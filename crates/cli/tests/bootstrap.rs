@@ -242,4 +242,56 @@ async fn bootstrap_is_atomic_native_keyed_and_tenant_isolated() {
     assert!(tx.set_tenant(other.tenant_id).await.is_err());
     drop(tx);
     assert!(PgStore::connect(&admin_url, 1).await.is_err());
+
+    // Force the same physical connection to alternate tenants under concurrent load.
+    let reused = Arc::new(PgStore::connect(&runtime_url, 1).await.unwrap());
+    let reused_service = Arc::new(WorkspaceService::new(
+        reused.clone(),
+        Arc::new(tect_host::GitSourceInspector),
+    ));
+    let mut alternating = Vec::new();
+    for index in 0..100 {
+        let (svc, request, expected) = if index % 2 == 0 {
+            (reused_service.clone(), ctx.clone(), workspace_id)
+        } else {
+            (
+                reused_service.clone(),
+                other_ctx.clone(),
+                other_open.workspace.as_ref().unwrap().id,
+            )
+        };
+        alternating.push(tokio::spawn(async move {
+            let state = svc.get_state(&request).await.unwrap();
+            assert_eq!(state.workspace.unwrap().id, expected);
+        }));
+    }
+    for task in alternating {
+        task.await.unwrap();
+    }
+    let leaked: Option<String> =
+        sqlx::query_scalar("SELECT current_setting('tect.tenant_id',true)")
+            .fetch_one(reused.pool())
+            .await
+            .unwrap();
+    assert!(leaked.is_none_or(|value| value.is_empty()));
+    let mut rollback = reused.begin(TransactionMode::ReadOnly).await.unwrap();
+    rollback.authenticate(&ctx.auth).await.unwrap();
+    rollback.set_tenant(tenant).await.unwrap();
+    drop(rollback);
+    let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM workspaces")
+        .fetch_one(reused.pool())
+        .await
+        .unwrap();
+    assert_eq!(visible, 0);
+    let mut bad = ctx.clone();
+    bad.auth.credential = "0".repeat(64);
+    assert_eq!(
+        reused_service.get_state(&bad).await,
+        Err(Error::Unauthorized)
+    );
+    let visible: i64 = sqlx::query_scalar("SELECT count(*) FROM workspaces")
+        .fetch_one(reused.pool())
+        .await
+        .unwrap();
+    assert_eq!(visible, 0);
 }

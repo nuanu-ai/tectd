@@ -161,6 +161,53 @@ pub async fn enroll_host(
     })
 }
 
+pub async fn revoke_host(pool: &PgPool, host_id: Uuid) -> Result<()> {
+    let mut transaction = pool.begin().await.map_err(storage_error)?;
+    let revoked: Option<bool> =
+        sqlx::query_scalar("SELECT revoked FROM hosts WHERE id=$1 FOR UPDATE")
+            .bind(host_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+    let revoked = revoked.ok_or(Error::NotFound)?;
+    if !revoked {
+        sqlx::query("UPDATE hosts SET revoked=true WHERE id=$1")
+            .bind(host_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+    }
+    transaction.commit().await.map_err(storage_error)
+}
+
+pub async fn revoke_session(pool: &PgPool, session_id: Uuid) -> Result<()> {
+    let mut transaction = pool.begin().await.map_err(storage_error)?;
+    let target: Option<(Uuid, String)> =
+        sqlx::query_as("SELECT host_id, native_session_id FROM agent_sessions WHERE id=$1")
+            .bind(session_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+    let (host_id, native_session_id) = target.ok_or(Error::NotFound)?;
+
+    sqlx::query(
+        "SELECT pg_catalog.pg_advisory_xact_lock(\
+             pg_catalog.hashtextextended($1::text || ':' || $2, 0))",
+    )
+    .bind(host_id)
+    .bind(native_session_id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(storage_error)?;
+
+    sqlx::query("UPDATE agent_sessions SET revoked=true WHERE id=$1 AND NOT revoked")
+        .bind(session_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(storage_error)?;
+    transaction.commit().await.map_err(storage_error)
+}
+
 fn quote_identifier(value: &str) -> Result<String> {
     if value.is_empty()
         || value.len() > 63

@@ -29,6 +29,14 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    RevokeHost {
+        #[arg(long)]
+        host_id: Uuid,
+    },
+    RevokeSession {
+        #[arg(long)]
+        session_id: Uuid,
+    },
 }
 
 #[tokio::main]
@@ -67,6 +75,14 @@ async fn run(arguments: Arguments) -> Result<()> {
                 enrollment.principal_id,
                 out.display()
             );
+        }
+        Command::RevokeHost { host_id } => {
+            tect_postgres::admin::revoke_host(&pool, host_id).await?;
+            println!("revoked host {host_id}");
+        }
+        Command::RevokeSession { session_id } => {
+            tect_postgres::admin::revoke_session(&pool, session_id).await?;
+            println!("revoked session {session_id}");
         }
     }
     pool.close().await;

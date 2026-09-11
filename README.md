@@ -11,7 +11,7 @@ separate operation.
 The native session MCP bridge opens logical workspaces, registers Git sources and
 selects worktrees per session. `get_state` does not create or update records and
 never runs Git. Bootstrap and selection changes are atomic. Recovery, revocation
-and measured performance acceptance are the final vertical within this Scope.
+and measured performance acceptance are included in the final vertical of this Scope.
 
 ## Architecture
 
@@ -88,6 +88,23 @@ Selection is bounded at 100 worktrees, catalog pages at 1–100 entries, source 
 at 4096 bytes and transport frames at 8 MiB. Each page returns `next_after` when more
 entries exist. Unknown arguments, including identity fields, are rejected.
 
+## Revocation and recovery
+
+The operator can revoke an enrolled host with
+`tect-admin revoke-host --host-id UUID` or a DB session with
+`tect-admin revoke-session --session-id UUID`, using `TECT_ADMIN_DATABASE_URL`.
+Repeated revocation of an existing target succeeds; an unknown target returns
+`not_found`. These commands are separate from MCP tools. A revoked host or session
+cannot reopen its native identity. Requests admitted before host revocation may
+finish; checks after its commit fail. Other sessions retain their identity and selection.
+
+After a bridge or daemon restart, use the same host configuration, native session
+and logical workspace key. `open_workspace` recovers a committed result even when
+the earlier response was lost. A daemon killed before commit leaves no partial
+bootstrap state. The daemon refuses to overwrite an existing Unix socket. Following
+an abrupt crash, the operator must verify its owning process is dead and the socket
+is the expected inode before removing that stale socket and starting the daemon.
+
 ## Verification
 
 Set `TECT_TEST_ADMIN_URL`, `TECT_TEST_RUNTIME_URL` and `TECT_TEST_RUNTIME_ROLE` to
@@ -105,3 +122,15 @@ Integration tests use real PostgreSQL and the real stdio MCP binary. Their synth
 native IDs are fixture identities. The separate Scope proof records the inherited
 native ID from the actual Codex session, without replacing it in the environment.
 Local proof, remote CI, plugin installation and deployment are separate results.
+
+For the explicit local performance profile, also set `TECT_PERFORMANCE_REPORT` to
+an absolute output JSON path and run:
+
+```sh
+cargo test -p tect-cli --test performance -- --ignored --nocapture
+```
+
+This profile creates a disposable tenant with 10,000 workspaces and 100,000 sessions,
+uses 100 selected worktrees per measured read session, and times actual stdio MCP
+calls. Fixture setup is excluded from warm timings. The report separates warm calls
+from bridge startup and records hardware, versions, concurrency and percentiles.
