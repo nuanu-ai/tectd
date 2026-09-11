@@ -1,0 +1,20 @@
+[package]
+name = "tect-postgres"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[dependencies]
+tect-domain.workspace = true
+tect-application.workspace = true
+async-trait.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+sqlx.workspace = true
+sha2.workspace = true
+getrandom.workspace = true
+
+[lints]
+workspace = true
