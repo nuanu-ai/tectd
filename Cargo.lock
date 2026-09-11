@@ -1563,10 +1563,12 @@ dependencies = [
 name = "tect-host"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "serde",
  "serde_json",
  "tect-application",
  "tect-domain",
+ "tempfile",
  "tokio",
  "uuid",
 ]

@@ -22,7 +22,10 @@ async fn run() -> tect_domain::Result<()> {
     reject_existing_path(&socket)?;
 
     let store = Arc::new(PgStore::connect(&database_url, 16).await?);
-    let service = Arc::new(WorkspaceService::new(store));
+    let service = Arc::new(WorkspaceService::new(
+        store,
+        Arc::new(tect_host::GitSourceInspector),
+    ));
     let listener = UnixListener::bind(&socket).map_err(|_| Error::InvalidConfiguration)?;
     let guard = SocketGuard::capture(socket)?;
     guard.set_private()?;

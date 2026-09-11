@@ -1,7 +1,7 @@
 use std::io;
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 
-pub(crate) const MAX_FRAME_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 pub(crate) enum Frame {
     Data(Vec<u8>),

@@ -13,7 +13,7 @@ ALLOWED = {
         "tect-domain", "tect-application", "async-trait", "sqlx", "uuid",
         "sha2", "getrandom", "serde", "serde_json",
     },
-    "tect-host": {"tect-domain", "tect-application", "serde", "serde_json", "tokio", "uuid"},
+    "tect-host": {"tect-domain", "tect-application", "serde", "serde_json", "tokio", "uuid", "async-trait"},
     "tect-cli": {
         "tect-domain", "tect-application", "tect-postgres", "tect-host",
         "tokio", "serde", "serde_json", "clap", "uuid",

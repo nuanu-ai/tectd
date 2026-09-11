@@ -10,3 +10,9 @@ pub use identity::{
 pub use state::{
     Created, EventKind, Session, StateStatus, Workspace, WorkspaceState, WorktreeSummary,
 };
+
+mod sources;
+pub use sources::{
+    MAX_SOURCE_PATH_BYTES, MAX_WORKTREES, RegisteredSource, SourceLocation, SourcePage,
+    validate_selection,
+};

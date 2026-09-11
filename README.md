@@ -8,10 +8,10 @@ This repository implements the first V2.1 Scope. The current installed Tect plug
 continues to govern its development. Installing or replacing that plugin is a
 separate operation.
 
-The first vertical exposes `get_state {}` and `open_workspace {}` through a native
-session MCP bridge. `get_state` does not create or update records. Bootstrap is
-atomic and idempotent. Source repository/worktree selection and recovery/performance
-acceptance are the ordered next verticals within this Scope.
+The native session MCP bridge opens logical workspaces, registers Git sources and
+selects worktrees per session. `get_state` does not create or update records and
+never runs Git. Bootstrap and selection changes are atomic. Recovery, revocation
+and measured performance acceptance are the final vertical within this Scope.
 
 ## Architecture
 
@@ -67,6 +67,26 @@ The MCP bridge uses the [MCP lifecycle](https://modelcontextprotocol.io/specific
 and [structured tool results](https://modelcontextprotocol.io/specification/2025-06-18/server/tools).
 Direct execution of this bridge validates the production transport path; it does
 not install a new plugin into the desktop app.
+
+## Source tools
+
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `open_workspace` | `{}` | Create or recover logical workspace/native session |
+| `get_state` | `{}` | Read workspace/session and selected worktrees |
+| `register_source` | `{ "path": "/absolute/source/worktree" }` | Register actual Git repository/worktree identities |
+| `select_worktrees` | `{ "worktree_ids": ["UUID"] }` | Replace this session's entire selection; `[]` clears it |
+| `list_sources` | `{ "limit": 25, "after": "UUID" }` | Read one ordered catalog page; `after` may be omitted |
+
+A checkout and its linked worktrees share a repository ID. Registration does not
+create or move Git worktrees. Both canonical worktree paths and Git common directories
+must be within the enrolled host's allowed source roots. Sources are scoped to
+workspace and host; selections belong to individual native sessions. A workspace
+works with zero sources. Invalid or foreign IDs leave the old selection intact.
+
+Selection is bounded at 100 worktrees, catalog pages at 1–100 entries, source paths
+at 4096 bytes and transport frames at 8 MiB. Each page returns `next_after` when more
+entries exist. Unknown arguments, including identity fields, are rejected.
 
 ## Verification
 

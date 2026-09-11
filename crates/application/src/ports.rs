@@ -1,5 +1,8 @@
 use async_trait::async_trait;
-use tect_domain::{Created, EventKind, HostAuth, HostIdentity, Result, Session, Workspace};
+use tect_domain::{
+    Created, EventKind, HostAuth, HostIdentity, RegisteredSource, Result, Session, SourceLocation,
+    Workspace, WorktreeSummary,
+};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,5 +39,44 @@ pub trait UnitOfWork: Send {
         kind: EventKind,
         entity_id: Uuid,
     ) -> Result<()>;
+    async fn register_source(
+        &mut self,
+        workspace_id: Uuid,
+        host_id: Uuid,
+        location: &SourceLocation,
+    ) -> Result<RegisteredSource>;
+    async fn source_worktrees(
+        &mut self,
+        workspace_id: Uuid,
+        host_id: Uuid,
+        ids: &[Uuid],
+    ) -> Result<Vec<WorktreeSummary>>;
+    async fn replace_selection(
+        &mut self,
+        workspace_id: Uuid,
+        host_id: Uuid,
+        session_id: Uuid,
+        ids: &[Uuid],
+    ) -> Result<()>;
+    async fn selected_worktrees(
+        &mut self,
+        workspace_id: Uuid,
+        host_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<Vec<WorktreeSummary>>;
+    /// Return at most limit entries, in UUID order; limit may be 101 for look-ahead.
+    async fn list_sources(
+        &mut self,
+        workspace_id: Uuid,
+        host_id: Uuid,
+        after: Option<Uuid>,
+        limit: u32,
+    ) -> Result<Vec<RegisteredSource>>;
     async fn commit(self: Box<Self>) -> Result<()>;
+}
+
+/// Host adapter validates real Git paths without mutating repositories.
+#[async_trait]
+pub trait SourceInspector: Send + Sync {
+    async fn inspect(&self, path: &str, allowed_roots: &[String]) -> Result<SourceLocation>;
 }

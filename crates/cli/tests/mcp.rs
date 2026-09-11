@@ -55,7 +55,10 @@ async fn real_mcp_schema_rejects_identity_override_and_recovers_session() {
     admin::migrate(&pool, &role).await.unwrap();
     let enrollment = admin::enroll_host(&pool, None, Vec::new()).await.unwrap();
     let store = Arc::new(PgStore::connect(&runtime_url, 4).await.unwrap());
-    let service = Arc::new(WorkspaceService::new(store));
+    let service = Arc::new(WorkspaceService::new(
+        store,
+        Arc::new(tect_host::GitSourceInspector),
+    ));
     let temp = tempfile::tempdir().unwrap();
     let private_path = temp.path().canonicalize().unwrap();
     std::fs::set_permissions(&private_path, std::fs::Permissions::from_mode(0o700)).unwrap();

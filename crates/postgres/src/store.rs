@@ -1,10 +1,13 @@
-use crate::storage_error;
+use crate::{sources, storage_error};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Postgres, Transaction};
 use tect_application::{Store, TransactionMode, UnitOfWork};
-use tect_domain::{Created, Error, EventKind, HostAuth, HostIdentity, Result, Session, Workspace};
+use tect_domain::{
+    Created, Error, EventKind, HostAuth, HostIdentity, RegisteredSource, Result, Session,
+    SourceLocation, Workspace, WorktreeSummary,
+};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -57,7 +60,8 @@ async fn verify_runtime_role(pool: &PgPool) -> Result<()> {
                    WHERE n.nspname = 'public'
                      AND c.relname IN (
                          'tenants', 'principals', 'hosts', 'workspaces', 'memberships',
-                         'agent_sessions', 'workspace_events'
+                         'agent_sessions', 'source_repositories', 'source_worktrees',
+                         'session_worktrees', 'workspace_events'
                      )
                      AND pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER')
                ) OR EXISTS (
@@ -334,6 +338,88 @@ impl UnitOfWork for PgUnitOfWork {
         .await
         .map_err(storage_error)?;
         Ok(())
+    }
+
+    async fn register_source(
+        &mut self,
+        workspace_id: Uuid,
+        host_id: Uuid,
+        location: &SourceLocation,
+    ) -> Result<RegisteredSource> {
+        let tenant_id = self.tenant_id()?;
+        sources::register_source(
+            self.transaction()?,
+            tenant_id,
+            workspace_id,
+            host_id,
+            location,
+        )
+        .await
+    }
+
+    async fn source_worktrees(
+        &mut self,
+        workspace_id: Uuid,
+        host_id: Uuid,
+        ids: &[Uuid],
+    ) -> Result<Vec<WorktreeSummary>> {
+        let tenant_id = self.tenant_id()?;
+        sources::source_worktrees(self.transaction()?, tenant_id, workspace_id, host_id, ids).await
+    }
+
+    async fn replace_selection(
+        &mut self,
+        workspace_id: Uuid,
+        host_id: Uuid,
+        session_id: Uuid,
+        ids: &[Uuid],
+    ) -> Result<()> {
+        let tenant_id = self.tenant_id()?;
+        sources::replace_selection(
+            self.transaction()?,
+            tenant_id,
+            workspace_id,
+            host_id,
+            session_id,
+            ids,
+        )
+        .await
+    }
+
+    async fn selected_worktrees(
+        &mut self,
+        workspace_id: Uuid,
+        host_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<Vec<WorktreeSummary>> {
+        let tenant_id = self.tenant_id()?;
+        sources::selected_worktrees(
+            self.transaction()?,
+            tenant_id,
+            workspace_id,
+            host_id,
+            session_id,
+        )
+        .await
+    }
+
+    async fn list_sources(
+        &mut self,
+        workspace_id: Uuid,
+        host_id: Uuid,
+        after: Option<Uuid>,
+        limit: u32,
+    ) -> Result<Vec<RegisteredSource>> {
+        let tenant_id = self.tenant_id()?;
+        sources::list_sources(
+            self.transaction()?,
+            tenant_id,
+            workspace_id,
+            host_id,
+            after,
+            limit,
+        )
+        .await
     }
 
     async fn commit(mut self: Box<Self>) -> Result<()> {

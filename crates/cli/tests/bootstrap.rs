@@ -59,7 +59,10 @@ async fn bootstrap_is_atomic_native_keyed_and_tenant_isolated() {
     let admin_pool = PgPool::connect(&admin_url).await.unwrap();
     admin::migrate(&admin_pool, &role).await.unwrap();
     let store = Arc::new(PgStore::connect(&runtime_url, 12).await.unwrap());
-    let service = Arc::new(WorkspaceService::new(store.clone()));
+    let service = Arc::new(WorkspaceService::new(
+        store.clone(),
+        Arc::new(tect_host::GitSourceInspector),
+    ));
     let enrollment = admin::enroll_host(&admin_pool, None, Vec::new())
         .await
         .unwrap();

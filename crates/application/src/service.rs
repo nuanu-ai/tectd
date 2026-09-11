@@ -1,4 +1,4 @@
-use crate::{Store, TransactionMode, UnitOfWork};
+use crate::{SourceInspector, Store, TransactionMode, UnitOfWork};
 use std::sync::Arc;
 use tect_domain::{
     Error, EventKind, HostIdentity, RequestContext, Result, Session, Workspace, WorkspaceState,
@@ -6,14 +6,15 @@ use tect_domain::{
 
 pub struct WorkspaceService {
     store: Arc<dyn Store>,
+    pub(crate) inspector: Arc<dyn SourceInspector>,
 }
 
 impl WorkspaceService {
-    pub fn new(store: Arc<dyn Store>) -> Self {
-        Self { store }
+    pub fn new(store: Arc<dyn Store>, inspector: Arc<dyn SourceInspector>) -> Self {
+        Self { store, inspector }
     }
 
-    async fn authorized(
+    pub(crate) async fn authorized(
         &self,
         context: &RequestContext,
         mode: TransactionMode,
@@ -25,7 +26,7 @@ impl WorkspaceService {
         Ok((tx, identity))
     }
 
-    async fn validate_binding(
+    pub(crate) async fn validate_binding(
         tx: &mut dyn UnitOfWork,
         context: &RequestContext,
         identity: &HostIdentity,
@@ -47,6 +48,32 @@ impl WorkspaceService {
         Ok(workspace)
     }
 
+    pub(crate) async fn state(
+        tx: &mut dyn UnitOfWork,
+        workspace: Workspace,
+        session: Session,
+    ) -> Result<WorkspaceState> {
+        let selected_worktrees = tx
+            .selected_worktrees(workspace.id, session.host_id, session.id)
+            .await?;
+        let mut state = WorkspaceState::opened(workspace, session);
+        state.selected_worktrees = selected_worktrees;
+        Ok(state)
+    }
+
+    pub(crate) async fn bound_session(
+        tx: &mut dyn UnitOfWork,
+        context: &RequestContext,
+        identity: &HostIdentity,
+    ) -> Result<(Workspace, Session)> {
+        let session = tx
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        let workspace = Self::validate_binding(tx, context, identity, &session).await?;
+        Ok((workspace, session))
+    }
+
     pub async fn get_state(&self, context: &RequestContext) -> Result<WorkspaceState> {
         let (mut tx, identity) = self.authorized(context, TransactionMode::ReadOnly).await?;
         let state = match tx
@@ -56,7 +83,7 @@ impl WorkspaceService {
             Some(session) => {
                 let workspace =
                     Self::validate_binding(&mut *tx, context, &identity, &session).await?;
-                WorkspaceState::opened(workspace, session)
+                Self::state(&mut *tx, workspace, session).await?
             }
             None => WorkspaceState::unopened(),
         };
@@ -73,8 +100,9 @@ impl WorkspaceService {
             .await?
         {
             let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
+            let state = Self::state(&mut *tx, workspace, session).await?;
             tx.commit().await?;
-            return Ok(WorkspaceState::opened(workspace, session));
+            return Ok(state);
         }
         let workspace = tx.ensure_workspace(&context.workspace_key).await?;
         tx.ensure_membership(workspace.value.id, identity.principal_id)

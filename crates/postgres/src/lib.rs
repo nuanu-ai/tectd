@@ -1,5 +1,6 @@
 //! PostgreSQL persistence and operator-only administration.
 pub mod admin;
+mod sources;
 mod store;
 
 pub use admin::Enrollment;

@@ -2,11 +2,14 @@
 
 mod context;
 mod frame;
+mod git;
 mod mcp;
+mod tools;
 mod transport;
 
 pub use context::context_from_env;
+pub use git::GitSourceInspector;
 pub use mcp::run_stdio;
-pub use transport::{call, serve};
+pub use transport::{call, call_tool, serve};
 
 pub type Result<T> = tect_domain::Result<T>;

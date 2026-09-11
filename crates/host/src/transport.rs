@@ -1,5 +1,6 @@
 use crate::Result;
 use crate::frame::{Frame, FrameReader, MAX_FRAME_BYTES};
+use crate::tools::{Invocation, parse_invocation};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -29,7 +30,7 @@ struct WireRequest {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 enum WireResponse {
-    Ok { state: WorkspaceState },
+    Ok { result: Value },
     Error { error: Error },
 }
 
@@ -59,6 +60,16 @@ pub async fn call(
     tool_name: &str,
     arguments: Value,
 ) -> Result<WorkspaceState> {
+    let result = call_tool(socket, context, tool_name, arguments).await?;
+    serde_json::from_value(result).map_err(|_| Error::TransportUnavailable)
+}
+
+pub async fn call_tool(
+    socket: &Path,
+    context: &RequestContext,
+    tool_name: &str,
+    arguments: Value,
+) -> Result<Value> {
     let expected_socket = validate_socket(socket)?;
 
     let request = WireRequest {
@@ -98,7 +109,7 @@ pub async fn call(
     let response: WireResponse =
         serde_json::from_slice(&bytes).map_err(|_| Error::TransportUnavailable)?;
     match response {
-        WireResponse::Ok { state } => Ok(state),
+        WireResponse::Ok { result } => Ok(result),
         WireResponse::Error { error } => Err(error),
     }
 }
@@ -126,38 +137,58 @@ async fn handle_connection(stream: UnixStream, service: Arc<WorkspaceService>) -
 }
 
 async fn execute(request: WireRequest, service: &WorkspaceService) -> WireResponse {
-    let arguments_are_empty = request
-        .arguments
-        .as_object()
-        .is_some_and(serde_json::Map::is_empty);
-    let known_tool = matches!(request.tool_name.as_str(), "open_workspace" | "get_state");
-    if !arguments_are_empty || !known_tool {
-        let authorization = timeout(OPERATION_TIMEOUT, service.get_state(&request.context)).await;
-        return match authorization {
-            Ok(Ok(_)) => WireResponse::Error {
-                error: Error::InvalidArguments,
-            },
-            Ok(Err(error)) => WireResponse::Error { error },
-            Err(_) => WireResponse::Error {
-                error: Error::TransportUnavailable,
-            },
-        };
-    }
-
-    let result = match request.tool_name.as_str() {
-        "open_workspace" => {
-            timeout(OPERATION_TIMEOUT, service.open_workspace(&request.context)).await
+    let invocation = match parse_invocation(&request.tool_name, request.arguments) {
+        Ok(invocation) => invocation,
+        Err(_) => {
+            return authenticate_invalid_request(service, &request.context).await;
         }
-        "get_state" => timeout(OPERATION_TIMEOUT, service.get_state(&request.context)).await,
-        _ => unreachable!("known tool checked above"),
     };
+
+    let result = timeout(OPERATION_TIMEOUT, async {
+        match invocation {
+            Invocation::OpenWorkspace => serialize(service.open_workspace(&request.context).await),
+            Invocation::GetState => serialize(service.get_state(&request.context).await),
+            Invocation::RegisterSource { path } => {
+                serialize(service.register_source(&request.context, &path).await)
+            }
+            Invocation::SelectWorktrees { worktree_ids } => serialize(
+                service
+                    .select_worktrees(&request.context, &worktree_ids)
+                    .await,
+            ),
+            Invocation::ListSources { after, limit } => {
+                serialize(service.list_sources(&request.context, after, limit).await)
+            }
+        }
+    })
+    .await;
     match result {
-        Ok(Ok(state)) => WireResponse::Ok { state },
+        Ok(Ok(result)) => WireResponse::Ok { result },
         Ok(Err(error)) => WireResponse::Error { error },
         Err(_) => WireResponse::Error {
             error: Error::TransportUnavailable,
         },
     }
+}
+
+async fn authenticate_invalid_request(
+    service: &WorkspaceService,
+    context: &RequestContext,
+) -> WireResponse {
+    let authorization = timeout(OPERATION_TIMEOUT, service.get_state(context)).await;
+    match authorization {
+        Ok(Ok(_)) => WireResponse::Error {
+            error: Error::InvalidArguments,
+        },
+        Ok(Err(error)) => WireResponse::Error { error },
+        Err(_) => WireResponse::Error {
+            error: Error::TransportUnavailable,
+        },
+    }
+}
+
+fn serialize<T: Serialize>(result: Result<T>) -> Result<Value> {
+    result.and_then(|value| serde_json::to_value(value).map_err(|_| Error::TransportUnavailable))
 }
 
 async fn write_response(writer: &mut WriteHalf<UnixStream>, response: WireResponse) -> Result<()> {

@@ -1,10 +1,11 @@
 use crate::Result;
 use crate::frame::{Frame, FrameReader, MAX_FRAME_BYTES};
-use crate::transport::call;
+use crate::tools::definitions;
+use crate::transport::call_tool;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
-use tect_domain::{Error, RequestContext, WorkspaceState};
+use tect_domain::{Error, RequestContext};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 const SERVER_PROTOCOL: &str = "2025-06-18";
@@ -129,7 +130,7 @@ impl McpSession {
             }
             "tools/list" if self.lifecycle == Lifecycle::Ready => {
                 if empty_params(params) {
-                    Some(success_response(id, tools_list()))
+                    Some(success_response(id, definitions()))
                 } else {
                     Some(error_response(id, -32602, "invalid_params"))
                 }
@@ -192,8 +193,8 @@ impl McpSession {
             Some(params) => params,
             None => return error_response(id, -32602, "invalid_params"),
         };
-        match call(&self.socket, &self.context, &params.name, params.arguments).await {
-            Ok(state) => success_response(id, successful_tool_result(state)),
+        match call_tool(&self.socket, &self.context, &params.name, params.arguments).await {
+            Ok(result) => success_response(id, successful_tool_result(result)),
             Err(error) => success_response(id, failed_tool_result(error)),
         }
     }
@@ -237,27 +238,7 @@ fn empty_arguments() -> Value {
     Value::Object(Map::new())
 }
 
-fn tools_list() -> Value {
-    json!({
-        "tools": [
-            {
-                "name": "open_workspace",
-                "description": "Create or recover this native session's logical workspace.",
-                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
-                "annotations": {"readOnlyHint": false, "idempotentHint": true, "destructiveHint": false}
-            },
-            {
-                "name": "get_state",
-                "description": "Read this native session's bounded workspace state.",
-                "inputSchema": {"type": "object", "properties": {}, "additionalProperties": false},
-                "annotations": {"readOnlyHint": true, "idempotentHint": true, "destructiveHint": false}
-            }
-        ]
-    })
-}
-
-fn successful_tool_result(state: WorkspaceState) -> Value {
-    let structured = serde_json::to_value(&state).unwrap_or_else(|_| json!({}));
+fn successful_tool_result(structured: Value) -> Value {
     let text = serde_json::to_string(&structured).unwrap_or_else(|_| "{}".to_owned());
     json!({
         "content": [{"type": "text", "text": text}],
@@ -324,15 +305,6 @@ mod tests {
                 workspace_key: "synthetic-unit-fixture".into(),
             },
             lifecycle: Lifecycle::New,
-        }
-    }
-
-    #[test]
-    fn tool_schemas_reject_context_and_all_other_arguments() {
-        let tools = tools_list();
-        for tool in tools["tools"].as_array().unwrap() {
-            assert_eq!(tool["inputSchema"]["additionalProperties"], false);
-            assert_eq!(tool["inputSchema"]["properties"], json!({}));
         }
     }
 

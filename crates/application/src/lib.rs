@@ -2,5 +2,7 @@
 mod ports;
 mod service;
 
-pub use ports::{Store, TransactionMode, UnitOfWork};
+pub use ports::{SourceInspector, Store, TransactionMode, UnitOfWork};
 pub use service::WorkspaceService;
+
+mod sources;
