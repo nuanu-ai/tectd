@@ -17,7 +17,7 @@ and measured performance acceptance are included in the final vertical of this S
 
 ```mermaid
 flowchart LR
-  Host[Native Codex session] --> MCP[tect-mcp: stdio]
+  Host[Native Codex session] --> MCP[tectd-mcp: stdio]
   MCP --> Daemon[tectd: private Unix socket]
   Daemon --> App[Application use cases and ports]
   App --> Domain[Pure domain values and invariants]
@@ -49,24 +49,45 @@ The generated host credential file must remain private and must not be printed.
 
 `tectd` requires `TECT_DATABASE_URL` and `TECT_SOCKET`. The socket must be a new
 absolute path inside a private directory. The daemon does not overwrite an existing
-socket or manage another process. `tect-mcp` requires:
+socket or manage another process. `tectd-mcp` requires:
 
 | Host setting | Meaning |
 | --- | --- |
 | `TECT_SOCKET` | Private daemon socket |
 | `TECT_HOST_CONFIG` | Absolute, non-symlinked, mode-0600 enrollment file |
 | `TECT_WORKSPACE_KEY` | Explicit logical key, 1–128 ASCII letters/digits/`.`/`_`/`-`, beginning with a letter/digit |
-| `CODEX_SESSION_ID` / `CODEX_THREAD_ID` | Native host identity; both must agree when present |
 
-These fields belong to host configuration, not tool arguments. Missing or ambiguous
-native identity fails closed. A different key with the same native session is
-rejected rather than silently moving the session. On macOS, resolve `<temporary-directory>` or `/var`
+These fields belong to host configuration, not tool arguments. Native identity is
+read on every tool call from the Codex-generated `params._meta.threadId` UUID.
+Missing, invalid or non-string identity fails before a daemon request. The bridge
+never falls back to `CODEX_SESSION_ID`, `CODEX_THREAD_ID`, PID or a generated UUID.
+Codex 0.153.4 strips those identity environment variables from native MCP startup;
+its MCP client attaches the authoritative thread ID to tool-call metadata. A
+different key with the same native session is rejected rather than moving it. On macOS, resolve `<temporary-directory>` or `/var`
 aliases to their canonical paths before configuring private files and sockets.
 
 The MCP bridge uses the [MCP lifecycle](https://modelcontextprotocol.io/specification/2025-03-26/basic/lifecycle)
 and [structured tool results](https://modelcontextprotocol.io/specification/2025-06-18/server/tools).
-Direct execution of this bridge validates the production transport path; it does
-not install a new plugin into the desktop app.
+Protocol discovery accepts standard MCP metadata, including Codex's
+`tools/list` progress token; tool business arguments remain strict.
+Direct execution validates the transport path. Actual bundled Codex app-server
+acceptance additionally validates native MCP launch and per-call identity delivery.
+These are separate from persistent installation into the desktop app.
+
+## Independent Codex connection
+
+The new **TectD MCP** uses plugin ID/server key `tectd` and executable/serverInfo
+`tectd-mcp`. The existing Tect V1 plugin uses `tect@tect-local` and server
+`tect-dynamic-materialization`. The independent source package and operator contract
+are in [integrations/codex/tectd](integrations/codex/tectd/README.md).
+
+Build `tectd-mcp`, then run `scripts/package-codex-plugin.py --binary` with that
+absolute executable path and `--output` with a new output parent directory. The
+packager creates `tectd/` and a binary hash receipt; it does not install a plugin,
+change a marketplace, start a daemon, enroll credentials, or migrate a database.
+The package forwards only the three operator configuration variables above.
+The registered host credential is the trust root; native thread IDs are identifiers,
+not per-session secrets.
 
 ## Source tools
 
@@ -118,10 +139,13 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Integration tests use real PostgreSQL and the real stdio MCP binary. Their synthetic
-native IDs are fixture identities. The separate Scope proof records the inherited
-native ID from the actual Codex session, without replacing it in the environment.
-Local proof, remote CI, plugin installation and deployment are separate results.
+Integration tests use real PostgreSQL and the real stdio MCP binary. Their native
+UUIDs supplied in metadata are synthetic fixtures. The separate Scope connection
+proof uses ten ephemeral threads created by the actual bundled Codex app-server and
+its `mcpServer/tool/call` client, with zero model turns. The host overwrites supplied
+thread metadata with the loaded thread's actual ID. Local transport, actual Codex
+client acceptance, remote CI, persistent installation and deployment remain separate
+proof layers; see the parent Scope result for the exact verified build.
 
 For the explicit local performance profile, also set `TECT_PERFORMANCE_REPORT` to
 an absolute output JSON path and run:

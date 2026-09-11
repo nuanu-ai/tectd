@@ -11,7 +11,7 @@ async fn main() {
 
 async fn run() -> tect_domain::Result<()> {
     let socket = required_absolute_path("TECT_SOCKET")?;
-    let context = tect_host::context_from_env()?;
+    let context = tect_host::host_context_from_env()?;
     tect_host::run_stdio(&socket, context).await
 }
 

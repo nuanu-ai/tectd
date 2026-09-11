@@ -1,4 +1,5 @@
 use crate::Result;
+use crate::context::HostContext;
 use crate::frame::{Frame, FrameReader, MAX_FRAME_BYTES};
 use crate::tools::definitions;
 use crate::transport::call_tool;
@@ -24,7 +25,7 @@ struct ToolCallParams {
     #[serde(default = "empty_arguments")]
     arguments: Value,
     #[serde(default, rename = "_meta")]
-    _meta: Option<Map<String, Value>>,
+    metadata: Option<Map<String, Value>>,
 }
 
 #[derive(Deserialize)]
@@ -47,7 +48,7 @@ struct ClientInfo {
     _title: Option<String>,
 }
 
-pub async fn run_stdio(socket: &Path, context: RequestContext) -> Result<()> {
+pub async fn run_stdio(socket: &Path, context: HostContext) -> Result<()> {
     if !socket.is_absolute() {
         return Err(Error::InvalidConfiguration);
     }
@@ -81,7 +82,7 @@ pub async fn run_stdio(socket: &Path, context: RequestContext) -> Result<()> {
 
 struct McpSession {
     socket: PathBuf,
-    context: RequestContext,
+    context: HostContext,
     lifecycle: Lifecycle,
 }
 
@@ -122,14 +123,14 @@ impl McpSession {
         match method {
             "initialize" => self.initialize(id, params),
             "ping" => {
-                if empty_params(params) {
+                if control_params(params) {
                     Some(success_response(id, json!({})))
                 } else {
                     Some(error_response(id, -32602, "invalid_params"))
                 }
             }
             "tools/list" if self.lifecycle == Lifecycle::Ready => {
-                if empty_params(params) {
+                if control_params(params) {
                     Some(success_response(id, definitions()))
                 } else {
                     Some(error_response(id, -32602, "invalid_params"))
@@ -171,7 +172,10 @@ impl McpSession {
             json!({
                 "protocolVersion": protocol,
                 "capabilities": {"tools": {"listChanged": false}},
-                "serverInfo": {"name": "tect-mcp", "version": env!("CARGO_PKG_VERSION")}
+                "serverInfo": {
+                    "name": "tectd-mcp", "title": "TectD MCP",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
             }),
         ))
     }
@@ -179,7 +183,7 @@ impl McpSession {
     fn handle_notification(&mut self, method: &str, params: Option<&Value>) {
         if method == "notifications/initialized"
             && self.lifecycle == Lifecycle::AwaitingInitialized
-            && empty_params(params)
+            && control_params(params)
         {
             self.lifecycle = Lifecycle::Ready;
         }
@@ -193,11 +197,26 @@ impl McpSession {
             Some(params) => params,
             None => return error_response(id, -32602, "invalid_params"),
         };
-        match call_tool(&self.socket, &self.context, &params.name, params.arguments).await {
+        let context = match request_context(&self.context, params.metadata.as_ref()) {
+            Ok(context) => context,
+            Err(error) => return success_response(id, failed_tool_result(error)),
+        };
+        match call_tool(&self.socket, &context, &params.name, params.arguments).await {
             Ok(result) => success_response(id, successful_tool_result(result)),
             Err(error) => success_response(id, failed_tool_result(error)),
         }
     }
+}
+
+fn request_context(
+    host: &HostContext,
+    metadata: Option<&Map<String, Value>>,
+) -> Result<RequestContext> {
+    let thread_id = metadata
+        .and_then(|metadata| metadata.get("threadId"))
+        .and_then(Value::as_str)
+        .ok_or(Error::InvalidNativeSession)?;
+    host.request_context(thread_id)
 }
 
 fn valid_request_members(object: &Map<String, Value>) -> bool {
@@ -226,10 +245,17 @@ fn notification_aware_error(
     }
 }
 
-fn empty_params(params: Option<&Value>) -> bool {
+fn control_params(params: Option<&Value>) -> bool {
     match params {
         None => true,
-        Some(Value::Object(object)) => object.is_empty(),
+        Some(Value::Object(object)) => object.iter().all(|(key, value)| {
+            key == "_meta"
+                && value.as_object().is_some_and(|metadata| {
+                    metadata
+                        .get("progressToken")
+                        .is_none_or(|token| token.is_string() || token.is_number())
+                })
+        }),
         _ => false,
     }
 }
@@ -288,117 +314,4 @@ async fn write_json_line<W: AsyncWrite + Unpin>(writer: &mut W, value: &Value) -
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tect_domain::HostAuth;
-    use uuid::Uuid;
-
-    fn synthetic_session() -> McpSession {
-        McpSession {
-            socket: PathBuf::from("/__tect_test__/unopened-test-socket"),
-            context: RequestContext {
-                auth: HostAuth {
-                    host_id: Uuid::new_v4(),
-                    credential: "0".repeat(64),
-                },
-                native_session_id: Uuid::new_v4().to_string(),
-                workspace_key: "synthetic-unit-fixture".into(),
-            },
-            lifecycle: Lifecycle::New,
-        }
-    }
-
-    #[test]
-    fn tool_errors_have_stable_structured_and_text_content() {
-        let result = failed_tool_result(Error::Unauthorized);
-        assert_eq!(result["isError"], true);
-        assert_eq!(result["structuredContent"]["error"]["code"], "unauthorized");
-        assert_eq!(
-            serde_json::from_str::<Value>(result["content"][0]["text"].as_str().unwrap()).unwrap(),
-            result["structuredContent"]
-        );
-    }
-
-    #[tokio::test]
-    async fn initialization_negotiates_the_single_supported_protocol() {
-        for requested in [SERVER_PROTOCOL, "2025-03-26"] {
-            let mut session = synthetic_session();
-            let response = session
-                .handle_value(json!({
-                    "jsonrpc": "2.0",
-                    "id": "init",
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": requested,
-                        "capabilities": {},
-                        "clientInfo": {"name": "synthetic-test", "version": "1"}
-                    }
-                }))
-                .await
-                .unwrap();
-            assert_eq!(response["result"]["protocolVersion"], SERVER_PROTOCOL);
-            assert_eq!(session.lifecycle, Lifecycle::AwaitingInitialized);
-        }
-    }
-
-    #[tokio::test]
-    async fn initialize_requires_capabilities_and_client_identity_objects() {
-        for params in [
-            json!({"protocolVersion": SERVER_PROTOCOL}),
-            json!({
-                "protocolVersion": SERVER_PROTOCOL,
-                "capabilities": [],
-                "clientInfo": {"name": "synthetic-test", "version": "1"}
-            }),
-            json!({
-                "protocolVersion": SERVER_PROTOCOL,
-                "capabilities": {},
-                "clientInfo": {"name": "synthetic-test", "version": 1}
-            }),
-        ] {
-            let mut session = synthetic_session();
-            let response = session
-                .handle_value(json!({
-                    "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": params
-                }))
-                .await
-                .unwrap();
-            assert_eq!(response["error"]["code"], -32602);
-            assert_eq!(session.lifecycle, Lifecycle::New);
-        }
-    }
-
-    #[tokio::test]
-    async fn ping_is_available_before_initialization() {
-        let mut session = synthetic_session();
-        let response = session
-            .handle_value(json!({"jsonrpc": "2.0", "id": 7, "method": "ping"}))
-            .await
-            .unwrap();
-        assert_eq!(response["result"], json!({}));
-        assert_eq!(session.lifecycle, Lifecycle::New);
-    }
-
-    #[tokio::test]
-    async fn object_without_method_is_an_invalid_request() {
-        let mut session = synthetic_session();
-        let response = session.handle_value(json!({})).await.unwrap();
-        assert_eq!(response["id"], Value::Null);
-        assert_eq!(response["error"]["code"], -32600);
-    }
-
-    #[test]
-    fn tool_call_params_accept_only_standard_meta_beside_name_and_arguments() {
-        let params: ToolCallParams = serde_json::from_value(json!({
-            "name": "get_state", "arguments": {}, "_meta": {"progressToken": "p"}
-        }))
-        .unwrap();
-        assert_eq!(params.name, "get_state");
-        assert!(
-            serde_json::from_value::<ToolCallParams>(json!({
-                "name": "get_state", "arguments": {}, "workspace_key": "spoofed"
-            }))
-            .is_err()
-        );
-    }
-}
+mod tests;

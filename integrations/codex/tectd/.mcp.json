@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "tectd": {
+      "command": "sh",
+      "args": [
+        "./run.sh"
+      ],
+      "cwd": ".",
+      "env_vars": [
+        "TECT_SOCKET",
+        "TECT_HOST_CONFIG",
+        "TECT_WORKSPACE_KEY"
+      ]
+    }
+  }
+}

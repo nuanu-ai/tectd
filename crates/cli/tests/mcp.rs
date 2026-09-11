@@ -72,11 +72,11 @@ async fn real_mcp_schema_rejects_identity_override_and_recovers_session() {
     let mut first_session = None;
 
     for reconnect in 0..2 {
-        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_tect-mcp"))
+        let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_tectd-mcp"))
             .env("TECT_SOCKET", &socket)
             .env("TECT_HOST_CONFIG", &config)
             .env("TECT_WORKSPACE_KEY", "stdio-fixture")
-            .env("CODEX_SESSION_ID", &native_id)
+            .env_remove("CODEX_SESSION_ID")
             .env_remove("CODEX_THREAD_ID")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -98,6 +98,9 @@ async fn real_mcp_schema_rejects_identity_override_and_recovers_session() {
         )
         .await;
         assert!(init.get("error").is_none(), "{init}");
+        assert_eq!(init["result"]["serverInfo"]["name"], "tectd-mcp");
+        assert_eq!(init["result"]["serverInfo"]["title"], "TectD MCP");
+        assert!(!init.to_string().contains(&enrollment.auth.credential));
         input
             .write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n")
             .await
@@ -117,7 +120,7 @@ async fn real_mcp_schema_rejects_identity_override_and_recovers_session() {
             &mut output,
             json!({
                 "jsonrpc":"2.0","id":3,"method":"tools/call",
-                "params":{"name":"get_state","arguments":{}}
+                "params":{"name":"get_state","arguments":{},"_meta":{"threadId":native_id}}
             }),
         )
         .await;
@@ -136,7 +139,7 @@ async fn real_mcp_schema_rejects_identity_override_and_recovers_session() {
             &mut output,
             json!({
                 "jsonrpc":"2.0","id":4,"method":"tools/call",
-                "params":{"name":"open_workspace","arguments":{"workspace_key":"spoofed"}}
+                "params":{"name":"open_workspace","arguments":{"workspace_key":"spoofed"},"_meta":{"threadId":native_id}}
             }),
         )
         .await;
@@ -146,7 +149,7 @@ async fn real_mcp_schema_rejects_identity_override_and_recovers_session() {
             &mut output,
             json!({
                 "jsonrpc":"2.0","id":5,"method":"tools/call",
-                "params":{"name":"open_workspace","arguments":{}}
+                "params":{"name":"open_workspace","arguments":{},"_meta":{"threadId":native_id}}
             }),
         )
         .await;

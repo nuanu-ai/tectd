@@ -4,6 +4,19 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+autobins = false
+
+[[bin]]
+name = "tect-admin"
+path = "src/bin/tect-admin.rs"
+
+[[bin]]
+name = "tectd"
+path = "src/bin/tectd.rs"
+
+[[bin]]
+name = "tectd-mcp"
+path = "src/bin/tect-mcp.rs"
 
 [dependencies]
 tect-domain.workspace = true

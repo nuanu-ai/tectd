@@ -7,7 +7,7 @@ mod mcp;
 mod tools;
 mod transport;
 
-pub use context::context_from_env;
+pub use context::{HostContext, host_context_from_env};
 pub use git::GitSourceInspector;
 pub use mcp::run_stdio;
 pub use transport::{call, call_tool, serve};

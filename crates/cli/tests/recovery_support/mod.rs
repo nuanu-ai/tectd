@@ -101,15 +101,16 @@ pub struct Mcp {
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     sequence: u64,
+    native: String,
 }
 impl Mcp {
     /// Native IDs here are explicitly synthetic integration fixtures.
     pub async fn start(socket: &Path, config: &Path, native: &str, key: &str) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_tect-mcp"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_tectd-mcp"))
             .env("TECT_SOCKET", socket)
             .env("TECT_HOST_CONFIG", config)
             .env("TECT_WORKSPACE_KEY", key)
-            .env("CODEX_SESSION_ID", native)
+            .env_remove("CODEX_SESSION_ID")
             .env_remove("CODEX_THREAD_ID")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -124,6 +125,7 @@ impl Mcp {
             input,
             output,
             sequence: 0,
+            native: native.to_owned(),
         };
         client.exchange("initialize", json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"tect-recovery-test","version":"1"}})).await;
         client
@@ -134,7 +136,10 @@ impl Mcp {
         client.input.flush().await.unwrap();
         client
     }
-    pub async fn send(&mut self, method: &str, params: Value) {
+    pub async fn send(&mut self, method: &str, mut params: Value) {
+        if method == "tools/call" {
+            params["_meta"] = json!({"threadId": self.native});
+        }
         self.sequence += 1;
         let message = json!({"jsonrpc":"2.0","id":self.sequence,"method":method,"params":params});
         self.input

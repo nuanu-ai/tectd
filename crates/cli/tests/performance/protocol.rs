@@ -108,6 +108,7 @@ pub(crate) struct Bridge {
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     sequence: u64,
+    native_id: String,
 }
 
 impl Bridge {
@@ -117,11 +118,11 @@ impl Bridge {
         native_id: &str,
         workspace_key: &str,
     ) -> TestResult<Self> {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_tect-mcp"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_tectd-mcp"))
             .env("TECT_SOCKET", socket)
             .env("TECT_HOST_CONFIG", config)
             .env("TECT_WORKSPACE_KEY", workspace_key)
-            .env("CODEX_SESSION_ID", native_id)
+            .env_remove("CODEX_SESSION_ID")
             .env_remove("CODEX_THREAD_ID")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -141,6 +142,7 @@ impl Bridge {
             input,
             output: BufReader::new(output),
             sequence: 0,
+            native_id: native_id.to_owned(),
         };
         let initialized = bridge
             .exchange(
@@ -164,8 +166,14 @@ impl Bridge {
     }
 
     pub(crate) async fn tool_call(&mut self, name: &str, arguments: Value) -> TestResult<Value> {
-        self.exchange("tools/call", json!({"name":name,"arguments":arguments}))
-            .await
+        self.exchange(
+            "tools/call",
+            json!({
+                "name":name, "arguments":arguments,
+                "_meta":{"threadId":self.native_id}
+            }),
+        )
+        .await
     }
 
     async fn exchange(&mut self, method: &str, params: Value) -> TestResult<Value> {

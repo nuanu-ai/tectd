@@ -1,0 +1,24 @@
+{
+  "name": "tectd",
+  "version": "0.1.0",
+  "description": "TectD MCP: logical workspaces and native agent sessions on the Rust/PostgreSQL daemon.",
+  "author": {
+    "name": "Tony"
+  },
+  "license": "MIT",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "TectD MCP",
+    "shortDescription": "Native sessions and logical DB workspaces.",
+    "longDescription": "Independent TectD MCP connection for the new Rust/SQLx/PostgreSQL product. Uses host-supplied Codex thread metadata and a private enrolled host credential.",
+    "developerName": "Tony",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Read the current TectD workspace state."
+    ]
+  }
+}

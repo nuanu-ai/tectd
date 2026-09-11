@@ -169,6 +169,7 @@ mod tests {
         ));
         for invalid in [
             json!({"path": "/repo", "workspace_key": "spoofed"}),
+            json!({"path": "/repo", "native_session_id": Uuid::new_v4()}),
             json!({"path": 7}),
             json!([]),
         ] {
