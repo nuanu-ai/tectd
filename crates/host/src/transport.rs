@@ -1,6 +1,9 @@
 use crate::Result;
 use crate::frame::{Frame, FrameReader, MAX_FRAME_BYTES};
+use crate::program_output::ProgramEncoding;
+use crate::program_tools::ProgramInvocation;
 use crate::tools::{Invocation, parse_invocation};
+use crate::{program_output, responses};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
@@ -25,6 +28,12 @@ struct WireRequest {
     context: RequestContext,
     tool_name: String,
     arguments: Value,
+    #[serde(default = "default_capacity")]
+    output_capacity: usize,
+}
+
+fn default_capacity() -> usize {
+    MAX_FRAME_BYTES
 }
 
 #[derive(Serialize, Deserialize)]
@@ -70,12 +79,23 @@ pub async fn call_tool(
     tool_name: &str,
     arguments: Value,
 ) -> Result<Value> {
+    call_tool_bounded(socket, context, tool_name, arguments, MAX_FRAME_BYTES).await
+}
+
+pub(crate) async fn call_tool_bounded(
+    socket: &Path,
+    context: &RequestContext,
+    tool_name: &str,
+    arguments: Value,
+    output_capacity: usize,
+) -> Result<Value> {
     let expected_socket = validate_socket(socket)?;
 
     let request = WireRequest {
         context: context.clone(),
         tool_name: tool_name.to_owned(),
         arguments,
+        output_capacity,
     };
     let bytes = encode_line(&request)?;
     let stream = timeout(IO_TIMEOUT, UnixStream::connect(socket))
@@ -137,6 +157,9 @@ async fn handle_connection(stream: UnixStream, service: Arc<WorkspaceService>) -
 }
 
 async fn execute(request: WireRequest, service: &WorkspaceService) -> WireResponse {
+    if request.output_capacity > MAX_FRAME_BYTES {
+        return authenticate_invalid_request(service, &request.context).await;
+    }
     let invocation = match parse_invocation(&request.tool_name, request.arguments) {
         Ok(invocation) => invocation,
         Err(_) => {
@@ -146,16 +169,30 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
 
     let result = timeout(OPERATION_TIMEOUT, async {
         match invocation {
-            Invocation::OpenWorkspace => serialize(service.open_workspace(&request.context).await),
-            Invocation::GetState => serialize(service.get_state(&request.context).await),
+            Invocation::OpenWorkspace => service
+                .open_workspace(&request.context)
+                .await
+                .and_then(|state| program_output::workspace(state, request.output_capacity)),
+            Invocation::GetState => service
+                .get_state(&request.context)
+                .await
+                .and_then(|state| program_output::workspace(state, request.output_capacity)),
+            Invocation::Program(invocation) => {
+                execute_program(
+                    &request.context,
+                    invocation,
+                    service,
+                    request.output_capacity,
+                )
+                .await
+            }
             Invocation::RegisterSource { path } => {
                 serialize(service.register_source(&request.context, &path).await)
             }
-            Invocation::SelectWorktrees { worktree_ids } => serialize(
-                service
-                    .select_worktrees(&request.context, &worktree_ids)
-                    .await,
-            ),
+            Invocation::SelectWorktrees { worktree_ids } => service
+                .select_worktrees(&request.context, &worktree_ids)
+                .await
+                .and_then(|state| program_output::workspace(state, request.output_capacity)),
             Invocation::ListSources { after, limit } => {
                 serialize(service.list_sources(&request.context, after, limit).await)
             }
@@ -163,7 +200,13 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
     })
     .await;
     match result {
-        Ok(Ok(result)) => WireResponse::Ok { result },
+        Ok(Ok(result)) => match responses::encoded_len(&result) {
+            Ok(bytes) if bytes <= request.output_capacity => WireResponse::Ok { result },
+            Ok(_) => WireResponse::Error {
+                error: Error::RequestTooLarge,
+            },
+            Err(error) => WireResponse::Error { error },
+        },
         Ok(Err(error)) => WireResponse::Error { error },
         Err(_) => WireResponse::Error {
             error: Error::TransportUnavailable,
@@ -188,7 +231,58 @@ async fn authenticate_invalid_request(
 }
 
 fn serialize<T: Serialize>(result: Result<T>) -> Result<Value> {
-    result.and_then(|value| serde_json::to_value(value).map_err(|_| Error::TransportUnavailable))
+    result
+        .and_then(|value| serde_json::to_value(value).map_err(|_| Error::TransportUnavailable))
+        .map(|data| {
+            responses::with_actions(
+                data,
+                vec![responses::action("get_state", serde_json::json!({}))],
+                Some(0),
+            )
+        })
+}
+
+async fn execute_program(
+    context: &RequestContext,
+    invocation: ProgramInvocation,
+    service: &WorkspaceService,
+    capacity: usize,
+) -> Result<Value> {
+    let guard = ProgramEncoding { capacity };
+    match invocation {
+        ProgramInvocation::Begin { request_id, input } => service
+            .begin_program(context, request_id, &input, &guard)
+            .await
+            .map(program_output::program),
+        ProgramInvocation::Get {
+            program_id,
+            after_input,
+            limit,
+        } => service
+            .get_program(context, program_id, after_input, limit)
+            .await
+            .and_then(|page| program_output::page(page, capacity)),
+        ProgramInvocation::Save(changes) => service
+            .save_program(context, &changes, &guard)
+            .await
+            .map(program_output::program),
+        ProgramInvocation::Record {
+            program_id,
+            request_id,
+            input,
+        } => service
+            .record_program_input(context, program_id, request_id, &input, &guard)
+            .await
+            .map(program_output::program),
+        ProgramInvocation::List { after, limit } => service
+            .list_programs(context, after, limit)
+            .await
+            .and_then(|list| program_output::list(list, capacity)),
+        ProgramInvocation::ReadSkill => {
+            service.read_program_skill(context).await?;
+            Ok(program_output::skill())
+        }
+    }
 }
 
 async fn write_response(writer: &mut WriteHalf<UnixStream>, response: WireResponse) -> Result<()> {

@@ -4,6 +4,9 @@ mod context;
 mod frame;
 mod git;
 mod mcp;
+mod program_output;
+mod program_tools;
+mod responses;
 mod tools;
 mod transport;
 

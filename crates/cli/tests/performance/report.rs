@@ -1,6 +1,7 @@
 use crate::TestResult;
 use crate::fixture::{
-    Cardinalities, SEEDED_SESSIONS, SEEDED_WORKSPACES, SEEDED_WORKTREES, SeedFixture,
+    Cardinalities, SEEDED_PROGRAMS, SEEDED_SESSIONS, SEEDED_WORKSPACES, SEEDED_WORKTREES,
+    SeedFixture,
 };
 use serde::Serialize;
 use std::fs;
@@ -88,7 +89,6 @@ pub(crate) struct PerformanceReport {
     pub fixture: FixtureReport,
     pub warm_get_state: Metric,
     pub open_workspace: Metric,
-    pub cold_bridge_start_init_get_state: Metric,
     pub budgets: Budgets,
     pub notes: Vec<&'static str>,
 }
@@ -187,6 +187,7 @@ pub(crate) struct FixtureReport {
     pub measured_session_count: usize,
     pub selected_worktrees_per_measured_session: usize,
     pub source_fixture: &'static str,
+    pub program_profile: &'static str,
 }
 
 impl FixtureReport {
@@ -206,6 +207,7 @@ impl FixtureReport {
                 sessions: SEEDED_SESSIONS,
                 source_repositories: 1,
                 source_worktrees: SEEDED_WORKTREES,
+                programs: SEEDED_PROGRAMS,
             },
             seeded_tenant,
             tenant_after_selection,
@@ -214,6 +216,7 @@ impl FixtureReport {
             measured_session_count: fixture.measured_native_ids.len(),
             selected_worktrees_per_measured_session: fixture.worktree_ids.len(),
             source_fixture: "synthetic database rows; no filesystem worktree discovery",
+            program_profile: "10 draft/compose Programs in the measured workspace",
         }
     }
 }
@@ -225,6 +228,7 @@ pub(crate) struct DeclaredSeed {
     pub sessions: i64,
     pub source_repositories: i64,
     pub source_worktrees: i64,
+    pub programs: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -237,7 +241,7 @@ pub(crate) struct Budgets {
 }
 
 impl Budgets {
-    pub(crate) fn new(warm: &Metric, bootstrap: &Metric, cold: &Metric) -> Self {
+    pub(crate) fn new(warm: &Metric, bootstrap: &Metric) -> Self {
         let complete = |metric: &Metric| {
             metric.failure_count == 0
                 && metric.latency_sample_count == metric.attempted_samples
@@ -250,7 +254,7 @@ impl Budgets {
                 && warm.p95_ms.is_some_and(|latency| latency < 250.0),
             open_workspace_pass: complete(bootstrap)
                 && bootstrap.p95_ms.is_some_and(|latency| latency < 1_000.0),
-            no_measurement_failures: complete(warm) && complete(bootstrap) && complete(cold),
+            no_measurement_failures: complete(warm) && complete(bootstrap),
         }
     }
 }

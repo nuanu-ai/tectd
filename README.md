@@ -4,7 +4,7 @@ A Rust daemon with PostgreSQL as the canonical store. A workspace is a logical
 database object. Its identity comes from an authenticated tenant and an explicit
 workspace key; it has no workspace directory or workspace Git worktree.
 
-This repository implements the first V2.1 Scope. The current installed Tect plugin
+This repository implements workspace bootstrap and Program formation in V2.1. The current installed Tect plugin
 continues to govern its development. Installing or replacing that plugin is a
 separate operation.
 
@@ -67,7 +67,11 @@ different key with the same native session is rejected rather than moving it. On
 aliases to their canonical paths before configuring private files and sockets.
 
 The MCP bridge uses the [MCP lifecycle](https://modelcontextprotocol.io/specification/2025-03-26/basic/lifecycle)
-and [structured tool results](https://modelcontextprotocol.io/specification/2025-06-18/server/tools).
+and [tool results](https://modelcontextprotocol.io/specification/2025-06-18/server/tools).
+Every tool result contains a fixed introductory text block and one JSON text block
+with data, exact `actions` and a `recommended_action` index (or null). It omits
+`structuredContent` to avoid repeating the JSON. Only the introductory prose has
+the 2000-token budget; data and a requested skill body are separate.
 Protocol discovery accepts standard MCP metadata, including Codex's
 `tools/list` progress token; tool business arguments remain strict.
 Direct execution validates the transport path. Actual bundled Codex app-server
@@ -109,6 +113,50 @@ Selection is bounded at 100 worktrees, catalog pages at 1–100 entries, source 
 at 4096 bytes and transport frames at 8 MiB. Each page returns `next_after` when more
 entries exist. Unknown arguments, including identity fields, are rejected.
 
+## Program formation
+
+`get_state` lists existing Programs with unfinished work first and offers starting
+a new Program last. It does not infer filesystem, knowledge-base or AGENTS state.
+
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `begin_program` | `request_id`, original `input` | One database-generated Program ID in `draft` |
+| `get_program` | `program_id`, optional `after_input`, `limit` | Current PRD and a page of original inputs |
+| `save_program` | `program_id`, `revision`, `input_cursor`, optional patch fields and `complete` | Atomic saved revision; `complete: true` opens the same Program |
+| `record_program_input` | `program_id`, `request_id`, original `input` | Durable reply or correction, ready for incorporation |
+| `list_programs` | Optional `after`, `limit` | Existing Programs and exact continuation actions |
+| `read_skill` | `name: "tectd-program"` | The single Program skill embedded in this build |
+
+The PRD has six nullable, free-text fields: `name`, `intent`, `basis`, `boundaries`,
+`constraints`, `success`. There is no duplicate description. `working_notes` and
+`pending_question` preserve continuation, while `current_step` is backend-derived:
+`compose`, `waiting_input` or `ready`. Status remains `draft` or `open`; opening
+neither creates a Scope nor starts code execution.
+
+Accept a narrative as normal input. The supplied skill guides the agent to form a
+coherent PRD, label assumptions, and ask only about a material unresolved choice.
+Before yielding for an answer it saves the partial draft and exact question. Once
+the six concerns are coherent, all input is incorporated and no critical question
+remains, it opens the same record without a mandatory final approval.
+
+Patch omission preserves a field; explicit null clears it. An open Program retains
+its six nonblank PRD fields while unresolved alternatives stay in notes. A stale
+revision refuses the whole save and returns an exact reload action. Original input
+is immutable and preserves exact text. Retrying the same request ID with identical
+input returns the existing result; different text with that ID returns `input_conflict`.
+
+Input pages default to entries after the saved consumed-input cursor. Read all
+required pages before advancing that cursor. Read transactions use a consistent
+database snapshot; writes serialize and verify revision inside their transaction.
+Pages contain whole entries and may become smaller to fit the existing 8 MiB frame.
+Unrepresentable writes are refused before commit, including PRD growth that would
+make an older original input unreadable. Text is not silently truncated.
+
+The host embeds `skills/tectd-program/SKILL.md`; `read_skill` is allowlisted and
+authorized against the current native workspace session. It never accepts a file
+path. The packaged binary therefore carries the same skill without installing
+client-side PRD files or the former WorkOrder artifact lifecycle.
+
 ## Revocation and recovery
 
 The operator can revoke an enrolled host with
@@ -145,7 +193,10 @@ proof uses ten ephemeral threads created by the actual bundled Codex app-server 
 its `mcpServer/tool/call` client, with zero model turns. The host overwrites supplied
 thread metadata with the loaded thread's actual ID. Local transport, actual Codex
 client acceptance, remote CI, persistent installation and deployment remain separate
-proof layers; see the parent Scope result for the exact verified build.
+proof layers; see the parent Scope result for the exact verified build. The Program
+formation acceptance also uses three actual model turns: a rich narrative, a
+necessary question, and a reply in a new native session. It checks the saved PRD,
+exact complete original messages, loaded skill and absence of client PRD files.
 
 For the explicit local performance profile, also set `TECT_PERFORMANCE_REPORT` to
 an absolute output JSON path and run:
@@ -156,5 +207,6 @@ cargo test -p tect-cli --test performance -- --ignored --nocapture
 
 This profile creates a disposable tenant with 10,000 workspaces and 100,000 sessions,
 uses 100 selected worktrees per measured read session, and times actual stdio MCP
-calls. Fixture setup is excluded from warm timings. The report separates warm calls
-from bridge startup and records hardware, versions, concurrency and percentiles.
+calls with ten draft Programs in the measured workspace. Fixture setup and bridge
+initialization are excluded from timings. The report records hardware, versions,
+concurrency, population and percentiles for reads and workspace bootstrap.

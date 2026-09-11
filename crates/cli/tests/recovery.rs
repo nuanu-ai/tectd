@@ -1,11 +1,18 @@
 //! Real process death, observed in-flight DB rollback and committed reply loss.
 mod recovery_support;
-use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
+use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url, tool_payload};
 use serde_json::json;
 use sqlx::PgPool;
 use std::time::Duration;
 use tect_postgres::admin;
 use uuid::Uuid;
+
+fn without_actions(mut payload: serde_json::Value) -> serde_json::Value {
+    let object = payload.as_object_mut().unwrap();
+    object.remove("actions");
+    object.remove("recommended_action");
+    payload
+}
 
 async fn counts(pool: &PgPool, tenant: Uuid) -> Vec<i64> {
     let mut result = Vec::new();
@@ -134,8 +141,14 @@ async fn real_daemon_crash_rolls_back_and_lost_reply_recovers_committed_identity
     daemon.remove_owned_stale_socket();
     let mut daemon = Daemon::start(&tagged_runtime, socket.clone()).await;
     let mut client = Mcp::start(&socket, &config, &native, "persistent-fixture").await;
-    assert_eq!(client.call("get_state", json!({})).await, persisted);
-    assert_eq!(client.call("open_workspace", json!({})).await, persisted);
+    assert_eq!(
+        without_actions(client.call("get_state", json!({})).await),
+        without_actions(persisted.clone())
+    );
+    assert_eq!(
+        without_actions(client.call("open_workspace", json!({})).await),
+        without_actions(persisted.clone())
+    );
     client.finish().await;
     let mut retried = Mcp::start(
         &socket,
@@ -182,10 +195,8 @@ async fn real_daemon_crash_rolls_back_and_lost_reply_recovers_committed_identity
         )
         .await;
     assert_eq!(denied["result"]["isError"], true);
-    assert_eq!(
-        denied["result"]["structuredContent"]["error"]["code"],
-        "session_revoked"
-    );
+    let denied = tool_payload(&denied);
+    assert_eq!(denied["error"]["code"], "session_revoked");
     let listed = retry.exchange("tools/list", json!({})).await;
     let names: Vec<_> = listed["result"]["tools"]
         .as_array()
@@ -193,7 +204,7 @@ async fn real_daemon_crash_rolls_back_and_lost_reply_recovers_committed_identity
         .iter()
         .map(|v| v["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 5);
+    assert_eq!(names.len(), 11);
     assert!(names.iter().all(|n| !n.starts_with("revoke")));
     retry.finish().await;
     daemon.crash().await;

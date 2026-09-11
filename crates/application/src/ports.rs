@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use tect_domain::{
-    Created, EventKind, HostAuth, HostIdentity, RegisteredSource, Result, Session, SourceLocation,
-    Workspace, WorktreeSummary,
+    Created, EventKind, HostAuth, HostIdentity, NewProgramInput, Program, ProgramCursor,
+    ProgramInput, ProgramSummary, RegisteredSource, Result, Session, SourceLocation, Workspace,
+    WorktreeSummary,
 };
 use uuid::Uuid;
 
@@ -73,6 +74,53 @@ pub trait UnitOfWork: Send {
         limit: u32,
     ) -> Result<Vec<RegisteredSource>>;
     async fn commit(self: Box<Self>) -> Result<()>;
+    /// Create Program/input together, or return current Program for a byte-identical retry.
+    async fn ensure_program(
+        &mut self,
+        workspace_id: Uuid,
+        session_id: Uuid,
+        input: &NewProgramInput,
+    ) -> Result<Program>;
+    async fn program(
+        &mut self,
+        workspace_id: Uuid,
+        program_id: Uuid,
+        for_update: bool,
+    ) -> Result<Option<Program>>;
+    async fn program_input(
+        &mut self,
+        workspace_id: Uuid,
+        program_id: Uuid,
+        request_id: Uuid,
+    ) -> Result<Option<ProgramInput>>;
+    async fn insert_program_input(
+        &mut self,
+        workspace_id: Uuid,
+        program_id: Uuid,
+        session_id: Uuid,
+        sequence: i64,
+        input: &NewProgramInput,
+    ) -> Result<ProgramInput>;
+    async fn update_program(&mut self, program: &Program) -> Result<()>;
+    async fn program_inputs(
+        &mut self,
+        workspace_id: Uuid,
+        program_id: Uuid,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<ProgramInput>>;
+    async fn list_programs(
+        &mut self,
+        workspace_id: Uuid,
+        after: Option<ProgramCursor>,
+        limit: u32,
+    ) -> Result<Vec<ProgramSummary>>;
+}
+
+/// Host encoding is measured by an adapter; inner policy owns rollback before commit.
+pub trait ProgramOutputGuard: Send + Sync {
+    fn input_bytes(&self, input: &str) -> Result<i64>;
+    fn check(&self, program: &Program) -> Result<()>;
 }
 
 /// Host adapter validates real Git paths without mutating repositories.

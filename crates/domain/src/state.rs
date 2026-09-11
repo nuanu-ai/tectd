@@ -1,3 +1,4 @@
+use crate::ProgramSummary;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -37,6 +38,8 @@ pub struct WorkspaceState {
     pub session: Option<Session>,
     pub selected_worktrees: Vec<WorktreeSummary>,
     pub next_action: Option<String>,
+    pub programs: Vec<ProgramSummary>,
+    pub next_after: Option<String>,
 }
 
 impl WorkspaceState {
@@ -47,6 +50,8 @@ impl WorkspaceState {
             session: None,
             selected_worktrees: Vec::new(),
             next_action: Some("open_workspace".into()),
+            programs: Vec::new(),
+            next_after: None,
         }
     }
 
@@ -56,7 +61,9 @@ impl WorkspaceState {
             workspace: Some(workspace),
             session: Some(session),
             selected_worktrees: Vec::new(),
-            next_action: None,
+            next_action: Some("begin_program".into()),
+            programs: Vec::new(),
+            next_after: None,
         }
     }
 }

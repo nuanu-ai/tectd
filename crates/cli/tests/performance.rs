@@ -25,7 +25,6 @@ const WARM_CONCURRENCY: usize = 10;
 const WARM_CALLS_PER_BRIDGE: usize = 100;
 const OPEN_CONCURRENCY: usize = 10;
 const OPEN_SAMPLES: usize = 100;
-const COLD_SAMPLES: usize = 10;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 12)]
 #[ignore = "explicit local MCP performance acceptance"]
@@ -58,10 +57,12 @@ async fn run_acceptance() -> TestResult<()> {
 
     let mut bridges = start_warm_bridges(&socket, &config, &fixture).await?;
     select_full_fixture(&mut bridges, &fixture.worktree_ids).await?;
+    seed_program_population(&mut bridges).await?;
     let after_selection = cardinalities(&admin_pool, Some(enrollment.tenant_id)).await?;
+    assert_eq!(after_selection.programs, fixture::SEEDED_PROGRAMS);
+    assert_eq!(after_selection.program_inputs, fixture::SEEDED_PROGRAMS);
     let warm = measure_warm_reads(bridges).await;
     let bootstrap = measure_bootstraps(&socket, &config, run_id).await;
-    let cold = measure_cold(&socket, &config, &fixture).await;
     let final_tenant = cardinalities(&admin_pool, Some(enrollment.tenant_id)).await?;
     let final_database = cardinalities(&admin_pool, None).await?;
 
@@ -71,10 +72,9 @@ async fn run_acceptance() -> TestResult<()> {
         .await?;
     let warm_metric = warm.metric(WARM_CONCURRENCY, WARM_CONCURRENCY * WARM_CALLS_PER_BRIDGE);
     let bootstrap_metric = bootstrap.metric(OPEN_CONCURRENCY, OPEN_SAMPLES);
-    let cold_metric = cold.metric(1, COLD_SAMPLES);
-    let budgets = report::Budgets::new(&warm_metric, &bootstrap_metric, &cold_metric);
+    let budgets = report::Budgets::new(&warm_metric, &bootstrap_metric);
     let report = PerformanceReport {
-        schema_version: "tect.local-mcp-performance.v1",
+        schema_version: "tect.local-mcp-performance.v2",
         generated_unix_ms: report::unix_millis(),
         identity_note: "all IDs in this test are disposable synthetic UUID fixtures",
         measurement_scope: "local stdio MCP -> owned tectd Unix daemon -> PostgreSQL",
@@ -90,12 +90,10 @@ async fn run_acceptance() -> TestResult<()> {
         ),
         warm_get_state: warm_metric,
         open_workspace: bootstrap_metric,
-        cold_bridge_start_init_get_state: cold_metric,
         budgets,
         notes: vec![
-            "seeding and MCP initialization are excluded from warm timings",
-            "cold profile includes bridge process start, initialize, and get_state",
-            "cold profile does not claim a cold PostgreSQL cache",
+            "fixture setup, Program creation, worktree selection, and MCP initialization are excluded from measurements",
+            "warm operation is exactly get_state; bootstrap operation is exactly open_workspace",
             "synthetic source paths are DB fixtures and are not filesystem Git worktrees",
         ],
     };
@@ -105,14 +103,6 @@ async fn run_acceptance() -> TestResult<()> {
     assert_eq!(report.warm_get_state.latency_sample_count, 1_000);
     assert_eq!(report.open_workspace.attempted_samples, 100);
     assert_eq!(report.open_workspace.latency_sample_count, 100);
-    assert_eq!(
-        report.cold_bridge_start_init_get_state.attempted_samples,
-        10
-    );
-    assert_eq!(
-        report.cold_bridge_start_init_get_state.latency_sample_count,
-        10
-    );
     assert!(
         report.budgets.warm_get_state_pass,
         "warm get_state budget failed"
@@ -146,6 +136,27 @@ async fn select_full_fixture(bridges: &mut [Bridge], worktrees: &[Uuid]) -> Test
             .tool_call("select_worktrees", json!({"worktree_ids": worktrees}))
             .await?;
         validate_selected(&response, worktrees.len()).map_err(std::io::Error::other)?;
+    }
+    Ok(())
+}
+
+async fn seed_program_population(bridges: &mut [Bridge]) -> TestResult<()> {
+    for (index, bridge) in bridges.iter_mut().enumerate() {
+        let response = bridge
+            .tool_call(
+                "begin_program",
+                json!({
+                    "request_id": Uuid::new_v4(),
+                    "input": format!("Measured nonempty Program fixture {index}")
+                }),
+            )
+            .await?;
+        let payload = decode_payload(&response).map_err(std::io::Error::other)?;
+        if payload["program"]["status"] != "draft"
+            || payload["program"]["current_step"] != "compose"
+        {
+            return Err(std::io::Error::other("program_fixture_not_draft_compose").into());
+        }
     }
     Ok(())
 }
@@ -246,46 +257,9 @@ async fn measure_bootstraps(socket: &Path, config: &Path, run_id: Uuid) -> Obser
     combined
 }
 
-async fn measure_cold(socket: &Path, config: &Path, fixture: &SeedFixture) -> Observations {
-    let mut observations = Observations::default();
-    for sample in 0..COLD_SAMPLES {
-        let started = Instant::now();
-        let bridge = Bridge::start(
-            socket,
-            config,
-            &fixture.measured_native_ids[0],
-            &fixture.first_workspace_key,
-        )
-        .await;
-        match bridge {
-            Ok(mut bridge) => {
-                let result = bridge.tool_call("get_state", json!({})).await;
-                let elapsed = started.elapsed().as_secs_f64() * 1_000.0;
-                observations.durations_ms.push(elapsed);
-                if let Err(error) = result
-                    .map_err(|error| error.to_string())
-                    .and_then(|value| validate_selected(&value, 100))
-                {
-                    observations
-                        .failures
-                        .push(Failure::new(sample, 0, elapsed, error));
-                }
-                bridge.stop().await;
-            }
-            Err(error) => observations.failures.push(Failure::new(
-                sample,
-                0,
-                started.elapsed().as_secs_f64() * 1_000.0,
-                format!("cold_bridge_initialize:{error}"),
-            )),
-        }
-    }
-    observations
-}
-
 fn validate_selected(response: &Value, expected: usize) -> Result<(), String> {
-    validate_ready(response)?;
-    let selected = response["result"]["structuredContent"]["selected_worktrees"]
+    let payload = decode_ready(response)?;
+    let selected = payload["selected_worktrees"]
         .as_array()
         .ok_or_else(|| "missing_selected_worktrees".to_owned())?;
     if selected.len() != expected {
@@ -295,21 +269,53 @@ fn validate_selected(response: &Value, expected: usize) -> Result<(), String> {
 }
 
 fn validate_ready(response: &Value) -> Result<(), String> {
+    decode_ready(response).map(|_| ())
+}
+
+fn decode_ready(response: &Value) -> Result<Value, String> {
     if response.get("error").is_some() {
         return Err("json_rpc_error".to_owned());
     }
+    let payload = decode_payload(response)?;
     if response["result"]["isError"] == true {
         return Err(format!(
             "tool_error:{}",
-            response["result"]["structuredContent"]["error"]["code"]
-                .as_str()
-                .unwrap_or("unknown")
+            payload["error"]["code"].as_str().unwrap_or("unknown")
         ));
     }
-    if response["result"]["structuredContent"]["status"] != "ready" {
+    if payload["status"] != "ready" {
         return Err("state_not_ready".to_owned());
     }
-    Ok(())
+    Ok(payload)
+}
+
+fn decode_payload(response: &Value) -> Result<Value, String> {
+    let result = response
+        .get("result")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "missing_tool_result".to_owned())?;
+    if result.contains_key("structuredContent") {
+        return Err("unexpected_structured_content".to_owned());
+    }
+    let content = result
+        .get("content")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "missing_tool_content".to_owned())?;
+    if content.len() != 2 || content.iter().any(|item| item["type"] != "text") {
+        return Err("invalid_tool_content_shape".to_owned());
+    }
+    let intro = content[0]["text"]
+        .as_str()
+        .ok_or_else(|| "missing_tool_intro".to_owned())?;
+    if intro.is_empty() || intro.len() > 2_000 {
+        return Err("invalid_tool_intro".to_owned());
+    }
+    serde_json::from_str(
+        content[1]["text"]
+            .as_str()
+            .ok_or_else(|| "missing_json_payload".to_owned())?,
+    )
+    .map_err(|error| format!("invalid_json_payload:{error}"))
 }
 
 #[derive(Default)]

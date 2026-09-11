@@ -23,8 +23,14 @@ as an identity fallback. Both the Codex-generated native UUID and host credentia
 are required before a business operation. Model tool arguments contain no identity.
 
 Tools: `get_state`, `open_workspace`, `register_source`, `select_worktrees`,
-`list_sources`. Each native session has its own selected worktrees. Future Program
-or pipeline execution is not part of this package. The enrolled host remains the
+`list_sources`, `begin_program`, `get_program`, `save_program`,
+`record_program_input`, `list_programs`, and `read_skill`. Each native session has
+its own selected worktrees. Program drafts, original input and PRDs live in the
+database. The one `tectd-program` skill is embedded in the executable and returned
+by the allowlisted `read_skill` tool. Opening a Program does not launch Scope or
+implementation work. Tool results carry a short introduction and one JSON content
+block with data and exact next actions, without duplicate structured content.
+The enrolled host remains the
 credential trust boundary; this is not a per-session secret scheme.
 
 For direct Codex configuration use server key `tectd`, the packaged `sh ./run.sh`

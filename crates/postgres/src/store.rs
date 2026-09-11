@@ -1,12 +1,12 @@
-use crate::{sources, storage_error};
+use crate::{programs, runtime, sources, storage_error};
 use async_trait::async_trait;
-use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Postgres, Transaction};
 use tect_application::{Store, TransactionMode, UnitOfWork};
 use tect_domain::{
-    Created, Error, EventKind, HostAuth, HostIdentity, RegisteredSource, Result, Session,
-    SourceLocation, Workspace, WorktreeSummary,
+    Created, Error, EventKind, HostAuth, HostIdentity, NewProgramInput, Program, ProgramCursor,
+    ProgramInput, ProgramSummary, RegisteredSource, Result, Session, SourceLocation, Workspace,
+    WorktreeSummary,
 };
 use uuid::Uuid;
 
@@ -25,7 +25,7 @@ impl PgStore {
             .connect(url)
             .await
             .map_err(storage_error)?;
-        if let Err(error) = verify_runtime_role(&pool).await {
+        if let Err(error) = runtime::verify_runtime_role(&pool).await {
             pool.close().await;
             return Err(error);
         }
@@ -40,50 +40,6 @@ impl PgStore {
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
-}
-
-async fn verify_runtime_role(pool: &PgPool) -> Result<()> {
-    let (superuser, bypass_rls, owns_database_object): (bool, bool, bool) = sqlx::query_as(
-        r#"
-        SELECT r.rolsuper,
-               r.rolbypassrls,
-               EXISTS (
-                   SELECT 1 FROM pg_catalog.pg_database d
-                   WHERE d.datname = pg_catalog.current_database() AND pg_catalog.pg_has_role(r.oid, d.datdba, 'MEMBER')
-               ) OR EXISTS (
-                   SELECT 1 FROM pg_catalog.pg_namespace n
-                   WHERE n.nspname = 'public' AND pg_catalog.pg_has_role(r.oid, n.nspowner, 'MEMBER')
-               ) OR EXISTS (
-                   SELECT 1
-                   FROM pg_catalog.pg_class c
-                   JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-                   WHERE n.nspname = 'public'
-                     AND c.relname IN (
-                         'tenants', 'principals', 'hosts', 'workspaces', 'memberships',
-                         'agent_sessions', 'source_repositories', 'source_worktrees',
-                         'session_worktrees', 'workspace_events'
-                     )
-                     AND pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER')
-               ) OR EXISTS (
-                   SELECT 1
-                   FROM pg_catalog.pg_proc p
-                   JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
-                   WHERE n.nspname = 'public'
-                     AND p.proname = 'tect_authenticate_host'
-                     AND pg_catalog.pg_has_role(r.oid, p.proowner, 'MEMBER')
-               )
-        FROM pg_catalog.pg_roles r
-        WHERE r.rolname = CURRENT_USER
-        "#,
-    )
-    .fetch_one(pool)
-    .await
-    .map_err(storage_error)?;
-
-    if superuser || bypass_rls || owns_database_object {
-        return Err(Error::InvalidConfiguration);
-    }
-    Ok(())
 }
 
 struct PgUnitOfWork {
@@ -108,7 +64,7 @@ impl Store for PgStore {
     async fn begin(&self, mode: TransactionMode) -> Result<Box<dyn UnitOfWork>> {
         let mut transaction = self.pool.begin().await.map_err(storage_error)?;
         if mode == TransactionMode::ReadOnly {
-            sqlx::query("SET TRANSACTION READ ONLY")
+            sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
                 .execute(&mut *transaction)
                 .await
                 .map_err(storage_error)?;
@@ -125,7 +81,7 @@ impl Store for PgStore {
 #[async_trait]
 impl UnitOfWork for PgUnitOfWork {
     async fn authenticate(&mut self, auth: &HostAuth) -> Result<HostIdentity> {
-        let digest = hex_lower(&Sha256::digest(auth.credential.as_bytes()));
+        let digest = runtime::credential_digest(&auth.credential);
         let for_write = self.mode == TransactionMode::ReadWrite;
         let row: Option<(Uuid, Uuid, serde_json::Value)> = sqlx::query_as(
             "SELECT tenant_id, principal_id, allowed_source_roots \
@@ -422,6 +378,112 @@ impl UnitOfWork for PgUnitOfWork {
         .await
     }
 
+    async fn ensure_program(
+        &mut self,
+        workspace_id: Uuid,
+        session_id: Uuid,
+        input: &NewProgramInput,
+    ) -> Result<Program> {
+        let tenant_id = self.tenant_id()?;
+        programs::ensure_program(
+            self.transaction()?,
+            tenant_id,
+            workspace_id,
+            session_id,
+            input,
+        )
+        .await
+    }
+
+    async fn program(
+        &mut self,
+        workspace_id: Uuid,
+        program_id: Uuid,
+        for_update: bool,
+    ) -> Result<Option<Program>> {
+        let tenant_id = self.tenant_id()?;
+        programs::program(
+            self.transaction()?,
+            tenant_id,
+            workspace_id,
+            program_id,
+            for_update,
+        )
+        .await
+    }
+
+    async fn program_input(
+        &mut self,
+        workspace_id: Uuid,
+        program_id: Uuid,
+        request_id: Uuid,
+    ) -> Result<Option<ProgramInput>> {
+        let tenant_id = self.tenant_id()?;
+        programs::program_input(
+            self.transaction()?,
+            tenant_id,
+            workspace_id,
+            program_id,
+            request_id,
+        )
+        .await
+    }
+
+    async fn insert_program_input(
+        &mut self,
+        workspace_id: Uuid,
+        program_id: Uuid,
+        session_id: Uuid,
+        sequence: i64,
+        input: &NewProgramInput,
+    ) -> Result<ProgramInput> {
+        let tenant_id = self.tenant_id()?;
+        programs::insert_program_input(
+            self.transaction()?,
+            tenant_id,
+            workspace_id,
+            program_id,
+            session_id,
+            sequence,
+            input,
+        )
+        .await
+    }
+
+    async fn update_program(&mut self, program: &Program) -> Result<()> {
+        let tenant_id = self.tenant_id()?;
+        programs::update_program(self.transaction()?, tenant_id, program).await
+    }
+
+    async fn program_inputs(
+        &mut self,
+        workspace_id: Uuid,
+        program_id: Uuid,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<ProgramInput>> {
+        let tenant_id = self.tenant_id()?;
+        programs::program_inputs(
+            self.transaction()?,
+            tenant_id,
+            workspace_id,
+            program_id,
+            after,
+            limit,
+        )
+        .await
+    }
+
+    async fn list_programs(
+        &mut self,
+        workspace_id: Uuid,
+        after: Option<ProgramCursor>,
+        limit: u32,
+    ) -> Result<Vec<ProgramSummary>> {
+        let tenant_id = self.tenant_id()?;
+        programs::list_programs(self.transaction()?, tenant_id, workspace_id, after, limit).await
+    }
+
     async fn commit(mut self: Box<Self>) -> Result<()> {
         self.transaction
             .take()
@@ -430,14 +492,4 @@ impl UnitOfWork for PgUnitOfWork {
             .await
             .map_err(storage_error)
     }
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut value = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        value.push(HEX[(byte >> 4) as usize] as char);
-        value.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    value
 }

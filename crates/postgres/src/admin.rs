@@ -46,7 +46,7 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
                      AND c.relname IN (
                          'tenants', 'principals', 'hosts', 'workspaces', 'memberships',
                          'agent_sessions', 'source_repositories', 'source_worktrees',
-                         'session_worktrees', 'workspace_events'
+                         'session_worktrees', 'workspace_events', 'programs', 'program_inputs'
                      )
                      AND pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER')
                ) OR EXISTS (
@@ -83,6 +83,9 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
              TO {quoted_role}"
         ),
         format!("GRANT SELECT, INSERT, DELETE ON TABLE session_worktrees TO {quoted_role}"),
+        format!("REVOKE ALL PRIVILEGES ON TABLE programs, program_inputs FROM {quoted_role}"),
+        format!("GRANT SELECT, INSERT, UPDATE ON TABLE programs TO {quoted_role}"),
+        format!("GRANT SELECT, INSERT ON TABLE program_inputs TO {quoted_role}"),
         format!(
             "GRANT EXECUTE ON FUNCTION public.tect_authenticate_host(uuid, text, boolean) TO {quoted_role}"
         ),

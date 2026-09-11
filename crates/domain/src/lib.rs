@@ -1,7 +1,15 @@
 //! Pure identities, values and invariants. No environment, transport or persistence.
 mod error;
 mod identity;
+mod program;
+mod program_page;
 mod state;
+
+pub use program::{
+    NewProgramInput, Program, ProgramStatus, ProgramStep, SaveProgram, TextPatch,
+    validate_program_input,
+};
+pub use program_page::{ProgramCursor, ProgramInput, ProgramList, ProgramPage, ProgramSummary};
 
 pub use error::{Error, Result};
 pub use identity::{

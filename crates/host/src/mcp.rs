@@ -1,8 +1,9 @@
 use crate::Result;
 use crate::context::HostContext;
 use crate::frame::{Frame, FrameReader, MAX_FRAME_BYTES};
+use crate::responses;
 use crate::tools::definitions;
-use crate::transport::call_tool;
+use crate::transport::call_tool_bounded;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::path::{Path, PathBuf};
@@ -201,9 +202,25 @@ impl McpSession {
             Ok(context) => context,
             Err(error) => return success_response(id, failed_tool_result(error)),
         };
-        match call_tool(&self.socket, &context, &params.name, params.arguments).await {
+        let envelope_bytes = serde_json::to_vec(&success_response(id.clone(), Value::Null))
+            .expect("JSON response")
+            .len()
+            - 4;
+        let capacity = MAX_FRAME_BYTES.saturating_sub(envelope_bytes);
+        match call_tool_bounded(
+            &self.socket,
+            &context,
+            &params.name,
+            params.arguments.clone(),
+            capacity,
+        )
+        .await
+        {
             Ok(result) => success_response(id, successful_tool_result(result)),
-            Err(error) => success_response(id, failed_tool_result(error)),
+            Err(error) => success_response(
+                id,
+                responses::failure(error, Some((&params.name, &params.arguments))),
+            ),
         }
     }
 }
@@ -265,23 +282,11 @@ fn empty_arguments() -> Value {
 }
 
 fn successful_tool_result(structured: Value) -> Value {
-    let text = serde_json::to_string(&structured).unwrap_or_else(|_| "{}".to_owned());
-    json!({
-        "content": [{"type": "text", "text": text}],
-        "structuredContent": structured,
-        "isError": false
-    })
+    responses::success(structured)
 }
 
 fn failed_tool_result(error: Error) -> Value {
-    let structured = json!({"error": {"code": error.code()}});
-    let text = serde_json::to_string(&structured)
-        .unwrap_or_else(|_| "{\"error\":{\"code\":\"transport_unavailable\"}}".to_owned());
-    json!({
-        "content": [{"type": "text", "text": text}],
-        "structuredContent": structured,
-        "isError": true
-    })
+    responses::failure(error, None)
 }
 
 fn success_response(id: Value, result: Value) -> Value {

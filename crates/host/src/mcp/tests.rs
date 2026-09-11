@@ -18,14 +18,14 @@ fn synthetic_session() -> McpSession {
 }
 
 #[test]
-fn tool_errors_have_stable_structured_and_text_content() {
+fn tool_errors_have_one_json_content_and_a_short_intro() {
     let result = failed_tool_result(Error::Unauthorized);
     assert_eq!(result["isError"], true);
-    assert_eq!(result["structuredContent"]["error"]["code"], "unauthorized");
-    assert_eq!(
-        serde_json::from_str::<Value>(result["content"][0]["text"].as_str().unwrap()).unwrap(),
-        result["structuredContent"]
-    );
+    assert!(result.get("structuredContent").is_none());
+    let data: Value = serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(data["error"]["code"], "unauthorized");
+    assert!(data["actions"].as_array().unwrap().is_empty());
+    assert!(result["content"][0]["text"].as_str().unwrap().len() <= 2000);
 }
 
 #[tokio::test]
@@ -101,7 +101,7 @@ async fn codex_tool_discovery_accepts_standard_progress_metadata() {
         }))
         .await
         .unwrap();
-    assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 5);
+    assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 11);
     for params in [
         json!({"_meta": null}),
         json!({"_meta": {"progressToken": false}}),
@@ -176,9 +176,9 @@ async fn missing_or_invalid_thread_id_fails_before_daemon_transport() {
             params["_meta"] = metadata;
         }
         let response = session.tools_call(json!(1), Some(&params)).await;
-        assert_eq!(
-            response["result"]["structuredContent"]["error"]["code"],
-            "invalid_native_session"
-        );
+        let data: Value =
+            serde_json::from_str(response["result"]["content"][1]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(data["error"]["code"], "invalid_native_session");
     }
 }

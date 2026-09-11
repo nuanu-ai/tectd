@@ -7,6 +7,7 @@ use uuid::Uuid;
 pub(crate) const SEEDED_WORKSPACES: i64 = 10_000;
 pub(crate) const SEEDED_SESSIONS: i64 = 100_000;
 pub(crate) const SEEDED_WORKTREES: i64 = 100;
+pub(crate) const SEEDED_PROGRAMS: i64 = 10;
 
 pub(crate) struct SeedFixture {
     pub first_workspace_key: String,
@@ -23,6 +24,8 @@ pub(crate) struct Cardinalities {
     pub source_worktrees: i64,
     pub session_worktrees: i64,
     pub workspace_events: i64,
+    pub programs: i64,
+    pub program_inputs: i64,
 }
 
 pub(crate) async fn seed_fixture(
@@ -145,6 +148,8 @@ pub(crate) async fn cardinalities(
         source_worktrees: count(pool, "source_worktrees", tenant).await?,
         session_worktrees: count(pool, "session_worktrees", tenant).await?,
         workspace_events: count(pool, "workspace_events", tenant).await?,
+        programs: count(pool, "programs", tenant).await?,
+        program_inputs: count(pool, "program_inputs", tenant).await?,
     })
 }
 

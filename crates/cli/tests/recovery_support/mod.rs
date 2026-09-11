@@ -12,6 +12,28 @@ use tokio::{
     process::{Child, ChildStdin, ChildStdout, Command},
 };
 
+pub fn tool_payload(response: &Value) -> Value {
+    assert!(response.get("error").is_none(), "{response}");
+    let result = &response["result"];
+    assert!(result.get("structuredContent").is_none(), "{response}");
+    let content = result["content"].as_array().expect("tool content array");
+    assert_eq!(content.len(), 2, "{response}");
+    assert_eq!(content[0]["type"], "text", "{response}");
+    let intro = content[0]["text"].as_str().expect("fixed tool intro");
+    assert!(!intro.is_empty() && intro.len() <= 2_000, "{response}");
+    assert_eq!(content[1]["type"], "text", "{response}");
+    let payload: Value =
+        serde_json::from_str(content[1]["text"].as_str().expect("JSON tool payload"))
+            .expect("content[1] must contain one JSON object");
+    assert!(payload.is_object(), "{payload}");
+    assert!(payload["actions"].is_array(), "{payload}");
+    assert!(
+        payload["recommended_action"].is_number() || payload["recommended_action"].is_null(),
+        "{payload}"
+    );
+    payload
+}
+
 pub fn host_file(path: &Path, auth: &HostAuth) {
     use std::io::Write;
     let mut file = fs::OpenOptions::new()
@@ -166,8 +188,19 @@ impl Mcp {
             response.get("error").is_none() && response["result"]["isError"] != true,
             "{response}"
         );
-        response["result"]["structuredContent"].clone()
+        tool_payload(&response)
     }
+    // This module is compiled once per integration binary; only refusal suites use this path.
+    #[allow(dead_code)]
+    pub async fn call_error(&mut self, name: &str, arguments: Value) -> Value {
+        let response = self
+            .exchange("tools/call", json!({"name":name,"arguments":arguments}))
+            .await;
+        assert_eq!(response["result"]["isError"], true, "{response}");
+        tool_payload(&response)
+    }
+    // Only the process-loss binary intentionally kills a live MCP child.
+    #[allow(dead_code)]
     pub async fn kill(&mut self) {
         self.child.start_kill().unwrap();
         let _ = self.child.wait().await.unwrap();

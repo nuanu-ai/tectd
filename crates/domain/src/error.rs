@@ -22,6 +22,10 @@ pub enum Error {
     InvalidConfiguration,
     TransportUnavailable,
     RequestTooLarge,
+    StaleRevision,
+    InputPending,
+    ProgramIncomplete,
+    InputConflict,
 }
 
 impl Error {
@@ -42,6 +46,10 @@ impl Error {
             Self::InvalidConfiguration => "invalid_configuration",
             Self::TransportUnavailable => "transport_unavailable",
             Self::RequestTooLarge => "request_too_large",
+            Self::StaleRevision => "stale_revision",
+            Self::InputPending => "input_pending",
+            Self::ProgramIncomplete => "program_incomplete",
+            Self::InputConflict => "input_conflict",
         }
     }
 }

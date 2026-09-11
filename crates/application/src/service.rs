@@ -58,6 +58,20 @@ impl WorkspaceService {
             .await?;
         let mut state = WorkspaceState::opened(workspace, session);
         state.selected_worktrees = selected_worktrees;
+        let entries = tx
+            .list_programs(state.workspace.as_ref().expect("opened").id, None, 26)
+            .await?;
+        let page = crate::programs::bounded_program_list(entries, 25);
+        state.next_action = Some(
+            if page.programs.is_empty() {
+                "begin_program"
+            } else {
+                "get_program"
+            }
+            .into(),
+        );
+        state.programs = page.programs;
+        state.next_after = page.next_after;
         Ok(state)
     }
 

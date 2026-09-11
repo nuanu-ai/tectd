@@ -12,6 +12,21 @@ use tect_postgres::{PgStore, admin};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use uuid::Uuid;
 
+fn payload(response: &Value) -> Value {
+    assert!(response.get("error").is_none(), "{response}");
+    assert!(
+        response["result"].get("structuredContent").is_none(),
+        "{response}"
+    );
+    let content = response["result"]["content"].as_array().unwrap();
+    assert_eq!(content.len(), 2, "{response}");
+    assert_eq!(content[0]["type"], "text");
+    let intro = content[0]["text"].as_str().unwrap();
+    assert!(!intro.is_empty() && intro.len() <= 2_000);
+    assert_eq!(content[1]["type"], "text");
+    serde_json::from_str(content[1]["text"].as_str().unwrap()).unwrap()
+}
+
 async fn exchange(
     input: &mut tokio::process::ChildStdin,
     output: &mut BufReader<tokio::process::ChildStdout>,
@@ -125,7 +140,7 @@ async fn real_mcp_schema_rejects_identity_override_and_recovers_session() {
         )
         .await;
         assert_eq!(
-            state["result"]["structuredContent"]["status"],
+            payload(&state)["status"],
             if reconnect == 0 {
                 "uninitialized"
             } else {
@@ -153,7 +168,7 @@ async fn real_mcp_schema_rejects_identity_override_and_recovers_session() {
             }),
         )
         .await;
-        let content = &state["result"]["structuredContent"];
+        let content = payload(&state);
         assert_eq!(content["status"], "ready", "{state}");
         assert_eq!(content["session"]["native_session_id"], native_id);
         if let Some(id) = &first_session {

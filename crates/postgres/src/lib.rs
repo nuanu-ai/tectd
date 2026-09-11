@@ -1,5 +1,7 @@
 //! PostgreSQL persistence and operator-only administration.
 pub mod admin;
+mod programs;
+mod runtime;
 mod sources;
 mod store;
 

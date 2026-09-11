@@ -4,6 +4,7 @@ use tect_domain::{Error, MAX_SOURCE_PATH_BYTES, MAX_WORKTREES, Result};
 use uuid::Uuid;
 
 pub(crate) enum Invocation {
+    Program(crate::program_tools::ProgramInvocation),
     OpenWorkspace,
     GetState,
     RegisterSource { path: String },
@@ -60,7 +61,7 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
                 limit: arguments.limit,
             })
         }
-        _ => Err(Error::InvalidArguments),
+        _ => crate::program_tools::parse(name, arguments).map(Invocation::Program),
     }
 }
 
@@ -69,7 +70,7 @@ fn empty_object(value: &Value) -> bool {
 }
 
 pub(crate) fn definitions() -> Value {
-    json!({
+    let mut definitions = json!({
         "tools": [
             {
                 "name": "open_workspace",
@@ -117,10 +118,15 @@ pub(crate) fn definitions() -> Value {
                 "annotations": annotations(true)
             }
         ]
-    })
+    });
+    definitions["tools"]
+        .as_array_mut()
+        .expect("tool array")
+        .extend(crate::program_tools::definitions());
+    definitions
 }
 
-fn object_schema(properties: Value, required: Value) -> Value {
+pub(crate) fn object_schema(properties: Value, required: Value) -> Value {
     json!({
         "type": "object",
         "properties": properties,
@@ -129,7 +135,7 @@ fn object_schema(properties: Value, required: Value) -> Value {
     })
 }
 
-fn annotations(read_only: bool) -> Value {
+pub(crate) fn annotations(read_only: bool) -> Value {
     json!({
         "readOnlyHint": read_only,
         "idempotentHint": true,
@@ -142,10 +148,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schemas_expose_only_five_bounded_tools() {
+    fn schemas_expose_eleven_bounded_tools() {
         let definitions = definitions();
         let tools = definitions["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 5);
+        assert_eq!(tools.len(), 11);
         assert!(
             tools
                 .iter()
