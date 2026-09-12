@@ -1,8 +1,11 @@
 //! Real PostgreSQL/daemon/stdio candidate planning, replay, restart, and bounded reads.
+#[path = "scope_candidates/actions.rs"]
+mod actions;
 #[path = "scope_candidates/covered.rs"]
 mod covered;
 mod recovery_support;
 
+use actions::{candidate_action, id, rows};
 use recovery_support::{
     Daemon, Mcp, action_name, action_params, host_file, private_temp, tagged_url,
 };
@@ -10,10 +13,6 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use tect_postgres::admin;
 use uuid::Uuid;
-
-fn id(value: &Value) -> Uuid {
-    Uuid::parse_str(value.as_str().unwrap()).unwrap()
-}
 
 fn planning_ref(context: &Value, sequence: i64) -> Uuid {
     context["snapshot"]["source_refs"]
@@ -97,22 +96,6 @@ fn draft(
         "goals":[goal],"evidence":evidence,"candidates":[candidate],"blockers":[],
         "protected_changes":protected_changes
     })
-}
-
-async fn rows(pool: &PgPool, set: Uuid) -> (i64, i64, i64, i64, i64, i64) {
-    sqlx::query_as(
-        "SELECT
-          (SELECT count(*) FROM scope_candidate_sets WHERE id=$1),
-          (SELECT count(*) FROM scope_candidate_inputs WHERE candidate_set_id=$1),
-          (SELECT count(*) FROM scope_candidate_snapshots WHERE candidate_set_id=$1),
-          (SELECT count(*) FROM scope_candidate_drafts WHERE candidate_set_id=$1),
-          (SELECT count(*) FROM scope_candidate_reviews WHERE candidate_set_id=$1),
-          (SELECT count(*) FROM scope_candidate_receipts WHERE candidate_set_id=$1)",
-    )
-    .bind(set)
-    .fetch_one(pool)
-    .await
-    .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -260,30 +243,39 @@ async fn candidate_set_replans_with_exact_receipts_protected_work_and_fragments(
             "findings":[],"candidate_decisions":[{"candidate_id":candidate_id,"decision":"accept","rationale":"Bounded and provable"}]}
     })).await;
     assert_eq!(reviewed["context"]["candidate_set"]["status"], "ready");
+    assert_eq!(reviewed["recommended_action"], 0);
+    assert_eq!(
+        action_name(&reviewed["actions"][0]),
+        Some("scope.candidates.context")
+    );
+    let record_action = &reviewed["actions"][1];
+    let mut record_params =
+        candidate_action(record_action, "scope.candidates.record_input", None, set, 3);
+    let record_request_id = id(&record_params["request_id"]);
 
     let amendment =
         "Do not reuse that adapter; replace the accepted-work link after this authorization.";
-    let recorded = first
-        .call(
-            "record_candidate_input",
-            json!({
-                "candidate_set_id":set,"revision":3,"request_id":Uuid::new_v4(),"input":amendment
-            }),
-        )
-        .await;
+    record_params["input"] = json!(amendment);
+    let recorded = first.call("record_candidate_input", record_params).await;
+    assert_eq!(recorded["context"]["candidate_set"]["revision"], 4);
     assert_eq!(recorded["context"]["candidate_set"]["latest_input"], 2);
+    assert_eq!(
+        recorded["context"]["candidate_set"]["status"],
+        "review_required"
+    );
+    assert_eq!(
+        recorded["context"]["candidate_set"]["revision"],
+        reviewed["context"]["candidate_set"]["revision"]
+            .as_i64()
+            .unwrap()
+            + 1
+    );
     assert_eq!(
         action_name(&recorded["actions"][0]),
         Some("scope.candidates.refresh")
     );
-    let refreshed = first
-        .call(
-            "refresh_candidate_set",
-            json!({
-                "candidate_set_id":set,"revision":4,"request_id":Uuid::new_v4(),"program_revision":2
-            }),
-        )
-        .await;
+    let refresh_params = action_params(&recorded["actions"][0]).clone();
+    let refreshed = first.call("refresh_candidate_set", refresh_params).await;
     let current = &refreshed["context"];
     let current_original = planning_ref(current, 1);
     let authority = planning_ref(current, 2);
@@ -294,20 +286,58 @@ async fn candidate_set_replans_with_exact_receipts_protected_work_and_fragments(
     assert_eq!(text(&mut first, set, current_original).await, original);
     assert_eq!(text(&mut first, set, authority).await, amendment);
 
-    let remapped = first.call("save_candidate_set", json!({
-        "kind":"draft","candidate_set_id":set,"revision":5,"snapshot_id":id(&current["snapshot"]["id"]),
-        "input_cursor":2,"request_id":Uuid::new_v4(),"draft":draft("ongoing",
-            json!({"identity":{"id":goal_id,"revision":1},"text":"Deliver read-only email preference inspection",
+    let candidates_page = first
+        .call(
+            "candidate_context",
+            action_params(&refreshed["actions"][0]).clone(),
+        )
+        .await;
+    let reviews_page = first
+        .call(
+            "candidate_context",
+            action_params(&candidates_page["actions"][0]).clone(),
+        )
+        .await;
+    assert_eq!(reviews_page["recommended_action"], 0);
+    assert_eq!(reviews_page["actions"].as_array().unwrap().len(), 2);
+    let offered_review = candidate_action(
+        &reviews_page["actions"][0],
+        "scope.candidates.save",
+        Some("review"),
+        set,
+        5,
+    );
+    let offered_draft = candidate_action(
+        &reviews_page["actions"][1],
+        "scope.candidates.save",
+        Some("draft"),
+        set,
+        5,
+    );
+    assert_eq!(offered_review["snapshot_id"], current["snapshot"]["id"]);
+    assert_eq!(offered_draft["snapshot_id"], current["snapshot"]["id"]);
+    assert_eq!(offered_review["input_cursor"], 2);
+    assert_eq!(offered_draft["input_cursor"], 2);
+    assert_ne!(offered_review["request_id"], offered_draft["request_id"]);
+    assert_ne!(id(&offered_draft["request_id"]), record_request_id);
+    let mut remapped_params = offered_draft;
+    remapped_params["draft"] = draft(
+        "ongoing",
+        json!({"identity":{"id":goal_id,"revision":1},"text":"Deliver read-only email preference inspection",
                 "source_ref_id":current_original,"resolution":{"kind":"candidate","reference":{"id":candidate_id}}}),
-            vec![json!({"identity":{"id":accepted_id,"revision":1},"kind":"accepted_work",
+        vec![
+            json!({"identity":{"id":accepted_id,"revision":1},"kind":"accepted_work",
                 "summary":"Reuse the already accepted delivery adapter","source_ref_id":current_original,
-                "authority_input_sequence":1})],
-            json!({"identity":{"id":candidate_id,"revision":1},"title":"Email preference controls",
+                "authority_input_sequence":1}),
+        ],
+        json!({"identity":{"id":candidate_id,"revision":1},"title":"Email preference controls",
                 "outcome":"Users inspect email notification preferences","trigger":"Open notification settings",
                 "delivered_behavior":"Read email preferences without changing them","proof":"Existing read-only integration tests pass",
                 "includes":["Read API and UI"],"excludes":["writes","SMS","push"],"dependencies":[],
-                "coverage_goals":[{"id":goal_id}],"evidence":[{"id":accepted_id}]}),vec![])
-    })).await;
+                "coverage_goals":[{"id":goal_id}],"evidence":[{"id":accepted_id}]}),
+        vec![],
+    );
+    let remapped = first.call("save_candidate_set", remapped_params).await;
     assert_eq!(remapped["context"]["candidate_set"]["revision"], 6);
     assert_eq!(remapped["draft"]["goals"][0]["revision"], 1);
     assert_eq!(remapped["draft"]["candidates"][0]["revision"], 1);
@@ -397,18 +427,27 @@ async fn candidate_set_replans_with_exact_receipts_protected_work_and_fragments(
         2
     );
     assert!(offered["request_id"].as_str().is_some());
-    let finished = first.call("save_candidate_set", json!({
-        "kind":"review","candidate_set_id":set,"revision":7,"snapshot_id":id(&current["snapshot"]["id"]),
-        "input_cursor":2,"request_id":Uuid::new_v4(),"review":{
-            "verdict":"ready","summary":"The later authority text supports removing the old accepted-work link.",
-            "findings":[],"candidate_decisions":[{"candidate_id":candidate_id,"decision":"accept","rationale":"Updated result remains vertical"}],
-            "protected_change_reviews":[{"accepted_evidence_id":accepted_id,
-                "rationale":"Reviewed evidence deletion against the exact second planning input"},
-                {"accepted_evidence_id":accepted_id,"prior_candidate_id":candidate_id,
-                "rationale":"Reviewed edge deletion against the exact second planning input"}]
-        }
-    })).await;
+    let mut finished_params = offered.clone();
+    finished_params["review"] = json!({
+        "verdict":"ready","summary":"The later authority text supports removing the old accepted-work link.",
+        "findings":[],"candidate_decisions":[{"candidate_id":candidate_id,"decision":"accept","rationale":"Updated result remains vertical"}],
+        "protected_change_reviews":[{"accepted_evidence_id":accepted_id,
+            "rationale":"Reviewed evidence deletion against the exact second planning input"},
+            {"accepted_evidence_id":accepted_id,"prior_candidate_id":candidate_id,
+            "rationale":"Reviewed edge deletion against the exact second planning input"}]
+    });
+    let finished = first.call("save_candidate_set", finished_params).await;
     assert_eq!(finished["context"]["candidate_set"]["status"], "ready");
+    assert_eq!(finished["recommended_action"], 0);
+    assert_eq!(finished["actions"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        action_name(&finished["actions"][0]),
+        Some("scope.candidates.context")
+    );
+    assert_eq!(
+        action_name(&finished["actions"][1]),
+        Some("scope.candidates.record_input")
+    );
     let terminal = first
         .call(
             "candidate_context",

@@ -119,63 +119,49 @@ def assert_successful_calls(
             continue
         if call["status"] != "completed" or call["is_error"]:
             raise AssertionError("model MCP call did not complete successfully")
-def assert_exact_recovery(
-    calls: list[dict[str, Any]],
-    *,
-    tool: str,
-    rejected_arguments: dict[str, Any],
-    corrected_arguments: dict[str, Any],
-    error_code: str = "invalid_arguments",
-) -> None:
-    """Accept one rejection only when its exact later correction is proven."""
-    rejected = [
-        index
-        for index, call in enumerate(calls)
-        if call.get("source") == "mcp_wire"
-        and call.get("response_source") == "mcp_wire"
-        and call.get("forwarded") is True
-        and call["server"] == "tectd"
-        and call["tool"] == tool
-        and call["arguments"] == rejected_arguments
-        and call["status"] == "failed"
-        and call["is_error"]
-        and call["error_code"] == error_code
-    ]
-    corrected = [
-        index
-        for index, call in enumerate(calls)
-        if call.get("source") == "mcp_wire"
-        and call.get("response_source") == "mcp_wire"
-        and call.get("forwarded") is True
-        and call["server"] == "tectd"
-        and call["tool"] == tool
-        and call["arguments"] == corrected_arguments
-        and call["status"] == "completed"
-        and not call["is_error"]
-    ]
-    other_failures = [
-        index
-        for index, call in enumerate(calls)
-        if (call["status"] != "completed" or call["is_error"]) and index not in rejected
-    ]
-    if len(rejected) != 1 or other_failures or not any(index > rejected[0] for index in corrected):
-        raise AssertionError("exact typed rejection and subsequent correction were not both proven")
+def recovered_backend_failures(calls: list[dict[str, Any]]) -> set[int]:
+    """Accept a typed backend rejection only after its exact ready recovery call."""
+    def backend(call: dict[str, Any]) -> bool:
+        response_source = call.get("response_source")
+        return (
+            call.get("source") == "mcp_wire"
+            and call.get("forwarded") is True
+            and (
+                response_source == "mcp_wire"
+                or (response_source is None and call.get("origin") == "tectd")
+            )
+        )
 
-
-def recovered_help_failures(calls: list[dict[str, Any]]) -> set[int]:
-    failures = [
-        index for index, call in enumerate(calls)
-        if call.get("status") != "completed" or call.get("is_error")
-    ]
-    if not failures:
-        return set()
-    assert_exact_recovery(
-        calls,
-        tool="help",
-        rejected_arguments={"mode": "describe"},
-        corrected_arguments={"mode": "describe", "tool": "query"},
-    )
-    return set(failures)
+    recovered: set[int] = set()
+    for index, call in enumerate(calls):
+        if call.get("status") == "completed" and not call.get("is_error"):
+            continue
+        if (
+            not backend(call)
+            or call.get("server") != "tectd"
+            or not isinstance(call.get("error_code"), str)
+            or not call["error_code"]
+        ):
+            raise AssertionError("failed MCP call is not an authoritative typed backend rejection")
+        actions = [
+            (action.get("tool"), action.get("arguments"))
+            for action in call.get("payload", {}).get("actions", [])
+            if action.get("kind") == "ready_call"
+            and isinstance(action.get("tool"), str)
+            and isinstance(action.get("arguments"), dict)
+        ]
+        if index + 1 >= len(calls) or not actions:
+            raise AssertionError("backend rejection was not followed by an exact recovery action")
+        following = calls[index + 1]
+        if (
+            (following.get("tool"), following.get("arguments")) not in actions
+            or not backend(following)
+            or following.get("status") != "completed"
+            or following.get("is_error")
+        ):
+            raise AssertionError("backend rejection was not followed by an exact recovery action")
+        recovered.add(index)
+    return recovered
 def prepare_open_program(
     call: Callable[[str, dict[str, Any]], tuple[dict[str, Any], bool]],
     source_path: str,
@@ -272,7 +258,10 @@ def candidate_model_prompt(candidate_set_id: str, worktree_id: str) -> str:
         "every exact backend-provided ready call and paging action until the "
         "complete planning context has been delivered. Read the full captured method and every matched rule "
         "before drafting. Use the exact current IDs, revisions, snapshot, source references, and route schemas "
-        "returned by TectD. Apply the current TectD methodology and applicable rules, then perform and save "
+        "returned by TectD. Never create a request ID or other control value: fill only the authored input fields "
+        "declared by an exact backend action. If a call is rejected, execute its exact backend recovery action "
+        "before any other discovery or mutation, then correct only the declared authored field under the unchanged "
+        "control envelope. Apply the current TectD methodology and applicable rules, then perform and save "
         "the critical semantic review; revise and review again if needed. Only after the first planning "
         "cycle reaches Ready, record this exact separate user amendment: \"" + CANDIDATE_AMENDMENT + "\" "
         "Follow the backend record-input and refresh actions, read the complete refreshed context, and draft "
@@ -335,7 +324,7 @@ def assert_model_item_boundary(items: list[dict[str, Any]]) -> None:
 def assert_candidate_model_result(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> dict[str, Any]:
     """Validate two observable cycles; prose remains a human semantic review."""
     assert_candidate_call_boundary(calls)
-    recovered = recovered_help_failures(calls)
+    recovered = recovered_backend_failures(calls)
     assert_successful_calls(calls, {"get_state", "help", "query", "command"}, recovered)
     opened = [call for call in calls if call["tool"] == "command"
               and call["arguments"].get("route") == "workspace.open"]

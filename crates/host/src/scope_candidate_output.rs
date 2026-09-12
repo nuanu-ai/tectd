@@ -25,14 +25,21 @@ pub(crate) fn begin(outcome: BeginCandidateSetOutcome, capacity: usize) -> Resul
 
 pub(crate) fn stored(stored: StoredCandidateContext, capacity: usize) -> Result<Value> {
     let latest_review = stored.reviews.last().cloned();
-    let actions = if stored.context.stale_reasons.is_empty() {
-        vec![read_action(
+    let actions = if !stored.context.stale_reasons.is_empty() {
+        vec![refresh_action(&stored.context)?]
+    } else {
+        let mut actions = vec![read_action(
             &stored.context,
             CandidateContextView::Candidates,
             None,
-        )?]
-    } else {
-        vec![refresh_action(&stored.context)?]
+        )?];
+        if stored.context.candidate_set.status == CandidateSetStatus::Ready {
+            actions.push(record_input_action(
+                stored.context.candidate_set.id,
+                stored.context.candidate_set.revision,
+            )?);
+        }
+        actions
     };
     within(
         with_actions(
@@ -226,7 +233,10 @@ fn terminal_actions(page: &CandidateContextPage) -> Result<(Vec<Value>, Option<u
     match set.status {
         CandidateSetStatus::Draft => Ok((vec![draft_action(context)?], Some(0))),
         CandidateSetStatus::ReviewRequired => Ok((
-            vec![review_action(context, &page.required_protected_changes)?],
+            vec![
+                review_action(context, &page.required_protected_changes)?,
+                draft_action(context)?,
+            ],
             Some(0),
         )),
         CandidateSetStatus::Ready | CandidateSetStatus::Blocked => {

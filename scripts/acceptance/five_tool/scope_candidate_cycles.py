@@ -4,6 +4,14 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from scope_candidate_lineage import (
+    assert_command_template as _assert_command_template,
+    assert_failed_body_recoveries as _assert_failed_body_recoveries,
+    assert_offered_reads as _assert_offered_reads,
+    reusable_overviews as _reusable_overviews,
+    successful as _successful,
+)
+
 
 def _is(call: dict[str, Any], tool: str, route: str | None = None) -> bool:
     if call.get("tool") != tool:
@@ -13,47 +21,6 @@ def _is(call: dict[str, Any], tool: str, route: str | None = None) -> bool:
 
 def _save_kind(call: dict[str, Any], kind: str) -> bool:
     return _is(call, "command", "scope.candidates.save") and call["arguments"]["params"].get("kind") == kind
-
-
-def _ready(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
-    return [
-        (action["tool"], action["arguments"])
-        for action in payload.get("actions", [])
-        if action.get("kind") in {"ready_call", "needs_input"}
-        and isinstance(action.get("tool"), str)
-        and isinstance(action.get("arguments"), dict)
-    ]
-
-
-def _assert_offered_reads(
-    reads: list[dict[str, Any]], initial: dict[str, Any] | None = None,
-    explicit: list[tuple[str, dict[str, Any]]] | None = None,
-) -> None:
-    def calls(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
-        return [
-            (action["tool"], action["arguments"])
-            for action in payload.get("actions", [])
-            if action.get("kind") == "ready_call"
-            and isinstance(action.get("tool"), str)
-            and isinstance(action.get("arguments"), dict)
-        ]
-
-    offered = calls(initial) if initial is not None else []
-    supplied = list(explicit or [])
-    for index, read in enumerate(reads):
-        call = (read["tool"], read["arguments"])
-        supplied_call = False
-        if call in supplied:
-            supplied.remove(call)
-            supplied_call = True
-        if read["tool"] != "help" and not supplied_call and (initial is not None or index):
-            try:
-                offered.pop(offered.index(call))
-            except ValueError as error:
-                raise AssertionError("model reconstructed a context read instead of using a backend action") from error
-        offered.extend(calls(read["payload"]))
-    if supplied:
-        raise AssertionError("model omitted an explicitly supplied fixture setup call")
 
 
 def _assert_source_setup(
@@ -104,27 +71,6 @@ def _assert_source_snapshots(calls: list[dict[str, Any]], scenario: dict[str, An
     if any(snapshot.get("selected_worktree_ids") != [scenario["worktree_id"]]
            for snapshot in current + historical):
         raise AssertionError("candidate planning switched away from the selected owned source")
-
-
-def _assert_command_template(
-    calls: list[dict[str, Any]], index: int, payloads: list[dict[str, Any]], variable: str | None,
-) -> None:
-    actual = calls[index]
-    candidates = [action for payload in payloads for action in _ready(payload)
-                  if action[0] == actual["tool"]]
-    if variable is None:
-        expected = actual["arguments"]
-        matched = expected in [arguments for _, arguments in candidates]
-    else:
-        params = actual["arguments"].get("params", {})
-        base = {key: value for key, value in params.items() if key != variable}
-        matched = any(
-            arguments.get("route") == actual["arguments"].get("route")
-            and {key: value for key, value in arguments.get("params", {}).items() if key != variable} == base
-            for _, arguments in candidates
-        )
-    if not matched:
-        raise AssertionError("model did not preserve the backend-provided command template")
 
 
 def _fragments(calls: list[dict[str, Any]], draft_revision: int | None) -> dict[str, str]:
@@ -210,11 +156,35 @@ def _assert_ready_review(call: dict[str, Any], draft: dict[str, Any]) -> None:
             "view": "candidates", "limit": 25,
         }},
     }
-    if actions != [expected]:
-        raise AssertionError("Ready planning cycle exposed anything but its exact read-only inspection")
-    recommended = payload.get("recommended_action")
-    if recommended is not None and (recommended != 0 or actions != [expected]):
+    if not actions or actions[0] != expected:
+        raise AssertionError("Ready planning cycle omitted its exact read-only inspection")
+    if len(actions) != 2 or not _matches_ready_record_input(
+        actions[1], payload["context"]["candidate_set"],
+    ):
+        raise AssertionError("Ready planning cycle omitted its backend-bound optional amendment action")
+    if payload.get("recommended_action") != 0:
         raise AssertionError("Ready planning cycle recommends an invalid continuation")
+
+
+def _matches_ready_record_input(action: dict[str, Any], candidate_set: dict[str, Any]) -> bool:
+    params = action.get("arguments", {}).get("params", {})
+    fields = action.get("input", {}).get("fields", [])
+    try:
+        uuid.UUID(str(params.get("request_id")))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return (
+        action.get("kind") == "needs_input"
+        and action.get("tool") == "command"
+        and action.get("arguments", {}).get("route") == "scope.candidates.record_input"
+        and set(params) == {"candidate_set_id", "revision", "request_id"}
+        and params.get("candidate_set_id") == candidate_set.get("id")
+        and params.get("revision") == candidate_set.get("revision")
+        and fields == [{
+            "path": "arguments.params.input",
+            "format": "Complete original amendment text without trimming or paraphrasing.",
+        }]
+    )
 
 
 def _assert_delta(previous: dict[str, Any], current: dict[str, Any]) -> None:
@@ -353,16 +323,20 @@ def _amendment_refresh_index(calls: list[dict[str, Any]], record: int, ready: in
 
 
 def assert_two_cycles(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> dict[str, Any]:
-    ready_reviews = [index for index, call in enumerate(calls) if _save_kind(call, "review")
+    _assert_failed_body_recoveries(calls)
+    ready_reviews = [index for index, call in enumerate(calls) if _successful(call)
+                     and _save_kind(call, "review")
                      and call.get("payload", {}).get("context", {}).get("candidate_set", {}).get("status") == "ready"]
     if len(ready_reviews) != 2:
         raise AssertionError("model did not produce exactly two evidenced Ready planning cycles")
     first_ready, second_ready = ready_reviews
-    first_drafts = [index for index in range(first_ready) if _save_kind(calls[index], "draft")]
+    first_drafts = [index for index in range(first_ready) if _successful(calls[index])
+                    and _save_kind(calls[index], "draft")]
     if not first_drafts:
         raise AssertionError("first planning cycle has no stored draft")
     first_draft_index = first_drafts[-1]
-    all_record_inputs = [index for index, call in enumerate(calls) if _is(call, "command", "scope.candidates.record_input")]
+    all_record_inputs = [index for index, call in enumerate(calls) if _successful(call)
+                         and _is(call, "command", "scope.candidates.record_input")]
     record_inputs = [index for index in all_record_inputs if first_ready < index < second_ready]
     if len(record_inputs) != 1 or len(all_record_inputs) != 1:
         raise AssertionError("the separate amendment was not recorded exactly once after first Ready")
@@ -370,7 +344,8 @@ def assert_two_cycles(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> 
     if calls[record_index]["arguments"]["params"].get("input") != scenario["amendment"]:
         raise AssertionError("recorded amendment is not the exact supplied user text")
     refresh_index = _amendment_refresh_index(calls, record_index, second_ready)
-    second_drafts = [index for index in range(refresh_index + 1, second_ready) if _save_kind(calls[index], "draft")]
+    second_drafts = [index for index in range(refresh_index + 1, second_ready)
+                     if _successful(calls[index]) and _save_kind(calls[index], "draft")]
     if not second_drafts:
         raise AssertionError("second planning cycle has no stored draft")
     second_draft_index = second_drafts[-1]
@@ -425,7 +400,11 @@ def assert_two_cycles(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> 
     _assert_command_template(calls, refresh_index, [calls[record_index]["payload"]], None)
 
     second_reads = [call for call in calls[refresh_index + 1:second_drafts[0]] if call["tool"] == "query"]
-    _assert_offered_reads(second_reads, calls[refresh_index]["payload"])
+    _assert_offered_reads(
+        second_reads,
+        calls[refresh_index]["payload"],
+        reusable=_reusable_overviews([call.get("payload", {}) for call in calls[:refresh_index + 1]]),
+    )
     second_overview = next(call["payload"] for call in second_reads if call["arguments"]["params"].get("view") == "overview")
     if second_overview["context"]["snapshot"] != second_snapshot:
         raise AssertionError("second context traversal switched away from the refreshed snapshot")

@@ -33,26 +33,40 @@ class CandidateCycleTests(unittest.TestCase):
         self.assertNotIn("api candidate", prompt.lower())
         self.assertNotIn("ui candidate", prompt.lower())
 
-    def test_help_recovery_allows_zero_or_one_exact_backend_rejection(self) -> None:
-        def call(arguments: dict, *, failed: bool = False, source: str = "mcp_wire") -> dict:
+    def test_recovery_requires_the_exact_backend_action_before_continuation(self) -> None:
+        def call(tool: str, arguments: dict, *, failed: bool = False,
+                 source: str = "mcp_wire", actions: list[dict] | None = None) -> dict:
             return {
                 "source": source, "response_source": source, "forwarded": source == "mcp_wire",
-                "server": "tectd", "tool": "help", "arguments": arguments,
+                "server": "tectd", "tool": tool, "arguments": arguments,
                 "status": "failed" if failed else "completed", "is_error": failed,
-                "error_code": "invalid_arguments" if failed else None, "payload": {},
+                "error_code": "invalid_arguments" if failed else None,
+                "payload": {"actions": actions or []},
             }
-        clean = [call({"mode": "describe", "tool": "query"})]
-        self.assertEqual(scope_candidates.recovered_help_failures(clean), set())
+        get_state = {"kind": "ready_call", "tool": "get_state", "arguments": {}}
+        clean = [call("help", {"mode": "describe", "tool": "query"})]
+        self.assertEqual(scope_candidates.recovered_backend_failures(clean), set())
         scope_candidates.assert_successful_calls(clean, {"help"})
-        recovered = [call({"mode": "describe"}, failed=True), *clean]
-        indexes = scope_candidates.recovered_help_failures(recovered)
+        recovered = [
+            call("help", {"mode": "describe"}, failed=True, actions=[get_state]),
+            call("get_state", {}),
+            *clean,
+        ]
+        indexes = scope_candidates.recovered_backend_failures(recovered)
         self.assertEqual(indexes, {0})
-        scope_candidates.assert_successful_calls(recovered, {"help"}, indexes)
+        scope_candidates.assert_successful_calls(recovered, {"get_state", "help"}, indexes)
         with self.assertRaises(AssertionError):
-            scope_candidates.recovered_help_failures(recovered[:1])
-        blocked = [call({"mode": "describe"}, failed=True, source="fixture_capture"), *clean]
+            scope_candidates.recovered_backend_failures([recovered[0], *clean])
+        mutation_first = [recovered[0], call("command", {"route": "scope.candidates.save", "params": {}})]
         with self.assertRaises(AssertionError):
-            scope_candidates.recovered_help_failures(blocked)
+            scope_candidates.recovered_backend_failures(mutation_first)
+        blocked = [
+            call("help", {"mode": "describe"}, failed=True,
+                 source="fixture_capture", actions=[get_state]),
+            call("get_state", {}),
+        ]
+        with self.assertRaises(AssertionError):
+            scope_candidates.recovered_backend_failures(blocked)
 
     def test_owned_source_setup_is_exact_ordered_and_bound_to_child(self) -> None:
         actor, worktree = str(uuid.uuid4()), str(uuid.uuid4())
@@ -132,11 +146,96 @@ class CandidateCycleTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             cycles._amendment_refresh_index(calls, 1, 4)
 
+    def test_authored_body_preserves_every_backend_control_and_declared_path(self) -> None:
+        set_id, snapshot_id, request_id = [str(uuid.uuid4()) for _ in range(3)]
+        action = {
+            "kind": "needs_input", "tool": "command",
+            "arguments": {"route": "scope.candidates.save", "params": {
+                "kind": "draft", "candidate_set_id": set_id, "revision": 5,
+                "snapshot_id": snapshot_id, "input_cursor": 2, "request_id": request_id,
+            }},
+            "input": {"fields": [{"path": "arguments.params.draft", "format": "draft"}]},
+        }
+        actual = {"tool": "command", "arguments": copy.deepcopy(action["arguments"])}
+        actual["arguments"]["params"]["draft"] = {"boundary": "ongoing"}
+        cycles._assert_command_template([actual], 0, [{"actions": [action]}], "draft")
+        for key, value in (("request_id", str(uuid.uuid4())), ("unexpected", True)):
+            broken = copy.deepcopy(actual)
+            broken["arguments"]["params"][key] = value
+            with self.assertRaises(AssertionError):
+                cycles._assert_command_template([broken], 0, [{"actions": [action]}], "draft")
+        undeclared = copy.deepcopy(action)
+        undeclared["input"]["fields"] = []
+        with self.assertRaises(AssertionError):
+            cycles._assert_command_template([actual], 0, [{"actions": [undeclared]}], "draft")
+        review_only = copy.deepcopy(action)
+        review_only["arguments"]["params"]["kind"] = "review"
+        review_only["arguments"]["params"]["review"] = {"protected_change_reviews": []}
+        review_only["input"]["fields"] = [{"path": "arguments.params.review.verdict"}]
+        with self.assertRaises(AssertionError):
+            cycles._assert_command_template([actual], 0, [{"actions": [review_only]}], "draft")
+        record = {"kind": "needs_input", "tool": "command", "arguments": {
+            "route": "scope.candidates.record_input", "params": {
+                "candidate_set_id": set_id, "revision": 5, "request_id": request_id,
+            }}, "input": {"fields": [{"path": "arguments.params.input"}]}}
+        invented = {"tool": "command", "arguments": copy.deepcopy(record["arguments"])}
+        invented["arguments"]["params"].update(request_id=str(uuid.uuid4()), input="amendment")
+        with self.assertRaises(AssertionError):
+            cycles._assert_command_template([invented], 0, [{"actions": [record]}], "input")
+
+    def test_failed_draft_requires_unchanged_head_and_same_backend_controls(self) -> None:
+        set_id, snapshot_id, request_id = [str(uuid.uuid4()) for _ in range(3)]
+        controls = {
+            "kind": "draft", "candidate_set_id": set_id, "revision": 1,
+            "snapshot_id": snapshot_id, "input_cursor": 1, "request_id": request_id,
+        }
+        action = {
+            "kind": "needs_input", "tool": "command",
+            "arguments": {"route": "scope.candidates.save", "params": controls},
+            "input": {"fields": [{"path": "arguments.params.draft", "format": "draft"}]},
+        }
+        failed_params = {**controls, "draft": {}}
+        corrected_params = {**controls, "draft": {"boundary": "ongoing"}}
+        calls = [
+            {"payload": {"context": {"candidate_set": {
+                "id": set_id, "revision": 1, "snapshot_id": snapshot_id, "status": "draft",
+            }}, "actions": [action]}},
+            {"tool": "command", "arguments": {"route": "scope.candidates.save", "params": failed_params},
+             "status": "failed", "is_error": True},
+            {"tool": "get_state", "arguments": {}, "status": "completed", "is_error": False,
+             "payload": {"candidate_sets": [{
+                 "id": set_id, "revision": 1, "snapshot_id": snapshot_id, "status": "draft",
+             }]}},
+            {"tool": "command", "arguments": {"route": "scope.candidates.save", "params": corrected_params},
+             "status": "completed", "is_error": False},
+        ]
+        cycles._assert_failed_body_recoveries(calls)
+        stale = copy.deepcopy(calls)
+        stale[2]["payload"]["candidate_sets"][0]["revision"] = 2
+        with self.assertRaises(AssertionError):
+            cycles._assert_failed_body_recoveries(stale)
+        minted = copy.deepcopy(calls)
+        minted[3]["arguments"]["params"]["request_id"] = str(uuid.uuid4())
+        with self.assertRaises(AssertionError):
+            cycles._assert_failed_body_recoveries(minted)
+
+    def test_only_identical_control_free_current_overview_is_reusable(self) -> None:
+        set_id = str(uuid.uuid4())
+        overview = ("query", {"route": "scope.candidates.context", "params": {
+            "candidate_set_id": set_id, "view": "overview", "limit": 25,
+        }})
+        read = {"tool": overview[0], "arguments": overview[1], "payload": {"actions": []}}
+        cycles._assert_offered_reads([read], initial={"actions": []}, reusable=[overview])
+        controlled = copy.deepcopy(read)
+        controlled["arguments"]["params"]["draft_revision"] = 2
+        with self.assertRaises(AssertionError):
+            cycles._assert_offered_reads([controlled], initial={"actions": []}, reusable=[overview])
+
     def test_ready_review_allows_only_exact_read_only_inspection(self) -> None:
         candidate_id, set_id = str(uuid.uuid4()), str(uuid.uuid4())
         draft = {"candidates": [{"id": candidate_id}], "blockers": []}
         call = {"payload": {
-            "context": {"candidate_set": {"id": set_id, "status": "ready"}},
+            "context": {"candidate_set": {"id": set_id, "revision": 3, "status": "ready"}},
             "latest_review": {"verdict": "ready", "candidate_decisions": [
                 {"candidate_id": candidate_id, "decision": "accept"},
             ]},
@@ -144,7 +243,14 @@ class CandidateCycleTests(unittest.TestCase):
                 "route": "scope.candidates.context", "params": {
                     "candidate_set_id": set_id, "view": "candidates", "limit": 25,
                 },
-            }}],
+            }}, {"kind": "needs_input", "tool": "command", "arguments": {
+                "route": "scope.candidates.record_input", "params": {
+                    "candidate_set_id": set_id, "revision": 3, "request_id": str(uuid.uuid4()),
+                },
+            }, "input": {"fields": [{
+                "path": "arguments.params.input",
+                "format": "Complete original amendment text without trimming or paraphrasing.",
+            }]}}],
             "recommended_action": 0,
         }}
         cycles._assert_ready_review(call, draft)
@@ -157,6 +263,10 @@ class CandidateCycleTests(unittest.TestCase):
         missing["payload"]["recommended_action"] = None
         with self.assertRaises(AssertionError):
             cycles._assert_ready_review(missing, draft)
+        minted = copy.deepcopy(call)
+        minted["payload"]["actions"][1]["arguments"]["params"]["request_id"] = None
+        with self.assertRaises(AssertionError):
+            cycles._assert_ready_review(minted, draft)
         blocked = copy.deepcopy(draft)
         blocked["blockers"] = [{"id": str(uuid.uuid4())}]
         with self.assertRaises(AssertionError):
