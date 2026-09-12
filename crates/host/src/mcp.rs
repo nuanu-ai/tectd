@@ -219,7 +219,15 @@ impl McpSession {
             Ok(result) => success_response(id, successful_tool_result(result)),
             Err(error) => success_response(
                 id,
-                responses::failure(error, Some((&params.name, &params.arguments))),
+                crate::setup_recovery::response(
+                    error,
+                    &params.name,
+                    &params.arguments,
+                    &self.socket,
+                    &context,
+                    capacity,
+                )
+                .await,
             ),
         }
     }

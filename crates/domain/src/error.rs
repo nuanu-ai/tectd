@@ -26,6 +26,13 @@ pub enum Error {
     InputPending,
     ProgramIncomplete,
     InputConflict,
+    TaskDirectoryUnbound,
+    TaskDirectoryMismatch,
+    SetupUnavailable,
+    SetupExists,
+    SetupIncomplete,
+    SetupFileConflict,
+    SetupAlreadyApplied,
 }
 
 impl Error {
@@ -50,6 +57,13 @@ impl Error {
             Self::InputPending => "input_pending",
             Self::ProgramIncomplete => "program_incomplete",
             Self::InputConflict => "input_conflict",
+            Self::TaskDirectoryUnbound => "task_directory_unbound",
+            Self::TaskDirectoryMismatch => "task_directory_mismatch",
+            Self::SetupUnavailable => "setup_unavailable",
+            Self::SetupExists => "setup_exists",
+            Self::SetupIncomplete => "setup_incomplete",
+            Self::SetupFileConflict => "setup_file_conflict",
+            Self::SetupAlreadyApplied => "setup_already_applied",
         }
     }
 }

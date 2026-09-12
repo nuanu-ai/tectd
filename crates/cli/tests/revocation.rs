@@ -67,6 +67,7 @@ async fn operator_revocation_serializes_with_admission_and_never_reopens_identit
     let service = Arc::new(WorkspaceService::new(
         store.clone(),
         Arc::new(tect_host::GitSourceInspector),
+        Arc::new(tect_host::LocalSetupFiles),
     ));
     let host = admin::enroll_host(&pool, None, Vec::new()).await.unwrap();
     let ctx = context(&host.auth, "admitted-before-host-revoke");

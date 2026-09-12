@@ -5,6 +5,7 @@ use uuid::Uuid;
 
 pub(crate) enum Invocation {
     Program(crate::program_tools::ProgramInvocation),
+    Setup(crate::setup_tools::SetupInvocation),
     OpenWorkspace,
     GetState,
     RegisterSource { path: String },
@@ -60,6 +61,12 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
                 after: arguments.after,
                 limit: arguments.limit,
             })
+        }
+        _ if name.ends_with("_setup")
+            || name == "record_setup_input"
+            || name == "read_skill" && arguments["name"] == "tectd-setup" =>
+        {
+            crate::setup_tools::parse(name, arguments).map(Invocation::Setup)
         }
         _ => crate::program_tools::parse(name, arguments).map(Invocation::Program),
     }
@@ -123,6 +130,10 @@ pub(crate) fn definitions() -> Value {
         .as_array_mut()
         .expect("tool array")
         .extend(crate::program_tools::definitions());
+    definitions["tools"]
+        .as_array_mut()
+        .expect("tool array")
+        .extend(crate::setup_tools::definitions());
     definitions
 }
 
@@ -148,10 +159,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schemas_expose_eleven_bounded_tools() {
+    fn schemas_expose_seventeen_bounded_tools() {
         let definitions = definitions();
         let tools = definitions["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 11);
+        assert_eq!(tools.len(), 17);
         assert!(
             tools
                 .iter()

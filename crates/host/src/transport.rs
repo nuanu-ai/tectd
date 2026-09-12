@@ -186,6 +186,15 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 )
                 .await
             }
+            Invocation::Setup(invocation) => {
+                crate::setup_dispatch::execute(
+                    &request.context,
+                    invocation,
+                    service,
+                    request.output_capacity,
+                )
+                .await
+            }
             Invocation::RegisterSource { path } => {
                 serialize(service.register_source(&request.context, &path).await)
             }

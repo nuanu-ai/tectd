@@ -1,4 +1,4 @@
-use crate::{SourceInspector, Store, TransactionMode, UnitOfWork};
+use crate::{SetupFiles, SourceInspector, Store, TransactionMode, UnitOfWork};
 use std::sync::Arc;
 use tect_domain::{
     Error, EventKind, HostIdentity, RequestContext, Result, Session, Workspace, WorkspaceState,
@@ -7,11 +7,20 @@ use tect_domain::{
 pub struct WorkspaceService {
     store: Arc<dyn Store>,
     pub(crate) inspector: Arc<dyn SourceInspector>,
+    pub(crate) setup_files: Arc<dyn SetupFiles>,
 }
 
 impl WorkspaceService {
-    pub fn new(store: Arc<dyn Store>, inspector: Arc<dyn SourceInspector>) -> Self {
-        Self { store, inspector }
+    pub fn new(
+        store: Arc<dyn Store>,
+        inspector: Arc<dyn SourceInspector>,
+        setup_files: Arc<dyn SetupFiles>,
+    ) -> Self {
+        Self {
+            store,
+            inspector,
+            setup_files,
+        }
     }
 
     pub(crate) async fn authorized(
@@ -62,9 +71,23 @@ impl WorkspaceService {
             .list_programs(state.workspace.as_ref().expect("opened").id, None, 26)
             .await?;
         let page = crate::programs::bounded_program_list(entries, 25);
+        state.setup_context = tx
+            .setup_context(
+                state.workspace.as_ref().expect("opened").id,
+                state.session.as_ref().expect("opened").host_id,
+                state.session.as_ref().expect("opened").id,
+            )
+            .await?;
         state.next_action = Some(
-            if page.programs.is_empty() {
-                "begin_program"
+            if state
+                .setup_context
+                .as_ref()
+                .and_then(|context| context.setup.as_ref())
+                .is_some_and(|setup| setup.status == tect_domain::SetupStatus::Draft)
+            {
+                "get_setup"
+            } else if page.programs.is_empty() {
+                "inspect_setup"
             } else {
                 "get_program"
             }
@@ -144,7 +167,8 @@ impl WorkspaceService {
             )
             .await?;
         }
+        let state = Self::state(&mut *tx, workspace.value, session.value).await?;
         tx.commit().await?;
-        Ok(WorkspaceState::opened(workspace.value, session.value))
+        Ok(state)
     }
 }

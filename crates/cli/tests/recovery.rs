@@ -204,7 +204,7 @@ async fn real_daemon_crash_rolls_back_and_lost_reply_recovers_committed_identity
         .iter()
         .map(|v| v["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 11);
+    assert_eq!(names.len(), 17);
     assert!(names.iter().all(|n| !n.starts_with("revoke")));
     retry.finish().await;
     daemon.crash().await;

@@ -22,7 +22,8 @@ pub(crate) async fn verify_runtime_role(pool: &PgPool) -> Result<()> {
                      AND c.relname IN (
                          'tenants', 'principals', 'hosts', 'workspaces', 'memberships',
                          'agent_sessions', 'source_repositories', 'source_worktrees',
-                         'session_worktrees', 'workspace_events', 'programs', 'program_inputs'
+                         'session_worktrees', 'workspace_events', 'programs', 'program_inputs',
+                         'setup_session_directories', 'workspace_setups', 'workspace_setup_inputs'
                      )
                      AND pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER')
                ) OR EXISTS (

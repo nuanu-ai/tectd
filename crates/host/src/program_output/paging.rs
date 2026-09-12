@@ -12,7 +12,7 @@ fn fragment_bytes(value: &impl Serialize) -> Result<usize> {
         .map_err(|_| Error::TransportUnavailable)
 }
 
-pub(super) fn fitting_prefix<T: Serialize>(
+pub(crate) fn fitting_prefix<T: Serialize>(
     items: &[T],
     first_page: &Value,
     items_key: &str,

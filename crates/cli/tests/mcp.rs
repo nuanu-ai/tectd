@@ -73,6 +73,7 @@ async fn real_mcp_schema_rejects_identity_override_and_recovers_session() {
     let service = Arc::new(WorkspaceService::new(
         store,
         Arc::new(tect_host::GitSourceInspector),
+        Arc::new(tect_host::LocalSetupFiles),
     ));
     let temp = tempfile::tempdir().unwrap();
     let private_path = temp.path().canonicalize().unwrap();

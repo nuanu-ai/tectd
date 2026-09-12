@@ -25,6 +25,7 @@ async fn run() -> tect_domain::Result<()> {
     let service = Arc::new(WorkspaceService::new(
         store,
         Arc::new(tect_host::GitSourceInspector),
+        Arc::new(tect_host::LocalSetupFiles),
     ));
     let listener = UnixListener::bind(&socket).map_err(|_| Error::InvalidConfiguration)?;
     let guard = SocketGuard::capture(socket)?;

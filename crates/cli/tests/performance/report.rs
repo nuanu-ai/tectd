@@ -1,7 +1,7 @@
 use crate::TestResult;
 use crate::fixture::{
-    Cardinalities, SEEDED_PROGRAMS, SEEDED_SESSIONS, SEEDED_WORKSPACES, SEEDED_WORKTREES,
-    SeedFixture,
+    Cardinalities, SEEDED_PROGRAMS, SEEDED_SESSIONS, SEEDED_SETUPS, SEEDED_WORKSPACES,
+    SEEDED_WORKTREES, SeedFixture,
 };
 use serde::Serialize;
 use std::fs;
@@ -188,6 +188,7 @@ pub(crate) struct FixtureReport {
     pub selected_worktrees_per_measured_session: usize,
     pub source_fixture: &'static str,
     pub program_profile: &'static str,
+    pub setup_profile: &'static str,
 }
 
 impl FixtureReport {
@@ -208,6 +209,7 @@ impl FixtureReport {
                 source_repositories: 1,
                 source_worktrees: SEEDED_WORKTREES,
                 programs: SEEDED_PROGRAMS,
+                setups: SEEDED_SETUPS,
             },
             seeded_tenant,
             tenant_after_selection,
@@ -217,6 +219,7 @@ impl FixtureReport {
             selected_worktrees_per_measured_session: fixture.worktree_ids.len(),
             source_fixture: "synthetic database rows; no filesystem worktree discovery",
             program_profile: "10 draft/compose Programs in the measured workspace",
+            setup_profile: "10 draft/waiting_input setups with separate task-directory bindings; current state is DB-only",
         }
     }
 }
@@ -229,6 +232,7 @@ pub(crate) struct DeclaredSeed {
     pub source_repositories: i64,
     pub source_worktrees: i64,
     pub programs: i64,
+    pub setups: i64,
 }
 
 #[derive(Debug, Serialize)]

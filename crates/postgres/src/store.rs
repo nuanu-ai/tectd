@@ -42,7 +42,7 @@ impl PgStore {
     }
 }
 
-struct PgUnitOfWork {
+pub(crate) struct PgUnitOfWork {
     transaction: Option<Transaction<'static, Postgres>>,
     mode: TransactionMode,
     identity: Option<HostIdentity>,
@@ -50,11 +50,11 @@ struct PgUnitOfWork {
 }
 
 impl PgUnitOfWork {
-    fn transaction(&mut self) -> Result<&mut Transaction<'static, Postgres>> {
+    pub(crate) fn transaction(&mut self) -> Result<&mut Transaction<'static, Postgres>> {
         self.transaction.as_mut().ok_or(Error::StorageUnavailable)
     }
 
-    fn tenant_id(&self) -> Result<Uuid> {
+    pub(crate) fn tenant_id(&self) -> Result<Uuid> {
         self.tenant_id.ok_or(Error::Forbidden)
     }
 }
@@ -83,8 +83,8 @@ impl UnitOfWork for PgUnitOfWork {
     async fn authenticate(&mut self, auth: &HostAuth) -> Result<HostIdentity> {
         let digest = runtime::credential_digest(&auth.credential);
         let for_write = self.mode == TransactionMode::ReadWrite;
-        let row: Option<(Uuid, Uuid, serde_json::Value)> = sqlx::query_as(
-            "SELECT tenant_id, principal_id, allowed_source_roots \
+        let row: Option<(Uuid, Uuid, serde_json::Value, serde_json::Value)> = sqlx::query_as(
+            "SELECT tenant_id, principal_id, allowed_source_roots, allowed_setup_roots \
              FROM public.tect_authenticate_host($1, $2, $3)",
         )
         .bind(auth.host_id)
@@ -93,13 +93,16 @@ impl UnitOfWork for PgUnitOfWork {
         .fetch_optional(&mut **self.transaction()?)
         .await
         .map_err(storage_error)?;
-        let (tenant_id, principal_id, roots) = row.ok_or(Error::Unauthorized)?;
-        let allowed_source_roots = serde_json::from_value(roots).map_err(storage_error)?;
+        let (tenant_id, principal_id, source_roots, setup_roots) =
+            row.ok_or(Error::Unauthorized)?;
+        let allowed_source_roots = serde_json::from_value(source_roots).map_err(storage_error)?;
+        let allowed_setup_roots = serde_json::from_value(setup_roots).map_err(storage_error)?;
         let identity = HostIdentity {
             host_id: auth.host_id,
             tenant_id,
             principal_id,
             allowed_source_roots,
+            allowed_setup_roots,
         };
         self.identity = Some(identity.clone());
         Ok(identity)

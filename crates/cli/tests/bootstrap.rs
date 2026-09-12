@@ -62,6 +62,7 @@ async fn bootstrap_is_atomic_native_keyed_and_tenant_isolated() {
     let service = Arc::new(WorkspaceService::new(
         store.clone(),
         Arc::new(tect_host::GitSourceInspector),
+        Arc::new(tect_host::LocalSetupFiles),
     ));
     let enrollment = admin::enroll_host(&admin_pool, None, Vec::new())
         .await
@@ -248,6 +249,7 @@ async fn bootstrap_is_atomic_native_keyed_and_tenant_isolated() {
     let reused_service = Arc::new(WorkspaceService::new(
         reused.clone(),
         Arc::new(tect_host::GitSourceInspector),
+        Arc::new(tect_host::LocalSetupFiles),
     ));
     let mut alternating = Vec::new();
     for index in 0..100 {

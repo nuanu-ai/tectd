@@ -2,6 +2,8 @@
 pub mod admin;
 mod programs;
 mod runtime;
+mod setup_store;
+mod setups;
 mod sources;
 mod store;
 

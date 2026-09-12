@@ -58,9 +58,25 @@ async fn run_acceptance() -> TestResult<()> {
     let mut bridges = start_warm_bridges(&socket, &config, &fixture).await?;
     select_full_fixture(&mut bridges, &fixture.worktree_ids).await?;
     seed_program_population(&mut bridges).await?;
+    admin::grant_setup_root(
+        &admin_pool,
+        enrollment.auth.host_id,
+        private_root.to_string_lossy().into_owned(),
+    )
+    .await?;
+    seed_setup_population(&mut bridges, &private_root).await?;
     let after_selection = cardinalities(&admin_pool, Some(enrollment.tenant_id)).await?;
     assert_eq!(after_selection.programs, fixture::SEEDED_PROGRAMS);
     assert_eq!(after_selection.program_inputs, fixture::SEEDED_PROGRAMS);
+    assert_eq!(after_selection.workspace_setups, fixture::SEEDED_SETUPS);
+    assert_eq!(
+        after_selection.setup_session_directories,
+        fixture::SEEDED_SETUPS
+    );
+    assert_eq!(
+        after_selection.workspace_setup_inputs,
+        fixture::SEEDED_SETUPS
+    );
     let warm = measure_warm_reads(bridges).await;
     let bootstrap = measure_bootstraps(&socket, &config, run_id).await;
     let final_tenant = cardinalities(&admin_pool, Some(enrollment.tenant_id)).await?;
@@ -74,7 +90,7 @@ async fn run_acceptance() -> TestResult<()> {
     let bootstrap_metric = bootstrap.metric(OPEN_CONCURRENCY, OPEN_SAMPLES);
     let budgets = report::Budgets::new(&warm_metric, &bootstrap_metric);
     let report = PerformanceReport {
-        schema_version: "tect.local-mcp-performance.v2",
+        schema_version: "tect.local-mcp-performance.v3",
         generated_unix_ms: report::unix_millis(),
         identity_note: "all IDs in this test are disposable synthetic UUID fixtures",
         measurement_scope: "local stdio MCP -> owned tectd Unix daemon -> PostgreSQL",
@@ -92,9 +108,10 @@ async fn run_acceptance() -> TestResult<()> {
         open_workspace: bootstrap_metric,
         budgets,
         notes: vec![
-            "fixture setup, Program creation, worktree selection, and MCP initialization are excluded from measurements",
+            "fixture setup, Program/setup creation, worktree selection, and MCP initialization are excluded from measurements",
             "warm operation is exactly get_state; bootstrap operation is exactly open_workspace",
             "synthetic source paths are DB fixtures and are not filesystem Git worktrees",
+            "each measured session has its own bound physical task directory and saved waiting_input setup; get_state does no file inspection",
         ],
     };
     write_report(&environment.report_path, &report)?;
@@ -161,6 +178,29 @@ async fn seed_program_population(bridges: &mut [Bridge]) -> TestResult<()> {
     Ok(())
 }
 
+async fn seed_setup_population(bridges: &mut [Bridge], root: &Path) -> TestResult<()> {
+    for (index, bridge) in bridges.iter_mut().enumerate() {
+        let path = root.join(format!("task-{index}"));
+        std::fs::create_dir(&path)?;
+        let discovery = bridge
+            .tool_call("inspect_setup", json!({"task_directory":path}))
+            .await?;
+        let discovery = decode_ready(&discovery).map_err(std::io::Error::other)?;
+        assert_eq!(discovery["file"]["status"], "missing");
+        let created = bridge.tool_call("begin_setup", json!({"request_id":Uuid::new_v4(),
+            "input":format!("We are measured workspace team {index}; preserve our working instructions.")})).await?;
+        let created = decode_payload(&created).map_err(std::io::Error::other)?;
+        let saved = bridge.tool_call("save_setup", json!({"setup_id":created["setup"]["id"],
+            "revision":1,"input_cursor":1,"ready":false,
+            "content":format!("# Measured team {index}\nPreserve explicit user instructions.\n"),
+            "working_notes":"The narrative is incorporated. One actual choice remains in this synthetic fixture.",
+            "pending_question":"Which team owns release acceptance?"})).await?;
+        let saved = decode_payload(&saved).map_err(std::io::Error::other)?;
+        assert_eq!(saved["setup"]["current_step"], "waiting_input");
+    }
+    Ok(())
+}
+
 async fn measure_warm_reads(bridges: Vec<Bridge>) -> Observations {
     let mut tasks = Vec::with_capacity(bridges.len());
     for (lane, mut bridge) in bridges.into_iter().enumerate() {
@@ -173,7 +213,7 @@ async fn measure_warm_reads(bridges: Vec<Bridge>) -> Observations {
                 observations.durations_ms.push(elapsed);
                 let validation = result
                     .map_err(|error| error.to_string())
-                    .and_then(|value| validate_selected(&value, 100));
+                    .and_then(|value| validate_warm_profile(&value));
                 if let Err(error) = validation {
                     observations.failures.push(Failure::new(
                         lane * WARM_CALLS_PER_BRIDGE + sample,
@@ -264,6 +304,20 @@ fn validate_selected(response: &Value, expected: usize) -> Result<(), String> {
         .ok_or_else(|| "missing_selected_worktrees".to_owned())?;
     if selected.len() != expected {
         return Err(format!("selected_count:{}", selected.len()));
+    }
+    Ok(())
+}
+
+fn validate_warm_profile(response: &Value) -> Result<(), String> {
+    validate_selected(response, 100)?;
+    let payload = decode_ready(response)?;
+    if payload["programs"].as_array().map(Vec::len) != Some(10)
+        || payload["setup_context"]["setup"]["current_step"] != "waiting_input"
+        || payload["file"]["observed_now"] != false
+        || payload["actions"][0]["tool"] != "get_setup"
+        || payload["actions"][0]["arguments"]["after_input"] != 0
+    {
+        return Err("measured_program_setup_profile_missing".into());
     }
     Ok(())
 }

@@ -8,6 +8,7 @@ pub(crate) const SEEDED_WORKSPACES: i64 = 10_000;
 pub(crate) const SEEDED_SESSIONS: i64 = 100_000;
 pub(crate) const SEEDED_WORKTREES: i64 = 100;
 pub(crate) const SEEDED_PROGRAMS: i64 = 10;
+pub(crate) const SEEDED_SETUPS: i64 = 10;
 
 pub(crate) struct SeedFixture {
     pub first_workspace_key: String,
@@ -26,6 +27,9 @@ pub(crate) struct Cardinalities {
     pub workspace_events: i64,
     pub programs: i64,
     pub program_inputs: i64,
+    pub setup_session_directories: i64,
+    pub workspace_setups: i64,
+    pub workspace_setup_inputs: i64,
 }
 
 pub(crate) async fn seed_fixture(
@@ -150,6 +154,9 @@ pub(crate) async fn cardinalities(
         workspace_events: count(pool, "workspace_events", tenant).await?,
         programs: count(pool, "programs", tenant).await?,
         program_inputs: count(pool, "program_inputs", tenant).await?,
+        setup_session_directories: count(pool, "setup_session_directories", tenant).await?,
+        workspace_setups: count(pool, "workspace_setups", tenant).await?,
+        workspace_setup_inputs: count(pool, "workspace_setup_inputs", tenant).await?,
     })
 }
 

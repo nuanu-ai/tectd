@@ -5,7 +5,7 @@ use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
-use tect_domain::{Error, HostAuth, Result};
+use tect_domain::{Error, HostAuth, Result, validate_setup_path};
 use uuid::Uuid;
 
 #[derive(Parser)]
@@ -26,8 +26,16 @@ enum Command {
         tenant: Option<Uuid>,
         #[arg(long = "source-root")]
         source_roots: Vec<PathBuf>,
+        #[arg(long = "setup-root")]
+        setup_roots: Vec<PathBuf>,
         #[arg(long)]
         out: PathBuf,
+    },
+    GrantSetupRoot {
+        #[arg(long)]
+        host_id: String,
+        #[arg(long)]
+        setup_root: PathBuf,
     },
     RevokeHost {
         #[arg(long)]
@@ -62,11 +70,19 @@ async fn run(arguments: Arguments) -> Result<()> {
         Command::Enroll {
             tenant,
             source_roots,
+            setup_roots,
             out,
         } => {
             preflight_output(&out)?;
             let source_roots = canonical_source_roots(source_roots)?;
-            let enrollment = tect_postgres::admin::enroll_host(&pool, tenant, source_roots).await?;
+            let setup_roots = canonical_setup_roots(setup_roots)?;
+            let enrollment = tect_postgres::admin::enroll_host_with_grants(
+                &pool,
+                tenant,
+                source_roots,
+                setup_roots,
+            )
+            .await?;
             write_auth_file(&out, &enrollment.auth)?;
             println!(
                 "enrolled host {} tenant {} principal {}; auth written to {}",
@@ -75,6 +91,18 @@ async fn run(arguments: Arguments) -> Result<()> {
                 enrollment.principal_id,
                 out.display()
             );
+        }
+        Command::GrantSetupRoot {
+            host_id,
+            setup_root,
+        } => {
+            let host_id = Uuid::parse_str(&host_id).map_err(|_| Error::InvalidArguments)?;
+            if host_id.is_nil() {
+                return Err(Error::InvalidArguments);
+            }
+            let setup_root = canonical_setup_root(setup_root)?;
+            tect_postgres::admin::grant_setup_root(&pool, host_id, setup_root.clone()).await?;
+            println!("granted setup root {setup_root} to host {host_id}");
         }
         Command::RevokeHost { host_id } => {
             tect_postgres::admin::revoke_host(&pool, host_id).await?;
@@ -106,6 +134,57 @@ fn canonical_source_roots(paths: Vec<PathBuf>) -> Result<Vec<String>> {
         }
     }
     Ok(roots)
+}
+
+fn canonical_setup_roots(paths: Vec<PathBuf>) -> Result<Vec<String>> {
+    let mut seen = HashSet::new();
+    let mut roots = Vec::with_capacity(paths.len());
+    for path in paths {
+        let root = canonical_setup_root(path)?;
+        if seen.insert(root.clone()) {
+            roots.push(root);
+        }
+    }
+    Ok(roots)
+}
+
+fn canonical_setup_root(path: PathBuf) -> Result<String> {
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|part| !matches!(part, Component::RootDir | Component::Normal(_)))
+    {
+        return Err(Error::InvalidArguments);
+    }
+    let selected = path.to_str().ok_or(Error::InvalidArguments)?;
+    validate_setup_path(selected)?;
+
+    let canonical = std::fs::canonicalize(&path).map_err(|_| Error::SetupUnavailable)?;
+    verify_setup_directory_chain(&canonical)?;
+    let root = canonical
+        .into_os_string()
+        .into_string()
+        .map_err(|_| Error::InvalidArguments)?;
+    validate_setup_path(&root)?;
+    Ok(root)
+}
+
+fn verify_setup_directory_chain(path: &Path) -> Result<()> {
+    let mut current = PathBuf::from("/");
+    for component in path.components() {
+        match component {
+            Component::RootDir => continue,
+            Component::Normal(part) => current.push(part),
+            Component::CurDir | Component::ParentDir | Component::Prefix(_) => {
+                return Err(Error::InvalidArguments);
+            }
+        }
+        let metadata = std::fs::symlink_metadata(&current).map_err(|_| Error::SetupUnavailable)?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err(Error::SetupUnavailable);
+        }
+    }
+    Ok(())
 }
 
 fn preflight_output(path: &Path) -> Result<()> {

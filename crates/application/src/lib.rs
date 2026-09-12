@@ -7,3 +7,10 @@ pub use ports::{ProgramOutputGuard, SourceInspector, Store, TransactionMode, Uni
 pub use service::WorkspaceService;
 
 mod sources;
+
+mod setup_ports;
+pub use setup_ports::{SetupFiles, SetupOutputGuard, SetupStore};
+
+mod setup_access;
+mod setup_apply;
+mod setups;

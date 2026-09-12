@@ -3,7 +3,7 @@ use getrandom::fill;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
-use tect_domain::{Error, HostAuth, Result};
+use tect_domain::{Error, HostAuth, Result, validate_setup_path};
 use uuid::Uuid;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
@@ -46,7 +46,8 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
                      AND c.relname IN (
                          'tenants', 'principals', 'hosts', 'workspaces', 'memberships',
                          'agent_sessions', 'source_repositories', 'source_worktrees',
-                         'session_worktrees', 'workspace_events', 'programs', 'program_inputs'
+                         'session_worktrees', 'workspace_events', 'programs', 'program_inputs',
+                         'setup_session_directories', 'workspace_setups', 'workspace_setup_inputs'
                      )
                      AND pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER')
                ) OR EXISTS (
@@ -87,6 +88,13 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
         format!("GRANT SELECT, INSERT, UPDATE ON TABLE programs TO {quoted_role}"),
         format!("GRANT SELECT, INSERT ON TABLE program_inputs TO {quoted_role}"),
         format!(
+            "REVOKE ALL PRIVILEGES ON TABLE setup_session_directories, workspace_setups, \
+             workspace_setup_inputs FROM {quoted_role}"
+        ),
+        format!("GRANT SELECT, INSERT ON TABLE setup_session_directories TO {quoted_role}"),
+        format!("GRANT SELECT, INSERT, UPDATE ON TABLE workspace_setups TO {quoted_role}"),
+        format!("GRANT SELECT, INSERT ON TABLE workspace_setup_inputs TO {quoted_role}"),
+        format!(
             "GRANT EXECUTE ON FUNCTION public.tect_authenticate_host(uuid, text, boolean) TO {quoted_role}"
         ),
     ];
@@ -104,7 +112,17 @@ pub async fn enroll_host(
     tenant_id: Option<Uuid>,
     allowed_source_roots: Vec<String>,
 ) -> Result<Enrollment> {
+    enroll_host_with_grants(pool, tenant_id, allowed_source_roots, Vec::new()).await
+}
+
+pub async fn enroll_host_with_grants(
+    pool: &PgPool,
+    tenant_id: Option<Uuid>,
+    allowed_source_roots: Vec<String>,
+    allowed_setup_roots: Vec<String>,
+) -> Result<Enrollment> {
     validate_source_roots(&allowed_source_roots)?;
+    validate_setup_roots(&allowed_setup_roots)?;
     let credential = generate_credential()?;
     let credential_digest = hex_lower(&Sha256::digest(credential.as_bytes()));
     let host_id = Uuid::new_v4();
@@ -141,14 +159,16 @@ pub async fn enroll_host(
 
     sqlx::query(
         "INSERT INTO hosts \
-             (id, tenant_id, principal_id, credential_digest, allowed_source_roots) \
-         VALUES ($1, $2, $3, $4, $5)",
+             (id, tenant_id, principal_id, credential_digest, allowed_source_roots, \
+              allowed_setup_roots) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(host_id)
     .bind(tenant_id)
     .bind(principal_id)
     .bind(credential_digest)
     .bind(sqlx::types::Json(&allowed_source_roots))
+    .bind(sqlx::types::Json(&allowed_setup_roots))
     .execute(&mut *transaction)
     .await
     .map_err(storage_error)?;
@@ -162,6 +182,40 @@ pub async fn enroll_host(
         tenant_id,
         principal_id,
     })
+}
+
+pub async fn grant_setup_root(pool: &PgPool, host_id: Uuid, setup_root: String) -> Result<()> {
+    if host_id.is_nil() {
+        return Err(Error::InvalidArguments);
+    }
+    validate_setup_roots(std::slice::from_ref(&setup_root))?;
+
+    let mut transaction = pool.begin().await.map_err(storage_error)?;
+    let row: Option<(bool, serde_json::Value)> =
+        sqlx::query_as("SELECT revoked, allowed_setup_roots FROM hosts WHERE id=$1 FOR UPDATE")
+            .bind(host_id)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+    let (revoked, stored) = row.ok_or(Error::NotFound)?;
+    if revoked {
+        return Err(Error::Unauthorized);
+    }
+
+    let mut roots: Vec<String> = serde_json::from_value(stored).map_err(storage_error)?;
+    if !roots.iter().any(|root| root == &setup_root) {
+        roots.push(setup_root);
+        let result = sqlx::query("UPDATE hosts SET allowed_setup_roots=$2 WHERE id=$1")
+            .bind(host_id)
+            .bind(sqlx::types::Json(&roots))
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+        if result.rows_affected() != 1 {
+            return Err(Error::StorageUnavailable);
+        }
+    }
+    transaction.commit().await.map_err(storage_error)
 }
 
 pub async fn revoke_host(pool: &PgPool, host_id: Uuid) -> Result<()> {
@@ -228,6 +282,16 @@ fn validate_source_roots(roots: &[String]) -> Result<()> {
     if roots
         .iter()
         .any(|root| root.is_empty() || root.as_bytes().contains(&0))
+    {
+        return Err(Error::InvalidArguments);
+    }
+    Ok(())
+}
+
+fn validate_setup_roots(roots: &[String]) -> Result<()> {
+    if roots
+        .iter()
+        .any(|root| root.len() > 4096 || validate_setup_path(root).is_err())
     {
         return Err(Error::InvalidArguments);
     }

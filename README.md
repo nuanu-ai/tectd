@@ -4,13 +4,13 @@ A Rust daemon with PostgreSQL as the canonical store. A workspace is a logical
 database object. Its identity comes from an authenticated tenant and an explicit
 workspace key; it has no workspace directory or workspace Git worktree.
 
-This repository implements workspace bootstrap and Program formation in V2.1. The current installed Tect plugin
+This repository implements workspace bootstrap, Program formation and initial workspace instructions in V2.1. The current installed Tect plugin
 continues to govern its development. Installing or replacing that plugin is a
 separate operation.
 
 The native session MCP bridge opens logical workspaces, registers Git sources and
 selects worktrees per session. `get_state` does not create or update records and
-never runs Git. Bootstrap and selection changes are atomic. Recovery, revocation
+never reads files or runs Git. Bootstrap and selection changes are atomic. Recovery, revocation
 and measured performance acceptance are included in the final vertical of this Scope.
 
 ## Architecture
@@ -45,6 +45,11 @@ The operator runs `tect-admin migrate --runtime-role ROLE` with
 Enrollment creates a tenant and owner, or uses an explicitly supplied existing
 `--tenant UUID`. Repeated `--source-root /absolute/path` arguments declare the host's
 allowed repository locations; an empty list permits zero-source bootstrap.
+Repeated `--setup-root /absolute/path` arguments independently grant initial AGENTS.md
+publication under those physical directories. Source roots do not grant file writes.
+For an existing host, `tect-admin grant-setup-root --host-id UUID --setup-root /absolute/path`
+adds one canonical root without changing its identity, credential or source roots.
+Concurrent additions preserve both roots; repeating an existing grant is harmless.
 The generated host credential file must remain private and must not be printed.
 
 `tectd` requires `TECT_DATABASE_URL` and `TECT_SOCKET`. The socket must be a new
@@ -157,6 +162,56 @@ authorized against the current native workspace session. It never accepts a file
 path. The packaged binary therefore carries the same skill without installing
 client-side PRD files or the former WorkOrder artifact lifecycle.
 
+## Initial workspace instructions
+
+Setup turns one company/work narrative into a durable draft and then creates
+AGENTS.md directly in the current Codex task launch directory. The agent obtains
+that directory from its existing task context; the user does not choose another
+folder. It is independent of the logical workspace, Git sources and selected
+worktrees. Two task directories in one workspace have separate setups, while a
+new session in the same host/directory recovers the same draft.
+
+| Tool | Arguments | Result |
+| --- | --- | --- |
+| `inspect_setup` | Optional `task_directory` | Current missing/existing/unavailable observation; omission is context unknown |
+| `begin_setup` | `request_id`, exact original `input` | One durable setup in the bound directory after verified absence |
+| `get_setup` | `setup_id`, optional `after_input`, `limit` | Whole draft, notes, question, original-input page and current file observation |
+| `save_setup` | `setup_id`, `revision`, `input_cursor`, required `ready`, optional `content`, `working_notes`, `pending_question` | Revision-checked nullable patch |
+| `record_setup_input` | `setup_id`, `revision`, `request_id`, exact original `input` | Durable reply/correction and resumed composition |
+| `apply_setup` | `setup_id`, ready `revision` | Exclusive fixed-name creation or verification of matching existing bytes |
+| `read_skill` | `name: "tectd-setup"` | The single setup method embedded in this build |
+
+Native thread identity is authenticated; the agent supplies the directory and this
+is not cryptographic cwd attestation. Every file operation rechecks the current
+host setup grant and physical directory identity. Bindings are not permanent
+capabilities. Symlink redirection, unsafe file types and another session's bound
+directory are rejected. An existing file is preserved; unknown or failed
+inspection never proves absence. `get_state` returns saved context only and labels
+the file as unobserved, with exact recovery/inspection calls. Programs remain
+available and creating a new Program remains the final action. If an old maximum
+Program name cannot fit beside new context, `programs_delivery: "use_list_programs"`
+explicitly directs a fresh standalone list; full names remain readable there.
+
+The backend derives `compose`, `waiting_input`, `ready_to_apply` and `complete`.
+Before asking a necessary question the agent saves the whole current draft, notes
+and question. New-session recovery reads original history from `after_input: 0`;
+normal reads default to the consumed cursor. Whole messages and drafts are never
+silently truncated. The output guard reserves the largest accepted original beside
+future drafts before committing begin/save/input changes or publishing a file.
+
+The setup skill preserves applicable global/local instructions and scoped owner
+exceptions, and shows the whole proposed file before application. It does not
+introduce a routine approval ceremony. Semantic instruction preservation is an
+agent responsibility, separate from database invariants.
+
+The intended bytes and ready revision are committed before publication. The host
+publishes an owned synced temporary file with an exclusive hard link, then reads
+back and verifies the target. The filesystem and database are not one transaction:
+if DB completion fails after creation, retry the same setup ID/ready revision to
+adopt exact matching bytes. A different existing file is never overwritten. After
+application, a removed or changed target produces a conflict and is not recreated.
+Responses distinguish current observations from historical saved status.
+
 ## Revocation and recovery
 
 The operator can revoke an enrolled host with
@@ -197,6 +252,21 @@ proof layers; see the parent Scope result for the exact verified build. The Prog
 formation acceptance also uses three actual model turns: a rich narrative, a
 necessary question, and a reply in a new native session. It checks the saved PRD,
 exact complete original messages, loaded skill and absence of client PRD files.
+Workspace-setup acceptance additionally exercises two actual task launch directories
+with a fixed MCP package cwd, whole-file presentation, inherited instructions, a
+saved question/new-session reply and exact publication. Ordinary recovery tests
+force a DB failure after publication and lose an MCP response; both verify the
+same durable intent without rewriting a conflicting file.
+
+The ignored `legacy_program_capacity_remains_recoverable` test separately verifies
+Program names accepted at the pre-setup `b6d988ef4eec91f9a90ce12ce8ac9fd75decc1a7`
+boundary. Build that immutable revision in a separate checkout, then set
+`TECT_LEGACY_COMMIT` to that revision, `TECT_LEGACY_DAEMON` and `TECT_LEGACY_MCP`
+to its absolute binary paths, and `TECT_LEGACY_RESULT` to a new absolute JSON path.
+Run `cargo test -p tect-cli --test setup_capacity legacy_program_capacity_remains_recoverable -- --ignored`.
+The test uses the same isolated PostgreSQL fixture, creates the large Program through
+the old API, and verifies complete-name navigation through the new API. The old
+migration command is not run against the additive current schema.
 
 For the explicit local performance profile, also set `TECT_PERFORMANCE_REPORT` to
 an absolute output JSON path and run:
@@ -207,6 +277,7 @@ cargo test -p tect-cli --test performance -- --ignored --nocapture
 
 This profile creates a disposable tenant with 10,000 workspaces and 100,000 sessions,
 uses 100 selected worktrees per measured read session, and times actual stdio MCP
-calls with ten draft Programs in the measured workspace. Fixture setup and bridge
+calls with ten draft Programs and ten saved setup drafts/directory bindings in the
+measured workspace. Fixture setup and bridge
 initialization are excluded from timings. The report records hardware, versions,
 concurrency, population and percentiles for reads and workspace bootstrap.

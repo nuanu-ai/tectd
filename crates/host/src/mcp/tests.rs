@@ -101,7 +101,7 @@ async fn codex_tool_discovery_accepts_standard_progress_metadata() {
         }))
         .await
         .unwrap();
-    assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 11);
+    assert_eq!(response["result"]["tools"].as_array().unwrap().len(), 17);
     for params in [
         json!({"_meta": null}),
         json!({"_meta": {"progressToken": false}}),

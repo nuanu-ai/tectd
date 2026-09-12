@@ -47,6 +47,7 @@ pub struct HostIdentity {
     pub tenant_id: Uuid,
     pub principal_id: Uuid,
     pub allowed_source_roots: Vec<String>,
+    pub allowed_setup_roots: Vec<String>,
 }
 
 pub fn validate_native_id(value: &str) -> Result<()> {

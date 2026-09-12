@@ -72,6 +72,12 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
     assert_eq!(
         names,
         BTreeSet::from([
+            "inspect_setup",
+            "begin_setup",
+            "get_setup",
+            "save_setup",
+            "record_setup_input",
+            "apply_setup",
             "begin_program",
             "get_program",
             "get_state",
@@ -132,7 +138,7 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
         .unwrap();
     assert_eq!(
         skill["inputSchema"]["properties"]["name"]["enum"],
-        json!(["tectd-program"])
+        json!(["tectd-program", "tectd-setup"])
     );
 
     let unopened = client.call("get_state", json!({})).await;
@@ -162,7 +168,10 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
     ids.push(ready_id);
     let one = client.call("get_state", json!({})).await;
     assert_eq!(one["programs"].as_array().unwrap().len(), 1);
-    assert_eq!(action_tools(&one), ["get_program", "begin_program"]);
+    assert_eq!(
+        action_tools(&one),
+        ["get_program", "inspect_setup", "begin_program"]
+    );
     assert_eq!(one["recommended_action"], 0);
     complete(&mut client, ready_id).await;
     for index in 1..27 {

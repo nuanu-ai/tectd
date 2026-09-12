@@ -24,3 +24,15 @@ pub use sources::{
     MAX_SOURCE_PATH_BYTES, MAX_WORKTREES, RegisteredSource, SourceLocation, SourcePage,
     validate_selection,
 };
+
+mod setup;
+mod setup_file;
+mod setup_page;
+pub use setup::{NewSetupInput, SaveSetup, Setup, SetupStatus, SetupStep, validate_setup_input};
+pub use setup_file::{
+    FileObservation, FilePublication, PublicationOutcome, SetupDirectory, SetupFileStatus,
+    setup_path_is_granted, validate_setup_path,
+};
+pub use setup_page::{
+    AppliedSetup, SetupContext, SetupDiscovery, SetupInput, SetupPage, SetupSummary,
+};

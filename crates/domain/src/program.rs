@@ -172,7 +172,7 @@ impl TextPatch {
         matches!(self, Self::Unchanged)
     }
 
-    fn apply(&self, field: &mut Option<String>) {
+    pub(crate) fn apply(&self, field: &mut Option<String>) {
         if let Self::Set(value) = self {
             *field = value.clone();
         }

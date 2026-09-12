@@ -188,8 +188,8 @@ pub(crate) fn definitions() -> Vec<Value> {
         ),
         tool(
             "read_skill",
-            "Read the single packaged method for composing or resuming a Program.",
-            json!({"name":{"type":"string","enum":["tectd-program"]}}),
+            "Read the packaged method named by the current Program or workspace setup step.",
+            json!({"name":{"type":"string","enum":["tectd-program","tectd-setup"]}}),
             json!(["name"]),
             true,
             true,

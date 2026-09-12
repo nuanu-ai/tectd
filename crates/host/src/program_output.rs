@@ -10,19 +10,19 @@ use uuid::Uuid;
 
 pub(crate) const PROGRAM_SKILL: &str = include_str!("../../../skills/tectd-program/SKILL.md");
 
-mod paging;
+pub(crate) mod paging;
 
 fn skill_action() -> Value {
     action("read_skill", json!({"name":"tectd-program"}))
 }
 
-fn input_action(tool: &str, arguments: Value) -> Value {
+pub(crate) fn input_action(tool: &str, arguments: Value) -> Value {
     let mut result = action(tool, arguments);
     result["input"] = json!({"field":"input","format":"Complete original user message, including request phrasing and context, as one nonblank string. Preserve exact text without extracting, trimming or paraphrasing."});
     result
 }
 
-fn begin_action() -> Value {
+pub(crate) fn begin_action() -> Value {
     input_action("begin_program", json!({"request_id":Uuid::new_v4()}))
 }
 
@@ -120,7 +120,7 @@ pub(crate) fn page(mut page: ProgramPage, capacity: usize) -> Result<Value> {
     Ok(page_value(&page))
 }
 
-fn list_actions(programs: &[ProgramSummary], next: &Option<String>) -> Vec<Value> {
+pub(crate) fn list_actions(programs: &[ProgramSummary], next: &Option<String>) -> Vec<Value> {
     let mut actions: Vec<_> = programs
         .iter()
         .map(|program| action("get_program", json!({"program_id":program.id})))
@@ -163,33 +163,8 @@ pub(crate) fn list(mut list: ProgramList, capacity: usize) -> Result<Value> {
     ))
 }
 
-pub(crate) fn workspace(mut state: WorkspaceState, capacity: usize) -> Result<Value> {
-    if state.programs.is_empty() {
-        let actions = if state.workspace.is_none() {
-            vec![action("open_workspace", json!({}))]
-        } else {
-            list_actions(&state.programs, &state.next_after)
-        };
-        return within_capacity(with_actions(json!(&state), actions, Some(0)), capacity);
-    }
-    let mut programs = std::mem::take(&mut state.programs);
-    let original_next = state.next_after.clone();
-    state.programs = vec![programs[0].clone()];
-    state.next_after = summary_next(&state.programs, programs.len() > 1, &original_next);
-    let first = with_actions(
-        json!(&state),
-        list_actions(&state.programs, &state.next_after),
-        Some(0),
-    );
-    let count = summary_prefix(&programs, &first, capacity, &original_next)?;
-    state.next_after = summary_next(&programs[..count], count < programs.len(), &original_next);
-    programs.truncate(count);
-    state.programs = programs;
-    Ok(with_actions(
-        json!(&state),
-        list_actions(&state.programs, &state.next_after),
-        Some(0),
-    ))
+pub(crate) fn workspace(state: WorkspaceState, capacity: usize) -> Result<Value> {
+    crate::workspace_output::workspace(state, capacity)
 }
 
 fn summary_next(
@@ -223,7 +198,7 @@ fn summary_prefix(
     )
 }
 
-fn within_capacity(value: Value, capacity: usize) -> Result<Value> {
+pub(crate) fn within_capacity(value: Value, capacity: usize) -> Result<Value> {
     if encoded_len(&value)? <= capacity {
         Ok(value)
     } else {
@@ -299,6 +274,15 @@ impl ProgramOutputGuard for ProgramEncoding {
                 revoked: false,
             },
         );
+        state.setup_context = Some(tect_domain::SetupContext {
+            task_directory: "\u{1}".repeat(MAX_SOURCE_PATH_BYTES),
+            setup: Some(tect_domain::SetupSummary {
+                id: Uuid::max(),
+                status: tect_domain::SetupStatus::Draft,
+                revision: i64::MAX,
+                current_step: tect_domain::SetupStep::WaitingInput,
+            }),
+        });
         state.programs = vec![program.summary()];
         state.next_after = Some(program.summary().cursor().encode());
         state.selected_worktrees = (0..MAX_WORKTREES)
@@ -308,7 +292,12 @@ impl ProgramOutputGuard for ProgramEncoding {
                 path: "\u{1}".repeat(MAX_SOURCE_PATH_BYTES),
             })
             .collect();
-        workspace(state, self.capacity).map(|_| ())
+        let result = workspace(state, self.capacity)?;
+        if result["programs_delivery"] == "use_list_programs" {
+            Err(Error::RequestTooLarge)
+        } else {
+            Ok(())
+        }
     }
 }
 

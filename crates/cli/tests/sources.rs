@@ -96,6 +96,7 @@ async fn real_sources_are_scoped_and_selections_replace_atomically() {
     let service = Arc::new(WorkspaceService::new(
         store.clone(),
         Arc::new(tect_host::GitSourceInspector),
+        Arc::new(tect_host::LocalSetupFiles),
     ));
     let ctx = context(&enrollment.auth, "logical-source-workspace");
     assert_eq!(
