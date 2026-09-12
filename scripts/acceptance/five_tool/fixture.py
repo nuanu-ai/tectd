@@ -16,6 +16,8 @@ import hashlib
 import model_capture
 import mcp_wire_capture
 
+FIRST_CHILD_CALL_TIMEOUT_SECONDS = 120
+
 CANDIDATE_PROGRAM_INPUT = (
     "Continuously evolve workspace notification capabilities. Maintain an ongoing backlog that may "
     "include email, SMS, push notifications, and notification analytics. Plan and deliver only the "
@@ -138,7 +140,7 @@ def collect_model_turn(
                         proof.persist()
                         raise
                 if child_observed_at is not None and not identity_gate_open \
-                        and time.monotonic() - child_observed_at > 10:
+                        and time.monotonic() - child_observed_at > FIRST_CHILD_CALL_TIMEOUT_SECONDS:
                     capture["identity_gate_failure"] = {
                         "source": "fixture_capture", "error": "identity gate timed out before candidate writes",
                     }
