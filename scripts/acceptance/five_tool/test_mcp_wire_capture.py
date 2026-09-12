@@ -149,6 +149,20 @@ class McpWireCaptureTests(unittest.TestCase):
             self.assertEqual(wire.guarded_error(base, policy, gate), "execute_forbidden")
             base["params"]["name"] = "unknown"
             self.assertEqual(wire.guarded_error(base, policy, gate), "forbidden_tool")
+            for route in ["program.get", "source.list"]:
+                query = {"method": "tools/call", "params": {
+                    "name": "query", "arguments": {"route": route, "params": {}},
+                    "_meta": {"threadId": child},
+                }}
+                self.assertIsNone(wire.guarded_error(query, policy, gate))
+            select = {"method": "tools/call", "params": {
+                "name": "command", "arguments": {
+                    "route": "session.select_worktrees", "params": {"worktree_ids": [str(uuid.uuid4())]},
+                }, "_meta": {"threadId": child},
+            }}
+            self.assertIsNone(wire.guarded_error(select, policy, gate))
+            select["params"]["arguments"]["route"] = "source.register"
+            self.assertEqual(wire.guarded_error(select, policy, gate), "forbidden_route")
 
     def test_duplicate_live_rpc_id_is_rejected_without_forwarding_or_overwriting(self) -> None:
         with tempfile.TemporaryDirectory() as name:

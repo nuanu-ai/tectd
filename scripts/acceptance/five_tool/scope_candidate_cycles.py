@@ -25,7 +25,10 @@ def _ready(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     ]
 
 
-def _assert_offered_reads(reads: list[dict[str, Any]], initial: dict[str, Any] | None = None) -> None:
+def _assert_offered_reads(
+    reads: list[dict[str, Any]], initial: dict[str, Any] | None = None,
+    explicit: list[tuple[str, dict[str, Any]]] | None = None,
+) -> None:
     def calls(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
         return [
             (action["tool"], action["arguments"])
@@ -36,14 +39,71 @@ def _assert_offered_reads(reads: list[dict[str, Any]], initial: dict[str, Any] |
         ]
 
     offered = calls(initial) if initial is not None else []
+    supplied = list(explicit or [])
     for index, read in enumerate(reads):
         call = (read["tool"], read["arguments"])
-        if initial is not None or index:
+        supplied_call = False
+        if call in supplied:
+            supplied.remove(call)
+            supplied_call = True
+        if read["tool"] != "help" and not supplied_call and (initial is not None or index):
             try:
                 offered.pop(offered.index(call))
             except ValueError as error:
                 raise AssertionError("model reconstructed a context read instead of using a backend action") from error
         offered.extend(calls(read["payload"]))
+    if supplied:
+        raise AssertionError("model omitted an explicitly supplied fixture setup call")
+
+
+def _assert_source_setup(
+    calls: list[dict[str, Any]], before: int, scenario: dict[str, Any],
+) -> list[tuple[str, dict[str, Any]]]:
+    prefix = calls[:before]
+    opened = [index for index, call in enumerate(prefix) if _is(call, "command", "workspace.open")]
+    listed = [index for index, call in enumerate(calls) if _is(call, "query", "source.list")]
+    selected = [index for index, call in enumerate(calls) if _is(call, "command", "session.select_worktrees")]
+    contexts = [index for index, call in enumerate(prefix) if _is(call, "query", "scope.candidates.context")]
+    refreshes = [index for index, call in enumerate(prefix) if _is(call, "command", "scope.candidates.refresh")]
+    if len(opened) != 1 or len(listed) != 1 or len(selected) != 1 or not contexts:
+        raise AssertionError("new child session did not perform exactly one owned-source setup")
+    if not opened[0] < listed[0] < selected[0] < min(contexts + refreshes):
+        raise AssertionError("owned-source setup did not finish before candidate context traversal")
+    expected_list = {"route": "source.list", "params": {"limit": 25}}
+    expected_select = {
+        "route": "session.select_worktrees",
+        "params": {"worktree_ids": [scenario["worktree_id"]]},
+    }
+    list_call, select_call = calls[listed[0]], calls[selected[0]]
+    if list_call["arguments"] != expected_list or select_call["arguments"] != expected_select:
+        raise AssertionError("owned-source setup changed its exact supplied arguments")
+    actor = prefix[opened[0]].get("actor_thread_id")
+    if not actor or list_call.get("actor_thread_id") != actor or select_call.get("actor_thread_id") != actor:
+        raise AssertionError("owned-source setup did not use the opened child session")
+    listed_ids = [item.get("id") for item in list_call["payload"].get("items", [])]
+    if listed_ids != [scenario["worktree_id"]] or list_call["payload"].get("next_after") is not None:
+        raise AssertionError("owned source catalog did not contain exactly the seeded fixture worktree")
+    selected_ids = [item.get("id") for item in select_call["payload"].get("selected_worktrees", [])]
+    if selected_ids != [scenario["worktree_id"]]:
+        raise AssertionError("new child session did not retain the exact owned worktree selection")
+    return [("query", expected_list), ("command", expected_select)]
+
+
+def _assert_source_snapshots(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> None:
+    current, historical = [], []
+    for call in calls:
+        payload = call.get("payload", {})
+        context = payload.get("context", {})
+        if isinstance(context.get("snapshot"), dict):
+            current.append(context["snapshot"])
+        old = payload.get("historical", {})
+        if isinstance(old, dict) and isinstance(old.get("snapshot"), dict):
+            historical.append(old["snapshot"])
+    if not current or not historical:
+        raise AssertionError("candidate proof omitted current or historical snapshots")
+    if any(snapshot.get("selected_worktree_ids") != [scenario["worktree_id"]]
+           for snapshot in current + historical):
+        raise AssertionError("candidate planning switched away from the selected owned source")
 
 
 def _assert_command_template(
@@ -140,8 +200,21 @@ def _assert_ready_review(call: dict[str, Any], draft: dict[str, Any]) -> None:
         raise AssertionError("Ready review does not decide the exact candidate set")
     if any(item.get("decision") != "accept" for item in decisions):
         raise AssertionError("Ready review contains a non-accepted candidate")
-    if payload.get("recommended_action") is not None:
-        raise AssertionError("Ready planning cycle still recommends an automatic continuation")
+    if draft.get("blockers") != []:
+        raise AssertionError("Ready planning cycle retains unresolved blockers")
+    actions = payload.get("actions", [])
+    expected = {
+        "kind": "ready_call", "tool": "query",
+        "arguments": {"route": "scope.candidates.context", "params": {
+            "candidate_set_id": payload["context"]["candidate_set"]["id"],
+            "view": "candidates", "limit": 25,
+        }},
+    }
+    if actions != [expected]:
+        raise AssertionError("Ready planning cycle exposed anything but its exact read-only inspection")
+    recommended = payload.get("recommended_action")
+    if recommended is not None and (recommended != 0 or actions != [expected]):
+        raise AssertionError("Ready planning cycle recommends an invalid continuation")
 
 
 def _assert_delta(previous: dict[str, Any], current: dict[str, Any]) -> None:
@@ -271,6 +344,14 @@ def _assert_cycle_bindings(
         raise AssertionError("second Ready review is not the exact next revision of its final draft")
 
 
+def _amendment_refresh_index(calls: list[dict[str, Any]], record: int, ready: int) -> int:
+    refreshes = [index for index, call in enumerate(calls)
+                 if record < index < ready and _is(call, "command", "scope.candidates.refresh")]
+    if len(refreshes) != 1:
+        raise AssertionError("amendment did not lead through exactly one explicit refresh")
+    return refreshes[0]
+
+
 def assert_two_cycles(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> dict[str, Any]:
     ready_reviews = [index for index, call in enumerate(calls) if _save_kind(call, "review")
                      and call.get("payload", {}).get("context", {}).get("candidate_set", {}).get("status") == "ready"]
@@ -288,11 +369,7 @@ def assert_two_cycles(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> 
     record_index = record_inputs[0]
     if calls[record_index]["arguments"]["params"].get("input") != scenario["amendment"]:
         raise AssertionError("recorded amendment is not the exact supplied user text")
-    all_refreshes = [index for index, call in enumerate(calls) if _is(call, "command", "scope.candidates.refresh")]
-    refreshes = [index for index in all_refreshes if record_index < index < second_ready]
-    if len(refreshes) != 1 or len(all_refreshes) != 1:
-        raise AssertionError("amendment did not lead through exactly one explicit refresh")
-    refresh_index = refreshes[0]
+    refresh_index = _amendment_refresh_index(calls, record_index, second_ready)
     second_drafts = [index for index in range(refresh_index + 1, second_ready) if _save_kind(calls[index], "draft")]
     if not second_drafts:
         raise AssertionError("second planning cycle has no stored draft")
@@ -325,14 +402,15 @@ def assert_two_cycles(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> 
         _assert_delta(prior_draft, current_draft)
         prior_draft = current_draft
 
+    source_setup = _assert_source_setup(calls, first_drafts[0], scenario)
     first_navigation = [call for call in calls[:first_drafts[0]]
-                        if call["tool"] in {"get_state", "query", "command"}]
+                        if call["tool"] in {"get_state", "help", "query", "command"}]
     if not first_navigation or first_navigation[0]["tool"] != "get_state" or first_navigation[0]["arguments"]:
         raise AssertionError("model did not start recovery from get_state")
     opened = [call for call in first_navigation if _is(call, "command", "workspace.open")]
     if len(opened) != 1:
         raise AssertionError("new child session did not execute exactly one offered workspace.open")
-    _assert_offered_reads(first_navigation)
+    _assert_offered_reads(first_navigation, explicit=source_setup)
     first_reads = [call for call in first_navigation if call["tool"] in {"get_state", "query"}]
     first_overview = next(call["payload"] for call in first_reads
                           if call["tool"] == "query" and call["arguments"]["params"].get("view") == "overview")
@@ -400,6 +478,7 @@ def assert_two_cycles(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> 
         raise AssertionError("historical traversal did not return to the current head")
     if current_reads[-1]["payload"]["context"]["candidate_set"]["revision"] != calls[second_ready]["payload"]["context"]["candidate_set"]["revision"]:
         raise AssertionError("historical traversal returned to an unexpected candidate-set revision")
+    _assert_source_snapshots(calls, scenario)
     return {
         "draft_receipts": [(calls[index]["arguments"], calls[index]["payload"]) for index in [first_draft_index, second_draft_index]],
         "final_payload": calls[second_ready]["payload"], "first_draft_revision": first_revision,

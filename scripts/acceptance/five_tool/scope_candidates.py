@@ -7,9 +7,9 @@ from fixture import CANDIDATE_AMENDMENT, CANDIDATE_PLANNING_INPUT, CANDIDATE_PRO
 import model_capture
 import scope_candidate_cycles
 
-CANDIDATE_QUERY_ROUTES = {"scope.candidates.context"}
+CANDIDATE_QUERY_ROUTES = {"program.get", "source.list", "scope.candidates.context"}
 CANDIDATE_COMMAND_ROUTES = {
-    "workspace.open", "scope.candidates.begin", "scope.candidates.save",
+    "workspace.open", "session.select_worktrees", "scope.candidates.begin", "scope.candidates.save",
     "scope.candidates.record_input", "scope.candidates.refresh",
 }
 def _canonical_payload(result: Any) -> tuple[dict[str, Any], bool]:
@@ -101,13 +101,22 @@ def capture_model_calls(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any
             }
         )
     return captured, errors
-def assert_successful_calls(calls: list[dict[str, Any]], allowed: set[str]) -> None:
-    """Require every captured call to be an allowed successful TectD result."""
+def assert_successful_calls(
+    calls: list[dict[str, Any]], allowed: set[str], recovered_failures: set[int] | None = None,
+) -> None:
+    """Require every call except an exactly proven recovery to be a backend success."""
     if not calls:
         raise AssertionError("model made no MCP calls")
-    for call in calls:
+    recovered = recovered_failures or set()
+    for index, call in enumerate(calls):
+        if call.get("source") != "mcp_wire":
+            raise AssertionError("model MCP call did not reach the TectD backend")
         if call["server"] != "tectd" or call["tool"] not in allowed:
             raise AssertionError("model used a disallowed MCP call")
+        if index in recovered:
+            if call["status"] == "completed" or not call["is_error"]:
+                raise AssertionError("declared recovered MCP call is not a rejection")
+            continue
         if call["status"] != "completed" or call["is_error"]:
             raise AssertionError("model MCP call did not complete successfully")
 def assert_exact_recovery(
@@ -122,7 +131,10 @@ def assert_exact_recovery(
     rejected = [
         index
         for index, call in enumerate(calls)
-        if call["server"] == "tectd"
+        if call.get("source") == "mcp_wire"
+        and call.get("response_source") == "mcp_wire"
+        and call.get("forwarded") is True
+        and call["server"] == "tectd"
         and call["tool"] == tool
         and call["arguments"] == rejected_arguments
         and call["status"] == "failed"
@@ -132,7 +144,10 @@ def assert_exact_recovery(
     corrected = [
         index
         for index, call in enumerate(calls)
-        if call["server"] == "tectd"
+        if call.get("source") == "mcp_wire"
+        and call.get("response_source") == "mcp_wire"
+        and call.get("forwarded") is True
+        and call["server"] == "tectd"
         and call["tool"] == tool
         and call["arguments"] == corrected_arguments
         and call["status"] == "completed"
@@ -145,6 +160,22 @@ def assert_exact_recovery(
     ]
     if len(rejected) != 1 or other_failures or not any(index > rejected[0] for index in corrected):
         raise AssertionError("exact typed rejection and subsequent correction were not both proven")
+
+
+def recovered_help_failures(calls: list[dict[str, Any]]) -> set[int]:
+    failures = [
+        index for index, call in enumerate(calls)
+        if call.get("status") != "completed" or call.get("is_error")
+    ]
+    if not failures:
+        return set()
+    assert_exact_recovery(
+        calls,
+        tool="help",
+        rejected_arguments={"mode": "describe"},
+        corrected_arguments={"mode": "describe", "tool": "query"},
+    )
+    return set(failures)
 def prepare_open_program(
     call: Callable[[str, dict[str, Any]], tuple[dict[str, Any], bool]],
     source_path: str,
@@ -231,10 +262,14 @@ def seed_candidate_scenario(
         "amendment": CANDIDATE_AMENDMENT,
         "begin_arguments": {"route": "scope.candidates.begin", "params": params},
     }
-def candidate_model_prompt(candidate_set_id: str) -> str:
+def candidate_model_prompt(candidate_set_id: str, worktree_id: str) -> str:
     return (
         "Review and correct the supplied proposed breakdown for candidate set " + candidate_set_id + ". "
-        "Start with get_state, then follow every exact backend-provided ready call and paging action until the "
+        "Start with get_state and its workspace.open action. This new native session must use the existing owned "
+        "fixture worktree " + worktree_id + ". After workspace.open and before reading candidate context, call "
+        "query source.list with limit 25, verify that exact worktree ID is present, then call command "
+        "session.select_worktrees with exactly that one ID. Do not register or select another source. Then follow "
+        "every exact backend-provided ready call and paging action until the "
         "complete planning context has been delivered. Read the full captured method and every matched rule "
         "before drafting. Use the exact current IDs, revisions, snapshot, source references, and route schemas "
         "returned by TectD. Apply the current TectD methodology and applicable rules, then perform and save "
@@ -300,7 +335,8 @@ def assert_model_item_boundary(items: list[dict[str, Any]]) -> None:
 def assert_candidate_model_result(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> dict[str, Any]:
     """Validate two observable cycles; prose remains a human semantic review."""
     assert_candidate_call_boundary(calls)
-    assert_successful_calls(calls, {"get_state", "help", "query", "command"})
+    recovered = recovered_help_failures(calls)
+    assert_successful_calls(calls, {"get_state", "help", "query", "command"}, recovered)
     opened = [call for call in calls if call["tool"] == "command"
               and call["arguments"].get("route") == "workspace.open"]
     if len(opened) != 1 or opened[0]["payload"].get("session", {}).get("native_session_id") != opened[0].get("actor_thread_id"):
@@ -328,7 +364,7 @@ def run_candidate_model_turn(
     allow_one_child: bool = False, capture_fixture: Any = None,
 ) -> None:
     turn_id, items = collect_model_turn(
-        app, thread_id, candidate_model_prompt(scenario["candidate_set_id"]), proof,
+        app, thread_id, candidate_model_prompt(scenario["candidate_set_id"], scenario["worktree_id"]), proof,
         allow_one_child, capture_fixture,
     )
     calls, parse_errors = capture_model_calls(items)

@@ -17,9 +17,9 @@ import uuid
 from typing import Any
 
 PUBLIC_TOOLS = {"get_state", "query", "command", "execute", "help"}
-QUERY_ROUTES = {"scope.candidates.context"}
+QUERY_ROUTES = {"program.get", "source.list", "scope.candidates.context"}
 COMMAND_ROUTES = {
-    "workspace.open",
+    "workspace.open", "session.select_worktrees",
     "scope.candidates.begin", "scope.candidates.save",
     "scope.candidates.record_input", "scope.candidates.refresh",
 }
