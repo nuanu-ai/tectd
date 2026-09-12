@@ -15,7 +15,7 @@ configuration, host credential, grants, or a real workspace AGENTS.md.
 
 The deterministic phase uses a new unauthenticated temporary `CODEX_HOME`. It exercises native
 MCP discovery and calls but does not start a model turn. `--model-turn` additionally starts one
-ephemeral `gpt-5.6-sol` low turn through the ordinary existing Codex auth store. The script
+ephemeral `gpt-5.6-sol` medium turn through the ordinary existing Codex auth store. The script
 does not read, copy, link, print, or hash account credentials. Omit the flag when that ordinary
 authenticated runtime is unavailable; the proof then records the model phase as `not_run`, not
 passed.
@@ -39,6 +39,14 @@ retains the owned temporary database and files for diagnosis; it never retains a
 Pass `--protected-artifact /absolute/nonsecret/receipt.json` for any additional installed
 receipt outside the standard Codex and TectD locations.
 
+Delegation remains rejected by default. `--allow-one-child-sol` is a test-only opt-in that also
+requires `--model-turn --scope-candidates`. It permits the parent to create exactly one
+`gpt-5.6-sol` medium child and captures both threads through native thread history APIs before
+cleanup. The proof distinguishes the spawn request from the child's configured model metadata;
+App Server documents that configured model metadata is not per-turn execution telemetry. A
+missing or ambiguous spawn request, another child, a grandchild, or any action outside the exact
+parent-collaboration and child-TectD boundaries fails the run.
+
 After the candidate implementation and conditional guidance registry are frozen, run the one
 bounded candidate scenario with `--model-turn --scope-candidates`. It opens a Program and selects
 the owned Git fixture, begins an ongoing candidate set with a proposed tables/API/UI breakdown,
@@ -52,7 +60,9 @@ The model proof records every TectD MCP call with its complete arguments, native
 canonical typed payload, `isError`, and stable error code. An expected rejected attempt is
 accepted only when the test names its exact invalid arguments and proves a later successful
 corrected call. Transport errors, malformed results, and unclassified failures fail the run.
-The model starts as a Sol Executor under the root Astra and may not create descendants.
+The model starts as a Sol Executor under the root Astra and may not create descendants unless the
+explicit one-child test flag is supplied. That exception applies only to the parent; the child may
+not delegate further.
 
 Scope-candidate acceptance extends this same harness through `scope_candidates.py`; it does
 not create a separate test project. The module currently supplies schema-independent call

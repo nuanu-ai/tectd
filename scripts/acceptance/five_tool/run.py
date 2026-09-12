@@ -27,6 +27,13 @@ DEV = (
     "Do not use shell, editors, web, external services, messages, or subagents. Do not access or modify anything "
     "outside the supplied temporary task directory. Native metadata authenticates the thread; never invent identity."
 )
+ONE_CHILD_DEV = (
+    "You are the Sol Executor working under the root Astra for this isolated TectD acceptance. "
+    "For this explicitly approved test only, create exactly one descendant using gpt-5.6-sol at medium effort. "
+    "The child must create no descendants and must use only TectD get_state, help, query, and command as requested; "
+    "no execute, Scope opening, implementation, Program completion, shell, editors, web, external services, or messages. "
+    "You may only spawn that child and wait for, resume, or send input to the same child. Native metadata authenticates identity."
+)
 
 
 def git(source: pathlib.Path, *arguments: str) -> str:
@@ -400,11 +407,14 @@ def main() -> None:
     )
     parser.add_argument("--model-turn", action="store_true")
     parser.add_argument("--scope-candidates", action="store_true", help="run the reviewed Scope-candidate scenario")
+    parser.add_argument("--allow-one-child-sol", action="store_true", help="test-only explicit one-child evidence mode")
     parser.add_argument("--final", action="store_true", help="require clean committed source and label proof final")
     parser.add_argument("--keep-fixture", action="store_true")
     args = parser.parse_args()
     if args.scope_candidates and not args.model_turn:
         parser.error("--scope-candidates requires --model-turn")
+    if args.allow_one_child_sol and not (args.scope_candidates and args.model_turn):
+        parser.error("--allow-one-child-sol requires --model-turn --scope-candidates")
     source = args.source.resolve()
     if args.final and git(source, "status", "--porcelain=v1"):
         raise SystemExit("final acceptance requires a clean committed source worktree")
@@ -425,6 +435,7 @@ def main() -> None:
             "source": source_snapshot(source),
             "codex": {"version": subprocess.check_output([str(args.codex), "--version"], text=True).strip(), "sha256": sha256_file(args.codex)},
             "model_phase_requested": args.model_turn,
+            "one_child_test_override_requested": args.allow_one_child_sol,
             "evidence_kind": "final_clean_commit" if args.final else "exploratory_feature_smoke",
             "protected_artifact_hashes_before": protected_before,
             "checks": [],
@@ -463,7 +474,7 @@ def main() -> None:
             second = Rpc(app_command(args.codex, fixture), model_env, fixture.task)
             apps.append(second)
             initialize(second, "tectd_five_tool_model")
-            second_thread = start_thread(second, fixture.task, DEV)
+            second_thread = start_thread(second, fixture.task, ONE_CHILD_DEV if args.allow_one_child_sol else DEV)
             proof.data["native_threads"].append({"phase": "model", "id": second_thread})
             assert_fixture_server(find_server(second, second_thread), fixture, proof, "model")
             if args.scope_candidates:
@@ -472,7 +483,7 @@ def main() -> None:
                 proof.data["scope_candidate_fixture"] = scenario
                 proof.data["scope_candidate_daemon_restart"] = fixture.restart_daemon()
                 proof.persist()
-                scope.run_candidate_model_turn(second, second_thread, scenario, proof)
+                scope.run_candidate_model_turn(second, second_thread, scenario, proof, args.allow_one_child_sol)
             else:
                 model_program_id = seed_model_thread(second, second_thread, proof)
                 model_turn(second, second_thread, model_program_id, proof)

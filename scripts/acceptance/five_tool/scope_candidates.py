@@ -4,6 +4,7 @@ import json, uuid
 from typing import Any, Callable
 from common import tool_result
 from fixture import CANDIDATE_PLANNING_INPUT, CANDIDATE_PROGRAM_FIELDS, CANDIDATE_PROGRAM_INPUT, collect_model_turn
+import model_capture
 
 CANDIDATE_QUERY_ROUTES = {"scope.candidates.context"}
 CANDIDATE_COMMAND_ROUTES = {
@@ -444,15 +445,17 @@ def assert_candidate_model_result(calls: list[dict[str, Any]], scenario: dict[st
         "registry_digest": overview["context"]["snapshot"]["registry_digest"],
     }
 
-def run_candidate_model_turn(app: Any, thread_id: str, scenario: dict[str, Any], proof: Any) -> None:
-    turn_id, items = collect_model_turn(app, thread_id, candidate_model_prompt(scenario["candidate_set_id"]), proof)
+def run_candidate_model_turn(app: Any, thread_id: str, scenario: dict[str, Any], proof: Any, allow_one_child: bool = False) -> None:
+    turn_id, items = collect_model_turn(
+        app, thread_id, candidate_model_prompt(scenario["candidate_set_id"]), proof, allow_one_child,
+    )
     calls, parse_errors = capture_model_calls(items)
     proof.data["scope_candidate_model_capture"]["calls"] = calls
     proof.data["scope_candidate_model_capture"]["parse_errors"] = parse_errors
     proof.persist()
     if parse_errors:
         raise AssertionError("candidate model emitted malformed MCP call evidence")
-    assert_model_item_boundary(items)
+    model_capture.assert_child_item_boundary(items) if allow_one_child else assert_model_item_boundary(items)
     evidence = assert_candidate_model_result(calls, scenario)
     replay, failed = tool_result(app, thread_id, "command", evidence["draft_arguments"])
     if failed or replay != evidence["draft_payload"]:

@@ -13,6 +13,7 @@ import time
 import urllib.parse
 import uuid
 import hashlib
+import model_capture
 
 CANDIDATE_PROGRAM_INPUT = (
     "Continuously evolve workspace notification capabilities. Maintain an ongoing backlog that may "
@@ -37,7 +38,7 @@ CANDIDATE_PLANNING_INPUT = (
     "endpoints, (3) add settings UI."
 )
 
-def collect_model_turn(app, thread_id: str, prompt: str, proof):
+def collect_model_turn(app, thread_id: str, prompt: str, proof, allow_one_child: bool = False):
     position = len(app.notifications)
     started = app.request(
         "turn/start",
@@ -46,12 +47,14 @@ def collect_model_turn(app, thread_id: str, prompt: str, proof):
     )
     turn_id = started["turn"]["id"]
     capture = {"thread_id": thread_id, "turn_id": turn_id, "model": "gpt-5.6-sol",
-               "effort": "medium", "turn_start": started, "events": []}
+               "effort": "medium", "turn_start": started, "events": [], "all_events": [],
+               "allow_one_child_sol": allow_one_child}
     proof.data["scope_candidate_model_capture"] = capture
     proof.persist()
     items = []
     deadline = time.monotonic() + 600
     terminal = None
+    next_lineage_refresh = time.monotonic()
     while time.monotonic() < deadline and terminal is None:
         if position >= len(app.notifications):
             try:
@@ -62,6 +65,8 @@ def collect_model_turn(app, thread_id: str, prompt: str, proof):
             event = app.notifications[position]
             position += 1
             params = event.get("params", {})
+            capture["all_events"].append(event)
+            proof.persist()
             if params.get("threadId") != thread_id:
                 continue
             if params.get("turnId") == turn_id or params.get("turn", {}).get("id") == turn_id:
@@ -71,11 +76,22 @@ def collect_model_turn(app, thread_id: str, prompt: str, proof):
                 if event.get("method") == "turn/completed":
                     terminal = params["turn"]
                 proof.persist()
+        if allow_one_child and time.monotonic() >= next_lineage_refresh:
+            model_capture.refresh_lineage(app, thread_id, capture, proof)
+            next_lineage_refresh = time.monotonic() + 5
+    if allow_one_child:
+        model_capture.refresh_lineage(app, thread_id, capture, proof)
     capture["terminal"] = terminal
     capture["items"] = items
     proof.persist()
     if terminal is None or terminal.get("status") != "completed":
         raise AssertionError("model turn did not complete")
+    if allow_one_child:
+        lineage = model_capture.assert_one_sol_child(capture, thread_id)
+        model_capture.assert_parent_boundary(capture)
+        capture["approved_child"] = lineage
+        proof.persist()
+        return turn_id, model_capture.child_items(capture)
     return turn_id, items
 
 
