@@ -26,7 +26,16 @@ def _ready(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
 
 
 def _assert_offered_reads(reads: list[dict[str, Any]], initial: dict[str, Any] | None = None) -> None:
-    offered = _ready(initial) if initial is not None else []
+    def calls(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+        return [
+            (action["tool"], action["arguments"])
+            for action in payload.get("actions", [])
+            if action.get("kind") == "ready_call"
+            and isinstance(action.get("tool"), str)
+            and isinstance(action.get("arguments"), dict)
+        ]
+
+    offered = calls(initial) if initial is not None else []
     for index, read in enumerate(reads):
         call = (read["tool"], read["arguments"])
         if initial is not None or index:
@@ -34,7 +43,7 @@ def _assert_offered_reads(reads: list[dict[str, Any]], initial: dict[str, Any] |
                 offered.pop(offered.index(call))
             except ValueError as error:
                 raise AssertionError("model reconstructed a context read instead of using a backend action") from error
-        offered.extend(_ready(read["payload"]))
+        offered.extend(calls(read["payload"]))
 
 
 def _assert_command_template(
@@ -159,7 +168,7 @@ def _assert_delta(previous: dict[str, Any], current: dict[str, Any]) -> None:
         raise AssertionError("retained candidates are not completely classified")
     for candidate_id, item in added.items():
         uuid.UUID(candidate_id)
-        if item["revision"] != new[candidate_id]["revision"]:
+        if item["revision"] != 1 or item["revision"] != new[candidate_id]["revision"]:
             raise AssertionError("added candidate revision does not match the stored entity")
     for candidate_id, item in unchanged.items():
         if item["revision"] != old[candidate_id]["revision"] or new[candidate_id] != old[candidate_id]:
@@ -174,6 +183,57 @@ def _assert_delta(previous: dict[str, Any], current: dict[str, Any]) -> None:
             raise AssertionError("supersession does not retain the exact prior entity and reason")
         if set(item.get("replacement_candidate_ids", [])) - set(new):
             raise AssertionError("supersession replacement points outside the current draft")
+
+
+def _assert_history(
+    first: dict[str, Any], continuations: list[dict[str, Any]], history_calls: list[dict[str, Any]],
+) -> None:
+    expected: dict[tuple[str, int], tuple[str, str | None, list[str]]] = {}
+    current = {item["id"]: item for item in first["candidates"]}
+    for draft in continuations:
+        delta = draft["delta"]
+        for item in delta.get("changed", []):
+            expected[(item["candidate_id"], item["from_revision"])] = ("prior", None, [])
+        for item in delta.get("superseded", []):
+            prior = item["prior"]
+            expected[(prior["id"], prior["revision"])] = (
+                "superseded", item["reason"], item.get("replacement_candidate_ids", []),
+            )
+        for item in delta.get("added", []):
+            if item["revision"] != 1:
+                raise AssertionError("added candidate did not begin at revision 1")
+        current = {item["id"]: item for item in draft["candidates"]}
+    for item in current.values():
+        expected[(item["id"], item["revision"])] = ("active", None, [])
+
+    entries = [item["history"] for call in history_calls for item in call["payload"].get("items", [])
+               if "history" in item]
+    actual = {(item["candidate_id"], item["candidate_revision"]): item for item in entries}
+    if len(actual) != len(entries):
+        raise AssertionError("compact history repeated a candidate revision")
+    for key, (status, reason, replacements) in expected.items():
+        item = actual.get(key)
+        if item is None:
+            raise AssertionError("compact history omitted a required candidate revision")
+        if item.get("status") != status:
+            raise AssertionError("compact history assigned the wrong candidate status")
+        if item.get("superseded_reason") != reason:
+            raise AssertionError("compact history changed a supersession reason")
+        if item.get("replacement_candidate_ids", []) != replacements:
+            raise AssertionError("compact history changed supersession replacement identities")
+
+
+def _tail_reads(calls: list[dict[str, Any]], after: int) -> list[dict[str, Any]]:
+    views = {"history", "historical", "fragment", "overview"}
+    reads = [
+        call for call in calls[after + 1:]
+        if _is(call, "query", "scope.candidates.context")
+        and call["arguments"]["params"].get("view") in views
+    ]
+    if not reads or reads[0]["arguments"]["params"].get("view") != "history":
+        raise AssertionError("historical traversal did not begin with compact history")
+    _assert_offered_reads(reads)
+    return reads
 
 
 def _assert_cycle_bindings(
@@ -199,8 +259,12 @@ def _assert_cycle_bindings(
         raise AssertionError("refresh did not reset the prior Ready result for review")
     first_snapshot = first_context["snapshot"]
     second_snapshot = second_context["snapshot"]
+    if first_ready_context["snapshot"] != first_snapshot or recorded_context["snapshot"] != first_snapshot:
+        raise AssertionError("first cycle or amendment recording switched away from the original snapshot")
     if second_snapshot.get("id") == first_snapshot.get("id") or refreshed_context["snapshot"] != second_snapshot:
         raise AssertionError("amendment did not bind the second cycle to one new immutable snapshot")
+    if second_ready_context["snapshot"] != second_snapshot:
+        raise AssertionError("second Ready review switched away from its refreshed snapshot")
     if second_set.get("input_cursor") != 2 or second_set.get("revision", 0) <= refreshed_set.get("revision", 0):
         raise AssertionError("second draft did not consume the refreshed two-input window")
     if second_ready_set.get("revision") != second_set.get("revision", 0) + 1:
@@ -292,7 +356,7 @@ def assert_two_cycles(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> 
     _assert_command_template(calls, second_drafts[0], [call["payload"] for call in second_reads], "draft")
     _assert_command_template(calls, second_ready, [call["payload"] for call in calls[second_draft_index:second_ready]], "review")
 
-    tail = calls[second_ready + 1:]
+    tail = _tail_reads(calls, second_ready)
     history = [call for call in tail if _is(call, "query", "scope.candidates.context")
                and call["arguments"]["params"].get("view") == "history"]
     historical = [call for call in tail if _is(call, "query", "scope.candidates.context")
@@ -300,8 +364,6 @@ def assert_two_cycles(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> 
     first_revision = calls[first_draft_index]["payload"]["context"]["candidate_set"]["revision"]
     if not history or not historical or any(call["arguments"]["params"].get("draft_revision") != first_revision for call in historical):
         raise AssertionError("compact history and the original historical draft were not read")
-    _assert_offered_reads(history)
-    _assert_offered_reads(historical)
     if history[-1]["payload"].get("next_after") is not None or historical[-1]["payload"].get("next_after") is not None:
         raise AssertionError("history traversal stopped before its terminal page")
     historical_snapshot = historical[0]["payload"]["historical"]["snapshot"]
@@ -324,15 +386,11 @@ def assert_two_cycles(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> 
     expected_old = _expected_bodies(historical_snapshot, scenario, {1: scenario["planning_input"]})
     if _fragments(tail, first_revision) != expected_old:
         raise AssertionError("original historical source bodies were not read in full")
-    history_keys = {(item["history"]["candidate_id"], item["history"]["candidate_revision"])
-                    for call in history for item in call["payload"].get("items", []) if "history" in item}
-    required_keys = {(item["id"], item["revision"]) for item in first_draft["candidates"] + second_draft["candidates"]}
-    if not required_keys <= history_keys:
-        raise AssertionError("compact history omitted a candidate revision from either cycle")
+    _assert_history(first_draft, [calls[index]["payload"]["draft"] for index in second_drafts], history)
     historical_ids = {id(call) for call in historical + historical_fragments}
-    last_historical = max(index for index, call in enumerate(calls) if id(call) in historical_ids)
-    current_reads = [call for call in calls[last_historical + 1:] if _is(call, "query", "scope.candidates.context")
-                     and call["arguments"]["params"].get("view") == "overview"]
+    last_historical = max(index for index, call in enumerate(tail) if id(call) in historical_ids)
+    current_reads = [call for call in tail[last_historical + 1:]
+                     if call["arguments"]["params"].get("view") == "overview"]
     if not current_reads or current_reads[-1]["payload"]["context"]["snapshot"]["id"] != second_snapshot["id"]:
         raise AssertionError("historical traversal did not return to the current head")
     if current_reads[-1]["payload"]["context"]["candidate_set"]["revision"] != calls[second_ready]["payload"]["context"]["candidate_set"]["revision"]:
