@@ -13,10 +13,20 @@ pub(super) fn context() -> Value {
         )
     };
     json!({"oneOf":[
-        page("overview"),page("program"),page("inputs"),page("candidates"),page("reviews"),
+        page("overview"),page("program"),page("inputs"),page("candidates"),page("reviews"),page("history"),
+        object_schema(
+            json!({
+                "candidate_set_id":uuid(),"view":{"const":"historical"},
+                "draft_revision":{"type":"integer","minimum":2},
+                "after":{"type":"integer","minimum":0},
+                "limit":{"type":"integer","minimum":1,"maximum":100}
+            }),
+            json!(["candidate_set_id","view","draft_revision","limit"])
+        ),
         object_schema(
             json!({
                 "candidate_set_id":uuid(),"view":{"const":"fragment"},
+                "draft_revision":{"type":"integer","minimum":2},
                 "source_ref_id":uuid(),"cursor":{"type":"integer","minimum":0}
             }),
             json!(["candidate_set_id","view","source_ref_id","cursor"])
@@ -97,7 +107,8 @@ pub(super) fn save() -> Value {
             "excludes":{"type":"array","items":text(),"maxItems":100},
             "dependencies":{"type":"array","items":reference,"maxItems":100},
             "coverage_goals":{"type":"array","items":reference,"minItems":1,"maxItems":100},
-            "evidence":{"type":"array","items":reference,"maxItems":100}
+            "evidence":{"type":"array","items":reference,"maxItems":100},
+            "change_rationale":text()
         }),
         json!([
             "identity",
@@ -135,6 +146,15 @@ pub(super) fn save() -> Value {
             "authority_source_ref_id"
         ]),
     );
+    let supersession = object_schema(
+        json!({
+            "candidate_id":uuid(),
+            "revision":{"type":"integer","minimum":1},
+            "reason":text(),
+            "replacements":{"type":"array","items":reference,"maxItems":100}
+        }),
+        json!(["candidate_id", "revision", "reason"]),
+    );
     let draft = object_schema(
         json!({
             "boundary":{"type":"string","enum":["finite","ongoing"]},
@@ -144,7 +164,8 @@ pub(super) fn save() -> Value {
             "blockers":{"type":"array","items":blocker,"maxItems":100},
             "pending_question":{"type":"string"},
             "empty_disposition":empty_disposition,
-            "protected_changes":{"type":"array","items":protected_change,"maxItems":100}
+            "protected_changes":{"type":"array","items":protected_change,"maxItems":100},
+            "supersessions":{"type":"array","items":supersession,"maxItems":100}
         }),
         json!(["boundary", "goals", "candidates"]),
     );

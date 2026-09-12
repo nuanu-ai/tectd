@@ -25,17 +25,21 @@ fn id(value: &Value) -> Uuid {
     Uuid::parse_str(value.as_str().unwrap()).unwrap()
 }
 
-async fn reconstruct(client: &mut Mcp, set: Uuid, source: Uuid) -> (String, usize) {
+async fn reconstruct(
+    client: &mut Mcp,
+    set: Uuid,
+    source: Uuid,
+    draft_revision: Option<i64>,
+) -> (String, usize) {
     let mut cursor = 0_u64;
     let mut result = String::new();
     let mut pages = 0;
     loop {
-        let page = client
-            .call(
-                "candidate_context",
-                json!({"candidate_set_id":set,"view":"fragment","source_ref_id":source,"cursor":cursor}),
-            )
-            .await;
+        let mut params = json!({"candidate_set_id":set,"view":"fragment","source_ref_id":source,"cursor":cursor});
+        if let Some(revision) = draft_revision {
+            params["draft_revision"] = json!(revision);
+        }
+        let page = client.call("candidate_context", params).await;
         assert!(serde_json::to_vec(&page).unwrap().len() < 8 * 1024 * 1024);
         let fragment = &page["fragment"];
         assert_eq!(fragment["cursor"], cursor);
@@ -259,7 +263,7 @@ async fn baseline_large_program_and_input_are_exactly_fragmented_and_failed_outp
         .find(|value| value["program_field"] == "name")
         .map(|value| id(&value["id"]))
         .unwrap();
-    let (read_name, name_pages) = reconstruct(&mut client, set, name_ref).await;
+    let (read_name, name_pages) = reconstruct(&mut client, set, name_ref, None).await;
     assert_eq!(read_name, name);
     assert!(name_pages > 20);
     let inputs = client
@@ -269,7 +273,7 @@ async fn baseline_large_program_and_input_are_exactly_fragmented_and_failed_outp
         )
         .await;
     let input_ref = id(&inputs["items"][0]["input"]["source_ref_id"]);
-    let (read_input, input_pages) = reconstruct(&mut client, set, input_ref).await;
+    let (read_input, input_pages) = reconstruct(&mut client, set, input_ref, None).await;
     assert_eq!(read_input, input);
     assert!(input_pages > 2);
     assert_eq!(canonical(&pool, set).await, before_reads);
@@ -291,6 +295,38 @@ async fn baseline_large_program_and_input_are_exactly_fragmented_and_failed_outp
         .await;
     assert_eq!(refused["error"]["code"], "request_too_large");
     assert_eq!(canonical(&pool, set).await, before_reads);
+
+    let saved = client.call("save_candidate_set", json!({
+        "kind":"draft","candidate_set_id":set,"revision":1,
+        "snapshot_id":id(&created["context"]["snapshot"]["id"]),"input_cursor":1,
+        "request_id":Uuid::new_v4(),"draft":{"boundary":"ongoing","goals":[{
+            "identity":{"local":"goal"},"text":"Read the request","source_ref_id":input_ref,
+            "resolution":{"kind":"candidate","reference":{"local":"candidate"}}}],
+            "evidence":[],"candidates":[{"identity":{"local":"candidate"},
+            "title":"Bounded result","outcome":"Historical context remains readable","trigger":"Query history",
+            "delivered_behavior":"Read exact retained sources","proof":"Reconstruct every fragment",
+            "coverage_goals":[{"local":"goal"}]}],"blockers":[]}}
+    )).await;
+    assert_eq!(saved["context"]["candidate_set"]["revision"], 2);
+    let before_historical_reads = canonical(&pool, set).await;
+    let historical = client
+        .call(
+            "candidate_context",
+            json!({
+                "candidate_set_id":set,"view":"historical","draft_revision":2,"limit":25
+            }),
+        )
+        .await;
+    assert!(serde_json::to_vec(&historical).unwrap().len() < 8 * 1024 * 1024);
+    assert_eq!(
+        historical["historical"]["snapshot"]["id"],
+        created["context"]["snapshot"]["id"]
+    );
+    let (historical_name, historical_pages) =
+        reconstruct(&mut client, set, name_ref, Some(2)).await;
+    assert_eq!(historical_name, name);
+    assert!(historical_pages > 20);
+    assert_eq!(canonical(&pool, set).await, before_historical_reads);
 
     client.finish().await;
     daemon.crash().await;

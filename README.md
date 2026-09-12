@@ -198,6 +198,15 @@ one payload; the backend atomically assigns durable UUIDs. Replays return the
 original coherent result, while conflicting request reuse, stale revisions and
 stale snapshots fail before effects.
 
+Every continued draft carries a backend-computed candidate delta. Unchanged
+definitions keep their UUID and revision, changed definitions keep their UUID and
+advance their revision with a required rationale, and every omitted ordinary
+candidate needs an explicit supersession reason. The `history` context view gives a
+compact inventory of retained candidate versions and supersessions; `historical`
+pages and server-scoped fragments expose one coherent old draft, snapshot, input
+window, method and rule set without mutation actions. Historical reads return to
+the current head explicitly and never rebind it.
+
 Finite planning maps captured Program success to reviewed candidates, evidence or
 blockers. Ongoing planning is limited to the originating request and its captured
 amendments. Accepted-work evidence and candidate associations remain protected;

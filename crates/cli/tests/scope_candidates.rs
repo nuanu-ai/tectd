@@ -309,6 +309,8 @@ async fn candidate_set_replans_with_exact_receipts_protected_work_and_fragments(
                 "coverage_goals":[{"id":goal_id}],"evidence":[{"id":accepted_id}]}),vec![])
     })).await;
     assert_eq!(remapped["context"]["candidate_set"]["revision"], 6);
+    assert_eq!(remapped["draft"]["goals"][0]["revision"], 1);
+    assert_eq!(remapped["draft"]["candidates"][0]["revision"], 1);
     assert_eq!(
         remapped["draft"]["evidence"][0]["source_ref_id"],
         current_original.to_string()
@@ -321,11 +323,12 @@ async fn candidate_set_replans_with_exact_receipts_protected_work_and_fragments(
     );
 
     let goal_existing = json!({
-        "identity":{"id":goal_id,"revision":2},"text":"Deliver read-only email preference inspection",
+        "identity":{"id":goal_id,"revision":1},"text":"Deliver read-only email preference inspection",
         "source_ref_id":authority,"resolution":{"kind":"candidate","reference":{"id":candidate_id}}
     });
     let candidate_existing = json!({
-        "identity":{"id":candidate_id,"revision":2},"title":"Email preference controls",
+        "identity":{"id":candidate_id,"revision":1},"change_rationale":"The later amendment withdraws the old accepted adapter",
+        "title":"Email preference controls",
         "outcome":"Users inspect email notification preferences","trigger":"Open notification settings",
         "delivered_behavior":"Read email preferences without the old adapter",
         "proof":"Existing read-only integration tests pass","includes":["Read API and UI"],"excludes":["writes","SMS","push"],
@@ -337,7 +340,7 @@ async fn candidate_set_replans_with_exact_receipts_protected_work_and_fragments(
     let evidence_only = first.call_error("save_candidate_set", json!({
         "kind":"draft","candidate_set_id":set,"revision":6,"snapshot_id":id(&current["snapshot"]["id"]),
         "input_cursor":2,"request_id":Uuid::new_v4(),"draft":draft("ongoing",
-            goal_existing.clone(),vec![json!({"identity":{"id":accepted_id,"revision":2},
+            goal_existing.clone(),vec![json!({"identity":{"id":accepted_id,"revision":1},
                 "kind":"verified_evidence","summary":"Reclassified without authority",
                 "source_ref_id":current_original,"authority_input_sequence":1})],
             candidate_with_evidence,vec![])
@@ -347,7 +350,7 @@ async fn candidate_set_replans_with_exact_receipts_protected_work_and_fragments(
     let edge_only = first.call_error("save_candidate_set", json!({
         "kind":"draft","candidate_set_id":set,"revision":6,"snapshot_id":id(&current["snapshot"]["id"]),
         "input_cursor":2,"request_id":Uuid::new_v4(),"draft":draft("ongoing",
-            goal_existing.clone(),vec![json!({"identity":{"id":accepted_id,"revision":2},
+            goal_existing.clone(),vec![json!({"identity":{"id":accepted_id,"revision":1},
                 "kind":"accepted_work","summary":"Reuse the already accepted delivery adapter",
                 "source_ref_id":current_original,"authority_input_sequence":1})],
             candidate_existing.clone(),vec![])

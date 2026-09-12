@@ -147,7 +147,18 @@ pub enum CandidateContextView {
     Inputs,
     Candidates,
     Reviews,
+    History,
+    Historical,
     Fragment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CandidateContextQuery {
+    pub candidate_set_id: Uuid,
+    pub view: CandidateContextView,
+    pub draft_revision: Option<i64>,
+    pub after: Option<i64>,
+    pub limit: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,11 +214,43 @@ pub enum ScopeCandidatePageItem {
     Evidence(EvidenceEntity),
     Blocker(BlockerEntity),
     Review(ScopeCandidateReview),
+    History(CandidateHistoryEntry),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateHistoryStatus {
+    Active,
+    Prior,
+    Superseded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidateHistoryEntry {
+    pub candidate_id: Uuid,
+    pub candidate_revision: i64,
+    pub title: String,
+    pub first_draft_revision: i64,
+    pub latest_draft_revision: i64,
+    pub latest_snapshot_id: Uuid,
+    pub status: CandidateHistoryStatus,
+    pub superseded_reason: Option<String>,
+    pub replacement_candidate_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoricalCandidateDraft {
+    pub set_revision: i64,
+    pub snapshot: CandidateSnapshot,
+    pub input_cursor: i64,
+    pub boundary: CandidateBoundary,
+    pub delta: crate::CandidateDelta,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CandidateTextFragment {
     pub source_ref: CandidateSourceRef,
+    pub snapshot_id: Uuid,
     pub cursor: usize,
     pub next_cursor: Option<usize>,
     pub next_source_ref_id: Option<Uuid>,
@@ -225,10 +268,18 @@ pub struct CandidateContextPage {
     pub context: CandidateContext,
     pub view: CandidateContextView,
     pub program: Option<CandidateProgramSummary>,
+    pub historical: Option<HistoricalCandidateDraft>,
     pub items: Vec<ScopeCandidatePageItem>,
     pub next_after: Option<i64>,
     pub required_protected_changes: Vec<ProtectedObjectRef>,
     pub terminal_note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredHistoricalCandidateDraft {
+    pub snapshot: CandidateSnapshot,
+    pub input_cursor: i64,
+    pub draft: crate::ResolvedCandidateDraft,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

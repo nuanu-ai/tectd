@@ -131,7 +131,7 @@ pub(super) async fn resolve(
         &old_blockers,
         |v| &v.identity,
     )?;
-    let goals = draft
+    let mut goals = draft
         .goals
         .iter()
         .zip(&goal_ids)
@@ -186,7 +186,8 @@ pub(super) async fn resolve(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let evidence = draft
+    super::continuation::stabilize_goals(&mut goals, previous, &sources)?;
+    let mut evidence = draft
         .evidence
         .iter()
         .zip(&evidence_ids)
@@ -216,7 +217,8 @@ pub(super) async fn resolve(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let blockers = draft
+    super::continuation::stabilize_evidence(&mut evidence, previous, &sources)?;
+    let mut blockers = draft
         .blockers
         .iter()
         .zip(&blocker_ids)
@@ -235,7 +237,8 @@ pub(super) async fn resolve(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    let candidates = draft
+    super::continuation::stabilize_blockers(&mut blockers, previous, &sources)?;
+    let mut candidates = draft
         .candidates
         .iter()
         .zip(&candidate_ids)
@@ -251,6 +254,7 @@ pub(super) async fn resolve(
             )
         })
         .collect::<Result<Vec<_>>>()?;
+    super::continuation::stabilize_candidates(&mut candidates, previous)?;
     validate_candidate_links(&goals, &candidates)?;
     let protected_changes = super::protected::resolve_protected_changes(
         previous,
@@ -270,6 +274,13 @@ pub(super) async fn resolve(
     }) {
         return Err(Error::InvalidArguments);
     }
+    let delta = super::continuation::candidate_delta(
+        draft,
+        previous,
+        &candidates,
+        &handles,
+        &candidate_ids,
+    )?;
     Ok(ResolvedCandidateDraft {
         boundary: draft.boundary,
         goals,
@@ -279,6 +290,7 @@ pub(super) async fn resolve(
         pending_question: draft.pending_question.clone(),
         empty_disposition: draft.empty_disposition.clone(),
         protected_changes,
+        delta,
     })
 }
 
@@ -329,10 +341,7 @@ fn entity_ids<T>(
             if identity.revision != Some(revision) {
                 return Err(Error::StaleRevision);
             }
-            Ok((
-                id,
-                revision.checked_add(1).ok_or(Error::StorageUnavailable)?,
-            ))
+            Ok((id, revision))
         })
         .collect()
 }

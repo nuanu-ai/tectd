@@ -55,29 +55,38 @@ pub(crate) fn page(mut page: CandidateContextPage, after: i64, capacity: usize) 
         if encoded_len(&value)? <= capacity {
             return Ok(value);
         }
-        if page.items.pop().is_none() {
+        if page.items.len() <= 1 {
             return Err(Error::RequestTooLarge);
         }
+        page.items.pop();
     }
 }
 
 pub(crate) fn fragment(
     candidate_set_id: Uuid,
+    draft_revision: Option<i64>,
     fragment: CandidateTextFragment,
     capacity: usize,
 ) -> Result<Value> {
     let id = fragment.source_ref.id;
     let next = fragment.next_cursor;
+    let historical = draft_revision.is_some();
+    let continuation = |source_ref_id, cursor| {
+        let mut params = json!({
+            "candidate_set_id":candidate_set_id,"view":"fragment",
+            "source_ref_id":source_ref_id,"cursor":cursor
+        });
+        if let Some(revision) = draft_revision {
+            params["draft_revision"] = json!(revision);
+        }
+        crate::api::ready_action("candidate_context", params)
+    };
     let actions = if let Some(cursor) = next {
-        vec![crate::api::ready_action(
-            "candidate_context",
-            json!({"candidate_set_id":candidate_set_id,"view":"fragment","source_ref_id":id,"cursor":cursor}),
-        )?]
+        vec![continuation(id, cursor)?]
     } else if let Some(next_source) = fragment.next_source_ref_id {
-        vec![crate::api::ready_action(
-            "candidate_context",
-            json!({"candidate_set_id":candidate_set_id,"view":"fragment","source_ref_id":next_source,"cursor":0}),
-        )?]
+        vec![continuation(next_source, 0)?]
+    } else if historical {
+        vec![current_context_action(candidate_set_id)?]
     } else {
         vec![crate::api::ready_action(
             "candidate_context",
@@ -91,14 +100,59 @@ pub(crate) fn fragment(
 }
 
 fn page_actions(page: &CandidateContextPage) -> Result<(Vec<Value>, Option<usize>)> {
+    if let Some(after) = page.next_after {
+        let action = if page.view == CandidateContextView::Historical {
+            historical_action(
+                &page.context,
+                page.historical
+                    .as_ref()
+                    .ok_or(Error::InternalInvariant)?
+                    .set_revision,
+                Some(after),
+            )?
+        } else {
+            read_action(&page.context, page.view, Some(after))?
+        };
+        return Ok((vec![action], Some(0)));
+    }
+    if page.view == CandidateContextView::History {
+        let mut actions = page
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                tect_domain::ScopeCandidatePageItem::History(entry) => Some(historical_action(
+                    &page.context,
+                    entry.latest_draft_revision,
+                    None,
+                )),
+                _ => None,
+            })
+            .collect::<Result<Vec<_>>>()?;
+        actions.push(current_context_action(page.context.candidate_set.id)?);
+        return Ok((actions, Some(0)));
+    }
+    if page.view == CandidateContextView::Historical {
+        let historical = page.historical.as_ref().ok_or(Error::InternalInvariant)?;
+        let mut actions = historical
+            .snapshot
+            .source_refs
+            .iter()
+            .map(|source| {
+                crate::api::ready_action(
+                    "candidate_context",
+                    json!({
+                        "candidate_set_id":page.context.candidate_set.id,
+                        "view":"fragment","draft_revision":historical.set_revision,
+                        "source_ref_id":source.id,"cursor":0
+                    }),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        actions.push(current_context_action(page.context.candidate_set.id)?);
+        return Ok((actions, Some(0)));
+    }
     if !page.context.stale_reasons.is_empty() {
         return Ok((vec![refresh_action(&page.context)?], Some(0)));
-    }
-    if let Some(after) = page.next_after {
-        return Ok((
-            vec![read_action(&page.context, page.view, Some(after))?],
-            Some(0),
-        ));
     }
     match page.view {
         CandidateContextView::Overview => Ok((
@@ -159,6 +213,9 @@ fn page_actions(page: &CandidateContextPage) -> Result<(Vec<Value>, Option<usize
             Some(0),
         )),
         CandidateContextView::Reviews => terminal_actions(page),
+        CandidateContextView::History | CandidateContextView::Historical => {
+            unreachable!("handled above")
+        }
         CandidateContextView::Fragment => Err(Error::InternalInvariant),
     }
 }
@@ -189,7 +246,7 @@ fn draft_action(context: &CandidateContext) -> Result<Value> {
             "request_id":request_id(set.id, set.revision, "save_draft")
         }),
         "input",
-        json!({"fields":[{"path":"arguments.params.draft","format":"Complete schema-valid candidate draft. Temporary local labels exist only inside this payload; durable UUIDs come from the backend reply."}]}),
+        json!({"fields":[{"path":"arguments.params.draft","format":"Complete schema-valid candidate draft. Reuse backend IDs and revisions; include change_rationale for changed candidates and an explicit supersession for every omitted ordinary candidate. Temporary local labels exist only inside this payload; durable UUIDs come from the backend reply."}]}),
     )
 }
 
@@ -261,6 +318,28 @@ fn read_action(
         params["after"] = json!(after);
     }
     crate::api::ready_action("candidate_context", params)
+}
+
+fn historical_action(
+    context: &CandidateContext,
+    draft_revision: i64,
+    after: Option<i64>,
+) -> Result<Value> {
+    let mut params = json!({
+        "candidate_set_id":context.candidate_set.id,"view":"historical",
+        "draft_revision":draft_revision,"limit":25
+    });
+    if let Some(after) = after {
+        params["after"] = json!(after);
+    }
+    crate::api::ready_action("candidate_context", params)
+}
+
+fn current_context_action(candidate_set_id: Uuid) -> Result<Value> {
+    crate::api::ready_action(
+        "candidate_context",
+        json!({"candidate_set_id":candidate_set_id,"view":"overview","limit":25}),
+    )
 }
 
 fn within(value: Value, capacity: usize) -> Result<Value> {

@@ -40,6 +40,7 @@ fn empty(
             source_ref_id: Uuid::new_v4(),
         }),
         protected_changes: Vec::new(),
+        delta: Default::default(),
     }
 }
 
@@ -88,6 +89,7 @@ fn empty_set_reviews_are_blocked_honestly_and_only_real_coverage_is_ready() {
             source_ref_id: Uuid::new_v4(),
         }),
         protected_changes: Vec::new(),
+        delta: Default::default(),
     };
     assert!(validate_review(&request(ReviewVerdict::Ready), &all_covered).is_ok());
 }

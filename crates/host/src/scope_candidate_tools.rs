@@ -10,11 +10,13 @@ pub(crate) enum ScopeCandidateInvocation {
     Context {
         candidate_set_id: Uuid,
         view: CandidateContextView,
+        draft_revision: Option<i64>,
         after: Option<i64>,
         limit: u32,
     },
     Fragment {
         candidate_set_id: Uuid,
+        draft_revision: Option<i64>,
         source_ref_id: Uuid,
         cursor: usize,
     },
@@ -48,6 +50,14 @@ enum ContextArguments {
         #[serde(flatten)]
         args: PageArguments,
     },
+    History {
+        #[serde(flatten)]
+        args: PageArguments,
+    },
+    Historical {
+        #[serde(flatten)]
+        args: HistoricalArguments,
+    },
     Fragment {
         #[serde(flatten)]
         args: FragmentArguments,
@@ -67,8 +77,20 @@ struct PageArguments {
 #[serde(deny_unknown_fields)]
 struct FragmentArguments {
     candidate_set_id: Uuid,
+    #[serde(default)]
+    draft_revision: Option<i64>,
     source_ref_id: Uuid,
     cursor: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HistoricalArguments {
+    candidate_set_id: Uuid,
+    draft_revision: i64,
+    #[serde(default)]
+    after: Option<i64>,
+    limit: u32,
 }
 
 #[derive(Deserialize)]
@@ -97,8 +119,17 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<ScopeCandidateInvoca
                     page(args, CandidateContextView::Candidates)
                 }
                 ContextArguments::Reviews { args } => page(args, CandidateContextView::Reviews),
+                ContextArguments::History { args } => page(args, CandidateContextView::History),
+                ContextArguments::Historical { args } => Ok(ScopeCandidateInvocation::Context {
+                    candidate_set_id: args.candidate_set_id,
+                    view: CandidateContextView::Historical,
+                    draft_revision: Some(args.draft_revision),
+                    after: args.after,
+                    limit: args.limit,
+                }),
                 ContextArguments::Fragment { args } => Ok(ScopeCandidateInvocation::Fragment {
                     candidate_set_id: args.candidate_set_id,
+                    draft_revision: args.draft_revision,
                     source_ref_id: args.source_ref_id,
                     cursor: args.cursor,
                 }),
@@ -119,6 +150,7 @@ fn page(args: PageArguments, view: CandidateContextView) -> Result<ScopeCandidat
     Ok(ScopeCandidateInvocation::Context {
         candidate_set_id: args.candidate_set_id,
         view,
+        draft_revision: None,
         after: args.after,
         limit: args.limit,
     })
@@ -141,6 +173,8 @@ fn reject_optional_nulls(value: &Value) -> Result<()> {
         "local",
         "id",
         "revision",
+        "change_rationale",
+        "draft_revision",
     ];
     match value {
         Value::Object(object) => {
@@ -179,9 +213,25 @@ mod tests {
             )
             .is_ok()
         );
+        assert!(
+            parse(
+                "candidate_context",
+                json!({"candidate_set_id":id,"view":"historical","draft_revision":2,"limit":25})
+            )
+            .is_ok()
+        );
+        assert!(
+            parse(
+                "candidate_context",
+                json!({"candidate_set_id":id,"view":"fragment","draft_revision":2,"source_ref_id":id,"cursor":0})
+            )
+            .is_ok()
+        );
         for invalid in [
             json!({"candidate_set_id":id,"view":"overview","limit":25,"after":null}),
             json!({"candidate_set_id":id,"view":"fragment","source_ref_id":id,"cursor":0,"limit":25}),
+            json!({"candidate_set_id":id,"view":"fragment","snapshot_id":id,"source_ref_id":id,"cursor":0}),
+            json!({"candidate_set_id":id,"view":"historical","limit":25}),
             json!({"candidate_set_id":id,"view":"reviews"}),
         ] {
             assert_eq!(

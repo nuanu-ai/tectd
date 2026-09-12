@@ -166,6 +166,17 @@ fn help_branches_are_strict_and_descriptions_come_from_registry() {
         help(parse_help(json!({"mode":"describe","method":"tectd-program"})).unwrap()).unwrap();
     assert_eq!(method["kind"], "method");
     assert!(method["body"].as_str().unwrap().contains("# TectD Program"));
+
+    let candidates =
+        help(parse_help(json!({"mode":"describe","method":"tectd-scope-candidates"})).unwrap())
+            .unwrap();
+    assert_eq!(candidates["method_revision"], "2");
+    assert!(
+        candidates["body"]
+            .as_str()
+            .unwrap()
+            .contains("compact candidate history")
+    );
 }
 
 #[test]

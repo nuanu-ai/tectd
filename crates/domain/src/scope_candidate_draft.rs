@@ -94,6 +94,8 @@ pub struct EvidenceDraft {
 #[serde(deny_unknown_fields)]
 pub struct CandidateDraft {
     pub identity: DraftIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_rationale: Option<String>,
     pub title: String,
     pub outcome: String,
     pub trigger: String,
@@ -134,6 +136,18 @@ pub struct ScopeCandidateDraft {
     pub empty_disposition: Option<EmptyCandidateDisposition>,
     #[serde(default)]
     pub protected_changes: Vec<ProtectedChangeDraft>,
+    #[serde(default)]
+    pub supersessions: Vec<CandidateSupersessionDraft>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateSupersessionDraft {
+    pub candidate_id: Uuid,
+    pub revision: i64,
+    pub reason: String,
+    #[serde(default)]
+    pub replacements: Vec<CandidateRef>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -331,6 +345,43 @@ pub struct ResolvedCandidateDraft {
     pub pending_question: Option<String>,
     pub empty_disposition: Option<EmptyCandidateDisposition>,
     pub protected_changes: Vec<ProtectedChangeEntity>,
+    #[serde(default)]
+    pub delta: CandidateDelta,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidateDelta {
+    pub added: Vec<CandidateAdded>,
+    pub changed: Vec<CandidateChanged>,
+    pub unchanged: Vec<CandidateUnchanged>,
+    pub superseded: Vec<CandidateSuperseded>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidateAdded {
+    pub candidate_id: Uuid,
+    pub revision: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidateChanged {
+    pub candidate_id: Uuid,
+    pub from_revision: i64,
+    pub to_revision: i64,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidateUnchanged {
+    pub candidate_id: Uuid,
+    pub revision: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidateSuperseded {
+    pub prior: CandidateEntity,
+    pub reason: String,
+    pub replacement_candidate_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,4 +1,6 @@
 mod begin;
+mod continuation;
+mod history;
 mod protected;
 mod resolve;
 mod save;
@@ -8,6 +10,7 @@ mod write;
 mod write_tests;
 
 pub(crate) use begin::{ensure, replay as begin_replay};
+pub(crate) use history::{historical, history};
 pub(crate) use save::{record_input, refresh, replay, save_draft, save_review};
 
 use crate::storage_error;
@@ -302,6 +305,7 @@ pub(crate) async fn fragment(
     tenant_id: Uuid,
     workspace_id: Uuid,
     candidate_set_id: Uuid,
+    snapshot_id: Option<Uuid>,
     source_ref_id: Uuid,
     cursor: usize,
     max_bytes: usize,
@@ -313,15 +317,17 @@ pub(crate) async fn fragment(
         "SELECT r.snapshot_id,r.kind,r.input_sequence,r.program_field,r.label,c.body \
          FROM scope_candidate_source_refs r \
          JOIN scope_candidate_sets s ON s.tenant_id=r.tenant_id AND s.workspace_id=r.workspace_id \
-          AND s.id=r.candidate_set_id AND s.current_snapshot_id=r.snapshot_id \
+          AND s.id=r.candidate_set_id \
          JOIN scope_candidate_contents c ON c.tenant_id=r.tenant_id \
           AND c.workspace_id=r.workspace_id AND c.digest=r.body_digest \
-         WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.candidate_set_id=$3 AND r.id=$4",
+         WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.candidate_set_id=$3 AND r.id=$4 \
+           AND (($5::uuid IS NULL AND s.current_snapshot_id=r.snapshot_id) OR r.snapshot_id=$5)",
     )
     .bind(tenant_id)
     .bind(workspace_id)
     .bind(candidate_set_id)
     .bind(source_ref_id)
+    .bind(snapshot_id)
     .fetch_optional(&mut **transaction)
     .await
     .map_err(storage_error)?;
@@ -377,6 +383,7 @@ pub(crate) async fn fragment(
             program_field,
             label,
         },
+        snapshot_id,
         cursor,
         next_cursor: (end < body.len()).then_some(end),
         next_source_ref_id,

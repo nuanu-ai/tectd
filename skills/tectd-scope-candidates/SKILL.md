@@ -61,6 +61,8 @@ For each candidate provide:
 
 Compare the draft with verified existing work, existing candidates, opened Scopes, results, and the current request. Remove duplicates, preserve accepted or open work, and express changes as a visible delta. Merge candidates that only divide one behavior into technical layers. Split a candidate when it contains several independently useful outcomes, when one part cannot be demonstrated without another unrelated part, or when materially different dependencies prevent a coherent delivery boundary.
 
+Before revising a saved draft, read the compact candidate history and any relevant retained version through the exact supplied calls. Keep an unchanged candidate's backend ID and revision. For each changed candidate, reuse its backend ID and state the concrete change rationale. Explicitly supersede every omitted ordinary candidate with a reason and any replacement references; omission is never an implicit deletion. The backend classifies the structural delta and preserves prior versions, while you remain responsible for semantic duplicate detection and the review judgment.
+
 Do not invent owners, authority, evidence, dependencies, readiness, acceptance proof, or policy exceptions. Do not create a separate product test harness when existing product tests and direct MCP verification can prove the behavior. Planning proof is an expectation for later work, not proof that the work already exists.
 
 Save useful drafts through the supplied action as soon as they are coherent enough for crash recovery. Draft persistence does not make the set reviewed or ready.
@@ -93,5 +95,7 @@ Persist the current draft, reviewed revision, ordering, rationale, source links,
 On a stale save, follow the returned refresh or reload action. Compare the new Program, request, existing work, candidates, method, and rules with the attempted revision. Preserve accepted and open work, merge compatible changes, show changed candidates and reasons, and review every affected item. Never overwrite concurrent work, discard unseen input, pretend a query refreshed state, or retry against an obsolete snapshot.
 
 After a crash or new session, resume the same planning run and restore its persisted draft, input cursor, context, rules, review status, and pending question before deciding what remains. Do not create a replacement run merely because a response was lost.
+
+Historical context is immutable and read-only. Use it to compare prior candidate definitions, source provenance, input windows, method and rule versions, then return through the supplied current-context call before saving. Never apply a mutation template from historical material.
 
 Finish with the ordered candidate proposal and exactly one next action documented by the current backend response: answer a consequential question, complete review or revision, or select a reviewed candidate for a separate future opening operation. Do not automatically create or open a Scope, start implementation, or generate further roadmap work.

@@ -2,9 +2,10 @@ use crate::{scope_candidates, store::PgUnitOfWork};
 use async_trait::async_trait;
 use tect_application::ScopeCandidateStore;
 use tect_domain::{
-    BeginCandidateSet, BeginCandidateSetOutcome, CandidateInputSummary, CandidateReceiptRequest,
-    CandidateSetSummary, CandidateSnapshotMaterial, CandidateTextFragment, RecordCandidateInput,
-    RefreshCandidateSet, Result, ReviewCandidateSet, SaveCandidateDraft, StoredCandidateContext,
+    BeginCandidateSet, BeginCandidateSetOutcome, CandidateHistoryEntry, CandidateInputSummary,
+    CandidateReceiptRequest, CandidateSetSummary, CandidateSnapshotMaterial, CandidateTextFragment,
+    RecordCandidateInput, RefreshCandidateSet, Result, ReviewCandidateSet, SaveCandidateDraft,
+    StoredCandidateContext, StoredHistoricalCandidateDraft,
 };
 use uuid::Uuid;
 
@@ -63,6 +64,42 @@ impl ScopeCandidateStore for PgUnitOfWork {
         .await
     }
 
+    async fn candidate_history(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<CandidateHistoryEntry>> {
+        let tenant_id = self.tenant_id()?;
+        scope_candidates::history(
+            self.transaction()?,
+            tenant_id,
+            workspace_id,
+            candidate_set_id,
+            after,
+            limit,
+        )
+        .await
+    }
+
+    async fn historical_candidate_draft(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+        draft_revision: i64,
+    ) -> Result<Option<StoredHistoricalCandidateDraft>> {
+        let tenant_id = self.tenant_id()?;
+        scope_candidates::historical(
+            self.transaction()?,
+            tenant_id,
+            workspace_id,
+            candidate_set_id,
+            draft_revision,
+        )
+        .await
+    }
+
     async fn candidate_heads(
         &mut self,
         workspace_id: Uuid,
@@ -95,6 +132,7 @@ impl ScopeCandidateStore for PgUnitOfWork {
         &mut self,
         workspace_id: Uuid,
         candidate_set_id: Uuid,
+        snapshot_id: Option<Uuid>,
         source_ref_id: Uuid,
         cursor: usize,
         max_bytes: usize,
@@ -105,6 +143,7 @@ impl ScopeCandidateStore for PgUnitOfWork {
             tenant_id,
             workspace_id,
             candidate_set_id,
+            snapshot_id,
             source_ref_id,
             cursor,
             max_bytes,

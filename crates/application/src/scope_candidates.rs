@@ -3,7 +3,7 @@ use crate::{
 };
 use tect_domain::{
     BeginCandidateSet, BeginCandidateSetOutcome, CandidateContext, CandidateContextPage,
-    CandidateContextView, Error, RecordCandidateInput, RefreshCandidateSet, Result,
+    CandidateContextQuery, Error, RecordCandidateInput, RefreshCandidateSet, Result,
     ReviewCandidateSet, SaveCandidateDraft, StoredCandidateContext, validate_program_input,
 };
 
@@ -12,6 +12,7 @@ impl WorkspaceService {
         &self,
         context: &tect_domain::RequestContext,
         candidate_set_id: uuid::Uuid,
+        draft_revision: Option<i64>,
         source_ref_id: uuid::Uuid,
         cursor: usize,
         max_bytes: usize,
@@ -22,10 +23,22 @@ impl WorkspaceService {
         let (mut tx, workspace, _) = self
             .candidate_transaction(context, TransactionMode::ReadOnly)
             .await?;
+        let snapshot_id = match draft_revision {
+            Some(revision) if revision >= 2 => Some(
+                tx.historical_candidate_draft(workspace.id, candidate_set_id, revision)
+                    .await?
+                    .ok_or(Error::NotFound)?
+                    .snapshot
+                    .id,
+            ),
+            Some(_) => return Err(Error::InvalidArguments),
+            None => None,
+        };
         let fragment = tx
             .candidate_fragment(
                 workspace.id,
                 candidate_set_id,
+                snapshot_id,
                 source_ref_id,
                 cursor,
                 max_bytes,
@@ -101,18 +114,19 @@ impl WorkspaceService {
     pub async fn candidate_context(
         &self,
         context: &tect_domain::RequestContext,
-        candidate_set_id: uuid::Uuid,
-        view: CandidateContextView,
-        after: Option<i64>,
-        limit: u32,
+        query: &CandidateContextQuery,
         guidance: &dyn CandidateGuidance,
     ) -> Result<CandidateContextPage> {
-        crate::scope_candidate_pages::validate_page(candidate_set_id, after, limit)?;
+        crate::scope_candidate_pages::validate_page(
+            query.candidate_set_id,
+            query.after,
+            query.limit,
+        )?;
         let (mut tx, workspace, session) = self
             .candidate_transaction(context, TransactionMode::ReadOnly)
             .await?;
         let mut stored = tx
-            .candidate_context(workspace.id, candidate_set_id)
+            .candidate_context(workspace.id, query.candidate_set_id)
             .await?
             .ok_or(Error::NotFound)?;
         let current_program = tx
@@ -129,9 +143,10 @@ impl WorkspaceService {
             &mut *tx,
             workspace.id,
             stored,
-            view,
-            after,
-            limit,
+            query.view,
+            query.draft_revision,
+            query.after,
+            query.limit,
         )
         .await?;
         tx.commit().await?;

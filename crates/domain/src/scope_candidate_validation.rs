@@ -11,6 +11,7 @@ impl ScopeCandidateDraft {
             || self.evidence.len() > 100
             || self.blockers.len() > 100
             || self.protected_changes.len() > 100
+            || self.supersessions.len() > 100
         {
             return Err(Error::InvalidArguments);
         }
@@ -105,6 +106,13 @@ impl ScopeCandidateDraft {
             if candidate.coverage_goals.is_empty() {
                 return Err(Error::InvalidArguments);
             }
+            if candidate
+                .change_rationale
+                .as_ref()
+                .is_some_and(|value| required(value).is_err())
+            {
+                return Err(Error::InvalidArguments);
+            }
             for reference in candidate
                 .dependencies
                 .iter()
@@ -112,6 +120,19 @@ impl ScopeCandidateDraft {
                 .chain(&candidate.evidence)
             {
                 reference.validate()?;
+            }
+        }
+        let mut superseded = BTreeSet::new();
+        for value in &self.supersessions {
+            if value.candidate_id.is_nil()
+                || value.revision < 1
+                || !superseded.insert(value.candidate_id)
+            {
+                return Err(Error::InvalidArguments);
+            }
+            required(&value.reason)?;
+            for replacement in &value.replacements {
+                replacement.validate()?;
             }
         }
         if self.boundary == CandidateBoundary::Finite && self.goals.is_empty() {

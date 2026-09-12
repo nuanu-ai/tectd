@@ -33,7 +33,9 @@ session has its own selected worktrees. Program drafts, original input and PRDs 
 in the database. The focused `tectd-program` and `tectd-setup` methods are embedded in the
 executable and returned by `help` describe. The `tectd-scope-candidates` method is
 also embedded and binds bounded candidate context to the packaged conditional rule
-registry. Opening a Program or reviewing candidates does not launch Scope or
+registry. Candidate continuation preserves stable identities, computes explicit
+added/changed/unchanged/superseded deltas, and exposes retained versions through
+the read-only `history` and `historical` context views. Opening a Program or reviewing candidates does not launch Scope or
 implementation work. Tool results carry a short introduction and one JSON content
 block with data and exact next actions, without duplicate structured content.
 The enrolled host remains the

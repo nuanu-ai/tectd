@@ -1,9 +1,10 @@
 use async_trait::async_trait;
 use tect_domain::{
-    BeginCandidateSet, BeginCandidateSetOutcome, CandidateInputSummary, CandidateReceiptRequest,
-    CandidateSetSummary, CandidateSnapshotMaterial, CandidateTextFragment, Program,
-    RecordCandidateInput, RefreshCandidateSet, ResolvedCandidateDraft, Result, ReviewCandidateSet,
-    SaveCandidateDraft, StoredCandidateContext, WorktreeSummary,
+    BeginCandidateSet, BeginCandidateSetOutcome, CandidateHistoryEntry, CandidateInputSummary,
+    CandidateReceiptRequest, CandidateSetSummary, CandidateSnapshotMaterial, CandidateTextFragment,
+    Program, RecordCandidateInput, RefreshCandidateSet, ResolvedCandidateDraft, Result,
+    ReviewCandidateSet, SaveCandidateDraft, StoredCandidateContext, StoredHistoricalCandidateDraft,
+    WorktreeSummary,
 };
 use uuid::Uuid;
 
@@ -64,10 +65,24 @@ pub trait ScopeCandidateStore: Send {
         &mut self,
         workspace_id: Uuid,
         candidate_set_id: Uuid,
+        snapshot_id: Option<Uuid>,
         source_ref_id: Uuid,
         cursor: usize,
         max_bytes: usize,
     ) -> Result<CandidateTextFragment>;
+    async fn candidate_history(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+        after: i64,
+        limit: u32,
+    ) -> Result<Vec<CandidateHistoryEntry>>;
+    async fn historical_candidate_draft(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+        draft_revision: i64,
+    ) -> Result<Option<StoredHistoricalCandidateDraft>>;
     async fn save_candidate_draft(
         &mut self,
         workspace_id: Uuid,

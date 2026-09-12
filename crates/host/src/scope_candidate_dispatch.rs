@@ -2,7 +2,7 @@ use crate::scope_candidate_tools::ScopeCandidateInvocation;
 use crate::scope_guidance::{CandidateEncoding, StaticCandidateGuidance};
 use crate::{Result, scope_candidate_output};
 use tect_application::WorkspaceService;
-use tect_domain::RequestContext;
+use tect_domain::{CandidateContextQuery, RequestContext};
 
 const FRAGMENT_BYTES: usize = 256 * 1024;
 
@@ -18,27 +18,45 @@ pub(crate) async fn execute(
         ScopeCandidateInvocation::Context {
             candidate_set_id,
             view,
+            draft_revision,
             after,
             limit,
         } => service
-            .candidate_context(context, candidate_set_id, view, after, limit, &guidance)
+            .candidate_context(
+                context,
+                &CandidateContextQuery {
+                    candidate_set_id,
+                    view,
+                    draft_revision,
+                    after,
+                    limit,
+                },
+                &guidance,
+            )
             .await
             .and_then(|page| scope_candidate_output::page(page, after.unwrap_or(0), capacity)),
         ScopeCandidateInvocation::Fragment {
             candidate_set_id,
+            draft_revision,
             source_ref_id,
             cursor,
         } => service
             .candidate_fragment(
                 context,
                 candidate_set_id,
+                draft_revision,
                 source_ref_id,
                 cursor,
                 FRAGMENT_BYTES,
             )
             .await
             .and_then(|fragment| {
-                scope_candidate_output::fragment(candidate_set_id, fragment, capacity)
+                scope_candidate_output::fragment(
+                    candidate_set_id,
+                    draft_revision,
+                    fragment,
+                    capacity,
+                )
             }),
         ScopeCandidateInvocation::Begin(request) => service
             .begin_candidate_set(context, &request, &guidance, &guard)

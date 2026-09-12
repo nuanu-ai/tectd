@@ -10,7 +10,7 @@ use tect_domain::{
 };
 
 pub(crate) const METHOD_ID: &str = "tectd-scope-candidates";
-pub(crate) const METHOD_REVISION: &str = "1";
+pub(crate) const METHOD_REVISION: &str = "2";
 pub(crate) const METHOD_BODY: &str =
     include_str!("../../../skills/tectd-scope-candidates/SKILL.md");
 const REGISTRY_REVISION: &str = "1";
