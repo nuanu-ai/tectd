@@ -11,6 +11,12 @@ mod sources;
 mod setup_ports;
 pub use setup_ports::{SetupFiles, SetupOutputGuard, SetupStore};
 
+mod scope_candidate_pages;
+mod scope_candidate_ports;
+pub use scope_candidate_ports::{CandidateGuidance, CandidateOutputGuard, ScopeCandidateStore};
+
+mod scope_candidates;
+
 mod setup_access;
 mod setup_apply;
 mod setups;

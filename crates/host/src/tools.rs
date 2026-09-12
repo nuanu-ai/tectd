@@ -6,6 +6,7 @@ use uuid::Uuid;
 pub(crate) enum Invocation {
     Program(crate::program_tools::ProgramInvocation),
     Setup(crate::setup_tools::SetupInvocation),
+    ScopeCandidate(crate::scope_candidate_tools::ScopeCandidateInvocation),
     Help(crate::api::HelpRequest),
     OpenWorkspace,
     GetState,
@@ -64,6 +65,9 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
             })
         }
         "help" => crate::api::parse_help(arguments).map(Invocation::Help),
+        _ if name.contains("candidate") => {
+            crate::scope_candidate_tools::parse(name, arguments).map(Invocation::ScopeCandidate)
+        }
         _ if name.ends_with("_setup")
             || name == "record_setup_input"
             || name == "read_skill" && arguments["name"] == "tectd-setup" =>
@@ -114,7 +118,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            10
+            14
         );
     }
 

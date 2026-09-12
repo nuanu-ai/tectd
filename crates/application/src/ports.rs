@@ -19,7 +19,7 @@ pub trait Store: Send + Sync {
 
 /// A dropped unit of work rolls back. No database-specific types escape this port.
 #[async_trait]
-pub trait UnitOfWork: Send + crate::SetupStore {
+pub trait UnitOfWork: Send + crate::SetupStore + crate::ScopeCandidateStore {
     async fn authenticate(&mut self, auth: &HostAuth) -> Result<HostIdentity>;
     async fn set_tenant(&mut self, tenant_id: Uuid) -> Result<()>;
     async fn lock_native_session(&mut self, host_id: Uuid, native_id: &str) -> Result<()>;

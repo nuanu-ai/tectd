@@ -201,10 +201,19 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 )
                 .await
             }
+            Invocation::ScopeCandidate(invocation) => {
+                crate::scope_candidate_dispatch::execute(
+                    &request.context,
+                    invocation,
+                    service,
+                    request.output_capacity,
+                )
+                .await
+            }
             Invocation::Help(help_request) => {
                 service.authenticate_host(&request.context).await?;
                 Ok(responses::with_actions(
-                    crate::api::help(help_request),
+                    crate::api::help(help_request)?,
                     Vec::new(),
                     None,
                 ))

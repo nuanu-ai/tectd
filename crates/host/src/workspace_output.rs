@@ -37,6 +37,12 @@ fn actions(
     }
     let context = state.setup_context.as_ref();
     let mut calls = Vec::new();
+    for candidate in &state.candidate_sets {
+        calls.push(crate::api::ready_action(
+            "candidate_context",
+            json!({"candidate_set_id":candidate.id,"view":"overview","limit":25}),
+        )?);
+    }
     match file.map(|file| file.status) {
         Some(SetupFileStatus::Unavailable) => {}
         Some(SetupFileStatus::ContextUnknown) => {}

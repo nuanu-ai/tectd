@@ -47,7 +47,11 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
                          'tenants', 'principals', 'hosts', 'workspaces', 'memberships',
                          'agent_sessions', 'source_repositories', 'source_worktrees',
                          'session_worktrees', 'workspace_events', 'programs', 'program_inputs',
-                         'setup_session_directories', 'workspace_setups', 'workspace_setup_inputs'
+                         'setup_session_directories', 'workspace_setups', 'workspace_setup_inputs',
+                         'scope_candidate_sets', 'scope_candidate_inputs',
+                         'scope_candidate_contents', 'scope_candidate_snapshots',
+                         'scope_candidate_source_refs', 'scope_candidate_drafts',
+                         'scope_candidate_reviews', 'scope_candidate_receipts'
                      )
                      AND pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER')
                ) OR EXISTS (
@@ -94,6 +98,18 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
         format!("GRANT SELECT, INSERT ON TABLE setup_session_directories TO {quoted_role}"),
         format!("GRANT SELECT, INSERT, UPDATE ON TABLE workspace_setups TO {quoted_role}"),
         format!("GRANT SELECT, INSERT ON TABLE workspace_setup_inputs TO {quoted_role}"),
+        format!(
+            "REVOKE ALL PRIVILEGES ON TABLE scope_candidate_sets, scope_candidate_inputs, \
+             scope_candidate_contents, scope_candidate_snapshots, scope_candidate_source_refs, \
+             scope_candidate_drafts, scope_candidate_reviews, scope_candidate_receipts \
+             FROM {quoted_role}"
+        ),
+        format!("GRANT SELECT, INSERT, UPDATE ON TABLE scope_candidate_sets TO {quoted_role}"),
+        format!(
+            "GRANT SELECT, INSERT ON TABLE scope_candidate_inputs, scope_candidate_contents, \
+             scope_candidate_snapshots, scope_candidate_source_refs, scope_candidate_drafts, \
+             scope_candidate_reviews, scope_candidate_receipts TO {quoted_role}"
+        ),
         format!(
             "GRANT EXECUTE ON FUNCTION public.tect_authenticate_host(uuid, text, boolean) TO {quoted_role}"
         ),

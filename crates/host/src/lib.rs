@@ -8,6 +8,10 @@ mod mcp;
 mod program_output;
 mod program_tools;
 mod responses;
+mod scope_candidate_dispatch;
+mod scope_candidate_output;
+mod scope_candidate_tools;
+mod scope_guidance;
 mod setup_dispatch;
 mod setup_files;
 mod setup_output;
@@ -20,6 +24,8 @@ mod workspace_output;
 pub use context::{HostContext, host_context_from_env};
 pub use git::GitSourceInspector;
 pub use mcp::run_stdio;
+#[doc(hidden)]
+pub use scope_guidance::CandidateEncoding;
 pub use setup_files::LocalSetupFiles;
 pub use transport::{call, call_tool, serve};
 

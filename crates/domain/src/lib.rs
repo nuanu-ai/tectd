@@ -36,3 +36,26 @@ pub use setup_file::{
 pub use setup_page::{
     AppliedSetup, SetupContext, SetupDiscovery, SetupInput, SetupPage, SetupSummary,
 };
+
+mod scope_candidate_draft;
+mod scope_candidate_validation;
+mod scope_candidates;
+pub use scope_candidate_draft::{
+    BlockerDraft, BlockerEntity, CandidateDecision, CandidateDecisionKind, CandidateDraft,
+    CandidateEntity, CandidateFinding, CandidateFindingSeverity, CandidateRef,
+    CandidateReviewDraft, CoverageGoalDraft, CoverageGoalEntity, CoverageResolutionDraft,
+    CoverageResolutionEntity, CoverageResolutionKind, DraftIdentity, EmptyCandidateDisposition,
+    EmptyCandidateDispositionKind, EvidenceDraft, EvidenceEntity, EvidenceKind,
+    ProtectedChangeDisposition, ProtectedChangeDraft, ProtectedChangeEntity, ProtectedChangeReview,
+    ResolvedCandidateDraft, ReviewCandidateSet, ReviewVerdict, SaveCandidateDraft,
+    ScopeCandidateDraft, ScopeCandidateReview,
+};
+pub use scope_candidates::{
+    BeginCandidateSet, BeginCandidateSetOutcome, CandidateBoundary, CandidateContext,
+    CandidateContextPage, CandidateContextView, CandidateInput, CandidateInputSummary,
+    CandidateMethodSnapshot, CandidateProgramSummary, CandidateReceiptRequest,
+    CandidateRuleSnapshot, CandidateSet, CandidateSetStatus, CandidateSetSummary,
+    CandidateSnapshot, CandidateSnapshotMaterial, CandidateSourceKind, CandidateSourceRef,
+    CandidateTextFragment, ProtectedObjectRef, RecordCandidateInput, RefreshCandidateSet,
+    ScopeCandidatePageItem, StoredCandidateContext,
+};

@@ -78,8 +78,13 @@ impl WorkspaceService {
                 state.session.as_ref().expect("opened").id,
             )
             .await?;
+        state.candidate_sets = tx
+            .candidate_heads(state.workspace.as_ref().expect("opened").id, 25)
+            .await?;
         state.next_action = Some(
-            if state
+            if !state.candidate_sets.is_empty() {
+                "candidate_context"
+            } else if state
                 .setup_context
                 .as_ref()
                 .and_then(|context| context.setup.as_ref())

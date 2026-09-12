@@ -2,6 +2,8 @@ use crate::tools::object_schema;
 use serde_json::{Value, json};
 use tect_domain::{MAX_SOURCE_PATH_BYTES, MAX_WORKTREES};
 
+use super::candidate_schema;
+
 #[derive(Clone)]
 pub(crate) struct RouteSpec {
     pub tool: &'static str,
@@ -40,6 +42,28 @@ impl RouteSpec {
             "setup.save" => &["save setup", "сохранить настройку"],
             "setup.record_input" => &["setup reply", "ответ для настройки"],
             "setup.apply" => &["apply setup", "создать agents", "применить настройку"],
+            "scope.candidates.context" => &[
+                "read scope candidates",
+                "candidate context",
+                "прочитать кандидаты scope",
+            ],
+            "scope.candidates.begin" => &[
+                "begin scope candidates",
+                "plan scopes",
+                "начать кандидаты scope",
+            ],
+            "scope.candidates.save" => &[
+                "save scope candidate draft",
+                "review scope candidates",
+                "сохранить кандидаты scope",
+            ],
+            "scope.candidates.record_input" => {
+                &["scope candidate amendment", "уточнить кандидаты scope"]
+            }
+            "scope.candidates.refresh" => &[
+                "refresh scope candidate context",
+                "обновить контекст кандидатов scope",
+            ],
             _ => &[],
         }
     }
@@ -273,6 +297,61 @@ pub(crate) fn routes() -> Vec<RouteSpec> {
                 json!(["setup_id", "revision", "request_id", "input"]),
             ),
             json!({"setup_id":example_id,"revision":1,"request_id":"00000000-0000-4000-8000-000000000002","input":"Complete original reply"}),
+        ),
+        route!(
+            "query",
+            "scope.candidates.context",
+            "candidate_context",
+            "Read one bounded view of an immutable Scope-candidate context and current stale reasons.",
+            "Requires an authenticated open native session and an accessible candidate set. after is omitted for the first whole-entry page; explicit null is invalid.",
+            "Reads one consistent database snapshot and compares current Program, selected-source identities, method, rule, and registry revisions. It never refreshes or writes.",
+            "Safe to repeat. Follow next_after exactly; use scope.candidates.refresh before a stale write.",
+            candidate_schema::context(),
+            json!({"candidate_set_id":example_id,"view":"overview","limit":25}),
+        ),
+        route!(
+            "command",
+            "scope.candidates.begin",
+            "begin_candidate_set",
+            "Create or recover the single current Scope-candidate set for one Program.",
+            "Requires current Program revision, an explicit finite or ongoing boundary, a non-nil request_id, and exact nonblank planning input.",
+            "Atomically captures Program, planning input, selected-source identities, the embedded method, and applicable full rules. It creates no Scope.",
+            "The same request and payload returns the same backend IDs. A different begin returns the existing head; changed payload under one request_id conflicts.",
+            candidate_schema::begin(),
+            json!({"request_id":example_id,"program_id":"00000000-0000-4000-8000-000000000002","program_revision":2,"boundary":"finite","input":"Plan reviewed Scope candidates for this Program."}),
+        ),
+        route!(
+            "command",
+            "scope.candidates.save",
+            "save_candidate_set",
+            "Persist either a Scope-candidate draft with backend-assigned IDs or its semantic review.",
+            "Requires the exact candidate-set revision, snapshot_id, input_cursor, and request_id. kind is draft or review. New entities use unique temporary local labels; existing entities copy backend id and revision.",
+            "Draft save atomically resolves local references and assigns durable UUIDs. Review save retains every decision and finding and may mark the candidate set review_required, ready, or blocked. Neither opens a Scope.",
+            "The same request and payload returns the same assigned IDs before revision checks. A changed payload conflicts. Reload scope.candidates.context after uncertainty.",
+            candidate_schema::save(),
+            json!({"kind":"draft","candidate_set_id":example_id,"revision":1,"snapshot_id":"00000000-0000-4000-8000-000000000002","input_cursor":1,"request_id":"00000000-0000-4000-8000-000000000003","draft":{"boundary":"finite","goals":[{"identity":{"local":"goal_invite"},"text":"Users can invite a collaborator.","source_ref_id":"00000000-0000-4000-8000-000000000004","resolution":{"kind":"candidate","reference":{"local":"candidate_invite"}}}],"candidates":[{"identity":{"local":"candidate_invite"},"title":"Invite collaborators","outcome":"An authorized user can invite a collaborator.","trigger":"An authorized user submits an invite.","delivered_behavior":"The service records and sends the invitation.","proof":"An integration test observes the accepted invite and delivery.","coverage_goals":[{"local":"goal_invite"}]}]}}),
+        ),
+        route!(
+            "command",
+            "scope.candidates.record_input",
+            "record_candidate_input",
+            "Append one exact amendment to the current planning-request window.",
+            "Requires the current candidate-set revision, a non-nil request_id, and nonblank exact input.",
+            "Atomically appends immutable raw input and marks the saved context stale until an explicit refresh. Existing history and backend IDs remain intact.",
+            "Repeat only with the same request_id and byte-identical input; changed input conflicts.",
+            candidate_schema::record_input(),
+            json!({"candidate_set_id":example_id,"revision":2,"request_id":"00000000-0000-4000-8000-000000000003","input":"Expire pending invitations after seven days."}),
+        ),
+        route!(
+            "command",
+            "scope.candidates.refresh",
+            "refresh_candidate_set",
+            "Capture a new immutable context snapshot for the current candidate-set head.",
+            "Requires current candidate-set and Program revisions and a non-nil request_id. It follows recorded planning amendments and current DB-selected worktree identities.",
+            "Atomically stores complete method and applicable rule bodies, Program material, planning inputs, and source references in a new version. It does not inspect Git content or open a Scope.",
+            "The same request and payload returns the same snapshot. A changed payload conflicts; stale revisions require a fresh context read.",
+            candidate_schema::refresh(),
+            json!({"candidate_set_id":example_id,"revision":3,"request_id":"00000000-0000-4000-8000-000000000004","program_revision":2}),
         ),
         route!(
             "execute",

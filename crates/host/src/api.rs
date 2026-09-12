@@ -1,3 +1,4 @@
+mod candidate_schema;
 mod catalog;
 
 use crate::tools::{annotations, object_schema};
@@ -12,6 +13,8 @@ const HELP_LIMIT: usize = 25;
 const PUBLIC_TOOLS: [&str; 5] = ["get_state", "query", "command", "execute", "help"];
 const PROGRAM_METHOD: &str = include_str!("../../../skills/tectd-program/SKILL.md");
 const SETUP_METHOD: &str = include_str!("../../../skills/tectd-setup/SKILL.md");
+const SCOPE_CANDIDATE_METHOD: &str =
+    include_str!("../../../skills/tectd-scope-candidates/SKILL.md");
 
 #[derive(Debug)]
 pub(crate) struct InternalCall {
@@ -75,7 +78,7 @@ pub(crate) fn definitions() -> Value {
         tool_definition("query", "Run one named read-only TectD route. Use help to inspect its exact parameter contract.", routed("query"), true, true),
         tool_definition("command", "Run one named logical state transition. Use help to inspect its exact parameter contract.", routed("command"), false, false),
         tool_definition("execute", "Run one named explicit external effect. Only setup.apply is currently supported.", routed("execute"), false, true),
-        tool_definition("help", "Search or describe the bounded TectD API and its two embedded methods.", help_schema(), true, true)
+        tool_definition("help", "Search or describe the bounded TectD API and its three embedded methods.", help_schema(), true, true)
     ]})
 }
 
@@ -99,7 +102,7 @@ fn help_schema() -> Value {
             "text":{"type":"string"},
             "tool":{"type":"string","enum":PUBLIC_TOOLS},
             "route":{"type":"string"},
-            "method":{"type":"string","enum":["tectd-program","tectd-setup"]}
+            "method":{"type":"string","enum":["tectd-program","tectd-setup","tectd-scope-candidates"]}
         },
         "required":["mode"],
         "additionalProperties":false,
@@ -168,10 +171,12 @@ pub(crate) fn parse_help(arguments: Value) -> Result<HelpRequest> {
             .tool
             .as_ref()
             .is_some_and(|tool| !PUBLIC_TOOLS.contains(&tool.as_str()))
-        || args
-            .method
-            .as_ref()
-            .is_some_and(|method| !matches!(method.as_str(), "tectd-program" | "tectd-setup"))
+        || args.method.as_ref().is_some_and(|method| {
+            !matches!(
+                method.as_str(),
+                "tectd-program" | "tectd-setup" | "tectd-scope-candidates"
+            )
+        })
     {
         return Err(Error::InvalidArguments);
     }
@@ -196,27 +201,36 @@ pub(crate) fn parse_help(arguments: Value) -> Result<HelpRequest> {
     }
 }
 
-pub(crate) fn help(request: HelpRequest) -> Value {
-    match request {
+pub(crate) fn help(request: HelpRequest) -> Result<Value> {
+    Ok(match request {
         HelpRequest::Search { text, tool } => search(text.as_deref(), tool.as_deref()),
         HelpRequest::DescribeTool(tool) => describe_tool(&tool),
         HelpRequest::DescribeRoute(spec) => describe_route(&spec),
         HelpRequest::DescribeMethod(method) => {
-            let (description, body) = if method == "tectd-program" {
-                (
+            let (description, body) = match method.as_str() {
+                "tectd-program" => (
                     "Method for forming and continuing a durable Program PRD.",
                     PROGRAM_METHOD,
-                )
-            } else {
-                (
+                ),
+                "tectd-setup" => (
                     "Method for composing and safely applying initial workspace instructions.",
                     SETUP_METHOD,
-                )
+                ),
+                "tectd-scope-candidates" => (
+                    "Method for deriving, reviewing, and continuing durable Scope candidates.",
+                    SCOPE_CANDIDATE_METHOD,
+                ),
+                _ => return Err(Error::InternalInvariant),
             };
-            json!({"mode":"describe","kind":"method","method":method,
-                "tool":"help","description":description,"body":body})
+            let mut value = json!({"mode":"describe","kind":"method","method":method,
+                "tool":"help","description":description,"body":body});
+            if method == "tectd-scope-candidates" {
+                value["method_revision"] = json!(crate::scope_guidance::METHOD_REVISION);
+                value["guidance_registry"] = crate::scope_guidance::help_registry()?;
+            }
+            value
         }
-    }
+    })
 }
 
 fn search(text: Option<&str>, tool_filter: Option<&str>) -> Value {
@@ -251,6 +265,10 @@ fn search(text: Option<&str>, tool_filter: Option<&str>) -> Value {
         (
             "tectd-setup",
             "Method for composing and safely applying initial workspace instructions.",
+        ),
+        (
+            "tectd-scope-candidates",
+            "Method for deriving, reviewing, and continuing durable Scope candidates.",
         ),
     ] {
         if tool_filter.is_none_or(|filter| filter == "help") && matches(&[method, summary]) {
@@ -297,10 +315,10 @@ fn describe_route(spec: &RouteSpec) -> Value {
 fn tool_summary(tool: &str) -> &'static str {
     match tool {
         "get_state" => "Read bounded DB-only state for the current native session.",
-        "query" => "Run one of four named read-only routes.",
-        "command" => "Run one of ten named logical state-transition routes.",
+        "query" => "Run one of five named read-only routes.",
+        "command" => "Run one of fourteen named logical state-transition routes.",
         "execute" => "Run the single explicit external-effect route setup.apply.",
-        "help" => "Search or describe this API and the embedded Program/setup methods.",
+        "help" => "Search or describe this API and its three embedded methods.",
         _ => "",
     }
 }
@@ -339,20 +357,32 @@ pub(crate) fn needs_action(
     }
     let (tool, arguments) = public_call(internal, params)?;
     let properties = if tool == "get_state" {
-        None
+        Some(std::collections::BTreeSet::new())
     } else {
-        route_for_internal(internal).and_then(|spec| spec.schema["properties"].as_object().cloned())
+        route_for_internal(internal).and_then(|spec| allowed_properties(&spec.schema))
     };
     let known = arguments
         .get("params")
         .and_then(Value::as_object)
         .ok_or(Error::InternalInvariant)?;
-    if properties.is_none_or(|allowed| known.keys().any(|key| !allowed.contains_key(key))) {
+    if properties.is_none_or(|allowed| known.keys().any(|key| !allowed.contains(key))) {
         return Err(Error::InternalInvariant);
     }
     let mut action = json!({"kind":kind,"tool":tool,"arguments":arguments});
     action[descriptor_name] = descriptor;
     Ok(action)
+}
+
+fn allowed_properties(schema: &Value) -> Option<std::collections::BTreeSet<String>> {
+    if let Some(properties) = schema["properties"].as_object() {
+        return Some(properties.keys().cloned().collect());
+    }
+    let variants = schema["oneOf"].as_array()?;
+    let mut names = std::collections::BTreeSet::new();
+    for variant in variants {
+        names.extend(allowed_properties(variant)?);
+    }
+    Some(names)
 }
 
 fn public_call(internal: &str, params: Value) -> Result<(&'static str, Value)> {

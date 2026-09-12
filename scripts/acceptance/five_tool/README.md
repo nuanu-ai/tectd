@@ -39,6 +39,30 @@ retains the owned temporary database and files for diagnosis; it never retains a
 Pass `--protected-artifact /absolute/nonsecret/receipt.json` for any additional installed
 receipt outside the standard Codex and TectD locations.
 
+After the candidate implementation and conditional guidance registry are frozen, run the one
+bounded candidate scenario with `--model-turn --scope-candidates`. It opens a Program and selects
+the owned Git fixture, begins an ongoing candidate set with a proposed tables/API/UI breakdown,
+proves exact begin replay, restarts the owned daemon, and asks Sol to follow only backend-owned
+continuation calls before correcting and reviewing the proposal. The final proof retains complete
+call payloads for human semantic review; automated checks cover workflow structure, source refs,
+IDs, revisions, input history, review decisions, receipt replay, and the absence of execute or
+Scope-open calls.
+
+The model proof records every TectD MCP call with its complete arguments, native status,
+canonical typed payload, `isError`, and stable error code. An expected rejected attempt is
+accepted only when the test names its exact invalid arguments and proves a later successful
+corrected call. Transport errors, malformed results, and unclassified failures fail the run.
+The model starts as a Sol Executor under the root Astra and may not create descendants.
+
+Scope-candidate acceptance extends this same harness through `scope_candidates.py`; it does
+not create a separate test project. The module currently supplies schema-independent call
+capture and exact recovery validation, preparation of an open Program with one selected owned
+source through the existing public DTOs, and assertions for snapshot binding, backend-resolved
+entity identities, exact ongoing input binding, review states, and the
+candidate-only tool boundary. Candidate route calls are added only from the implemented live
+host schemas. The owned fixture can restart its copied daemon and verify a new process/socket
+while retaining the same temporary PostgreSQL data.
+
 Before the model turn, deterministic calls on that same native thread open only the temporary
 workspace and seed one Program. The model can therefore consume a ready `query program.get`
 action without performing a bootstrap mutation. Both phases reject a resolved `tectd` server
@@ -47,6 +71,8 @@ whose full native status does not point at the owned package, socket, and host c
 The proof contains UTC start/finish times, source HEAD/tree plus changed-file hashes, Codex and product binary
 hashes, discovered tool schema hashes, native thread/turn IDs, check results, sanitized result
 hashes, fixture AGENTS.md hash, and cleanup status. It contains no database URL, command line,
-host credential, account material, or full user/model text. It also records before/after hashes
+host credential, account material, or conversational prompt/final response outside the captured
+TectD calls. It also records before/after hashes
 for the persistent Codex config and the nonsecret installed TectD receipts; it never opens the
-installed host credential or account authentication file.
+installed host credential or account authentication file. Installed upgrade receipts and their
+captured native and preservation proofs are protected by default as well.

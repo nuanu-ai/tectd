@@ -12,26 +12,26 @@ fn names(definitions: &Value) -> BTreeSet<&str> {
 }
 
 #[test]
-fn public_surface_is_exactly_five_tools_and_fifteen_registry_routes() {
+fn public_surface_is_exactly_five_tools_and_twenty_registry_routes() {
     let definitions = definitions();
     assert_eq!(
         names(&definitions),
         BTreeSet::from(["command", "execute", "get_state", "help", "query"])
     );
-    assert_eq!(routes().len(), 15);
+    assert_eq!(routes().len(), 20);
     assert_eq!(
         routes()
             .iter()
             .filter(|route| route.tool == "query")
             .count(),
-        4
+        5
     );
     assert_eq!(
         routes()
             .iter()
             .filter(|route| route.tool == "command")
             .count(),
-        10
+        14
     );
     assert_eq!(
         routes()
@@ -63,12 +63,7 @@ fn every_route_example_uses_the_authoritative_strict_decoder() {
             spec.route
         );
 
-        for field in spec.schema["required"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-        {
+        for field in required_fields(&spec.schema) {
             let mut missing = spec.example.clone();
             missing.as_object_mut().unwrap().remove(field);
             assert!(
@@ -79,7 +74,10 @@ fn every_route_example_uses_the_authoritative_strict_decoder() {
             );
         }
 
-        for (field, property) in spec.schema["properties"].as_object().unwrap() {
+        let Some(properties) = spec.schema["properties"].as_object() else {
+            continue;
+        };
+        for (field, property) in properties {
             let mut explicit_null = spec.example.clone();
             explicit_null[field] = Value::Null;
             let accepted = decode_public_call(
@@ -157,35 +155,47 @@ fn help_branches_are_strict_and_descriptions_come_from_registry() {
     .unwrap() else {
         panic!("expected route description")
     };
-    let described = help(HelpRequest::DescribeRoute(spec.clone()));
+    let described = help(HelpRequest::DescribeRoute(spec.clone())).unwrap();
     assert_eq!(described["params_schema"], spec.schema);
     assert_eq!(described["example"]["arguments"]["route"], spec.route);
     assert!(described["conditions"].as_str().unwrap().len() > 20);
     assert!(described["effects"].as_str().unwrap().len() > 20);
     assert!(described["retry"].as_str().unwrap().len() > 20);
 
-    let method = help(parse_help(json!({"mode":"describe","method":"tectd-program"})).unwrap());
+    let method =
+        help(parse_help(json!({"mode":"describe","method":"tectd-program"})).unwrap()).unwrap();
     assert_eq!(method["kind"], "method");
     assert!(method["body"].as_str().unwrap().contains("# TectD Program"));
 }
 
 #[test]
 fn help_search_is_bounded_stable_filtered_and_bilingual() {
-    let all = help(parse_help(json!({"mode":"search"})).unwrap());
-    assert_eq!(all["total_matches"], 22);
-    assert_eq!(all["returned"], 22);
-    assert_eq!(all["truncated"], false);
+    let all = help(parse_help(json!({"mode":"search"})).unwrap()).unwrap();
+    assert_eq!(all["total_matches"], 28);
+    assert_eq!(all["returned"], 25);
+    assert_eq!(all["truncated"], true);
     assert_eq!(all["hits"][0]["tool"], "get_state");
 
     let russian = help(
         parse_help(json!({"mode":"search","text":"создать программу","tool":"command"})).unwrap(),
-    );
+    )
+    .unwrap();
     assert_eq!(russian["hits"].as_array().unwrap().len(), 1);
     assert_eq!(russian["hits"][0]["route"], "program.begin");
 
-    let unknown = help(parse_help(json!({"mode":"search","text":"zz-no-such-route"})).unwrap());
+    let unknown =
+        help(parse_help(json!({"mode":"search","text":"zz-no-such-route"})).unwrap()).unwrap();
     assert!(unknown["hits"].as_array().unwrap().is_empty());
     assert!(unknown["refine_search"].is_string());
+}
+
+fn required_fields(schema: &Value) -> Vec<&str> {
+    schema["required"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect()
 }
 
 #[test]

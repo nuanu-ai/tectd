@@ -89,7 +89,13 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
     assert_eq!(query["inputSchema"]["required"], json!(["route", "params"]));
     assert_eq!(
         query["inputSchema"]["properties"]["route"]["enum"],
-        json!(["program.get", "program.list", "source.list", "setup.get"])
+        json!([
+            "program.get",
+            "program.list",
+            "source.list",
+            "setup.get",
+            "scope.candidates.context"
+        ])
     );
     let command = tools.iter().find(|tool| tool["name"] == "command").unwrap();
     assert_eq!(
@@ -97,7 +103,7 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             .as_array()
             .unwrap()
             .len(),
-        10
+        14
     );
     let help = tools.iter().find(|tool| tool["name"] == "help").unwrap();
     assert_eq!(help["inputSchema"]["oneOf"].as_array().unwrap().len(), 4);

@@ -1,4 +1,4 @@
-use crate::{ProgramSummary, SetupContext};
+use crate::{CandidateSetSummary, ProgramSummary, SetupContext};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -41,6 +41,7 @@ pub struct WorkspaceState {
     pub programs: Vec<ProgramSummary>,
     pub next_after: Option<String>,
     pub setup_context: Option<SetupContext>,
+    pub candidate_sets: Vec<CandidateSetSummary>,
 }
 
 impl WorkspaceState {
@@ -54,6 +55,7 @@ impl WorkspaceState {
             programs: Vec::new(),
             next_after: None,
             setup_context: None,
+            candidate_sets: Vec::new(),
         }
     }
 
@@ -67,6 +69,7 @@ impl WorkspaceState {
             programs: Vec::new(),
             next_after: None,
             setup_context: None,
+            candidate_sets: Vec::new(),
         }
     }
 }

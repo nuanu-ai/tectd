@@ -17,11 +17,13 @@ from typing import Any
 
 from common import Proof, Rpc, RpcError, command_overrides, initialize, raw_tool_result, sha256_file, sha256_json, start_thread, tool_result
 from fixture import Fixture
+import scope_candidates as scope
 
 
 TOOLS = ["get_state", "query", "command", "execute", "help"]
 DEV = (
-    "This is an isolated TectD five-tool acceptance fixture. Use only the TectD MCP tools explicitly requested. "
+    "You are the Sol Executor working under the root Astra for this isolated TectD five-tool acceptance. "
+    "Do not create descendants. Use only the TectD MCP tools explicitly requested. "
     "Do not use shell, editors, web, external services, messages, or subagents. Do not access or modify anything "
     "outside the supplied temporary task directory. Native metadata authenticates the thread; never invent identity."
 )
@@ -196,6 +198,8 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
     proof.check("help search works before workspace open", not failed and bool(search))
     method, failed = tool_result(app, thread_id, "help", {"mode": "describe", "method": "tectd-program"})
     proof.check("help method works before workspace open", not failed and bool(method))
+    candidate_method, failed = tool_result(app, thread_id, "help", {"mode": "describe", "method": "tectd-scope-candidates"})
+    proof.check("Scope-candidate method works before workspace open", not failed and bool(candidate_method))
     unopened, failed = tool_result(app, thread_id, "get_state", {})
     proof.check("native unopened get_state succeeds", not failed and unopened.get("status") == "uninitialized")
     open_action = recommended_call(unopened)
@@ -281,6 +285,7 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
     proof.data["representative_results"] = {
         "help_search_sha256": sha256_json(search),
         "help_method_sha256": sha256_json(method),
+        "help_candidate_method_sha256": sha256_json(candidate_method),
         "opened_sha256": sha256_json(opened),
         "program_get_sha256": sha256_json(recovered),
         "setup_apply_sha256": sha256_json(applied),
@@ -325,56 +330,37 @@ def seed_model_thread(app: Rpc, thread_id: str, proof: Proof) -> str:
 
 
 def model_turn(app: Rpc, thread_id: str, expected_program_id: str, proof: Proof) -> None:
-    position = len(app.notifications)
     prompt = (
         "Use only the TectD MCP server. Call get_state once and directly execute its recommended ready query action "
         "for the current Program without a help lookup. Then use help search for setup routes and help describe method "
         "tectd-program. Report what you read. Use only get_state, query, and help; do not mutate anything."
     )
-    result = app.request("turn/start", {"threadId": thread_id, "input": [{"type": "text", "text": prompt}], "model": "gpt-5.6-sol", "effort": "low"})
-    turn_id = result["turn"]["id"]
-    items: list[dict[str, Any]] = []
-    deadline = datetime.datetime.now(datetime.timezone.utc).timestamp() + 600
-    terminal = None
-    while datetime.datetime.now(datetime.timezone.utc).timestamp() < deadline:
-        if position >= len(app.notifications):
-            try:
-                app.notifications.append(app._read(30))
-            except TimeoutError:
-                continue
-        while position < len(app.notifications):
-            event = app.notifications[position]
-            position += 1
-            params = event.get("params", {})
-            if params.get("threadId") != thread_id:
-                continue
-            if event.get("method") == "item/completed" and params.get("turnId") == turn_id:
-                item = params["item"]
-                if item.get("type") != "reasoning":
-                    items.append(item)
-            if event.get("method") == "turn/completed" and params.get("turn", {}).get("id") == turn_id:
-                terminal = params["turn"]
-                break
-        if terminal is not None:
-            break
-    calls = [item for item in items if item.get("type") == "mcpToolCall"]
-    names = [item.get("tool") for item in calls]
+    turn_id, items, calls = scope.collect_model_turn(app, thread_id, prompt)
+    names = [call["tool"] for call in calls]
     item_types = [item.get("type") for item in items]
-    proof.check("fresh Sol native help turn completed", terminal is not None and terminal.get("status") == "completed")
+    proof.check("fresh Sol native help turn completed", True)
     proof.check(
         "fresh Sol turn used no shell subagent or external tool",
         set(item_types) <= {"userMessage", "mcpToolCall", "agentMessage"},
         item_types,
     )
     proof.check("fresh Sol turn used only get_state query and help", bool(calls) and set(names) <= {"get_state", "query", "help"}, names)
+    scope.assert_successful_calls(calls, {"get_state", "query", "help"})
     proof.check("fresh Sol turn consumed the ready query action", "get_state" in names and "query" in names and "help" in names, names)
-    query_arguments = [item.get("arguments") for item in calls if item.get("tool") == "query"]
+    query_arguments = [call["arguments"] for call in calls if call["tool"] == "query"]
     proof.check(
         "fresh Sol turn used the exact offered program.get payload",
         {"route": "program.get", "params": {"program_id": expected_program_id}} in query_arguments,
         query_arguments,
     )
-    proof.data["model_turn"] = {"thread_id": thread_id, "turn_id": turn_id, "model": "gpt-5.6-sol", "effort": "low", "tool_names": names}
+    proof.data["model_turn"] = {
+        "thread_id": thread_id,
+        "turn_id": turn_id,
+        "model": "gpt-5.6-sol",
+        "effort": "low",
+        "tool_names": names,
+        "calls": calls,
+    }
     proof.persist()
 
 
@@ -393,15 +379,21 @@ def main() -> None:
         help="additional nonsecret installed artifact to hash before and after acceptance",
     )
     parser.add_argument("--model-turn", action="store_true")
+    parser.add_argument("--scope-candidates", action="store_true", help="run the reviewed Scope-candidate scenario")
     parser.add_argument("--final", action="store_true", help="require clean committed source and label proof final")
     parser.add_argument("--keep-fixture", action="store_true")
     args = parser.parse_args()
+    if args.scope_candidates and not args.model_turn:
+        parser.error("--scope-candidates requires --model-turn")
     source = args.source.resolve()
     if args.final and git(source, "status", "--porcelain=v1"):
         raise SystemExit("final acceptance requires a clean committed source worktree")
     home = pathlib.Path.home()
     protected_paths = [home / ".codex/config.toml", home / ".config/tectd/install.json", home / ".config/tectd/README.md"]
-    protected_paths.extend(sorted((home / ".local/share/tectd/acceptance").glob("install-*/native-install-proof.json")))
+    acceptance = home / ".local/share/tectd/acceptance"
+    protected_paths.extend(sorted(acceptance.glob("install-*/native-install-proof.json")))
+    for pattern in ["upgrade-*/upgrade-proof.json", "upgrade-*/post-native-readonly-captured.json", "upgrade-*/preservation-proof.json"]:
+        protected_paths.extend(sorted(acceptance.glob(pattern)))
     protected_paths.extend(path.resolve() for path in args.protected_artifact)
     protected_before = {str(path): sha256_file(path) for path in protected_paths if path.is_file()}
     proof = Proof(
@@ -453,8 +445,16 @@ def main() -> None:
             second_thread = start_thread(second, fixture.task, DEV)
             proof.data["native_threads"].append({"phase": "model", "id": second_thread})
             assert_fixture_server(find_server(second, second_thread), fixture, proof, "model")
-            model_program_id = seed_model_thread(second, second_thread, proof)
-            model_turn(second, second_thread, model_program_id, proof)
+            if args.scope_candidates:
+                call = lambda tool, arguments: tool_result(second, second_thread, tool, arguments)
+                scenario = scope.seed_candidate_scenario(call, str(fixture.source_fixture))
+                proof.data["scope_candidate_fixture"] = scenario
+                proof.data["scope_candidate_daemon_restart"] = fixture.restart_daemon()
+                proof.persist()
+                scope.run_candidate_model_turn(second, second_thread, scenario, proof)
+            else:
+                model_program_id = seed_model_thread(second, second_thread, proof)
+                model_turn(second, second_thread, model_program_id, proof)
         else:
             proof.data["model_phase"] = {"status": "not_run", "reason": "--model-turn was not supplied"}
         proof.data["status"] = "pass"

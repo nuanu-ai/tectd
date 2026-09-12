@@ -14,6 +14,29 @@ import urllib.parse
 import uuid
 import hashlib
 
+CANDIDATE_PROGRAM_INPUT = (
+    "Continuously evolve workspace notification capabilities. Maintain an ongoing backlog that may "
+    "include email, SMS, push notifications, and notification analytics. Plan and deliver only the "
+    "specific notification increment requested at each continuation; no backlog item is promised "
+    "until it is explicitly requested and authorized."
+)
+CANDIDATE_PROGRAM_FIELDS = {
+    "name": "Ongoing workspace notifications",
+    "intent": "Continuously evolve useful workspace notification capabilities through separately requested increments.",
+    "basis": "An ongoing backlog may contain email, SMS, push, and analytics work; the current continuation supplies the authorized increment.",
+    "boundaries": "The Program may cover future email, SMS, push, and analytics capabilities, while each planning window stays within its exact current request.",
+    "constraints": "Do not treat backlog presence as current authorization; candidate planning opens no Scope and performs no implementation.",
+    "success": "Requested notification increments are durably planned and reviewed as they arrive; future SMS, push, and analytics backlog remains optional and separately authorized.",
+}
+CANDIDATE_PLANNING_INPUT = (
+    "Current requested feature: workspace administrators can choose email delivery frequency and "
+    "recipients, see the saved settings after reload, and send one test notification before enabling "
+    "delivery. Exclude SMS, push notifications, analytics, and unrelated notification-platform "
+    "cleanup from this request. Review and correct this supplied proposed breakdown using the current "
+    "TectD methodology and applicable rules: (1) add preference tables, (2) add preference API "
+    "endpoints, (3) add settings UI."
+)
+
 
 class Fixture:
     def __init__(self, source: pathlib.Path, postgres_bin: pathlib.Path, keep: bool = False):
@@ -38,6 +61,47 @@ class Fixture:
         self.port = 55432 + os.getpid() % 1000
         self.daemon: subprocess.Popen[bytes] | None = None
         self.pg_started = False
+
+    def _start_daemon(self) -> None:
+        if self.daemon is not None and self.daemon.poll() is None:
+            raise RuntimeError("owned daemon is already running")
+        if self.daemon_socket.exists():
+            raise RuntimeError("owned daemon socket was not removed before startup")
+        self.daemon = subprocess.Popen(
+            [str(self.binaries / "tectd")],
+            env={**os.environ, "TECT_DATABASE_URL": self.runtime_url(), "TECT_SOCKET": str(self.daemon_socket)},
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not self.daemon_socket.exists() and self.daemon.poll() is None:
+            time.sleep(0.03)
+        if not self.daemon_socket.exists() or self.daemon.poll() is not None:
+            raise RuntimeError("owned daemon did not create its socket")
+
+    def restart_daemon(self) -> dict[str, int]:
+        if self.daemon is None or self.daemon.poll() is not None:
+            raise RuntimeError("owned daemon is not running")
+        old_pid = self.daemon.pid
+        old_inode = self.daemon_socket.stat().st_ino
+        self.daemon.send_signal(signal.SIGINT)
+        self.daemon.wait(timeout=5)
+        deadline = time.monotonic() + 5
+        while self.daemon_socket.exists() and time.monotonic() < deadline:
+            time.sleep(0.03)
+        if self.daemon_socket.exists():
+            raise RuntimeError("owned daemon did not remove its socket")
+        self._start_daemon()
+        assert self.daemon is not None
+        new_inode = self.daemon_socket.stat().st_ino
+        if self.daemon.pid == old_pid or new_inode == old_inode:
+            raise RuntimeError("owned daemon restart did not replace process and socket")
+        return {
+            "pid_before": old_pid,
+            "pid_after": self.daemon.pid,
+            "socket_inode_before": old_inode,
+            "socket_inode_after": new_inode,
+        }
 
     @property
     def package(self) -> pathlib.Path:
@@ -132,17 +196,7 @@ class Fixture:
             "os.execv('/bin/sh',['sh','./run.sh'])\n"
         )
         self.launcher.chmod(0o700)
-        self.daemon = subprocess.Popen(
-            [str(self.binaries / "tectd")],
-            env={**os.environ, "TECT_DATABASE_URL": self.runtime_url(), "TECT_SOCKET": str(self.daemon_socket)},
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and not self.daemon_socket.exists() and self.daemon.poll() is None:
-            time.sleep(0.03)
-        if not self.daemon_socket.exists() or self.daemon.poll() is not None:
-            raise RuntimeError("owned daemon did not create its socket")
+        self._start_daemon()
 
     def database_fingerprint(self) -> str:
         result = subprocess.run(

@@ -23,14 +23,17 @@ as an identity fallback. Both the Codex-generated native UUID and host credentia
 are required before a business operation. Model tool arguments contain no identity.
 
 The public MCP surface is exactly `get_state`, `query`, `command`, `execute`, and
-`help`. Read-only routes are `program.get`, `program.list`, `source.list`, and
-`setup.get`. Logical transitions are `workspace.open`, `source.register`,
+`help`. Read-only routes include `program.get`, `program.list`, `source.list`,
+`setup.get`, and `scope.candidates.context`. Logical transitions are `workspace.open`, `source.register`,
 `session.select_worktrees`, `program.begin`, `program.save`,
 `program.record_input`, `setup.inspect`, `setup.begin`, `setup.save`, and
-`setup.record_input`. The only external-effect route is `setup.apply`. Each native
+`setup.record_input`, `scope.candidates.begin`, `scope.candidates.save`,
+`scope.candidates.record_input`, and `scope.candidates.refresh`. The only external-effect route is `setup.apply`. Each native
 session has its own selected worktrees. Program drafts, original input and PRDs live
 in the database. The focused `tectd-program` and `tectd-setup` methods are embedded in the
-executable and returned by `help` describe. Opening a Program does not launch Scope or
+executable and returned by `help` describe. The `tectd-scope-candidates` method is
+also embedded and binds bounded candidate context to the packaged conditional rule
+registry. Opening a Program or reviewing candidates does not launch Scope or
 implementation work. Tool results carry a short introduction and one JSON content
 block with data and exact next actions, without duplicate structured content.
 The enrolled host remains the

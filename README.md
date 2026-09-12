@@ -4,7 +4,8 @@ A Rust daemon with PostgreSQL as the canonical store. A workspace is a logical
 database object. Its identity comes from an authenticated tenant and an explicit
 workspace key; it has no workspace directory or workspace Git worktree.
 
-This repository implements workspace bootstrap, Program formation and initial workspace instructions in V2.1. The current installed Tect plugin
+This repository implements workspace bootstrap, Program formation, reviewed Scope
+candidate planning and initial workspace instructions in V2.1. The current installed Tect plugin
 continues to govern its development. Installing or replacing that plugin is a
 separate operation.
 
@@ -107,13 +108,13 @@ route schema. Unknown routes and route parameters fail before effects.
 | Tool | Purpose |
 | --- | --- |
 | `get_state` | DB-only bounded state for the current native session |
-| `query` | Read-only routes: `program.get`, `program.list`, `source.list`, `setup.get` |
-| `command` | Ten logical state-transition routes; validation may read Git/files but does not publish files |
+| `query` | Read-only routes, including bounded Program, source, setup and candidate-context reads |
+| `command` | Logical state-transition routes; validation may read Git/files but does not publish files |
 | `execute` | Explicit external effects; currently only `setup.apply` |
 | `help` | Bounded static API search and exact tool/route/method descriptions |
 
-Embedded methods are returned by `help` describe calls for `tectd-program` and
-`tectd-setup`. Help works before workspace bootstrap after native identity and host
+Embedded methods are returned by `help` describe calls for `tectd-program`,
+`tectd-setup` and `tectd-scope-candidates`. Help works before workspace bootstrap after native identity and host
 authentication; it creates no workspace/session records and reads no filesystem.
 
 ## Source routes
@@ -174,10 +175,43 @@ Pages contain whole entries and may become smaller to fit the existing 8 MiB fra
 Unrepresentable writes are refused before commit, including PRD growth that would
 make an older original input unreadable. Text is not silently truncated.
 
-The host embeds `skills/tectd-program/SKILL.md`; `help` describes only the two
-allowlisted build-bound methods after host authentication. It never accepts a file
+The host embeds build-bound methods under `skills/`; `help` describes only the three
+allowlisted methods after host authentication. It never accepts a file
 path. The packaged binary therefore carries the same method without installing
 client-side PRD files or the former WorkOrder artifact lifecycle.
+
+## Scope candidate planning
+
+One Program has one current, versioned candidate-set head. The backend captures an
+immutable Program/request/source-selection snapshot with the embedded method and
+all matched rule bodies. `query` route `scope.candidates.context` returns the
+overview, compact Program field references, planning-input references, candidate
+objects and reviews as bounded pages. Large Program fields and exact raw inputs are
+read through server-generated UTF-8 fragments and advancing cursors; reads never
+write or rebind the snapshot.
+
+`command` routes `scope.candidates.begin`, `scope.candidates.save`,
+`scope.candidates.record_input` and `scope.candidates.refresh` create or resume the
+head, persist a draft or critical review, append exact amendments and explicitly
+capture a fresh context. New draft objects use temporary local labels only within
+one payload; the backend atomically assigns durable UUIDs. Replays return the
+original coherent result, while conflicting request reuse, stale revisions and
+stale snapshots fail before effects.
+
+Finite planning maps captured Program success to reviewed candidates, evidence or
+blockers. Ongoing planning is limited to the originating request and its captured
+amendments. Accepted-work evidence and candidate associations remain protected;
+changing them requires a later captured authority reference, rationale and explicit
+review. A ready candidate set remains a recommendation for user selection. This
+release has no native Scope or Result lifecycle and never opens a Scope automatically.
+
+## Monthly epochs
+
+Migration 0005 adds immutable, PostgreSQL-generated UTC month keys and bounded
+indexes to the eleven append/history and long-lived state tables named by the V2.1
+design. Existing rows derive their month from their original `created_at`; normal
+updates do not move them. Epoch keys are an internal storage/query property and add
+no agent parameter, timer, cron job, periodic write or physical partition.
 
 ## Initial workspace instructions
 

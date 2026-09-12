@@ -63,6 +63,7 @@ pub fn public_call(name: &str, arguments: Value) -> Value {
         "list_programs" => ("query", "program.list"),
         "list_sources" => ("query", "source.list"),
         "get_setup" => ("query", "setup.get"),
+        "candidate_context" => ("query", "scope.candidates.context"),
         "open_workspace" => ("command", "workspace.open"),
         "register_source" => ("command", "source.register"),
         "select_worktrees" => ("command", "session.select_worktrees"),
@@ -73,6 +74,10 @@ pub fn public_call(name: &str, arguments: Value) -> Value {
         "begin_setup" => ("command", "setup.begin"),
         "save_setup" => ("command", "setup.save"),
         "record_setup_input" => ("command", "setup.record_input"),
+        "begin_candidate_set" => ("command", "scope.candidates.begin"),
+        "save_candidate_set" => ("command", "scope.candidates.save"),
+        "record_candidate_input" => ("command", "scope.candidates.record_input"),
+        "refresh_candidate_set" => ("command", "scope.candidates.refresh"),
         "apply_setup" => ("execute", "setup.apply"),
         "read_skill" => {
             return json!({"name":"help","arguments":{
