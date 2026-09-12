@@ -219,17 +219,59 @@ class CandidateCycleTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             cycles._assert_failed_body_recoveries(minted)
 
-    def test_only_identical_control_free_current_overview_is_reusable(self) -> None:
+    def test_only_identical_unpinned_current_head_reads_are_reusable(self) -> None:
         set_id = str(uuid.uuid4())
-        overview = ("query", {"route": "scope.candidates.context", "params": {
-            "candidate_set_id": set_id, "view": "overview", "limit": 25,
-        }})
-        read = {"tool": overview[0], "arguments": overview[1], "payload": {"actions": []}}
-        cycles._assert_offered_reads([read], initial={"actions": []}, reusable=[overview])
-        controlled = copy.deepcopy(read)
-        controlled["arguments"]["params"]["draft_revision"] = 2
+        for view in ["overview", "program", "inputs", "candidates", "reviews"]:
+            params = {"candidate_set_id": set_id, "view": view, "limit": 25}
+            if view == "inputs":
+                params["after"] = 0
+            reusable = ("query", {"route": "scope.candidates.context", "params": params})
+            read = {"tool": reusable[0], "arguments": reusable[1], "payload": {"actions": []}}
+            issued = {"actions": [{
+                "kind": "ready_call", "tool": reusable[0], "arguments": reusable[1],
+            }]}
+            cycles._assert_offered_reads([read, copy.deepcopy(read)], initial=issued)
+            for key, value in [
+                ("candidate_set_id", str(uuid.uuid4())), ("limit", 24),
+                ("after", 1), ("draft_revision", 2),
+            ]:
+                controlled = copy.deepcopy(read)
+                controlled["arguments"]["params"][key] = value
+                with self.assertRaises(AssertionError):
+                    cycles._assert_offered_reads([controlled], initial=issued)
+        for view in ["history", "historical", "fragment"]:
+            self.assertFalse(cycles._is_reusable_current_head_read(("query", {
+                "route": "scope.candidates.context",
+                "params": {"candidate_set_id": set_id, "view": view, "limit": 25},
+            })))
+
+    def test_recovered_draft_is_a_transition_that_emits_its_checkpoint(self) -> None:
+        set_id = str(uuid.uuid4())
+        rejected = {
+            "tool": "command", "arguments": {"route": "scope.candidates.save", "params": {}},
+            "status": "failed", "is_error": True, "payload": {"actions": [{
+                "kind": "ready_call", "tool": "get_state", "arguments": {},
+            }]},
+        }
+        checkpoint = {"tool": "get_state", "arguments": {}, "payload": {"actions": []}}
+        cycles._assert_offered_reads(
+            [rejected, checkpoint], initial={"actions": []}, recovered_transitions=[rejected],
+        )
         with self.assertRaises(AssertionError):
-            cycles._assert_offered_reads([controlled], initial={"actions": []}, reusable=[overview])
+            cycles._assert_offered_reads([rejected, checkpoint], initial={"actions": []})
+
+    def test_repeated_input_page_must_preserve_the_immutable_record(self) -> None:
+        value = {"id": str(uuid.uuid4()), "sequence": 2, "source_ref_id": str(uuid.uuid4())}
+        def page(item: dict) -> dict:
+            return {
+                "arguments": {"params": {"view": "inputs"}},
+                "payload": {"items": [{"input": item}]},
+            }
+        self.assertEqual(cycles._input_window([page(value), page(copy.deepcopy(value))]), {2})
+        changed = copy.deepcopy(value)
+        changed["source_ref_id"] = str(uuid.uuid4())
+        with self.assertRaises(AssertionError):
+            cycles._input_window([page(value), page(changed)])
 
     def test_ready_review_allows_only_exact_read_only_inspection(self) -> None:
         candidate_id, set_id = str(uuid.uuid4()), str(uuid.uuid4())

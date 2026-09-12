@@ -5,10 +5,11 @@ import uuid
 from typing import Any
 
 from scope_candidate_lineage import (
+    _is_reusable_current_head_read,
     assert_command_template as _assert_command_template,
     assert_failed_body_recoveries as _assert_failed_body_recoveries,
     assert_offered_reads as _assert_offered_reads,
-    reusable_overviews as _reusable_overviews,
+    reusable_current_head_reads as _reusable_current_head_reads,
     successful as _successful,
 )
 
@@ -110,6 +111,20 @@ def _expected_bodies(snapshot: dict[str, Any], scenario: dict[str, Any], inputs:
         else:
             expected[source["id"]] = scenario["program_fields"][source["program_field"]]
     return expected
+
+
+def _input_window(reads: list[dict[str, Any]]) -> set[int]:
+    observed: dict[int, dict[str, Any]] = {}
+    for call in reads:
+        if call.get("arguments", {}).get("params", {}).get("view") != "inputs":
+            continue
+        for item in call.get("payload", {}).get("items", []):
+            value = item["input"]
+            sequence = value["sequence"]
+            if sequence in observed and observed[sequence] != value:
+                raise AssertionError("repeated input sequence changed its immutable record")
+            observed[sequence] = value
+    return set(observed)
 
 
 def _assert_draft(draft: dict[str, Any], planning_sources: set[str]) -> None:
@@ -385,7 +400,11 @@ def assert_two_cycles(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> 
     opened = [call for call in first_navigation if _is(call, "command", "workspace.open")]
     if len(opened) != 1:
         raise AssertionError("new child session did not execute exactly one offered workspace.open")
-    _assert_offered_reads(first_navigation, explicit=source_setup)
+    recovered_drafts = [call for call in first_navigation if not _successful(call)
+                        and any(_save_kind(call, kind) for kind in ("draft", "review"))]
+    _assert_offered_reads(
+        first_navigation, explicit=source_setup, recovered_transitions=recovered_drafts,
+    )
     first_reads = [call for call in first_navigation if call["tool"] in {"get_state", "query"}]
     first_overview = next(call["payload"] for call in first_reads
                           if call["tool"] == "query" and call["arguments"]["params"].get("view") == "overview")
@@ -403,16 +422,18 @@ def assert_two_cycles(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> 
     _assert_offered_reads(
         second_reads,
         calls[refresh_index]["payload"],
-        reusable=_reusable_overviews([call.get("payload", {}) for call in calls[:refresh_index + 1]]),
+        reusable=_reusable_current_head_reads(
+            [call.get("payload", {}) for call in calls[:refresh_index + 1]]
+        ),
     )
-    second_overview = next(call["payload"] for call in second_reads if call["arguments"]["params"].get("view") == "overview")
-    if second_overview["context"]["snapshot"] != second_snapshot:
-        raise AssertionError("second context traversal switched away from the refreshed snapshot")
-    inputs = [item["input"]["sequence"] for call in second_reads
-              if call["arguments"]["params"].get("view") == "inputs" for item in call["payload"].get("items", [])]
-    if inputs != [1, 2]:
+    if refreshed_context["snapshot"] != second_snapshot:
+        raise AssertionError("second context traversal switched away from the authoritative refreshed snapshot")
+    if _input_window(second_reads) != {1, 2}:
         raise AssertionError("second planning context did not expose the exact two-input window")
-    expected_current = _expected_bodies(second_overview["context"]["snapshot"], scenario, {1: scenario["planning_input"], 2: scenario["amendment"]})
+    expected_current = _expected_bodies(
+        second_snapshot, scenario,
+        {1: scenario["planning_input"], 2: scenario["amendment"]},
+    )
     if _fragments(second_reads, None) != expected_current:
         raise AssertionError("second planning context was not read in full")
     _assert_command_template(calls, second_drafts[0], [call["payload"] for call in second_reads], "draft")

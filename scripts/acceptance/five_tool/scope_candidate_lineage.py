@@ -20,28 +20,34 @@ def _ready(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     ]
 
 
-def _is_current_overview(call: tuple[str, dict[str, Any]]) -> bool:
+def _is_reusable_current_head_read(call: tuple[str, dict[str, Any]]) -> bool:
     tool, arguments = call
     params = arguments.get("params", {})
     return (
         tool == "query"
         and arguments.get("route") == "scope.candidates.context"
         and set(arguments) == {"route", "params"}
-        and set(params) == {"candidate_set_id", "view", "limit"}
+        and set(params) in (
+            {"candidate_set_id", "view", "limit"},
+            {"candidate_set_id", "view", "limit", "after"},
+        )
         and isinstance(params.get("candidate_set_id"), str)
-        and params.get("view") == "overview"
+        and params.get("view") in {"overview", "program", "inputs", "candidates", "reviews"}
         and params.get("limit") == 25
+        and ("after" not in params or isinstance(params["after"], int) and params["after"] >= 0)
     )
 
 
-def reusable_overviews(payloads: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
-    return [call for payload in payloads for call in _ready(payload) if _is_current_overview(call)]
+def reusable_current_head_reads(payloads: list[dict[str, Any]]) -> list[tuple[str, dict[str, Any]]]:
+    # These unpinned views reload the current head; exact previously issued calls remain valid.
+    return [call for payload in payloads for call in _ready(payload) if _is_reusable_current_head_read(call)]
 
 
 def assert_offered_reads(
     reads: list[dict[str, Any]], initial: dict[str, Any] | None = None,
     explicit: list[tuple[str, dict[str, Any]]] | None = None,
     reusable: list[tuple[str, dict[str, Any]]] | None = None,
+    recovered_transitions: list[dict[str, Any]] | None = None,
 ) -> None:
     def calls(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
         return [
@@ -54,8 +60,14 @@ def assert_offered_reads(
 
     offered = calls(initial) if initial is not None else []
     supplied = list(explicit or [])
-    reusable_calls = [*(reusable or []), *(call for call in offered if _is_current_overview(call))]
+    recovered = {id(call) for call in recovered_transitions or []}
+    reusable_calls = [*(reusable or []), *(call for call in offered if _is_reusable_current_head_read(call))]
     for index, read in enumerate(reads):
+        if id(read) in recovered:
+            emitted = calls(read["payload"])
+            offered.extend(emitted)
+            reusable_calls.extend(item for item in emitted if _is_reusable_current_head_read(item))
+            continue
         call = (read["tool"], read["arguments"])
         supplied_call = False
         if call in supplied:
@@ -73,7 +85,7 @@ def assert_offered_reads(
                 ) from error
         emitted = calls(read["payload"])
         offered.extend(emitted)
-        reusable_calls.extend(item for item in emitted if _is_current_overview(item))
+        reusable_calls.extend(item for item in emitted if _is_reusable_current_head_read(item))
     if supplied:
         raise AssertionError("model omitted an explicitly supplied fixture setup call")
 
