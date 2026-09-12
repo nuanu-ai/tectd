@@ -436,7 +436,7 @@ def collect_model_turn(app: Any, thread_id: str, prompt: str) -> tuple[str, list
     position = len(app.notifications)
     started = app.request(
         "turn/start",
-        {"threadId": thread_id, "input": [{"type": "text", "text": prompt}], "model": "gpt-5.6-sol", "effort": "low"},
+        {"threadId": thread_id, "input": [{"type": "text", "text": prompt}], "model": "gpt-5.6-sol", "effort": "medium"},
     )
     turn_id = started["turn"]["id"]
     items: list[dict[str, Any]] = []
@@ -488,7 +488,7 @@ def run_candidate_model_turn(app: Any, thread_id: str, scenario: dict[str, Any],
         "thread_id": thread_id,
         "turn_id": turn_id,
         "model": "gpt-5.6-sol",
-        "effort": "low",
+        "effort": "medium",
         "calls": calls,
         "semantic_review_required": True,
         "bindings": {
