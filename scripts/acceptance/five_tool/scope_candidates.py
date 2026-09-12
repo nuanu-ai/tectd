@@ -3,8 +3,9 @@ from __future__ import annotations
 import json, uuid
 from typing import Any, Callable
 from common import tool_result
-from fixture import CANDIDATE_PLANNING_INPUT, CANDIDATE_PROGRAM_FIELDS, CANDIDATE_PROGRAM_INPUT, collect_model_turn
+from fixture import CANDIDATE_AMENDMENT, CANDIDATE_PLANNING_INPUT, CANDIDATE_PROGRAM_FIELDS, CANDIDATE_PROGRAM_INPUT, collect_model_turn
 import model_capture
+import scope_candidate_cycles
 
 CANDIDATE_QUERY_ROUTES = {"scope.candidates.context"}
 CANDIDATE_COMMAND_ROUTES = {
@@ -179,6 +180,7 @@ def seed_candidate_scenario(
         "candidate_revision": candidate_set["revision"],
         "snapshot_id": context["snapshot"]["id"],
         "planning_input": CANDIDATE_PLANNING_INPUT,
+        "amendment": CANDIDATE_AMENDMENT,
         "begin_arguments": {"route": "scope.candidates.begin", "params": params},
     }
 def candidate_model_prompt(candidate_set_id: str) -> str:
@@ -188,10 +190,13 @@ def candidate_model_prompt(candidate_set_id: str) -> str:
         "complete planning context has been delivered. Read the full captured method and every matched rule "
         "before drafting. Use the exact current IDs, revisions, snapshot, source references, and route schemas "
         "returned by TectD. Apply the current TectD methodology and applicable rules, then perform and save "
-        "the critical semantic review; revise and "
-        "review again if needed. "
-        "Use only TectD get_state, help, query, and command. Use no execute route, open no Scope, do no "
-        "implementation, and do not complete the Program."
+        "the critical semantic review; revise and review again if needed. Only after the first planning "
+        "cycle reaches Ready, record this exact separate user amendment: \"" + CANDIDATE_AMENDMENT + "\" "
+        "Follow the backend record-input and refresh actions, read the complete refreshed context, and draft "
+        "and critically review the amended planning result until it reaches Ready. Then read compact history, "
+        "the complete original historical draft and all of its referenced source fragments, and return to the "
+        "current overview. Use only TectD get_state, help, query, and command. Use no execute route, open no "
+        "Scope, do no implementation, and do not complete the Program."
     )
 
 def assert_bound_context(context: dict[str, Any], program_id: str, worktree_id: str) -> None:
@@ -210,51 +215,11 @@ def assert_bound_context(context: dict[str, Any], program_id: str, worktree_id: 
     if not snapshot["rules"] or any(not all(rule.get(key) for key in ["id", "revision", "text"]) for rule in snapshot["rules"]):
         raise AssertionError("candidate rule snapshots are incomplete")
 
-def assert_resolved_entities(draft: dict[str, Any]) -> None:
-    """Require local draft handles to resolve to stable backend UUIDs and revisions."""
-    for collection in ["goals", "evidence", "candidates", "blockers"]:
-        for entity in draft.get(collection, []):
-            uuid.UUID(str(entity.get("id")))
-            if not isinstance(entity.get("revision"), int) or entity["revision"] < 1 or "local" in entity:
-                raise AssertionError("candidate entity did not resolve to backend identity")
-
 def assert_program_remains_open(page: dict[str, Any]) -> None:
     candidate_set = page.get("context", {}).get("candidate_set", {})
     program = page.get("program", {})
     if candidate_set.get("status") not in {"ready", "blocked"} or program.get("status") != "open":
         raise AssertionError("candidate readiness incorrectly completed or lost the Program")
-
-def assert_review_state(context: dict[str, Any], draft: dict[str, Any], review: dict[str, Any] | None) -> None:
-    """Check set status separately from per-candidate review decisions and blockers."""
-    status = context.get("candidate_set", {}).get("status")
-    if status == "draft":
-        if review is not None:
-            raise AssertionError("unreviewed draft unexpectedly has a review")
-        return
-    if status == "review_required":
-        if not draft.get("candidates"):
-            raise AssertionError("review-required set has no candidate draft")
-        if review is not None and review.get("verdict") != "revise":
-            raise AssertionError("review-required set has an incompatible review verdict")
-        return
-    if not isinstance(review, dict):
-        raise AssertionError("terminal candidate status has no review")
-    decisions = review.get("candidate_decisions", [])
-    candidate_ids = {str(item.get("id")) for item in draft.get("candidates", [])}
-    decision_ids = {str(item.get("candidate_id")) for item in decisions}
-    if not candidate_ids or decision_ids != candidate_ids:
-        raise AssertionError("review decisions do not cover the exact candidate set")
-    if status == "ready":
-        if review.get("verdict") != "ready" or any(item.get("decision") != "accept" for item in decisions):
-            raise AssertionError("ready set contains a non-accepted candidate decision")
-        if draft.get("blockers") or draft.get("pending_question") is not None:
-            raise AssertionError("ready set retains a blocker or pending question")
-    elif status == "blocked":
-        material = any(item.get("severity") == "material" for item in review.get("findings", []))
-        if review.get("verdict") != "blocked" or not (draft.get("blockers") or material):
-            raise AssertionError("blocked set has no concrete blocker or material finding")
-    else:
-        raise AssertionError("unknown candidate set status")
 
 def assert_candidate_call_boundary(calls: list[dict[str, Any]]) -> None:
     """Keep model work inside candidate read/write routes, with no execute or Scope open."""
@@ -284,166 +249,27 @@ def assert_model_item_boundary(items: list[dict[str, Any]]) -> None:
     if unexpected:
         raise AssertionError("candidate model used disallowed item types: " + ", ".join(unexpected))
 
-def _complete_fragments(calls: list[dict[str, Any]]) -> dict[str, str]:
-    bodies: dict[str, str] = {}
-    complete: set[str] = set()
-    for call in calls:
-        params = call.get("arguments", {}).get("params", {})
-        if call.get("tool") != "query" or params.get("view") != "fragment":
-            continue
-        fragment = call.get("payload", {}).get("fragment", {})
-        source = fragment.get("source_ref", {})
-        source_id = str(source.get("id"))
-        text = fragment.get("text")
-        cursor = fragment.get("cursor")
-        if source_id != params.get("source_ref_id") or cursor != params.get("cursor") or not isinstance(text, str):
-            raise AssertionError("fragment result does not match its backend-provided request")
-        previous = bodies.get(source_id, "")
-        if source_id in complete or cursor != len(previous.encode("utf-8")):
-            raise AssertionError("fragment sequence is duplicated, skipped, or out of order")
-        bodies[source_id] = previous + text
-        next_cursor = fragment.get("next_cursor")
-        if next_cursor is None:
-            complete.add(source_id)
-        elif next_cursor != len(bodies[source_id].encode("utf-8")):
-            raise AssertionError("fragment continuation is not the exact server byte cursor")
-    if complete != set(bodies):
-        raise AssertionError("one or more referenced bodies stopped before the terminal fragment")
-    return bodies
-
-def _assert_ready_reads(reads: list[dict[str, Any]], initial: dict[str, Any] | None = None) -> None:
-    def ready(payload: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
-        return [(action["tool"], action["arguments"]) for action in payload.get("actions", [])
-                if action.get("kind") == "ready_call" and isinstance(action.get("arguments"), dict)]
-    offered = ready(initial) if initial is not None else []
-    for index, read in enumerate(reads):
-        if initial is not None or index:
-            try:
-                offered.pop(offered.index((read["tool"], read["arguments"])))
-            except ValueError as error:
-                raise AssertionError("model reconstructed a context read instead of using a backend ready call") from error
-        offered.extend(ready(read["payload"]))
-
 def assert_candidate_model_result(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> dict[str, Any]:
-    """Validate observable workflow structure; prose remains a human semantic review."""
+    """Validate two observable cycles; prose remains a human semantic review."""
     assert_candidate_call_boundary(calls)
     assert_successful_calls(calls, {"get_state", "help", "query", "command"})
-    draft_index = next(
-        (
-            index
-            for index, call in enumerate(calls)
-            if call["tool"] == "command"
-            and call["arguments"]["route"] == "scope.candidates.save"
-            and call["arguments"]["params"].get("kind") == "draft"
-        ),
-        None,
-    )
-    if draft_index is None:
-        raise AssertionError("model did not save a candidate draft")
-    before = calls[:draft_index]
-    reads = [call for call in before if call["tool"] in {"get_state", "query"}]
-    if not reads or reads[0]["tool"] != "get_state" or reads[0]["arguments"]:
-        raise AssertionError("model did not start candidate recovery from get_state")
-    _assert_ready_reads(reads)
-    input_templates = [
-        action
-        for read in reads
-        for action in read["payload"].get("actions", [])
-        if action.get("kind") == "needs_input"
-        and action.get("tool") == "command"
-        and action.get("arguments", {}).get("route") == "scope.candidates.save"
+    evidence = scope_candidate_cycles.assert_two_cycles(calls, scenario)
+    first = evidence["first_snapshot"]
+    second = evidence["second_snapshot"]
+    for snapshot in [first, second]:
+        method, rules = snapshot["method"], snapshot["rules"]
+        if not method["body"] or not rules or any(not rule["text"] for rule in rules):
+            raise AssertionError("planning context omitted the full method or matched rule bodies")
+    evidence["method_id"] = second["method"]["id"]
+    evidence["method_revision"] = second["method"]["revision"]
+    evidence["method_digest"] = second["method"]["digest"]
+    evidence["rule_bindings"] = [
+        {"id": rule["id"], "revision": rule["revision"], "origin_refs": rule.get("origin_refs", [])}
+        for rule in second["rules"]
     ]
-    if not input_templates:
-        raise AssertionError("backend context traversal did not explicitly advance to candidate drafting")
-    draft_base = input_templates[-1]["arguments"]["params"]
-    actual_draft_params = calls[draft_index]["arguments"]["params"]
-    if {key: value for key, value in actual_draft_params.items() if key != "draft"} != draft_base:
-        raise AssertionError("model did not preserve the backend-provided candidate draft call template")
-    overview = next(
-        call["payload"]
-        for call in before
-        if call["tool"] == "query" and call["arguments"]["params"].get("view") == "overview"
-    )
-    assert_bound_context(overview["context"], scenario["program_id"], scenario["worktree_id"])
-    snapshot = overview["context"]["snapshot"]
-    method = snapshot["method"]
-    rules = snapshot["rules"]
-    if not method["body"] or not rules or any(not rule["text"] for rule in rules):
-        raise AssertionError("model context omitted the full method or matched rule bodies")
-    input_items = [
-        item
-        for call in before
-        if call["tool"] == "query" and call["arguments"]["params"].get("view") == "inputs"
-        for item in call["payload"].get("items", [])
-    ]
-    input_sequences = [item.get("input", {}).get("sequence") for item in input_items]
-    if input_sequences != [1]:
-        raise AssertionError("planning input page did not preserve the exact request window")
-    fragments = _complete_fragments(before)
-    expected_bodies = {
-        ref["id"]: scenario["planning_input"] if ref["kind"] == "planning_input" else scenario["program_fields"][ref["program_field"]]
-        for ref in snapshot["source_refs"]
-    }
-    if fragments != expected_bodies:
-        raise AssertionError("model did not retrieve every referenced Program field and planning input exactly")
-    draft_call = calls[draft_index]
-    stored_draft = draft_call["payload"].get("draft", {})
-    context = draft_call["payload"].get("context", {})
-    assert_resolved_entities(stored_draft)
-    assert_review_state(context, stored_draft, None)
-    planning_source_ids = {
-        item["id"] for item in context["snapshot"]["source_refs"] if item["kind"] == "planning_input"
-    }
-    source_kinds = {item["kind"] for item in context["snapshot"]["source_refs"]}
-    if source_kinds != {"program_field", "program_success", "planning_input"}:
-        raise AssertionError("candidate snapshot has unexpected authority source kinds")
-    goal_ids = {goal["id"] for goal in stored_draft.get("goals", [])}
-    candidate_ids = {candidate["id"] for candidate in stored_draft.get("candidates", [])}
-    resolved_ids = {goal.get("resolution", {}).get("id") for goal in stored_draft.get("goals", [])}
-    covered_ids = {goal for candidate in stored_draft.get("candidates", []) for goal in candidate.get("coverage_goal_ids", [])}
-    if stored_draft.get("boundary") != "ongoing" or stored_draft.get("evidence") or not candidate_ids or not goal_ids or any(
-        goal.get("source_ref_id") not in planning_source_ids for goal in stored_draft.get("goals", [])
-    ) or resolved_ids - candidate_ids or covered_ids != goal_ids:
-        raise AssertionError("candidate draft is empty, claims evidence, or escapes its exact planning-input source window")
-    review_calls = [
-        call
-        for call in calls[draft_index + 1 :]
-        if call["tool"] == "command"
-        and call["arguments"]["route"] == "scope.candidates.save"
-        and call["arguments"]["params"].get("kind") == "review"
-    ]
-    if not review_calls:
-        raise AssertionError("model did not save its critical candidate review")
-    review_call = review_calls[-1]
-    review_index = calls.index(review_call)
-    post_draft_reads = [call for call in calls[draft_index + 1 : review_index] if call["tool"] == "query"]
-    _assert_ready_reads(post_draft_reads, draft_call["payload"])
-    review_templates = [
-        action for call in post_draft_reads for action in call["payload"].get("actions", [])
-        if action.get("kind") == "needs_input" and action.get("arguments", {}).get("route") == "scope.candidates.save"
-    ]
-    if not review_templates or {key: value for key, value in review_call["arguments"]["params"].items() if key != "review"} != review_templates[-1]["arguments"]["params"]:
-        raise AssertionError("model did not preserve the backend-provided candidate review call template")
-    reviewed = review_call["payload"]
-    latest_review = reviewed.get("latest_review")
-    if not isinstance(latest_review, dict):
-        raise AssertionError("review receipt omitted the stored review")
-    if reviewed.get("context", {}).get("candidate_set", {}).get("status") != "ready":
-        raise AssertionError("unblocked two-outcome scenario did not reach reviewed ready state")
-    if reviewed.get("recommended_action") is not None:
-        raise AssertionError("terminal reviewed set still recommends a continuation loop")
-    assert_review_state(reviewed.get("context", {}), reviewed.get("draft", {}), latest_review)
-    return {
-        "draft_arguments": draft_call["arguments"],
-        "draft_payload": draft_call["payload"],
-        "final_payload": reviewed,
-        "method_id": method["id"],
-        "method_revision": method["revision"],
-        "method_digest": method["digest"],
-        "rule_bindings": [{"id": rule["id"], "revision": rule["revision"], "origin_refs": rule.get("origin_refs", [])} for rule in rules],
-        "registry_revision": overview["context"]["snapshot"]["registry_revision"],
-        "registry_digest": overview["context"]["snapshot"]["registry_digest"],
-    }
+    evidence["registry_revision"] = second["registry_revision"]
+    evidence["registry_digest"] = second["registry_digest"]
+    return evidence
 
 def run_candidate_model_turn(app: Any, thread_id: str, scenario: dict[str, Any], proof: Any, allow_one_child: bool = False) -> None:
     turn_id, items = collect_model_turn(
@@ -457,9 +283,10 @@ def run_candidate_model_turn(app: Any, thread_id: str, scenario: dict[str, Any],
         raise AssertionError("candidate model emitted malformed MCP call evidence")
     model_capture.assert_child_item_boundary(items) if allow_one_child else assert_model_item_boundary(items)
     evidence = assert_candidate_model_result(calls, scenario)
-    replay, failed = tool_result(app, thread_id, "command", evidence["draft_arguments"])
-    if failed or replay != evidence["draft_payload"]:
-        raise AssertionError("exact candidate draft receipt did not replay after review")
+    for arguments, payload in evidence["draft_receipts"]:
+        replay, failed = tool_result(app, thread_id, "command", arguments)
+        if failed or replay != payload:
+            raise AssertionError("exact candidate draft receipt did not replay after later planning")
     current, failed = tool_result(
         app,
         thread_id,
@@ -482,6 +309,6 @@ def run_candidate_model_turn(app: Any, thread_id: str, scenario: dict[str, Any],
             key: evidence[key]
             for key in ["method_id", "method_revision", "method_digest", "rule_bindings", "registry_revision", "registry_digest"]
         },
-        "receipt_replay": True,
+        "receipt_replays": len(evidence["draft_receipts"]),
     }
     proof.persist()

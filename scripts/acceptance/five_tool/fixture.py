@@ -37,6 +37,12 @@ CANDIDATE_PLANNING_INPUT = (
     "TectD methodology and applicable rules: (1) add preference tables, (2) add preference API "
     "endpoints, (3) add settings UI."
 )
+CANDIDATE_AMENDMENT = (
+    "Keep the email frequency and recipient settings, including restoration after reload. For this "
+    "iteration, replace the one-time test notification with a preview of the recipients and delivery "
+    "schedule; do not include actual email sending. SMS, push notifications, analytics, and unrelated "
+    "platform cleanup remain excluded."
+)
 
 def collect_model_turn(app, thread_id: str, prompt: str, proof, allow_one_child: bool = False):
     position = len(app.notifications)
@@ -55,7 +61,7 @@ def collect_model_turn(app, thread_id: str, prompt: str, proof, allow_one_child:
     proof.persist()
     items = []
     actors: set[str] = set()
-    deadline = time.monotonic() + 600
+    deadline = time.monotonic() + 900
     terminal = None
 
     def record(event: dict[str, Any]) -> bool:

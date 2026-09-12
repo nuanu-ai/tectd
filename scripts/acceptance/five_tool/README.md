@@ -54,13 +54,16 @@ The feature state describes configuration only. Native lineage and tool history 
 the exactly-one-child boundary.
 
 After the candidate implementation and conditional guidance registry are frozen, run the one
-bounded candidate scenario with `--model-turn --scope-candidates`. It opens a Program and selects
-the owned Git fixture, begins an ongoing candidate set with a proposed tables/API/UI breakdown,
-proves exact begin replay, restarts the owned daemon, and asks Sol to follow only backend-owned
-continuation calls before correcting and reviewing the proposal. The final proof retains complete
+bounded model turn with `--model-turn --scope-candidates`. It opens a Program and selects the owned
+Git fixture, begins an ongoing candidate set with a proposed horizontal breakdown, proves exact
+begin replay, restarts the owned daemon, and asks Sol to follow only backend-owned continuation
+calls. Sol corrects and critically reviews the first result to Ready, then records the exact
+separate amendment supplied by the fixture, refreshes, reads the complete two-input context, and
+produces a second reviewed Ready result. It then reads compact history and reconstructs the full
+original historical context before returning to the current head. The final proof retains complete
 call payloads for human semantic review; automated checks cover workflow structure, source refs,
-IDs, revisions, input history, review decisions, receipt replay, and the absence of execute or
-Scope-open calls.
+IDs, revisions, both input windows, delta classification, history, both draft receipt replays, and
+the absence of execute or Scope-open calls. Candidate count and grouping remain model decisions.
 
 The model proof records every TectD MCP call with its complete arguments, native status,
 canonical typed payload, `isError`, and stable error code. An expected rejected attempt is
@@ -77,13 +80,13 @@ retain the complete MCP arguments, results, errors, and latest item status witho
 entire raw event history for every token delta.
 
 Scope-candidate acceptance extends this same harness through `scope_candidates.py`; it does
-not create a separate test project. The module currently supplies schema-independent call
-capture and exact recovery validation, preparation of an open Program with one selected owned
-source through the existing public DTOs, and assertions for snapshot binding, backend-resolved
-entity identities, exact ongoing input binding, review states, and the
-candidate-only tool boundary. Candidate route calls are added only from the implemented live
-host schemas. The owned fixture can restart its copied daemon and verify a new process/socket
-while retaining the same temporary PostgreSQL data.
+not create a separate test project. The module supplies schema-independent call capture and exact
+recovery validation, preparation of an open Program with one selected owned source through the
+existing public DTOs, and assertions for snapshot binding, backend-resolved entity identities,
+ordered input and revision transitions, review states, complete delta partitions, historical
+reconstruction, and the candidate-only tool boundary. Candidate route calls are added only from
+the implemented live host schemas. The owned fixture can restart its copied daemon and verify a
+new process/socket while retaining the same temporary PostgreSQL data.
 
 Before the model turn, deterministic calls on that same native thread open only the temporary
 workspace and seed one Program. The model can therefore consume a ready `query program.get`
