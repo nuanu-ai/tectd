@@ -47,6 +47,12 @@ App Server documents that configured model metadata is not per-turn execution te
 missing or ambiguous spawn request, another child, a grandchild, or any action outside the exact
 parent-collaboration and child-TectD boundaries fails the run.
 
+The deterministic process and the default model process explicitly keep both delegation features
+disabled. This opt-in model process enables `multi_agent` while keeping `multi_agent_v2` disabled;
+the proof records the requested overrides and effective feature state separately for each process.
+The feature state describes configuration only. Native lineage and tool history enforce and prove
+the exactly-one-child boundary.
+
 After the candidate implementation and conditional guidance registry are frozen, run the one
 bounded candidate scenario with `--model-turn --scope-candidates`. It opens a Program and selects
 the owned Git fixture, begins an ongoing candidate set with a proposed tables/API/UI breakdown,
@@ -63,6 +69,12 @@ corrected call. Transport errors, malformed results, and unclassified failures f
 The model starts as a Sol Executor under the root Astra and may not create descendants unless the
 explicit one-child test flag is supplied. That exception applies only to the parent; the child may
 not delegate further.
+
+Every native event is appended before validation to a unique JSONL sidecar next to the proof. The
+main proof records its absolute path, event count, and SHA-256 digest, while compact checkpoints
+capture child discovery, completed or failed MCP calls, and terminal state. Final thread snapshots
+retain the complete MCP arguments, results, errors, and latest item status without rewriting the
+entire raw event history for every token delta.
 
 Scope-candidate acceptance extends this same harness through `scope_candidates.py`; it does
 not create a separate test project. The module currently supplies schema-independent call
@@ -81,8 +93,8 @@ whose full native status does not point at the owned package, socket, and host c
 The proof contains UTC start/finish times, source HEAD/tree plus changed-file hashes, Codex and product binary
 hashes, discovered tool schema hashes, native thread/turn IDs, check results, sanitized result
 hashes, fixture AGENTS.md hash, and cleanup status. It contains no database URL, command line,
-host credential, account material, or conversational prompt/final response outside the captured
-TectD calls. It also records before/after hashes
+host credential, or account material. The raw model-event sidecar includes native conversation
+events and must be handled as acceptance evidence. It also records before/after hashes
 for the persistent Codex config and the nonsecret installed TectD receipts; it never opens the
 installed host credential or account authentication file. Installed upgrade receipts and their
 captured native and preservation proofs are protected by default as well.

@@ -1,10 +1,42 @@
 """Live parent/child App Server evidence capture for the native model phase."""
 from __future__ import annotations
 
+import hashlib
+import json
+import pathlib
+import uuid
 from typing import Any
 
 PASSIVE_ITEMS = {"userMessage", "agentMessage", "plan", "reasoning", "contextCompaction"}
 PARENT_COLLAB_TOOLS = {"spawnAgent", "wait", "sendInput", "resumeAgent"}
+
+
+class RawEventLog:
+    """Append every native event once without repeatedly rewriting prior history."""
+
+    def __init__(self, proof_path: pathlib.Path):
+        suffix = uuid.uuid4().hex
+        self.path = proof_path.with_name(f"{proof_path.stem}.model-events-{suffix}.jsonl")
+        self._stream = self.path.open("xb")
+        self._digest = hashlib.sha256()
+        self.count = 0
+
+    def append(self, event: dict[str, Any]) -> None:
+        record = json.dumps(
+            {"sequence": self.count + 1, "event": event},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8") + b"\n"
+        self._stream.write(record)
+        self._stream.flush()
+        self._digest.update(record)
+        self.count += 1
+
+    def evidence(self) -> dict[str, Any]:
+        return {"path": str(self.path), "count": self.count, "sha256": self._digest.hexdigest()}
+
+    def close(self) -> None:
+        self._stream.close()
 
 
 def _pages(app: Any, method: str, params: dict[str, Any]) -> list[dict[str, Any]]:
@@ -65,7 +97,7 @@ def child_ids(items: list[dict[str, Any]]) -> set[str]:
 def refresh_lineage(app: Any, parent_thread_id: str, capture: dict[str, Any], proof: Any) -> None:
     parent = read_thread(app, parent_thread_id)
     parent_entries = latest_items(parent)
-    observed = child_ids(event_items(capture["events"]) + [entry["item"] for entry in parent_entries])
+    observed = child_ids(capture.get("lineage_event_items", []) + [entry["item"] for entry in parent_entries])
     prior = capture.get("lineage", {}).get("child_metadata_observations", [])
     capture["lineage"] = {"parent": parent, "observed_child_ids": sorted(observed)}
     proof.persist()
@@ -136,10 +168,7 @@ def assert_parent_boundary(capture: dict[str, Any]) -> None:
             continue
         raise AssertionError("parent used a practical action outside the approved one-child collaboration")
 
-    actors = {
-        event.get("params", {}).get("threadId") for event in capture.get("all_events", [])
-        if event.get("params", {}).get("threadId") is not None
-    }
+    actors = set(capture.get("observed_actor_thread_ids", []))
     if not actors <= {capture["thread_id"], child_id}:
         raise AssertionError("model phase emitted events for an actor outside the approved lineage")
 

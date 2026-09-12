@@ -68,20 +68,27 @@ def source_snapshot(source: pathlib.Path) -> dict[str, Any]:
     }
 
 
-DELEGATION_OVERRIDES = ["-c", "features.multi_agent=false", "-c", "features.multi_agent_v2=false"]
+def delegation_overrides(allow_one_child: bool) -> list[str]:
+    return [
+        "-c", f"features.multi_agent={'true' if allow_one_child else 'false'}",
+        "-c", "features.multi_agent_v2=false",
+    ]
 
 
-def app_command(codex: pathlib.Path, fixture: Fixture) -> list[str]:
+def app_command(codex: pathlib.Path, fixture: Fixture, allow_one_child: bool = False) -> list[str]:
     base = command_overrides(fixture.package, fixture.launcher, fixture.daemon_socket, fixture.host_config, fixture.workspace_key)
-    return [str(codex), *base, *DELEGATION_OVERRIDES, "app-server", "--listen", "stdio://"]
+    return [str(codex), *base, *delegation_overrides(allow_one_child), "app-server", "--listen", "stdio://"]
 
 
-def delegation_features(codex: pathlib.Path, fixture: Fixture) -> dict[str, bool]:
-    output = subprocess.check_output([*app_command(codex, fixture)[:-3], "features", "list"], text=True)
+def delegation_features(codex: pathlib.Path, fixture: Fixture, allow_one_child: bool = False) -> dict[str, bool]:
+    output = subprocess.check_output(
+        [*app_command(codex, fixture, allow_one_child)[:-3], "features", "list"], text=True,
+    )
     rows = [line.split() for line in output.splitlines()]
     states = {row[0]: row[2] == "true" for row in rows if len(row) == 3 and row[0] in {"multi_agent", "multi_agent_v2"}}
-    if states != {"multi_agent": False, "multi_agent_v2": False}:
-        raise AssertionError("owned app-server delegation features did not resolve disabled")
+    expected = {"multi_agent": allow_one_child, "multi_agent_v2": False}
+    if states != expected:
+        raise AssertionError("owned app-server delegation features do not match the requested test mode")
     return states
 
 
@@ -446,7 +453,12 @@ def main() -> None:
     deterministic_home: pathlib.Path | None = None
     try:
         fixture.prepare()
-        proof.data["owned_app_server_features"] = {"overrides": DELEGATION_OVERRIDES, "effective": delegation_features(args.codex, fixture)}
+        proof.data["owned_app_server_features"] = {
+            "deterministic": {
+                "overrides": delegation_overrides(False),
+                "effective": delegation_features(args.codex, fixture, False),
+            }
+        }
         proof.data["artifacts"] = {
             name: sha256_file(fixture.binaries / name) for name in ["tectd", "tectd-mcp", "tect-admin"]
         }
@@ -471,7 +483,13 @@ def main() -> None:
             model_env = dict(os.environ)
             model_env.pop("CODEX_SESSION_ID", None)
             model_env.pop("CODEX_THREAD_ID", None)
-            second = Rpc(app_command(args.codex, fixture), model_env, fixture.task)
+            model_features = {
+                "overrides": delegation_overrides(args.allow_one_child_sol),
+                "effective": delegation_features(args.codex, fixture, args.allow_one_child_sol),
+            }
+            proof.data["owned_app_server_features"]["model"] = model_features
+            proof.persist()
+            second = Rpc(app_command(args.codex, fixture, args.allow_one_child_sol), model_env, fixture.task)
             apps.append(second)
             initialize(second, "tectd_five_tool_model")
             second_thread = start_thread(second, fixture.task, ONE_CHILD_DEV if args.allow_one_child_sol else DEV)

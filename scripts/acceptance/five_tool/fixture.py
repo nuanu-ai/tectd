@@ -46,41 +46,81 @@ def collect_model_turn(app, thread_id: str, prompt: str, proof, allow_one_child:
          "model": "gpt-5.6-sol", "effort": "medium"},
     )
     turn_id = started["turn"]["id"]
+    raw = model_capture.RawEventLog(proof.path)
     capture = {"thread_id": thread_id, "turn_id": turn_id, "model": "gpt-5.6-sol",
-               "effort": "medium", "turn_start": started, "events": [], "all_events": [],
+               "effort": "medium", "turn_start": started, "lineage_event_items": [],
+               "observed_actor_thread_ids": [], "raw_event_log": raw.evidence(),
                "allow_one_child_sol": allow_one_child}
     proof.data["scope_candidate_model_capture"] = capture
     proof.persist()
     items = []
+    actors: set[str] = set()
     deadline = time.monotonic() + 600
     terminal = None
-    next_lineage_refresh = time.monotonic()
-    while time.monotonic() < deadline and terminal is None:
-        if position >= len(app.notifications):
+
+    def record(event: dict[str, Any]) -> bool:
+        nonlocal terminal
+        raw.append(event)
+        params = event.get("params", {})
+        actor = params.get("threadId")
+        if actor is not None:
+            actors.add(str(actor))
+            capture["observed_actor_thread_ids"] = sorted(actors)
+        item = params.get("item")
+        meaningful = event.get("method") in {"turn/completed", "turn/failed", "error"}
+        if isinstance(item, dict):
+            kind = item.get("type")
+            status = item.get("status")
+            meaningful = meaningful or kind in {"subAgentActivity", "collabAgentToolCall"}
+            meaningful = meaningful or (kind == "mcpToolCall" and status in {"completed", "failed"})
+            if kind in {"subAgentActivity", "collabAgentToolCall"}:
+                capture["lineage_event_items"].append(item)
+        if params.get("threadId") == thread_id and (
+            params.get("turnId") == turn_id or params.get("turn", {}).get("id") == turn_id
+        ):
+            if event.get("method") == "item/completed" and isinstance(item, dict):
+                items.append(item)
+            if event.get("method") == "turn/completed":
+                terminal = params["turn"]
+        capture["raw_event_log"] = raw.evidence()
+        return meaningful
+
+    def drain_ready() -> None:
+        while True:
             try:
-                app.notifications.append(app._read(30))
+                app.notifications.append(app._read(0.05))
             except TimeoutError:
-                continue
-        while position < len(app.notifications):
-            event = app.notifications[position]
-            position += 1
-            params = event.get("params", {})
-            capture["all_events"].append(event)
-            proof.persist()
-            if params.get("threadId") != thread_id:
-                continue
-            if params.get("turnId") == turn_id or params.get("turn", {}).get("id") == turn_id:
-                capture["events"].append(event)
-                if event.get("method") == "item/completed":
-                    items.append(params["item"])
-                if event.get("method") == "turn/completed":
-                    terminal = params["turn"]
-                proof.persist()
-        if allow_one_child and time.monotonic() >= next_lineage_refresh:
+                return
+
+    try:
+        while time.monotonic() < deadline and terminal is None:
+            if position >= len(app.notifications):
+                try:
+                    app.notifications.append(app._read(30))
+                except TimeoutError:
+                    continue
+            while position < len(app.notifications):
+                event = app.notifications[position]
+                position += 1
+                if record(event):
+                    proof.persist()
+                    if allow_one_child:
+                        model_capture.refresh_lineage(app, thread_id, capture, proof)
+        if allow_one_child:
             model_capture.refresh_lineage(app, thread_id, capture, proof)
-            next_lineage_refresh = time.monotonic() + 5
-    if allow_one_child:
-        model_capture.refresh_lineage(app, thread_id, capture, proof)
+            drain_ready()
+            while position < len(app.notifications):
+                record(app.notifications[position])
+                position += 1
+            model_capture.refresh_lineage(app, thread_id, capture, proof)
+            drain_ready()
+            while position < len(app.notifications):
+                record(app.notifications[position])
+                position += 1
+    finally:
+        capture["raw_event_log"] = raw.evidence()
+        raw.close()
+        proof.persist()
     capture["terminal"] = terminal
     capture["items"] = items
     proof.persist()
