@@ -37,6 +37,47 @@ CANDIDATE_PLANNING_INPUT = (
     "endpoints, (3) add settings UI."
 )
 
+def collect_model_turn(app, thread_id: str, prompt: str, proof):
+    position = len(app.notifications)
+    started = app.request(
+        "turn/start",
+        {"threadId": thread_id, "input": [{"type": "text", "text": prompt}],
+         "model": "gpt-5.6-sol", "effort": "medium"},
+    )
+    turn_id = started["turn"]["id"]
+    capture = {"thread_id": thread_id, "turn_id": turn_id, "model": "gpt-5.6-sol",
+               "effort": "medium", "turn_start": started, "events": []}
+    proof.data["scope_candidate_model_capture"] = capture
+    proof.persist()
+    items = []
+    deadline = time.monotonic() + 600
+    terminal = None
+    while time.monotonic() < deadline and terminal is None:
+        if position >= len(app.notifications):
+            try:
+                app.notifications.append(app._read(30))
+            except TimeoutError:
+                continue
+        while position < len(app.notifications):
+            event = app.notifications[position]
+            position += 1
+            params = event.get("params", {})
+            if params.get("threadId") != thread_id:
+                continue
+            if params.get("turnId") == turn_id or params.get("turn", {}).get("id") == turn_id:
+                capture["events"].append(event)
+                if event.get("method") == "item/completed":
+                    items.append(params["item"])
+                if event.get("method") == "turn/completed":
+                    terminal = params["turn"]
+                proof.persist()
+    capture["terminal"] = terminal
+    capture["items"] = items
+    proof.persist()
+    if terminal is None or terminal.get("status") != "completed":
+        raise AssertionError("model turn did not complete")
+    return turn_id, items
+
 
 class Fixture:
     def __init__(self, source: pathlib.Path, postgres_bin: pathlib.Path, keep: bool = False):

@@ -1,9 +1,9 @@
 """Shared native-call evidence helpers for Scope-candidate acceptance."""
 from __future__ import annotations
-import json, time, uuid
+import json, uuid
 from typing import Any, Callable
 from common import tool_result
-from fixture import CANDIDATE_PLANNING_INPUT, CANDIDATE_PROGRAM_FIELDS, CANDIDATE_PROGRAM_INPUT
+from fixture import CANDIDATE_PLANNING_INPUT, CANDIDATE_PROGRAM_FIELDS, CANDIDATE_PROGRAM_INPUT, collect_model_turn
 
 CANDIDATE_QUERY_ROUTES = {"scope.candidates.context"}
 CANDIDATE_COMMAND_ROUTES = {
@@ -23,16 +23,21 @@ def _canonical_payload(result: Any) -> tuple[dict[str, Any], bool]:
         raise AssertionError("model MCP canonical payload is not an object")
     return payload, result.get("isError") is True
 
-def capture_model_calls(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Capture complete nonsecret TectD calls without treating failure as success."""
-    captured = []
+def capture_model_calls(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Parse MCP calls independently, retaining malformed call evidence."""
+    captured, errors = [], []
     for item in items:
         if item.get("type") != "mcpToolCall":
             continue
         arguments = item.get("arguments")
         if not isinstance(arguments, dict):
-            raise AssertionError("model MCP arguments are not an object")
-        payload, is_error = _canonical_payload(item.get("result"))
+            errors.append({"item": item, "error": "model MCP arguments are not an object"})
+            continue
+        try:
+            payload, is_error = _canonical_payload(item.get("result"))
+        except AssertionError as error:
+            errors.append({"item": item, "error": str(error)})
+            continue
         error_code = payload.get("error", {}).get("code") if is_error else None
         captured.append(
             {
@@ -45,7 +50,7 @@ def capture_model_calls(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "payload": payload,
             }
         )
-    return captured
+    return captured, errors
 def assert_successful_calls(calls: list[dict[str, Any]], allowed: set[str]) -> None:
     """Require every captured call to be an allowed successful TectD result."""
     if not calls:
@@ -271,6 +276,13 @@ def assert_candidate_call_boundary(calls: list[dict[str, Any]]) -> None:
             if arguments["route"] not in CANDIDATE_QUERY_ROUTES | CANDIDATE_COMMAND_ROUTES:
                 raise AssertionError("candidate model requested help for a disallowed route")
 
+def assert_model_item_boundary(items: list[dict[str, Any]]) -> None:
+    # These non-action item variants are defined by the generated local app-server ThreadItem schema.
+    passive = {"userMessage", "agentMessage", "plan", "reasoning", "contextCompaction"}
+    unexpected = sorted({str(item.get("type")) for item in items} - passive - {"mcpToolCall"})
+    if unexpected:
+        raise AssertionError("candidate model used disallowed item types: " + ", ".join(unexpected))
+
 def _complete_fragments(calls: list[dict[str, Any]]) -> dict[str, str]:
     bodies: dict[str, str] = {}
     complete: set[str] = set()
@@ -432,43 +444,15 @@ def assert_candidate_model_result(calls: list[dict[str, Any]], scenario: dict[st
         "registry_digest": overview["context"]["snapshot"]["registry_digest"],
     }
 
-def collect_model_turn(app: Any, thread_id: str, prompt: str) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
-    position = len(app.notifications)
-    started = app.request(
-        "turn/start",
-        {"threadId": thread_id, "input": [{"type": "text", "text": prompt}], "model": "gpt-5.6-sol", "effort": "medium"},
-    )
-    turn_id = started["turn"]["id"]
-    items: list[dict[str, Any]] = []
-    deadline = time.monotonic() + 600
-    terminal = None
-    while time.monotonic() < deadline and terminal is None:
-        if position >= len(app.notifications):
-            try:
-                app.notifications.append(app._read(30))
-            except TimeoutError:
-                continue
-        while position < len(app.notifications):
-            event = app.notifications[position]
-            position += 1
-            params = event.get("params", {})
-            if params.get("threadId") != thread_id:
-                continue
-            if event.get("method") == "item/completed" and params.get("turnId") == turn_id:
-                item = params["item"]
-                if item.get("type") != "reasoning":
-                    items.append(item)
-            if event.get("method") == "turn/completed" and params.get("turn", {}).get("id") == turn_id:
-                terminal = params["turn"]
-                break
-    if terminal is None or terminal.get("status") != "completed":
-        raise AssertionError("model turn did not complete")
-    return turn_id, items, capture_model_calls(items)
-
 def run_candidate_model_turn(app: Any, thread_id: str, scenario: dict[str, Any], proof: Any) -> None:
-    turn_id, items, calls = collect_model_turn(app, thread_id, candidate_model_prompt(scenario["candidate_set_id"]))
-    if {item.get("type") for item in items} - {"userMessage", "mcpToolCall", "agentMessage"}:
-        raise AssertionError("candidate model used a shell, subagent, or external tool")
+    turn_id, items = collect_model_turn(app, thread_id, candidate_model_prompt(scenario["candidate_set_id"]), proof)
+    calls, parse_errors = capture_model_calls(items)
+    proof.data["scope_candidate_model_capture"]["calls"] = calls
+    proof.data["scope_candidate_model_capture"]["parse_errors"] = parse_errors
+    proof.persist()
+    if parse_errors:
+        raise AssertionError("candidate model emitted malformed MCP call evidence")
+    assert_model_item_boundary(items)
     evidence = assert_candidate_model_result(calls, scenario)
     replay, failed = tool_result(app, thread_id, "command", evidence["draft_arguments"])
     if failed or replay != evidence["draft_payload"]:

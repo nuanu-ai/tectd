@@ -335,13 +335,20 @@ def model_turn(app: Rpc, thread_id: str, expected_program_id: str, proof: Proof)
         "for the current Program without a help lookup. Then use help search for setup routes and help describe method "
         "tectd-program. Report what you read. Use only get_state, query, and help; do not mutate anything."
     )
-    turn_id, items, calls = scope.collect_model_turn(app, thread_id, prompt)
+    turn_id, items = scope.collect_model_turn(app, thread_id, prompt, proof)
+    calls, parse_errors = scope.capture_model_calls(items)
+    proof.data["scope_candidate_model_capture"]["calls"] = calls
+    proof.data["scope_candidate_model_capture"]["parse_errors"] = parse_errors
+    proof.persist()
+    if parse_errors:
+        raise AssertionError("fresh Sol turn emitted malformed MCP call evidence")
     names = [call["tool"] for call in calls]
     item_types = [item.get("type") for item in items]
     proof.check("fresh Sol native help turn completed", True)
+    scope.assert_model_item_boundary(items)
     proof.check(
         "fresh Sol turn used no shell subagent or external tool",
-        set(item_types) <= {"userMessage", "mcpToolCall", "agentMessage"},
+        True,
         item_types,
     )
     proof.check("fresh Sol turn used only get_state query and help", bool(calls) and set(names) <= {"get_state", "query", "help"}, names)
