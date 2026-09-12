@@ -32,7 +32,10 @@ def main() -> None:
     manifest = {
         "plugin": "tectd", "display_name": "TectD MCP", "mcp_server": "tectd",
         "binary_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
-        "skill_delivery": "tectd-program and tectd-setup are embedded in the binary and served by read_skill",
+        "skill_delivery": (
+            "tectd-program, tectd-setup, and tectd-scope-candidates are embedded "
+            "in the binary and served by help describe"
+        ),
         "installation_performed": False,
     }
     (output / "package-proof.json").write_text(json.dumps(manifest, indent=2) + "\n")
