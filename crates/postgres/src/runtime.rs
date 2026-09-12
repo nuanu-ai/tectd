@@ -31,7 +31,7 @@ pub(crate) async fn verify_runtime_role(pool: &PgPool) -> Result<()> {
                    FROM pg_catalog.pg_proc p
                    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
                    WHERE n.nspname = 'public'
-                     AND p.proname = 'tect_authenticate_host'
+                     AND p.proname IN ('tect_authenticate_host', 'tect_preserve_created_at')
                      AND pg_catalog.pg_has_role(r.oid, p.proowner, 'MEMBER')
                )
         FROM pg_catalog.pg_roles r
