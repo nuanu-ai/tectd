@@ -25,6 +25,8 @@ const OPERATION_TIMEOUT: Duration = Duration::from_secs(15);
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireRequest {
+    #[serde(default)]
+    api_version: Option<u32>,
     context: RequestContext,
     tool_name: String,
     arguments: Value,
@@ -92,6 +94,7 @@ pub(crate) async fn call_tool_bounded(
     let expected_socket = validate_socket(socket)?;
 
     let request = WireRequest {
+        api_version: Some(crate::api::WIRE_API_VERSION),
         context: context.clone(),
         tool_name: tool_name.to_owned(),
         arguments,
@@ -157,6 +160,9 @@ async fn handle_connection(stream: UnixStream, service: Arc<WorkspaceService>) -
 }
 
 async fn execute(request: WireRequest, service: &WorkspaceService) -> WireResponse {
+    if let Err(error) = validate_wire_version(&request) {
+        return WireResponse::Error { error };
+    }
     if request.output_capacity > MAX_FRAME_BYTES {
         return authenticate_invalid_request(service, &request.context).await;
     }
@@ -195,6 +201,14 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 )
                 .await
             }
+            Invocation::Help(help_request) => {
+                service.authenticate_host(&request.context).await?;
+                Ok(responses::with_actions(
+                    crate::api::help(help_request),
+                    Vec::new(),
+                    None,
+                ))
+            }
             Invocation::RegisterSource { path } => {
                 serialize(service.register_source(&request.context, &path).await)
             }
@@ -223,6 +237,14 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
     }
 }
 
+fn validate_wire_version(request: &WireRequest) -> Result<()> {
+    if request.api_version == Some(crate::api::WIRE_API_VERSION) {
+        Ok(())
+    } else {
+        Err(Error::InvalidConfiguration)
+    }
+}
+
 async fn authenticate_invalid_request(
     service: &WorkspaceService,
     context: &RequestContext,
@@ -242,12 +264,12 @@ async fn authenticate_invalid_request(
 fn serialize<T: Serialize>(result: Result<T>) -> Result<Value> {
     result
         .and_then(|value| serde_json::to_value(value).map_err(|_| Error::TransportUnavailable))
-        .map(|data| {
-            responses::with_actions(
+        .and_then(|data| {
+            Ok(responses::with_actions(
                 data,
-                vec![responses::action("get_state", serde_json::json!({}))],
+                vec![responses::action("get_state", serde_json::json!({}))?],
                 Some(0),
-            )
+            ))
         })
 }
 
@@ -262,7 +284,7 @@ async fn execute_program(
         ProgramInvocation::Begin { request_id, input } => service
             .begin_program(context, request_id, &input, &guard)
             .await
-            .map(program_output::program),
+            .and_then(program_output::program),
         ProgramInvocation::Get {
             program_id,
             after_input,
@@ -274,7 +296,7 @@ async fn execute_program(
         ProgramInvocation::Save(changes) => service
             .save_program(context, &changes, &guard)
             .await
-            .map(program_output::program),
+            .and_then(program_output::program),
         ProgramInvocation::Record {
             program_id,
             request_id,
@@ -282,7 +304,7 @@ async fn execute_program(
         } => service
             .record_program_input(context, program_id, request_id, &input, &guard)
             .await
-            .map(program_output::program),
+            .and_then(program_output::program),
         ProgramInvocation::List { after, limit } => service
             .list_programs(context, after, limit)
             .await
@@ -358,4 +380,75 @@ fn validate_socket(path: &Path) -> Result<SocketIdentity> {
         device: metadata.dev(),
         inode: metadata.ino(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+    use serde_json::json;
+    use tect_domain::HostAuth;
+    use uuid::Uuid;
+
+    fn context() -> RequestContext {
+        RequestContext {
+            auth: HostAuth {
+                host_id: Uuid::new_v4(),
+                credential: "0".repeat(64),
+            },
+            native_session_id: Uuid::new_v4().to_string(),
+            workspace_key: "wire-version-test".into(),
+        }
+    }
+
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LegacyWireRequest {
+        #[allow(dead_code)]
+        context: RequestContext,
+        #[allow(dead_code)]
+        tool_name: String,
+        #[allow(dead_code)]
+        arguments: Value,
+        #[allow(dead_code)]
+        output_capacity: usize,
+    }
+
+    #[test]
+    fn new_daemon_rejects_old_or_wrong_wire_before_operation_decode() {
+        let legacy = json!({
+            "context":context(),"tool_name":"open_workspace","arguments":{},
+            "output_capacity":MAX_FRAME_BYTES
+        });
+        let request: WireRequest = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            validate_wire_version(&request),
+            Err(Error::InvalidConfiguration)
+        );
+
+        let wrong = WireRequest {
+            api_version: Some(crate::api::WIRE_API_VERSION + 1),
+            context: context(),
+            tool_name: "open_workspace".into(),
+            arguments: json!({}),
+            output_capacity: MAX_FRAME_BYTES,
+        };
+        assert_eq!(
+            validate_wire_version(&wrong),
+            Err(Error::InvalidConfiguration)
+        );
+    }
+
+    #[test]
+    fn old_daemon_shape_rejects_new_bridge_request_before_operation_decode() {
+        let current = WireRequest {
+            api_version: Some(crate::api::WIRE_API_VERSION),
+            context: context(),
+            tool_name: "open_workspace".into(),
+            arguments: json!({}),
+            output_capacity: MAX_FRAME_BYTES,
+        };
+        let encoded = serde_json::to_value(current).unwrap();
+        assert!(serde_json::from_value::<LegacyWireRequest>(encoded).is_err());
+    }
 }

@@ -33,6 +33,7 @@ pub enum Error {
     SetupIncomplete,
     SetupFileConflict,
     SetupAlreadyApplied,
+    InternalInvariant,
 }
 
 impl Error {
@@ -64,6 +65,7 @@ impl Error {
             Self::SetupIncomplete => "setup_incomplete",
             Self::SetupFileConflict => "setup_file_conflict",
             Self::SetupAlreadyApplied => "setup_already_applied",
+            Self::InternalInvariant => "internal_invariant",
         }
     }
 }

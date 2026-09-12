@@ -12,79 +12,95 @@ pub(crate) const PROGRAM_SKILL: &str = include_str!("../../../skills/tectd-progr
 
 pub(crate) mod paging;
 
-fn skill_action() -> Value {
-    action("read_skill", json!({"name":"tectd-program"}))
+fn skill_action() -> Result<Value> {
+    crate::api::method_action("tectd-program")
 }
 
-pub(crate) fn input_action(tool: &str, arguments: Value) -> Value {
-    let mut result = action(tool, arguments);
-    result["input"] = json!({"field":"input","format":"Complete original user message, including request phrasing and context, as one nonblank string. Preserve exact text without extracting, trimming or paraphrasing."});
-    result
+pub(crate) fn input_action(tool: &str, arguments: Value) -> Result<Value> {
+    crate::api::needs_action(
+        "needs_input",
+        tool,
+        arguments,
+        "input",
+        json!({"fields":[{"path":"arguments.params.input","format":"Complete original user message, including request phrasing and context, as one nonblank string. Preserve exact text without extracting, trimming or paraphrasing."}]}),
+    )
 }
 
-pub(crate) fn begin_action() -> Value {
+pub(crate) fn begin_action() -> Result<Value> {
     input_action("begin_program", json!({"request_id":Uuid::new_v4()}))
 }
 
-fn save_action(program: &Program, cursor: i64) -> Value {
-    let mut result = action(
+fn save_action(program: &Program, cursor: i64) -> Result<Value> {
+    crate::api::needs_action(
+        "needs_input",
         "save_program",
         json!({"program_id":program.id,"revision":program.revision,"input_cursor":cursor}),
-    );
-    result["input"] = json!({
-        "fields":["name","intent","basis","boundaries","constraints","success","working_notes","pending_question","complete"],
-        "format":"Optional string-or-null patch fields; omission preserves. complete is boolean (default false); true requires six coherent nonblank fields, no pending question and all original input incorporated."
-    });
-    result
+        "input",
+        json!({"fields":[
+            {"path":"arguments.params.name","format":"Optional string-or-null patch; omission preserves and null clears."},
+            {"path":"arguments.params.intent","format":"Optional string-or-null patch; omission preserves and null clears."},
+            {"path":"arguments.params.basis","format":"Optional string-or-null patch; omission preserves and null clears."},
+            {"path":"arguments.params.boundaries","format":"Optional string-or-null patch; omission preserves and null clears."},
+            {"path":"arguments.params.constraints","format":"Optional string-or-null patch; omission preserves and null clears."},
+            {"path":"arguments.params.success","format":"Optional string-or-null patch; omission preserves and null clears."},
+            {"path":"arguments.params.working_notes","format":"Optional string-or-null continuation patch."},
+            {"path":"arguments.params.pending_question","format":"Optional string-or-null question patch."},
+            {"path":"arguments.params.complete","format":"Optional boolean, default false; true requires six coherent nonblank fields, no pending question, and all original input incorporated."}
+        ]}),
+    )
 }
 
-fn program_actions(program: &Program, delivered: Option<i64>, next: Option<i64>) -> Vec<Value> {
-    let mut actions = vec![skill_action()];
+fn program_actions(
+    program: &Program,
+    delivered: Option<i64>,
+    next: Option<i64>,
+) -> Result<Vec<Value>> {
+    let mut actions = vec![skill_action()?];
     match program.current_step {
         ProgramStep::Compose => {
             if let Some(after_input) = next {
                 actions.push(action(
                     "get_program",
                     json!({"program_id":program.id,"after_input":after_input,"limit":25}),
-                ));
+                )?);
             } else if delivered.is_none() && program.input_cursor < program.latest_input {
-                actions.push(action("get_program", json!({"program_id":program.id})));
+                actions.push(action("get_program", json!({"program_id":program.id}))?);
             }
             actions.push(save_action(
                 program,
                 delivered
                     .unwrap_or(program.input_cursor)
                     .max(program.input_cursor),
-            ));
+            )?);
         }
         ProgramStep::WaitingInput | ProgramStep::Ready => {
             actions.push(input_action(
                 "record_program_input",
                 json!({"program_id":program.id,"request_id":Uuid::new_v4()}),
-            ));
+            )?);
         }
     }
-    actions
+    Ok(actions)
 }
 
-pub(crate) fn program(program: Program) -> Value {
-    let actions = program_actions(&program, None, None);
-    with_actions(json!({"program":program}), actions, Some(0))
+pub(crate) fn program(program: Program) -> Result<Value> {
+    let actions = program_actions(&program, None, None)?;
+    Ok(with_actions(json!({"program":program}), actions, Some(0)))
 }
 
-fn page_value(page: &ProgramPage) -> Value {
+fn page_value(page: &ProgramPage) -> Result<Value> {
     let delivered = page
         .inputs
         .last()
         .map(|entry| entry.sequence)
         .or(Some(page.program.input_cursor));
-    let actions = program_actions(&page.program, delivered, page.next_after_input);
-    with_actions(json!(page), actions, Some(0))
+    let actions = program_actions(&page.program, delivered, page.next_after_input)?;
+    Ok(with_actions(json!(page), actions, Some(0)))
 }
 
 pub(crate) fn page(mut page: ProgramPage, capacity: usize) -> Result<Value> {
     if page.inputs.is_empty() {
-        let value = page_value(&page);
+        let value = page_value(&page)?;
         return within_capacity(value, capacity);
     }
     let mut inputs = std::mem::take(&mut page.inputs);
@@ -97,17 +113,17 @@ pub(crate) fn page(mut page: ProgramPage, capacity: usize) -> Result<Value> {
     };
     let count = paging::fitting_prefix(
         &inputs,
-        &page_value(&page),
+        &page_value(&page)?,
         "inputs",
         "next_after_input",
         capacity,
         |prefix, more| {
             let last = prefix.last().expect("nonempty prefix").sequence;
             let next = if more { Some(last) } else { original_next };
-            (
-                program_actions(&page.program, Some(last), next),
+            Ok((
+                program_actions(&page.program, Some(last), next)?,
                 json!(next),
-            )
+            ))
         },
     )?;
     page.next_after_input = if count < inputs.len() {
@@ -117,19 +133,22 @@ pub(crate) fn page(mut page: ProgramPage, capacity: usize) -> Result<Value> {
     };
     inputs.truncate(count);
     page.inputs = inputs;
-    Ok(page_value(&page))
+    page_value(&page)
 }
 
-pub(crate) fn list_actions(programs: &[ProgramSummary], next: &Option<String>) -> Vec<Value> {
-    let mut actions: Vec<_> = programs
-        .iter()
-        .map(|program| action("get_program", json!({"program_id":program.id})))
-        .collect();
-    if let Some(after) = next {
-        actions.push(action("list_programs", json!({"after":after,"limit":25})));
+pub(crate) fn list_actions(
+    programs: &[ProgramSummary],
+    next: &Option<String>,
+) -> Result<Vec<Value>> {
+    let mut actions = Vec::new();
+    for program in programs {
+        actions.push(action("get_program", json!({"program_id":program.id}))?);
     }
-    actions.push(begin_action());
-    actions
+    if let Some(after) = next {
+        actions.push(action("list_programs", json!({"after":after,"limit":25}))?);
+    }
+    actions.push(begin_action()?);
+    Ok(actions)
 }
 
 pub(crate) fn list(mut list: ProgramList, capacity: usize) -> Result<Value> {
@@ -137,7 +156,7 @@ pub(crate) fn list(mut list: ProgramList, capacity: usize) -> Result<Value> {
         return within_capacity(
             with_actions(
                 json!(&list),
-                list_actions(&list.programs, &list.next_after),
+                list_actions(&list.programs, &list.next_after)?,
                 Some(0),
             ),
             capacity,
@@ -149,7 +168,7 @@ pub(crate) fn list(mut list: ProgramList, capacity: usize) -> Result<Value> {
     list.next_after = summary_next(&list.programs, programs.len() > 1, &original_next);
     let first = with_actions(
         json!(&list),
-        list_actions(&list.programs, &list.next_after),
+        list_actions(&list.programs, &list.next_after)?,
         Some(0),
     );
     let count = summary_prefix(&programs, &first, capacity, &original_next)?;
@@ -158,7 +177,7 @@ pub(crate) fn list(mut list: ProgramList, capacity: usize) -> Result<Value> {
     list.programs = programs;
     Ok(with_actions(
         json!(&list),
-        list_actions(&list.programs, &list.next_after),
+        list_actions(&list.programs, &list.next_after)?,
         Some(0),
     ))
 }
@@ -193,7 +212,7 @@ fn summary_prefix(
         capacity,
         |prefix, more| {
             let next = summary_next(prefix, more, original);
-            (list_actions(prefix, &next), json!(next))
+            Ok((list_actions(prefix, &next)?, json!(next)))
         },
     )
 }
@@ -252,7 +271,7 @@ impl ProgramOutputGuard for ProgramEncoding {
                 }],
                 next_after_input: Some(i64::MAX),
             };
-            let bytes = encoded_len(&page_value(&sample))?
+            let bytes = encoded_len(&page_value(&sample)?)?
                 .checked_add(input_cost)
                 .ok_or(Error::RequestTooLarge)?;
             if bytes > self.capacity {

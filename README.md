@@ -98,15 +98,32 @@ The package forwards only the three operator configuration variables above.
 The registered host credential is the trust root; native thread IDs are identifiers,
 not per-session secrets.
 
-## Source tools
+## Public MCP API
 
-| Tool | Arguments | Result |
+The public surface has exactly five tools. `query`, `command`, and `execute` use
+`{"route":"...","params":{...}}`; `help` searches or describes the exact
+route schema. Unknown routes and route parameters fail before effects.
+
+| Tool | Purpose |
+| --- | --- |
+| `get_state` | DB-only bounded state for the current native session |
+| `query` | Read-only routes: `program.get`, `program.list`, `source.list`, `setup.get` |
+| `command` | Ten logical state-transition routes; validation may read Git/files but does not publish files |
+| `execute` | Explicit external effects; currently only `setup.apply` |
+| `help` | Bounded static API search and exact tool/route/method descriptions |
+
+Embedded methods are returned by `help` describe calls for `tectd-program` and
+`tectd-setup`. Help works before workspace bootstrap after native identity and host
+authentication; it creates no workspace/session records and reads no filesystem.
+
+## Source routes
+
+| Tool + route | Params | Result |
 | --- | --- | --- |
-| `open_workspace` | `{}` | Create or recover logical workspace/native session |
-| `get_state` | `{}` | Read workspace/session and selected worktrees |
-| `register_source` | `{ "path": "/absolute/source/worktree" }` | Register actual Git repository/worktree identities |
-| `select_worktrees` | `{ "worktree_ids": ["UUID"] }` | Replace this session's entire selection; `[]` clears it |
-| `list_sources` | `{ "limit": 25, "after": "UUID" }` | Read one ordered catalog page; `after` may be omitted |
+| `command` · `workspace.open` | `{}` | Create or recover logical workspace/native session |
+| `command` · `source.register` | `{ "path": "/absolute/source/worktree" }` | Register actual Git repository/worktree identities |
+| `command` · `session.select_worktrees` | `{ "worktree_ids": ["UUID"] }` | Replace this session's entire selection; `[]` clears it |
+| `query` · `source.list` | `{ "limit": 25, "after": "UUID" }` | Read one ordered catalog page; `after` may be omitted |
 
 A checkout and its linked worktrees share a repository ID. Registration does not
 create or move Git worktrees. Both canonical worktree paths and Git common directories
@@ -123,14 +140,14 @@ entries exist. Unknown arguments, including identity fields, are rejected.
 `get_state` lists existing Programs with unfinished work first and offers starting
 a new Program last. It does not infer filesystem, knowledge-base or AGENTS state.
 
-| Tool | Arguments | Result |
+| Tool + route | Params | Result |
 | --- | --- | --- |
-| `begin_program` | `request_id`, original `input` | One database-generated Program ID in `draft` |
-| `get_program` | `program_id`, optional `after_input`, `limit` | Current PRD and a page of original inputs |
-| `save_program` | `program_id`, `revision`, `input_cursor`, optional patch fields and `complete` | Atomic saved revision; `complete: true` opens the same Program |
-| `record_program_input` | `program_id`, `request_id`, original `input` | Durable reply or correction, ready for incorporation |
-| `list_programs` | Optional `after`, `limit` | Existing Programs and exact continuation actions |
-| `read_skill` | `name: "tectd-program"` | The single Program skill embedded in this build |
+| `command` · `program.begin` | `request_id`, original `input` | One database-generated Program ID in `draft` |
+| `query` · `program.get` | `program_id`, optional `after_input`, `limit` | Current PRD and a page of original inputs |
+| `command` · `program.save` | `program_id`, `revision`, `input_cursor`, optional patch fields and `complete` | Atomic saved revision; `complete: true` opens the same Program |
+| `command` · `program.record_input` | `program_id`, `request_id`, original `input` | Durable reply or correction, ready for incorporation |
+| `query` · `program.list` | Optional `after`, `limit` | Existing Programs and exact continuation actions |
+| `help` · describe method | `method: "tectd-program"` | The Program method embedded in this build |
 
 The PRD has six nullable, free-text fields: `name`, `intent`, `basis`, `boundaries`,
 `constraints`, `success`. There is no duplicate description. `working_notes` and
@@ -157,9 +174,9 @@ Pages contain whole entries and may become smaller to fit the existing 8 MiB fra
 Unrepresentable writes are refused before commit, including PRD growth that would
 make an older original input unreadable. Text is not silently truncated.
 
-The host embeds `skills/tectd-program/SKILL.md`; `read_skill` is allowlisted and
-authorized against the current native workspace session. It never accepts a file
-path. The packaged binary therefore carries the same skill without installing
+The host embeds `skills/tectd-program/SKILL.md`; `help` describes only the two
+allowlisted build-bound methods after host authentication. It never accepts a file
+path. The packaged binary therefore carries the same method without installing
 client-side PRD files or the former WorkOrder artifact lifecycle.
 
 ## Initial workspace instructions
@@ -171,15 +188,15 @@ folder. It is independent of the logical workspace, Git sources and selected
 worktrees. Two task directories in one workspace have separate setups, while a
 new session in the same host/directory recovers the same draft.
 
-| Tool | Arguments | Result |
+| Tool + route | Params | Result |
 | --- | --- | --- |
-| `inspect_setup` | Optional `task_directory` | Current missing/existing/unavailable observation; omission is context unknown |
-| `begin_setup` | `request_id`, exact original `input` | One durable setup in the bound directory after verified absence |
-| `get_setup` | `setup_id`, optional `after_input`, `limit` | Whole draft, notes, question, original-input page and current file observation |
-| `save_setup` | `setup_id`, `revision`, `input_cursor`, required `ready`, optional `content`, `working_notes`, `pending_question` | Revision-checked nullable patch |
-| `record_setup_input` | `setup_id`, `revision`, `request_id`, exact original `input` | Durable reply/correction and resumed composition |
-| `apply_setup` | `setup_id`, ready `revision` | Exclusive fixed-name creation or verification of matching existing bytes |
-| `read_skill` | `name: "tectd-setup"` | The single setup method embedded in this build |
+| `command` · `setup.inspect` | Optional `task_directory` | Current missing/existing/unavailable observation; omission is context unknown |
+| `command` · `setup.begin` | `request_id`, exact original `input` | One durable setup in the bound directory after verified absence |
+| `query` · `setup.get` | `setup_id`, optional `after_input`, `limit` | Whole draft, notes, question, original-input page and current file observation |
+| `command` · `setup.save` | `setup_id`, `revision`, `input_cursor`, required `ready`, optional patches | Revision-checked nullable patch |
+| `command` · `setup.record_input` | `setup_id`, `revision`, `request_id`, exact original `input` | Durable reply/correction and resumed composition |
+| `execute` · `setup.apply` | `setup_id`, ready `revision` | Exclusive fixed-name creation or verification of matching existing bytes |
+| `help` · describe method | `method: "tectd-setup"` | The setup method embedded in this build |
 
 Native thread identity is authenticated; the agent supplies the directory and this
 is not cryptographic cwd attestation. Every file operation rechecks the current
@@ -223,7 +240,7 @@ cannot reopen its native identity. Requests admitted before host revocation may
 finish; checks after its commit fail. Other sessions retain their identity and selection.
 
 After a bridge or daemon restart, use the same host configuration, native session
-and logical workspace key. `open_workspace` recovers a committed result even when
+and logical workspace key. `command` route `workspace.open` recovers a committed result even when
 the earlier response was lost. A daemon killed before commit leaves no partial
 bootstrap state. The daemon refuses to overwrite an existing Unix socket. Following
 an abrupt crash, the operator must verify its owning process is dead and the socket

@@ -9,9 +9,9 @@ Shape one broad project into a coherent Program PRD and persist the work through
 
 ## Use the backend-owned route
 
-Use only the exact calls, arguments, revision, formats, and next-step instruction supplied by the current TectD system. Expected Program tools include `begin_program`, `get_program`, `save_program`, `record_program_input`, `list_programs`, and `read_skill`; their live contracts are authoritative. Do not reconstruct tool schemas from this skill.
+Use only the exact calls, arguments, revision, formats, and next-step instruction supplied by the current TectD system. Program work uses `command` routes `program.begin`, `program.save`, and `program.record_input`; `query` routes `program.get` and `program.list`; and `help` describe for this embedded method. Their live contracts are authoritative. Do not reconstruct route schemas from this skill.
 
-The backend owns the Program ID, workspace association, revision, progress, and `current_step`. It chooses the current step and supplies this one Program skill. Follow that compact instruction, loading a referenced skill with `read_skill` when directed. Never invent, skip, or rewrite the next route.
+The backend owns the Program ID, workspace association, revision, progress, and `current_step`. It chooses the current step and supplies this one Program method. Follow that compact instruction, loading a referenced method with `help` describe when directed. Never invent, skip, or rewrite the next route.
 
 Start a record when the user is opening a new Program. Resume an existing record when the request or supplied context identifies one; use listing only when necessary to resolve which Program the user means. Reload current state before continuing work that may have been touched by another session or agent.
 
@@ -36,7 +36,7 @@ Distinguish three kinds of content in the draft: what the user stated, what is s
 
 ## Develop and persist the draft
 
-Use `working_notes` as a short continuation summary of decisions, assumptions, meaningful options, and unresolved points. It is not a duplicate PRD and must remain useful to a later session. Original user inputs belong in the backend's separate input history through the supplied `record_program_input` contract; do not replace them with summaries or copy them only into `working_notes`.
+Use `working_notes` as a short continuation summary of decisions, assumptions, meaningful options, and unresolved points. It is not a duplicate PRD and must remain useful to a later session. Original user inputs belong in the backend's separate input history through the supplied `command` route `program.record_input`; do not replace them with summaries or copy them only into `working_notes`.
 
 For both creation and continuation, send the complete original user message as `input`, including its request phrasing and context. Do not extract only the answer fragment, trim the message, or paraphrase it. The structured PRD is where interpretation belongs; the original message remains verbatim.
 

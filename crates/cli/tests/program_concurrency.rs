@@ -1,7 +1,10 @@
 //! Real concurrent Program idempotency, pagination, and atomic refusal acceptance.
 mod recovery_support;
 
-use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url, tool_payload};
+use recovery_support::{
+    Daemon, Mcp, action_name, action_params, host_file, private_temp, public_call, ready_action,
+    tagged_url, tool_payload,
+};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::collections::BTreeSet;
@@ -99,7 +102,7 @@ async fn concurrent_inputs_and_saves_are_durable_idempotent_and_atomic() {
         )
         .await;
     assert_eq!(conflict["error"]["code"], "input_conflict");
-    assert_eq!(conflict["actions"][0]["tool"], "get_state");
+    assert_eq!(action_name(&conflict["actions"][0]), Some("get_state"));
     assert_eq!(canonical(&pool, program_id).await, creation_state);
 
     let first_key = Uuid::new_v4();
@@ -150,7 +153,7 @@ async fn concurrent_inputs_and_saves_are_durable_idempotent_and_atomic() {
     assert_eq!(changed_replay["error"]["code"], "input_conflict");
     assert_eq!(
         changed_replay["actions"][0],
-        json!({"tool":"get_program","arguments":{"program_id":program_id}})
+        ready_action("get_program", json!({"program_id":program_id}))
     );
     assert_eq!(canonical(&pool, program_id).await, after_inputs);
 
@@ -171,9 +174,9 @@ async fn concurrent_inputs_and_saves_are_durable_idempotent_and_atomic() {
             break;
         }
         assert_eq!(page["next_after_input"], after);
-        assert_eq!(page["actions"][0]["tool"], "read_skill");
-        assert_eq!(page["actions"][1]["tool"], "get_program");
-        assert_eq!(page["actions"][1]["arguments"]["after_input"], after);
+        assert_eq!(action_name(&page["actions"][0]), Some("tectd-program"));
+        assert_eq!(action_name(&page["actions"][1]), Some("program.get"));
+        assert_eq!(action_params(&page["actions"][1])["after_input"], after);
     }
     assert_eq!(seen[0], original);
     assert_eq!(seen.len(), 3);
@@ -194,18 +197,18 @@ async fn concurrent_inputs_and_saves_are_durable_idempotent_and_atomic() {
     assert_eq!(pending["error"]["code"], "input_pending");
     assert_eq!(
         pending["actions"][0],
-        json!({"tool":"get_program","arguments":{"program_id":program_id}})
+        ready_action("get_program", json!({"program_id":program_id}))
     );
     assert_eq!(canonical(&pool, program_id).await, before_pending);
 
     let (left, right) = tokio::join!(
         first.exchange(
             "tools/call",
-            json!({"name":"save_program","arguments":complete_patch(program_id,3,"A")}),
+            public_call("save_program", complete_patch(program_id, 3, "A")),
         ),
         second.exchange(
             "tools/call",
-            json!({"name":"save_program","arguments":complete_patch(program_id,3,"B")}),
+            public_call("save_program", complete_patch(program_id, 3, "B")),
         )
     );
     let mut success = None;
@@ -226,7 +229,7 @@ async fn concurrent_inputs_and_saves_are_durable_idempotent_and_atomic() {
     assert_eq!(refusal["error"]["code"], "stale_revision");
     assert_eq!(
         refusal["actions"][0],
-        json!({"tool":"get_program","arguments":{"program_id":program_id}})
+        ready_action("get_program", json!({"program_id":program_id}))
     );
     let final_rows = canonical(&pool, program_id).await;
     assert_eq!(final_rows.len(), 4);

@@ -1,4 +1,4 @@
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 use std::fs;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -165,12 +165,4 @@ impl LegacyMcp {
                 .success()
         );
     }
-}
-
-pub fn exact_action<'a>(payload: &'a Value, tool: &str) -> Option<&'a Map<String, Value>> {
-    payload["actions"]
-        .as_array()?
-        .iter()
-        .find(|action| action["tool"] == tool)?
-        .as_object()
 }

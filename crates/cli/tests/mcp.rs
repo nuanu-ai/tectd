@@ -128,6 +128,7 @@ async fn real_mcp_schema_rejects_identity_override_and_recovers_session() {
         )
         .await;
         let tools = listed["result"]["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 5);
         let state_tool = tools.iter().find(|t| t["name"] == "get_state").unwrap();
         assert_eq!(state_tool["annotations"]["readOnlyHint"], true);
         assert_eq!(state_tool["inputSchema"]["additionalProperties"], false);
@@ -155,7 +156,7 @@ async fn real_mcp_schema_rejects_identity_override_and_recovers_session() {
             &mut output,
             json!({
                 "jsonrpc":"2.0","id":4,"method":"tools/call",
-                "params":{"name":"open_workspace","arguments":{"workspace_key":"spoofed"},"_meta":{"threadId":native_id}}
+                "params":{"name":"command","arguments":{"route":"workspace.open","params":{"workspace_key":"spoofed"}},"_meta":{"threadId":native_id}}
             }),
         )
         .await;
@@ -165,7 +166,7 @@ async fn real_mcp_schema_rejects_identity_override_and_recovers_session() {
             &mut output,
             json!({
                 "jsonrpc":"2.0","id":5,"method":"tools/call",
-                "params":{"name":"open_workspace","arguments":{},"_meta":{"threadId":native_id}}
+                "params":{"name":"command","arguments":{"route":"workspace.open","params":{}},"_meta":{"threadId":native_id}}
             }),
         )
         .await;

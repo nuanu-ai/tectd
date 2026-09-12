@@ -12,8 +12,8 @@ pub(crate) const INTROS: [&str; 8] = [
     "Current data and available calls are below.",
 ];
 
-pub(crate) fn action(tool: &str, arguments: Value) -> Value {
-    json!({"tool":tool,"arguments":arguments})
+pub(crate) fn action(tool: &str, arguments: Value) -> tect_domain::Result<Value> {
+    crate::api::ready_action(tool, arguments)
 }
 
 pub(crate) fn with_actions(
@@ -73,7 +73,7 @@ fn intro(data: &Value) -> &'static str {
         return INTROS[0];
     }
     if data["programs_delivery"] == "use_list_programs" {
-        return "The Program listing is available through the exact list_programs call from the beginning. Full names did not fit beside this workspace context; the current file observation is included below.";
+        return "The Program listing is available through the exact query route program.list call from the beginning. Full names did not fit beside this workspace context; the current file observation is included below.";
     }
     if data.get("file").is_some() {
         return match data["file"]["status"].as_str() {
@@ -87,7 +87,7 @@ fn intro(data: &Value) -> &'static str {
                 "AGENTS.md could not be safely inspected with current access. This does not establish absence. Programs remain available."
             }
             _ if data["setup_context"]["setup"].is_object() => {
-                "A saved setup is available. Use its exact get_setup call to restore the draft and original history and inspect the current file. Programs remain available."
+                "A saved setup is available. Use its exact query route setup.get call to restore the draft and original history and inspect the current file. Programs remain available."
             }
             _ => {
                 "This is saved workspace state; the file's current presence is unknown. The exact inspection action accepts the known task launch directory. Programs remain available."
@@ -131,21 +131,35 @@ pub(crate) fn failure_with_state(
     call: Option<(&str, &Value)>,
     state: Option<&Value>,
 ) -> Value {
+    match try_failure_with_state(error, call, state) {
+        Ok(value) => value,
+        Err(_) => internal_failure(),
+    }
+}
+
+fn try_failure_with_state(
+    error: Error,
+    call: Option<(&str, &Value)>,
+    state: Option<&Value>,
+) -> tect_domain::Result<Value> {
     let mut actions = Vec::new();
-    let reload = call.and_then(|(_, args)| {
+    let reload = if let Some((_, args)) = call {
         if let Some(id) = args.get("setup_id").filter(|id| id.is_string()) {
             Some(action(
                 "get_setup",
                 json!({"setup_id":id,"after_input":0,"limit":25}),
-            ))
+            )?)
         } else {
-            args.get("program_id")
-                .filter(|id| id.is_string())
-                .map(|id| action("get_program", json!({"program_id":id})))
+            match args.get("program_id").filter(|id| id.is_string()) {
+                Some(id) => Some(action("get_program", json!({"program_id":id}))?),
+                None => None,
+            }
         }
-    });
+    } else {
+        None
+    };
     match error {
-        Error::WorkspaceNotOpen => actions.push(action("open_workspace", json!({}))),
+        Error::WorkspaceNotOpen => actions.push(action("open_workspace", json!({}))?),
         Error::StaleRevision
         | Error::InputPending
         | Error::ProgramIncomplete
@@ -154,24 +168,30 @@ pub(crate) fn failure_with_state(
         | Error::SetupFileConflict
         | Error::InputConflict
         | Error::RequestTooLarge => {
-            actions.push(reload.unwrap_or_else(|| action("get_state", json!({}))));
+            actions.push(match reload {
+                Some(reload) => reload,
+                None => action("get_state", json!({}))?,
+            });
         }
         Error::StorageUnavailable | Error::TransportUnavailable => {
             if let Some((name, arguments)) = call {
                 if name == "save_program" || name == "save_setup" {
-                    actions.push(reload.unwrap_or_else(|| action("get_state", json!({}))));
+                    actions.push(match reload {
+                        Some(reload) => reload,
+                        None => action("get_state", json!({}))?,
+                    });
                 } else {
-                    actions.push(action(name, arguments.clone()));
+                    actions.push(action(name, arguments.clone())?);
                 }
             }
         }
-        Error::TaskDirectoryUnbound => actions.push(crate::workspace_output::inspect_action(None)),
+        Error::TaskDirectoryUnbound => actions.push(crate::workspace_output::inspect_action(None)?),
         Error::SetupExists if state.is_some() => {
             let context = state.and_then(|state| {
                 serde_json::from_value::<tect_domain::SetupContext>(state["setup_context"].clone())
                     .ok()
             });
-            actions.push(crate::workspace_output::inspect_action(context.as_ref()));
+            actions.push(crate::workspace_output::inspect_action(context.as_ref())?);
         }
         Error::Unauthorized
         | Error::InvalidNativeSession
@@ -181,16 +201,25 @@ pub(crate) fn failure_with_state(
         | Error::InvalidConfiguration
         | Error::TaskDirectoryMismatch
         | Error::SetupUnavailable => {}
-        _ => actions.push(action("get_state", json!({}))),
+        _ => actions.push(action("get_state", json!({}))?),
     }
     let recommended = (!actions.is_empty()).then_some(0);
     if state.is_some() {
-        actions.push(action("list_programs", json!({"limit":25})));
-        actions.push(crate::program_output::begin_action());
+        actions.push(action("list_programs", json!({"limit":25}))?);
+        actions.push(crate::program_output::begin_action()?);
     }
     let recommended = recommended.or_else(|| (!actions.is_empty()).then_some(0));
     let data = with_actions(json!({"error":{"code":error.code()}}), actions, recommended);
-    content(error_intro(error), data, true)
+    Ok(content(error_intro(error), data, true))
+}
+
+fn internal_failure() -> Value {
+    let data = with_actions(
+        json!({"error":{"code":Error::InternalInvariant.code()}}),
+        Vec::new(),
+        None,
+    );
+    content(error_intro(Error::InternalInvariant), data, true)
 }
 
 pub(crate) fn error_intro(error: Error) -> &'static str {
@@ -205,7 +234,7 @@ pub(crate) fn error_intro(error: Error) -> &'static str {
             "Keep every required PRD field meaningful and resolve the pending question before completion."
         }
         Error::SetupIncomplete => {
-            "The setup needs coherent content, every input incorporated and no pending question before it can be applied."
+            "The setup needs coherent content, every input incorporated and no pending question before execute route setup.apply can proceed."
         }
         Error::SetupFileConflict => {
             "The current AGENTS.md is missing after prior application, changed, or conflicts with the intended content. It was not overwritten or recreated. Reload the current observation."
@@ -231,6 +260,9 @@ pub(crate) fn error_intro(error: Error) -> &'static str {
         }
         Error::InvalidArguments => {
             "The arguments do not match the current tool schema. Read current state and use the live schema."
+        }
+        Error::InternalInvariant => {
+            "TectD could not construct a valid next call. No follow-up action was emitted."
         }
         _ => {
             "The request cannot proceed with the current identity or access. No protected data is included."

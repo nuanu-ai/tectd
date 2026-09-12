@@ -2,7 +2,6 @@ use crate::Result;
 use crate::context::HostContext;
 use crate::frame::{Frame, FrameReader, MAX_FRAME_BYTES};
 use crate::responses;
-use crate::tools::definitions;
 use crate::transport::call_tool_bounded;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -132,7 +131,7 @@ impl McpSession {
             }
             "tools/list" if self.lifecycle == Lifecycle::Ready => {
                 if control_params(params) {
-                    Some(success_response(id, definitions()))
+                    Some(success_response(id, crate::api::definitions()))
                 } else {
                     Some(error_response(id, -32602, "invalid_params"))
                 }
@@ -207,22 +206,19 @@ impl McpSession {
             .len()
             - 4;
         let capacity = MAX_FRAME_BYTES.saturating_sub(envelope_bytes);
-        match call_tool_bounded(
-            &self.socket,
-            &context,
-            &params.name,
-            params.arguments.clone(),
-            capacity,
-        )
-        .await
-        {
+        let routed = crate::api::decode_public_call(&params.name, params.arguments.clone());
+        let (name, arguments) = match routed {
+            Ok(call) => (call.name, call.arguments),
+            Err(_) => (crate::api::INVALID_PUBLIC_CALL, Value::Object(Map::new())),
+        };
+        match call_tool_bounded(&self.socket, &context, name, arguments.clone(), capacity).await {
             Ok(result) => success_response(id, successful_tool_result(result)),
             Err(error) => success_response(
                 id,
                 crate::setup_recovery::response(
                     error,
-                    &params.name,
-                    &params.arguments,
+                    name,
+                    &arguments,
                     &self.socket,
                     &context,
                     capacity,

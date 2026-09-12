@@ -1,11 +1,12 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tect_domain::{Error, MAX_SOURCE_PATH_BYTES, MAX_WORKTREES, Result};
+use tect_domain::{Error, Result};
 use uuid::Uuid;
 
 pub(crate) enum Invocation {
     Program(crate::program_tools::ProgramInvocation),
     Setup(crate::setup_tools::SetupInvocation),
+    Help(crate::api::HelpRequest),
     OpenWorkspace,
     GetState,
     RegisterSource { path: String },
@@ -62,6 +63,7 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
                 limit: arguments.limit,
             })
         }
+        "help" => crate::api::parse_help(arguments).map(Invocation::Help),
         _ if name.ends_with("_setup")
             || name == "record_setup_input"
             || name == "read_skill" && arguments["name"] == "tectd-setup" =>
@@ -74,67 +76,6 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
 
 fn empty_object(value: &Value) -> bool {
     value.as_object().is_some_and(serde_json::Map::is_empty)
-}
-
-pub(crate) fn definitions() -> Value {
-    let mut definitions = json!({
-        "tools": [
-            {
-                "name": "open_workspace",
-                "description": "Create or recover this native session's logical workspace.",
-                "inputSchema": object_schema(json!({}), json!([])),
-                "annotations": annotations(false)
-            },
-            {
-                "name": "get_state",
-                "description": "Read this native session's bounded workspace state.",
-                "inputSchema": object_schema(json!({}), json!([])),
-                "annotations": annotations(true)
-            },
-            {
-                "name": "register_source",
-                "description": "Register a Git worktree for this logical workspace and host.",
-                "inputSchema": object_schema(
-                    json!({"path": {"type": "string", "minLength": 1, "maxLength": MAX_SOURCE_PATH_BYTES}}),
-                    json!(["path"])
-                ),
-                "annotations": annotations(false)
-            },
-            {
-                "name": "select_worktrees",
-                "description": "Replace this native session's selected worktree set.",
-                "inputSchema": object_schema(
-                    json!({"worktree_ids": {
-                        "type": "array", "items": {"type": "string", "format": "uuid"},
-                        "maxItems": MAX_WORKTREES, "uniqueItems": true
-                    }}),
-                    json!(["worktree_ids"])
-                ),
-                "annotations": annotations(false)
-            },
-            {
-                "name": "list_sources",
-                "description": "List a bounded page of registered worktrees for this workspace and host.",
-                "inputSchema": object_schema(
-                    json!({
-                        "after": {"type": "string", "format": "uuid"},
-                        "limit": {"type": "integer", "minimum": 1, "maximum": MAX_WORKTREES}
-                    }),
-                    json!(["limit"])
-                ),
-                "annotations": annotations(true)
-            }
-        ]
-    });
-    definitions["tools"]
-        .as_array_mut()
-        .expect("tool array")
-        .extend(crate::program_tools::definitions());
-    definitions["tools"]
-        .as_array_mut()
-        .expect("tool array")
-        .extend(crate::setup_tools::definitions());
-    definitions
 }
 
 pub(crate) fn object_schema(properties: Value, required: Value) -> Value {
@@ -159,22 +100,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn schemas_expose_seventeen_bounded_tools() {
-        let definitions = definitions();
+    fn schemas_expose_five_bounded_tools() {
+        let definitions = crate::api::definitions();
         let tools = definitions["tools"].as_array().unwrap();
-        assert_eq!(tools.len(), 17);
+        assert_eq!(tools.len(), 5);
         assert!(
             tools
                 .iter()
                 .all(|tool| tool["inputSchema"]["additionalProperties"] == false)
         );
         assert_eq!(
-            tools[3]["inputSchema"]["properties"]["worktree_ids"]["maxItems"],
-            100
-        );
-        assert_eq!(
-            tools[4]["inputSchema"]["properties"]["limit"]["maximum"],
-            100
+            tools[2]["inputSchema"]["properties"]["route"]["enum"]
+                .as_array()
+                .unwrap()
+                .len(),
+            10
         );
     }
 

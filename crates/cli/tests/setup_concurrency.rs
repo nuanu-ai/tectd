@@ -2,7 +2,10 @@
 
 mod recovery_support;
 
-use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url, tool_payload};
+use recovery_support::{
+    Daemon, Mcp, action_name, action_params, host_file, private_temp, public_call, ready_action,
+    tagged_url, tool_payload,
+};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tect_postgres::admin;
@@ -114,13 +117,13 @@ async fn concurrent_setup_retries_are_scoped_and_stale_saves_are_atomic() {
     assert_eq!(existing["actions"].as_array().unwrap().len(), 3);
     assert_eq!(
         existing["actions"][0],
-        json!({"tool":"inspect_setup","arguments":{"task_directory":directory}})
+        ready_action("inspect_setup", json!({"task_directory":directory}))
     );
     assert_eq!(
         existing["actions"][1],
-        json!({"tool":"list_programs","arguments":{"limit":25}})
+        ready_action("list_programs", json!({"limit":25}))
     );
-    assert_eq!(existing["actions"][2]["tool"], "begin_program");
+    assert_eq!(action_name(&existing["actions"][2]), Some("program.begin"));
     assert!(existing.get("setup").is_none());
     assert_eq!(canonical(&pool, id).await, creation_state);
 
@@ -191,14 +194,8 @@ async fn concurrent_setup_retries_are_scoped_and_stale_saves_are_atomic() {
         "content":"# Shared setup\n\nConcurrent result B.\n"
     });
     let (left, right) = tokio::join!(
-        first.exchange(
-            "tools/call",
-            json!({"name":"save_setup","arguments":left_patch}),
-        ),
-        second.exchange(
-            "tools/call",
-            json!({"name":"save_setup","arguments":right_patch}),
-        )
+        first.exchange("tools/call", public_call("save_setup", left_patch),),
+        second.exchange("tools/call", public_call("save_setup", right_patch),)
     );
     let mut success = None;
     let mut refusal = None;
@@ -215,16 +212,16 @@ async fn concurrent_setup_retries_are_scoped_and_stale_saves_are_atomic() {
     assert_eq!(success["setup"]["revision"], 4);
     assert_eq!(success["setup"]["current_step"], "ready_to_apply");
     assert_eq!(refusal["error"]["code"], "stale_revision");
-    assert_eq!(refusal["actions"][0]["tool"], "get_setup");
+    assert_eq!(action_name(&refusal["actions"][0]), Some("setup.get"));
     assert_eq!(
-        refusal["actions"][0]["arguments"],
-        json!({"setup_id":id,"after_input":0,"limit":25})
+        action_params(&refusal["actions"][0]),
+        &json!({"setup_id":id,"after_input":0,"limit":25})
     );
     assert_eq!(
         refusal["actions"][1],
-        json!({"tool":"list_programs","arguments":{"limit":25}})
+        ready_action("list_programs", json!({"limit":25}))
     );
-    assert_eq!(refusal["actions"][2]["tool"], "begin_program");
+    assert_eq!(action_name(&refusal["actions"][2]), Some("program.begin"));
     let final_state = canonical(&pool, id).await;
     assert_ne!(final_state, before_race);
     assert_eq!(final_state.len(), 3);

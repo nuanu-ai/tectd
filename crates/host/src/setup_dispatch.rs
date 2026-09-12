@@ -19,7 +19,7 @@ pub(crate) async fn execute(
         SetupInvocation::Begin { request_id, input } => service
             .begin_setup(context, request_id, &input, &guard)
             .await
-            .map(setup_output::saved),
+            .and_then(setup_output::saved),
         SetupInvocation::Get {
             setup_id,
             after_input,
@@ -31,7 +31,7 @@ pub(crate) async fn execute(
         SetupInvocation::Save(changes) => service
             .save_setup(context, &changes, &guard)
             .await
-            .map(setup_output::saved),
+            .and_then(setup_output::saved),
         SetupInvocation::Record {
             setup_id,
             revision,
@@ -40,11 +40,11 @@ pub(crate) async fn execute(
         } => service
             .record_setup_input(context, setup_id, revision, request_id, &input, &guard)
             .await
-            .map(setup_output::saved),
+            .and_then(setup_output::saved),
         SetupInvocation::Apply { setup_id, revision } => service
             .apply_setup(context, setup_id, revision, &guard)
             .await
-            .map(setup_output::applied),
+            .and_then(setup_output::applied),
         SetupInvocation::ReadSkill => {
             service.read_program_skill(context).await?;
             Ok(setup_output::skill())

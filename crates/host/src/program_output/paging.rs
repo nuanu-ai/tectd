@@ -18,7 +18,7 @@ pub(crate) fn fitting_prefix<T: Serialize>(
     items_key: &str,
     next_key: &str,
     capacity: usize,
-    context: impl Fn(&[T], bool) -> (Vec<Value>, Value),
+    context: impl Fn(&[T], bool) -> Result<(Vec<Value>, Value)>,
 ) -> Result<usize> {
     let fixed = encoded_len(first_page)?
         - fragment_bytes(&first_page[items_key])?
@@ -28,7 +28,7 @@ pub(crate) fn fitting_prefix<T: Serialize>(
     let mut accepted = 0;
     for (index, item) in items.iter().enumerate() {
         entries += fragment_bytes(item)? + usize::from(index > 0);
-        let (actions, next) = context(&items[..=index], index + 1 < items.len());
+        let (actions, next) = context(&items[..=index], index + 1 < items.len())?;
         let bytes = fixed + entries + fragment_bytes(&actions)? + fragment_bytes(&next)?;
         if bytes > capacity {
             break;

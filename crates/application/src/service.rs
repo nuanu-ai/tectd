@@ -128,6 +128,12 @@ impl WorkspaceService {
         Ok(state)
     }
 
+    /// Authenticate a native host call without requiring or creating workspace state.
+    pub async fn authenticate_host(&self, context: &RequestContext) -> Result<()> {
+        let (tx, _) = self.authorized(context, TransactionMode::ReadOnly).await?;
+        tx.commit().await
+    }
+
     pub async fn open_workspace(&self, context: &RequestContext) -> Result<WorkspaceState> {
         let (mut tx, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
         tx.lock_native_session(identity.host_id, &context.native_session_id)

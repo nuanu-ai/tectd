@@ -1,7 +1,6 @@
-use crate::tools::{annotations, object_schema};
 use serde::Deserialize;
-use serde_json::{Value, json};
-use tect_domain::{Error, MAX_SOURCE_PATH_BYTES, Result, SaveSetup};
+use serde_json::Value;
+use tect_domain::{Error, Result, SaveSetup};
 use uuid::Uuid;
 
 pub(crate) enum SetupInvocation {
@@ -139,78 +138,10 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<SetupInvocation> {
     })
 }
 
-pub(crate) fn definitions() -> Vec<Value> {
-    let uuid = json!({"type":"string","format":"uuid"});
-    let revision = json!({"type":"integer","minimum":1});
-    let text = json!({"type":"string","minLength":1});
-    let nullable = json!({"type":["string","null"]});
-    vec![
-        tool(
-            "inspect_setup",
-            "Inspect AGENTS.md in the actual launch directory from the current Codex task context. Omission reports context_unknown; do not ask the human to choose a folder.",
-            json!({"task_directory":{"type":"string","minLength":1,"maxLength":MAX_SOURCE_PATH_BYTES}}),
-            json!([]),
-            false,
-            true,
-        ),
-        tool(
-            "begin_setup",
-            "Persist the complete company/work narrative for the verified missing AGENTS.md in this session's bound task directory. Reuse request_id and exact text on retry.",
-            json!({"request_id":uuid,"input":text}),
-            json!(["request_id", "input"]),
-            false,
-            true,
-        ),
-        tool(
-            "get_setup",
-            "Read the whole saved draft, notes, pending question and a page of exact original inputs, plus current file observation. Omitted after_input uses the consumed cursor; recovery starts at 0.",
-            json!({"setup_id":uuid,"after_input":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":100,"default":25}}),
-            json!(["setup_id"]),
-            true,
-            true,
-        ),
-        tool(
-            "save_setup",
-            "Persist a revision-checked complete draft or partial work before asking a necessary question. Omission preserves; null clears. ready is required; true requires all inputs incorporated, meaningful content and no pending question.",
-            json!({"setup_id":uuid,"revision":revision,"input_cursor":{"type":"integer","minimum":0},"ready":{"type":"boolean"},"content":nullable,"working_notes":nullable,"pending_question":nullable}),
-            json!(["setup_id", "revision", "input_cursor", "ready"]),
-            false,
-            false,
-        ),
-        tool(
-            "record_setup_input",
-            "Persist the complete original reply and resume the same setup. Exact retries retain request_id and original text, including after a lost response.",
-            json!({"setup_id":uuid,"revision":revision,"request_id":uuid,"input":text}),
-            json!(["setup_id", "revision", "request_id", "input"]),
-            false,
-            true,
-        ),
-        tool(
-            "apply_setup",
-            "Create the fixed AGENTS.md exclusively from the durable ready draft and verify its exact bytes. Never overwrite an existing different file. Retry the same setup_id and ready revision after an uncertain result.",
-            json!({"setup_id":uuid,"revision":revision}),
-            json!(["setup_id", "revision"]),
-            false,
-            true,
-        ),
-    ]
-}
-fn tool(
-    name: &str,
-    description: &str,
-    properties: Value,
-    required: Value,
-    read: bool,
-    idempotent: bool,
-) -> Value {
-    let mut hints = annotations(read);
-    hints["idempotentHint"] = json!(idempotent);
-    json!({"name":name,"description":description,"inputSchema":object_schema(properties, required),"annotations":hints})
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     #[test]
     fn schema_does_not_accept_forged_authority_or_ambiguous_nulls() {
         let id = Uuid::new_v4();

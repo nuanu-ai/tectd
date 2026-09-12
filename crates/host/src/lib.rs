@@ -1,5 +1,6 @@
 //! Native host configuration and bounded local transports.
 
+mod api;
 mod context;
 mod frame;
 mod git;

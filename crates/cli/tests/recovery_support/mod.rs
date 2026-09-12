@@ -55,6 +55,66 @@ pub fn tagged_url(url: &str, tag: &str) -> String {
         if url.contains('?') { "&" } else { "?" }
     )
 }
+
+pub fn public_call(name: &str, arguments: Value) -> Value {
+    let routed = match name {
+        "get_state" => return json!({"name":"get_state","arguments":arguments}),
+        "get_program" => ("query", "program.get"),
+        "list_programs" => ("query", "program.list"),
+        "list_sources" => ("query", "source.list"),
+        "get_setup" => ("query", "setup.get"),
+        "open_workspace" => ("command", "workspace.open"),
+        "register_source" => ("command", "source.register"),
+        "select_worktrees" => ("command", "session.select_worktrees"),
+        "begin_program" => ("command", "program.begin"),
+        "save_program" => ("command", "program.save"),
+        "record_program_input" => ("command", "program.record_input"),
+        "inspect_setup" => ("command", "setup.inspect"),
+        "begin_setup" => ("command", "setup.begin"),
+        "save_setup" => ("command", "setup.save"),
+        "record_setup_input" => ("command", "setup.record_input"),
+        "apply_setup" => ("execute", "setup.apply"),
+        "read_skill" => {
+            return json!({"name":"help","arguments":{
+                "mode":"describe","method":arguments["name"]
+            }});
+        }
+        _ => return json!({"name":name,"arguments":arguments}),
+    };
+    json!({"name":routed.0,"arguments":{"route":routed.1,"params":arguments}})
+}
+
+#[allow(dead_code)]
+pub fn action_name(action: &Value) -> Option<&str> {
+    action["arguments"]["route"]
+        .as_str()
+        .or_else(|| action["arguments"]["method"].as_str())
+        .or_else(|| action["tool"].as_str())
+}
+
+#[allow(dead_code)]
+pub fn action_params(action: &Value) -> &Value {
+    action["arguments"]
+        .get("params")
+        .unwrap_or(&action["arguments"])
+}
+
+#[allow(dead_code)]
+pub fn find_action<'a>(payload: &'a Value, name: &str) -> Option<&'a Value> {
+    payload["actions"]
+        .as_array()?
+        .iter()
+        .find(|action| action_name(action) == Some(name))
+}
+
+#[allow(dead_code)]
+pub fn ready_action(name: &str, arguments: Value) -> Value {
+    let mut call = public_call(name, arguments);
+    call["tool"] = call["name"].take();
+    call.as_object_mut().unwrap().remove("name");
+    call["kind"] = json!("ready_call");
+    call
+}
 pub struct Daemon {
     pub child: Child,
     pub socket: PathBuf,
@@ -181,9 +241,8 @@ impl Mcp {
         serde_json::from_str(&line).unwrap()
     }
     pub async fn call(&mut self, name: &str, arguments: Value) -> Value {
-        let response = self
-            .exchange("tools/call", json!({"name":name,"arguments":arguments}))
-            .await;
+        let call = public_call(name, arguments);
+        let response = self.exchange("tools/call", call).await;
         assert!(
             response.get("error").is_none() && response["result"]["isError"] != true,
             "{response}"
@@ -193,9 +252,8 @@ impl Mcp {
     // This module is compiled once per integration binary; only refusal suites use this path.
     #[allow(dead_code)]
     pub async fn call_error(&mut self, name: &str, arguments: Value) -> Value {
-        let response = self
-            .exchange("tools/call", json!({"name":name,"arguments":arguments}))
-            .await;
+        let call = public_call(name, arguments);
+        let response = self.exchange("tools/call", call).await;
         assert_eq!(response["result"]["isError"], true, "{response}");
         tool_payload(&response)
     }

@@ -166,6 +166,7 @@ impl Bridge {
     }
 
     pub(crate) async fn tool_call(&mut self, name: &str, arguments: Value) -> TestResult<Value> {
+        let (name, arguments) = public_call(name, arguments);
         self.exchange(
             "tools/call",
             json!({
@@ -208,6 +209,29 @@ impl Bridge {
             }
         }
     }
+}
+
+fn public_call(name: &str, arguments: Value) -> (&str, Value) {
+    let routed = match name {
+        "get_state" => return ("get_state", arguments),
+        "get_program" => ("query", "program.get"),
+        "list_programs" => ("query", "program.list"),
+        "list_sources" => ("query", "source.list"),
+        "get_setup" => ("query", "setup.get"),
+        "open_workspace" => ("command", "workspace.open"),
+        "register_source" => ("command", "source.register"),
+        "select_worktrees" => ("command", "session.select_worktrees"),
+        "begin_program" => ("command", "program.begin"),
+        "save_program" => ("command", "program.save"),
+        "record_program_input" => ("command", "program.record_input"),
+        "inspect_setup" => ("command", "setup.inspect"),
+        "begin_setup" => ("command", "setup.begin"),
+        "save_setup" => ("command", "setup.save"),
+        "record_setup_input" => ("command", "setup.record_input"),
+        "apply_setup" => ("execute", "setup.apply"),
+        _ => return (name, arguments),
+    };
+    (routed.0, json!({"route":routed.1,"params":arguments}))
 }
 
 impl Drop for Bridge {

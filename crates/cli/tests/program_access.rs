@@ -60,7 +60,6 @@ fn calls(program_id: Uuid) -> Vec<(&'static str, Value)> {
             json!({"program_id":program_id,"request_id":Uuid::new_v4(),"input":"refused input"}),
         ),
         ("list_programs", json!({})),
-        ("read_skill", json!({"name":"tectd-program"})),
     ]
 }
 
@@ -157,6 +156,11 @@ async fn program_tools_hide_foreign_rows_and_honor_every_revocation_layer() {
     admin::revoke_host(&pool, host_revoked.enrollment.auth.host_id)
         .await
         .unwrap();
+    let denied_help = host_revoked
+        .client
+        .call_error("read_skill", json!({"name":"tectd-program"}))
+        .await;
+    assert_eq!(denied_help["error"]["code"], "unauthorized");
     assert_all_denied(
         &mut host_revoked.client,
         host_revoked.program_id,
@@ -173,6 +177,11 @@ async fn program_tools_hide_foreign_rows_and_honor_every_revocation_layer() {
     admin::revoke_session(&pool, session_revoked.session_id)
         .await
         .unwrap();
+    let session_help = session_revoked
+        .client
+        .call("read_skill", json!({"name":"tectd-program"}))
+        .await;
+    assert_eq!(session_help["method"], "tectd-program");
     assert_all_denied(
         &mut session_revoked.client,
         session_revoked.program_id,
@@ -195,6 +204,11 @@ async fn program_tools_hide_foreign_rows_and_honor_every_revocation_layer() {
     .execute(&pool)
     .await
     .unwrap();
+    let member_help = member_revoked
+        .client
+        .call("read_skill", json!({"name":"tectd-program"}))
+        .await;
+    assert_eq!(member_help["method"], "tectd-program");
     assert_all_denied(
         &mut member_revoked.client,
         member_revoked.program_id,

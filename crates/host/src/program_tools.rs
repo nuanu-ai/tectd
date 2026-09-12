@@ -1,6 +1,5 @@
-use crate::tools::{annotations, object_schema};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use tect_domain::{Error, ProgramCursor, Result, SaveProgram};
 use uuid::Uuid;
 
@@ -133,87 +132,10 @@ fn reject_null(arguments: &Value, field: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn definitions() -> Vec<Value> {
-    let uuid = json!({"type":"string","format":"uuid"});
-    let text = json!({"type":"string","minLength":1});
-    let nullable = json!({"type":["string","null"]});
-    let limit = json!({"type":"integer","minimum":1,"maximum":100,"default":25});
-    let input = json!({"request_id":uuid,"input":text});
-    vec![
-        tool(
-            "begin_program",
-            "Persist one original narrative and a resumable draft. Reuse request_id only for an exact retry.",
-            input,
-            json!(["request_id", "input"]),
-            false,
-            true,
-        ),
-        tool(
-            "get_program",
-            "Read current PRD and a page of original input. Omitted after_input starts at the saved coverage cursor.",
-            json!({"program_id":uuid,"after_input":{"type":"integer","minimum":0},"limit":limit}),
-            json!(["program_id"]),
-            true,
-            true,
-        ),
-        tool(
-            "save_program",
-            "Save a revision-checked patch. Omission preserves; null clears. Complete opens the same coherent Program without launching work.",
-            json!({
-                "program_id":uuid,"revision":{"type":"integer","minimum":1},
-                "input_cursor":{"type":"integer","minimum":0},
-                "name":nullable,"intent":nullable,"basis":nullable,"boundaries":nullable,
-                "constraints":nullable,"success":nullable,"working_notes":nullable,
-                "pending_question":nullable,"complete":{"type":"boolean","default":false}
-            }),
-            json!(["program_id", "revision", "input_cursor"]),
-            false,
-            false,
-        ),
-        tool(
-            "record_program_input",
-            "Append the human's original reply or correction and resume the same Program. Exact retries retain request_id.",
-            json!({"program_id":uuid,"request_id":uuid,"input":text}),
-            json!(["program_id", "request_id", "input"]),
-            false,
-            true,
-        ),
-        tool(
-            "list_programs",
-            "Page through this workspace's Programs, unfinished first. Use the exact returned cursor for the next page.",
-            json!({"after":{"type":"string","pattern":"^[wr]:[0-9a-fA-F-]+$"},"limit":limit}),
-            json!([]),
-            true,
-            true,
-        ),
-        tool(
-            "read_skill",
-            "Read the packaged method named by the current Program or workspace setup step.",
-            json!({"name":{"type":"string","enum":["tectd-program","tectd-setup"]}}),
-            json!(["name"]),
-            true,
-            true,
-        ),
-    ]
-}
-
-fn tool(
-    name: &str,
-    description: &str,
-    properties: Value,
-    required: Value,
-    read: bool,
-    idempotent: bool,
-) -> Value {
-    let mut hints = annotations(read);
-    hints["idempotentHint"] = json!(idempotent);
-    json!({"name":name,"description":description,
-        "inputSchema":object_schema(properties, required),"annotations":hints})
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     use tect_domain::TextPatch;
 
     #[test]

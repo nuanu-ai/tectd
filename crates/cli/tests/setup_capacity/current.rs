@@ -1,4 +1,6 @@
-use crate::recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
+use crate::recovery_support::{
+    Daemon, Mcp, action_name, action_params, host_file, private_temp, tagged_url,
+};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tect_postgres::admin;
@@ -101,9 +103,9 @@ async fn page_all(
             break;
         }
         assert_eq!(page["next_after_input"], after);
-        assert_eq!(page["actions"][0]["tool"], "read_skill");
-        assert_eq!(page["actions"][1]["tool"], "get_setup");
-        assert_eq!(page["actions"][1]["arguments"]["after_input"], after);
+        assert_eq!(action_name(&page["actions"][0]), Some("tectd-setup"));
+        assert_eq!(action_name(&page["actions"][1]), Some("setup.get"));
+        assert_eq!(action_params(&page["actions"][1])["after_input"], after);
     }
     (originals, pages)
 }

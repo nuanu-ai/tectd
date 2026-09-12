@@ -1,6 +1,8 @@
 //! Real process death, observed in-flight DB rollback and committed reply loss.
 mod recovery_support;
-use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url, tool_payload};
+use recovery_support::{
+    Daemon, Mcp, host_file, private_temp, public_call, tagged_url, tool_payload,
+};
 use serde_json::json;
 use sqlx::PgPool;
 use std::time::Duration;
@@ -113,10 +115,7 @@ async fn real_daemon_crash_rolls_back_and_lost_reply_recovers_committed_identity
         .await
         .unwrap();
     interrupted_client
-        .send(
-            "tools/call",
-            json!({"name":"open_workspace","arguments":{}}),
-        )
+        .send("tools/call", public_call("open_workspace", json!({})))
         .await;
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -173,10 +172,7 @@ async fn real_daemon_crash_rolls_back_and_lost_reply_recovers_committed_identity
     let lost_native = Uuid::new_v4().to_string();
     let mut lost_client = Mcp::start(&socket, &lost_config, &lost_native, "lost-reply").await;
     lost_client
-        .send(
-            "tools/call",
-            json!({"name":"open_workspace","arguments":{}}),
-        )
+        .send("tools/call", public_call("open_workspace", json!({})))
         .await;
     let committed_id = wait_for_session(&pool, lost.auth.host_id, &lost_native).await;
     lost_client.kill().await;
@@ -189,10 +185,7 @@ async fn real_daemon_crash_rolls_back_and_lost_reply_recovers_committed_identity
     // Revocation is observable through real MCP; no operator commands are tools.
     admin::revoke_session(&pool, committed_id).await.unwrap();
     let denied = retry
-        .exchange(
-            "tools/call",
-            json!({"name":"open_workspace","arguments":{}}),
-        )
+        .exchange("tools/call", public_call("open_workspace", json!({})))
         .await;
     assert_eq!(denied["result"]["isError"], true);
     let denied = tool_payload(&denied);
@@ -204,7 +197,7 @@ async fn real_daemon_crash_rolls_back_and_lost_reply_recovers_committed_identity
         .iter()
         .map(|v| v["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names.len(), 17);
+    assert_eq!(names, ["get_state", "query", "command", "execute", "help"]);
     assert!(names.iter().all(|n| !n.starts_with("revoke")));
     retry.finish().await;
     daemon.crash().await;

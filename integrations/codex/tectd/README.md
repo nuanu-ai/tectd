@@ -22,13 +22,15 @@ No CODEX_SESSION_ID or CODEX_THREAD_ID environment setting is required or accept
 as an identity fallback. Both the Codex-generated native UUID and host credential
 are required before a business operation. Model tool arguments contain no identity.
 
-Tools: `get_state`, `open_workspace`, `register_source`, `select_worktrees`,
-`list_sources`, `begin_program`, `get_program`, `save_program`,
-`record_program_input`, `list_programs`, `inspect_setup`, `begin_setup`, `get_setup`,
-`save_setup`, `record_setup_input`, `apply_setup`, and `read_skill`. Each native session has
-its own selected worktrees. Program drafts, original input and PRDs live in the
-database. The focused `tectd-program` and `tectd-setup` methods are embedded in the
-executable and returned by the allowlisted `read_skill` tool. Opening a Program does not launch Scope or
+The public MCP surface is exactly `get_state`, `query`, `command`, `execute`, and
+`help`. Read-only routes are `program.get`, `program.list`, `source.list`, and
+`setup.get`. Logical transitions are `workspace.open`, `source.register`,
+`session.select_worktrees`, `program.begin`, `program.save`,
+`program.record_input`, `setup.inspect`, `setup.begin`, `setup.save`, and
+`setup.record_input`. The only external-effect route is `setup.apply`. Each native
+session has its own selected worktrees. Program drafts, original input and PRDs live
+in the database. The focused `tectd-program` and `tectd-setup` methods are embedded in the
+executable and returned by `help` describe. Opening a Program does not launch Scope or
 implementation work. Tool results carry a short introduction and one JSON content
 block with data and exact next actions, without duplicate structured content.
 The enrolled host remains the
@@ -37,7 +39,7 @@ credential trust boundary; this is not a per-session secret scheme.
 For direct Codex configuration use server key `tectd`, the packaged `sh ./run.sh`
 entry with its absolute package directory as `cwd`, and the three settings above.
 This package cwd is not the setup target. The model supplies the actual current
-task launch directory from its environment to `inspect_setup`, without asking the
+task launch directory from its environment to `command` route `setup.inspect`, without asking the
 human to choose a folder. The enrolled host needs an independent `--setup-root`
 grant for that path; source grants do not authorize AGENTS.md publication. Setup
 persists its narrative/draft/question in PostgreSQL and creates only a verified

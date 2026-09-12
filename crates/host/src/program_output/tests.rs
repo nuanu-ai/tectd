@@ -24,10 +24,10 @@ fn encoding_cost_includes_both_json_escape_layers_exactly() {
         inputs: vec![input(1, "")],
         next_after_input: None,
     };
-    let empty = encoded_len(&page_value(&page)).unwrap();
+    let empty = encoded_len(&page_value(&page).unwrap()).unwrap();
     for text in ["plain", "\n\t\u{1f}", "\\\"quoted\\path", "日本語🙂"] {
         page.inputs[0].input = text.to_owned();
-        let expected = encoded_len(&page_value(&page)).unwrap() - empty;
+        let expected = encoded_len(&page_value(&page).unwrap()).unwrap() - empty;
         assert_eq!(guard.input_bytes(text).unwrap() as usize, expected);
     }
 }
@@ -62,7 +62,7 @@ fn capacity_pages_keep_whole_input_entries_and_exact_cursor() {
         inputs: vec![input(1, &original)],
         next_after_input: Some(1),
     };
-    let capacity = encoded_len(&page_value(&first)).unwrap();
+    let capacity = encoded_len(&page_value(&first).unwrap()).unwrap();
     let result = page(
         ProgramPage {
             program,
@@ -80,7 +80,9 @@ fn capacity_pages_keep_whole_input_entries_and_exact_cursor() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|call| call["tool"] == "get_program" && call["arguments"]["after_input"] == 1)
+            .any(|call| call["tool"] == "query"
+                && call["arguments"]["route"] == "program.get"
+                && call["arguments"]["params"]["after_input"] == 1)
     );
 }
 
@@ -100,7 +102,7 @@ fn capacity_pages_keep_full_names_and_creation_last() {
     };
     let first_value = with_actions(
         json!(&first),
-        list_actions(&first.programs, &first.next_after),
+        list_actions(&first.programs, &first.next_after).unwrap(),
         Some(0),
     );
     let result = list(
@@ -118,8 +120,8 @@ fn capacity_pages_keep_full_names_and_creation_last() {
     );
     assert_eq!(result["next_after"], programs[0].cursor().encode());
     assert_eq!(
-        result["actions"].as_array().unwrap().last().unwrap()["tool"],
-        "begin_program"
+        result["actions"].as_array().unwrap().last().unwrap()["arguments"]["route"],
+        "program.begin"
     );
 }
 
@@ -141,7 +143,7 @@ fn original_history_reads_never_move_the_save_cursor_back() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|a| a["tool"] == "save_program")
+        .find(|a| a["tool"] == "command" && a["arguments"]["route"] == "program.save")
         .unwrap();
-    assert_eq!(save["arguments"]["input_cursor"], 8);
+    assert_eq!(save["arguments"]["params"]["input_cursor"], 8);
 }

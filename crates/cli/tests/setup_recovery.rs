@@ -2,7 +2,10 @@
 
 mod recovery_support;
 
-use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url, tool_payload};
+use recovery_support::{
+    Daemon, Mcp, action_name, host_file, private_temp, public_call, ready_action, tagged_url,
+    tool_payload,
+};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::fs;
@@ -118,7 +121,7 @@ fn assert_apply_retry(payload: &Value, ready: ReadySetup) {
     assert_eq!(payload["recommended_action"], 0);
     assert_eq!(
         payload["actions"][0],
-        json!({"tool":"apply_setup","arguments":apply_args(ready)})
+        ready_action("apply_setup", apply_args(ready))
     );
     assert_program_navigation(payload);
 }
@@ -127,8 +130,10 @@ fn assert_reload(payload: &Value, ready: ReadySetup) {
     assert_eq!(payload["recommended_action"], 0);
     assert_eq!(
         payload["actions"][0],
-        json!({"tool":"get_setup","arguments":{"setup_id":ready.id,
-            "after_input":0,"limit":25}})
+        ready_action(
+            "get_setup",
+            json!({"setup_id":ready.id,"after_input":0,"limit":25}),
+        )
     );
     assert_program_navigation(payload);
 }
@@ -137,9 +142,9 @@ fn assert_program_navigation(payload: &Value) {
     assert_eq!(payload["actions"].as_array().unwrap().len(), 3);
     assert_eq!(
         payload["actions"][1],
-        json!({"tool":"list_programs","arguments":{"limit":25}})
+        ready_action("list_programs", json!({"limit":25}))
     );
-    assert_eq!(payload["actions"][2]["tool"], "begin_program");
+    assert_eq!(action_name(&payload["actions"][2]), Some("program.begin"));
 }
 
 async fn install_owned_failure(pool: &PgPool, setup_id: Uuid) -> (String, String) {
@@ -262,7 +267,7 @@ async fn setup_publication_recovers_across_database_and_stdio_failures() {
     let failed_response = db_client
         .exchange(
             "tools/call",
-            json!({"name":"apply_setup","arguments":apply_args(db_ready)}),
+            public_call("apply_setup", apply_args(db_ready)),
         )
         .await;
     remove_owned_failure(&pool, &trigger, &function).await;
@@ -312,7 +317,7 @@ async fn setup_publication_recovers_across_database_and_stdio_failures() {
     lost_client
         .send(
             "tools/call",
-            json!({"name":"apply_setup","arguments":apply_args(lost_ready)}),
+            public_call("apply_setup", apply_args(lost_ready)),
         )
         .await;
     wait_until_blocked(&pool, &tag).await;

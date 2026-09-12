@@ -1,7 +1,9 @@
 //! Stdio schema, state routing, Program ordering, and pagination acceptance.
 mod recovery_support;
 
-use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url, tool_payload};
+use recovery_support::{
+    Daemon, Mcp, host_file, private_temp, public_call, tagged_url, tool_payload,
+};
 use serde_json::{Map, Value, json};
 use sqlx::PgPool;
 use std::collections::BTreeSet;
@@ -22,7 +24,12 @@ fn action_tools(payload: &Value) -> Vec<&str> {
         .as_array()
         .unwrap()
         .iter()
-        .map(|action| action["tool"].as_str().unwrap())
+        .map(|action| {
+            action["arguments"]["route"]
+                .as_str()
+                .or_else(|| action["arguments"]["method"].as_str())
+                .unwrap_or_else(|| action["tool"].as_str().unwrap())
+        })
         .collect()
 }
 
@@ -71,88 +78,89 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
         .collect();
     assert_eq!(
         names,
-        BTreeSet::from([
-            "inspect_setup",
-            "begin_setup",
-            "get_setup",
-            "save_setup",
-            "record_setup_input",
-            "apply_setup",
-            "begin_program",
-            "get_program",
-            "get_state",
-            "list_programs",
-            "list_sources",
-            "open_workspace",
-            "read_skill",
-            "record_program_input",
-            "register_source",
-            "save_program",
-            "select_worktrees",
-        ])
+        BTreeSet::from(["command", "execute", "get_state", "help", "query"])
     );
-    for name in [
-        "begin_program",
-        "get_program",
-        "save_program",
-        "record_program_input",
-        "list_programs",
-        "read_skill",
-    ] {
+    for name in ["get_state", "query", "command", "execute", "help"] {
         let tool = tools.iter().find(|tool| tool["name"] == name).unwrap();
         assert_eq!(tool["inputSchema"]["type"], "object");
         assert_eq!(tool["inputSchema"]["additionalProperties"], false);
     }
-    let get = tools
-        .iter()
-        .find(|tool| tool["name"] == "get_program")
-        .unwrap();
-    assert_eq!(get["inputSchema"]["properties"]["limit"]["default"], 25);
-    let list = tools
-        .iter()
-        .find(|tool| tool["name"] == "list_programs")
-        .unwrap();
-    assert_eq!(list["inputSchema"]["properties"]["limit"]["default"], 25);
-    let save = tools
-        .iter()
-        .find(|tool| tool["name"] == "save_program")
-        .unwrap();
+    let query = tools.iter().find(|tool| tool["name"] == "query").unwrap();
+    assert_eq!(query["inputSchema"]["required"], json!(["route", "params"]));
     assert_eq!(
-        save["inputSchema"]["properties"]["complete"]["default"],
-        false
+        query["inputSchema"]["properties"]["route"]["enum"],
+        json!(["program.get", "program.list", "source.list", "setup.get"])
     );
-    assert!(
-        save["inputSchema"]["properties"]
-            .get("description")
-            .is_none()
-    );
-    assert!(save["inputSchema"]["properties"].get("status").is_none());
-    assert!(
-        save["inputSchema"]["properties"]
-            .get("current_step")
-            .is_none()
-    );
-    let skill = tools
-        .iter()
-        .find(|tool| tool["name"] == "read_skill")
-        .unwrap();
+    let command = tools.iter().find(|tool| tool["name"] == "command").unwrap();
     assert_eq!(
-        skill["inputSchema"]["properties"]["name"]["enum"],
-        json!(["tectd-program", "tectd-setup"])
+        command["inputSchema"]["properties"]["route"]["enum"]
+            .as_array()
+            .unwrap()
+            .len(),
+        10
     );
+    let help = tools.iter().find(|tool| tool["name"] == "help").unwrap();
+    assert_eq!(help["inputSchema"]["oneOf"].as_array().unwrap().len(), 4);
+
+    let before_help: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM workspaces WHERE tenant_id=$1) + \
+         (SELECT count(*) FROM agent_sessions WHERE tenant_id=$1) + \
+         (SELECT count(*) FROM workspace_events WHERE tenant_id=$1)",
+    )
+    .bind(enrollment.tenant_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(before_help, 0);
+    let searched = client
+        .call(
+            "help",
+            json!({"mode":"search","text":"создать программу","tool":"command"}),
+        )
+        .await;
+    assert_eq!(searched["hits"][0]["route"], "program.begin");
+    let described = client
+        .call(
+            "help",
+            json!({"mode":"describe","tool":"command","route":"program.begin"}),
+        )
+        .await;
+    assert_eq!(
+        described["params_schema"]["required"],
+        json!(["request_id", "input"])
+    );
+    let method = client
+        .call("help", json!({"mode":"describe","method":"tectd-program"}))
+        .await;
+    assert!(method["body"].as_str().unwrap().contains("# TectD Program"));
+    let after_help: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM workspaces WHERE tenant_id=$1) + \
+         (SELECT count(*) FROM agent_sessions WHERE tenant_id=$1) + \
+         (SELECT count(*) FROM workspace_events WHERE tenant_id=$1)",
+    )
+    .bind(enrollment.tenant_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(after_help, 0, "static help must not bootstrap entity state");
 
     let unopened = client.call("get_state", json!({})).await;
     assert_eq!(unopened["status"], "uninitialized");
-    assert_eq!(action_tools(&unopened), ["open_workspace"]);
+    assert_eq!(action_tools(&unopened), ["workspace.open"]);
     assert_eq!(unopened["recommended_action"], 0);
+    assert_eq!(unopened["actions"][0]["kind"], "ready_call");
     assert!(unopened["programs"].as_array().unwrap().is_empty());
     let empty = client.call("open_workspace", json!({})).await;
     assert_eq!(empty["status"], "ready");
     assert!(empty["programs"].as_array().unwrap().is_empty());
-    assert_eq!(action_tools(&empty).last(), Some(&"begin_program"));
+    assert_eq!(action_tools(&empty).last(), Some(&"program.begin"));
     assert_eq!(empty["recommended_action"], 0);
+    assert_eq!(
+        empty["actions"].as_array().unwrap().last().unwrap()["kind"],
+        "needs_input"
+    );
     assert!(
-        empty["actions"].as_array().unwrap().last().unwrap()["arguments"]["request_id"]
+        empty["actions"].as_array().unwrap().last().unwrap()["arguments"]["params"]["request_id"]
             .as_str()
             .is_some_and(|value| Uuid::parse_str(value).is_ok())
     );
@@ -170,7 +178,7 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
     assert_eq!(one["programs"].as_array().unwrap().len(), 1);
     assert_eq!(
         action_tools(&one),
-        ["get_program", "inspect_setup", "begin_program"]
+        ["program.get", "setup.inspect", "program.begin"]
     );
     assert_eq!(one["recommended_action"], 0);
     complete(&mut client, ready_id).await;
@@ -208,14 +216,14 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
         );
     }
     let state_tools = action_tools(&populated);
-    assert_eq!(&state_tools[..25], &["get_program"; 25]);
-    assert_eq!(state_tools[25], "list_programs");
-    assert_eq!(state_tools.last(), Some(&"begin_program"));
+    assert_eq!(&state_tools[..25], &["program.get"; 25]);
+    assert_eq!(state_tools[25], "program.list");
+    assert_eq!(state_tools.last(), Some(&"program.begin"));
     assert_eq!(populated["recommended_action"], 0);
     let cursor = populated["next_after"].as_str().unwrap();
     assert!(cursor.starts_with("w:"));
     assert_eq!(
-        populated["actions"][25]["arguments"],
+        populated["actions"][25]["arguments"]["params"],
         json!({"after":cursor,"limit":25})
     );
 
@@ -234,13 +242,13 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
                 .iter()
                 .map(|program| Uuid::parse_str(program["id"].as_str().unwrap()).unwrap()),
         );
-        assert_eq!(action_tools(&page).last(), Some(&"begin_program"));
+        assert_eq!(action_tools(&page).last(), Some(&"program.begin"));
         if page["next_after"].is_null() {
             break;
         }
         let next = page["next_after"].as_str().unwrap().to_owned();
         let actions = action_tools(&page);
-        assert_eq!(actions[programs.len()], "list_programs");
+        assert_eq!(actions[programs.len()], "program.list");
         after = Some(next);
     }
     assert_eq!(ordered.len(), ids.len());
@@ -292,7 +300,13 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
         ("read_skill", json!({"name":"../AGENTS.md"})),
     ] {
         let response = client
-            .exchange("tools/call", json!({"name":name,"arguments":arguments}))
+            .exchange("tools/call", public_call(name, arguments))
+            .await;
+        assert_rejected(&response);
+    }
+    for legacy in ["open_workspace", "get_program", "read_skill", "apply_setup"] {
+        let response = client
+            .exchange("tools/call", json!({"name":legacy,"arguments":{}}))
             .await;
         assert_rejected(&response);
     }

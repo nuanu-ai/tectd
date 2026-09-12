@@ -314,8 +314,9 @@ fn validate_warm_profile(response: &Value) -> Result<(), String> {
     if payload["programs"].as_array().map(Vec::len) != Some(10)
         || payload["setup_context"]["setup"]["current_step"] != "waiting_input"
         || payload["file"]["observed_now"] != false
-        || payload["actions"][0]["tool"] != "get_setup"
-        || payload["actions"][0]["arguments"]["after_input"] != 0
+        || payload["actions"][0]["tool"] != "query"
+        || payload["actions"][0]["arguments"]["route"] != "setup.get"
+        || payload["actions"][0]["arguments"]["params"]["after_input"] != 0
     {
         return Err("measured_program_setup_profile_missing".into());
     }

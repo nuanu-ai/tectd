@@ -1,7 +1,9 @@
 //! Actual 8 MiB adapter-capacity rollback and whole-entry pagination.
 mod recovery_support;
 
-use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
+use recovery_support::{
+    Daemon, Mcp, action_name, action_params, host_file, private_temp, ready_action, tagged_url,
+};
 use serde_json::json;
 use sqlx::PgPool;
 use std::time::Instant;
@@ -83,7 +85,7 @@ async fn escaped_growth_rolls_back_and_large_history_pages_only_whole_inputs() {
     assert_eq!(refused["error"]["code"], "request_too_large");
     assert_eq!(
         refused["actions"][0],
-        json!({"tool":"get_program","arguments":{"program_id":small_id}})
+        ready_action("get_program", json!({"program_id":small_id}))
     );
     assert_eq!(canonical(&pool, small_id).await, before);
     let unchanged = client
@@ -149,9 +151,9 @@ async fn escaped_growth_rolls_back_and_large_history_pages_only_whole_inputs() {
             break;
         }
         assert_eq!(page["next_after_input"], after);
-        assert_eq!(page["actions"][0]["tool"], "read_skill");
-        assert_eq!(page["actions"][1]["tool"], "get_program");
-        assert_eq!(page["actions"][1]["arguments"]["after_input"], after);
+        assert_eq!(action_name(&page["actions"][0]), Some("tectd-program"));
+        assert_eq!(action_name(&page["actions"][1]), Some("program.get"));
+        assert_eq!(action_params(&page["actions"][1])["after_input"], after);
     }
     assert!(
         page_count > 1,

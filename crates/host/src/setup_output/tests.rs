@@ -42,18 +42,18 @@ fn escaped_original_cost_and_paging_preserve_whole_messages() {
         capacity: crate::frame::MAX_FRAME_BYTES,
     };
     let mut p = sample(draft(), &[""]);
-    let empty = encoded_len(&page_value(&p)).unwrap();
+    let empty = encoded_len(&page_value(&p).unwrap()).unwrap();
     for text in ["plain", "\\\"\n\t", "Русский 日本語🙂"] {
         p.inputs[0].input = text.into();
         assert_eq!(
             guard.input_bytes(text).unwrap() as usize,
-            encoded_len(&page_value(&p)).unwrap() - empty
+            encoded_len(&page_value(&p).unwrap()).unwrap() - empty
         );
     }
     let original = "Read all this original input. \\ \" \n日本語".repeat(200);
     let mut p = sample(draft(), &[&original]);
     p.next_after_input = Some(1);
-    let capacity = encoded_len(&page_value(&p)).unwrap();
+    let capacity = encoded_len(&page_value(&p).unwrap()).unwrap();
     let value = page(
         sample(p.setup, &[&original, &original, &original]),
         capacity,
@@ -63,8 +63,8 @@ fn escaped_original_cost_and_paging_preserve_whole_messages() {
     assert_eq!(value["inputs"][0]["input"], original);
     assert_eq!(value["next_after_input"], 1);
     assert_eq!(
-        value["actions"].as_array().unwrap().last().unwrap()["tool"],
-        "begin_program"
+        value["actions"].as_array().unwrap().last().unwrap()["arguments"]["route"],
+        "program.begin"
     );
 }
 
@@ -78,11 +78,12 @@ fn every_step_has_context_and_historical_status_is_not_fresh_verification() {
     ] {
         let mut setup = draft();
         setup.current_step = step;
-        let saved = saved(setup.clone());
+        let saved = saved(setup.clone()).unwrap();
         assert_eq!(saved["task_directory"], setup.directory.path);
         assert!(saved["setup"].get("directory").is_none());
         assert_eq!(saved["file"]["observed_now"], false);
-        assert_eq!(saved["actions"][0]["arguments"]["name"], "tectd-setup");
+        assert_eq!(saved["actions"][0]["tool"], "help");
+        assert_eq!(saved["actions"][0]["arguments"]["method"], "tectd-setup");
         assert!(
             !saved["current_step_instruction"]
                 .as_str()
@@ -109,16 +110,16 @@ fn recovery_uses_original_history_and_save_cursor_never_moves_back() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|a| a["tool"] == "save_setup")
+        .find(|a| a["tool"] == "command" && a["arguments"]["route"] == "setup.save")
         .unwrap();
-    assert_eq!(save["arguments"]["input_cursor"], 8);
+    assert_eq!(save["arguments"]["params"]["input_cursor"], 8);
     let response = crate::responses::failure(
         Error::StaleRevision,
         Some(("save_setup", &json!({"setup_id":setup.id,"revision":1}))),
     );
     let data: Value =
         serde_json::from_str(response["content"][1]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(data["actions"][0], reload(setup.id));
+    assert_eq!(data["actions"][0], reload(setup.id).unwrap());
 }
 
 #[test]
@@ -171,7 +172,7 @@ fn legacy_name_capacity_falls_back_honestly_without_losing_enumeration() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|call| call == &action("list_programs", json!({"limit":25})))
+            .any(|call| call == &action("list_programs", json!({"limit":25})).unwrap())
     );
     let envelope = crate::responses::success(result);
     assert!(
@@ -190,7 +191,10 @@ fn uncertain_apply_replays_exact_ready_revision_and_auth_errors_disclose_nothing
         crate::responses::failure(Error::StorageUnavailable, Some(("apply_setup", &args)));
     let data: Value =
         serde_json::from_str(response["content"][1]["text"].as_str().unwrap()).unwrap();
-    assert_eq!(data["actions"][0], action("apply_setup", args.clone()));
+    assert_eq!(
+        data["actions"][0],
+        action("apply_setup", args.clone()).unwrap()
+    );
     let denied = crate::responses::failure(Error::SetupUnavailable, Some(("get_setup", &args)));
     let data: Value = serde_json::from_str(denied["content"][1]["text"].as_str().unwrap()).unwrap();
     assert!(data["actions"].as_array().unwrap().is_empty());

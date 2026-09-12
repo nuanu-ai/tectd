@@ -1,7 +1,9 @@
 //! Real PostgreSQL/daemon/stdio Program lifecycle and restart acceptance.
 mod recovery_support;
 
-use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
+use recovery_support::{
+    Daemon, Mcp, action_name, action_params, host_file, private_temp, tagged_url,
+};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use tect_postgres::admin;
@@ -171,8 +173,11 @@ async fn rich_program_draft_question_correction_and_restart_preserve_one_record(
         )
         .await;
     assert_eq!(refused["error"]["code"], "program_incomplete");
-    assert_eq!(refused["actions"][0]["tool"], "get_program");
-    assert_eq!(refused["actions"][0]["arguments"], json!({"program_id":id}));
+    assert_eq!(action_name(&refused["actions"][0]), Some("program.get"));
+    assert_eq!(
+        action_params(&refused["actions"][0]),
+        &json!({"program_id":id})
+    );
     assert_eq!(canonical(&pool, id).await, before_refusal);
 
     let notes_only = first
@@ -245,7 +250,7 @@ async fn rich_program_draft_question_correction_and_restart_preserve_one_record(
     let skill = later
         .call("read_skill", json!({"name":"tectd-program"}))
         .await;
-    assert_eq!(skill["name"], "tectd-program");
+    assert_eq!(skill["method"], "tectd-program");
     assert!(skill["body"].as_str().is_some_and(|body| !body.is_empty()));
     assert_eq!(skill["actions"], json!([]));
     assert!(skill["recommended_action"].is_null());

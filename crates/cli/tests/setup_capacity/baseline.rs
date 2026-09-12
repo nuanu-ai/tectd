@@ -1,5 +1,8 @@
-use crate::legacy::{LegacyDaemon, LegacyMcp, exact_action};
-use crate::recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url, tool_payload};
+use crate::legacy::{LegacyDaemon, LegacyMcp};
+use crate::recovery_support::{
+    Daemon, Mcp, action_name, action_params, find_action, host_file, private_temp, public_call,
+    tagged_url, tool_payload,
+};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::collections::HashSet;
@@ -229,7 +232,7 @@ pub async fn run() {
         setup_directory.to_str().unwrap()
     );
     let state_response = current
-        .exchange("tools/call", json!({"name":"get_state","arguments":{}}))
+        .exchange("tools/call", public_call("get_state", json!({})))
         .await;
     let intro = state_response["result"]["content"][0]["text"]
         .as_str()
@@ -239,10 +242,10 @@ pub async fn run() {
     assert_eq!(current_state["programs_delivery"], "use_list_programs");
     assert!(current_state["programs"].as_array().unwrap().is_empty());
     assert!(current_state["next_after"].is_null());
-    let list = exact_action(&current_state, "list_programs").unwrap();
-    assert_eq!(list["arguments"], json!({"limit":25}));
+    let list = find_action(&current_state, "program.list").unwrap();
+    assert_eq!(action_params(list), &json!({"limit":25}));
     let fallback_page = current
-        .call("list_programs", list["arguments"].clone())
+        .call("list_programs", action_params(list).clone())
         .await;
     assert_eq!(fallback_page["programs"].as_array().unwrap().len(), 1);
     assert_eq!(
@@ -251,9 +254,18 @@ pub async fn run() {
     );
     assert_eq!(fallback_page["programs"][0]["name"], legacy_name);
     assert!(fallback_page["next_after"].is_null());
+    let current_get = current
+        .call(
+            "get_program",
+            json!({"program_id":legacy_program,"after_input":0,"limit":25}),
+        )
+        .await;
+    assert_eq!(current_get["program"]["name"], legacy_name);
+    assert_eq!(current_get["inputs"][0]["input"], original);
+    assert!(current_get["next_after_input"].is_null());
     assert_eq!(
-        current_state["actions"].as_array().unwrap().last().unwrap()["tool"],
-        "begin_program"
+        action_name(current_state["actions"].as_array().unwrap().last().unwrap()),
+        Some("program.begin")
     );
 
     // A distinct native session rebuilds the same truthful fallback from durable state.
@@ -297,7 +309,7 @@ pub async fn run() {
         setup_directory.to_str().unwrap()
     );
     let fresh_response = fresh
-        .exchange("tools/call", json!({"name":"get_state","arguments":{}}))
+        .exchange("tools/call", public_call("get_state", json!({})))
         .await;
     let fresh_intro = fresh_response["result"]["content"][0]["text"]
         .as_str()
@@ -307,10 +319,10 @@ pub async fn run() {
     assert_eq!(fresh_state["programs_delivery"], "use_list_programs");
     assert!(fresh_state["programs"].as_array().unwrap().is_empty());
     assert!(fresh_state["next_after"].is_null());
-    let fresh_action = exact_action(&fresh_state, "list_programs").unwrap();
-    assert_eq!(fresh_action["arguments"], json!({"limit":25}));
+    let fresh_action = find_action(&fresh_state, "program.list").unwrap();
+    assert_eq!(action_params(fresh_action), &json!({"limit":25}));
     let fresh_page = fresh
-        .call("list_programs", fresh_action["arguments"].clone())
+        .call("list_programs", action_params(fresh_action).clone())
         .await;
     assert!(fresh_page["next_after"].is_null());
     assert_eq!(fresh_page["programs"].as_array().unwrap().len(), 1);
@@ -346,14 +358,14 @@ pub async fn run() {
         }
         if page["next_after"].is_null() {
             assert_eq!(
-                page["actions"].as_array().unwrap().last().unwrap()["tool"],
-                "begin_program"
+                action_name(page["actions"].as_array().unwrap().last().unwrap()),
+                Some("program.begin")
             );
             break;
         }
         let cursor = page["next_after"].as_str().unwrap().to_owned();
-        let action = exact_action(&page, "list_programs").unwrap();
-        assert_eq!(action["arguments"], json!({"after":cursor,"limit":25}));
+        let action = find_action(&page, "program.list").unwrap();
+        assert_eq!(action_params(action), &json!({"after":cursor,"limit":25}));
         after = Some(cursor);
         saw_cursor = true;
     }
@@ -374,7 +386,8 @@ pub async fn run() {
                 "get_program_exact":"ok"},
             "current_api":{"inspect_setup":"ok","get_state_fallback":"ok",
                 "programs_delivery":"use_list_programs","fallback_action_executed":"limit_25",
-                "list_programs_exact":"ok","fresh_native_session":"truthful",
+                "list_programs_exact":"ok","get_program_exact":"ok",
+                "fresh_native_session":"truthful",
                 "fresh_selected_worktrees":100,
                 "cursor":"paged_and_terminal_null","begin_program_final":"ok",
                 "false_no_programs_intro":false}

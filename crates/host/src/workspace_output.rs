@@ -7,17 +7,21 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
-pub(crate) fn inspect_action(context: Option<&SetupContext>) -> Value {
+pub(crate) fn inspect_action(context: Option<&SetupContext>) -> Result<Value> {
     if let Some(context) = context {
         action(
             "inspect_setup",
             json!({"task_directory":context.task_directory}),
         )
     } else {
-        let mut call = action("inspect_setup", json!({}));
-        call["context_input"] = json!({"field":"task_directory",
-            "format":"Absolute physical launch directory already supplied in the current Codex task environment context. The agent supplies this known context; do not ask the human to select a folder or use the MCP package/source/worktree directory."});
-        call
+        crate::api::needs_action(
+            "needs_context",
+            "inspect_setup",
+            json!({}),
+            "context_input",
+            json!({"fields":[{"path":"arguments.params.task_directory",
+                "format":"Absolute physical launch directory already supplied in the current Codex task environment context. The agent supplies this known context; do not ask the human to select a folder or use the MCP package/source/worktree directory."}]}),
+        )
     }
 }
 
@@ -27,9 +31,9 @@ fn actions(
     next: &Option<String>,
     file: Option<&FileObservation>,
     fallback: bool,
-) -> Vec<Value> {
+) -> Result<Vec<Value>> {
     if state.workspace.is_none() {
-        return vec![action("open_workspace", json!({}))];
+        return Ok(vec![action("open_workspace", json!({}))?]);
     }
     let context = state.setup_context.as_ref();
     let mut calls = Vec::new();
@@ -39,25 +43,23 @@ fn actions(
         _ if context.and_then(|context| context.setup.as_ref()).is_some() => {
             calls.push(crate::setup_output::reload(
                 context.and_then(|c| c.setup.as_ref()).expect("checked").id,
-            ));
+            )?);
         }
         Some(SetupFileStatus::Missing) => calls.push(input_action(
             "begin_setup",
             json!({"request_id":Uuid::new_v4()}),
-        )),
+        )?),
         None => {}
         Some(SetupFileStatus::Existing) => {}
     }
     if fallback {
-        calls.push(action("list_programs", json!({"limit":25})));
+        calls.push(action("list_programs", json!({"limit":25}))?);
     } else {
-        calls.extend(
-            programs
-                .iter()
-                .map(|program| action("get_program", json!({"program_id":program.id}))),
-        );
+        for program in programs {
+            calls.push(action("get_program", json!({"program_id":program.id}))?);
+        }
         if let Some(after) = next {
-            calls.push(action("list_programs", json!({"after":after,"limit":25})));
+            calls.push(action("list_programs", json!({"after":after,"limit":25}))?);
         }
     }
     if file.is_none()
@@ -68,14 +70,14 @@ fn actions(
             )
         })
     {
-        calls.push(inspect_action(context));
+        calls.push(inspect_action(context)?);
     }
-    calls.push(begin_action());
-    calls
+    calls.push(begin_action()?);
+    Ok(calls)
 }
 
-fn value(state: &WorkspaceState, file: Option<&FileObservation>, fallback: bool) -> Value {
-    let calls = actions(state, &state.programs, &state.next_after, file, fallback);
+fn value(state: &WorkspaceState, file: Option<&FileObservation>, fallback: bool) -> Result<Value> {
+    let calls = actions(state, &state.programs, &state.next_after, file, fallback)?;
     let mut result = json!(state);
     result["file"] = file.map_or_else(
         || {
@@ -96,7 +98,7 @@ fn value(state: &WorkspaceState, file: Option<&FileObservation>, fallback: bool)
     result["next_action"] = calls
         .first()
         .map_or(Value::Null, |call| call["tool"].clone());
-    with_actions(result, calls, Some(0))
+    Ok(with_actions(result, calls, Some(0)))
 }
 
 pub(crate) fn workspace(state: WorkspaceState, capacity: usize) -> Result<Value> {
@@ -112,7 +114,7 @@ fn encode(
     capacity: usize,
 ) -> Result<Value> {
     if state.programs.is_empty() {
-        return within_capacity(value(&state, file.as_ref(), false), capacity);
+        return within_capacity(value(&state, file.as_ref(), false)?, capacity);
     }
     let mut programs = std::mem::take(&mut state.programs);
     let original_next = state.next_after.clone();
@@ -120,16 +122,16 @@ fn encode(
     state.next_after = next(&state.programs, programs.len() > 1, &original_next);
     let count = crate::program_output::paging::fitting_prefix(
         &programs,
-        &value(&state, file.as_ref(), false),
+        &value(&state, file.as_ref(), false)?,
         "programs",
         "next_after",
         capacity,
         |prefix, more| {
             let next = next(prefix, more, &original_next);
-            (
-                actions(&state, prefix, &next, file.as_ref(), false),
+            Ok((
+                actions(&state, prefix, &next, file.as_ref(), false)?,
                 json!(next),
-            )
+            ))
         },
     );
     match count {
@@ -137,14 +139,14 @@ fn encode(
             state.next_after = next(&programs[..count], count < programs.len(), &original_next);
             programs.truncate(count);
             state.programs = programs;
-            Ok(value(&state, file.as_ref(), false))
+            value(&state, file.as_ref(), false)
         }
         Err(Error::RequestTooLarge) => {
             // An old maximum-sized name may predate setup context overhead. Its full value
             // remains available through the existing unchanged standalone Program list.
             state.programs.clear();
             state.next_after = None;
-            within_capacity(value(&state, file.as_ref(), true), capacity)
+            within_capacity(value(&state, file.as_ref(), true)?, capacity)
         }
         Err(error) => Err(error),
     }
