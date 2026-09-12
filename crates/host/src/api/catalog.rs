@@ -1,5 +1,6 @@
 use crate::tools::object_schema;
 use serde_json::{Value, json};
+use std::sync::OnceLock;
 use tect_domain::{MAX_SOURCE_PATH_BYTES, MAX_WORKTREES};
 
 use super::candidate_schema;
@@ -102,7 +103,12 @@ macro_rules! route {
     };
 }
 
-pub(crate) fn routes() -> Vec<RouteSpec> {
+pub(crate) fn routes() -> &'static [RouteSpec] {
+    static ROUTES: OnceLock<Vec<RouteSpec>> = OnceLock::new();
+    ROUTES.get_or_init(build_routes)
+}
+
+fn build_routes() -> Vec<RouteSpec> {
     let example_id = "00000000-0000-4000-8000-000000000001";
     vec![
         route!(

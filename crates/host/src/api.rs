@@ -292,7 +292,7 @@ fn search(text: Option<&str>, tool_filter: Option<&str>) -> Value {
 
 fn describe_tool(tool: &str) -> Value {
     let routes: Vec<_> = routes()
-        .into_iter()
+        .iter()
         .filter(|spec| spec.tool == tool)
         .map(|spec| spec.route)
         .collect();
@@ -325,12 +325,16 @@ fn tool_summary(tool: &str) -> &'static str {
 
 fn route_for(tool: &str, route: &str) -> Option<RouteSpec> {
     routes()
-        .into_iter()
+        .iter()
         .find(|spec| spec.tool == tool && spec.route == route)
+        .cloned()
 }
 
 fn route_for_internal(internal: &str) -> Option<RouteSpec> {
-    routes().into_iter().find(|spec| spec.internal == internal)
+    routes()
+        .iter()
+        .find(|spec| spec.internal == internal)
+        .cloned()
 }
 
 pub(crate) fn ready_action(internal: &str, params: Value) -> Result<Value> {
