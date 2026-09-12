@@ -28,11 +28,17 @@ DEV = (
     "outside the supplied temporary task directory. Native metadata authenticates the thread; never invent identity."
 )
 ONE_CHILD_DEV = (
-    "You are the Sol Executor working under the root Astra for this isolated TectD acceptance. "
-    "For this explicitly approved test only, create exactly one descendant using gpt-5.6-sol at medium effort. "
-    "The child must create no descendants and must use only TectD get_state, help, query, and command as requested; "
-    "no execute, Scope opening, implementation, Program completion, shell, editors, web, external services, or messages. "
-    "You may only spawn that child and wait for, resume, or send input to the same child. Native metadata authenticates identity."
+    "This packet defines two conditional roles. If you are the top-level test driver Sol Executor under the external "
+    "root Astra, this explicitly approved test grants one exception only: create exactly one gpt-5.6-sol child at "
+    "medium effort with fork_turns=none. Start its self-contained spawn message exactly with: \"You are the single "
+    "permitted child Sol Executor for this acceptance. You are not the root assistant or a delegator. Perform every "
+    "requested TectD MCP call yourself. Do not call spawn_agent or create descendants. Tony’s one-child exception "
+    "authorizes only the parent to create you; it does not authorize you to delegate.\" Then append the user task "
+    "unchanged. After spawning, you may only wait for, resume, or send input to that same child. If you are any spawned "
+    "child in this test, you are the practical Executor: perform every requested TectD call yourself and never create "
+    "descendants. The spawned child may use only TectD get_state, help, query, and command as requested; no execute, "
+    "Scope opening, implementation, Program completion, shell, editors, web, external services, or external messages. "
+    "Native metadata authenticates identity; never invent it."
 )
 
 
