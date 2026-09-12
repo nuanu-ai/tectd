@@ -61,8 +61,21 @@ def source_snapshot(source: pathlib.Path) -> dict[str, Any]:
     }
 
 
+DELEGATION_OVERRIDES = ["-c", "features.multi_agent=false", "-c", "features.multi_agent_v2=false"]
+
+
 def app_command(codex: pathlib.Path, fixture: Fixture) -> list[str]:
-    return [str(codex), *command_overrides(fixture.package, fixture.launcher, fixture.daemon_socket, fixture.host_config, fixture.workspace_key), "app-server", "--listen", "stdio://"]
+    base = command_overrides(fixture.package, fixture.launcher, fixture.daemon_socket, fixture.host_config, fixture.workspace_key)
+    return [str(codex), *base, *DELEGATION_OVERRIDES, "app-server", "--listen", "stdio://"]
+
+
+def delegation_features(codex: pathlib.Path, fixture: Fixture) -> dict[str, bool]:
+    output = subprocess.check_output([*app_command(codex, fixture)[:-3], "features", "list"], text=True)
+    rows = [line.split() for line in output.splitlines()]
+    states = {row[0]: row[2] == "true" for row in rows if len(row) == 3 and row[0] in {"multi_agent", "multi_agent_v2"}}
+    if states != {"multi_agent": False, "multi_agent_v2": False}:
+        raise AssertionError("owned app-server delegation features did not resolve disabled")
+    return states
 
 
 def find_server(app: Rpc, thread_id: str) -> dict[str, Any]:
@@ -422,6 +435,7 @@ def main() -> None:
     deterministic_home: pathlib.Path | None = None
     try:
         fixture.prepare()
+        proof.data["owned_app_server_features"] = {"overrides": DELEGATION_OVERRIDES, "effective": delegation_features(args.codex, fixture)}
         proof.data["artifacts"] = {
             name: sha256_file(fixture.binaries / name) for name in ["tectd", "tectd-mcp", "tect-admin"]
         }
