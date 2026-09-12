@@ -9,7 +9,8 @@ import scope_candidate_cycles
 
 CANDIDATE_QUERY_ROUTES = {"scope.candidates.context"}
 CANDIDATE_COMMAND_ROUTES = {
-    "scope.candidates.begin", "scope.candidates.save", "scope.candidates.record_input", "scope.candidates.refresh"
+    "workspace.open", "scope.candidates.begin", "scope.candidates.save",
+    "scope.candidates.record_input", "scope.candidates.refresh",
 }
 def _canonical_payload(result: Any) -> tuple[dict[str, Any], bool]:
     if not isinstance(result, dict):
@@ -25,10 +26,57 @@ def _canonical_payload(result: Any) -> tuple[dict[str, Any], bool]:
         raise AssertionError("model MCP canonical payload is not an object")
     return payload, result.get("isError") is True
 
+def _wire_call(pair: dict[str, Any]) -> dict[str, Any]:
+    request, response = pair.get("request"), pair.get("response")
+    if not isinstance(request, dict) or not isinstance(response, dict):
+        raise AssertionError("MCP wire pair is not a request and response object")
+    params = request.get("params")
+    if not isinstance(params, dict) or not isinstance(params.get("arguments", {}), dict):
+        raise AssertionError("MCP wire request has invalid tool parameters")
+    metadata = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
+    actor = metadata.get("threadId")
+    if pair.get("response_source") == "fixture_capture":
+        error = response.get("error", {})
+        return {
+            "source": "fixture_capture", "server": "tectd", "tool": params.get("name"),
+            "arguments": params.get("arguments", {}), "actor_thread_id": actor,
+            "response_source": pair.get("response_source"), "forwarded": pair.get("forwarded"),
+            "status": "failed", "is_error": True, "error_code": error.get("message"),
+            "payload": {}, "wire_request": request, "wire_response": response,
+            "connection_id": pair.get("connection_id"),
+        }
+    if "error" in response:
+        error = response.get("error", {})
+        return {
+            "source": "mcp_wire", "server": "tectd", "tool": params.get("name"),
+            "arguments": params.get("arguments", {}), "actor_thread_id": actor,
+            "response_source": pair.get("response_source"), "forwarded": pair.get("forwarded"),
+            "status": "failed", "is_error": True, "error_code": error.get("code"),
+            "payload": {}, "wire_request": request, "wire_response": response,
+            "connection_id": pair.get("connection_id"),
+        }
+    payload, is_error = _canonical_payload(response.get("result"))
+    return {
+        "source": "mcp_wire", "server": "tectd", "tool": params.get("name"),
+        "arguments": params.get("arguments", {}), "actor_thread_id": actor,
+        "response_source": pair.get("response_source"), "forwarded": pair.get("forwarded"),
+        "status": "failed" if is_error else "completed", "is_error": is_error,
+        "error_code": payload.get("error", {}).get("code") if is_error else None,
+        "payload": payload, "wire_request": request, "wire_response": response,
+        "connection_id": pair.get("connection_id"),
+    }
+
+
 def capture_model_calls(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Parse MCP calls independently, retaining malformed call evidence."""
     captured, errors = [], []
     for item in items:
+        if item.get("source") == "mcp_wire":
+            try:
+                captured.append(_wire_call(item))
+            except AssertionError as error:
+                errors.append({"pair": item, "error": str(error)})
+            continue
         if item.get("type") != "mcpToolCall":
             continue
         arguments = item.get("arguments")
@@ -253,6 +301,10 @@ def assert_candidate_model_result(calls: list[dict[str, Any]], scenario: dict[st
     """Validate two observable cycles; prose remains a human semantic review."""
     assert_candidate_call_boundary(calls)
     assert_successful_calls(calls, {"get_state", "help", "query", "command"})
+    opened = [call for call in calls if call["tool"] == "command"
+              and call["arguments"].get("route") == "workspace.open"]
+    if len(opened) != 1 or opened[0]["payload"].get("session", {}).get("native_session_id") != opened[0].get("actor_thread_id"):
+        raise AssertionError("child workspace bootstrap does not bind its native MCP identity")
     evidence = scope_candidate_cycles.assert_two_cycles(calls, scenario)
     first = evidence["first_snapshot"]
     second = evidence["second_snapshot"]
@@ -271,9 +323,13 @@ def assert_candidate_model_result(calls: list[dict[str, Any]], scenario: dict[st
     evidence["registry_digest"] = second["registry_digest"]
     return evidence
 
-def run_candidate_model_turn(app: Any, thread_id: str, scenario: dict[str, Any], proof: Any, allow_one_child: bool = False) -> None:
+def run_candidate_model_turn(
+    app: Any, thread_id: str, scenario: dict[str, Any], proof: Any,
+    allow_one_child: bool = False, capture_fixture: Any = None,
+) -> None:
     turn_id, items = collect_model_turn(
-        app, thread_id, candidate_model_prompt(scenario["candidate_set_id"]), proof, allow_one_child,
+        app, thread_id, candidate_model_prompt(scenario["candidate_set_id"]), proof,
+        allow_one_child, capture_fixture,
     )
     calls, parse_errors = capture_model_calls(items)
     proof.data["scope_candidate_model_capture"]["calls"] = calls
@@ -281,7 +337,12 @@ def run_candidate_model_turn(app: Any, thread_id: str, scenario: dict[str, Any],
     proof.persist()
     if parse_errors:
         raise AssertionError("candidate model emitted malformed MCP call evidence")
-    model_capture.assert_child_item_boundary(items) if allow_one_child else assert_model_item_boundary(items)
+    if not allow_one_child:
+        assert_model_item_boundary(items)
+    else:
+        if any(call.get("source") != "mcp_wire" for call in calls):
+            raise AssertionError("one-child call oracle did not use the MCP wire")
+        capture_fixture.disarm_model_capture()
     evidence = assert_candidate_model_result(calls, scenario)
     for arguments, payload in evidence["draft_receipts"]:
         replay, failed = tool_result(app, thread_id, "command", arguments)

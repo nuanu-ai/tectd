@@ -92,6 +92,25 @@ def delegation_features(codex: pathlib.Path, fixture: Fixture, allow_one_child: 
     return states
 
 
+def retain_wire_evidence(fixture: Fixture, proof: Proof) -> None:
+    try:
+        proof.data["mcp_wire_capture"] = fixture.wire_evidence()
+    except Exception as wire_error:
+        detail = type(wire_error).__name__ + ": " + str(wire_error)
+        proof.data["status"] = "fail"
+        proof.data.setdefault("failure", "fixture_capture: MCP wire validation failed")
+        proof.data.setdefault("validation_errors", []).append({
+            "source": "fixture_capture", "stage": "mcp_wire_capture", "error": detail,
+        })
+        try:
+            artifacts = fixture.wire_artifacts()
+        except Exception as artifact_error:
+            artifacts = {"artifact_error": type(artifact_error).__name__ + ": " + str(artifact_error)}
+        proof.data["mcp_wire_capture"] = artifacts | {
+            "chain_verified": False, "validation_error": detail,
+        }
+
+
 def find_server(app: Rpc, thread_id: str) -> dict[str, Any]:
     listing = app.request("mcpServerStatus/list", {"threadId": thread_id, "detail": "full"})
     return next(server for server in listing["data"] if server["name"] == "tectd")
@@ -448,7 +467,7 @@ def main() -> None:
             "checks": [],
         },
     )
-    fixture = Fixture(source, args.postgres_bin, args.keep_fixture)
+    fixture = Fixture(source, args.postgres_bin, args.proof, args.keep_fixture)
     apps: list[Rpc] = []
     deterministic_home: pathlib.Path | None = None
     try:
@@ -501,7 +520,9 @@ def main() -> None:
                 proof.data["scope_candidate_fixture"] = scenario
                 proof.data["scope_candidate_daemon_restart"] = fixture.restart_daemon()
                 proof.persist()
-                scope.run_candidate_model_turn(second, second_thread, scenario, proof, args.allow_one_child_sol)
+                scope.run_candidate_model_turn(
+                    second, second_thread, scenario, proof, args.allow_one_child_sol, fixture,
+                )
             else:
                 model_program_id = seed_model_thread(second, second_thread, proof)
                 model_turn(second, second_thread, model_program_id, proof)
@@ -515,6 +536,7 @@ def main() -> None:
     finally:
         for app in apps:
             app.close()
+        retain_wire_evidence(fixture, proof)
         if deterministic_home is not None:
             shutil.rmtree(deterministic_home, ignore_errors=True)
         proof.data["cleanup"] = fixture.cleanup()

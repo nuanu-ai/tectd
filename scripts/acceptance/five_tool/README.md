@@ -41,17 +41,19 @@ receipt outside the standard Codex and TectD locations.
 
 Delegation remains rejected by default. `--allow-one-child-sol` is a test-only opt-in that also
 requires `--model-turn --scope-candidates`. It permits the parent to create exactly one
-`gpt-5.6-sol` medium child and captures both threads through native thread history APIs before
-cleanup. The proof distinguishes the spawn request from the child's configured model metadata;
-App Server documents that configured model metadata is not per-turn execution telemetry. A
-missing or ambiguous spawn request, another child, a grandchild, or any action outside the exact
-parent-collaboration and child-TectD boundaries fails the run.
+`gpt-5.6-sol` medium child. Live notifications prove the parent collaboration boundary, while
+metadata-only `thread/read` validates the parent and binds that child to its parent; both must be
+`gpt-5.6-sol` at medium effort. The paged
+`thread/loaded/list` inventory rejects any unexpected third actor; the child may be absent from
+that inventory and the proof records this fact. The runtime may omit the spawn item; when it
+is present its target, model, and effort must match. Child non-MCP actions are not observable in
+this runtime and are reported as that limitation rather than claimed as passed.
 
 The deterministic process and the default model process explicitly keep both delegation features
 disabled. This opt-in model process enables `multi_agent` while keeping `multi_agent_v2` disabled;
 the proof records the requested overrides and effective feature state separately for each process.
-The feature state describes configuration only. Native lineage and tool history enforce and prove
-the exactly-one-child boundary.
+The feature state describes configuration only. Native lineage, metadata, and the MCP transport
+guard enforce the exactly-one-child TectD boundary.
 
 After the candidate implementation and conditional guidance registry are frozen, run the one
 bounded model turn with `--model-turn --scope-candidates`. It opens a Program and selects the owned
@@ -65,19 +67,26 @@ call payloads for human semantic review; automated checks cover workflow structu
 IDs, revisions, both input windows, delta classification, history, both draft receipt replays, and
 the absence of execute or Scope-open calls. Candidate count and grouping remain model decisions.
 
-The model proof records every TectD MCP call with its complete arguments, native status,
-canonical typed payload, `isError`, and stable error code. An expected rejected attempt is
+The owned launcher relays the unchanged packaged `run.sh` and records every MCP request and
+response byte in a private append-only JSONL sidecar. Records use only
+`direction=connection|request|response` and `phase=transparent|guarded`; responses say whether
+they were forwarded and identify `mcp_wire` versus `fixture_capture` origin. Each call carries the host-generated
+`_meta.threadId`; the relay blocks candidate writes until the first successful child `get_state`
+matches the parent-child metadata and the loaded-thread inventory contains no third actor. It never accepts environment
+identity, never forwards `execute`, and labels its own fail-closed errors as fixture-capture errors.
+The model proof records every TectD MCP call from those paired wire frames with its complete
+arguments, result, native actor, canonical payload, `isError`, and stable error code. An expected rejected attempt is
 accepted only when the test names its exact invalid arguments and proves a later successful
 corrected call. Transport errors, malformed results, and unclassified failures fail the run.
 The model starts as a Sol Executor under the root Astra and may not create descendants unless the
 explicit one-child test flag is supplied. That exception applies only to the parent; the child may
 not delegate further.
 
-Every native event is appended before validation to a unique JSONL sidecar next to the proof. The
-main proof records its absolute path, event count, and SHA-256 digest, while compact checkpoints
-capture child discovery, completed or failed MCP calls, and terminal state. Final thread snapshots
-retain the complete MCP arguments, results, errors, and latest item status without rewriting the
-entire raw event history for every token delta.
+Every native event is appended before validation to a private JSONL sidecar next to the proof. A
+separate private MCP sidecar keeps exact request/response bytes, global order across connections,
+per-connection identity, pairing, and launcher/relay/package hashes. The main proof records the
+sidecar paths, counts, and SHA-256 digests. Its public fields retain allowlisted lineage metadata and
+the full paired TectD calls, without copying passive model conversation events.
 
 Scope-candidate acceptance extends this same harness through `scope_candidates.py`; it does
 not create a separate test project. The module supplies schema-independent call capture and exact

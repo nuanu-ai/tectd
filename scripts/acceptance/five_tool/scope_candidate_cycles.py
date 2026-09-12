@@ -325,10 +325,15 @@ def assert_two_cycles(calls: list[dict[str, Any]], scenario: dict[str, Any]) -> 
         _assert_delta(prior_draft, current_draft)
         prior_draft = current_draft
 
-    first_reads = [call for call in calls[:first_drafts[0]] if call["tool"] in {"get_state", "query"}]
-    if not first_reads or first_reads[0]["tool"] != "get_state" or first_reads[0]["arguments"]:
+    first_navigation = [call for call in calls[:first_drafts[0]]
+                        if call["tool"] in {"get_state", "query", "command"}]
+    if not first_navigation or first_navigation[0]["tool"] != "get_state" or first_navigation[0]["arguments"]:
         raise AssertionError("model did not start recovery from get_state")
-    _assert_offered_reads(first_reads)
+    opened = [call for call in first_navigation if _is(call, "command", "workspace.open")]
+    if len(opened) != 1:
+        raise AssertionError("new child session did not execute exactly one offered workspace.open")
+    _assert_offered_reads(first_navigation)
+    first_reads = [call for call in first_navigation if call["tool"] in {"get_state", "query"}]
     first_overview = next(call["payload"] for call in first_reads
                           if call["tool"] == "query" and call["arguments"]["params"].get("view") == "overview")
     if first_overview["context"]["snapshot"] != first_snapshot:

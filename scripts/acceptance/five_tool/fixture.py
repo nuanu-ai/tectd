@@ -14,6 +14,7 @@ import urllib.parse
 import uuid
 import hashlib
 import model_capture
+import mcp_wire_capture
 
 CANDIDATE_PROGRAM_INPUT = (
     "Continuously evolve workspace notification capabilities. Maintain an ongoing backlog that may "
@@ -44,8 +45,15 @@ CANDIDATE_AMENDMENT = (
     "platform cleanup remain excluded."
 )
 
-def collect_model_turn(app, thread_id: str, prompt: str, proof, allow_one_child: bool = False):
+def collect_model_turn(
+    app, thread_id: str, prompt: str, proof, allow_one_child: bool = False,
+    capture_fixture=None,
+):
     position = len(app.notifications)
+    if allow_one_child:
+        if capture_fixture is None:
+            raise AssertionError("one-child capture requires the owned wire fixture")
+        capture_fixture.arm_model_capture(thread_id)
     started = app.request(
         "turn/start",
         {"threadId": thread_id, "input": [{"type": "text", "text": prompt}],
@@ -56,13 +64,17 @@ def collect_model_turn(app, thread_id: str, prompt: str, proof, allow_one_child:
     capture = {"thread_id": thread_id, "turn_id": turn_id, "model": "gpt-5.6-sol",
                "effort": "medium", "turn_start": started, "lineage_event_items": [],
                "observed_actor_thread_ids": [], "raw_event_log": raw.evidence(),
-               "allow_one_child_sol": allow_one_child}
+               "allow_one_child_sol": allow_one_child,
+               "mcp_capture_source": "mcp_wire" if allow_one_child else "app_server_items",
+               "child_non_mcp_actions_observable": not allow_one_child}
     proof.data["scope_candidate_model_capture"] = capture
     proof.persist()
     items = []
     actors: set[str] = set()
     deadline = time.monotonic() + 900
     terminal = None
+    identity_gate_open = False
+    child_observed_at = None
 
     def record(event: dict[str, Any]) -> bool:
         nonlocal terminal
@@ -79,8 +91,7 @@ def collect_model_turn(app, thread_id: str, prompt: str, proof, allow_one_child:
             status = item.get("status")
             meaningful = meaningful or kind in {"subAgentActivity", "collabAgentToolCall"}
             meaningful = meaningful or (kind == "mcpToolCall" and status in {"completed", "failed"})
-            if kind in {"subAgentActivity", "collabAgentToolCall"}:
-                capture["lineage_event_items"].append(item)
+            meaningful = model_capture.record_parent_item(capture, thread_id, event) or meaningful
         if params.get("threadId") == thread_id and (
             params.get("turnId") == turn_id or params.get("turn", {}).get("id") == turn_id
         ):
@@ -102,16 +113,37 @@ def collect_model_turn(app, thread_id: str, prompt: str, proof, allow_one_child:
         while time.monotonic() < deadline and terminal is None:
             if position >= len(app.notifications):
                 try:
-                    app.notifications.append(app._read(30))
+                    app.notifications.append(app._read(0.25 if allow_one_child else 30))
                 except TimeoutError:
-                    continue
+                    if not allow_one_child:
+                        continue
             while position < len(app.notifications):
                 event = app.notifications[position]
                 position += 1
                 if record(event):
                     proof.persist()
-                    if allow_one_child:
-                        model_capture.refresh_lineage(app, thread_id, capture, proof)
+            if allow_one_child:
+                observed = model_capture.child_ids(capture["lineage_event_items"])
+                if observed and child_observed_at is None:
+                    child_observed_at = time.monotonic()
+                if observed and not identity_gate_open:
+                    try:
+                        identity_gate_open = model_capture.try_open_identity_gate(
+                            app, thread_id, capture, proof, capture_fixture,
+                        )
+                    except Exception as error:
+                        capture["identity_gate_failure"] = {
+                            "source": "fixture_capture", "error": type(error).__name__ + ": " + str(error),
+                        }
+                        proof.persist()
+                        raise
+                if child_observed_at is not None and not identity_gate_open \
+                        and time.monotonic() - child_observed_at > 10:
+                    capture["identity_gate_failure"] = {
+                        "source": "fixture_capture", "error": "identity gate timed out before candidate writes",
+                    }
+                    proof.persist()
+                    raise AssertionError("identity gate timed out before candidate writes")
         if allow_one_child:
             model_capture.refresh_lineage(app, thread_id, capture, proof)
             drain_ready()
@@ -128,21 +160,32 @@ def collect_model_turn(app, thread_id: str, prompt: str, proof, allow_one_child:
         raw.close()
         proof.persist()
     capture["terminal"] = terminal
-    capture["items"] = items
     proof.persist()
     if terminal is None or terminal.get("status") != "completed":
         raise AssertionError("model turn did not complete")
     if allow_one_child:
+        if not identity_gate_open or capture.get("identity_gate", {}).get("status") != "open":
+            raise AssertionError("model turn completed without the native MCP identity gate")
+        model_capture.refresh_lineage(app, thread_id, capture, proof)
         lineage = model_capture.assert_one_sol_child(capture, thread_id)
         model_capture.assert_parent_boundary(capture)
+        pairs, pair_errors = capture_fixture.guarded_wire_pairs()
+        if pair_errors:
+            raise AssertionError("native MCP wire capture has unmatched or malformed frames")
+        child_id = lineage["child_thread_id"]
+        if any(model_capture._wire_actor(pair) != child_id for pair in pairs):
+            raise AssertionError("native MCP wire capture includes an unapproved actor")
         capture["approved_child"] = lineage
         proof.persist()
-        return turn_id, model_capture.child_items(capture)
+        return turn_id, pairs
     return turn_id, items
 
 
 class Fixture:
-    def __init__(self, source: pathlib.Path, postgres_bin: pathlib.Path, keep: bool = False):
+    def __init__(
+        self, source: pathlib.Path, postgres_bin: pathlib.Path,
+        proof_path: pathlib.Path, keep: bool = False,
+    ):
         self.source = source.resolve()
         self.pg_bin = postgres_bin.resolve()
         self.keep = keep
@@ -160,10 +203,71 @@ class Fixture:
         self.host_config = self.private / "host.json"
         self.daemon_socket = self.private / "tectd.sock"
         self.launch_attestation = self.private / "mcp-launch.json"
+        suffix = uuid.uuid4().hex
+        self.wire_directory = proof_path.parent / f"{proof_path.stem}.mcp-wire-{suffix}"
+        self.wire_directory.mkdir(mode=0o700)
+        self.wire_policy = self.private / "mcp-wire-policy.json"
+        self.wire_gate = self.private / "mcp-wire-gate.json"
+        mcp_wire_capture.write_private_json(self.wire_policy, {"phase": "transparent"})
         self.workspace_key = "native-five-" + uuid.uuid4().hex
         self.port = 55432 + os.getpid() % 1000
         self.daemon: subprocess.Popen[bytes] | None = None
         self.pg_started = False
+
+    def arm_model_capture(self, parent_thread_id: str) -> None:
+        self.wire_gate.unlink(missing_ok=True)
+        mcp_wire_capture.write_private_json(self.wire_policy, {
+            "phase": "guarded", "parent_thread_id": parent_thread_id,
+        })
+
+    def open_model_gate(self, parent_thread_id: str, child_thread_id: str) -> None:
+        mcp_wire_capture.write_private_json(self.wire_gate, {
+            "parent_thread_id": parent_thread_id, "child_thread_id": child_thread_id,
+        })
+
+    def disarm_model_capture(self) -> None:
+        mcp_wire_capture.write_private_json(self.wire_policy, {"phase": "transparent"})
+        self.wire_gate.unlink(missing_ok=True)
+
+    def guarded_wire_pairs(self, allow_pending: bool = False) -> tuple[list[dict], list[dict]]:
+        return mcp_wire_capture.tool_pairs(self.wire_directory, allow_pending=allow_pending)
+
+    def wire_artifacts(self) -> dict:
+        files = []
+        for path in sorted(self.wire_directory.glob("mcp-wire-*.jsonl")):
+            files.append({
+                "path": str(path), "bytes": path.stat().st_size,
+                "sha256": mcp_wire_capture.sha256_file(path),
+                "records": len(path.read_bytes().splitlines()),
+            })
+        return {"directory": str(self.wire_directory), "files": files}
+
+    def wire_evidence(self) -> dict:
+        artifacts = self.wire_artifacts()
+        records = mcp_wire_capture.read_records(self.wire_directory)
+        headers = [row["parsed"] for row in records if row["direction"] == "connection"]
+        expected = {
+            "launcher": self.launcher,
+            "relay": self.source / "scripts/acceptance/five_tool/mcp_wire_capture.py",
+            "run_sh": self.package / "run.sh",
+            "packaged_binary": self.package / "bin/tectd-mcp",
+        }
+        if not headers or any(
+            header.get("target_argv") != ["/bin/sh", "./run.sh"]
+            or any(header.get(key) != {"path": str(path), "sha256": mcp_wire_capture.sha256_file(path)}
+                   for key, path in expected.items())
+            for header in headers
+        ):
+            raise AssertionError("MCP relay chain does not match the owned packaged binary")
+        pairing_errors = []
+        for phase in ["transparent", "guarded"]:
+            _, errors = mcp_wire_capture.tool_pairs(self.wire_directory, phase=phase)
+            pairing_errors.extend(error["error"] for error in errors)
+        if pairing_errors:
+            raise AssertionError("MCP wire pairing failed: " + ", ".join(sorted(set(pairing_errors))))
+        return artifacts | {
+            "connections": len(headers), "records": len(records), "chain_verified": True,
+        }
 
     def _start_daemon(self) -> None:
         if self.daemon is not None and self.daemon.poll() is None:
@@ -289,14 +393,19 @@ class Fixture:
         )
         self.launcher.write_text(
             "#!/usr/bin/env python3\n"
-            "import hashlib,json,os,pathlib\n"
+            "import hashlib,json,os,pathlib,sys\n"
             f"out=pathlib.Path({str(self.launch_attestation)!r})\n"
             "h=lambda value: hashlib.sha256(value.encode()).hexdigest()\n"
             "data={'cwd':os.getcwd(),'socket_sha256':h(os.environ.get('TECT_SOCKET','')),"
             "'host_config_sha256':h(os.environ.get('TECT_HOST_CONFIG','')),"
             "'workspace_key_sha256':h(os.environ.get('TECT_WORKSPACE_KEY',''))}\n"
             "out.write_text(json.dumps(data,sort_keys=True)+'\\n')\n"
-            "os.execv('/bin/sh',['sh','./run.sh'])\n"
+            f"relay={str(self.source / 'scripts/acceptance/five_tool/mcp_wire_capture.py')!r}\n"
+            "os.execv(sys.executable,[sys.executable,relay,"
+            f"'--log-dir',{str(self.wire_directory)!r},'--policy',{str(self.wire_policy)!r},"
+            f"'--gate',{str(self.wire_gate)!r},'--launcher',__file__,'--relay',relay,"
+            f"'--run-sh',{str(self.package / 'run.sh')!r},"
+            f"'--binary',{str(self.package / 'bin/tectd-mcp')!r}])\n"
         )
         self.launcher.chmod(0o700)
         self._start_daemon()
