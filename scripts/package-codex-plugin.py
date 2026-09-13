@@ -33,8 +33,8 @@ def main() -> None:
         "plugin": "tectd", "display_name": "TectD MCP", "mcp_server": "tectd",
         "binary_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
         "skill_delivery": (
-            "tectd-program, tectd-setup, and tectd-scope-candidates are embedded "
-            "in the binary and served by help describe"
+            "tectd-program, tectd-setup, tectd-scope-candidates, and "
+            "tectd-slice-candidates are embedded in the binary and served by help describe"
         ),
         "installation_performed": False,
     }

@@ -175,9 +175,9 @@ Pages contain whole entries and may become smaller to fit the existing 8 MiB fra
 Unrepresentable writes are refused before commit, including PRD growth that would
 make an older original input unreadable. Text is not silently truncated.
 
-The host embeds build-bound methods under `skills/`; `help` describes only the three
+The host embeds build-bound methods under `skills/`; `help` describes only the four
 allowlisted methods after host authentication. It never accepts a file
-path. The packaged binary therefore carries the same method without installing
+path. The packaged binary therefore carries the same methods without installing
 client-side PRD files or the former WorkOrder artifact lifecycle.
 
 ## Scope candidate planning

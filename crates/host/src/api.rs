@@ -335,10 +335,10 @@ fn describe_route(spec: &RouteSpec) -> Value {
 fn tool_summary(tool: &str) -> &'static str {
     match tool {
         "get_state" => "Read bounded DB-only state for the current native session.",
-        "query" => "Run one of five named read-only routes.",
-        "command" => "Run one of fourteen named logical state-transition routes.",
+        "query" => "Run one of nine named read-only routes.",
+        "command" => "Run one of twenty named logical state-transition routes.",
         "execute" => "Run the single explicit external-effect route setup.apply.",
-        "help" => "Search or describe this API and its three embedded methods.",
+        "help" => "Search or describe this API and its four embedded methods.",
         _ => "",
     }
 }
