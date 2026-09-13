@@ -33,6 +33,15 @@ This default run is labeled `exploratory_feature_smoke`, because a parallel feat
 be dirty. The release-quality rerun must use binaries rebuilt from the clean final commit and add
 `--final`; the harness then refuses a dirty source tree and labels the proof `final_clean_commit`.
 
+The deterministic zero-model phase also exercises the native Scope and Slice-planning lifecycle:
+one accepted Scope candidate opens idempotently, a reviewed Debug-work-plus-Decision plan opens its
+first Slice, an `externally_reported` result makes the old plan stale, and a refreshed revision
+resolves the decision into a reviewed Lightweight successor. A blocked successor then accepts a
+later result at its exact incremented revision, retains both results in history, and becomes
+terminal when completed. This proves five-tool persistence, freshness, history and branching
+mechanics. It does not claim that TectD executed either
+provisional pipeline or independently verified caller-supplied evidence.
+
 Add `--model-turn` only for the separately authorized fresh native model smoke. Use
 `--postgres-bin /absolute/postgresql-18/bin` when PostgreSQL is elsewhere. `--keep-fixture`
 retains the owned temporary database and files for diagnosis; it never retains account auth.

@@ -1,5 +1,6 @@
 mod candidate_schema;
 mod catalog;
+mod slice_schema;
 
 use crate::tools::{annotations, object_schema};
 use catalog::{RouteSpec, routes};
@@ -15,6 +16,8 @@ const PROGRAM_METHOD: &str = include_str!("../../../skills/tectd-program/SKILL.m
 const SETUP_METHOD: &str = include_str!("../../../skills/tectd-setup/SKILL.md");
 const SCOPE_CANDIDATE_METHOD: &str =
     include_str!("../../../skills/tectd-scope-candidates/SKILL.md");
+const SLICE_CANDIDATE_METHOD: &str =
+    include_str!("../../../skills/tectd-slice-candidates/SKILL.md");
 
 #[derive(Debug)]
 pub(crate) struct InternalCall {
@@ -78,7 +81,7 @@ pub(crate) fn definitions() -> Value {
         tool_definition("query", "Run one named read-only TectD route. Use help to inspect its exact parameter contract.", routed("query"), true, true),
         tool_definition("command", "Run one named logical state transition. Use help to inspect its exact parameter contract.", routed("command"), false, false),
         tool_definition("execute", "Run one named explicit external effect. Only setup.apply is currently supported.", routed("execute"), false, true),
-        tool_definition("help", "Search or describe the bounded TectD API and its three embedded methods.", help_schema(), true, true)
+        tool_definition("help", "Search or describe the bounded TectD API and its four embedded methods.", help_schema(), true, true)
     ]})
 }
 
@@ -102,7 +105,7 @@ fn help_schema() -> Value {
             "text":{"type":"string"},
             "tool":{"type":"string","enum":PUBLIC_TOOLS},
             "route":{"type":"string"},
-            "method":{"type":"string","enum":["tectd-program","tectd-setup","tectd-scope-candidates"]}
+            "method":{"type":"string","enum":["tectd-program","tectd-setup","tectd-scope-candidates","tectd-slice-candidates"]}
         },
         "required":["mode"],
         "additionalProperties":false,
@@ -174,7 +177,10 @@ pub(crate) fn parse_help(arguments: Value) -> Result<HelpRequest> {
         || args.method.as_ref().is_some_and(|method| {
             !matches!(
                 method.as_str(),
-                "tectd-program" | "tectd-setup" | "tectd-scope-candidates"
+                "tectd-program"
+                    | "tectd-setup"
+                    | "tectd-scope-candidates"
+                    | "tectd-slice-candidates"
             )
         })
     {
@@ -220,6 +226,10 @@ pub(crate) fn help(request: HelpRequest) -> Result<Value> {
                     "Method for deriving, reviewing, and continuing durable Scope candidates.",
                     SCOPE_CANDIDATE_METHOD,
                 ),
+                "tectd-slice-candidates" => (
+                    "Method for designing and reviewing a complete revisable Slice-candidate plan.",
+                    SLICE_CANDIDATE_METHOD,
+                ),
                 _ => return Err(Error::InternalInvariant),
             };
             let mut value = json!({"mode":"describe","kind":"method","method":method,
@@ -227,6 +237,12 @@ pub(crate) fn help(request: HelpRequest) -> Result<Value> {
             if method == "tectd-scope-candidates" {
                 value["method_revision"] = json!(crate::scope_guidance::METHOD_REVISION);
                 value["guidance_registry"] = crate::scope_guidance::help_registry()?;
+            }
+            if method == "tectd-slice-candidates" {
+                value["method_revision"] = json!(crate::slice_guidance::METHOD_REVISION);
+                let details = crate::slice_guidance::help()?;
+                value["guidance_registry"] = details["guidance_registry"].clone();
+                value["pipeline_catalog"] = details["pipeline_catalog"].clone();
             }
             value
         }
@@ -269,6 +285,10 @@ fn search(text: Option<&str>, tool_filter: Option<&str>) -> Value {
         (
             "tectd-scope-candidates",
             "Method for deriving, reviewing, and continuing durable Scope candidates.",
+        ),
+        (
+            "tectd-slice-candidates",
+            "Method for designing and reviewing a complete revisable Slice-candidate plan.",
         ),
     ] {
         if tool_filter.is_none_or(|filter| filter == "help") && matches(&[method, summary]) {

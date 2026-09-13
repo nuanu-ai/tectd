@@ -1,9 +1,10 @@
 use crate::program_output::{begin_action, input_action, within_capacity};
 use crate::responses::{action, with_actions};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tect_domain::{
-    Error, FileObservation, ProgramSummary, Result, SetupContext, SetupDiscovery, SetupFileStatus,
-    WorkspaceState,
+    Error, FileObservation, NativePlanningSummary, ProgramSummary, Result, SetupContext,
+    SetupDiscovery, SetupFileStatus, SliceCandidateSetStatus, WorkspaceState,
 };
 use uuid::Uuid;
 
@@ -37,6 +38,9 @@ fn actions(
     }
     let context = state.setup_context.as_ref();
     let mut calls = Vec::new();
+    for native in &state.native_planning {
+        calls.extend(native_actions(native)?);
+    }
     for candidate in &state.candidate_sets {
         calls.push(crate::api::ready_action(
             "candidate_context",
@@ -82,6 +86,68 @@ fn actions(
     Ok(calls)
 }
 
+fn native_actions(summary: &NativePlanningSummary) -> Result<Vec<Value>> {
+    let mut calls = Vec::new();
+    if summary.stale {
+        calls.push(crate::api::ready_action(
+            "refresh_slice_candidate_set",
+            json!({"scope_id":summary.scope_id,"candidate_set_id":summary.candidate_set_id,
+                "revision":summary.candidate_set_revision,
+                "request_id":native_request_id(summary.candidate_set_id, summary.candidate_set_revision, "refresh")}),
+        )?);
+    } else {
+        for slice in &summary.slices_needing_result {
+            if slice.state != tect_domain::SliceState::Open {
+                continue;
+            }
+            calls.push(crate::api::needs_action(
+                "needs_input",
+                "slice_result_record",
+                json!({"request_id":native_request_id(slice.slice_id, slice.slice_revision, "result"),
+                    "scope_id":summary.scope_id,"slice_id":slice.slice_id,
+                    "slice_revision":slice.slice_revision}),
+                "input",
+                json!({"fields":[
+                    {"path":"arguments.params.outcome","format":"completed or blocked"},
+                    {"path":"arguments.params.summary","format":"Exact externally reported bounded outcome summary"},
+                    {"path":"arguments.params.evidence","format":"One or more direct evidence records with kind, reference, and observation"},
+                    {"path":"arguments.params.scope_impact","format":"How this observed result affects the remaining Scope plan"},
+                    {"path":"arguments.params.remaining_work","format":"Remaining work after this result"}
+                ]}),
+            )?);
+        }
+        if matches!(summary.candidate_set_status, SliceCandidateSetStatus::Ready) {
+            for work in &summary.eligible_work {
+                calls.push(crate::api::ready_action(
+                    "slice_open",
+                    json!({"request_id":native_request_id(work.candidate_id, work.candidate_revision, "open"),
+                        "scope_id":summary.scope_id,"scope_revision":summary.scope_revision,
+                        "candidate_set_id":summary.candidate_set_id,
+                        "candidate_set_revision":summary.candidate_set_revision,
+                        "candidate_snapshot_id":summary.snapshot_id,
+                        "candidate_id":work.candidate_id,
+                        "candidate_revision":work.candidate_revision}),
+                )?);
+            }
+        }
+    }
+    calls.push(crate::api::ready_action(
+        "slice_candidate_context",
+        json!({"scope_id":summary.scope_id,"view":"overview","limit":25}),
+    )?);
+    Ok(calls)
+}
+
+fn native_request_id(id: Uuid, revision: i64, operation: &str) -> Uuid {
+    let digest =
+        Sha256::digest(format!("tectd-native-state:{id}:{revision}:{operation}").as_bytes());
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x50;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
+}
+
 fn value(state: &WorkspaceState, file: Option<&FileObservation>, fallback: bool) -> Result<Value> {
     let calls = actions(state, &state.programs, &state.next_after, file, fallback)?;
     let mut result = json!(state);
@@ -101,9 +167,12 @@ fn value(state: &WorkspaceState, file: Option<&FileObservation>, fallback: bool)
     } else {
         "listed"
     });
-    result["next_action"] = calls
-        .first()
-        .map_or(Value::Null, |call| call["tool"].clone());
+    result["next_action"] = calls.first().map_or(Value::Null, |call| {
+        call["arguments"]
+            .get("route")
+            .cloned()
+            .unwrap_or_else(|| call["tool"].clone())
+    });
     Ok(with_actions(result, calls, Some(0)))
 }
 
@@ -163,5 +232,73 @@ fn next(programs: &[ProgramSummary], more: bool, original: &Option<String>) -> O
         programs.last().map(|program| program.cursor().encode())
     } else {
         original.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tect_domain::{NativeSliceSummary, NativeWorkCandidateSummary, SliceState};
+
+    fn summary() -> NativePlanningSummary {
+        NativePlanningSummary {
+            scope_id: Uuid::new_v4(),
+            scope_revision: 1,
+            candidate_set_id: Uuid::new_v4(),
+            candidate_set_revision: 3,
+            candidate_set_status: SliceCandidateSetStatus::Ready,
+            snapshot_id: Uuid::new_v4(),
+            stale: false,
+            eligible_work: vec![NativeWorkCandidateSummary {
+                candidate_id: Uuid::new_v4(),
+                candidate_revision: 1,
+            }],
+            slices_needing_result: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn native_state_routes_stale_ready_and_open_slice_without_stub_execution() {
+        let ready = native_actions(&summary()).unwrap();
+        assert_eq!(ready[0]["arguments"]["route"], "slice.open");
+        assert!(ready.iter().all(|action| {
+            !matches!(
+                action["arguments"]["route"].as_str(),
+                Some("slice.start" | "slice.execute")
+            )
+        }));
+
+        let mut stale = summary();
+        stale.stale = true;
+        let stale_actions = native_actions(&stale).unwrap();
+        assert_eq!(
+            stale_actions[0]["arguments"]["route"],
+            "slice.candidates.refresh"
+        );
+
+        let mut awaiting = summary();
+        awaiting.eligible_work.clear();
+        awaiting.slices_needing_result.push(NativeSliceSummary {
+            slice_id: Uuid::new_v4(),
+            slice_revision: 1,
+            state: SliceState::Open,
+        });
+        let result_actions = native_actions(&awaiting).unwrap();
+        assert_eq!(
+            result_actions[0]["arguments"]["route"],
+            "slice.result.record"
+        );
+
+        awaiting.slices_needing_result[0].state = SliceState::Blocked;
+        let blocked_actions = native_actions(&awaiting).unwrap();
+        assert!(
+            blocked_actions
+                .iter()
+                .all(|action| action["arguments"]["route"] != "slice.result.record")
+        );
+        assert_eq!(
+            blocked_actions[0]["arguments"]["route"],
+            "slice.candidates.context"
+        );
     }
 }

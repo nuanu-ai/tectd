@@ -7,6 +7,7 @@ pub(crate) enum Invocation {
     Program(crate::program_tools::ProgramInvocation),
     Setup(crate::setup_tools::SetupInvocation),
     ScopeCandidate(crate::scope_candidate_tools::ScopeCandidateInvocation),
+    Slice(crate::slice_tools::SliceInvocation),
     Help(crate::api::HelpRequest),
     OpenWorkspace,
     GetState,
@@ -65,6 +66,22 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
             })
         }
         "help" => crate::api::parse_help(arguments).map(Invocation::Help),
+        _ if matches!(
+            name,
+            "scope_context"
+                | "slice_pipelines"
+                | "slice_candidate_context"
+                | "scope_open"
+                | "save_slice_candidate_set"
+                | "record_slice_candidate_input"
+                | "refresh_slice_candidate_set"
+                | "slice_open"
+                | "slice_context"
+                | "slice_result_record"
+        ) =>
+        {
+            crate::slice_tools::parse(name, arguments).map(Invocation::Slice)
+        }
         _ if name.contains("candidate") => {
             crate::scope_candidate_tools::parse(name, arguments).map(Invocation::ScopeCandidate)
         }
@@ -118,7 +135,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            14
+            20
         );
     }
 

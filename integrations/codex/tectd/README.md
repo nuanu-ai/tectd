@@ -23,23 +23,53 @@ as an identity fallback. Both the Codex-generated native UUID and host credentia
 are required before a business operation. Model tool arguments contain no identity.
 
 The public MCP surface is exactly `get_state`, `query`, `command`, `execute`, and
-`help`. Read-only routes include `program.get`, `program.list`, `source.list`,
-`setup.get`, and `scope.candidates.context`. Logical transitions are `workspace.open`, `source.register`,
-`session.select_worktrees`, `program.begin`, `program.save`,
-`program.record_input`, `setup.inspect`, `setup.begin`, `setup.save`, and
-`setup.record_input`, `scope.candidates.begin`, `scope.candidates.save`,
-`scope.candidates.record_input`, and `scope.candidates.refresh`. The only external-effect route is `setup.apply`. Each native
+`help`, with 30 routes. Read-only routes are `program.get`, `program.list`,
+`source.list`, `setup.get`, `scope.candidates.context`, `scope.context`,
+`slice.pipelines`, `slice.candidates.context`, and `slice.context`. Logical
+transitions are `workspace.open`, `source.register`, `session.select_worktrees`,
+`program.begin`, `program.save`, `program.record_input`, `setup.inspect`,
+`setup.begin`, `setup.save`, `setup.record_input`, `scope.candidates.begin`,
+`scope.candidates.save`, `scope.candidates.record_input`,
+`scope.candidates.refresh`, `scope.open`, `slice.candidates.save`,
+`slice.candidates.input`, `slice.candidates.refresh`, `slice.open`, and
+`slice.result.record`. The only external-effect route is `setup.apply`. Each native
 session has its own selected worktrees. Program drafts, original input and PRDs live
-in the database. The focused `tectd-program` and `tectd-setup` methods are embedded in the
-executable and returned by `help` describe. The `tectd-scope-candidates` method is
-also embedded and binds bounded candidate context to the packaged conditional rule
-registry. Candidate continuation preserves stable identities, computes explicit
-added/changed/unchanged/superseded deltas, and exposes retained versions through
-the read-only `history` and `historical` context views. Opening a Program or reviewing candidates does not launch Scope or
-implementation work. Tool results carry a short introduction and one JSON content
-block with data and exact next actions, without duplicate structured content.
-The enrolled host remains the
-credential trust boundary; this is not a per-session secret scheme.
+in the database. The focused `tectd-program`, `tectd-setup`,
+`tectd-scope-candidates` and `tectd-slice-candidates` methods are embedded in the
+executable and returned by `help` describe. Candidate continuation preserves stable
+identities, computes explicit added/changed/unchanged/superseded deltas, and exposes
+retained versions through the read-only `history` and `historical` context views.
+Opening a Program or reviewing Scope candidates does not open a Scope or launch
+implementation work.
+
+`scope.open` explicitly opens one native Scope from one current accepted Scope
+candidate and returns the initial complete Slice-candidate planning context. The
+plan is a revisable dependency graph of work candidates and unresolved decision
+points. The catalogue exposes seven provisional descriptive pipeline stubs; it has
+no executable stages, hybrid pipeline or backend execution facility. The same four
+full design rules are captured for Scope and Slice-candidate design and review,
+then omitted from `slice.open` and `slice.context` because the opened Slice was
+already designed. One eligible accepted work candidate opens as one native Slice.
+
+`slice.result.record` stores an explicit `externally_reported` observation and its
+supplied evidence. TectD does not execute the selected pipeline or semantically
+verify that evidence. Recording a Result atomically marks affected future planning
+stale; the caller refreshes and reviews the future graph while opened work remains
+protected and history is retained. A compact route flow is:
+
+```text
+scope.open -> slice.candidates.save(draft) -> slice.candidates.save(review)
+           -> slice.open -> slice.result.record
+           -> slice.candidates.refresh -> slice.candidates.save(draft/review)
+```
+
+Migration 0007 supplies the forward-only native Scope/Slice persistence. These are
+source contracts; final gates, native Codex acceptance, package publication and
+desktop installation remain separate evidence and are not claimed here.
+
+Tool results carry a short introduction and one JSON content block with data and
+exact next actions, without duplicate structured content. The enrolled host remains
+the credential trust boundary; this is not a per-session secret scheme.
 
 For direct Codex configuration use server key `tectd`, the packaged `sh ./run.sh`
 entry with its absolute package directory as `cwd`, and the three settings above.

@@ -63,7 +63,7 @@ Compare the draft with verified existing work, existing candidates, opened Scope
 
 Before revising a saved draft, read the compact candidate history and any relevant retained version through the exact supplied calls. Keep an unchanged candidate's backend ID and revision. For each changed candidate, reuse its backend ID and state the concrete change rationale. Explicitly supersede every omitted ordinary candidate with a reason and any replacement references; omission is never an implicit deletion. The backend classifies the structural delta and preserves prior versions, while you remain responsible for semantic duplicate detection and the review judgment.
 
-Do not invent owners, authority, evidence, dependencies, readiness, acceptance proof, or policy exceptions. Do not create a separate product test harness when existing product tests and direct MCP verification can prove the behavior. Planning proof is an expectation for later work, not proof that the work already exists.
+Do not invent owners, authority, evidence, dependencies, readiness, acceptance proof, or policy exceptions. Use ordinary tests, fixtures, and test infrastructure when they are necessary to verify the requested outcome, but do not create, expand, debug, or maintain a separate audit or evaluation harness unless the user explicitly requested or authorized it. Planning proof is an expectation for later work, not proof that the work already exists.
 
 Save useful drafts through the supplied action as soon as they are coherent enough for crash recovery. Draft persistence does not make the set reviewed or ready.
 

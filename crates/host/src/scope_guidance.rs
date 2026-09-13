@@ -10,10 +10,10 @@ use tect_domain::{
 };
 
 pub(crate) const METHOD_ID: &str = "tectd-scope-candidates";
-pub(crate) const METHOD_REVISION: &str = "2";
+pub(crate) const METHOD_REVISION: &str = "3";
 pub(crate) const METHOD_BODY: &str =
     include_str!("../../../skills/tectd-scope-candidates/SKILL.md");
-const REGISTRY_REVISION: &str = "1";
+pub(crate) const REGISTRY_REVISION: &str = "3";
 const RULE_SOURCE: &str = "plugins/tect/capabilities/registry/general-agent-work-rules-v1.json@ea7259c9a30ff7ea9a9eef1eae116cfc525eedd8";
 
 #[derive(Clone)]
@@ -48,32 +48,32 @@ struct RuleContext<'a> {
 const RULES: [RuleRecord; 4] = [
     RuleRecord {
         id: "vertical-provable-slices",
-        revision: "1",
-        text: "Each candidate must describe one vertical, demonstrable product result with its trigger, delivered behavior, boundaries, dependencies, and observable proof. Split work when those results cannot be reviewed and demonstrated independently.",
+        revision: "2",
+        text: "Each candidate must deliver one coherent outcome that can be demonstrated and accepted on its own once its stated prerequisites are met. State the triggering need, observable behavior or result, in-scope and out-of-scope boundaries, necessary dependencies, and concrete acceptance evidence. Include the end-to-end work needed for that outcome. Do not substitute isolated technical layers, setup activity, or supporting artifacts for the outcome unless those are explicitly requested deliverables. Split independently deliverable outcomes into separate candidates.",
         origins: &[
             "plugins/tect/capabilities/registry/general-agent-work-rules-v1.json@ea7259c9a30ff7ea9a9eef1eae116cfc525eedd8#vertical-provable-slices",
         ],
     },
     RuleRecord {
         id: "no-unrequested-or-unauthorized-work",
-        revision: "1",
-        text: "Keep candidates within the captured Program and current planning-request window. Do not include work that the user did not request or authorize, and preserve consequential authorization boundaries as explicit blockers or questions.",
+        revision: "2",
+        text: "Every candidate and supporting task must be traceable to the captured Program and current planning request. Include only work necessary to achieve an authorized outcome; do not expand into adjacent features, speculative redesign, or unrelated cleanup. Honor authorization already granted, and do not infer permission for consequential external actions beyond it. Record unresolved scope or authority gaps explicitly and pause only the work that depends on their resolution.",
         origins: &[
             "plugins/tect/capabilities/registry/general-agent-work-rules-v1.json@ea7259c9a30ff7ea9a9eef1eae116cfc525eedd8#no-unrequested-or-unauthorized-work",
         ],
     },
     RuleRecord {
         id: "autonomous-local-technical-decisions",
-        revision: "1",
-        text: "Resolve ordinary local technical choices from the captured context and source evidence. Ask the user only when a consequential ambiguity changes product behavior, authority, safety, cost, or an irreversible external effect.",
+        revision: "2",
+        text: "Resolve routine technical choices autonomously using the captured context, relevant source evidence, and established constraints and conventions. Verify material unknowns rather than inventing facts, and do not escalate ordinary implementation choices to the user. Ask only when an unresolved decision materially changes the intended outcome, scope, authority, safety, cost, or an irreversible external effect and cannot be resolved from existing instructions or evidence. State the precise decision needed and continue independent authorized work.",
         origins: &[
             "plugins/tect/capabilities/registry/general-agent-work-rules-v1.json@ea7259c9a30ff7ea9a9eef1eae116cfc525eedd8#autonomous-local-technical-decisions",
         ],
     },
     RuleRecord {
         id: "no-product-test-harness-work",
-        revision: "1",
-        text: "Plan verification through existing product tests and direct native MCP acceptance. Do not create a separate product test harness or count harness construction as delivered product behavior.",
+        revision: "2",
+        text: "Verify the requested outcome against concrete acceptance criteria using direct evidence. Reuse suitable existing checks, and add or repair ordinary tests, fixtures, and test infrastructure when necessary to verify that outcome. Do not create or expand a separate audit or evaluation harness unless that harness itself was explicitly requested or authorized. A request to implement, test, review, or verify work does not by itself authorize such a separate audit harness. Do not debug, maintain, or repeatedly repair an unrequested audit harness, or make the requested work depend on it. Stop work on such a harness and return to verification of the requested outcome; report any remaining evidence gap without claiming an unproven result.",
         origins: &[
             "plugins/tect/capabilities/registry/general-agent-work-rules-v1.json@ea7259c9a30ff7ea9a9eef1eae116cfc525eedd8#no-product-test-harness-work",
         ],
@@ -93,33 +93,73 @@ const REVIEW: [Predicate; 2] = [
     Predicate::Purpose("scope_candidates.design"),
     Predicate::State("review"),
 ];
-const BINDINGS: [BindingRecord; 4] = [
+const SLICE_BASE: [Predicate; 1] = [Predicate::Purpose("slice_candidates.design")];
+const SLICE_TECHNICAL: [Predicate; 2] = [
+    Predicate::Purpose("slice_candidates.design"),
+    Predicate::Phase("technical_decisions"),
+];
+const SLICE_PROOF: [Predicate; 2] = [
+    Predicate::Purpose("slice_candidates.design"),
+    Predicate::Phase("proof_planning"),
+];
+const SLICE_REVIEW: [Predicate; 2] = [
+    Predicate::Purpose("slice_candidates.design"),
+    Predicate::State("review"),
+];
+const BINDINGS: [BindingRecord; 8] = [
     BindingRecord {
         id: "scope-candidate-base",
         revision: "1",
         all: &BASE,
         rules: &[
-            ("vertical-provable-slices", "1"),
-            ("no-unrequested-or-unauthorized-work", "1"),
+            ("vertical-provable-slices", "2"),
+            ("no-unrequested-or-unauthorized-work", "2"),
         ],
     },
     BindingRecord {
         id: "scope-candidate-technical",
         revision: "1",
         all: &TECHNICAL,
-        rules: &[("autonomous-local-technical-decisions", "1")],
+        rules: &[("autonomous-local-technical-decisions", "2")],
     },
     BindingRecord {
         id: "scope-candidate-proof",
         revision: "1",
         all: &PROOF,
-        rules: &[("no-product-test-harness-work", "1")],
+        rules: &[("no-product-test-harness-work", "2")],
     },
     BindingRecord {
         id: "scope-candidate-review",
         revision: "1",
         all: &REVIEW,
-        rules: &[("vertical-provable-slices", "1")],
+        rules: &[("vertical-provable-slices", "2")],
+    },
+    BindingRecord {
+        id: "slice-candidate-base",
+        revision: "1",
+        all: &SLICE_BASE,
+        rules: &[
+            ("vertical-provable-slices", "2"),
+            ("no-unrequested-or-unauthorized-work", "2"),
+        ],
+    },
+    BindingRecord {
+        id: "slice-candidate-technical",
+        revision: "1",
+        all: &SLICE_TECHNICAL,
+        rules: &[("autonomous-local-technical-decisions", "2")],
+    },
+    BindingRecord {
+        id: "slice-candidate-proof",
+        revision: "1",
+        all: &SLICE_PROOF,
+        rules: &[("no-product-test-harness-work", "2")],
+    },
+    BindingRecord {
+        id: "slice-candidate-review",
+        revision: "1",
+        all: &SLICE_REVIEW,
+        rules: &[("vertical-provable-slices", "2")],
     },
 ];
 
@@ -184,12 +224,28 @@ pub(crate) fn help_registry() -> Result<Value> {
             "rules":binding.rules.iter().map(|(id,revision)| json!({"id":id,"revision":revision})).collect::<Vec<_>>()
         })).collect::<Vec<_>>(),
         "applicability":{
-            "purpose":"scope_candidates.design",
+            "purposes":["scope_candidates.design","slice_candidates.design"],
             "phases":["technical_decisions","proof_planning"],
             "states":["review"],
             "semantics":"Every predicate in one binding must match; matching bindings add rules; duplicate rule identities are emitted once in registry order."
         }
     }))
+}
+
+pub(crate) fn slice_candidate_rules() -> Result<Vec<CandidateRuleSnapshot>> {
+    resolve_rules(
+        &RULES,
+        &BINDINGS,
+        &RuleContext {
+            purpose: "slice_candidates.design",
+            phases: &["technical_decisions", "proof_planning"],
+            states: &["review"],
+        },
+    )
+}
+
+pub(crate) fn registry_digest_value() -> Result<String> {
+    registry_digest()
 }
 
 fn resolve_rules(
@@ -387,6 +443,19 @@ mod tests {
         assert_eq!(resolved.len(), 4);
         assert_eq!(resolved[0].id, "vertical-provable-slices");
         assert_eq!(resolved[0].applicability.len(), 2);
+
+        let slice = RuleContext {
+            purpose: "slice_candidates.design",
+            phases: &["technical_decisions", "proof_planning"],
+            states: &["review"],
+        };
+        let resolved_slice = resolve_rules(&RULES, &BINDINGS, &slice).unwrap();
+        assert_eq!(resolved_slice.len(), 4);
+        assert!(resolved_slice.iter().all(|rule| {
+            rule.applicability
+                .iter()
+                .all(|binding| binding.starts_with("slice-"))
+        }));
 
         let dangling = [BindingRecord {
             id: "bad",

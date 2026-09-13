@@ -15,7 +15,10 @@ mod scope_candidate_pages;
 mod scope_candidate_ports;
 pub use scope_candidate_ports::{CandidateGuidance, CandidateOutputGuard, ScopeCandidateStore};
 
+mod native_planning_ports;
 mod scope_candidates;
+pub use native_planning_ports::{NativePlanningGuidance, NativePlanningStore};
+mod native_planning;
 
 mod setup_access;
 mod setup_apply;

@@ -51,7 +51,11 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
                          'scope_candidate_sets', 'scope_candidate_inputs',
                          'scope_candidate_contents', 'scope_candidate_snapshots',
                          'scope_candidate_source_refs', 'scope_candidate_drafts',
-                         'scope_candidate_reviews', 'scope_candidate_receipts'
+                         'scope_candidate_reviews', 'scope_candidate_receipts',
+                         'native_scopes', 'slice_candidate_sets', 'slice_planning_inputs',
+                         'slice_planning_snapshots', 'slice_candidate_drafts',
+                         'slice_candidate_reviews', 'native_slices', 'slice_results',
+                         'native_planning_receipts'
                      )
                      AND pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER')
                ) OR EXISTS (
@@ -109,6 +113,21 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
             "GRANT SELECT, INSERT ON TABLE scope_candidate_inputs, scope_candidate_contents, \
              scope_candidate_snapshots, scope_candidate_source_refs, scope_candidate_drafts, \
              scope_candidate_reviews, scope_candidate_receipts TO {quoted_role}"
+        ),
+        format!(
+            "REVOKE ALL PRIVILEGES ON TABLE native_scopes, slice_candidate_sets, \
+             slice_planning_inputs, slice_planning_snapshots, slice_candidate_drafts, \
+             slice_candidate_reviews, native_slices, slice_results, native_planning_receipts \
+             FROM {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT, UPDATE ON TABLE native_scopes, slice_candidate_sets, \
+             native_slices, slice_results TO {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT ON TABLE slice_planning_inputs, slice_planning_snapshots, \
+             slice_candidate_drafts, slice_candidate_reviews, native_planning_receipts \
+             TO {quoted_role}"
         ),
         format!(
             "GRANT EXECUTE ON FUNCTION public.tect_authenticate_host(uuid, text, boolean) TO {quoted_role}"

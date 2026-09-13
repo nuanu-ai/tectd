@@ -216,9 +216,9 @@ async fn method_and_registry_change_require_refresh_and_retain_old_bodies() {
     .await
     .unwrap();
     assert_eq!(snapshots.len(), 2);
-    assert_eq!(snapshots[0].1, "2");
+    assert_eq!(snapshots[0].1, "3");
     assert!(snapshots[0].2.contains("# TectD Scope candidates"));
-    assert_eq!(snapshots[0].3, "1");
+    assert_eq!(snapshots[0].3, "3");
     assert_eq!(snapshots[0].4.as_array().unwrap().len(), 4);
     assert_eq!(snapshots[1].1, "new");
     assert_eq!(snapshots[1].2, "New trusted candidate method body.");

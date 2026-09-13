@@ -81,8 +81,21 @@ impl WorkspaceService {
         state.candidate_sets = tx
             .candidate_heads(state.workspace.as_ref().expect("opened").id, 25)
             .await?;
+        state.native_planning = tx
+            .native_planning_summaries(state.workspace.as_ref().expect("opened").id, 25)
+            .await?;
         state.next_action = Some(
-            if !state.candidate_sets.is_empty() {
+            if let Some(native) = state.native_planning.first() {
+                match native.candidate_set_status {
+                    tect_domain::SliceCandidateSetStatus::Ready
+                        if !native.eligible_work.is_empty() =>
+                    {
+                        "slice_open"
+                    }
+                    _ if !native.slices_needing_result.is_empty() => "slice_result_record",
+                    _ => "slice_candidate_context",
+                }
+            } else if !state.candidate_sets.is_empty() {
                 "candidate_context"
             } else if state
                 .setup_context

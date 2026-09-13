@@ -27,7 +27,11 @@ pub(crate) async fn verify_runtime_role(pool: &PgPool) -> Result<()> {
                          'scope_candidate_sets', 'scope_candidate_inputs',
                          'scope_candidate_contents', 'scope_candidate_snapshots',
                          'scope_candidate_source_refs', 'scope_candidate_drafts',
-                         'scope_candidate_reviews', 'scope_candidate_receipts'
+                         'scope_candidate_reviews', 'scope_candidate_receipts',
+                         'native_scopes', 'slice_candidate_sets', 'slice_planning_inputs',
+                         'slice_planning_snapshots', 'slice_candidate_drafts',
+                         'slice_candidate_reviews', 'native_slices', 'slice_results',
+                         'native_planning_receipts'
                      )
                      AND pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER')
                ) OR EXISTS (

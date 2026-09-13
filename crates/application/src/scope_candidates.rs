@@ -313,7 +313,7 @@ impl WorkspaceService {
     }
 }
 
-async fn ensure_fresh(
+pub(crate) async fn ensure_fresh(
     tx: &mut dyn UnitOfWork,
     workspace_id: uuid::Uuid,
     host_id: uuid::Uuid,

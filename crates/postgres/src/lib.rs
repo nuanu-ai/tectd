@@ -1,5 +1,7 @@
 //! PostgreSQL persistence and operator-only administration.
 pub mod admin;
+mod native_planning;
+mod native_planning_store;
 mod programs;
 mod runtime;
 mod scope_candidate_store;

@@ -11,6 +11,7 @@ tect-domain.workspace = true
 tect-application.workspace = true
 async-trait.workspace = true
 serde_json.workspace = true
+serde.workspace = true
 uuid.workspace = true
 sqlx.workspace = true
 sha2.workspace = true

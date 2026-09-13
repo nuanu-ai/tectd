@@ -101,7 +101,7 @@ not per-session secrets.
 
 ## Public MCP API
 
-The public surface has exactly five tools. `query`, `command`, and `execute` use
+The public surface has exactly five tools and 30 routes. `query`, `command`, and `execute` use
 `{"route":"...","params":{...}}`; `help` searches or describes the exact
 route schema. Unknown routes and route parameters fail before effects.
 
@@ -114,7 +114,7 @@ route schema. Unknown routes and route parameters fail before effects.
 | `help` | Bounded static API search and exact tool/route/method descriptions |
 
 Embedded methods are returned by `help` describe calls for `tectd-program`,
-`tectd-setup` and `tectd-scope-candidates`. Help works before workspace bootstrap after native identity and host
+`tectd-setup`, `tectd-scope-candidates` and `tectd-slice-candidates`. Help works before workspace bootstrap after native identity and host
 authentication; it creates no workspace/session records and reads no filesystem.
 
 ## Source routes
@@ -211,8 +211,66 @@ Finite planning maps captured Program success to reviewed candidates, evidence o
 blockers. Ongoing planning is limited to the originating request and its captured
 amendments. Accepted-work evidence and candidate associations remain protected;
 changing them requires a later captured authority reference, rationale and explicit
-review. A ready candidate set remains a recommendation for user selection. This
-release has no native Scope or Result lifecycle and never opens a Scope automatically.
+review. A ready candidate set remains a recommendation for selection. Opening a
+Scope is an explicit, guarded command against one current accepted candidate;
+candidate review alone never opens it.
+
+## Native Scope and Slice planning
+
+Migration 0007 adds native Scopes, revisable Slice-candidate graphs, opened Slices,
+immutable externally reported Results and their request receipts. A Scope opens
+from one accepted Scope candidate and starts one complete Slice-candidate planning
+pass. The graph may contain work candidates and intentional unresolved decision
+points; dependencies are validated as a DAG. Each opened Slice comes from one
+accepted work candidate and carries one bounded outcome and one pipeline choice.
+
+The pipeline catalogue contains exactly seven descriptive stubs:
+`slice.lightweight-tdd-development`, `slice.full-design-to-execution`,
+`slice.debug-root-cause`, `slice.operational-preparation`,
+`slice.operational-execution`, `slice.research-to-durable-knowledge`, and
+`slice.custom-procedure-capture`. Their descriptions are provisional and require
+refinement before executable pipeline design. TectD exposes no pipeline stages,
+executor or execution claim for these entries.
+
+| Tool + route | Purpose |
+| --- | --- |
+| `command` · `scope.open` | Open a native Scope from an exact current accepted Scope candidate and return initial Slice-planning context |
+| `query` · `scope.context` | Read the durable Scope without candidate-design guidance |
+| `query` · `slice.pipelines` | Read the seven provisional, nonexecutable pipeline descriptions |
+| `query` · `slice.candidates.context` | Read bounded current, history, input, review and Result planning views |
+| `command` · `slice.candidates.save` | Save a complete graph draft or its critical review |
+| `command` · `slice.candidates.input` | Record exact additional planning input |
+| `command` · `slice.candidates.refresh` | Capture current inputs, Results, method, catalogue and rules before revising future work |
+| `command` · `slice.open` | Open one eligible work candidate as one native Slice; decision points cannot open |
+| `query` · `slice.context` | Read one opened Slice and its provisional pipeline label |
+| `command` · `slice.result.record` | Record an externally reported Result and make affected future planning require refresh and review |
+
+A typical source-level flow is:
+
+```text
+scope.candidates.context
+  -> scope.open
+  -> slice.candidates.context
+  -> slice.candidates.save(kind=draft)
+  -> slice.candidates.save(kind=review)
+  -> slice.open
+  -> slice.result.record
+  -> slice.candidates.refresh
+  -> slice.candidates.save(kind=draft/review)
+```
+
+Scope opening and Slice-candidate design snapshots carry the same four full design
+rules. Opening an already designed Slice does not inject those rules again. Opened
+work keeps its identity and history when later Results change future candidates,
+order or dependencies. Result recording is an `externally_reported` observation:
+the backend stores the supplied outcome and evidence but neither executes a
+pipeline nor semantically proves that evidence. A Result makes future planning
+stale so it must be refreshed and reviewed, even when the reviewed branch remains
+unchanged.
+
+These statements describe the current source implementation. Final workspace gates,
+native client acceptance and publication or installation of a new package are
+separate proof layers and are not claimed here.
 
 ## Monthly epochs
 
@@ -221,6 +279,10 @@ indexes to the eleven append/history and long-lived state tables named by the V2
 design. Existing rows derive their month from their original `created_at`; normal
 updates do not move them. Epoch keys are an internal storage/query property and add
 no agent parameter, timer, cron job, periodic write or physical partition.
+
+Migration 0007 is forward-only and adds the native Scope/Slice planning tables,
+constraints and indexes described above. It does not install, publish or activate
+the seven provisional pipeline stubs as executable workflows.
 
 ## Initial workspace instructions
 

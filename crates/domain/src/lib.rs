@@ -16,7 +16,8 @@ pub use identity::{
     HostAuth, HostIdentity, RequestContext, validate_native_id, validate_workspace_key,
 };
 pub use state::{
-    Created, EventKind, Session, StateStatus, Workspace, WorkspaceState, WorktreeSummary,
+    Created, EventKind, NativePlanningSummary, NativeSliceSummary, NativeWorkCandidateSummary,
+    Session, StateStatus, Workspace, WorkspaceState, WorktreeSummary,
 };
 
 mod sources;
@@ -37,9 +38,17 @@ pub use setup_page::{
     AppliedSetup, SetupContext, SetupDiscovery, SetupInput, SetupPage, SetupSummary,
 };
 
+mod native_planning;
+mod native_planning_receipt;
+mod native_planning_validation;
+mod pipelines;
 mod scope_candidate_draft;
 mod scope_candidate_validation;
 mod scope_candidates;
+pub use native_planning::*;
+pub use native_planning_receipt::NativePlanningReceiptRequest;
+pub use native_planning_validation::validate_slice_graph;
+pub use pipelines::*;
 pub use scope_candidate_draft::{
     BlockerDraft, BlockerEntity, CandidateAdded, CandidateChanged, CandidateDecision,
     CandidateDecisionKind, CandidateDelta, CandidateDraft, CandidateEntity, CandidateFinding,

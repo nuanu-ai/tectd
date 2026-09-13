@@ -94,19 +94,50 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "program.list",
             "source.list",
             "setup.get",
-            "scope.candidates.context"
+            "scope.candidates.context",
+            "scope.context",
+            "slice.pipelines",
+            "slice.candidates.context",
+            "slice.context"
         ])
     );
     let command = tools.iter().find(|tool| tool["name"] == "command").unwrap();
     assert_eq!(
-        command["inputSchema"]["properties"]["route"]["enum"]
-            .as_array()
-            .unwrap()
-            .len(),
-        14
+        command["inputSchema"]["properties"]["route"]["enum"],
+        json!([
+            "workspace.open",
+            "source.register",
+            "session.select_worktrees",
+            "program.begin",
+            "program.save",
+            "program.record_input",
+            "setup.inspect",
+            "setup.begin",
+            "setup.save",
+            "setup.record_input",
+            "scope.candidates.begin",
+            "scope.candidates.save",
+            "scope.candidates.record_input",
+            "scope.candidates.refresh",
+            "scope.open",
+            "slice.candidates.save",
+            "slice.candidates.input",
+            "slice.candidates.refresh",
+            "slice.open",
+            "slice.result.record"
+        ])
     );
     let help = tools.iter().find(|tool| tool["name"] == "help").unwrap();
     assert_eq!(help["inputSchema"]["oneOf"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        help["inputSchema"]["properties"]["method"]["enum"],
+        json!([
+            "tectd-program",
+            "tectd-setup",
+            "tectd-scope-candidates",
+            "tectd-slice-candidates"
+        ])
+    );
 
     let before_help: i64 = sqlx::query_scalar(
         "SELECT (SELECT count(*) FROM workspaces WHERE tenant_id=$1) + \

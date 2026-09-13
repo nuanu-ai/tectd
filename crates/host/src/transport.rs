@@ -179,8 +179,7 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 .open_workspace(&request.context)
                 .await
                 .and_then(|state| program_output::workspace(state, request.output_capacity)),
-            Invocation::GetState => service
-                .get_state(&request.context)
+            Invocation::GetState => crate::slice_dispatch::state(&request.context, service)
                 .await
                 .and_then(|state| program_output::workspace(state, request.output_capacity)),
             Invocation::Program(invocation) => {
@@ -203,6 +202,15 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
             }
             Invocation::ScopeCandidate(invocation) => {
                 crate::scope_candidate_dispatch::execute(
+                    &request.context,
+                    invocation,
+                    service,
+                    request.output_capacity,
+                )
+                .await
+            }
+            Invocation::Slice(invocation) => {
+                crate::slice_dispatch::execute(
                     &request.context,
                     invocation,
                     service,

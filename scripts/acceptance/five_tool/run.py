@@ -17,6 +17,7 @@ from typing import Any
 
 from common import Proof, Rpc, RpcError, command_overrides, initialize, raw_tool_result, sha256_file, sha256_json, start_thread, tool_result
 from fixture import Fixture
+import native_slices
 import scope_candidates as scope
 
 
@@ -334,6 +335,11 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
         {"route": "setup.apply", "params": {"setup_id": ready["id"], "revision": ready["revision"]}},
     )
     proof.check("execute publishes exact bytes only in owned fixture", not failed and (fixture.task / "AGENTS.md").read_text() == content)
+    native_slice_result = native_slices.run(
+        lambda tool, arguments: tool_result(app, thread_id, tool, arguments),
+        str(fixture.source_fixture),
+        proof.check,
+    )
     proof.data["representative_results"] = {
         "help_search_sha256": sha256_json(search),
         "help_method_sha256": sha256_json(method),
@@ -342,6 +348,7 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
         "program_get_sha256": sha256_json(recovered),
         "setup_apply_sha256": sha256_json(applied),
         "fixture_agents_sha256": sha256_file(fixture.task / "AGENTS.md"),
+        "native_scope_slice": native_slice_result,
     }
     before_hash = sha256_file(fixture.task / "AGENTS.md")
     before_database = fixture.database_fingerprint()

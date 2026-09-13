@@ -1,4 +1,6 @@
-use crate::{CandidateSetSummary, ProgramSummary, SetupContext};
+use crate::{
+    CandidateSetSummary, ProgramSummary, SetupContext, SliceCandidateSetStatus, SliceState,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -42,6 +44,33 @@ pub struct WorkspaceState {
     pub next_after: Option<String>,
     pub setup_context: Option<SetupContext>,
     pub candidate_sets: Vec<CandidateSetSummary>,
+    pub native_planning: Vec<NativePlanningSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeWorkCandidateSummary {
+    pub candidate_id: Uuid,
+    pub candidate_revision: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeSliceSummary {
+    pub slice_id: Uuid,
+    pub slice_revision: i64,
+    pub state: SliceState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativePlanningSummary {
+    pub scope_id: Uuid,
+    pub scope_revision: i64,
+    pub candidate_set_id: Uuid,
+    pub candidate_set_revision: i64,
+    pub candidate_set_status: SliceCandidateSetStatus,
+    pub snapshot_id: Uuid,
+    pub stale: bool,
+    pub eligible_work: Vec<NativeWorkCandidateSummary>,
+    pub slices_needing_result: Vec<NativeSliceSummary>,
 }
 
 impl WorkspaceState {
@@ -56,6 +85,7 @@ impl WorkspaceState {
             next_after: None,
             setup_context: None,
             candidate_sets: Vec::new(),
+            native_planning: Vec::new(),
         }
     }
 
@@ -70,6 +100,7 @@ impl WorkspaceState {
             next_after: None,
             setup_context: None,
             candidate_sets: Vec::new(),
+            native_planning: Vec::new(),
         }
     }
 }
