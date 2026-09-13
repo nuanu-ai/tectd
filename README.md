@@ -101,7 +101,8 @@ not per-session secrets.
 
 ## Public MCP API
 
-The public surface has exactly five tools and 30 routes. `query`, `command`, and `execute` use
+The public surface has exactly five tools and 35 routes: 10 queries, 24 commands,
+and one execute route. `query`, `command`, and `execute` use
 `{"route":"...","params":{...}}`; `help` searches or describes the exact
 route schema. Unknown routes and route parameters fail before effects.
 
@@ -224,26 +225,32 @@ pass. The graph may contain work candidates and intentional unresolved decision
 points; dependencies are validated as a DAG. Each opened Slice comes from one
 accepted work candidate and carries one bounded outcome and one pipeline choice.
 
-The pipeline catalogue contains exactly seven descriptive stubs:
+The pipeline catalogue contains exactly seven executable, versioned pipelines:
 `slice.lightweight-tdd-development`, `slice.full-design-to-execution`,
 `slice.debug-root-cause`, `slice.operational-preparation`,
 `slice.operational-execution`, `slice.research-to-durable-knowledge`, and
-`slice.custom-procedure-capture`. Their descriptions are provisional and require
-refinement before executable pipeline design. TectD exposes no pipeline stages,
-executor or execution claim for these entries.
+`slice.custom-procedure-capture`. Each run pins its complete definition, delivery
+mode, instructions, skills, resources and gate contracts. TectD validates ordering,
+version bindings and reported receipt structure; the caller performs the work and
+reports evidence. The backend does not run an LLM or semantically verify the work.
 
 | Tool + route | Purpose |
 | --- | --- |
 | `command` · `scope.open` | Open a native Scope from an exact current accepted Scope candidate and return initial Slice-planning context |
 | `query` · `scope.context` | Read the durable Scope without candidate-design guidance |
-| `query` · `slice.pipelines` | Read the seven provisional, nonexecutable pipeline descriptions |
+| `query` · `slice.pipelines` | Read the seven executable pipeline descriptions and allowed delivery modes |
 | `query` · `slice.candidates.context` | Read bounded current, history, input, review and Result planning views |
 | `command` · `slice.candidates.save` | Save a complete graph draft or its critical review |
 | `command` · `slice.candidates.input` | Record exact additional planning input |
 | `command` · `slice.candidates.refresh` | Capture current inputs, Results, method, catalogue and rules before revising future work |
 | `command` · `slice.open` | Open one eligible work candidate as one native Slice; decision points cannot open |
-| `query` · `slice.context` | Read one opened Slice and its provisional pipeline label |
-| `command` · `slice.result.record` | Record an externally reported Result and make affected future planning require refresh and review |
+| `query` · `slice.context` | Read one opened Slice and its selected pipeline |
+| `command` · `slice.result.record` | Record a legacy externally reported Result when no managed pipeline run can be bypassed |
+| `query` · `slice.pipeline.context` | Read current run context or one exact immutable phase output by ID and digest |
+| `command` · `slice.pipeline.begin` | Start a version-pinned managed run with a validated default or selected delivery mode |
+| `command` · `slice.pipeline.phase.complete` | Record one structurally validated phase attempt and return the next ready action |
+| `command` · `slice.pipeline.delivery.escalate` | Irreversibly change an unfinished whole-delivery run to phasewise delivery |
+| `command` · `slice.pipeline.input` | Append exact phase-local answer, context, authority or reconciliation input |
 
 A typical source-level flow is:
 
@@ -254,7 +261,8 @@ scope.candidates.context
   -> slice.candidates.save(kind=draft)
   -> slice.candidates.save(kind=review)
   -> slice.open
-  -> slice.result.record
+  -> slice.pipeline.begin
+  -> slice.pipeline.phase.complete (ordered until terminal)
   -> slice.candidates.refresh
   -> slice.candidates.save(kind=draft/review)
 ```
@@ -262,11 +270,12 @@ scope.candidates.context
 Scope opening and Slice-candidate design snapshots carry the same four full design
 rules. Opening an already designed Slice does not inject those rules again. Opened
 work keeps its identity and history when later Results change future candidates,
-order or dependencies. Result recording is an `externally_reported` observation:
-the backend stores the supplied outcome and evidence but neither executes a
-pipeline nor semantically proves that evidence. A Result makes future planning
-stale so it must be refreshed and reviewed, even when the reviewed branch remains
-unchanged.
+order or dependencies. Managed phase outputs and Results retain
+`externally_reported` provenance: the backend stores supplied evidence and validates
+its pinned structural contract, but neither performs the work nor semantically
+proves it. Intermediate phases do not stale future planning or emit Slice Results.
+A terminal managed Result makes future planning stale so it must be refreshed and
+reviewed, even when the reviewed branch remains unchanged.
 
 These statements describe the current source implementation. Final workspace gates,
 native client acceptance and publication or installation of a new package are
@@ -281,8 +290,10 @@ updates do not move them. Epoch keys are an internal storage/query property and 
 no agent parameter, timer, cron job, periodic write or physical partition.
 
 Migration 0007 is forward-only and adds the native Scope/Slice planning tables,
-constraints and indexes described above. It does not install, publish or activate
-the seven provisional pipeline stubs as executable workflows.
+constraints and indexes described above. Migration 0008 adds version-pinned
+pipeline runs, immutable attempts and outputs, current output bindings, append-only
+inputs and skill-read receipts with tenant/workspace isolation. A source build and
+database migration do not install or activate a desktop plugin release.
 
 ## Initial workspace instructions
 

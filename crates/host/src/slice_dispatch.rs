@@ -95,19 +95,31 @@ pub(crate) async fn execute(
         ),
         SliceInvocation::OpenSlice(request) => {
             let value = service.slice_open(context, &request).await?;
-            let slice_id = match &value {
-                OpenSliceOutcome::Created(slice) | OpenSliceOutcome::Replay(slice) => slice.id,
+            let slice = match &value {
+                OpenSliceOutcome::Created(slice) | OpenSliceOutcome::Replay(slice) => slice,
             };
-            output(
-                value,
-                vec![responses::action(
-                    "slice_context",
-                    json!({"slice_id":slice_id}),
-                )?],
-            )
+            let mut actions = vec![responses::action(
+                "slice_context",
+                json!({"slice_id":slice.id}),
+            )?];
+            if crate::pipeline_definitions::delivery_modes(slice.pipeline).is_some() {
+                actions.insert(0, pipeline_begin_action(slice)?);
+            }
+            output(value, actions)
         }
         SliceInvocation::SliceContext { slice_id } => {
-            output(service.slice_context(context, slice_id).await?, vec![])
+            let slice = service.slice_context(context, slice_id).await?;
+            let actions = if let Some(run_id) = slice.pipeline_run_id {
+                vec![responses::action(
+                    "slice_pipeline_context",
+                    json!({"run_id":run_id}),
+                )?]
+            } else if crate::pipeline_definitions::delivery_modes(slice.pipeline).is_some() {
+                vec![pipeline_begin_action(&slice)?]
+            } else {
+                Vec::new()
+            };
+            output(slice, actions)
         }
         SliceInvocation::RecordResult(request) => {
             let value = service.slice_result_record(context, &request).await?;
@@ -119,6 +131,18 @@ pub(crate) async fn execute(
             output(value, actions)
         }
     }
+}
+
+fn pipeline_begin_action(slice: &tect_domain::NativeSlice) -> Result<Value> {
+    crate::api::needs_action(
+        "needs_context",
+        "slice_pipeline_begin",
+        json!({"request_id":request_id(slice.id,slice.revision,"pipeline-begin"),
+            "scope_id":slice.scope_id,"slice_id":slice.id,"slice_revision":slice.revision}),
+        "context_input",
+        json!({"fields":[{"path":"arguments.params.qualification_reason",
+            "format":"Agent-supplied concrete reason this Slice fits the selected pipeline and its default delivery mode. Do not ask the human unless fit is genuinely ambiguous."}]}),
+    )
 }
 
 fn candidate_context(value: SliceCandidateContext) -> Result<Value> {
@@ -290,7 +314,7 @@ mod tests {
     use tect_domain::{NativeSlice, PipelineKind, SliceState};
 
     #[test]
-    fn opened_slice_output_has_stub_status_without_design_guidance_or_execution_claim() {
+    fn opened_slice_output_is_not_started_without_design_guidance_or_execution_claim() {
         let slice = NativeSlice {
             id: Uuid::new_v4(),
             scope_id: Uuid::new_v4(),
@@ -302,11 +326,12 @@ mod tests {
             outcome: "Observed result".into(),
             pipeline: PipelineKind::LightweightTddDevelopment,
             state: SliceState::Open,
-            pipeline_status: "stub".into(),
+            pipeline_status: "not_started".into(),
+            pipeline_run_id: None,
             execution_claimed: false,
         };
         let value = output(slice, Vec::new()).unwrap();
-        assert_eq!(value["pipeline_status"], "stub");
+        assert_eq!(value["pipeline_status"], "not_started");
         assert_eq!(value["execution_claimed"], false);
         assert!(value.get("rules").is_none());
         assert!(value.get("method").is_none());

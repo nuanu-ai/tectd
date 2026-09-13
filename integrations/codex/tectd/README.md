@@ -23,16 +23,19 @@ as an identity fallback. Both the Codex-generated native UUID and host credentia
 are required before a business operation. Model tool arguments contain no identity.
 
 The public MCP surface is exactly `get_state`, `query`, `command`, `execute`, and
-`help`, with 30 routes. Read-only routes are `program.get`, `program.list`,
+`help`, with 35 routes: 10 queries, 24 commands, and one execute route. Read-only routes are `program.get`, `program.list`,
 `source.list`, `setup.get`, `scope.candidates.context`, `scope.context`,
-`slice.pipelines`, `slice.candidates.context`, and `slice.context`. Logical
+`slice.pipelines`, `slice.candidates.context`, `slice.context`, and
+`slice.pipeline.context`. Logical
 transitions are `workspace.open`, `source.register`, `session.select_worktrees`,
 `program.begin`, `program.save`, `program.record_input`, `setup.inspect`,
 `setup.begin`, `setup.save`, `setup.record_input`, `scope.candidates.begin`,
 `scope.candidates.save`, `scope.candidates.record_input`,
 `scope.candidates.refresh`, `scope.open`, `slice.candidates.save`,
 `slice.candidates.input`, `slice.candidates.refresh`, `slice.open`, and
-`slice.result.record`. The only external-effect route is `setup.apply`. Each native
+`slice.result.record`, plus `slice.pipeline.begin`, `slice.pipeline.phase.complete`,
+`slice.pipeline.delivery.escalate`, and `slice.pipeline.input`. The only
+external-effect route is `setup.apply`. Each native
 session has its own selected worktrees. Program drafts, original input and PRDs live
 in the database. The focused `tectd-program`, `tectd-setup`,
 `tectd-scope-candidates` and `tectd-slice-candidates` methods are embedded in the
@@ -45,25 +48,27 @@ implementation work.
 `scope.open` explicitly opens one native Scope from one current accepted Scope
 candidate and returns the initial complete Slice-candidate planning context. The
 plan is a revisable dependency graph of work candidates and unresolved decision
-points. The catalogue exposes seven provisional descriptive pipeline stubs; it has
-no executable stages, hybrid pipeline or backend execution facility. The same four
+points. The catalogue exposes seven executable, versioned pipeline definitions and
+no retired Hybrid pipeline. The same four
 full design rules are captured for Scope and Slice-candidate design and review,
 then omitted from `slice.open` and `slice.context` because the opened Slice was
 already designed. One eligible accepted work candidate opens as one native Slice.
 
-`slice.result.record` stores an explicit `externally_reported` observation and its
-supplied evidence. TectD does not execute the selected pipeline or semantically
-verify that evidence. Recording a Result atomically marks affected future planning
-stale; the caller refreshes and reviews the future graph while opened work remains
-protected and history is retained. A compact route flow is:
+Managed runs pin the selected definition, delivery mode and exact phase contracts.
+TectD persists caller-reported phase evidence and validates order, bindings and
+receipt structure; it does not run an LLM or semantically verify the work. A
+terminal managed Result marks affected future planning stale while intermediate
+phases do not. Legacy `slice.result.record` remains available when it cannot bypass
+an active managed run. A compact route flow is:
 
 ```text
 scope.open -> slice.candidates.save(draft) -> slice.candidates.save(review)
-           -> slice.open -> slice.result.record
+           -> slice.open -> slice.pipeline.begin -> slice.pipeline.phase.complete
            -> slice.candidates.refresh -> slice.candidates.save(draft/review)
 ```
 
-Migration 0007 supplies the forward-only native Scope/Slice persistence. These are
+Migrations 0007 and 0008 supply the forward-only native Scope/Slice planning and
+managed pipeline persistence. These are
 source contracts; final gates, native Codex acceptance, package publication and
 desktop installation remain separate evidence and are not claimed here.
 

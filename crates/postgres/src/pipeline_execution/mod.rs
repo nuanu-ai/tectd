@@ -1,0 +1,59 @@
+use crate::storage_error;
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use sqlx::{Postgres, Transaction};
+use tect_domain::*;
+use uuid::Uuid;
+
+fn json<T: Serialize>(value: &T) -> Result<serde_json::Value> {
+    serde_json::to_value(value).map_err(storage_error)
+}
+
+fn decode<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T> {
+    serde_json::from_value(value).map_err(storage_error)
+}
+
+fn digest<T: Serialize>(value: &T) -> Result<String> {
+    let bytes = serde_json::to_vec(value).map_err(storage_error)?;
+    Ok(Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+fn mode(value: &str) -> Result<PipelineDeliveryMode> {
+    decode(serde_json::Value::String(value.into()))
+}
+
+fn run_status(value: &str) -> Result<PipelineRunStatus> {
+    decode(serde_json::Value::String(value.into()))
+}
+
+fn phase_outcome(value: &str) -> Result<PipelinePhaseOutcome> {
+    decode(serde_json::Value::String(value.into()))
+}
+
+fn transition(value: &str) -> Result<PipelineTransition> {
+    decode(serde_json::Value::String(value.into()))
+}
+
+fn pipeline(value: &str) -> Result<PipelineKind> {
+    decode(serde_json::Value::String(value.into()))
+}
+
+fn enum_text<T: Serialize>(value: &T) -> Result<String> {
+    match json(value)? {
+        serde_json::Value::String(value) => Ok(value),
+        _ => Err(Error::InternalInvariant),
+    }
+}
+
+mod context;
+mod input;
+mod phase;
+mod run;
+
+pub(crate) use context::{load_context, load_output};
+pub(crate) use input::{escalate_delivery, record_input};
+pub(crate) use phase::complete_phase;
+pub(crate) use run::{begin, begin_replay};

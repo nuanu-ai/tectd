@@ -2,12 +2,22 @@
 from __future__ import annotations
 import json, uuid
 from typing import Any, Callable
+import pipeline_execution
 import scope_candidates
 
 PIPELINES = {
     "slice.lightweight-tdd-development", "slice.full-design-to-execution",
     "slice.debug-root-cause", "slice.operational-preparation", "slice.operational-execution",
     "slice.research-to-durable-knowledge", "slice.custom-procedure-capture",
+}
+PIPELINE_MODES = {
+    "slice.lightweight-tdd-development": ("whole", ["whole", "phasewise"], 14),
+    "slice.full-design-to-execution": ("phasewise", ["phasewise"], 20),
+    "slice.debug-root-cause": ("whole", ["whole", "phasewise"], 18),
+    "slice.operational-preparation": ("whole", ["whole", "phasewise"], 16),
+    "slice.operational-execution": ("phasewise", ["phasewise"], 18),
+    "slice.research-to-durable-knowledge": ("phasewise", ["whole", "phasewise"], 22),
+    "slice.custom-procedure-capture": ("whole", ["whole", "phasewise"], 17),
 }
 RULES = {
     "vertical-provable-slices", "no-unrequested-or-unauthorized-work",
@@ -110,16 +120,41 @@ def open_params(context, candidate, request_id=None):
             "candidate_snapshot_id":context["snapshot"]["id"],
             "candidate_id":candidate["id"], "candidate_revision":candidate["revision"]}
 
+def assert_exact_pipeline_delivery(context: dict[str, Any], kind: str, check: Callable) -> None:
+    default, allowed, phase_count = PIPELINE_MODES[kind]
+    mode = context["run"]["delivery_mode"]
+    phases = context["definition"].get("phases", [])
+    delivered = context.get("delivered_phases", [])
+    items = [item for phase in phases for field in ("instructions", "skills", "resources")
+             for item in phase.get(field, [])]
+    expected = phase_count if mode == "whole" else 1
+    check(f"{kind} delivers exact pinned bodies through the native Codex MCP surface",
+          context["definition"].get("kind") == kind and len(phases) == expected
+          and len(delivered) == expected and bool(items)
+          and all(isinstance(item.get("id"),str) and item["id"].strip()
+                  and isinstance(item.get("version"),str) and item["version"].strip()
+                  and isinstance(item.get("digest"),str) and item["digest"].strip()
+                  and isinstance(item.get("body"),str) and item["body"].strip()
+                  and isinstance(item.get("origin_refs"),list) and item["origin_refs"]
+                  for item in items),
+          {"kind":kind,"mode":mode,"default":default,"allowed":allowed,
+           "delivered_phases":len(delivered),"delivered_items":len(items)})
+
 def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
     source = source_candidate(call, source_path)
     catalogue = ok(call, "query", "slice.pipelines", {})
     entries = catalogue.get("pipelines", []); ids = {entry.get("kind") for entry in entries}
-    check("native Slice catalogue exposes exactly seven provisional non-executable stubs",
+    by_kind = {entry.get("kind"):entry for entry in entries}
+    check("native Slice catalogue exposes all seven executable pipelines with exact delivery modes",
           ids == PIPELINES and "slice.hybrid-implementation-operation" not in json.dumps(catalogue)
-          and catalogue.get("executable") is False
-          and all(x.get("implementation_status")=="stub" and x.get("description_status")=="provisional"
-                  and x.get("refinement_required") is True for x in entries),
-          {"pipeline_ids":sorted(ids),"executable":catalogue.get("executable")})
+          and catalogue.get("executable") is True and catalogue.get("executable_count") == 7
+          and all(by_kind[kind].get("implementation_status") == "executable"
+                  and by_kind[kind].get("description_status") == "refined"
+                  and by_kind[kind].get("refinement_required") is False
+                  and by_kind[kind].get("default_delivery_mode") == values[0]
+                  and by_kind[kind].get("allowed_delivery_modes") == values[1]
+                  for kind,values in PIPELINE_MODES.items()),
+          {"pipeline_ids":sorted(ids),"executable_count":catalogue.get("executable_count")})
 
     sc, cand = source["context"], source["candidate"]
     scope_request = {"request_id":str(uuid.uuid4()), "candidate_set_id":sc["candidate_set"]["id"],
@@ -164,8 +199,8 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
     open_request=open_params(reviewed,debug)
     opened=ok(call,"command","slice.open",open_request); slice_=variant(opened,"created")
     slice_read=ok(call,"query","slice.context",action_params(opened,"slice.context"))
-    check("slice.open starts no stub execution and reinjects no design rules",
-          slice_["pipeline"]=="slice.debug-root-cause" and slice_["pipeline_status"]=="stub"
+    check("slice.open starts no non-executable Debug run and reinjects no design rules",
+          slice_["pipeline"]=="slice.debug-root-cause" and slice_["pipeline_status"]=="not_started"
           and slice_["execution_claimed"] is False and "rules" not in json.dumps(opened)
           and all(a.get("tool")!="execute" for a in opened.get("actions",[]))
           and slice_read.get("id")==slice_["id"] and slice_read.get("pipeline")==slice_["pipeline"],
@@ -201,7 +236,24 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
           not refreshed["stale_reasons"] and result["id"] in refreshed["snapshot"]["result_ids"] and rr==RULES,
           {"result_ids":refreshed["snapshot"]["result_ids"],"rule_ids":sorted(rr)})
 
-    revised=save_plan(call,refreshed,{"coverage_summary":"Result resolves decision to bounded correction.","nodes":[
+    probe_kinds = [kind for kind in PIPELINE_MODES if kind != "slice.lightweight-tdd-development"]
+    probe_nodes = [{"kind":"work","identity":{"local":f"probe-{index}"},
+        "title":f"Inspect native delivery for {kind}",
+        "outcome":"The pinned definition and current exact step bodies are delivered through MCP.",
+        "includes":["native delivery inspection"],"excludes":["semantic execution"],
+        "dependencies":[{"candidate_id":debug["id"],"revision":debug["revision"]}],
+        "proof":["Exact version, digest, body and origin reference are present."],
+        "pipeline":kind,"pipeline_reason":"Bounded final native delivery acceptance.",
+        "source_result_ids":[result["id"]]} for index,kind in enumerate(probe_kinds,1)]
+    for node in probe_nodes:
+        if node["pipeline"] == "slice.full-design-to-execution":
+            node["why_lightweight_insufficient"] = (
+                "Full delivery is the object under inspection, including its irreducible phase contract."
+            )
+            node["why_further_vertical_split_not_viable"] = (
+                "Splitting the inspection would no longer prove one pinned Full definition delivery."
+            )
+    revised=save_plan(call,refreshed,{"coverage_summary":"Result resolves decision and enables exact pipeline delivery inspection.","nodes":[
         existing_work(debug),
         {"kind":"work","identity":{"local":"correction"},"title":"Correct preview derivation",
          "outcome":"Preview reflects saved recipient and cadence settings.",
@@ -211,7 +263,7 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
          "pipeline":"slice.lightweight-tdd-development",
          "pipeline_reason":"The result isolates one small vertical correction.",
          "source_result_ids":[result["id"]]},
-    ],"supersessions":[{"candidate_id":decision["id"],"revision":decision["revision"],
+    ] + probe_nodes,"supersessions":[{"candidate_id":decision["id"],"revision":decision["revision"],
         "reason":"Diagnosis resolves the correction-path question.","replacements":[{"local":"correction"}]}]})
     light=next(n for n in revised["draft"]["nodes"] if n["pipeline"]=="slice.lightweight-tdd-development")
     final=review_plan(call,revised,"Result-backed Lightweight successor is bounded and history explicit.")
@@ -219,29 +271,81 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
     check("externally reported result supports Decision-to-Lightweight continuation",
           follow["pipeline"]=="slice.lightweight-tdd-development" and follow["execution_claimed"] is False,
           {"slice_id":follow["id"],"source_result_id":result["id"]})
-    blocked_payload=ok(call,"command","slice.result.record",{
+    probe_runs = {}
+    for kind in probe_kinds:
+        candidate = next(node for node in final["draft"]["nodes"] if node.get("pipeline") == kind
+                         and node.get("id") != debug["id"])
+        probe = variant(ok(call,"command","slice.open",open_params(final,candidate)),"created")
+        explicit_mode = "whole" if kind == "slice.research-to-durable-knowledge" else None
+        begun_probe = ok(call,"command","slice.pipeline.begin",pipeline_execution.begin_params(
+            final["scope"]["id"],probe["id"],probe["revision"],delivery_mode=explicit_mode,
+            qualification_reason="Bounded native delivery inspection; no semantic execution claim."))
+        probe_context = pipeline_execution.outcome(begun_probe,"created")
+        assert_exact_pipeline_delivery(probe_context,kind,check)
+        probe_runs[kind] = probe_context["run"]["id"]
+    begun=ok(call,"command","slice.pipeline.begin",pipeline_execution.begin_params(
+        final["scope"]["id"],follow["id"],follow["revision"]))
+    context=pipeline_execution.outcome(begun,"created")
+    pipeline_execution.assert_lightweight_whole_context(context,check)
+    bypass, bypass_failed=call("command",{"route":"slice.result.record","params":{
         "request_id":str(uuid.uuid4()),"scope_id":final["scope"]["id"],"slice_id":follow["id"],
-        "slice_revision":follow["revision"],"outcome":"blocked","summary":"Caller reports a bounded blocker.",
+        "slice_revision":follow["revision"],"outcome":"blocked","summary":"Managed bypass attempt.",
+        "evidence":[{"kind":"fixture_observation","reference":"managed guard",
+                     "observation":"Legacy result recording is rejected for a managed run."}],
+        "scope_impact":"None.","remaining_work":"Use the managed run."}})
+    check("managed Lightweight run rejects legacy Result bypass",
+          bypass_failed and bypass.get("error",{}).get("code")=="forbidden",
+          {"error_code":bypass.get("error",{}).get("code")})
+
+    first=ok(call,"command","slice.pipeline.phase.complete",
+             pipeline_execution.completion_params(context))
+    context=first["context"]
+    escalated=ok(call,"command","slice.pipeline.delivery.escalate",{
+        "request_id":str(uuid.uuid4()),"run_id":context["run"]["id"],
+        "run_revision":context["run"]["revision"],"phase_id":context["run"]["current_phase_id"],
+        "reason":"The remaining isolated acceptance is inspected one phase at a time."})
+    context=escalated["context"]
+    check("whole-to-phasewise escalation resumes at the first unfinished phase",
+          context["run"]["delivery_mode"]=="phasewise"
+          and context["run"]["current_phase_ordinal"]==2
+          and len(context["delivered_phases"])==1,
+          {"current_phase":context["run"]["current_phase_id"]})
+
+    waiting=ok(call,"command","slice.pipeline.phase.complete",
+               pipeline_execution.completion_params(context,outcome_name="waiting_input"))
+    context=waiting["context"]
+    supplied=ok(call,"command","slice.pipeline.input",{
+        "request_id":str(uuid.uuid4()),"run_id":context["run"]["id"],
+        "run_revision":context["run"]["revision"],"phase_id":context["run"]["current_phase_id"],
+        "input":"Owned fixture supplies bounded resume context without changing authority."})
+    context=supplied["context"]
+    resumed=ok(call,"command","slice.pipeline.phase.complete",
+               pipeline_execution.completion_params(context))
+    context=resumed["context"]
+    while context["run"]["current_phase_ordinal"] < 14:
+        context=ok(call,"command","slice.pipeline.phase.complete",
+                   pipeline_execution.completion_params(context))["context"]
+
+    terminal_result={
+        "summary":"Caller reports the final Lightweight phase temporarily blocked.",
         "evidence":[{"kind":"fixture_observation","reference":"native deterministic API call sequence",
-                     "observation":"A blocked external result was accepted once."}],
-        "scope_impact":"Future correction work requires review.","remaining_work":"Refresh the affected plan."})
-    blocked=variant(blocked_payload,"created")
-    offered_refresh=action_params(blocked_payload,"slice.candidates.refresh")
-    check("a blocked external result leads to refresh instead of another result prompt",
-          blocked["result"]["outcome"]=="blocked"
-          and offered_refresh["candidate_set_id"]==final["candidate_set"]["id"]
-          and all(a.get("arguments",{}).get("route")!="slice.result.record"
-                  for a in blocked_payload.get("actions",[])),
-          {"result_id":blocked["result"]["id"],"next_route":"slice.candidates.refresh"})
-    blocked_slice=ok(call,"query","slice.context",{"slice_id":follow["id"]})
-    completed_payload=ok(call,"command","slice.result.record",{
-        "request_id":str(uuid.uuid4()),"scope_id":final["scope"]["id"],"slice_id":follow["id"],
-        "slice_revision":blocked_slice["revision"],"outcome":"completed",
-        "summary":"Caller reports the bounded blocker resolved and correction complete.",
-        "evidence":[{"kind":"fixture_observation","reference":"native deterministic API call sequence",
-                     "observation":"A later external result completed the previously blocked Slice."}],
-        "scope_impact":"The bounded correction is complete.","remaining_work":"None for this Slice."})
-    completed=variant(completed_payload,"created")
+                     "observation":"A managed blocked Result was explicitly requested."}],
+        "scope_impact":"Future planning receives the reported blocker.",
+        "remaining_work":"Supply resume evidence and finish the final phase.",
+    }
+    blocked_payload=ok(call,"command","slice.pipeline.phase.complete",
+        pipeline_execution.completion_params(context,outcome_name="blocked",transition="block",
+            terminal_result=terminal_result,publish_blocked_result=True))
+    blocked=blocked_payload["result"]; context=blocked_payload["context"]
+    context=ok(call,"command","slice.pipeline.input",{
+        "request_id":str(uuid.uuid4()),"run_id":context["run"]["id"],
+        "run_revision":context["run"]["revision"],"phase_id":context["run"]["current_phase_id"],
+        "input":"Owned fixture reports that the final blocker is resolved."})["context"]
+    terminal_result["summary"]="Caller reports the managed Lightweight Slice complete."
+    terminal_result["remaining_work"]="None for this Slice."
+    completed_payload=ok(call,"command","slice.pipeline.phase.complete",
+        pipeline_execution.completion_params(context,transition="complete",terminal_result=terminal_result))
+    completed=completed_payload["result"]
     terminal=ok(call,"query","slice.context",{"slice_id":follow["id"]})
     results=ok(call,"query","slice.candidates.context",{
         "scope_id":final["scope"]["id"],"view":"results","limit":25})
@@ -253,14 +357,15 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
                      "observation":"A second completion attempt is rejected."}],
         "scope_impact":"None.","remaining_work":"None."}})
     check("a blocked Slice accepts a later externally reported result with durable history, then becomes terminal",
-          completed["result"]["outcome"]=="completed"
-          and completed["result"]["slice_revision"]==blocked_slice["revision"]
-          and terminal["state"]=="completed" and terminal["revision"]==blocked_slice["revision"]+1
-          and {blocked["result"]["id"],completed["result"]["id"]}.issubset(result_ids)
+          completed["outcome"]=="completed" and completed["provenance"]=="externally_reported"
+          and completed["pipeline_run_id"]==context["run"]["id"]
+          and terminal["state"]=="completed"
+          and {blocked["id"],completed["id"]}.issubset(result_ids)
           and terminal_failed and terminal_attempt.get("error",{}).get("code")=="forbidden",
-          {"blocked_result_id":blocked["result"]["id"],
-           "completed_result_id":completed["result"]["id"],"terminal_revision":terminal["revision"]})
+          {"blocked_result_id":blocked["id"],
+           "completed_result_id":completed["id"],"terminal_revision":terminal["revision"]})
     return {"scope_id":created["scope"]["id"],"debug_slice_id":slice_["id"],
         "result_id":result["id"],"followup_slice_id":follow["id"],"pipeline_ids":sorted(ids),
         "rule_ids":sorted(rule_ids),"result_provenance":result["provenance"],
-        "claim_boundary":"Proves native API persistence, replay, freshness and branch mechanics; does not prove pipeline execution or independent verification of supplied evidence."}
+        "pipeline_probe_run_ids":probe_runs,
+        "claim_boundary":"Proves native API persistence, exact pipeline delivery, durable managed transitions and structural receipt enforcement; caller-supplied fixture evidence does not prove independent semantic verification."}

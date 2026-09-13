@@ -67,11 +67,24 @@ pub(crate) async fn summaries(
         let slices_needing_result = context
             .slices
             .iter()
-            .filter(|slice| slice.state == SliceState::Open)
+            .filter(|slice| slice.state == SliceState::Open && slice.pipeline_run_id.is_none())
             .map(|slice| NativeSliceSummary {
                 slice_id: slice.id,
                 slice_revision: slice.revision,
                 state: slice.state,
+            })
+            .collect();
+        let pipeline_runs = context
+            .slices
+            .iter()
+            .filter_map(|slice| {
+                slice
+                    .pipeline_run_id
+                    .map(|run_id| NativePipelineRunSummary {
+                        run_id,
+                        slice_id: slice.id,
+                        status: slice.pipeline_status.clone(),
+                    })
             })
             .collect();
         summaries.push(NativePlanningSummary {
@@ -84,6 +97,7 @@ pub(crate) async fn summaries(
             stale: !fresh,
             eligible_work,
             slices_needing_result,
+            pipeline_runs,
         });
     }
     Ok(summaries)
@@ -209,7 +223,7 @@ async fn load_slices(
     workspace: Uuid,
     scope: Uuid,
 ) -> Result<Vec<NativeSlice>> {
-    let rows:Vec<(Uuid,i64,Uuid,i64,Uuid,String,String,String,String)>=sqlx::query_as("SELECT id,revision,candidate_id,candidate_revision,opening_snapshot_id,title,outcome,pipeline,state FROM native_slices WHERE tenant_id=$1 AND workspace_id=$2 AND scope_id=$3 ORDER BY created_at,id")
+    let rows:Vec<(Uuid,i64,Uuid,i64,Uuid,String,String,String,String,Option<Uuid>,Option<String>)>=sqlx::query_as("SELECT s.id,s.revision,s.candidate_id,s.candidate_revision,s.opening_snapshot_id,s.title,s.outcome,s.pipeline,s.state,r.id,r.status FROM native_slices s LEFT JOIN slice_pipeline_runs r ON r.tenant_id=s.tenant_id AND r.workspace_id=s.workspace_id AND r.slice_id=s.id WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.scope_id=$3 ORDER BY s.created_at,s.id")
         .bind(tenant).bind(workspace).bind(scope).fetch_all(&mut **tx).await.map_err(storage_error)?;
     rows.into_iter()
         .map(|r| {
@@ -224,7 +238,8 @@ async fn load_slices(
                 outcome: r.6,
                 pipeline: pipeline(&r.7)?,
                 state: slice_state(&r.8)?,
-                pipeline_status: "stub".into(),
+                pipeline_status: r.10.unwrap_or_else(|| "not_started".into()),
+                pipeline_run_id: r.9,
                 execution_claimed: false,
             })
         })
@@ -238,7 +253,7 @@ pub(crate) async fn load_slice(
     workspace: Uuid,
     id: Uuid,
 ) -> Result<Option<NativeSlice>> {
-    let row:Option<(Uuid,Uuid,i64,Uuid,i64,Uuid,String,String,String,String)>=sqlx::query_as("SELECT id,scope_id,revision,candidate_id,candidate_revision,opening_snapshot_id,title,outcome,pipeline,state FROM native_slices WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
+    let row:Option<(Uuid,Uuid,i64,Uuid,i64,Uuid,String,String,String,String,Option<Uuid>,Option<String>)>=sqlx::query_as("SELECT s.id,s.scope_id,s.revision,s.candidate_id,s.candidate_revision,s.opening_snapshot_id,s.title,s.outcome,s.pipeline,s.state,r.id,r.status FROM native_slices s LEFT JOIN slice_pipeline_runs r ON r.tenant_id=s.tenant_id AND r.workspace_id=s.workspace_id AND r.slice_id=s.id WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.id=$3")
         .bind(tenant).bind(workspace).bind(id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     row.map(|r| {
         Ok(NativeSlice {
@@ -252,7 +267,8 @@ pub(crate) async fn load_slice(
             outcome: r.7,
             pipeline: pipeline(&r.8)?,
             state: slice_state(&r.9)?,
-            pipeline_status: "stub".into(),
+            pipeline_status: r.11.unwrap_or_else(|| "not_started".into()),
+            pipeline_run_id: r.10,
             execution_claimed: false,
         })
     })
@@ -266,7 +282,7 @@ async fn load_results(
     workspace: Uuid,
     scope: Uuid,
 ) -> Result<Vec<SliceResult>> {
-    let rows:Vec<(Uuid,Uuid,i64,i64,String,String,serde_json::Value,String,String,String)>=sqlx::query_as("SELECT id,slice_id,slice_revision,revision,outcome,summary,evidence,scope_impact,remaining_work,provenance FROM slice_results WHERE tenant_id=$1 AND workspace_id=$2 AND scope_id=$3 ORDER BY created_at,id")
+    let rows:Vec<(Uuid,Uuid,i64,i64,String,String,serde_json::Value,String,String,String,Option<Uuid>,Option<String>,Option<String>,Option<Uuid>,Option<String>)>=sqlx::query_as("SELECT id,slice_id,slice_revision,revision,outcome,summary,evidence,scope_impact,remaining_work,provenance,pipeline_run_id,pipeline_definition_version,pipeline_definition_digest,pipeline_final_attempt_id,pipeline_result_origin FROM slice_results WHERE tenant_id=$1 AND workspace_id=$2 AND scope_id=$3 ORDER BY created_at,id")
         .bind(tenant).bind(workspace).bind(scope).fetch_all(&mut **tx).await.map_err(storage_error)?;
     rows.into_iter()
         .map(|r| {
@@ -281,6 +297,11 @@ async fn load_results(
                 scope_impact: r.7,
                 remaining_work: r.8,
                 provenance: r.9,
+                pipeline_run_id: r.10,
+                pipeline_definition_version: r.11,
+                pipeline_definition_digest: r.12,
+                pipeline_final_attempt_id: r.13,
+                pipeline_result_origin: r.14,
             })
         })
         .collect()

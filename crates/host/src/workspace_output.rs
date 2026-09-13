@@ -88,6 +88,12 @@ fn actions(
 
 fn native_actions(summary: &NativePlanningSummary) -> Result<Vec<Value>> {
     let mut calls = Vec::new();
+    for run in &summary.pipeline_runs {
+        calls.push(crate::api::ready_action(
+            "slice_pipeline_context",
+            json!({"run_id":run.run_id}),
+        )?);
+    }
     if summary.stale {
         calls.push(crate::api::ready_action(
             "refresh_slice_candidate_set",
@@ -238,7 +244,9 @@ fn next(programs: &[ProgramSummary], more: bool, original: &Option<String>) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tect_domain::{NativeSliceSummary, NativeWorkCandidateSummary, SliceState};
+    use tect_domain::{
+        NativePipelineRunSummary, NativeSliceSummary, NativeWorkCandidateSummary, SliceState,
+    };
 
     fn summary() -> NativePlanningSummary {
         NativePlanningSummary {
@@ -254,11 +262,12 @@ mod tests {
                 candidate_revision: 1,
             }],
             slices_needing_result: Vec::new(),
+            pipeline_runs: Vec::new(),
         }
     }
 
     #[test]
-    fn native_state_routes_stale_ready_and_open_slice_without_stub_execution() {
+    fn native_state_routes_stale_ready_and_open_slice_without_claiming_execution() {
         let ready = native_actions(&summary()).unwrap();
         assert_eq!(ready[0]["arguments"]["route"], "slice.open");
         assert!(ready.iter().all(|action| {
@@ -299,6 +308,28 @@ mod tests {
         assert_eq!(
             blocked_actions[0]["arguments"]["route"],
             "slice.candidates.context"
+        );
+
+        let mut managed = summary();
+        managed.eligible_work.clear();
+        managed.pipeline_runs.push(NativePipelineRunSummary {
+            run_id: Uuid::new_v4(),
+            slice_id: Uuid::new_v4(),
+            status: "blocked".into(),
+        });
+        assert_eq!(
+            native_actions(&managed).unwrap()[0]["arguments"]["route"],
+            "slice.pipeline.context"
+        );
+        managed.stale = true;
+        let stale_managed = native_actions(&managed).unwrap();
+        assert_eq!(
+            stale_managed[0]["arguments"]["route"],
+            "slice.pipeline.context"
+        );
+        assert_eq!(
+            stale_managed[1]["arguments"]["route"],
+            "slice.candidates.refresh"
         );
     }
 }

@@ -1,0 +1,46 @@
+{
+  "step_id": "slice-workspace-preflight",
+  "step_type": "service",
+  "title": "Workspace and provenance preflight",
+  "required": true,
+  "invokes": [
+    {
+      "kind": "service",
+      "ref": "workspace-map-service"
+    },
+    {
+      "kind": "service",
+      "ref": "git-worktree-read-only-service"
+    }
+  ],
+  "produces": [
+    "workspace-preflight.md"
+  ],
+  "receipt_contract": {
+    "artifact": "workspace-preflight.md",
+    "required_fields": [
+      "repository_identity:",
+      "remote_relation:",
+      "dirty_state_classification:",
+      "isolation_decision:",
+      "source_generation_freshness:",
+      "authority_decision:",
+      "dependency_readiness:",
+      "cleanup_obligations:"
+    ],
+    "success_attestation": "preflight_receipt_complete: true"
+  },
+  "gates": [
+    "freshness_gate",
+    "authority_gate"
+  ],
+  "on_failure": [
+    "block false completion",
+    "record missing proof or authority",
+    "handoff or create follow-up Slice when target changes materially"
+  ],
+  "terminal_states": [
+    "blocked_missing_current_state",
+    "preflight_ready"
+  ]
+}

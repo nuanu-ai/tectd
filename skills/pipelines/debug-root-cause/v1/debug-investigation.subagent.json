@@ -1,0 +1,176 @@
+{
+  "generated_by": "tect-layer6-iteration15",
+  "generated_at": "2026-06-24",
+  "canonical_status": "source_shard",
+  "shard": "capabilities/subagents/debug-investigation.subagent.json",
+  "shard_kind": "subagent_template",
+  "row_count": 1,
+  "unresolved_count": 0,
+  "atom_ids": [
+    "subagent.debug_investigation"
+  ],
+  "classes": {
+    "subagent_template": 1
+  },
+  "coverage_statuses": {
+    "mapped": 1
+  },
+  "public_surfaces": [
+    "tect-work"
+  ],
+  "canonical_ledger_refs": [
+    "capabilities/ledger/runtime.jsonl"
+  ],
+  "source_reports": [
+    "layer-6-iteration-15-prepared-subagent-template-family"
+  ],
+  "atoms": [
+    {
+      "atom_id": "subagent.debug_investigation",
+      "atom_class": "subagent_template",
+      "normalized_name": "debug-investigation subagent template",
+      "coverage_status": "mapped",
+      "review_status": "accepted",
+      "public_surfaces": [
+        "tect-work"
+      ],
+      "callers_or_triggers": [
+        "manifest subagent_template_refs"
+      ],
+      "inputs": [
+        "bug or failure statement",
+        "reproduction evidence",
+        "scope boundary",
+        "forbidden mutation list"
+      ],
+      "outputs": [
+        "observations",
+        "root-cause candidates",
+        "evidence refs",
+        "next verification step",
+        "blocked unknowns"
+      ],
+      "storage_owner": "plugin_package",
+      "proof_relationship": "produces",
+      "authority_boundary": "proposal_only",
+      "tools": [],
+      "validators": [
+        "tools/validate-prepared-subagent-templates.mjs"
+      ],
+      "subagent_templates": [],
+      "terminal_states": [
+        "reported",
+        "blocked",
+        "needs_review"
+      ],
+      "fallback_or_repair": "Main thread/controller performs fan-in and decides next action.",
+      "source_refs": [],
+      "notes": "Created by Layer 6 Iteration 15 from manifest template ref."
+    }
+  ],
+  "implementation_status": "prepared_template",
+  "template_id": "debug-investigation",
+  "template_status": "prepared_not_executed",
+  "prepared_template_contract": {
+    "schema_version": "0.1.0",
+    "template_id": "debug-investigation",
+    "template_file": "capabilities/subagents/debug-investigation.subagent.json",
+    "template_status": "prepared_not_executed",
+    "source_kind": "manifest_ref_created",
+    "manifest_refs": [
+      "capabilities/pipelines/slice-variants/debug-root-cause.pipeline.json#subagent_template_refs.debug-investigation.subagent.json"
+    ],
+    "architecture_anchors": [
+      "docs/architecture/master-plugin-target-architecture-part-6b-spine-operational-pipelines.html#debug-root-cause-slice-variant",
+      "docs/architecture/master-plugin-target-architecture-final-whole-plugin-map.html#s17"
+    ],
+    "input_contract": {
+      "required": [
+        "bug or failure statement",
+        "reproduction evidence",
+        "scope boundary",
+        "forbidden mutation list"
+      ],
+      "optional": [
+        "prior result packet",
+        "focused source excerpts",
+        "known blockers"
+      ],
+      "forbidden": [
+        "unbounded workspace scan",
+        "secret values",
+        "implicit approval",
+        "instructions to mutate source"
+      ]
+    },
+    "output_contract": {
+      "required": [
+        "observations",
+        "root-cause candidates",
+        "evidence refs",
+        "next verification step",
+        "blocked unknowns"
+      ],
+      "optional": [
+        "confidence",
+        "follow-up questions"
+      ],
+      "forbidden": [
+        "completion claim",
+        "source mutation claim",
+        "workspace write claim",
+        "runtime dispatch result",
+        "unverified proof",
+        "approval bypass"
+      ]
+    },
+    "fan_in_contract": {
+      "controller_review_required": true,
+      "sequential_fan_in_required": true,
+      "parallel_dispatch_allowed_by_template": false,
+      "accepted_terminal_states": [
+        "reported",
+        "blocked",
+        "needs_review"
+      ],
+      "blocked_terminal_states": [
+        "executed",
+        "mutated",
+        "approved_without_controller",
+        "claimed_complete"
+      ],
+      "forbidden_claims": [
+        "I completed the parent pipeline",
+        "I mutated the workspace",
+        "I approved promotion",
+        "I executed deployment"
+      ]
+    },
+    "execution_boundary": {
+      "pipeline_execution_allowed": false,
+      "active_pipeline_state_persistence_allowed": false,
+      "real_workspace_write_allowed": false,
+      "durable_domain_write_allowed": false,
+      "source_repo_mutation_allowed": false,
+      "worktree_mutation_allowed": false,
+      "branch_mutation_allowed": false,
+      "package_execution_allowed": false,
+      "migration_execution_allowed": false,
+      "deployment_execution_allowed": false,
+      "maintenance_execution_allowed": false,
+      "adoption_execution_allowed": false,
+      "team_merge_allowed": false,
+      "live_system_command_allowed": false
+    },
+    "validator_coverage": [
+      "tools/validate-prepared-subagent-templates.mjs",
+      "capabilities/contracts/prepared-subagent-template.schema.json",
+      "capabilities/registry/prepared-subagent-templates.json"
+    ]
+  },
+  "validator_coverage": [
+    "tools/validate-prepared-subagent-templates.mjs",
+    "capabilities/contracts/prepared-subagent-template.schema.json",
+    "capabilities/registry/prepared-subagent-templates.json"
+  ]
+}

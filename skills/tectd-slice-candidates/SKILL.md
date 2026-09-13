@@ -9,9 +9,9 @@ Design one complete initial set of Slice candidates for an opened Scope. This me
 
 ## Use the backend-owned contract
 
-Use the exact routes, schemas, identifiers, revisions, context versions, and next actions supplied by TectD. The backend owns persistence, stable identity, revision history, structural graph validation, context freshness, and authorization checks. The agent owns semantic coverage, candidate boundaries, pipeline classification, dependencies, review, and later plan revision. Descriptive pipeline stubs are provisional planning labels; they are not executable workflows or final pipeline contracts.
+Use the exact routes, schemas, identifiers, revisions, context versions, and next actions supplied by TectD. The backend owns persistence, stable identity, revision history, structural graph validation, context freshness, and authorization checks. The agent owns semantic coverage, candidate boundaries, pipeline classification, dependencies, review, and later plan revision. Catalogue entries describe executable versioned pipelines, but candidate planning does not start a run.
 
-Read the complete method, all four matched rules, the complete provisional pipeline catalogue, and every required context page before drafting or reviewing. Preserve supplied durable identifiers. Use temporary local labels only within one draft payload and copy backend-assigned identifiers from its response.
+Read the complete method, all four matched rules, the complete pipeline catalogue, and every required context page before drafting or reviewing. Preserve supplied durable identifiers. Use temporary local labels only within one draft payload and copy backend-assigned identifiers from its response.
 
 ## Initial complete pass
 
@@ -25,7 +25,7 @@ Choose a pipeline from evidence about the candidate outcome. Use `slice.lightwei
 
 Use `slice.full-design-to-execution` only for an intrinsically complex or large indivisible vertical outcome. Record why Lightweight is insufficient and why further sensible vertical decomposition cannot produce independently deliverable outcomes. Full is not a generic fallback. Consider Debug when the cause of a behavioral deviation is unknown, and Custom Procedure Capture when the explicitly requested outcome is a reusable procedure; do not hide either behind Full.
 
-Apply each provisional stub's `choose_when`, `do_not_choose_when`, and `expected_result`. Do not infer executable stages or claim the selected stub is implemented.
+Apply each catalogue entry's `choose_when`, `do_not_choose_when`, and `expected_result`. Selecting a pipeline for a candidate is planning evidence; it does not prove that a run has begun or completed.
 
 ## Review and continuation
 
@@ -33,4 +33,4 @@ Review the complete set against the opened Scope, captured input, existing Slice
 
 After a Slice Result, refresh and review the affected future graph even when the selected branch leaves its candidates unchanged. Revise, reorder, add, or supersede future candidates as evidence requires, recording the predecessor evidence and rationale. Preserve stable identities and history; do not silently rewrite opened, running, or completed work. An externally reported result is an observation and evidence record, not proof that TectD executed a pipeline.
 
-Opening an already designed work candidate creates one Slice with that candidate's one chosen pipeline and bounded outcome. Do not inject this design method or the four candidate-design rules into Slice opening or Slice context. Do not advertise a start or execute action for provisional pipeline stubs.
+Opening an already designed work candidate creates one Slice with that candidate's one chosen pipeline and bounded outcome. Do not inject this design method or the four candidate-design rules into Slice opening or Slice context. Use only the backend-supplied managed-run action after opening; do not treat Slice opening itself as pipeline execution.

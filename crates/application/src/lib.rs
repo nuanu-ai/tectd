@@ -19,6 +19,9 @@ mod native_planning_ports;
 mod scope_candidates;
 pub use native_planning_ports::{NativePlanningGuidance, NativePlanningStore};
 mod native_planning;
+mod pipeline_execution;
+mod pipeline_execution_ports;
+pub use pipeline_execution_ports::{PipelineDefinitionProvider, PipelineExecutionStore};
 
 mod setup_access;
 mod setup_apply;

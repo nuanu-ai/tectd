@@ -2,6 +2,8 @@
 pub mod admin;
 mod native_planning;
 mod native_planning_store;
+mod pipeline_execution;
+mod pipeline_execution_store;
 mod programs;
 mod runtime;
 mod scope_candidate_store;

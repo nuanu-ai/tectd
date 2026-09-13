@@ -67,15 +67,22 @@ const PIPELINES: [SlicePipelineStub; 7] = [
 pub(crate) fn snapshot() -> PipelineCatalogueSnapshot {
     let entries = PIPELINES
         .iter()
-        .map(|pipeline| PipelineCatalogueEntry {
-            kind: pipeline.kind,
-            description: pipeline.description.into(),
-            implementation_status: "stub".into(),
-            description_status: "provisional".into(),
-            refinement_required: true,
-            choose_when: pipeline.choose_when.into(),
-            do_not_choose_when: pipeline.do_not_choose_when.into(),
-            expected_result: pipeline.expected_result.into(),
+        .map(|pipeline| {
+            let modes = crate::pipeline_definitions::delivery_modes(pipeline.kind);
+            let executable = modes.is_some();
+            PipelineCatalogueEntry {
+                kind: pipeline.kind,
+                description: pipeline.description.into(),
+                implementation_status: if executable { "executable" } else { "stub" }.into(),
+                description_status: if executable { "refined" } else { "provisional" }.into(),
+                refinement_required: !executable,
+                choose_when: pipeline.choose_when.into(),
+                do_not_choose_when: pipeline.do_not_choose_when.into(),
+                expected_result: pipeline.expected_result.into(),
+                executable,
+                default_delivery_mode: modes.as_ref().map(|(default, _)| *default),
+                allowed_delivery_modes: modes.map_or_else(Vec::new, |(_, allowed)| allowed),
+            }
         })
         .collect::<Vec<_>>();
     let digest = digest_entries(&entries);
@@ -88,13 +95,19 @@ pub(crate) fn snapshot() -> PipelineCatalogueSnapshot {
 
 pub(crate) fn value() -> Value {
     let snapshot = snapshot();
+    let executable_count = snapshot
+        .entries
+        .iter()
+        .filter(|entry| entry.executable)
+        .count();
     json!({
         "revision": snapshot.revision,
         "digest": snapshot.digest,
-        "implementation_status": "stub",
-        "description_status": "provisional",
-        "refinement_required": true,
-        "executable": false,
+        "implementation_status": if executable_count == snapshot.entries.len() { "executable" } else { "partial" },
+        "description_status": if executable_count == snapshot.entries.len() { "refined" } else { "partial" },
+        "refinement_required": executable_count != snapshot.entries.len(),
+        "executable": executable_count > 0,
+        "executable_count": executable_count,
         "pipelines": snapshot.entries,
     })
 }
@@ -112,7 +125,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn catalogue_contains_only_seven_distinct_provisional_stubs() {
+    fn catalogue_contains_seven_executable_pipelines_and_no_retired_aliases() {
         let snapshot = snapshot();
         let ids = snapshot
             .entries
@@ -122,13 +135,36 @@ mod tests {
         assert_eq!(ids.len(), 7);
         assert!(!ids.contains("slice.hybrid-implementation-operation"));
         assert!(!ids.contains("slice.research-to-durable-kb"));
+        assert_eq!(
+            snapshot
+                .entries
+                .iter()
+                .filter(|pipeline| pipeline.executable)
+                .count(),
+            7
+        );
+        let lightweight = snapshot
+            .entries
+            .iter()
+            .find(|pipeline| pipeline.kind == PipelineKind::LightweightTddDevelopment)
+            .unwrap();
+        assert_eq!(lightweight.implementation_status, "executable");
+        assert_eq!(lightweight.description_status, "refined");
+        assert!(!lightweight.refinement_required);
+        assert!(lightweight.default_delivery_mode.is_some());
+        assert_eq!(lightweight.allowed_delivery_modes.len(), 2);
         assert!(snapshot.entries.iter().all(|pipeline| {
-            pipeline.implementation_status == "stub"
-                && pipeline.description_status == "provisional"
-                && pipeline.refinement_required
+            pipeline.executable
+                && pipeline.implementation_status == "executable"
+                && pipeline.description_status == "refined"
+                && !pipeline.refinement_required
         }));
         let catalog = value();
-        assert_eq!(catalog["executable"], false);
+        assert_eq!(catalog["executable"], true);
+        assert_eq!(catalog["executable_count"], 7);
+        assert_eq!(catalog["implementation_status"], "executable");
+        assert_eq!(catalog["description_status"], "refined");
+        assert_eq!(catalog["refinement_required"], false);
         assert!(catalog.get("stages").is_none());
     }
 }

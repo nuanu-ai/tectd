@@ -61,7 +61,8 @@ async fn native_scope_slice_result_replans_and_recovers() {
 
     let pipelines = route(&mut client, "query", "slice.pipelines", json!({})).await;
     assert_eq!(pipelines["pipelines"].as_array().unwrap().len(), 7);
-    assert_eq!(pipelines["executable"], false);
+    assert_eq!(pipelines["executable"], true);
+    assert_eq!(pipelines["executable_count"], 7);
     assert!(
         !pipelines
             .to_string()
@@ -141,7 +142,7 @@ async fn native_scope_slice_result_replans_and_recovers() {
     let open_request = open_slice(&reviewed, &debug, Uuid::new_v4());
     let slice_opened = route(&mut client, "command", "slice.open", open_request.clone()).await;
     let slice = &slice_opened["created"];
-    assert_eq!(slice["pipeline_status"], "stub");
+    assert_eq!(slice["pipeline_status"], "not_started");
     assert_eq!(slice["execution_claimed"], false);
     assert!(
         slice_opened["actions"]

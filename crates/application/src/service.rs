@@ -93,6 +93,7 @@ impl WorkspaceService {
                         "slice_open"
                     }
                     _ if !native.slices_needing_result.is_empty() => "slice_result_record",
+                    _ if !native.pipeline_runs.is_empty() => "slice_pipeline_context",
                     _ => "slice_candidate_context",
                 }
             } else if !state.candidate_sets.is_empty() {

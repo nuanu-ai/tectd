@@ -1,4 +1,4 @@
-use crate::{Error, Result};
+use crate::{Error, PipelineDeliveryMode, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -61,6 +61,12 @@ pub struct PipelineCatalogueEntry {
     pub choose_when: String,
     pub do_not_choose_when: String,
     pub expected_result: String,
+    #[serde(default)]
+    pub executable: bool,
+    #[serde(default)]
+    pub default_delivery_mode: Option<PipelineDeliveryMode>,
+    #[serde(default)]
+    pub allowed_delivery_modes: Vec<PipelineDeliveryMode>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -81,9 +87,17 @@ impl PipelineCatalogueSnapshot {
         if kinds.len() != 7
             || self.entries.iter().any(|e| {
                 e.description.trim().is_empty()
-                    || e.implementation_status != "stub"
-                    || e.description_status != "provisional"
-                    || !e.refinement_required
+                    || !matches!(e.implementation_status.as_str(), "stub" | "executable")
+                    || !matches!(e.description_status.as_str(), "provisional" | "refined")
+                    || e.executable != (e.implementation_status == "executable")
+                    || e.executable != (e.description_status == "refined")
+                    || e.refinement_required == e.executable
+                    || e.executable
+                        && (e.default_delivery_mode.is_none()
+                            || e.allowed_delivery_modes.is_empty()
+                            || !e
+                                .allowed_delivery_modes
+                                .contains(e.default_delivery_mode.as_ref().expect("checked")))
                     || e.choose_when.trim().is_empty()
                     || e.do_not_choose_when.trim().is_empty()
                     || e.expected_result.trim().is_empty()

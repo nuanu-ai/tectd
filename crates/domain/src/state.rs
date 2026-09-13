@@ -61,6 +61,13 @@ pub struct NativeSliceSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativePipelineRunSummary {
+    pub run_id: Uuid,
+    pub slice_id: Uuid,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativePlanningSummary {
     pub scope_id: Uuid,
     pub scope_revision: i64,
@@ -71,6 +78,7 @@ pub struct NativePlanningSummary {
     pub stale: bool,
     pub eligible_work: Vec<NativeWorkCandidateSummary>,
     pub slices_needing_result: Vec<NativeSliceSummary>,
+    pub pipeline_runs: Vec<NativePipelineRunSummary>,
 }
 
 impl WorkspaceState {

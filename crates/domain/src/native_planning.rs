@@ -410,6 +410,8 @@ pub struct NativeSlice {
     pub pipeline: PipelineKind,
     pub state: SliceState,
     pub pipeline_status: String,
+    #[serde(default)]
+    pub pipeline_run_id: Option<Uuid>,
     pub execution_claimed: bool,
 }
 
@@ -460,6 +462,11 @@ pub struct SliceResult {
     pub scope_impact: String,
     pub remaining_work: String,
     pub provenance: String,
+    pub pipeline_run_id: Option<Uuid>,
+    pub pipeline_definition_version: Option<String>,
+    pub pipeline_definition_digest: Option<String>,
+    pub pipeline_final_attempt_id: Option<Uuid>,
+    pub pipeline_result_origin: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

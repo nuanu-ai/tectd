@@ -39,8 +39,8 @@ first Slice, an `externally_reported` result makes the old plan stale, and a ref
 resolves the decision into a reviewed Lightweight successor. A blocked successor then accepts a
 later result at its exact incremented revision, retains both results in history, and becomes
 terminal when completed. This proves five-tool persistence, freshness, history and branching
-mechanics. It does not claim that TectD executed either
-provisional pipeline or independently verified caller-supplied evidence.
+mechanics. It does not claim that TectD executed either selected pipeline or
+independently verified caller-supplied evidence.
 
 Add `--model-turn` only for the separately authorized fresh native model smoke. Use
 `--postgres-bin /absolute/postgresql-18/bin` when PostgreSQL is elsewhere. `--keep-fixture`

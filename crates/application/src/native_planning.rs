@@ -9,7 +9,7 @@ use tect_domain::{
 };
 
 impl WorkspaceService {
-    async fn native_planning_transaction(
+    pub(crate) async fn native_planning_transaction(
         &self,
         context: &tect_domain::RequestContext,
         mode: TransactionMode,

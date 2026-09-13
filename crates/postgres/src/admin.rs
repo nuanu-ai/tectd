@@ -55,7 +55,10 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
                          'native_scopes', 'slice_candidate_sets', 'slice_planning_inputs',
                          'slice_planning_snapshots', 'slice_candidate_drafts',
                          'slice_candidate_reviews', 'native_slices', 'slice_results',
-                         'native_planning_receipts'
+                         'native_planning_receipts', 'slice_pipeline_runs',
+                         'slice_pipeline_phase_attempts', 'slice_pipeline_phase_outputs',
+                         'slice_pipeline_output_bindings', 'slice_pipeline_inputs',
+                         'slice_pipeline_receipts'
                      )
                      AND pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER')
                ) OR EXISTS (
@@ -117,7 +120,9 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
         format!(
             "REVOKE ALL PRIVILEGES ON TABLE native_scopes, slice_candidate_sets, \
              slice_planning_inputs, slice_planning_snapshots, slice_candidate_drafts, \
-             slice_candidate_reviews, native_slices, slice_results, native_planning_receipts \
+             slice_candidate_reviews, native_slices, slice_results, native_planning_receipts, \
+             slice_pipeline_runs, slice_pipeline_phase_attempts, slice_pipeline_phase_outputs, \
+             slice_pipeline_output_bindings, slice_pipeline_inputs, slice_pipeline_receipts \
              FROM {quoted_role}"
         ),
         format!(
@@ -128,6 +133,19 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
             "GRANT SELECT, INSERT ON TABLE slice_planning_inputs, slice_planning_snapshots, \
              slice_candidate_drafts, slice_candidate_reviews, native_planning_receipts \
              TO {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT, UPDATE ON TABLE slice_pipeline_runs, \
+             slice_pipeline_output_bindings TO {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT ON TABLE slice_pipeline_phase_attempts, \
+             slice_pipeline_phase_outputs, slice_pipeline_inputs, \
+             slice_pipeline_receipts TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE (result_payload) ON TABLE slice_pipeline_phase_attempts, \
+             slice_pipeline_inputs TO {quoted_role}"
         ),
         format!(
             "GRANT EXECUTE ON FUNCTION public.tect_authenticate_host(uuid, text, boolean) TO {quoted_role}"
