@@ -31,6 +31,8 @@ pub(crate) async fn begin(
     request: &BeginPipelineRun,
     definition: &PipelineDefinitionSnapshot,
 ) -> Result<BeginPipelineRunOutcome> {
+    // DK lock order: workspace knowledge state precedes Slice/run locks.
+    let _ = crate::durable_knowledge::lock_state(tx, tenant, workspace).await?;
     let row:Option<(Uuid,i64,String,String)>=sqlx::query_as(
         "SELECT scope_id,revision,pipeline,state FROM native_slices WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
         .bind(tenant).bind(workspace).bind(request.slice_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
@@ -54,6 +56,21 @@ pub(crate) async fn begin(
         .bind(definition.kind.as_str()).bind(&definition.version).bind(&definition.digest).bind(json(definition)?)
         .bind(enum_text(&selected_mode)?).bind(&request.qualification_reason).bind(&first.id).bind(first.ordinal as i32)
         .bind(request.request_id).bind(json(request)?).execute(&mut **tx).await.map_err(storage_error)?;
+    if let Some(manifest) = crate::durable_knowledge::manifest::capture(
+        tx,
+        tenant,
+        workspace,
+        id,
+        1,
+        scope,
+        request.slice_id,
+        &first.id,
+    )
+    .await?
+    {
+        sqlx::query("UPDATE slice_pipeline_runs SET knowledge_manifest_id=$4,knowledge_manifest_digest=$5 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
+            .bind(tenant).bind(workspace).bind(id).bind(manifest.id).bind(&manifest.digest).execute(&mut **tx).await.map_err(storage_error)?;
+    }
     let context = load_context(tx, tenant, workspace, id)
         .await?
         .ok_or(Error::InternalInvariant)?;

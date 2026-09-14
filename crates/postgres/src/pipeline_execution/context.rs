@@ -7,8 +7,8 @@ pub(crate) async fn load_context(
     workspace: Uuid,
     run_id: Uuid,
 ) -> Result<Option<PipelineRunContext>> {
-    let row:Option<(Uuid,Uuid,Uuid,i64,i64,String,String,String,serde_json::Value,String,String,String,Option<String>,Option<i32>)>=sqlx::query_as(
-        "SELECT id,scope_id,slice_id,slice_revision,revision,definition_kind,definition_version,definition_digest,definition,delivery_mode,qualification_reason,status,current_phase_id,current_phase_ordinal FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
+    let row:Option<(Uuid,Uuid,Uuid,i64,i64,String,String,String,serde_json::Value,String,String,String,Option<String>,Option<i32>,Option<Uuid>)>=sqlx::query_as(
+        "SELECT id,scope_id,slice_id,slice_revision,revision,definition_kind,definition_version,definition_digest,definition,delivery_mode,qualification_reason,status,current_phase_id,current_phase_ordinal,knowledge_manifest_id FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
         .bind(tenant).bind(workspace).bind(run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     let Some(row) = row else { return Ok(None) };
     let definition: PipelineDefinitionSnapshot = decode(row.8)?;
@@ -126,6 +126,18 @@ pub(crate) async fn load_context(
             .into_iter()
             .collect(),
     };
+    let knowledge = crate::durable_knowledge::manifest::load(tx, tenant, workspace, row.14).await?;
+    let knowledge_status = crate::durable_knowledge::manifest::status(
+        tx,
+        tenant,
+        workspace,
+        run.id,
+        run.scope_id,
+        run.slice_id,
+        run.current_phase_id.as_deref(),
+        knowledge.as_ref(),
+    )
+    .await?;
     Ok(Some(PipelineRunContext {
         run,
         definition,
@@ -136,6 +148,8 @@ pub(crate) async fn load_context(
         outputs_complete: true,
         inputs,
         result,
+        knowledge,
+        knowledge_status,
     }))
 }
 

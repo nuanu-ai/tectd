@@ -20,6 +20,8 @@ enum Command {
     Migrate {
         #[arg(long)]
         runtime_role: String,
+        #[arg(long)]
+        enable_durable_knowledge: bool,
     },
     Enroll {
         #[arg(long)]
@@ -63,8 +65,14 @@ async fn run(arguments: Arguments) -> Result<()> {
         std::env::var("TECT_ADMIN_DATABASE_URL").map_err(|_| Error::InvalidConfiguration)?;
     let pool = tect_postgres::admin::connect_admin(&admin_url).await?;
     match arguments.command {
-        Command::Migrate { runtime_role } => {
+        Command::Migrate {
+            runtime_role,
+            enable_durable_knowledge,
+        } => {
             tect_postgres::admin::migrate(&pool, &runtime_role).await?;
+            if enable_durable_knowledge {
+                tect_postgres::enable_durable_knowledge(&pool, &runtime_role).await?;
+            }
             println!("migration complete for runtime role {runtime_role}");
         }
         Command::Enroll {

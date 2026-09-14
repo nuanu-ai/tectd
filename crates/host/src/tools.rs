@@ -9,6 +9,7 @@ pub(crate) enum Invocation {
     ScopeCandidate(crate::scope_candidate_tools::ScopeCandidateInvocation),
     Slice(crate::slice_tools::SliceInvocation),
     Pipeline(crate::pipeline_tools::PipelineInvocation),
+    Knowledge(crate::knowledge_tools::KnowledgeInvocation),
     Help(crate::api::HelpRequest),
     OpenWorkspace,
     GetState,
@@ -67,6 +68,18 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
             })
         }
         "help" => crate::api::parse_help(arguments).map(Invocation::Help),
+        _ if matches!(
+            name,
+            "knowledge_context"
+                | "knowledge_change"
+                | "knowledge_change_prepare"
+                | "knowledge_change_review"
+                | "knowledge_change_publish"
+                | "pipeline_knowledge_refresh"
+        ) =>
+        {
+            crate::knowledge_tools::parse(name, arguments).map(Invocation::Knowledge)
+        }
         _ if name.starts_with("slice_pipeline_") => {
             crate::pipeline_tools::parse(name, arguments).map(Invocation::Pipeline)
         }
@@ -139,7 +152,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            24
+            28
         );
     }
 

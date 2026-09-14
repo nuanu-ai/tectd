@@ -23,10 +23,10 @@ as an identity fallback. Both the Codex-generated native UUID and host credentia
 are required before a business operation. Model tool arguments contain no identity.
 
 The public MCP surface is exactly `get_state`, `query`, `command`, `execute`, and
-`help`, with 35 routes: 10 queries, 24 commands, and one execute route. Read-only routes are `program.get`, `program.list`,
+`help`, with 41 routes: 12 queries, 28 commands, and one execute route. Read-only routes are `program.get`, `program.list`,
 `source.list`, `setup.get`, `scope.candidates.context`, `scope.context`,
 `slice.pipelines`, `slice.candidates.context`, `slice.context`, and
-`slice.pipeline.context`. Logical
+`slice.pipeline.context`, plus `knowledge.context` and `knowledge.change`. Logical
 transitions are `workspace.open`, `source.register`, `session.select_worktrees`,
 `program.begin`, `program.save`, `program.record_input`, `setup.inspect`,
 `setup.begin`, `setup.save`, `setup.record_input`, `scope.candidates.begin`,
@@ -34,7 +34,11 @@ transitions are `workspace.open`, `source.register`, `session.select_worktrees`,
 `scope.candidates.refresh`, `scope.open`, `slice.candidates.save`,
 `slice.candidates.input`, `slice.candidates.refresh`, `slice.open`, and
 `slice.result.record`, plus `slice.pipeline.begin`, `slice.pipeline.phase.complete`,
-`slice.pipeline.delivery.escalate`, and `slice.pipeline.input`. The only
+`slice.pipeline.delivery.escalate`, `slice.pipeline.input`,
+`knowledge.change_prepare`, `knowledge.change_review`,
+`knowledge.change_publish`, and `pipeline.knowledge_refresh`. DK-1 exposes only
+Constraint create/revise/retract; native RDF activation remains an operator action,
+and `lifecycle_complete` is false. The only
 external-effect route is `setup.apply`. Each native
 session has its own selected worktrees. Program drafts, original input and PRDs live
 in the database. The focused `tectd-program`, `tectd-setup`,

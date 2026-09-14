@@ -59,6 +59,9 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
                          'slice_pipeline_phase_attempts', 'slice_pipeline_phase_outputs',
                          'slice_pipeline_output_bindings', 'slice_pipeline_inputs',
                          'slice_pipeline_receipts'
+                         ,'durable_knowledge_capability','workspace_knowledge_state','knowledge_changes','knowledge_unit_heads',
+                         'knowledge_publication_events','knowledge_revisions','knowledge_bindings',
+                         'knowledge_command_receipts','pipeline_knowledge_manifests','knowledge_effect_outbox'
                      )
                      AND pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER')
                ) OR EXISTS (
@@ -66,7 +69,8 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
                    FROM pg_catalog.pg_proc p
                    JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
                    WHERE n.nspname='public'
-                     AND p.proname IN ('tect_authenticate_host', 'tect_preserve_created_at')
+                     AND p.proname IN ('tect_authenticate_host', 'tect_preserve_created_at',
+                         'tect_dk_native_publish','tect_dk_native_read','tect_dk_session_principal','tect_dk_is_owner','tect_dk_ensure_workspace_state','tect_dk_capability')
                      AND pg_catalog.pg_has_role(r.oid, p.proowner, 'MEMBER')
                )
         FROM pg_catalog.pg_roles r
@@ -149,6 +153,36 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
         ),
         format!(
             "GRANT EXECUTE ON FUNCTION public.tect_authenticate_host(uuid, text, boolean) TO {quoted_role}"
+        ),
+        format!(
+            "REVOKE ALL PRIVILEGES ON TABLE workspace_knowledge_state,knowledge_changes,knowledge_unit_heads,knowledge_publication_events,knowledge_revisions,knowledge_bindings,knowledge_command_receipts,pipeline_knowledge_manifests,knowledge_effect_outbox FROM {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT ON TABLE workspace_knowledge_state,knowledge_changes,knowledge_unit_heads,knowledge_publication_events,knowledge_revisions,knowledge_bindings,knowledge_command_receipts,pipeline_knowledge_manifests,knowledge_effect_outbox TO {quoted_role}"
+        ),
+        format!(
+            "GRANT INSERT(tenant_id,workspace_id) ON TABLE workspace_knowledge_state TO {quoted_role}"
+        ),
+        format!("GRANT UPDATE(generation) ON TABLE workspace_knowledge_state TO {quoted_role}"),
+        format!(
+            "GRANT INSERT,UPDATE(stage,review,publication_receipt,updated_at) ON TABLE knowledge_changes TO {quoted_role}"
+        ),
+        format!(
+            "GRANT INSERT,UPDATE(accepted_revision,active,proposal_fingerprint,last_event_id,updated_at) ON TABLE knowledge_unit_heads TO {quoted_role}"
+        ),
+        format!(
+            "GRANT INSERT ON TABLE knowledge_publication_events,knowledge_revisions,knowledge_command_receipts,pipeline_knowledge_manifests,knowledge_effect_outbox TO {quoted_role}"
+        ),
+        format!("GRANT INSERT,UPDATE(active) ON TABLE knowledge_bindings TO {quoted_role}"),
+        format!(
+            "GRANT EXECUTE ON FUNCTION public.tect_dk_session_principal(uuid),public.tect_dk_is_owner(uuid) TO {quoted_role}"
+        ),
+        format!(
+            "GRANT EXECUTE ON FUNCTION public.tect_dk_ensure_workspace_state(uuid,uuid) TO {quoted_role}"
+        ),
+        format!("GRANT EXECUTE ON FUNCTION public.tect_dk_capability() TO {quoted_role}"),
+        format!(
+            "GRANT EXECUTE ON FUNCTION public.tect_dk_native_publish(uuid,uuid,uuid,text,text,text),public.tect_dk_native_read(uuid,uuid,uuid,bigint,uuid) TO {quoted_role}"
         ),
     ];
     for statement in statements {

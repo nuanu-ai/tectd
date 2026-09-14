@@ -149,11 +149,14 @@ fn try_failure_with_state(
                 "get_setup",
                 json!({"setup_id":id,"after_input":0,"limit":25}),
             )?)
+        } else if let Some(id) = args.get("program_id").filter(|id| id.is_string()) {
+            Some(action("get_program", json!({"program_id":id}))?)
+        } else if let Some(id) = args.get("change_id").filter(|id| id.is_string()) {
+            Some(action("knowledge_change", json!({"change_id":id}))?)
+        } else if let Some(id) = args.get("run_id").filter(|id| id.is_string()) {
+            Some(action("slice_pipeline_context", json!({"run_id":id}))?)
         } else {
-            match args.get("program_id").filter(|id| id.is_string()) {
-                Some(id) => Some(action("get_program", json!({"program_id":id}))?),
-                None => None,
-            }
+            None
         }
     } else {
         None
@@ -161,13 +164,17 @@ fn try_failure_with_state(
     match error {
         Error::WorkspaceNotOpen => actions.push(action("open_workspace", json!({}))?),
         Error::StaleRevision
+        | Error::StaleContext
+        | Error::ContextChanged
+        | Error::NeedsContext
         | Error::InputPending
         | Error::ProgramIncomplete
         | Error::SetupIncomplete
         | Error::SetupAlreadyApplied
         | Error::SetupFileConflict
         | Error::InputConflict
-        | Error::RequestTooLarge => {
+        | Error::RequestTooLarge
+        | Error::CapacityExceeded => {
             actions.push(match reload {
                 Some(reload) => reload,
                 None => action("get_state", json!({}))?,
@@ -186,6 +193,9 @@ fn try_failure_with_state(
             }
         }
         Error::TaskDirectoryUnbound => actions.push(crate::workspace_output::inspect_action(None)?),
+        Error::KnowledgeUnavailable => {
+            actions.push(action("knowledge_context", json!({}))?);
+        }
         Error::SetupExists if state.is_some() => {
             let context = state.and_then(|state| {
                 serde_json::from_value::<tect_domain::SetupContext>(state["setup_context"].clone())
@@ -226,6 +236,18 @@ pub(crate) fn error_intro(error: Error) -> &'static str {
     match error {
         Error::StaleRevision => {
             "A newer revision exists. Reload the saved record and merge before saving."
+        }
+        Error::StaleContext | Error::ContextChanged => {
+            "The durable knowledge selected for this phase changed. Reload the pipeline context and use its exact refresh call."
+        }
+        Error::NeedsContext => {
+            "This phase has unresolved durable knowledge needs. Reload the pipeline context and use its exact refresh call."
+        }
+        Error::KnowledgeUnavailable => {
+            "Durable knowledge is not activated for this database. An operator must activate the pinned native capability before publication."
+        }
+        Error::CapacityExceeded => {
+            "The complete required durable knowledge context exceeds the bounded transport capacity. No partial context was returned."
         }
         Error::InputPending => {
             "The input cursor is not current. Read the remaining original input before completing."

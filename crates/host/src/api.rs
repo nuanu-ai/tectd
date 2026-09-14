@@ -1,6 +1,7 @@
 mod candidate_schema;
 mod catalog;
 mod catalog_aliases;
+mod knowledge_schema;
 mod slice_schema;
 
 use crate::tools::{annotations, object_schema};
@@ -336,8 +337,8 @@ fn describe_route(spec: &RouteSpec) -> Value {
 fn tool_summary(tool: &str) -> &'static str {
     match tool {
         "get_state" => "Read bounded DB-only state for the current native session.",
-        "query" => "Run one of ten named read-only routes.",
-        "command" => "Run one of twenty-four named logical state-transition routes.",
+        "query" => "Run one of twelve named read-only routes.",
+        "command" => "Run one of twenty-eight named logical state-transition routes.",
         "execute" => "Run the single explicit external-effect route setup.apply.",
         "help" => "Search or describe this API and its four embedded methods.",
         _ => "",

@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use std::sync::OnceLock;
 use tect_domain::{MAX_SOURCE_PATH_BYTES, MAX_WORKTREES};
 
-use super::{candidate_schema, slice_schema};
+use super::{candidate_schema, knowledge_schema, slice_schema};
 
 #[derive(Clone)]
 pub(crate) struct RouteSpec {
@@ -58,7 +58,7 @@ pub(crate) fn routes() -> &'static [RouteSpec] {
 
 fn build_routes() -> Vec<RouteSpec> {
     let example_id = "00000000-0000-4000-8000-000000000001";
-    vec![
+    let mut routes = vec![
         route!(
             "query",
             "program.get",
@@ -486,5 +486,7 @@ fn build_routes() -> Vec<RouteSpec> {
             ),
             json!({"setup_id":example_id,"revision":2}),
         ),
-    ]
+    ];
+    routes.extend(knowledge_schema::routes(example_id));
+    routes
 }

@@ -35,6 +35,10 @@ pub enum Error {
     SetupFileConflict,
     SetupAlreadyApplied,
     InternalInvariant,
+    KnowledgeUnavailable,
+    ContextChanged,
+    NeedsContext,
+    CapacityExceeded,
 }
 
 impl Error {
@@ -68,6 +72,10 @@ impl Error {
             Self::SetupFileConflict => "setup_file_conflict",
             Self::SetupAlreadyApplied => "setup_already_applied",
             Self::InternalInvariant => "internal_invariant",
+            Self::KnowledgeUnavailable => "knowledge_unavailable",
+            Self::ContextChanged => "context_changed",
+            Self::NeedsContext => "needs_context",
+            Self::CapacityExceeded => "capacity_exceeded",
         }
     }
 }

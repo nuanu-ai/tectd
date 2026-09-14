@@ -58,6 +58,10 @@ pub(super) fn pipeline_phase_complete() -> Value {
         json!({"input_id":uuid(),"sequence":{"type":"integer","minimum":1},"digest":text()}),
         json!(["input_id", "sequence", "digest"]),
     );
+    let consumed_knowledge = object_schema(
+        json!({"manifest_id":uuid(),"digest":text()}),
+        json!(["manifest_id", "digest"]),
+    );
     let skill_read = object_schema(
         json!({"instruction_id":text(),"version":text(),"digest":text()}),
         json!(["instruction_id", "version", "digest"]),
@@ -149,7 +153,8 @@ pub(super) fn pipeline_phase_complete() -> Value {
             "phase_id":text(),"outcome":{"type":"string","enum":["completed","waiting_input","blocked"]},
             "transition":{"type":"string","enum":["continue","complete","block","escalate"]},
             "output":output,"consumed_outputs":{"type":"array","items":consumed,"uniqueItems":true},
-            "consumed_inputs":{"type":"array","items":consumed_input,"uniqueItems":true},"revisit_phase_id":text(),"escalation_target":{"type":"string","enum":pipelines()},
+            "consumed_inputs":{"type":"array","items":consumed_input,"uniqueItems":true},
+            "consumed_knowledge":consumed_knowledge,"revisit_phase_id":text(),"escalation_target":{"type":"string","enum":pipelines()},
             "terminal_result":terminal,"publish_blocked_result":{"type":"boolean","default":false}
         }),
         json!([

@@ -25,6 +25,7 @@ pub trait UnitOfWork:
     + crate::ScopeCandidateStore
     + crate::NativePlanningStore
     + crate::PipelineExecutionStore
+    + crate::DurableKnowledgeStore
 {
     async fn authenticate(&mut self, auth: &HostAuth) -> Result<HostIdentity>;
     async fn set_tenant(&mut self, tenant_id: Uuid) -> Result<()>;
@@ -32,6 +33,7 @@ pub trait UnitOfWork:
     async fn session(&mut self, host_id: Uuid, native_id: &str) -> Result<Option<Session>>;
     async fn workspace(&mut self, id: Uuid) -> Result<Option<Workspace>>;
     async fn is_member(&mut self, workspace_id: Uuid, principal_id: Uuid) -> Result<bool>;
+    async fn session_principal(&mut self, session_id: Uuid) -> Result<Uuid>;
     async fn ensure_workspace(&mut self, key: &str) -> Result<Created<Workspace>>;
     async fn ensure_membership(&mut self, workspace_id: Uuid, principal_id: Uuid) -> Result<()>;
     async fn ensure_session(

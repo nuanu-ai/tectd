@@ -16,6 +16,10 @@ uuid.workspace = true
 sqlx.workspace = true
 sha2.workspace = true
 getrandom.workspace = true
+oxrdf.workspace = true
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

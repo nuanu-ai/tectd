@@ -4,7 +4,7 @@ use std::{fs, str::FromStr};
 use tect_postgres::admin;
 use uuid::Uuid;
 
-const SCHEMA_SEVEN_MIGRATIONS: &[(&str, &str)] = &[
+const SCHEMA_EIGHT_MIGRATIONS: &[(&str, &str)] = &[
     (
         "0001_native_session_bootstrap.sql",
         include_str!("../../postgres/migrations/0001_native_session_bootstrap.sql"),
@@ -33,6 +33,10 @@ const SCHEMA_SEVEN_MIGRATIONS: &[(&str, &str)] = &[
         "0007_native_scope_slice_planning.sql",
         include_str!("../../postgres/migrations/0007_native_scope_slice_planning.sql"),
     ),
+    (
+        "0008_native_slice_pipeline_execution.sql",
+        include_str!("../../postgres/migrations/0008_native_slice_pipeline_execution.sql"),
+    ),
 ];
 
 fn quoted_database(name: &str) -> String {
@@ -53,7 +57,7 @@ async fn connect_database(url: &str, database: &str) -> PgPool {
 }
 
 #[tokio::test]
-async fn populated_schema_seven_survives_pipeline_execution_upgrade() {
+async fn populated_schema_eight_survives_durable_knowledge_upgrade() {
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").expect("TECT_TEST_ADMIN_URL required");
     let runtime_url =
         std::env::var("TECT_TEST_RUNTIME_URL").expect("TECT_TEST_RUNTIME_URL required");
@@ -65,7 +69,7 @@ async fn populated_schema_seven_survives_pipeline_execution_upgrade() {
         .connect_with(base_options)
         .await
         .unwrap();
-    let database = format!("tect_v7_pipeline_upgrade_{}", Uuid::new_v4().simple());
+    let database = format!("tect_v8_knowledge_upgrade_{}", Uuid::new_v4().simple());
     sqlx::query(&format!("CREATE DATABASE {}", quoted_database(&database)))
         .execute(&base)
         .await
@@ -91,7 +95,7 @@ async fn run_upgrade(
 ) -> Result<(), String> {
     let pool = connect_database(admin_url, database).await;
     let migration_dir = tempfile::tempdir().map_err(|error| error.to_string())?;
-    for (name, body) in SCHEMA_SEVEN_MIGRATIONS {
+    for (name, body) in SCHEMA_EIGHT_MIGRATIONS {
         fs::write(migration_dir.path().join(name), body).map_err(|error| error.to_string())?;
     }
     sqlx::migrate::Migrator::new(migration_dir.path())
@@ -101,8 +105,13 @@ async fn run_upgrade(
         .await
         .map_err(|error| error.to_string())?;
 
-    let ids = seed_schema_seven(&pool).await?;
+    let ids = seed_schema_eight(&pool).await?;
     let before = preserved_rows(&pool, &ids).await?;
+    let extension_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM pg_catalog.pg_extension WHERE extname='pgrdf'")
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
 
     admin::migrate(&pool, runtime_role)
         .await
@@ -110,42 +119,66 @@ async fn run_upgrade(
 
     let after = preserved_rows(&pool, &ids).await?;
     if before != after {
-        return Err("schema-7 Program, Scope, Slice, graph or Result data changed".into());
+        return Err(
+            "schema-8 Program, Scope, Slice, graph, pipeline or Result data changed".into(),
+        );
     }
     let migration_count: i64 = sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations")
         .fetch_one(&pool)
         .await
         .map_err(|error| error.to_string())?;
-    if migration_count != 8 {
-        return Err(format!("expected 8 migrations, observed {migration_count}"));
+    if migration_count != 9 {
+        return Err(format!("expected 9 migrations, observed {migration_count}"));
     }
-    let table_count: i64 = sqlx::query_scalar(
+    let knowledge_table_count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace \
          WHERE n.nspname='public' AND c.relname = ANY($1) AND c.relkind='r'",
     )
     .bind(vec![
-        "slice_pipeline_runs",
-        "slice_pipeline_phase_attempts",
-        "slice_pipeline_phase_outputs",
-        "slice_pipeline_output_bindings",
-        "slice_pipeline_inputs",
-        "slice_pipeline_receipts",
+        "workspace_knowledge_state",
+        "knowledge_changes",
+        "knowledge_unit_heads",
+        "knowledge_publication_events",
+        "knowledge_revisions",
+        "knowledge_bindings",
+        "knowledge_command_receipts",
+        "pipeline_knowledge_manifests",
+        "knowledge_effect_outbox",
     ])
     .fetch_one(&pool)
     .await
     .map_err(|error| error.to_string())?;
-    if table_count != 6 {
-        return Err("schema 8 did not create all six pipeline tables".into());
+    if knowledge_table_count != 9 {
+        return Err("schema 9 did not create all nine durable-knowledge tables".into());
     }
     let forced_rls_count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace \
-         WHERE n.nspname='public' AND c.relname LIKE 'slice_pipeline_%' AND c.relrowsecurity AND c.relforcerowsecurity",
+         WHERE n.nspname='public' AND c.relname = ANY($1) AND c.relrowsecurity AND c.relforcerowsecurity",
     )
+    .bind(vec![
+        "workspace_knowledge_state",
+        "knowledge_changes",
+        "knowledge_unit_heads",
+        "knowledge_publication_events",
+        "knowledge_revisions",
+        "knowledge_bindings",
+        "knowledge_command_receipts",
+        "pipeline_knowledge_manifests",
+        "knowledge_effect_outbox",
+    ])
     .fetch_one(&pool)
     .await
     .map_err(|error| error.to_string())?;
-    if forced_rls_count != 6 {
-        return Err("pipeline tables do not all enforce RLS".into());
+    if forced_rls_count != 9 {
+        return Err("durable-knowledge tables do not all enforce RLS".into());
+    }
+    let extension_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM pg_catalog.pg_extension WHERE extname='pgrdf'")
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
+    if extension_after != extension_before {
+        return Err("metadata migration changed pgrdf extension activation state".into());
     }
     let runtime_privileges: bool = sqlx::query_scalar(
         "SELECT \
@@ -210,9 +243,10 @@ struct SeedIds {
     slice_snapshot: Uuid,
     slice: Uuid,
     result: Uuid,
+    run: Uuid,
 }
 
-async fn seed_schema_seven(pool: &PgPool) -> Result<SeedIds, String> {
+async fn seed_schema_eight(pool: &PgPool) -> Result<SeedIds, String> {
     let tenant = Uuid::new_v4();
     let workspace = Uuid::new_v4();
     let program = Uuid::new_v4();
@@ -224,6 +258,7 @@ async fn seed_schema_seven(pool: &PgPool) -> Result<SeedIds, String> {
     let slice_snapshot = Uuid::new_v4();
     let slice = Uuid::new_v4();
     let result = Uuid::new_v4();
+    let run = Uuid::new_v4();
 
     sqlx::query("INSERT INTO tenants(id) VALUES($1)")
         .bind(tenant)
@@ -365,6 +400,20 @@ async fn seed_schema_seven(pool: &PgPool) -> Result<SeedIds, String> {
     .execute(pool)
     .await
     .map_err(|error| error.to_string())?;
+    sqlx::query(
+        "INSERT INTO slice_pipeline_runs(id,tenant_id,workspace_id,scope_id,slice_id,slice_revision,revision,definition_kind,definition_version,definition_digest,definition,delivery_mode,qualification_reason,status,current_phase_id,current_phase_ordinal,origin_request_id,origin_payload,origin_result) \
+         VALUES($1,$2,$3,$4,$5,1,2,'lightweight_tdd_development','schema-8',$6,'{}','phasewise','Preserve schema 8 pipeline','active','slice-lightweight-entry-gate',1,$7,'{}','{}')",
+    )
+    .bind(run)
+    .bind(tenant)
+    .bind(workspace)
+    .bind(scope)
+    .bind(slice)
+    .bind("f".repeat(64))
+    .bind(Uuid::new_v4())
+    .execute(pool)
+    .await
+    .map_err(|error| error.to_string())?;
 
     Ok(SeedIds {
         tenant,
@@ -374,6 +423,7 @@ async fn seed_schema_seven(pool: &PgPool) -> Result<SeedIds, String> {
         slice_snapshot,
         slice,
         result,
+        run,
     })
 }
 
@@ -385,7 +435,8 @@ async fn preserved_rows(pool: &PgPool, ids: &SeedIds) -> Result<Vec<String>, Str
          (SELECT jsonb_build_object('revision',revision,'status',status,'current_snapshot_id',current_snapshot_id)::text FROM slice_candidate_sets WHERE id=$3), \
          (SELECT jsonb_build_object('sequence',sequence,'registry_digest',registry_digest)::text FROM slice_planning_snapshots WHERE id=$4), \
          (SELECT jsonb_build_object('revision',revision,'state',state,'pipeline',pipeline)::text FROM native_slices WHERE id=$5), \
-         (SELECT jsonb_build_object('revision',revision,'outcome',outcome,'summary',summary,'evidence',evidence,'provenance',provenance)::text FROM slice_results WHERE id=$6)",
+         (SELECT jsonb_build_object('revision',revision,'outcome',outcome,'summary',summary,'evidence',evidence,'provenance',provenance)::text FROM slice_results WHERE id=$6), \
+         (SELECT jsonb_build_object('revision',revision,'definition_digest',definition_digest,'status',status)::text FROM slice_pipeline_runs WHERE id=$7)",
     )
     .bind(ids.program)
     .bind(ids.scope)
@@ -393,8 +444,9 @@ async fn preserved_rows(pool: &PgPool, ids: &SeedIds) -> Result<Vec<String>, Str
     .bind(ids.slice_snapshot)
     .bind(ids.slice)
     .bind(ids.result)
+    .bind(ids.run)
     .fetch_one(pool)
     .await
     .map_err(|error| error.to_string())?;
-    Ok((0..6).map(|index| row.get(index)).collect())
+    Ok((0..7).map(|index| row.get(index)).collect())
 }

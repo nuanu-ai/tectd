@@ -5,9 +5,10 @@ database object. Its identity comes from an authenticated tenant and an explicit
 workspace key; it has no workspace directory or workspace Git worktree.
 
 This repository implements workspace bootstrap, Program formation, reviewed Scope
-candidate planning and initial workspace instructions in V2.1. The current installed Tect plugin
-continues to govern its development. Installing or replacing that plugin is a
-separate operation.
+candidate planning, native Scope/Slice execution, initial workspace instructions,
+and bounded Durable Knowledge in V2.1. The installed Tect plugin and persistent
+runtime are separate from this source checkout; using or updating them is an
+explicit task decision.
 
 The native session MCP bridge opens logical workspaces, registers Git sources and
 selects worktrees per session. `get_state` does not create or update records and
@@ -43,6 +44,11 @@ connection. Keep admin and runtime connection URLs outside source control.
 
 The operator runs `tect-admin migrate --runtime-role ROLE` with
 `TECT_ADMIN_DATABASE_URL`, then `tect-admin enroll --out /absolute/private/host.json`.
+Migration 0009 installs durable-knowledge metadata only. To activate the pinned native
+pgRDF 0.6.34 capability explicitly, the database operator runs
+`tect-admin migrate --runtime-role ROLE --enable-durable-knowledge`. This flag creates
+or verifies the extension, installs the pinned shapes and private adapter contract,
+and marks workspace capability ready. MCP routes never activate the extension.
 Enrollment creates a tenant and owner, or uses an explicitly supplied existing
 `--tenant UUID`. Repeated `--source-root /absolute/path` arguments declare the host's
 allowed repository locations; an empty list permits zero-source bootstrap.
@@ -101,7 +107,7 @@ not per-session secrets.
 
 ## Public MCP API
 
-The public surface has exactly five tools and 35 routes: 10 queries, 24 commands,
+The public surface has exactly five tools and 41 routes: 12 queries, 28 commands,
 and one execute route. `query`, `command`, and `execute` use
 `{"route":"...","params":{...}}`; `help` searches or describes the exact
 route schema. Unknown routes and route parameters fail before effects.
@@ -281,6 +287,40 @@ These statements describe the current source implementation. Final workspace gat
 native client acceptance and publication or installation of a new package are
 separate proof layers and are not claimed here.
 
+## Durable knowledge DK-1
+
+DK-1 implements one bounded source-derived execution-constraint lifecycle with
+`create`, `revise`, and `retract`. It exposes versioned preparation and review method
+snapshots, requires an exact review receipt, and publishes native RDF plus SQL
+projections and a receipt atomically. It does not implement the later full
+twelve-phase Knowledge Change engine, additional knowledge profiles, vector search,
+or a new pipeline kind.
+
+| Tool + route | Purpose |
+| --- | --- |
+| `query` · `knowledge.context` | Read capability, generation, method snapshots, and an optional exact unit revision |
+| `query` · `knowledge.change` | Read one current proposal/review/publication cursor by `change_id` |
+| `command` · `knowledge.change_prepare` | Prepare one exact create, revise, or retract proposal against pinned generation and revision |
+| `command` · `knowledge.change_review` | Approve or reject the pinned proposal digest with the exact built-in review method receipt |
+| `command` · `knowledge.change_publish` | Atomically publish an approved exact proposal and return its immutable receipt |
+| `command` · `pipeline.knowledge_refresh` | Explicitly replace the current phase manifest after a stale or missing-context result |
+
+Create requires `draft` and forbids unit/revision pins. Revise requires `unit_id`,
+`expected_unit_revision`, and `draft`. Retract requires the two pins and forbids a
+draft. Every operation also requires `request_id`, `expected_generation`, `reason`,
+and `authority_basis`. A draft contains the exact source snapshot, `must` or
+`must_not` modality, action, semantic target IRI, conditions, exceptions, and either
+workspace or exact Slice-phase binding. Its fixed DK-1 purpose and version policy are
+`execution_constraint` and `current_accepted`. Use `help` describe mode for the full
+strict schema and follow returned stage-specific actions so review/publish pins are
+not reconstructed by the caller.
+
+At phase entry, an active capability captures the applicable immutable manifest.
+Mandatory selected knowledge is included in phase context without source text, and
+phase completion carries its exact `consumed_knowledge` manifest ID and digest.
+Read-only context reports stale or unresolved knowledge and returns an exact
+`pipeline.knowledge_refresh` call; it never refreshes implicitly.
+
 ## Monthly epochs
 
 Migration 0005 adds immutable, PostgreSQL-generated UTC month keys and bounded
@@ -293,7 +333,9 @@ Migration 0007 is forward-only and adds the native Scope/Slice planning tables,
 constraints and indexes described above. Migration 0008 adds version-pinned
 pipeline runs, immutable attempts and outputs, current output bindings, append-only
 inputs and skill-read receipts with tenant/workspace isolation. A source build and
-database migration do not install or activate a desktop plugin release.
+database migration do not install or activate a desktop plugin release. Migration
+0009 adds DK-1 metadata, forced RLS, and inactive native adapter wrappers without
+implicitly creating the pgRDF extension.
 
 ## Initial workspace instructions
 
@@ -390,6 +432,28 @@ with a fixed MCP package cwd, whole-file presentation, inherited instructions, a
 saved question/new-session reply and exact publication. Ordinary recovery tests
 force a DB failure after publication and lose an MCP response; both verify the
 same durable intent without rewriting a conflicting file.
+
+The DK-1 integration path is opt-in and must use a dedicated PostgreSQL 18.6 database
+whose server has the pinned pgRDF 0.6.34 binary available. Set the three isolated
+database variables above plus `TECT_TEST_DURABLE_KNOWLEDGE=1`; when enabled, missing
+or invalid native capability fails the test instead of skipping it. Run only the
+bounded migration and lifecycle contours with:
+
+```sh
+cargo test -p tect-cli --test pipeline_execution_migration
+cargo test -p tect-cli --test pipeline_execution_knowledge
+cargo test -p tect-cli --test pipeline_execution_knowledge_binding
+```
+
+The lifecycle test performs explicit operator activation, real daemon/stdio MCP
+calls, publication and pipeline refresh guards, access denials, and an application
+logical-backup round trip: one exported snapshot supplies canonical native graph
+exports and an app-only `pg_dump`, then a fresh database restores app metadata,
+reactivates the pinned extension, imports graphs by IRI, verifies graph digests, and
+performs an exact daemon read. A plain whole-database pgRDF restore is not this
+portable path. Without the opt-in flag, the DK lifecycle
+binaries return without changing the database; ordinary historical tests remain
+independent of pgRDF activation.
 
 The ignored `legacy_program_capacity_remains_recoverable` test separately verifies
 Program names accepted at the pre-setup `b6d988ef4eec91f9a90ce12ce8ac9fd75decc1a7`

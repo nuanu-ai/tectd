@@ -12,6 +12,8 @@ type LockedRun = (
     String,
     Option<String>,
     Option<i32>,
+    Option<Uuid>,
+    Option<String>,
 );
 
 #[allow(clippy::too_many_arguments)]
@@ -32,8 +34,10 @@ pub(crate) async fn complete_phase(
         if stored != payload { return Err(Error::InputConflict) }
         return decode(result.ok_or(Error::InternalInvariant)?);
     }
+    // DK lock order: workspace knowledge state precedes the run lock.
+    let _ = crate::durable_knowledge::lock_state(tx, tenant, workspace).await?;
     let run_row:LockedRun=sqlx::query_as(
-        "SELECT scope_id,slice_id,slice_revision,revision,status,definition_version,definition_digest,definition,delivery_mode,current_phase_id,current_phase_ordinal FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
+        "SELECT scope_id,slice_id,slice_revision,revision,status,definition_version,definition_digest,definition,delivery_mode,current_phase_id,current_phase_ordinal,knowledge_manifest_id,knowledge_manifest_digest FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
         .bind(tenant).bind(workspace).bind(request.run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?.ok_or(Error::NotFound)?;
     if let Some((stored, result)) = sqlx::query_as::<_, (serde_json::Value, Option<serde_json::Value>)>(
         "SELECT request_payload,result_payload FROM slice_pipeline_phase_attempts WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3",
@@ -58,6 +62,20 @@ pub(crate) async fn complete_phase(
         .iter()
         .find(|phase| phase.id == request.phase_id)
         .ok_or(Error::InternalInvariant)?;
+    let knowledge =
+        crate::durable_knowledge::manifest::load(tx, tenant, workspace, run_row.11).await?;
+    crate::durable_knowledge::manifest::validate_completion(
+        tx,
+        tenant,
+        workspace,
+        request.run_id,
+        run_row.0,
+        run_row.1,
+        &phase.id,
+        knowledge.as_ref(),
+        request.consumed_knowledge.as_ref(),
+    )
+    .await?;
     validate_consumed_outputs(
         tx,
         tenant,
@@ -117,8 +135,26 @@ pub(crate) async fn complete_phase(
         next_state(tx, tenant, workspace, request, &definition, phase).await?;
     let next_revision = run_row.3.checked_add(1).ok_or(Error::StorageUnavailable)?;
     sqlx::query("UPDATE slice_pipeline_runs SET revision=$4,status=$5,current_phase_id=$6,current_phase_ordinal=$7 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
-        .bind(tenant).bind(workspace).bind(request.run_id).bind(next_revision).bind(status).bind(next_id).bind(next_ordinal.map(|value| value as i32))
+        .bind(tenant).bind(workspace).bind(request.run_id).bind(next_revision).bind(status).bind(next_id.as_deref()).bind(next_ordinal.map(|value| value as i32))
         .execute(&mut **tx).await.map_err(storage_error)?;
+    if let Some(next_phase) = next_id.as_deref() {
+        let manifest = crate::durable_knowledge::manifest::capture(
+            tx,
+            tenant,
+            workspace,
+            request.run_id,
+            next_revision,
+            run_row.0,
+            run_row.1,
+            next_phase,
+        )
+        .await?;
+        sqlx::query("UPDATE slice_pipeline_runs SET knowledge_manifest_id=$4,knowledge_manifest_digest=$5 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
+            .bind(tenant).bind(workspace).bind(request.run_id).bind(manifest.as_ref().map(|v|v.id)).bind(manifest.as_ref().map(|v|v.digest.as_str())).execute(&mut **tx).await.map_err(storage_error)?;
+    } else {
+        sqlx::query("UPDATE slice_pipeline_runs SET knowledge_manifest_id=NULL,knowledge_manifest_digest=NULL WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
+            .bind(tenant).bind(workspace).bind(request.run_id).execute(&mut **tx).await.map_err(storage_error)?;
+    }
     let result = match request.transition {
         PipelineTransition::Complete => Some(
             publish_result(

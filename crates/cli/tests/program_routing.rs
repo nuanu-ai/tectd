@@ -99,7 +99,9 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "slice.pipelines",
             "slice.candidates.context",
             "slice.context",
-            "slice.pipeline.context"
+            "slice.pipeline.context",
+            "knowledge.context",
+            "knowledge.change"
         ])
     );
     let command = tools.iter().find(|tool| tool["name"] == "command").unwrap();
@@ -129,7 +131,11 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "slice.pipeline.begin",
             "slice.pipeline.phase.complete",
             "slice.pipeline.input",
-            "slice.pipeline.delivery.escalate"
+            "slice.pipeline.delivery.escalate",
+            "knowledge.change_prepare",
+            "knowledge.change_review",
+            "knowledge.change_publish",
+            "pipeline.knowledge_refresh"
         ])
     );
     let help = tools.iter().find(|tool| tool["name"] == "help").unwrap();

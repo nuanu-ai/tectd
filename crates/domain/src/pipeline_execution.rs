@@ -1,5 +1,6 @@
 use crate::{
-    PipelineKind, SliceResult, SliceResultEvidence,
+    ConsumedKnowledgeManifestRef, PipelineKind, PipelineKnowledgeManifest, PipelineKnowledgeStatus,
+    SliceResult, SliceResultEvidence,
     pipeline_followups::{PipelineFollowupContract, PipelineFollowupProposal},
 };
 use serde::{Deserialize, Serialize};
@@ -382,6 +383,10 @@ pub struct PipelineRunContext {
     pub outputs_complete: bool,
     pub inputs: Vec<PipelineInput>,
     pub result: Option<SliceResult>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge: Option<PipelineKnowledgeManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_status: Option<PipelineKnowledgeStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -459,6 +464,8 @@ pub struct CompletePipelinePhase {
     pub terminal_result: Option<PipelineTerminalResultDraft>,
     #[serde(default)]
     pub publish_blocked_result: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_knowledge: Option<ConsumedKnowledgeManifestRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

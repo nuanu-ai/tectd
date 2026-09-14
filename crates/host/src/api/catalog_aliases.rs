@@ -67,6 +67,22 @@ impl RouteSpec {
                 "escalate pipeline delivery",
                 "переключить pipeline по фазам",
             ],
+            "knowledge.context" => &["read durable knowledge", "прочитать durable knowledge"],
+            "knowledge.change" => &["read knowledge change", "прочитать изменение knowledge"],
+            "knowledge.change_prepare" => &[
+                "prepare knowledge change",
+                "подготовить изменение knowledge",
+            ],
+            "knowledge.change_review" => {
+                &["review knowledge change", "проверить изменение knowledge"]
+            }
+            "knowledge.change_publish" => &[
+                "publish knowledge change",
+                "опубликовать изменение knowledge",
+            ],
+            "pipeline.knowledge_refresh" => {
+                &["refresh pipeline knowledge", "обновить knowledge pipeline"]
+            }
             _ => &[],
         }
     }

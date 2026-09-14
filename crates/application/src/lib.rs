@@ -22,6 +22,9 @@ mod native_planning;
 mod pipeline_execution;
 mod pipeline_execution_ports;
 pub use pipeline_execution_ports::{PipelineDefinitionProvider, PipelineExecutionStore};
+mod durable_knowledge;
+mod durable_knowledge_ports;
+pub use durable_knowledge_ports::DurableKnowledgeStore;
 
 mod setup_access;
 mod setup_apply;

@@ -206,6 +206,15 @@ pub(super) async fn complete(
     if let Some(result) = terminal_result {
         params["terminal_result"] = result;
     }
+    if context["knowledge"]["selected"]
+        .as_array()
+        .is_some_and(|selected| !selected.is_empty())
+    {
+        params["consumed_knowledge"] = json!({
+            "manifest_id":context["knowledge"]["id"],
+            "digest":context["knowledge"]["digest"]
+        });
+    }
     let response = route(
         client,
         "command",

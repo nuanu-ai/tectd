@@ -1,4 +1,6 @@
 //! Pure identities, values and invariants. No environment, transport or persistence.
+mod durable_knowledge;
+mod durable_knowledge_validation;
 mod error;
 mod identity;
 mod program;
@@ -11,6 +13,7 @@ pub use program::{
 };
 pub use program_page::{ProgramCursor, ProgramInput, ProgramList, ProgramPage, ProgramSummary};
 
+pub use durable_knowledge::*;
 pub use error::{Error, Result};
 pub use identity::{
     HostAuth, HostIdentity, RequestContext, validate_native_id, validate_workspace_key,

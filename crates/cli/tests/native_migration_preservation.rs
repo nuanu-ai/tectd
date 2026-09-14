@@ -204,8 +204,8 @@ async fn run_upgrade(admin_url: &str, database: &str, runtime_role: &str) -> Res
             .fetch_one(&pool)
             .await
             .map_err(|error| error.to_string())?;
-    if migration_count != 8 || native_table.as_deref() != Some("native_scopes") {
-        return Err("schema 8 was not installed after preserving legacy rows".into());
+    if migration_count != 9 || native_table.as_deref() != Some("native_scopes") {
+        return Err("schema 9 was not installed after preserving legacy rows".into());
     }
     pool.close().await;
     Ok(())

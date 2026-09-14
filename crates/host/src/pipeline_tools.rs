@@ -45,6 +45,7 @@ fn reject_optional_nulls(value: &Value) -> Result<()> {
         "revisit_phase_id",
         "escalation_target",
         "terminal_result",
+        "consumed_knowledge",
     ];
     match value {
         Value::Object(object) => {

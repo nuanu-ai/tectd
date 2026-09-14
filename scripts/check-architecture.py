@@ -8,10 +8,10 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = {
     "tect-domain": {"serde", "uuid"},
-    "tect-application": {"tect-domain", "async-trait", "uuid"},
+    "tect-application": {"tect-domain", "async-trait", "uuid", "sha2", "serde_json"},
     "tect-postgres": {
         "tect-domain", "tect-application", "async-trait", "sqlx", "uuid",
-        "sha2", "getrandom", "serde", "serde_json",
+        "sha2", "getrandom", "serde", "serde_json", "oxrdf",
     },
     "tect-host": {
         "tect-domain", "tect-application", "serde", "serde_json", "tokio",

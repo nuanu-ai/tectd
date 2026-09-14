@@ -3,11 +3,7 @@ use async_trait::async_trait;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Postgres, Transaction};
 use tect_application::{Store, TransactionMode, UnitOfWork};
-use tect_domain::{
-    Created, Error, EventKind, HostAuth, HostIdentity, NewProgramInput, Program, ProgramCursor,
-    ProgramInput, ProgramSummary, RegisteredSource, Result, Session, SourceLocation, Workspace,
-    WorktreeSummary,
-};
+use tect_domain::*;
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -194,6 +190,9 @@ impl UnitOfWork for PgUnitOfWork {
         .map_err(storage_error)
     }
 
+    async fn session_principal(&mut self, session_id: Uuid) -> Result<Uuid> {
+        crate::durable_knowledge_store::session_principal(self, session_id).await
+    }
     async fn ensure_workspace(&mut self, key: &str) -> Result<Created<Workspace>> {
         let tenant_id = self.tenant_id()?;
         let inserted: Option<Uuid> = sqlx::query_scalar(
@@ -213,6 +212,7 @@ impl UnitOfWork for PgUnitOfWork {
                 .fetch_one(&mut **self.transaction()?)
                 .await
                 .map_err(storage_error)?;
+        crate::durable_knowledge_store::ensure_workspace_state(self, tenant_id, id).await?;
         Ok(Created {
             value: Workspace { id, key },
             created: inserted.is_some(),

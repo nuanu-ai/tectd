@@ -20,6 +20,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time", "signal", "process"] }
 sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "uuid", "migrate", "macros", "json"] }
 sha2 = "0.10"
+oxrdf = "=0.3.3"
 rustix = { version = "=1.1.4", features = ["fs"] }
 getrandom = "0.3"
 clap = { version = "4", features = ["derive", "env"] }

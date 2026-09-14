@@ -270,6 +270,56 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
         "arguments.params.task_directory" in missing_paths(opened, "needs_context"),
     )
 
+    knowledge_help, failed = tool_result(
+        app, thread_id, "help", {"mode": "search", "text": "knowledge"},
+    )
+    knowledge_routes = {
+        hit.get("route") for hit in knowledge_help.get("hits", [])
+        if hit.get("kind") == "route"
+    }
+    expected_knowledge_routes = {
+        "knowledge.context",
+        "knowledge.change",
+        "knowledge.change_prepare",
+        "knowledge.change_review",
+        "knowledge.change_publish",
+        "pipeline.knowledge_refresh",
+    }
+    proof.check(
+        "native help discovers all DK-1 routes",
+        not failed and knowledge_routes == expected_knowledge_routes,
+        sorted(route for route in knowledge_routes if isinstance(route, str)),
+    )
+    knowledge_description, failed = tool_result(
+        app,
+        thread_id,
+        "help",
+        {"mode": "describe", "tool": "query", "route": "knowledge.context"},
+    )
+    proof.check(
+        "native help describes the exact knowledge context route",
+        not failed
+        and knowledge_description.get("kind") == "route"
+        and knowledge_description.get("tool") == "query"
+        and knowledge_description.get("route") == "knowledge.context",
+    )
+    knowledge, failed = tool_result(
+        app, thread_id, "query", {"route": "knowledge.context", "params": {}},
+    )
+    capability = knowledge.get("capability", {})
+    proof.check(
+        "metadata-only DK context remains inactive and advertises the bounded lifecycle",
+        not failed
+        and capability.get("ready") is False
+        and capability.get("lifecycle_complete") is False
+        and capability.get("supported_operations") == ["create", "revise", "retract"],
+        {
+            "ready": capability.get("ready"),
+            "lifecycle_complete": capability.get("lifecycle_complete"),
+            "supported_operations": capability.get("supported_operations"),
+        },
+    )
+
     programs, failed = tool_result(app, thread_id, "query", {"route": "program.list", "params": {"limit": 25}})
     proof.check("representative query route succeeds", not failed and bool(programs))
     narrative = "Exact isolated acceptance narrative. Preserve this input byte for byte."

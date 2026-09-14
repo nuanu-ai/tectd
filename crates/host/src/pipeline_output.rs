@@ -2,8 +2,8 @@ use crate::responses;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tect_domain::{
-    BeginPipelineRunOutcome, Error, PipelineContextResponse, PipelineMutationOutcome,
-    PipelineRunContext, PipelineRunStatus, Result,
+    BeginPipelineRunOutcome, Error, PipelineContextResponse, PipelineKnowledgeState,
+    PipelineMutationOutcome, PipelineRunContext, PipelineRunStatus, Result,
 };
 
 pub(crate) fn begin(mut value: BeginPipelineRunOutcome, capacity: usize) -> Result<Value> {
@@ -65,6 +65,19 @@ fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
             json!({"slice_id":run.slice_id}),
         )?]);
     };
+    if matches!(
+        context.knowledge_status.as_ref().map(|status| status.state),
+        Some(PipelineKnowledgeState::Stale | PipelineKnowledgeState::NeedsContext)
+    ) {
+        return Ok(vec![
+            responses::action(
+                "pipeline_knowledge_refresh",
+                json!({"request_id":request_id(run.id,run.revision,"knowledge-refresh"),
+                    "run_id":run.id,"run_revision":run.revision,"phase_id":phase_id}),
+            )?,
+            responses::action("slice_pipeline_context", json!({"run_id":run.id}))?,
+        ]);
+    }
     let action = match run.status {
         PipelineRunStatus::Active => {
             let ordinal = run.current_phase_ordinal.ok_or(Error::InternalInvariant)?;
@@ -86,12 +99,21 @@ fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
                     "digest":input.digest})
                 })
                 .collect::<Vec<_>>();
+            let mut params = json!({"request_id":request_id(run.id,run.revision,"complete"),
+                "run_id":run.id,"run_revision":run.revision,"phase_id":phase_id,
+                "consumed_outputs":consumed_outputs,"consumed_inputs":consumed_inputs});
+            if let Some(manifest) = context
+                .knowledge
+                .as_ref()
+                .filter(|manifest| !manifest.selected.is_empty())
+            {
+                params["consumed_knowledge"] =
+                    json!({"manifest_id":manifest.id,"digest":manifest.digest});
+            }
             crate::api::needs_action(
                 "needs_context",
                 "slice_pipeline_phase_complete",
-                json!({"request_id":request_id(run.id,run.revision,"complete"),
-                    "run_id":run.id,"run_revision":run.revision,"phase_id":phase_id,
-                    "consumed_outputs":consumed_outputs,"consumed_inputs":consumed_inputs}),
+                params,
                 "context_input",
                 json!({"fields":[
                     {"path":"arguments.params.outcome","format":"Caller-reported phase outcome allowed by the current verdict route."},

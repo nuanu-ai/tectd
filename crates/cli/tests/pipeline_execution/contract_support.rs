@@ -150,6 +150,7 @@ pub(super) fn valid_completion() -> CompletePipelinePhase {
         },
         consumed_outputs: vec![],
         consumed_inputs: vec![],
+        consumed_knowledge: None,
         revisit_phase_id: None,
         escalation_target: None,
         terminal_result: None,
