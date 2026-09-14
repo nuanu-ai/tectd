@@ -8,8 +8,18 @@ pub(super) async fn relational(
     workspace: Uuid,
     unit: Uuid,
 ) -> Result<i64> {
-    let direct:i64=sqlx::query_scalar("SELECT (SELECT count(*) FROM knowledge_unit_heads WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3 AND (NOT payload_erased OR proposal_fingerprint<>'[erased]'))+(SELECT count(*) FROM knowledge_revisions WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3 AND (NOT payload_erased OR constraint_payload IS NOT NULL OR document_payload IS NOT NULL OR source_sha256 IS NOT NULL OR rdf_digest IS NOT NULL))+(SELECT count(*) FROM knowledge_publication_events WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3 AND (NOT payload_erased OR event_payload IS NOT NULL OR rdf_digest IS NOT NULL))+(SELECT count(*) FROM knowledge_validation_events WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3 AND (NOT payload_erased OR sources IS NOT NULL OR source_pin_digest IS NOT NULL OR evidence_basis IS NOT NULL))+(SELECT count(*) FROM knowledge_changes WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3 AND (NOT payload_erased OR proposal_digest IS NOT NULL OR proposal_fingerprint IS NOT NULL OR source_sha256 IS NOT NULL OR semantic_diff IS NOT NULL OR baseline IS NOT NULL OR proposal IS NOT NULL OR binding_provenance IS NOT NULL OR reason IS NOT NULL OR authority_basis IS NOT NULL OR review IS NOT NULL OR publication_receipt IS NOT NULL))")
+    let mut direct:i64=sqlx::query_scalar("SELECT (SELECT count(*) FROM knowledge_unit_heads WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3 AND (NOT payload_erased OR proposal_fingerprint<>'[erased]'))+(SELECT count(*) FROM knowledge_revisions WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3 AND (NOT payload_erased OR constraint_payload IS NOT NULL OR document_payload IS NOT NULL OR source_sha256 IS NOT NULL OR rdf_digest IS NOT NULL))+(SELECT count(*) FROM knowledge_publication_events WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3 AND (NOT payload_erased OR event_payload IS NOT NULL OR rdf_digest IS NOT NULL))+(SELECT count(*) FROM knowledge_validation_events WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3 AND (NOT payload_erased OR sources IS NOT NULL OR source_pin_digest IS NOT NULL OR evidence_basis IS NOT NULL))+(SELECT count(*) FROM knowledge_changes WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3 AND (NOT payload_erased OR proposal_digest IS NOT NULL OR proposal_fingerprint IS NOT NULL OR source_sha256 IS NOT NULL OR semantic_diff IS NOT NULL OR baseline IS NOT NULL OR proposal IS NOT NULL OR binding_provenance IS NOT NULL OR reason IS NOT NULL OR authority_basis IS NOT NULL OR review IS NOT NULL OR publication_receipt IS NOT NULL))+(SELECT count(*) FROM knowledge_search_resources WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3)+(SELECT count(*) FROM knowledge_search_embedding_jobs WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3)")
         .bind(tenant).bind(workspace).bind(unit).fetch_one(&mut **tx).await.map_err(storage_error)?;
+    let vector_table: bool = sqlx::query_scalar(
+        "SELECT pg_catalog.to_regclass('public.knowledge_search_vectors') IS NOT NULL",
+    )
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    if vector_table {
+        direct+=sqlx::query_scalar::<_,i64>("SELECT count(*) FROM knowledge_search_vectors WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3")
+            .bind(tenant).bind(workspace).bind(unit).fetch_one(&mut **tx).await.map_err(storage_error)?;
+    }
     let copies:Vec<OwnedCopyStateRow>=sqlx::query_as("SELECT redacted,relation_name,row_id,row_revision,row_operation,row_request_id FROM knowledge_owned_copies WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3")
         .bind(tenant).bind(workspace).bind(unit).fetch_all(&mut **tx).await.map_err(storage_error)?;
     let mut readable = direct;
@@ -36,6 +46,9 @@ pub(super) async fn relational(
             "slice_candidate_drafts"=>versioned_clean(tx,tenant,workspace,"slice_candidate_drafts",row,revision).await?,
             "slice_candidate_reviews"=>versioned_clean(tx,tenant,workspace,"slice_candidate_reviews",row,revision).await?,
             "native_planning_receipts"=>planning_receipt_clean(tx,tenant,workspace,row,operation.as_deref().ok_or(Error::InternalInvariant)?,request.ok_or(Error::InternalInvariant)?).await?,
+            "knowledge_search_resources"=>key_clean(tx,tenant,workspace,"knowledge_search_resources","unit_id",row,"false").await?,
+            "knowledge_search_embedding_jobs"=>id_clean(tx,tenant,workspace,"knowledge_search_embedding_jobs",row,"false").await?,
+            "knowledge_search_vectors"=>if vector_table { key_clean(tx,tenant,workspace,"knowledge_search_vectors","unit_id",row,"false").await? } else { true },
             _=>return Err(Error::InternalInvariant),
         };
         if !marked || !clean {

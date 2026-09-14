@@ -321,10 +321,26 @@ pub(super) async fn refresh(
             ready(impact_reviewed(tx, tenant, workspace, receipt).await?),
             "stored impact, followups, and review coverage checked".into(),
         ),
-        KnowledgeEffectKind::Search => (
-            KnowledgeEffectStatus::NotConfigured,
-            "search is not configured".into(),
-        ),
+        KnowledgeEffectKind::Search
+            if completion.search == KnowledgeSearchRequirement::NotRequired =>
+        {
+            (
+                KnowledgeEffectStatus::NotApplicable,
+                "search completion was not required".into(),
+            )
+        }
+        KnowledgeEffectKind::Search => {
+            let units = receipt
+                .applied_operations
+                .iter()
+                .map(|value| value.unit_id)
+                .collect::<Vec<_>>();
+            (
+                crate::knowledge_search::search_effect_status(tx, tenant, workspace, &units, true)
+                    .await?,
+                "current canonical search projection checked".into(),
+            )
+        }
         KnowledgeEffectKind::VisibilityClosure if !closure => (
             KnowledgeEffectStatus::NotApplicable,
             "no retraction or erasure visibility closure applies".into(),
@@ -391,7 +407,8 @@ pub(super) fn required_complete(
     (!completion.exact_delivery || ready(KnowledgeEffectKind::ExactDelivery))
         && ready(KnowledgeEffectKind::Invalidation)
         && (!completion.impact_recorded || ready(KnowledgeEffectKind::Impact))
-        && completion.search == KnowledgeSearchRequirement::NotRequired
+        && (completion.search == KnowledgeSearchRequirement::NotRequired
+            || ready(KnowledgeEffectKind::Search))
         && ready(KnowledgeEffectKind::VisibilityClosure)
         && match completion.erasure {
             KnowledgeErasureRequirement::NotRequired => true,

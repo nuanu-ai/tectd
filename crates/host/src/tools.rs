@@ -11,6 +11,7 @@ pub(crate) enum Invocation {
     Pipeline(crate::pipeline_tools::PipelineInvocation),
     Knowledge(crate::knowledge_tools::KnowledgeInvocation),
     KnowledgeLifecycle(crate::knowledge_lifecycle_tools::KnowledgeLifecycleInvocation),
+    KnowledgeSearch(tect_domain::KnowledgeSearchQuery),
     Help(crate::api::HelpRequest),
     OpenWorkspace,
     GetState,
@@ -69,6 +70,9 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
             })
         }
         "help" => crate::api::parse_help(arguments).map(Invocation::Help),
+        "knowledge_search" => {
+            crate::knowledge_search_tools::parse(name, arguments).map(Invocation::KnowledgeSearch)
+        }
         _ if matches!(
             name,
             "knowledge_lifecycle"

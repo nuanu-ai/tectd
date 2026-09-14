@@ -85,6 +85,7 @@ impl RouteSpec {
             }
             "knowledge.lifecycle" => &["read knowledge lifecycle", "прочитать lifecycle knowledge"],
             "knowledge.unit" => &["read typed knowledge unit", "прочитать knowledge unit"],
+            "knowledge.search" => &["search knowledge", "найти knowledge"],
             "knowledge.change_begin" => &["begin knowledge change", "начать knowledge change"],
             "knowledge.change_phase_complete" => &[
                 "complete knowledge change phase",

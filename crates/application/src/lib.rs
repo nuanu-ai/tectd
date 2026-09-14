@@ -30,6 +30,12 @@ mod knowledge_lifecycle_ports;
 pub use knowledge_lifecycle_ports::{
     KnowledgeLifecycleDefinitionProvider, KnowledgeLifecycleStore, KnowledgeOutputGuard,
 };
+mod knowledge_search;
+mod knowledge_search_ports;
+pub use knowledge_search_ports::{
+    DisabledKnowledgeEmbeddingProvider, KnowledgeEmbeddingProvider, KnowledgeSearchOutputGuard,
+    KnowledgeSearchStore,
+};
 
 mod setup_access;
 mod setup_apply;

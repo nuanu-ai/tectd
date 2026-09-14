@@ -5,12 +5,16 @@ mod context;
 mod frame;
 mod git;
 mod knowledge_dispatch;
+mod knowledge_embedding;
 mod knowledge_lifecycle_definitions;
 mod knowledge_lifecycle_dispatch;
 mod knowledge_lifecycle_encoding;
 mod knowledge_lifecycle_output;
 mod knowledge_lifecycle_tools;
 mod knowledge_output;
+mod knowledge_search_dispatch;
+mod knowledge_search_output;
+mod knowledge_search_tools;
 mod knowledge_tools;
 mod mcp;
 mod pipeline_definitions;
@@ -39,6 +43,7 @@ mod workspace_output;
 
 pub use context::{HostContext, host_context_from_env};
 pub use git::GitSourceInspector;
+pub use knowledge_embedding::{LocalEmbeddingConfig, LocalKnowledgeEmbeddingWorker};
 pub use mcp::run_stdio;
 #[doc(hidden)]
 pub use scope_guidance::CandidateEncoding;

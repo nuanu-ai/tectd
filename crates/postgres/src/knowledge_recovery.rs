@@ -352,6 +352,8 @@ pub async fn apply_knowledge_suppression_manifest(
     sqlx::query("UPDATE durable_knowledge_capability SET erasure_sequence=$1,capability_ready=true,pgrdf_version='0.6.34',qualified_system_identifier=$2,qualified_database_oid=$3::bigint::oid,qualified_at=pg_catalog.clock_timestamp() WHERE singleton")
         .bind(manifest.high_water_erasure_sequence).bind(&report.qualified_identity.system_identifier)
         .bind(i64::from(report.qualified_identity.database_oid)).execute(&mut *tx).await.map_err(storage_error)?;
+    crate::knowledge_search_admin::qualify_restored_search(&mut tx, &report.qualified_identity)
+        .await?;
     sqlx::query("INSERT INTO knowledge_suppression_exports(database_lineage_id,erasure_sequence,manifest_digest) VALUES($1,$2,$3) ON CONFLICT DO NOTHING")
         .bind(expected.database_lineage_id).bind(expected.erasure_sequence).bind(&expected.manifest_digest)
         .execute(&mut *tx).await.map_err(storage_error)?;

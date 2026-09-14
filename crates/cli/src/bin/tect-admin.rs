@@ -25,6 +25,8 @@ enum Command {
         runtime_role: String,
         #[arg(long)]
         enable_durable_knowledge: bool,
+        #[arg(long)]
+        enable_knowledge_vector_search: bool,
     },
     Enroll {
         #[arg(long)]
@@ -85,10 +87,14 @@ async fn run(arguments: Arguments) -> Result<()> {
         Command::Migrate {
             runtime_role,
             enable_durable_knowledge,
+            enable_knowledge_vector_search,
         } => {
             tect_postgres::admin::migrate(&pool, &runtime_role).await?;
             if enable_durable_knowledge {
                 tect_postgres::enable_durable_knowledge(&pool, &runtime_role).await?;
+            }
+            if enable_knowledge_vector_search {
+                tect_postgres::enable_knowledge_vector_search(&pool, &runtime_role).await?;
             }
             println!("migration complete for runtime role {runtime_role}");
         }
@@ -300,4 +306,42 @@ fn write_and_link(temporary: &Path, destination: &Path, auth: &HostAuth) -> Resu
         .and_then(|created| created.sync_all())
         .map_err(|_| Error::InvalidConfiguration)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vector_search_activation_is_an_explicit_migrate_flag() {
+        let args = Arguments::try_parse_from([
+            "tect-admin",
+            "migrate",
+            "--runtime-role",
+            "tect_runtime",
+            "--enable-knowledge-vector-search",
+        ])
+        .unwrap();
+        let Command::Migrate {
+            enable_durable_knowledge,
+            enable_knowledge_vector_search,
+            ..
+        } = args.command
+        else {
+            panic!("migrate")
+        };
+        assert!(!enable_durable_knowledge);
+        assert!(enable_knowledge_vector_search);
+        let default =
+            Arguments::try_parse_from(["tect-admin", "migrate", "--runtime-role", "tect_runtime"])
+                .unwrap();
+        let Command::Migrate {
+            enable_knowledge_vector_search,
+            ..
+        } = default.command
+        else {
+            panic!("migrate")
+        };
+        assert!(!enable_knowledge_vector_search);
+    }
 }

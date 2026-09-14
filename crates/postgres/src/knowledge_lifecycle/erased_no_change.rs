@@ -106,7 +106,6 @@ async fn state_is_complete(
         || value.head_lifecycle.as_deref() != Some("erased")
         || value.head_closed != Some(true)
         || expected_lifecycle != KnowledgeLifecycleState::Erased
-        || completion.search != KnowledgeSearchRequirement::NotRequired
         || matches!(
             completion.erasure,
             KnowledgeErasureRequirement::NotRequired

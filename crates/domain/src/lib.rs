@@ -15,6 +15,7 @@ mod knowledge_lifecycle_validation;
 mod knowledge_operation_validation;
 mod knowledge_phase_validation;
 mod knowledge_profile_registry;
+mod knowledge_search;
 mod knowledge_time;
 mod program;
 mod program_page;
@@ -37,6 +38,7 @@ pub use knowledge_erased_no_change::*;
 pub use knowledge_lifecycle::*;
 pub use knowledge_lifecycle_execution::*;
 pub use knowledge_profile_registry::*;
+pub use knowledge_search::*;
 pub use state::{
     Created, EventKind, NativeKnowledgeChangeSummary, NativePipelineRunSummary,
     NativePlanningSummary, NativeSliceSummary, NativeWorkCandidateSummary, Session, StateStatus,

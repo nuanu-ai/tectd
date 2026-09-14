@@ -103,7 +103,8 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "knowledge.context",
             "knowledge.change",
             "knowledge.lifecycle",
-            "knowledge.unit"
+            "knowledge.unit",
+            "knowledge.search"
         ])
     );
     let command = tools.iter().find(|tool| tool["name"] == "command").unwrap();

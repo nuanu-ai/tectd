@@ -42,7 +42,9 @@ pub(crate) async fn verify_runtime_role(pool: &PgPool) -> Result<()> {
                          'knowledge_change_outputs','knowledge_change_attempts','knowledge_change_output_bindings',
                          'knowledge_change_inputs','knowledge_lifecycle_command_receipts','knowledge_validation_events',
                          'knowledge_lifecycle_effects','knowledge_owned_copies','knowledge_suppression_ledger',
-                         'knowledge_suppression_exports','knowledge_supersessions'
+                         'knowledge_suppression_exports','knowledge_supersessions',
+                         'knowledge_search_capability','knowledge_search_resources',
+                         'knowledge_search_embedding_jobs','knowledge_search_vectors'
                      )
                      AND pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER')
                ) OR EXISTS (
@@ -52,7 +54,7 @@ pub(crate) async fn verify_runtime_role(pool: &PgPool) -> Result<()> {
                    WHERE n.nspname = 'public'
                      AND p.proname IN ('tect_authenticate_host', 'tect_preserve_created_at',
                          'tect_dk_native_publish','tect_dk_native_read','tect_dk_session_principal','tect_dk_is_owner','tect_dk_ensure_workspace_state','tect_dk_capability','tect_dk_database_identity_ready',
-                         'tect_dk_internal_native_publish','tect_dk_internal_native_read','tect_dk_internal_native_owned_residual','tect_dk2_internal_native_publish','tect_dk2_internal_native_read','tect_dk_internal_native_erase','tect_dk_internal_capability')
+                         'tect_dk_internal_native_publish','tect_dk_internal_native_read','tect_dk_internal_native_owned_residual','tect_dk2_internal_native_publish','tect_dk2_internal_native_read','tect_dk_internal_native_erase','tect_dk_internal_capability','tect_dk_search_vector_ready')
                      AND pg_catalog.pg_has_role(r.oid, p.proowner, 'MEMBER')
                ),
                EXISTS (SELECT 1 FROM pg_catalog.pg_namespace n WHERE n.nspname='pgrdf' AND pg_catalog.has_schema_privilege(CURRENT_USER,n.oid,'USAGE'))

@@ -22,6 +22,7 @@ use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use support::{open_slice, ready_source_candidate, repository, review, route, save};
+use tect_domain::{KnowledgeEmbeddingJobCompletion, KnowledgeEmbeddingModelIdentity};
 use tect_postgres::admin;
 use uuid::Uuid;
 
@@ -76,6 +77,9 @@ async fn managed_restore_reapplies_complete_suppression_and_preserves_survivor()
     tect_postgres::enable_durable_knowledge(&pool, &role)
         .await
         .unwrap();
+    tect_postgres::enable_knowledge_vector_search(&pool, &role)
+        .await
+        .unwrap();
     let temp = private_temp();
     let root = temp.path().canonicalize().unwrap();
     let repo = root.join("source");
@@ -106,6 +110,35 @@ async fn managed_restore_reapplies_complete_suppression_and_preserves_survivor()
     survivor_document["sources"][0]["snapshot"]["uri"] = json!("urn:independent-survivor");
     let survivor = commit_create(&mut client, survivor_document).await;
     let survivor_unit = survivor.receipt["applied_operations"][0]["unit_id"].clone();
+    let survivor_uuid = Uuid::parse_str(survivor_unit.as_str().unwrap()).unwrap();
+    let (survivor_job, survivor_input): (Uuid, String) = sqlx::query_as(
+        "SELECT id,input_digest FROM knowledge_search_embedding_jobs WHERE unit_id=$1",
+    )
+    .bind(survivor_uuid)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let restored_lease = Uuid::new_v4();
+    sqlx::query(
+        "UPDATE knowledge_search_embedding_jobs SET state='leased',lease_token=$2,\
+         lease_expires_at=pg_catalog.clock_timestamp()+interval '1 hour' WHERE id=$1",
+    )
+    .bind(survivor_job)
+    .bind(restored_lease)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let restored_completion = KnowledgeEmbeddingJobCompletion {
+        job_id: survivor_job,
+        lease_token: restored_lease,
+        input_digest: survivor_input,
+        model: KnowledgeEmbeddingModelIdentity::pinned(),
+        values: {
+            let mut values = vec![0.0; 384];
+            values[0] = 1.0;
+            values
+        },
+    };
     let origin = begin_consumer(&mut client, &repo).await;
     assert!(
         origin["knowledge_resources"]["selected"]
@@ -143,6 +176,14 @@ async fn managed_restore_reapplies_complete_suppression_and_preserves_survivor()
         tect_postgres::record_knowledge_suppression_export(&pool, &older_manifest)
             .await
             .unwrap();
+    sqlx::query(
+        "UPDATE knowledge_search_capability SET vector_ready=false,pgvector_version=NULL,\
+         model_name=NULL,model_revision=NULL,dimensions=NULL,recipe=NULL,\
+         qualified_system_identifier=NULL,qualified_database_oid=NULL,activated_at=NULL",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     let backup = knowledge_suppression_backup_support::capture(&pool, &admin_url, &root).await;
 
     let erased = commit_single(
@@ -197,6 +238,7 @@ async fn managed_restore_reapplies_complete_suppression_and_preserves_survivor()
         &marker,
         &survivor_unit,
         &survivor.exact,
+        &restored_completion,
     )
     .await;
     pool.close().await;

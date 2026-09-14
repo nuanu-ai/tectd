@@ -5,6 +5,7 @@ mod recovery;
 mod redact;
 mod registry;
 mod residual;
+mod search;
 
 pub(crate) use recovery::reconcile_change_owned_copies;
 pub(crate) use registry::{
@@ -13,6 +14,7 @@ pub(crate) use registry::{
     register_pipeline_phase_copies, register_pipeline_receipt_copies,
     register_pipeline_run_origin_copies,
 };
+pub(crate) use search::{reconcile_absent_search_copies, register_search_copies};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct KnowledgeOwnedPurgeReport {
@@ -70,6 +72,7 @@ pub(crate) async fn suppress_owned_unit(
                 native_count(&native, "dictionary_terms_deleted")?,
             )
         };
+    crate::knowledge_search::invalidate_unit(tx, tenant, workspace, unit).await?;
     let mut relational_rows_redacted = redact::canonical(tx, tenant, workspace, unit).await?;
     relational_rows_redacted += redact::registered(tx, tenant, workspace, unit).await?;
     let residual = residual_owned_unit(tx, tenant, workspace, unit).await?;

@@ -140,6 +140,9 @@ pub(super) async fn registered(
             "slice_candidate_drafts"=>sqlx::query("UPDATE slice_candidate_drafts SET payload=NULL,payload_erased=true WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 AND set_revision=$4").bind(tenant).bind(workspace).bind(row).bind(revision).execute(&mut **tx).await,
             "slice_candidate_reviews"=>sqlx::query("UPDATE slice_candidate_reviews SET payload=NULL,payload_erased=true WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 AND set_revision=$4").bind(tenant).bind(workspace).bind(row).bind(revision).execute(&mut **tx).await,
             "native_planning_receipts"=>sqlx::query("UPDATE native_planning_receipts SET request_payload=NULL,result_payload=NULL,payload_erased=true WHERE tenant_id=$1 AND workspace_id=$2 AND entity_id=$3 AND operation=$4 AND request_id=$5").bind(tenant).bind(workspace).bind(row).bind(operation.ok_or(Error::InternalInvariant)?).bind(request.ok_or(Error::InternalInvariant)?).execute(&mut **tx).await,
+            "knowledge_search_resources"=>sqlx::query("DELETE FROM knowledge_search_resources WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3").bind(tenant).bind(workspace).bind(row).execute(&mut **tx).await,
+            "knowledge_search_embedding_jobs"=>sqlx::query("DELETE FROM knowledge_search_embedding_jobs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3").bind(tenant).bind(workspace).bind(row).execute(&mut **tx).await,
+            "knowledge_search_vectors"=>sqlx::query("DELETE FROM knowledge_search_vectors WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3").bind(tenant).bind(workspace).bind(row).execute(&mut **tx).await,
             _=>return Err(Error::InternalInvariant),
         }.map_err(storage_error)?;
         changed += result.rows_affected() as i64;

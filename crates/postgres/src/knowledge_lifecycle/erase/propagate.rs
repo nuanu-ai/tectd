@@ -17,6 +17,7 @@ pub(super) async fn reconcile_unit(
     unit: Uuid,
 ) -> Result<()> {
     recovery::reconcile_unit_direct(tx, tenant, workspace, unit).await?;
+    super::search::register_search_copies(tx, tenant, workspace, unit).await?;
     let manifests:Vec<(Uuid,i64)>=sqlx::query_as("SELECT DISTINCT m.id,(item->>'revision')::bigint FROM pipeline_knowledge_manifests m CROSS JOIN LATERAL pg_catalog.jsonb_array_elements(COALESCE(m.selected,'[]'::jsonb)||COALESCE(m.selected_resources,'[]'::jsonb)) item WHERE m.tenant_id=$1 AND m.workspace_id=$2 AND item->>'unit_id'=$3::text ORDER BY 1,2")
         .bind(tenant).bind(workspace).bind(unit).fetch_all(&mut **tx).await.map_err(storage_error)?;
     for (row, revision) in manifests {

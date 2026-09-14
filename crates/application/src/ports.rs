@@ -27,6 +27,7 @@ pub trait UnitOfWork:
     + crate::PipelineExecutionStore
     + crate::DurableKnowledgeStore
     + crate::KnowledgeLifecycleStore
+    + crate::KnowledgeSearchStore
 {
     async fn authenticate(&mut self, auth: &HostAuth) -> Result<HostIdentity>;
     async fn set_tenant(&mut self, tenant_id: Uuid) -> Result<()>;

@@ -1,6 +1,6 @@
 use crate::{
     DK2_MAX_OPERATIONS, Error, KnowledgeCompletionRequirement, KnowledgeErasureRequirement,
-    KnowledgeLifecycleState, KnowledgeSearchRequirement, Result,
+    KnowledgeLifecycleState, Result,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -27,7 +27,6 @@ impl KnowledgeErasedNoChangeProof {
     pub fn validate(&self) -> Result<()> {
         if self.operations.is_empty()
             || self.operations.len() > DK2_MAX_OPERATIONS
-            || self.completion.search != KnowledgeSearchRequirement::NotRequired
             || matches!(
                 self.completion.erasure,
                 KnowledgeErasureRequirement::NotRequired
@@ -65,6 +64,7 @@ impl KnowledgeErasedNoChangeProof {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::KnowledgeSearchRequirement;
 
     fn proof() -> KnowledgeErasedNoChangeProof {
         KnowledgeErasedNoChangeProof {

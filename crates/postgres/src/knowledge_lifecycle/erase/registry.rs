@@ -23,6 +23,9 @@ pub(super) enum CopyRelation {
     CandidateDraft,
     CandidateReview,
     PlanningReceipt,
+    SearchResource,
+    SearchJob,
+    SearchVector,
 }
 
 impl CopyRelation {
@@ -49,6 +52,9 @@ impl CopyRelation {
             Self::CandidateDraft => "slice_candidate_drafts",
             Self::CandidateReview => "slice_candidate_reviews",
             Self::PlanningReceipt => "native_planning_receipts",
+            Self::SearchResource => "knowledge_search_resources",
+            Self::SearchJob => "knowledge_search_embedding_jobs",
+            Self::SearchVector => "knowledge_search_vectors",
         }
     }
 }

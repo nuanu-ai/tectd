@@ -271,10 +271,29 @@ pub(super) async fn refresh(
             ready(retained.status == KnowledgeEffectStatus::Ready),
             "transactional pre-scrub impact and followup attestation retained".into(),
         ),
-        KnowledgeEffectKind::Search => (
-            KnowledgeEffectStatus::NotConfigured,
-            "search is not configured".into(),
-        ),
+        KnowledgeEffectKind::Search
+            if receipt.completion.search == KnowledgeSearchRequirement::NotRequired =>
+        {
+            (
+                KnowledgeEffectStatus::NotApplicable,
+                "search completion was not required".into(),
+            )
+        }
+        KnowledgeEffectKind::Search => {
+            let units = receipt
+                .operations
+                .iter()
+                .map(|value| match value {
+                    KnowledgeRetainedOperationReceipt::PayloadErased(value) => value.unit_id,
+                    KnowledgeRetainedOperationReceipt::Intact(value) => value.unit_id,
+                })
+                .collect::<Vec<_>>();
+            (
+                crate::knowledge_search::search_effect_status(tx, tenant, workspace, &units, true)
+                    .await?,
+                "current canonical search projection checked".into(),
+            )
+        }
         KnowledgeEffectKind::VisibilityClosure if !has_erased && !has_retract => (
             KnowledgeEffectStatus::NotApplicable,
             "no retraction or erasure visibility closure applies".into(),

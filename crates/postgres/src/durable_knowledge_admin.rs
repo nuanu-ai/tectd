@@ -194,6 +194,8 @@ pub async fn enable_durable_knowledge(pool: &PgPool, runtime_role: &str) -> Resu
         .execute(&mut *tx).await.map_err(storage_error)?;
     sqlx::query("INSERT INTO workspace_knowledge_state(tenant_id,workspace_id,capability_ready,pgrdf_version,activated_at) SELECT tenant_id,id,true,'0.6.34',pg_catalog.clock_timestamp() FROM workspaces ON CONFLICT(tenant_id,workspace_id) DO UPDATE SET capability_ready=true,pgrdf_version='0.6.34',activated_at=pg_catalog.clock_timestamp()")
         .execute(&mut *tx).await.map_err(storage_error)?;
+    crate::knowledge_search_admin::grant_search_runtime(&mut tx, runtime_role).await?;
+    crate::knowledge_search_admin::backfill_all(&mut tx).await?;
     for statement in [
         format!(
             "REVOKE ALL PRIVILEGES ON FUNCTION public.tect_dk_internal_native_publish(uuid,uuid,uuid,text,text,text),public.tect_dk_internal_native_read(uuid,uuid,uuid,bigint,uuid),public.tect_dk_internal_native_owned_residual(uuid,uuid,uuid),public.tect_dk2_internal_native_publish(uuid,uuid,uuid,text,text,text),public.tect_dk2_internal_native_read(uuid,uuid,uuid,bigint,uuid,boolean),public.tect_dk_internal_native_erase(uuid,uuid,uuid),public.tect_dk_internal_capability() FROM {role}"

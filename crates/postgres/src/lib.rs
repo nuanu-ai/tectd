@@ -6,6 +6,9 @@ mod durable_knowledge_store;
 mod knowledge_lifecycle;
 mod knowledge_lifecycle_store;
 mod knowledge_recovery;
+mod knowledge_search;
+mod knowledge_search_admin;
+mod knowledge_search_store;
 mod native_planning;
 mod native_planning_store;
 mod pipeline_execution;
@@ -28,6 +31,7 @@ pub use knowledge_recovery::{
     knowledge_suppression_manifest_bytes, parse_knowledge_suppression_manifest,
     prepare_knowledge_suppression_manifest, record_knowledge_suppression_export,
 };
+pub use knowledge_search_admin::enable_knowledge_vector_search;
 pub use store::PgStore;
 
 use tect_domain::Error;

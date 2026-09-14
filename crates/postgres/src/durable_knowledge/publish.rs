@@ -181,6 +181,15 @@ pub(crate) async fn publish(
     .execute(&mut **tx)
     .await
     .map_err(storage_error)?;
+    crate::knowledge_search::project_legacy(
+        tx,
+        tenant,
+        workspace,
+        principal,
+        change.unit_id,
+        next_generation,
+    )
+    .await?;
     sqlx::query("INSERT INTO knowledge_effect_outbox(id,tenant_id,workspace_id,publication_event_id,effect) VALUES($1,$2,$3,$4,'invalidate_phase_context')").bind(Uuid::new_v4()).bind(tenant).bind(workspace).bind(event).execute(&mut **tx).await.map_err(storage_error)?;
     let receipt_value = KnowledgePublicationReceipt {
         id: Uuid::new_v4(),

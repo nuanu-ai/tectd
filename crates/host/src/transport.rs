@@ -174,6 +174,8 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
     };
 
     let result = timeout(OPERATION_TIMEOUT, async {
+        let context = &request.context;
+        let capacity = request.output_capacity;
         match invocation {
             Invocation::OpenWorkspace => service
                 .open_workspace(&request.context)
@@ -228,22 +230,14 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 .await
             }
             Invocation::Knowledge(invocation) => {
-                crate::knowledge_dispatch::execute(
-                    &request.context,
-                    invocation,
-                    service,
-                    request.output_capacity,
-                )
-                .await
+                crate::knowledge_dispatch::execute(context, invocation, service, capacity).await
             }
             Invocation::KnowledgeLifecycle(invocation) => {
-                crate::knowledge_lifecycle_dispatch::execute(
-                    &request.context,
-                    invocation,
-                    service,
-                    request.output_capacity,
-                )
-                .await
+                crate::knowledge_lifecycle_dispatch::execute(context, invocation, service, capacity)
+                    .await
+            }
+            Invocation::KnowledgeSearch(query) => {
+                crate::knowledge_search_dispatch::execute(context, query, service, capacity).await
             }
             Invocation::Help(help_request) => {
                 service.authenticate_host(&request.context).await?;

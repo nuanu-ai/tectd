@@ -250,8 +250,8 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
         for tool in tools if tool["name"] in {"query", "command", "execute"}
     }
     proof.check(
-        "five-tool facade exposes the exact DK-2 route totals",
-        route_counts == {"query": 14, "command": 33, "execute": 1},
+        "five-tool facade exposes the exact DK-3 route totals",
+        route_counts == {"query": 15, "command": 33, "execute": 1},
         route_counts,
     )
     proof.persist()
@@ -300,11 +300,52 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
         "knowledge.change_record_input",
         "knowledge.change_commit",
         "knowledge.change_settle_effects",
+        "knowledge.search",
     }
     proof.check(
-        "native help discovers the exact thirteen DK-1 and DK-2 routes",
+        "native help discovers the exact fourteen DK-1 through DK-3 routes",
         not failed and knowledge_routes == expected_knowledge_routes,
         sorted(route for route in knowledge_routes if isinstance(route, str)),
+    )
+    search_description, failed = tool_result(
+        app,
+        thread_id,
+        "help",
+        {"mode": "describe", "tool": "query", "route": "knowledge.search"},
+    )
+    search_variants = search_description.get("params_schema", {}).get("oneOf", [])
+    proof.check(
+        "native help exposes strict lexical graph and super-wide search variants",
+        not failed
+        and search_description.get("kind") == "route"
+        and search_description.get("tool") == "query"
+        and search_description.get("route") == "knowledge.search"
+        and [variant.get("properties", {}).get("mode", {}).get("const") for variant in search_variants]
+        == ["lexical", "graph_search", "super_wide", "super_wide"]
+        and all(variant.get("additionalProperties") is False for variant in search_variants)
+        and search_variants[0].get("properties", {}).get("include_graph", {}).get("const") is False
+        and search_variants[1].get("properties", {}).get("seeds", {}).get("minItems") == 1
+        and search_variants[1].get("properties", {}).get("max_depth", {}).get("maximum") == 4
+        and search_variants[3].get("properties", {}).get("include_graph", {}).get("const") is True,
+        {"variant_count": len(search_variants), "modes": [
+            variant.get("properties", {}).get("mode", {}).get("const") for variant in search_variants
+        ]},
+    )
+    invalid_search, invalid_search_failed = tool_result(
+        app,
+        thread_id,
+        "query",
+        {"route": "knowledge.search", "params": {
+            "mode": "lexical", "query": "current knowledge", "direction": "both",
+            "purpose": "Verify strict metadata-only search decoding.",
+        }},
+    )
+    proof.check(
+        "inactive fixture rejects cross-mode search fields at the public typed boundary",
+        invalid_search_failed
+        and invalid_search.get("error", {}).get("code") == "invalid_arguments"
+        and all(key not in invalid_search for key in ("results", "vector_status", "graph")),
+        {"error_code": invalid_search.get("error", {}).get("code")},
     )
     knowledge_description, failed = tool_result(
         app,
@@ -353,6 +394,22 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
         and exact_knowledge.get("error", {}).get("code") == "knowledge_unavailable"
         and all(key not in exact_knowledge for key in ("capability", "exact_revision", "document", "constraint")),
         {"error_code": exact_knowledge.get("error", {}).get("code")},
+    )
+    inactive_search, inactive_search_failed = tool_result(
+        app,
+        thread_id,
+        "query",
+        {"route": "knowledge.search", "params": {
+            "mode": "lexical", "query": "current knowledge",
+            "purpose": "Verify inactive metadata-only behavior without native dependencies.",
+        }},
+    )
+    proof.check(
+        "inactive metadata refuses valid search without requiring native search dependencies",
+        inactive_search_failed
+        and inactive_search.get("error", {}).get("code") == "knowledge_unavailable"
+        and all(key not in inactive_search for key in ("results", "vector_status", "graph")),
+        {"error_code": inactive_search.get("error", {}).get("code")},
     )
 
     programs, failed = tool_result(app, thread_id, "query", {"route": "program.list", "params": {"limit": 25}})

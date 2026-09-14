@@ -1,5 +1,7 @@
 use super::recovery_support::{Daemon, Mcp};
 use super::support::{route, route_error};
+#[path = "knowledge_search_restore_support.rs"]
+mod knowledge_search_restore_support;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{
@@ -14,6 +16,7 @@ use std::{
     process::Stdio,
     time::Duration,
 };
+use tect_domain::KnowledgeEmbeddingJobCompletion;
 use tect_postgres::{KnowledgeSuppressionCheckpoint, KnowledgeSuppressionManifest};
 use tokio::process::Command;
 use uuid::Uuid;
@@ -201,6 +204,7 @@ pub async fn restore_apply_and_verify(
     erased_marker: &str,
     survivor_unit: &Value,
     survivor_expected: &Value,
+    restored_completion: &KnowledgeEmbeddingJobCompletion,
 ) {
     let database = format!("tect_dk_suppression_restore_{}", Uuid::new_v4().simple());
     let maintenance = PgPool::connect(&database_url(admin_url, "postgres"))
@@ -301,6 +305,7 @@ pub async fn restore_apply_and_verify(
             .await;
     assert!(blocked_native.is_err());
     runtime_pool.close().await;
+    knowledge_search_restore_support::verify_blocked(&pool, &runtime, restored_completion).await;
     let blocked_socket = directory.join("suppression-blocked.sock");
     let mut blocked_daemon = Command::new(env!("CARGO_BIN_EXE_tectd"))
         .env("TECT_DATABASE_URL", &runtime)
@@ -333,11 +338,31 @@ pub async fn restore_apply_and_verify(
         .unwrap();
     assert_eq!(report.remaining, 0);
     assert_eq!(report.units_suppressed, manifest.entries.len() as i64);
+    knowledge_search_restore_support::verify_requalified(
+        &pool,
+        &runtime,
+        config,
+        workspace,
+        Uuid::parse_str(survivor_unit.as_str().unwrap()).unwrap(),
+        restored_completion,
+        runtime_role,
+    )
+    .await;
     let entry = manifest
         .entries
         .iter()
         .find(|entry| entry.unit_id.to_string() == erased_unit.as_str().unwrap())
         .unwrap();
+    let erased_search: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM knowledge_search_resources WHERE unit_id=$1),\
+         (SELECT count(*) FROM knowledge_search_embedding_jobs WHERE unit_id=$1),\
+         (SELECT count(*) FROM knowledge_search_vectors WHERE unit_id=$1)",
+    )
+    .bind(entry.unit_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(erased_search, (0, 0, 0));
     let result_copies: (i64, i64) = sqlx::query_as(
         "SELECT count(*),count(*) FILTER (WHERE r.payload_erased AND r.summary IS NULL \
          AND r.evidence IS NULL AND r.knowledge_publisher_receipt_digest IS NULL) \

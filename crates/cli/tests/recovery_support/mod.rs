@@ -127,13 +127,17 @@ pub struct Daemon {
 }
 impl Daemon {
     pub async fn start(url: &str, socket: PathBuf) -> Self {
+        Self::start_with(Path::new(env!("CARGO_BIN_EXE_tectd")), url, socket).await
+    }
+
+    pub async fn start_with(binary: &Path, url: &str, socket: PathBuf) -> Self {
         let log = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
             .open(socket.with_extension("stderr"))
             .unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_tectd"))
+        let mut child = Command::new(binary)
             .env("TECT_DATABASE_URL", url)
             .env("TECT_SOCKET", &socket)
             .stdin(Stdio::null())
@@ -193,7 +197,24 @@ pub struct Mcp {
 impl Mcp {
     /// Native IDs here are explicitly synthetic integration fixtures.
     pub async fn start(socket: &Path, config: &Path, native: &str, key: &str) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_tectd-mcp"))
+        Self::start_with(
+            Path::new(env!("CARGO_BIN_EXE_tectd-mcp")),
+            socket,
+            config,
+            native,
+            key,
+        )
+        .await
+    }
+
+    pub async fn start_with(
+        binary: &Path,
+        socket: &Path,
+        config: &Path,
+        native: &str,
+        key: &str,
+    ) -> Self {
+        let mut child = Command::new(binary)
             .env("TECT_SOCKET", socket)
             .env("TECT_HOST_CONFIG", config)
             .env("TECT_WORKSPACE_KEY", key)

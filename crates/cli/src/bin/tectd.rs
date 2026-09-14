@@ -7,6 +7,9 @@ use tect_domain::Error;
 use tect_postgres::PgStore;
 use tokio::net::UnixListener;
 
+#[path = "../knowledge_search_worker.rs"]
+mod knowledge_search_worker;
+
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
@@ -22,11 +25,27 @@ async fn run() -> tect_domain::Result<()> {
     reject_existing_path(&socket)?;
 
     let store = Arc::new(PgStore::connect(&database_url, 16).await?);
-    let service = Arc::new(WorkspaceService::new(
+    let mut service = WorkspaceService::new(
         store,
         Arc::new(tect_host::GitSourceInspector),
         Arc::new(tect_host::LocalSetupFiles),
-    ));
+    );
+    let embedding_enabled = match tect_host::LocalEmbeddingConfig::from_env() {
+        Ok(Some(config)) => {
+            service = service.with_knowledge_embedding_provider(Arc::new(
+                tect_host::LocalKnowledgeEmbeddingWorker::new(config),
+            ));
+            true
+        }
+        Ok(None) | Err(_) => false,
+    };
+    let service = Arc::new(service);
+    let search_worker = if embedding_enabled {
+        knowledge_search_worker::SearchWorkerConfig::from_env()?
+            .map(|config| tokio::spawn(knowledge_search_worker::run(service.clone(), config)))
+    } else {
+        None
+    };
     let listener = UnixListener::bind(&socket).map_err(|_| Error::InvalidConfiguration)?;
     let guard = SocketGuard::capture(socket)?;
     guard.set_private()?;
@@ -34,11 +53,13 @@ async fn run() -> tect_domain::Result<()> {
     let mut server = tokio::spawn(tect_host::serve(listener, service));
     tokio::select! {
         result = &mut server => {
+            if let Some(worker) = &search_worker { worker.abort(); }
             result.map_err(|_| Error::TransportUnavailable)?
         }
         signal = tokio::signal::ctrl_c() => {
             signal.map_err(|_| Error::TransportUnavailable)?;
             server.abort();
+            if let Some(worker) = &search_worker { worker.abort(); }
             let _ = server.await;
             Ok(())
         }

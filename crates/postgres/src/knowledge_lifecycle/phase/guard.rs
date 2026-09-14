@@ -191,9 +191,6 @@ pub(super) async fn seal_gate(
     generation: i64,
 ) -> Result<KnowledgeReadyToCommit> {
     let completion:KnowledgeCompletionRequirement=decode(sqlx::query_scalar("SELECT completion FROM knowledge_lifecycle_changes WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3").bind(tenant).bind(workspace).bind(change).fetch_one(&mut **tx).await.map_err(storage_error)?)?;
-    if completion.search == KnowledgeSearchRequirement::Required {
-        return Err(Error::KnowledgeUnavailable);
-    }
     if completion.erasure == KnowledgeErasureRequirement::AllRetainedCopies {
         return Err(Error::UnsupportedCompletionRequirement);
     }
