@@ -169,6 +169,7 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
 
     entry = catalogue.get("knowledge_change_entry", {})
     definition = entry.get("definition", {})
+    overview = definition.get("overview", {})
     phases = definition.get("phases", [])
     phase_ids = [phase.get("id") for phase in phases]
     phase_methods = {method.get("id") for phase in phases
@@ -196,12 +197,24 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
           and entry.get("context_route") == "knowledge.lifecycle"
           and definition.get("default_mode") == "whole"
           and definition.get("allowed_modes") == ["whole", "phasewise"]
+          and definition.get("version") == "0.3.0-dk3.1"
+          and definition.get("registry_version") == "0.2.0-dk2.1"
+          and overview.get("version") == "0.3.0-dk3.1"
+          and overview.get("origin_refs") == ["crates/host/knowledge-methods/overview-dk3.md"]
+          and "With optional vector capability enabled" in overview.get("body", "")
+          and "Vector/search work is not configured" not in overview.get("body", "")
+          and "Required unavailable capabilities block" not in overview.get("body", "")
+          and definition.get("completion_contract_ref", {}).get("version") == "0.3.0-dk3.1"
+          and definition.get("escalation_contract_ref", {}).get("version") == "0.3.0-dk3.1"
           and phase_ids == expected_phases and len(phase_methods) == 9
           and profile_methods == expected_profiles
           and catalogue.get("phase_counts", {}).get("knowledge_change_phases") == 12
           and promotion_declares_unconfigured_vectors,
           {"phase_ids":phase_ids,"phase_method_ids":sorted(phase_methods),
            "profile_method_ids":sorted(profile_methods),
+           "knowledge_change_version":definition.get("version"),
+           "knowledge_change_overview_version":overview.get("version"),
+           "knowledge_change_overview_digest":overview.get("digest"),
            "promotion_method_declares_unconfigured_vectors":promotion_declares_unconfigured_vectors})
 
     sc, cand = source["context"], source["candidate"]

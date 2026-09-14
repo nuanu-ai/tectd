@@ -3,7 +3,8 @@ use sha2::{Digest, Sha256};
 use tect_application::KnowledgeLifecycleDefinitionProvider;
 use tect_domain::*;
 
-const VERSION: &str = "0.2.0-dk2.1";
+const REGISTRY_VERSION: &str = "0.2.0-dk2.1";
+const DEFINITION_VERSION: &str = "0.3.0-dk3.1";
 const ROOT: &str = "crates/host/knowledge-methods/";
 
 pub(crate) struct StaticKnowledgeLifecycleDefinitions;
@@ -11,10 +12,11 @@ pub(crate) struct StaticKnowledgeLifecycleDefinitions;
 impl KnowledgeLifecycleDefinitionProvider for StaticKnowledgeLifecycleDefinitions {
     fn definition(&self) -> Result<KnowledgeChangeDefinition> {
         let registry = self.registry()?;
-        let overview = snapshot(
+        let overview = snapshot_version(
             "tect:knowledge-change:overview",
-            "overview.md",
-            include_str!("../knowledge-methods/overview.md"),
+            DEFINITION_VERSION,
+            "overview-dk3.md",
+            include_str!("../knowledge-methods/overview-dk3.md"),
         );
         let profile_methods: Vec<_> = registry
             .profiles
@@ -80,7 +82,7 @@ impl KnowledgeLifecycleDefinitionProvider for StaticKnowledgeLifecycleDefinition
             });
         }
         let mut value = KnowledgeChangeDefinition {
-            version: VERSION.into(),
+            version: DEFINITION_VERSION.into(),
             digest: String::new(),
             registry_version: registry.version.clone(),
             registry_digest: registry.digest.clone(),
@@ -88,15 +90,17 @@ impl KnowledgeLifecycleDefinitionProvider for StaticKnowledgeLifecycleDefinition
             default_mode: PipelineDeliveryMode::Whole,
             allowed_modes: vec![PipelineDeliveryMode::Whole, PipelineDeliveryMode::Phasewise],
             phases,
-            completion_contract_ref: contract_ref(
+            completion_contract_ref: contract_ref_version(
                 "tect:knowledge-change:completion",
-                "overview.md",
-                include_str!("../knowledge-methods/overview.md"),
+                DEFINITION_VERSION,
+                "overview-dk3.md",
+                include_str!("../knowledge-methods/overview-dk3.md"),
             ),
-            escalation_contract_ref: contract_ref(
+            escalation_contract_ref: contract_ref_version(
                 "tect:knowledge-change:escalation",
-                "overview.md",
-                include_str!("../knowledge-methods/overview.md"),
+                DEFINITION_VERSION,
+                "overview-dk3.md",
+                include_str!("../knowledge-methods/overview-dk3.md"),
             ),
         };
         value.digest = material_digest(&value)?;
@@ -108,7 +112,7 @@ impl KnowledgeLifecycleDefinitionProvider for StaticKnowledgeLifecycleDefinition
             "../knowledge-methods/profile-obligations.json"
         ))
         .map_err(|_| Error::InvalidConfiguration)?;
-        if source.version != VERSION {
+        if source.version != REGISTRY_VERSION {
             return Err(Error::InvalidConfiguration);
         }
         let mut profiles = Vec::new();
@@ -141,7 +145,7 @@ impl KnowledgeLifecycleDefinitionProvider for StaticKnowledgeLifecycleDefinition
             obligations.sort_by(|a, b| a.id.cmp(&b.id));
             let mut value = KnowledgeProfileContract {
                 profile_id: id,
-                version: VERSION.into(),
+                version: REGISTRY_VERSION.into(),
                 digest: String::new(),
                 applicable_kinds: applicable_kinds(id),
                 operations: all_operations(),
@@ -167,7 +171,7 @@ impl KnowledgeLifecycleDefinitionProvider for StaticKnowledgeLifecycleDefinition
             profiles.push(value);
         }
         let mut registry = KnowledgeProfileRegistry {
-            version: VERSION.into(),
+            version: REGISTRY_VERSION.into(),
             digest: String::new(),
             profiles,
         };
@@ -195,18 +199,29 @@ struct Obligation {
 }
 
 fn snapshot(id: &str, file: &str, body: &str) -> PipelineInstructionSnapshot {
+    snapshot_version(id, REGISTRY_VERSION, file, body)
+}
+fn snapshot_version(
+    id: &str,
+    version: &str,
+    file: &str,
+    body: &str,
+) -> PipelineInstructionSnapshot {
     PipelineInstructionSnapshot {
         id: id.into(),
-        version: VERSION.into(),
+        version: version.into(),
         digest: digest(body.as_bytes()),
         body: body.into(),
         origin_refs: vec![format!("{ROOT}{file}")],
     }
 }
 fn contract_ref(id: &str, file: &str, body: &str) -> KnowledgeContractRef {
+    contract_ref_version(id, REGISTRY_VERSION, file, body)
+}
+fn contract_ref_version(id: &str, version: &str, file: &str, body: &str) -> KnowledgeContractRef {
     KnowledgeContractRef {
         id: id.into(),
-        version: VERSION.into(),
+        version: version.into(),
         digest: digest(body.as_bytes()),
         source_ref: format!("{ROOT}{file}"),
     }
@@ -214,7 +229,7 @@ fn contract_ref(id: &str, file: &str, body: &str) -> KnowledgeContractRef {
 fn source_contract_ref(id: &str, source_ref: &str, body: &str) -> KnowledgeContractRef {
     KnowledgeContractRef {
         id: id.into(),
-        version: VERSION.into(),
+        version: REGISTRY_VERSION.into(),
         digest: digest(body.as_bytes()),
         source_ref: source_ref.into(),
     }
@@ -302,8 +317,9 @@ fn profile_body(file: &str) -> Result<&'static str> {
 fn phase_method(id: KnowledgeChangePhaseId) -> Option<PipelineInstructionSnapshot> {
     let file = format!("{}.md", id.as_str());
     id.method_id().map(|mid| {
-        snapshot(
+        snapshot_version(
             mid,
+            DEFINITION_VERSION,
             &file,
             match id {
                 KnowledgeChangePhaseId::KcIntake => {
@@ -381,108 +397,5 @@ fn phase_title(id: KnowledgeChangePhaseId) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn registry_pins_seven_profiles_and_49_operation_obligations() {
-        let registry = StaticKnowledgeLifecycleDefinitions.registry().unwrap();
-        registry.validate().unwrap();
-        assert_eq!(registry.version, VERSION);
-        assert_eq!(registry.profiles.len(), 7);
-        assert_eq!(
-            registry
-                .profiles
-                .iter()
-                .map(|p| p.obligations.len())
-                .sum::<usize>(),
-            49
-        );
-        for profile in &registry.profiles {
-            assert_eq!(profile.operations, all_operations());
-            assert!(profile.lifecycle_complete);
-            let method = &profile.methods[0];
-            assert_eq!(method.id, profile.profile_id.method_id());
-            assert_eq!(method.digest, digest(method.body.as_bytes()));
-            assert!(method.origin_refs[0].starts_with(ROOT));
-            assert!(
-                profile
-                    .obligations
-                    .iter()
-                    .all(|obligation| obligation.required
-                        && obligation.phase_id == KnowledgeChangePhaseId::KcDomainChecks)
-            );
-        }
-        for profile in [
-            KnowledgeProfileId::Runbook,
-            KnowledgeProfileId::Devops,
-            KnowledgeProfileId::Security,
-        ] {
-            let contract = registry
-                .profiles
-                .iter()
-                .find(|item| item.profile_id == profile)
-                .unwrap();
-            assert!(
-                contract
-                    .applicable_kinds
-                    .contains(&KnowledgeKind::Procedure)
-            );
-        }
-    }
-
-    #[test]
-    fn definition_pins_all_twelve_phases_and_composed_methods() {
-        let definition = StaticKnowledgeLifecycleDefinitions.definition().unwrap();
-        definition.validate().unwrap();
-        assert_eq!(definition.phases.len(), 12);
-        for (index, phase) in definition.phases.iter().enumerate() {
-            assert_eq!(phase.id, KnowledgeChangePhaseId::ALL[index]);
-            assert_eq!(
-                phase.depends_on,
-                index
-                    .checked_sub(1)
-                    .map(|i| vec![KnowledgeChangePhaseId::ALL[i]])
-                    .unwrap_or_default()
-            );
-            if phase.id.agent_authored() {
-                assert!(
-                    phase
-                        .methods
-                        .iter()
-                        .any(|method| Some(method.id.as_str()) == phase.id.method_id())
-                );
-            } else {
-                assert!(phase.methods.is_empty());
-            }
-            if matches!(phase.ordinal, 4..=8) {
-                assert_eq!(phase.methods.len(), 8);
-            }
-        }
-        assert!(
-            definition
-                .phases
-                .iter()
-                .all(|phase| phase.required_obligation_ids.is_empty())
-        );
-        assert!(
-            definition
-                .phases
-                .iter()
-                .all(|phase| phase.output_contract_ref.source_ref
-                    == "crates/domain/src/knowledge_lifecycle_execution.rs")
-        );
-        assert_eq!(
-            definition.phases[8].executor,
-            KnowledgePhaseExecutor::Backend
-        );
-        assert_eq!(
-            definition.phases[9].executor,
-            KnowledgePhaseExecutor::Publisher
-        );
-        assert_eq!(
-            definition.phases[10].executor,
-            KnowledgePhaseExecutor::Backend
-        );
-    }
-}
+#[path = "knowledge_lifecycle_definitions/tests.rs"]
+mod tests;
