@@ -188,6 +188,9 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
         "tect:knowledge-profile:operations", "tect:knowledge-profile:product_research",
         "tect:knowledge-profile:security",
     }
+    promotion_declares_unconfigured_vectors = (
+        "vectors that are not configured" in catalogue.get("promotion_method", {}).get("body", "")
+    )
     check("catalogue exposes the static twelve-phase Knowledge Change and seven profile methods",
           entry.get("route") == "knowledge.change_begin"
           and entry.get("context_route") == "knowledge.lifecycle"
@@ -196,9 +199,10 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
           and phase_ids == expected_phases and len(phase_methods) == 9
           and profile_methods == expected_profiles
           and catalogue.get("phase_counts", {}).get("knowledge_change_phases") == 12
-          and "not_configured" in catalogue.get("promotion_method", {}).get("body", ""),
+          and promotion_declares_unconfigured_vectors,
           {"phase_ids":phase_ids,"phase_method_ids":sorted(phase_methods),
-           "profile_method_ids":sorted(profile_methods),"search_status":"not_configured"})
+           "profile_method_ids":sorted(profile_methods),
+           "promotion_method_declares_unconfigured_vectors":promotion_declares_unconfigured_vectors})
 
     sc, cand = source["context"], source["candidate"]
     scope_request = {"request_id":str(uuid.uuid4()), "candidate_set_id":sc["candidate_set"]["id"],
