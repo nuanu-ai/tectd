@@ -341,6 +341,19 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
             "supported_bindings": capability.get("supported_bindings"),
         },
     )
+    exact_knowledge, exact_failed = tool_result(
+        app,
+        thread_id,
+        "query",
+        {"route": "knowledge.context", "params": {"unit_id": str(uuid.uuid4())}},
+    )
+    proof.check(
+        "inactive metadata permits no exact DK unit read",
+        exact_failed
+        and exact_knowledge.get("error", {}).get("code") == "knowledge_unavailable"
+        and all(key not in exact_knowledge for key in ("capability", "exact_revision", "document", "constraint")),
+        {"error_code": exact_knowledge.get("error", {}).get("code")},
+    )
 
     programs, failed = tool_result(app, thread_id, "query", {"route": "program.list", "params": {"limit": 25}})
     proof.check("representative query route succeeds", not failed and bool(programs))

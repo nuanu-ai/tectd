@@ -48,7 +48,9 @@ impl DurableKnowledgeStore for PgUnitOfWork {
         review: &KnowledgeMethodSnapshot,
     ) -> Result<KnowledgeContext> {
         let tenant = self.tenant_id()?;
-        durable_knowledge::require_identity_ready(self.transaction()?).await?;
+        if query.unit_id.is_some() {
+            durable_knowledge::require_identity_ready(self.transaction()?).await?;
+        }
         durable_knowledge::context::context(
             self.transaction()?,
             tenant,
