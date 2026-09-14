@@ -35,6 +35,7 @@ impl PipelineDefinitionProvider for StaticPipelineDefinitions {
                 include_str!("../pipeline-definitions/procedure-capture.json"),
                 kind,
             ),
+            PipelineKind::PromoteToDurableKnowledge => Err(Error::KnowledgeLifecycleRequired),
         }
     }
 }
@@ -204,6 +205,7 @@ mod tests {
             .definition(PipelineKind::ResearchToDurableKnowledge)
             .unwrap();
         assert_eq!(definition.phases.len(), 22);
+        assert_eq!(definition.version, "0.2.0-native.dk2.1");
         assert_eq!(definition.allowed_modes.len(), 2);
         assert_eq!(
             definition.default_mode,
@@ -229,6 +231,7 @@ mod tests {
             .definition(PipelineKind::CustomProcedureCapture)
             .unwrap();
         assert_eq!(definition.phases.len(), 17);
+        assert_eq!(definition.version, "0.2.0-native.dk2.1");
         assert_eq!(definition.allowed_modes.len(), 2);
         assert_eq!(
             definition.default_mode,
@@ -246,5 +249,81 @@ mod tests {
                 .iter()
                 .any(|phase| !phase.skills.is_empty())
         );
+    }
+
+    #[test]
+    fn dk2_producer_versions_preserve_phase_bodies_and_pin_handoff_resource() {
+        for (current, archived, expected_phases) in [
+            (
+                include_str!("../pipeline-definitions/research-to-durable-knowledge.json"),
+                include_str!(
+                    "../pipeline-definitions/research-to-durable-knowledge-0.1.0-native.1.json"
+                ),
+                [
+                    "slice-research-promotion-gate",
+                    "slice-research-index-front-door-checker",
+                    "slice-research-result-and-handoff-writer",
+                ],
+            ),
+            (
+                include_str!("../pipeline-definitions/procedure-capture.json"),
+                include_str!("../pipeline-definitions/procedure-capture-0.1.0-native.1.json"),
+                [
+                    "slice-procedure-promotion-gate",
+                    "slice-procedure-result-writer",
+                    "slice-procedure-maintenance-and-handoff",
+                ],
+            ),
+        ] {
+            let new: serde_json::Value = serde_json::from_str(current).unwrap();
+            let old: serde_json::Value = serde_json::from_str(archived).unwrap();
+            assert_eq!(old["version"], "0.1.0-native.1");
+            assert_eq!(new["version"], "0.2.0-native.dk2.1");
+            let new_phases = new["phases"].as_array().unwrap();
+            let old_phases = old["phases"].as_array().unwrap();
+            assert_eq!(new_phases.len(), old_phases.len());
+            for (new_phase, old_phase) in new_phases.iter().zip(old_phases) {
+                assert_eq!(new_phase["id"], old_phase["id"]);
+                assert_eq!(new_phase["instructions"], old_phase["instructions"]);
+                assert_eq!(new_phase["skills"], old_phase["skills"]);
+                let old_resources = old_phase["resources"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                let new_resources = new_phase["resources"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                assert_eq!(&new_resources[..old_resources.len()], old_resources);
+                let expected = expected_phases.contains(&new_phase["id"].as_str().unwrap());
+                assert_eq!(
+                    new_resources.len(),
+                    old_resources.len() + usize::from(expected)
+                );
+                if expected {
+                    let method = new_resources.last().unwrap();
+                    assert_eq!(
+                        method["id"],
+                        "tect:knowledge-change:producer-publication-handoff"
+                    );
+                    assert_eq!(method["version"], "0.2.0-dk2.1");
+                    assert_eq!(
+                        method["digest"],
+                        hex(&Sha256::digest(method["body"].as_str().unwrap().as_bytes()))
+                    );
+                }
+            }
+            let guarded = new_phases
+                .iter()
+                .filter(|phase| {
+                    phase["output_constraints"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|constraint| constraint["kind"] == "resolved_knowledge_publication")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(guarded.len(), 1);
+        }
     }
 }

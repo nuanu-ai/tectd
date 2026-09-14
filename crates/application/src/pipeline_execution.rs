@@ -15,7 +15,11 @@ impl WorkspaceService {
         let (mut tx, workspace, session) = self
             .native_planning_transaction(context, TransactionMode::ReadWrite)
             .await?;
-        if let Some(replay) = tx.pipeline_begin_replay(workspace.id, request).await? {
+        let principal_id = tx.session_principal(session.id).await?;
+        if let Some(replay) = tx
+            .pipeline_begin_replay(workspace.id, principal_id, request)
+            .await?
+        {
             tx.commit().await?;
             return Ok(replay);
         }
@@ -42,12 +46,13 @@ impl WorkspaceService {
         query: &PipelineRunContextQuery,
     ) -> Result<PipelineContextResponse> {
         query.validate()?;
-        let (mut tx, workspace, _) = self
+        let (mut tx, workspace, session) = self
             .native_planning_transaction(context, TransactionMode::ReadOnly)
             .await?;
+        let principal_id = tx.session_principal(session.id).await?;
         let value = match query.view {
             PipelineRunContextView::Current => PipelineContextResponse::Current(Box::new(
-                tx.pipeline_run_context(workspace.id, query.run_id)
+                tx.pipeline_run_context(workspace.id, principal_id, query.run_id)
                     .await?
                     .ok_or(Error::NotFound)?,
             )),
@@ -74,8 +79,9 @@ impl WorkspaceService {
         let (mut tx, workspace, session) = self
             .native_planning_transaction(context, TransactionMode::ReadWrite)
             .await?;
+        let principal_id = tx.session_principal(session.id).await?;
         let stored = tx
-            .pipeline_run_context(workspace.id, request.run_id)
+            .pipeline_run_context(workspace.id, principal_id, request.run_id)
             .await?
             .ok_or(Error::NotFound)?;
         request.validate(&stored.definition)?;

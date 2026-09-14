@@ -10,6 +10,7 @@ pub(crate) enum Invocation {
     Slice(crate::slice_tools::SliceInvocation),
     Pipeline(crate::pipeline_tools::PipelineInvocation),
     Knowledge(crate::knowledge_tools::KnowledgeInvocation),
+    KnowledgeLifecycle(crate::knowledge_lifecycle_tools::KnowledgeLifecycleInvocation),
     Help(crate::api::HelpRequest),
     OpenWorkspace,
     GetState,
@@ -68,6 +69,20 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
             })
         }
         "help" => crate::api::parse_help(arguments).map(Invocation::Help),
+        _ if matches!(
+            name,
+            "knowledge_lifecycle"
+                | "knowledge_unit"
+                | "knowledge_change_begin"
+                | "knowledge_change_phase_complete"
+                | "knowledge_change_record_input"
+                | "knowledge_change_commit"
+                | "knowledge_change_settle_effects"
+        ) =>
+        {
+            crate::knowledge_lifecycle_tools::parse(name, arguments)
+                .map(Invocation::KnowledgeLifecycle)
+        }
         _ if matches!(
             name,
             "knowledge_context"
@@ -152,7 +167,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            28
+            33
         );
     }
 

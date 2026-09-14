@@ -15,11 +15,13 @@ pub trait PipelineExecutionStore: Send {
     async fn pipeline_begin_replay(
         &mut self,
         workspace_id: Uuid,
+        principal_id: Uuid,
         request: &BeginPipelineRun,
     ) -> Result<Option<BeginPipelineRunOutcome>>;
     async fn pipeline_run_context(
         &mut self,
         workspace_id: Uuid,
+        principal_id: Uuid,
         run_id: Uuid,
     ) -> Result<Option<PipelineRunContext>>;
     async fn pipeline_phase_output(

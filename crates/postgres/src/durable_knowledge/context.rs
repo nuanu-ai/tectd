@@ -10,13 +10,23 @@ pub(crate) async fn load_revision(
     native: bool,
 ) -> Result<Option<KnowledgeUnitRevision>> {
     let row = if let Some(revision) = revision {
-        sqlx::query("SELECT r.revision,(h.active AND h.accepted_revision=r.revision),r.constraint_payload,r.source_sha256,r.rdf_digest,r.publication_event_id,r.unit_iri,r.revision_iri,r.source_iri,r.publication_event_iri,e.operation,c.reason,c.authority_basis,e.actor_principal_id,e.actor_session_id,b.definition_kind,b.definition_version,b.definition_digest FROM knowledge_revisions r JOIN knowledge_unit_heads h ON h.tenant_id=r.tenant_id AND h.workspace_id=r.workspace_id AND h.unit_id=r.unit_id JOIN knowledge_publication_events e ON e.tenant_id=r.tenant_id AND e.workspace_id=r.workspace_id AND e.id=r.publication_event_id JOIN knowledge_changes c ON c.tenant_id=e.tenant_id AND c.workspace_id=e.workspace_id AND c.id=e.change_id JOIN knowledge_bindings b ON b.tenant_id=r.tenant_id AND b.workspace_id=r.workspace_id AND b.unit_id=r.unit_id AND b.revision=r.revision WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.unit_id=$3 AND r.revision=$4")
+        sqlx::query("SELECT r.revision,(h.active AND h.accepted_revision=r.revision),r.constraint_payload,r.source_sha256,r.rdf_digest,r.publication_event_id,r.unit_iri,r.revision_iri,r.source_iri,r.publication_event_iri,e.operation,c.reason,c.authority_basis,e.actor_principal_id,e.actor_session_id,b.definition_kind,b.definition_version,b.definition_digest,h.contract_version,r.contract_version,h.payload_erased,r.payload_erased,e.payload_erased,c.payload_erased FROM knowledge_revisions r JOIN knowledge_unit_heads h ON h.tenant_id=r.tenant_id AND h.workspace_id=r.workspace_id AND h.unit_id=r.unit_id JOIN knowledge_publication_events e ON e.tenant_id=r.tenant_id AND e.workspace_id=r.workspace_id AND e.id=r.publication_event_id JOIN knowledge_changes c ON c.tenant_id=e.tenant_id AND c.workspace_id=e.workspace_id AND c.id=e.change_id JOIN knowledge_bindings b ON b.tenant_id=r.tenant_id AND b.workspace_id=r.workspace_id AND b.unit_id=r.unit_id AND b.revision=r.revision WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.unit_id=$3 AND r.revision=$4")
             .bind(tenant).bind(workspace).bind(unit).bind(revision).fetch_optional(&mut **tx).await.map_err(storage_error)?
     } else {
-        sqlx::query("SELECT r.revision,h.active,r.constraint_payload,r.source_sha256,r.rdf_digest,r.publication_event_id,r.unit_iri,r.revision_iri,r.source_iri,r.publication_event_iri,e.operation,c.reason,c.authority_basis,e.actor_principal_id,e.actor_session_id,b.definition_kind,b.definition_version,b.definition_digest FROM knowledge_unit_heads h JOIN knowledge_revisions r ON r.tenant_id=h.tenant_id AND r.workspace_id=h.workspace_id AND r.unit_id=h.unit_id AND r.revision=h.accepted_revision JOIN knowledge_publication_events e ON e.tenant_id=r.tenant_id AND e.workspace_id=r.workspace_id AND e.id=r.publication_event_id JOIN knowledge_changes c ON c.tenant_id=e.tenant_id AND c.workspace_id=e.workspace_id AND c.id=e.change_id JOIN knowledge_bindings b ON b.tenant_id=r.tenant_id AND b.workspace_id=r.workspace_id AND b.unit_id=r.unit_id AND b.revision=r.revision WHERE h.tenant_id=$1 AND h.workspace_id=$2 AND h.unit_id=$3")
+        sqlx::query("SELECT r.revision,h.active,r.constraint_payload,r.source_sha256,r.rdf_digest,r.publication_event_id,r.unit_iri,r.revision_iri,r.source_iri,r.publication_event_iri,e.operation,c.reason,c.authority_basis,e.actor_principal_id,e.actor_session_id,b.definition_kind,b.definition_version,b.definition_digest,h.contract_version,r.contract_version,h.payload_erased,r.payload_erased,e.payload_erased,c.payload_erased FROM knowledge_unit_heads h JOIN knowledge_revisions r ON r.tenant_id=h.tenant_id AND r.workspace_id=h.workspace_id AND r.unit_id=h.unit_id AND r.revision=h.accepted_revision JOIN knowledge_publication_events e ON e.tenant_id=r.tenant_id AND e.workspace_id=r.workspace_id AND e.id=r.publication_event_id JOIN knowledge_changes c ON c.tenant_id=e.tenant_id AND c.workspace_id=e.workspace_id AND c.id=e.change_id JOIN knowledge_bindings b ON b.tenant_id=r.tenant_id AND b.workspace_id=r.workspace_id AND b.unit_id=r.unit_id AND b.revision=r.revision WHERE h.tenant_id=$1 AND h.workspace_id=$2 AND h.unit_id=$3")
             .bind(tenant).bind(workspace).bind(unit).fetch_optional(&mut **tx).await.map_err(storage_error)?
     };
     let Some(row) = row else { return Ok(None) };
+    if row.get::<String, _>(18) != "dk-1" || row.get::<String, _>(19) != "dk-1" {
+        return Err(Error::KnowledgeLifecycleRequired);
+    }
+    if row.get::<bool, _>(20)
+        || row.get::<bool, _>(21)
+        || row.get::<bool, _>(22)
+        || row.get::<bool, _>(23)
+    {
+        return Err(Error::KnowledgePayloadErased);
+    }
     let value = KnowledgeUnitRevision {
         unit_id: unit,
         revision: row.get(0),
@@ -72,7 +82,7 @@ pub(crate) async fn context(
     preparation: &KnowledgeMethodSnapshot,
     review: &KnowledgeMethodSnapshot,
 ) -> Result<KnowledgeContext> {
-    let state:Option<(i64,bool,Option<String>)>=sqlx::query_as("SELECT generation,capability_ready,pgrdf_version FROM workspace_knowledge_state WHERE tenant_id=$1 AND workspace_id=$2")
+    let state:Option<(i64,bool,Option<String>)>=sqlx::query_as("SELECT generation,capability_ready AND tect_dk_database_identity_ready(),pgrdf_version FROM workspace_knowledge_state WHERE tenant_id=$1 AND workspace_id=$2")
         .bind(tenant).bind(workspace).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     let (generation, ready, version) = match state {
         Some(v) => v,
@@ -127,9 +137,12 @@ pub(crate) async fn load_change(
     workspace: Uuid,
     id: Uuid,
 ) -> Result<Option<KnowledgeChange>> {
-    let row=sqlx::query("SELECT unit_id,change_revision,operation,stage,expected_generation,expected_unit_revision,proposed_unit_revision,proposal_digest,source_sha256,semantic_diff,baseline,proposal,binding_provenance,preparation_method,review_method,reason,authority_basis,review,publication_receipt FROM knowledge_changes WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
+    let row=sqlx::query("SELECT unit_id,change_revision,operation,stage,expected_generation,expected_unit_revision,proposed_unit_revision,proposal_digest,source_sha256,semantic_diff,baseline,proposal,binding_provenance,preparation_method,review_method,reason,authority_basis,review,publication_receipt,payload_erased FROM knowledge_changes WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
         .bind(tenant).bind(workspace).bind(id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     let Some(row) = row else { return Ok(None) };
+    if row.get::<bool, _>(19) {
+        return Err(Error::KnowledgePayloadErased);
+    }
     Ok(Some(KnowledgeChange {
         id,
         unit_id: row.get(0),

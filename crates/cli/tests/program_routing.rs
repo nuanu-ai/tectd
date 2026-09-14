@@ -101,7 +101,9 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "slice.context",
             "slice.pipeline.context",
             "knowledge.context",
-            "knowledge.change"
+            "knowledge.change",
+            "knowledge.lifecycle",
+            "knowledge.unit"
         ])
     );
     let command = tools.iter().find(|tool| tool["name"] == "command").unwrap();
@@ -135,7 +137,12 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "knowledge.change_prepare",
             "knowledge.change_review",
             "knowledge.change_publish",
-            "pipeline.knowledge_refresh"
+            "pipeline.knowledge_refresh",
+            "knowledge.change_begin",
+            "knowledge.change_phase_complete",
+            "knowledge.change_record_input",
+            "knowledge.change_commit",
+            "knowledge.change_settle_effects"
         ])
     );
     let help = tools.iter().find(|tool| tool["name"] == "help").unwrap();
@@ -176,6 +183,27 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
     assert_eq!(
         described["params_schema"]["required"],
         json!(["request_id", "input"])
+    );
+    let knowledge = client
+        .call(
+            "help",
+            json!({"mode":"describe","tool":"command","route":"knowledge.change_phase_complete"}),
+        )
+        .await;
+    let output = &knowledge["params_schema"]["oneOf"][1]["properties"]["output"];
+    assert_eq!(
+        output["properties"]["data"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .len(),
+        9
+    );
+    let prepare = &output["properties"]["data"]["oneOf"][4]["properties"]["data"];
+    let planned = &prepare["properties"]["operations"]["items"]["oneOf"];
+    assert_eq!(planned.as_array().unwrap().len(), 5);
+    assert_eq!(
+        planned[0]["properties"]["document"]["properties"]["sections"]["properties"]["runbook"]["additionalProperties"],
+        false
     );
     let method = client
         .call("help", json!({"mode":"describe","method":"tectd-program"}))

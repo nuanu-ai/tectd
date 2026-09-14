@@ -48,9 +48,20 @@ fn enum_text<T: Serialize>(value: &T) -> Result<String> {
     }
 }
 
+async fn session_principal(tx: &mut Transaction<'_, Postgres>, session: Uuid) -> Result<Uuid> {
+    sqlx::query_scalar("SELECT tect_dk_session_principal($1)")
+        .bind(session)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(storage_error)?
+        .ok_or(Error::Forbidden)
+}
+
 mod context;
 mod input;
+mod knowledge_publication;
 mod phase;
+mod phase_validation;
 mod run;
 
 pub(crate) use context::{load_context, load_output};

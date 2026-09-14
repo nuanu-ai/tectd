@@ -1,0 +1,91 @@
+{
+  "id": "devops",
+  "source_path": "tect/programs/tect-substrate-daemon-v1/architecture-evidence/dk2-20260914/native-targeted-orphan-purge.json",
+  "source_revision": "2026-09-14T14:34:17+08:00",
+  "source_sha256": "1c69096e74c516e8e6bbd8b65e877a7b0de4e519ea6533371c4711f2dae691d7",
+  "document": {
+    "title": "Isolated pgRDF qualification fixture observed on 2026-09-14",
+    "canonical_text": "At the recorded observation time, a task-owned Docker fixture used the pinned pgRDF 0.6.34/PG 18.6 image on loopback 127.0.0.1:59861. The captured orphan-purge test proved scoped logical deletion, rollback and fresh-backend reinsertion; it did not prove physical WAL/MVCC/backup erasure.",
+    "knowledge_kind": "infrastructure",
+    "epistemic_state": "observed",
+    "target_iris": [
+      "urn:tect:dk2:acceptance:devops"
+    ],
+    "conditions": [
+      "Historical isolated fixture observation; no current health or installed-service claim."
+    ],
+    "exceptions": [],
+    "sources": [
+      {
+        "kind": "snapshot",
+        "snapshot": {
+          "title": "Targeted orphan purge observation",
+          "uri": "urn:tect:dk2:source:native-targeted-orphan-purge",
+          "text": "{\n  \"captured_at\": \"2026-09-14T14:34:17+08:00\",\n  \"fixture\": {\n    \"container_id\": \"8fdee6b83af449234161fffe020b1d13dcab8b09dbba8e97dc872aca26d9ae0a\",\n    \"container_name\": \"dk2-pgrdf-probe-20260914142507\",\n    \"credential_file_mode\": \"0600\",\n    \"host_binding\": \"127.0.0.1:59861\",\n    \"image_id\": \"sha256:d52dd721f9556e6d2e159014da04b40dbc0da81d20097f8df88cd083a174e65f\",\n    \"state_after_probe\": \"running\"\n  },\n  \"fresh_backend_reinsert\": {\n    \"backend_pid\": 133,\n    \"exact_datatype_iri\": \"http://www.w3.org/2001/XMLSchema#string\",\n    \"exact_lexical_value\": \"dk2-unique-orphan-marker-20260914144000\",\n    \"new_object_id\": 12,\n    \"object_id_reallocated\": true,\n    \"old_object_id\": 7,\n    \"public_sparql_exact_value\": \"dk2-unique-orphan-marker-20260914144000\",\n    \"stale_cache_reference_observed\": false,\n    \"survivor_digest_stable\": true,\n    \"target_digest_restored\": true\n  },\n  \"scope_boundary\": {\n    \"broad_orphan_gc_performed\": false,\n    \"couples_to_pinned_internal_schema\": true,\n    \"forensic_wal_mvcc_backup_purge_proven\": false,\n    \"logical_live_rows_only\": true,\n    \"native_public_purge_capability\": false\n  }\n}\n",
+          "evidence_kind": "observation",
+          "observed_at": "2026-09-14T14:34:17+08:00"
+        }
+      }
+    ],
+    "bindings": [
+      {
+        "target": {
+          "kind": "workspace"
+        },
+        "purpose": "reference",
+        "version_resolution": {
+          "kind": "current_accepted"
+        }
+      }
+    ],
+    "profiles": [
+      "general",
+      "devops"
+    ],
+    "access_scope": "workspace_members",
+    "owner_ref": "isolated-workspace-owner",
+    "authority_basis": "Owner-authorized source-only DK-2 acceptance in an isolated fixture",
+    "sections": {
+      "constraint": null,
+      "general": null,
+      "runbook": null,
+      "protocol": null,
+      "devops": {
+        "asset_iris": [
+          "urn:tect:dk2:acceptance:rdf-fixture"
+        ],
+        "environment_iris": [
+          "urn:tect:dk2:acceptance:isolated-docker"
+        ],
+        "topology_links": [
+          "loopback client -> owned Docker PostgreSQL fixture"
+        ],
+        "ownership": [
+          "DK-2 acceptance task"
+        ],
+        "configuration_refs": [
+          "sha256:d52dd721f9556e6d2e159014da04b40dbc0da81d20097f8df88cd083a174e65f"
+        ],
+        "observations": [
+          {
+            "observed_at": "2026-09-14T14:34:17+08:00",
+            "status": "targeted purge proof passed",
+            "limits": [
+              "historical isolated fixture observation; no current health or installed-service claim"
+            ],
+            "evidence_refs": [
+              0
+            ]
+          }
+        ],
+        "deployment_surfaces": [
+          "task-owned Docker fixture only"
+        ],
+        "configuration_custody": "Task-owned private fixture configuration; credentials are excluded from this knowledge."
+      },
+      "operations": null,
+      "product_research": null,
+      "security": null
+    }
+  }
+}

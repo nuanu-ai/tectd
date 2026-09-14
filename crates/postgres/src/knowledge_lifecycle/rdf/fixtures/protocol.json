@@ -1,0 +1,97 @@
+{
+  "id": "protocol",
+  "source_path": "sources/tectd-dk1/integrations/codex/tectd/README.md",
+  "source_revision": "26d5f0123a32e15c2a174ab003ffb6a1beab5e34",
+  "source_sha256": "9b4c0ceb26d95e2d670a99e3152b58aabc1afc93be5d5038e15c119feb134efb",
+  "document": {
+    "title": "TectD MCP five-tool facade",
+    "canonical_text": "The source contract exposes get_state, query, command, execute and help. Logical routes are carried inside the facade; tool results contain a short introduction and one JSON content block with exact next actions.",
+    "knowledge_kind": "protocol",
+    "epistemic_state": "declared",
+    "target_iris": [
+      "urn:tect:dk2:acceptance:protocol"
+    ],
+    "conditions": [
+      "Declared pinned source contract; no installed-runtime claim."
+    ],
+    "exceptions": [],
+    "sources": [
+      {
+        "kind": "snapshot",
+        "snapshot": {
+          "title": "Pinned TectD public facade source contract",
+          "uri": "urn:tect:dk2:source:integration-readme:facade",
+          "text": "The public MCP surface is exactly `get_state`, `query`, `command`, `execute`, and\n`help`, with 41 routes: 12 queries, 28 commands, and one execute route. Read-only routes are `program.get`, `program.list`,\n`source.list`, `setup.get`, `scope.candidates.context`, `scope.context`,\n`slice.pipelines`, `slice.candidates.context`, `slice.context`, and\n`slice.pipeline.context`, plus `knowledge.context` and `knowledge.change`. Logical\ntransitions are `workspace.open`, `source.register`, `session.select_worktrees`,\n`program.begin`, `program.save`, `program.record_input`, `setup.inspect`,\n`setup.begin`, `setup.save`, `setup.record_input`, `scope.candidates.begin`,\n`scope.candidates.save`, `scope.candidates.record_input`,\n`scope.candidates.refresh`, `scope.open`, `slice.candidates.save`,\n`slice.candidates.input`, `slice.candidates.refresh`, `slice.open`, and\n`slice.result.record`, plus `slice.pipeline.begin`, `slice.pipeline.phase.complete`,\n`slice.pipeline.delivery.escalate`, `slice.pipeline.input`,\n`knowledge.change_prepare`, `knowledge.change_review`,\n`knowledge.change_publish`, and `pipeline.knowledge_refresh`. DK-1 exposes only\nConstraint create/revise/retract; native RDF activation remains an operator action,\nand `lifecycle_complete` is false. The only\nexternal-effect route is `setup.apply`. Each native\nsession has its own selected worktrees. Program drafts, original input and PRDs live\nin the database. The focused `tectd-program`, `tectd-setup`,\n`tectd-scope-candidates` and `tectd-slice-candidates` methods are embedded in the\nexecutable and returned by `help` describe. Candidate continuation preserves stable\nidentities, computes explicit added/changed/unchanged/superseded deltas, and exposes\nretained versions through the read-only `history` and `historical` context views.\nOpening a Program or reviewing Scope candidates does not open a Scope or launch\nimplementation work.\n\nTool results carry a short introduction and one JSON content block with data and\nexact next actions, without duplicate structured content. The enrolled host remains\nthe credential trust boundary; this is not a per-session secret scheme.\n\nThe Codex process supplies three explicitly configured environment variables:\n`TECT_SOCKET`, `TECT_HOST_CONFIG`, and `TECT_WORKSPACE_KEY`. They identify a private\nUnix socket, an enrolled mode-0600 credential file, and a logical workspace key.\nThe package forwards only these names. It contains no secret or machine-specific\nconfiguration. The operator provides them to the launcher or uses equivalent\nexplicit `mcp_servers.tectd.env` settings in the selected Codex configuration.\nAn absent setting fails closed. Keep daemon and database lifecycle separate.\n\nNative identity comes from each tool call's host-generated `params._meta.threadId`.\nNo CODEX_SESSION_ID or CODEX_THREAD_ID environment setting is required or accepted\nas an identity fallback. Both the Codex-generated native UUID and host credential\nare required before a business operation. Model tool arguments contain no identity.\n",
+          "evidence_kind": "declaration"
+        }
+      }
+    ],
+    "bindings": [
+      {
+        "target": {
+          "kind": "workspace"
+        },
+        "purpose": "reference",
+        "version_resolution": {
+          "kind": "current_accepted"
+        }
+      }
+    ],
+    "profiles": [
+      "general",
+      "protocol"
+    ],
+    "access_scope": "workspace_members",
+    "owner_ref": "isolated-workspace-owner",
+    "authority_basis": "Owner-authorized source-only DK-2 acceptance in an isolated fixture",
+    "sections": {
+      "constraint": null,
+      "general": null,
+      "runbook": null,
+      "protocol": {
+        "specification_uri": "urn:tect:dk2:acceptance:dk1-integration-readme",
+        "specification_version": "26d5f0123a32e15c2a174ab003ffb6a1beab5e34",
+        "provider_scope": [
+          "TectD MCP source template"
+        ],
+        "network_scope": [
+          "stdio MCP and private Unix socket"
+        ],
+        "assertions": [
+          {
+            "statement": "The source contract exposes get_state, query, command, execute and help.",
+            "observed": false,
+            "evidence_refs": [
+              0
+            ]
+          },
+          {
+            "statement": "Tool results contain a short introduction and one JSON content block with exact next actions.",
+            "observed": false,
+            "evidence_refs": [
+              0
+            ]
+          }
+        ],
+        "capabilities": [
+          "get_state",
+          "query",
+          "command",
+          "execute",
+          "help"
+        ],
+        "compatibility_constraints": [
+          "Host-generated native session identity and enrolled host credential remain outside model arguments"
+        ],
+        "negative_states_and_quirks": [
+          "Missing required configuration fails closed"
+        ],
+        "observation_bounds": "Declared pinned source contract; no installed-runtime or model-turn acceptance."
+      },
+      "devops": null,
+      "operations": null,
+      "product_research": null,
+      "security": null
+    }
+  }
+}

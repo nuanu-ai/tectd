@@ -1,0 +1,83 @@
+{
+  "id": "security",
+  "source_path": "sources/tectd-dk1/integrations/codex/tectd/README.md",
+  "source_revision": "26d5f0123a32e15c2a174ab003ffb6a1beab5e34",
+  "source_sha256": "f3a9245516ad03cc83d78ca53590a7f7a1628af68d6c8c584248627aa3ac8aa0",
+  "document": {
+    "title": "TectD private host credential and native identity boundary",
+    "canonical_text": "The enrolled host credential and native session identity form the declared business-operation authentication boundary. The package contains no secret or machine-specific configuration and forwards only the explicitly configured socket, credential-file and workspace-key names.",
+    "knowledge_kind": "security",
+    "epistemic_state": "declared",
+    "target_iris": [
+      "urn:tect:dk2:acceptance:security"
+    ],
+    "conditions": [
+      "Declared pinned source contract; no installed-runtime claim."
+    ],
+    "exceptions": [],
+    "sources": [
+      {
+        "kind": "snapshot",
+        "snapshot": {
+          "title": "Pinned TectD credential and identity source contract",
+          "uri": "urn:tect:dk2:source:integration-readme:security",
+          "text": "The Codex process supplies three explicitly configured environment variables:\n`TECT_SOCKET`, `TECT_HOST_CONFIG`, and `TECT_WORKSPACE_KEY`. They identify a private\nUnix socket, an enrolled mode-0600 credential file, and a logical workspace key.\nThe package forwards only these names. It contains no secret or machine-specific\nconfiguration. The operator provides them to the launcher or uses equivalent\nexplicit `mcp_servers.tectd.env` settings in the selected Codex configuration.\nAn absent setting fails closed. Keep daemon and database lifecycle separate.\n\nNative identity comes from each tool call's host-generated `params._meta.threadId`.\nNo CODEX_SESSION_ID or CODEX_THREAD_ID environment setting is required or accepted\nas an identity fallback. Both the Codex-generated native UUID and host credential\nare required before a business operation. Model tool arguments contain no identity.\n",
+          "evidence_kind": "declaration"
+        }
+      }
+    ],
+    "bindings": [
+      {
+        "target": {
+          "kind": "workspace"
+        },
+        "purpose": "reference",
+        "version_resolution": {
+          "kind": "current_accepted"
+        }
+      }
+    ],
+    "profiles": [
+      "general",
+      "security"
+    ],
+    "access_scope": "owners_only",
+    "owner_ref": "isolated-workspace-owner",
+    "authority_basis": "Owner-authorized source-only DK-2 acceptance in an isolated fixture",
+    "sections": {
+      "constraint": null,
+      "general": null,
+      "runbook": null,
+      "protocol": null,
+      "devops": null,
+      "operations": null,
+      "product_research": null,
+      "security": {
+        "asset_iris": [
+          "urn:tect:dk2:acceptance:mcp-connection"
+        ],
+        "trust_boundaries": [
+          "model arguments -> host-authenticated MCP request",
+          "package -> operator-owned private configuration"
+        ],
+        "threats": [
+          "model-forged identity",
+          "secret configuration copied into a package"
+        ],
+        "controls": [
+          "host credential plus host-generated native UUID",
+          "explicit configuration names; no packaged credential"
+        ],
+        "evidence_refs": [
+          0
+        ],
+        "verification_status": "Declared source contract; this source alone is not runtime security acceptance",
+        "sensitivity": "internal",
+        "applicable_authority": "Current authenticated owner/membership contract",
+        "exceptions": [],
+        "finding_state": "not_a_finding",
+        "remediation_proof_refs": []
+      }
+    }
+  }
+}

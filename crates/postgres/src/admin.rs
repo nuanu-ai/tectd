@@ -62,6 +62,11 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
                          ,'durable_knowledge_capability','workspace_knowledge_state','knowledge_changes','knowledge_unit_heads',
                          'knowledge_publication_events','knowledge_revisions','knowledge_bindings',
                          'knowledge_command_receipts','pipeline_knowledge_manifests','knowledge_effect_outbox'
+                         ,'knowledge_lifecycle_changes','knowledge_change_runs','knowledge_change_operations',
+                         'knowledge_change_outputs','knowledge_change_attempts','knowledge_change_output_bindings',
+                         'knowledge_change_inputs','knowledge_lifecycle_command_receipts','knowledge_validation_events',
+                         'knowledge_lifecycle_effects','knowledge_owned_copies','knowledge_suppression_ledger',
+                         'knowledge_suppression_exports','knowledge_supersessions'
                      )
                      AND pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER')
                ) OR EXISTS (
@@ -70,7 +75,8 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
                    JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
                    WHERE n.nspname='public'
                      AND p.proname IN ('tect_authenticate_host', 'tect_preserve_created_at',
-                         'tect_dk_native_publish','tect_dk_native_read','tect_dk_session_principal','tect_dk_is_owner','tect_dk_ensure_workspace_state','tect_dk_capability')
+                         'tect_dk_native_publish','tect_dk_native_read','tect_dk_native_owned_residual','tect_dk_session_principal','tect_dk_is_owner','tect_dk_ensure_workspace_state','tect_dk_capability','tect_dk_database_identity_ready',
+                         'tect_dk_internal_native_publish','tect_dk_internal_native_read','tect_dk_internal_native_owned_residual','tect_dk2_internal_native_publish','tect_dk2_internal_native_read','tect_dk_internal_native_erase','tect_dk_internal_capability')
                      AND pg_catalog.pg_has_role(r.oid, p.proowner, 'MEMBER')
                )
         FROM pg_catalog.pg_roles r
@@ -180,9 +186,90 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
         format!(
             "GRANT EXECUTE ON FUNCTION public.tect_dk_ensure_workspace_state(uuid,uuid) TO {quoted_role}"
         ),
-        format!("GRANT EXECUTE ON FUNCTION public.tect_dk_capability() TO {quoted_role}"),
+        format!(
+            "GRANT EXECUTE ON FUNCTION public.tect_dk_capability(),public.tect_dk_database_identity_ready() TO {quoted_role}"
+        ),
         format!(
             "GRANT EXECUTE ON FUNCTION public.tect_dk_native_publish(uuid,uuid,uuid,text,text,text),public.tect_dk_native_read(uuid,uuid,uuid,bigint,uuid) TO {quoted_role}"
+        ),
+        format!(
+            "GRANT EXECUTE ON FUNCTION public.tect_dk_native_owned_residual(uuid,uuid,uuid) TO {quoted_role}"
+        ),
+        format!(
+            "GRANT EXECUTE ON FUNCTION public.tect_dk_erased_no_change_proof_valid(jsonb) TO {quoted_role}"
+        ),
+        format!(
+            "REVOKE ALL PRIVILEGES ON TABLE knowledge_lifecycle_changes,knowledge_change_runs,knowledge_change_operations,knowledge_change_outputs,knowledge_change_attempts,knowledge_change_output_bindings,knowledge_change_inputs,knowledge_lifecycle_command_receipts,knowledge_validation_events,knowledge_lifecycle_effects,knowledge_owned_copies,knowledge_suppression_ledger,knowledge_suppression_exports,knowledge_supersessions FROM {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT,INSERT,UPDATE ON TABLE knowledge_lifecycle_changes,knowledge_change_runs,knowledge_change_operations,knowledge_change_outputs,knowledge_change_output_bindings,knowledge_lifecycle_effects,knowledge_owned_copies,knowledge_suppression_ledger,knowledge_supersessions TO {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT,INSERT ON TABLE knowledge_change_attempts,knowledge_change_inputs,knowledge_lifecycle_command_receipts,knowledge_validation_events TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(output_digest,payload_erased) ON TABLE knowledge_change_attempts TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(reason,input,digest,applied_basis_amendment,payload_erased) ON TABLE knowledge_change_inputs TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(erased_change_id,request_payload,result_payload,payload_erased) ON TABLE knowledge_lifecycle_command_receipts TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(sources,evidence_basis,source_pin_digest,payload_erased) ON TABLE knowledge_validation_events TO {quoted_role}"
+        ),
+        format!("GRANT SELECT ON TABLE knowledge_suppression_exports TO {quoted_role}"),
+        format!(
+            "GRANT SELECT(erasure_sequence),UPDATE(erasure_sequence) ON TABLE durable_knowledge_capability TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(contract_version,lifecycle,access_scope,last_validation_event_id,payload_erased) ON TABLE knowledge_unit_heads TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(proposal_digest,proposal_fingerprint,source_sha256,semantic_diff,baseline,proposal,binding_provenance,reason,authority_basis,review,publication_receipt,payload_erased) ON TABLE knowledge_changes TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(constraint_payload,document_payload,payload_erased,source_sha256,rdf_digest) ON TABLE knowledge_revisions TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(event_payload,rdf_digest,payload_erased) ON TABLE knowledge_publication_events TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(request_payload,result_payload,payload_erased) ON TABLE knowledge_command_receipts TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(digest,semantic_digest,selected,unresolved_needs,definition_version,definition_digest,method_requirements,selected_resources,resource_unresolved_needs,freshness_warnings,resource_semantic_digest,payload_erased) ON TABLE pipeline_knowledge_manifests TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(reviewer_context,request_payload,result_payload,payload_erased) ON TABLE slice_pipeline_phase_attempts TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(body,producer_context_id,body_digest,reference,fields,verdict,dispositions,skill_reads,resource_reads,artifacts,validator_receipts,followup_proposal,knowledge_publication,payload_erased) ON TABLE slice_pipeline_phase_outputs TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(input,input_digest,request_payload,result_payload,payload_erased,owner_unit_ids) ON TABLE slice_pipeline_inputs TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(request_payload,result_payload,payload_erased,owner_unit_ids) ON TABLE slice_pipeline_receipts TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(input,payload_erased) ON TABLE slice_planning_inputs TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(result_ids,payload_erased) ON TABLE slice_planning_snapshots TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(payload,payload_erased,owner_unit_ids) ON TABLE slice_candidate_drafts,slice_candidate_reviews TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(request_payload,result_payload,payload_erased,owner_unit_ids) ON TABLE native_planning_receipts TO {quoted_role}"
+        ),
+        format!(
+            "GRANT EXECUTE ON FUNCTION public.tect_dk2_native_publish(uuid,uuid,uuid,text,text,text),public.tect_dk2_native_read(uuid,uuid,uuid,bigint,uuid,boolean),public.tect_dk_native_erase(uuid,uuid,uuid) TO {quoted_role}"
+        ),
+        format!(
+            "REVOKE ALL PRIVILEGES ON FUNCTION public.tect_dk_internal_native_publish(uuid,uuid,uuid,text,text,text),public.tect_dk_internal_native_read(uuid,uuid,uuid,bigint,uuid),public.tect_dk_internal_native_owned_residual(uuid,uuid,uuid),public.tect_dk2_internal_native_publish(uuid,uuid,uuid,text,text,text),public.tect_dk2_internal_native_read(uuid,uuid,uuid,bigint,uuid,boolean),public.tect_dk_internal_native_erase(uuid,uuid,uuid),public.tect_dk_internal_capability() FROM {quoted_role}"
         ),
     ];
     for statement in statements {

@@ -16,6 +16,15 @@ pub(crate) fn validate_output_constraint(
         })
     };
     let valid = match constraint {
+        PipelineOutputConstraint::ResolvedKnowledgePublication { when_verdicts } => {
+            !when_verdicts.is_empty()
+                && when_verdicts.iter().all(|value| {
+                    phase
+                        .allowed_verdicts
+                        .iter()
+                        .any(|allowed| allowed == value)
+                })
+        }
         PipelineOutputConstraint::FieldEquals {
             field,
             value,
@@ -79,6 +88,13 @@ pub(crate) fn output_constraint_satisfied(
             .is_none_or(|value| output.verdict.as_ref() == Some(value))
     };
     match constraint {
+        PipelineOutputConstraint::ResolvedKnowledgePublication { when_verdicts } => {
+            let required = output
+                .verdict
+                .as_ref()
+                .is_some_and(|verdict| when_verdicts.contains(verdict));
+            required == output.knowledge_publication.is_some()
+        }
         PipelineOutputConstraint::FieldEquals {
             field,
             value,

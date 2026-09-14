@@ -60,9 +60,9 @@ async fn native_scope_slice_result_replans_and_recovers() {
     let (source, candidate) = ready_source_candidate(&mut client, &repo).await;
 
     let pipelines = route(&mut client, "query", "slice.pipelines", json!({})).await;
-    assert_eq!(pipelines["pipelines"].as_array().unwrap().len(), 7);
+    assert_eq!(pipelines["pipelines"].as_array().unwrap().len(), 8);
     assert_eq!(pipelines["executable"], true);
-    assert_eq!(pipelines["executable_count"], 7);
+    assert_eq!(pipelines["executable_count"], 8);
     assert!(
         !pipelines
             .to_string()
@@ -89,7 +89,7 @@ async fn native_scope_slice_result_replans_and_recovers() {
             .as_array()
             .unwrap()
             .len(),
-        7
+        8
     );
 
     let planning = &created["planning"];

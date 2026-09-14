@@ -328,6 +328,9 @@ mod tests {
             state: SliceState::Open,
             pipeline_status: "not_started".into(),
             pipeline_run_id: None,
+            knowledge_change_id: None,
+            knowledge_run_id: None,
+            knowledge_status: None,
             execution_claimed: false,
         };
         let value = output(slice, Vec::new()).unwrap();

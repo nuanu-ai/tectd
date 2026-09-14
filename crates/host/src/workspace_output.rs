@@ -263,6 +263,7 @@ mod tests {
             }],
             slices_needing_result: Vec::new(),
             pipeline_runs: Vec::new(),
+            knowledge_changes: Vec::new(),
         }
     }
 

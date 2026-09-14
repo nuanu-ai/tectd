@@ -66,6 +66,21 @@ pub(crate) fn parse_operation(value: &str) -> Result<KnowledgeOperation> {
     }
 }
 
+pub(crate) async fn identity_ready(tx: &mut Transaction<'_, Postgres>) -> Result<bool> {
+    sqlx::query_scalar("SELECT tect_dk_database_identity_ready()")
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(storage_error)
+}
+
+pub(crate) async fn require_identity_ready(tx: &mut Transaction<'_, Postgres>) -> Result<()> {
+    if identity_ready(tx).await? {
+        Ok(())
+    } else {
+        Err(Error::KnowledgeUnavailable)
+    }
+}
+
 pub(crate) async fn ensure_state(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -77,7 +92,7 @@ pub(crate) async fn ensure_state(
         .execute(&mut **tx)
         .await
         .map_err(storage_error)?;
-    sqlx::query_as("SELECT generation,capability_ready,pgrdf_version FROM workspace_knowledge_state WHERE tenant_id=$1 AND workspace_id=$2")
+    sqlx::query_as("SELECT generation,capability_ready AND tect_dk_database_identity_ready(),pgrdf_version FROM workspace_knowledge_state WHERE tenant_id=$1 AND workspace_id=$2")
         .bind(tenant).bind(workspace).fetch_one(&mut **tx).await.map_err(storage_error)
 }
 
@@ -87,7 +102,7 @@ pub(crate) async fn lock_state(
     workspace: Uuid,
 ) -> Result<(i64, bool, Option<String>)> {
     let _ = ensure_state(tx, tenant, workspace).await?;
-    sqlx::query_as("SELECT generation,capability_ready,pgrdf_version FROM workspace_knowledge_state WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE")
+    sqlx::query_as("SELECT generation,capability_ready AND tect_dk_database_identity_ready(),pgrdf_version FROM workspace_knowledge_state WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE")
         .bind(tenant).bind(workspace).fetch_one(&mut **tx).await.map_err(storage_error)
 }
 
@@ -105,10 +120,14 @@ pub(crate) async fn receipt<T: DeserializeOwned>(
     request: Uuid,
     payload: &serde_json::Value,
 ) -> Result<Option<T>> {
-    let row:Option<(serde_json::Value,serde_json::Value)>=sqlx::query_as("SELECT request_payload,result_payload FROM knowledge_command_receipts WHERE tenant_id=$1 AND workspace_id=$2 AND operation=$3 AND request_id=$4")
+    let row:Option<(Option<serde_json::Value>,Option<serde_json::Value>,bool)>=sqlx::query_as("SELECT request_payload,result_payload,payload_erased FROM knowledge_command_receipts WHERE tenant_id=$1 AND workspace_id=$2 AND operation=$3 AND request_id=$4")
         .bind(tenant).bind(workspace).bind(op).bind(request).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     match row {
-        Some((stored, result)) if stored == *payload => Ok(Some(decode(result)?)),
+        Some((_, _, true)) => Err(Error::KnowledgePayloadErased),
+        Some((Some(stored), Some(result), false)) if stored == *payload => {
+            Ok(Some(decode(result)?))
+        }
+        Some((None, _, false) | (_, None, false)) => Err(Error::InternalInvariant),
         Some(_) => Err(Error::InputConflict),
         None => Ok(None),
     }

@@ -8,17 +8,21 @@ pub(crate) async fn record_input(
     request: &RecordPipelineInput,
 ) -> Result<PipelineMutationOutcome> {
     let payload = json(request)?;
-    if let Some((stored,result))=sqlx::query_as::<_,(serde_json::Value,Option<serde_json::Value>)>(
-        "SELECT request_payload,result_payload FROM slice_pipeline_inputs WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3")
+    if let Some((stored,result,erased))=sqlx::query_as::<_,(Option<serde_json::Value>,Option<serde_json::Value>,bool)>(
+        "SELECT request_payload,result_payload,payload_erased FROM slice_pipeline_inputs WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3")
         .bind(tenant).bind(workspace).bind(request.request_id).fetch_optional(&mut **tx).await.map_err(storage_error)? {
-        if stored!=payload{return Err(Error::InputConflict)} return decode(result.ok_or(Error::InternalInvariant)?)
+        if erased { return Err(Error::KnowledgePayloadErased) }
+        if stored != Some(payload.clone()) { return Err(Error::InputConflict) }
+        return decode(result.ok_or(Error::InternalInvariant)?);
     }
     let row:(i64,String,Option<String>)=sqlx::query_as("SELECT revision,status,current_phase_id FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
         .bind(tenant).bind(workspace).bind(request.run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?.ok_or(Error::NotFound)?;
-    if let Some((stored,result))=sqlx::query_as::<_,(serde_json::Value,Option<serde_json::Value>)>(
-        "SELECT request_payload,result_payload FROM slice_pipeline_inputs WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3")
+    if let Some((stored,result,erased))=sqlx::query_as::<_,(Option<serde_json::Value>,Option<serde_json::Value>,bool)>(
+        "SELECT request_payload,result_payload,payload_erased FROM slice_pipeline_inputs WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3")
         .bind(tenant).bind(workspace).bind(request.request_id).fetch_optional(&mut **tx).await.map_err(storage_error)? {
-        if stored!=payload{return Err(Error::InputConflict)} return decode(result.ok_or(Error::InternalInvariant)?)
+        if erased { return Err(Error::KnowledgePayloadErased) }
+        if stored != Some(payload.clone()) { return Err(Error::InputConflict) }
+        return decode(result.ok_or(Error::InternalInvariant)?);
     }
     if row.0 != request.run_revision {
         return Err(Error::StaleRevision);
@@ -37,14 +41,24 @@ pub(crate) async fn record_input(
         .execute(&mut **tx).await.map_err(storage_error)?;
     sqlx::query("UPDATE slice_pipeline_runs SET revision=revision+1,status='active' WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
         .bind(tenant).bind(workspace).bind(request.run_id).execute(&mut **tx).await.map_err(storage_error)?;
+    let principal = session_principal(tx, session).await?;
     let outcome = PipelineMutationOutcome {
-        context: load_context(tx, tenant, workspace, request.run_id)
+        context: load_context(tx, tenant, workspace, principal, request.run_id)
             .await?
             .ok_or(Error::InternalInvariant)?,
         result: None,
     };
     sqlx::query("UPDATE slice_pipeline_inputs SET result_payload=$4 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
         .bind(tenant).bind(workspace).bind(id).bind(json(&outcome)?).execute(&mut **tx).await.map_err(storage_error)?;
+    crate::knowledge_lifecycle::erase::register_pipeline_input_copies(
+        tx,
+        tenant,
+        workspace,
+        request.run_id,
+        id,
+        request.request_id,
+    )
+    .await?;
     Ok(outcome)
 }
 
@@ -56,17 +70,21 @@ pub(crate) async fn escalate_delivery(
     request: &EscalatePipelineDelivery,
 ) -> Result<PipelineMutationOutcome> {
     let payload = json(request)?;
-    if let Some((stored,result))=sqlx::query_as::<_,(serde_json::Value,serde_json::Value)>(
-        "SELECT request_payload,result_payload FROM slice_pipeline_receipts WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND operation='delivery_escalate' AND request_id=$4")
+    if let Some((stored,result,erased))=sqlx::query_as::<_,(Option<serde_json::Value>,Option<serde_json::Value>,bool)>(
+        "SELECT request_payload,result_payload,payload_erased FROM slice_pipeline_receipts WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND operation='delivery_escalate' AND request_id=$4")
         .bind(tenant).bind(workspace).bind(request.run_id).bind(request.request_id).fetch_optional(&mut **tx).await.map_err(storage_error)? {
-        if stored!=payload{return Err(Error::InputConflict)} return decode(result)
+        if erased { return Err(Error::KnowledgePayloadErased) }
+        if stored != Some(payload.clone()) { return Err(Error::InputConflict) }
+        return decode(result.ok_or(Error::InternalInvariant)?);
     }
     let row:(i64,String,String,Option<String>)=sqlx::query_as("SELECT revision,status,delivery_mode,current_phase_id FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
         .bind(tenant).bind(workspace).bind(request.run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?.ok_or(Error::NotFound)?;
-    if let Some((stored,result))=sqlx::query_as::<_,(serde_json::Value,serde_json::Value)>(
-        "SELECT request_payload,result_payload FROM slice_pipeline_receipts WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND operation='delivery_escalate' AND request_id=$4")
+    if let Some((stored,result,erased))=sqlx::query_as::<_,(Option<serde_json::Value>,Option<serde_json::Value>,bool)>(
+        "SELECT request_payload,result_payload,payload_erased FROM slice_pipeline_receipts WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND operation='delivery_escalate' AND request_id=$4")
         .bind(tenant).bind(workspace).bind(request.run_id).bind(request.request_id).fetch_optional(&mut **tx).await.map_err(storage_error)? {
-        if stored!=payload{return Err(Error::InputConflict)} return decode(result)
+        if erased { return Err(Error::KnowledgePayloadErased) }
+        if stored != Some(payload.clone()) { return Err(Error::InputConflict) }
+        return decode(result.ok_or(Error::InternalInvariant)?);
     }
     if row.0 != request.run_revision {
         return Err(Error::StaleRevision);
@@ -80,8 +98,9 @@ pub(crate) async fn escalate_delivery(
     }
     sqlx::query("UPDATE slice_pipeline_runs SET revision=revision+1,delivery_mode='phasewise' WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
         .bind(tenant).bind(workspace).bind(request.run_id).execute(&mut **tx).await.map_err(storage_error)?;
+    let principal = session_principal(tx, session).await?;
     let outcome = PipelineMutationOutcome {
-        context: load_context(tx, tenant, workspace, request.run_id)
+        context: load_context(tx, tenant, workspace, principal, request.run_id)
             .await?
             .ok_or(Error::InternalInvariant)?,
         result: None,
@@ -89,5 +108,13 @@ pub(crate) async fn escalate_delivery(
     sqlx::query("INSERT INTO slice_pipeline_receipts(tenant_id,workspace_id,run_id,operation,request_id,actor_session_id,request_payload,result_payload) VALUES($1,$2,$3,'delivery_escalate',$4,$5,$6,$7)")
         .bind(tenant).bind(workspace).bind(request.run_id).bind(request.request_id).bind(session).bind(payload).bind(json(&outcome)?)
         .execute(&mut **tx).await.map_err(storage_error)?;
+    crate::knowledge_lifecycle::erase::register_pipeline_receipt_copies(
+        tx,
+        tenant,
+        workspace,
+        request.run_id,
+        request.request_id,
+    )
+    .await?;
     Ok(outcome)
 }

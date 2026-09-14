@@ -1,5 +1,4 @@
 use super::*;
-
 type LockedRun = (
     Uuid,
     Uuid,
@@ -24,14 +23,15 @@ pub(crate) async fn complete_phase(
     session: Uuid,
     request: &CompletePipelinePhase,
 ) -> Result<PipelineMutationOutcome> {
-    validate_output_integrity(&request.output)?;
+    phase_validation::validate_output_integrity(&request.output)?;
     let payload = json(request)?;
-    if let Some((stored, result)) = sqlx::query_as::<_, (serde_json::Value, Option<serde_json::Value>)>(
-        "SELECT request_payload,result_payload FROM slice_pipeline_phase_attempts WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3",
+    if let Some((stored, result, erased)) = sqlx::query_as::<_, (Option<serde_json::Value>, Option<serde_json::Value>,bool)>(
+        "SELECT request_payload,result_payload,payload_erased FROM slice_pipeline_phase_attempts WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3",
     )
     .bind(tenant).bind(workspace).bind(request.request_id)
     .fetch_optional(&mut **tx).await.map_err(storage_error)? {
-        if stored != payload { return Err(Error::InputConflict) }
+        if erased{return Err(Error::KnowledgePayloadErased)}
+        if stored != Some(payload.clone()) { return Err(Error::InputConflict) }
         return decode(result.ok_or(Error::InternalInvariant)?);
     }
     // DK lock order: workspace knowledge state precedes the run lock.
@@ -39,12 +39,13 @@ pub(crate) async fn complete_phase(
     let run_row:LockedRun=sqlx::query_as(
         "SELECT scope_id,slice_id,slice_revision,revision,status,definition_version,definition_digest,definition,delivery_mode,current_phase_id,current_phase_ordinal,knowledge_manifest_id,knowledge_manifest_digest FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
         .bind(tenant).bind(workspace).bind(request.run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?.ok_or(Error::NotFound)?;
-    if let Some((stored, result)) = sqlx::query_as::<_, (serde_json::Value, Option<serde_json::Value>)>(
-        "SELECT request_payload,result_payload FROM slice_pipeline_phase_attempts WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3",
+    if let Some((stored, result, erased)) = sqlx::query_as::<_, (Option<serde_json::Value>, Option<serde_json::Value>,bool)>(
+        "SELECT request_payload,result_payload,payload_erased FROM slice_pipeline_phase_attempts WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3",
     )
     .bind(tenant).bind(workspace).bind(request.request_id)
     .fetch_optional(&mut **tx).await.map_err(storage_error)? {
-        if stored != payload { return Err(Error::InputConflict) }
+        if erased{return Err(Error::KnowledgePayloadErased)}
+        if stored != Some(payload.clone()) { return Err(Error::InputConflict) }
         return decode(result.ok_or(Error::InternalInvariant)?);
     }
     if run_row.3 != request.run_revision {
@@ -62,8 +63,18 @@ pub(crate) async fn complete_phase(
         .iter()
         .find(|phase| phase.id == request.phase_id)
         .ok_or(Error::InternalInvariant)?;
+    knowledge_publication::validate(
+        tx,
+        tenant,
+        workspace,
+        session,
+        request.run_id,
+        phase,
+        &request.output,
+    )
+    .await?;
     let knowledge =
-        crate::durable_knowledge::manifest::load(tx, tenant, workspace, run_row.11).await?;
+        phase_validation::load_manifest(tx, tenant, workspace, session, run_row.11).await?;
     crate::durable_knowledge::manifest::validate_completion(
         tx,
         tenant,
@@ -72,6 +83,7 @@ pub(crate) async fn complete_phase(
         run_row.0,
         run_row.1,
         &phase.id,
+        session,
         knowledge.as_ref(),
         request.consumed_knowledge.as_ref(),
     )
@@ -120,13 +132,14 @@ pub(crate) async fn complete_phase(
         .bind(enum_text(&request.outcome)?).bind(enum_text(&request.transition)?).bind(&request.revisit_phase_id)
         .bind(request.escalation_target.map(PipelineKind::as_str)).bind(session).bind(reviewer_context)
         .bind(request.request_id).bind(&payload).execute(&mut **tx).await.map_err(storage_error)?;
-    sqlx::query("INSERT INTO slice_pipeline_phase_outputs(id,tenant_id,workspace_id,run_id,attempt_id,phase_id,phase_ordinal,revision,body,producer_context_id,body_digest,reference,fields,verdict,dispositions,skill_reads,resource_reads,artifacts,validator_receipts,followup_proposal) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)")
+    sqlx::query("INSERT INTO slice_pipeline_phase_outputs(id,tenant_id,workspace_id,run_id,attempt_id,phase_id,phase_ordinal,revision,body,producer_context_id,body_digest,reference,fields,verdict,dispositions,skill_reads,resource_reads,artifacts,validator_receipts,followup_proposal,knowledge_publication) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)")
         .bind(output_id).bind(tenant).bind(workspace).bind(request.run_id).bind(attempt_id).bind(&request.phase_id).bind(phase.ordinal as i32)
         .bind(output_revision).bind(&request.output.body).bind(&request.output.producer_context_id).bind(&output_digest).bind(&request.output.reference).bind(json(&request.output.fields)?)
         .bind(&request.output.verdict).bind(json(&request.output.dispositions)?).bind(json(&request.output.skill_reads)?)
         .bind(json(&request.output.resource_reads)?).bind(json(&request.output.artifacts)?)
         .bind(json(&request.output.validator_receipts)?)
         .bind(followup_proposal)
+        .bind(request.output.knowledge_publication.as_ref().map(json).transpose()?)
         .execute(&mut **tx).await.map_err(storage_error)?;
     sqlx::query("INSERT INTO slice_pipeline_output_bindings(tenant_id,workspace_id,run_id,phase_id,phase_ordinal,output_id,output_revision) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(tenant_id,workspace_id,run_id,phase_id) DO UPDATE SET output_id=EXCLUDED.output_id,output_revision=EXCLUDED.output_revision,stale=false,stale_reason=NULL,updated_at=pg_catalog.clock_timestamp()")
         .bind(tenant).bind(workspace).bind(request.run_id).bind(&request.phase_id).bind(phase.ordinal as i32).bind(output_id).bind(output_revision)
@@ -147,6 +160,7 @@ pub(crate) async fn complete_phase(
             run_row.0,
             run_row.1,
             next_phase,
+            session,
         )
         .await?;
         sqlx::query("UPDATE slice_pipeline_runs SET knowledge_manifest_id=$4,knowledge_manifest_digest=$5 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
@@ -200,8 +214,27 @@ pub(crate) async fn complete_phase(
         ),
         _ => None,
     };
+    let planning_input = if let Some(result) = &result {
+        sqlx::query_scalar("SELECT id FROM slice_planning_inputs WHERE tenant_id=$1 AND workspace_id=$2 AND source_result_id=$3")
+            .bind(tenant).bind(workspace).bind(result.id).fetch_optional(&mut **tx).await.map_err(storage_error)?
+    } else {
+        None
+    };
+    crate::knowledge_lifecycle::erase::register_pipeline_phase_copies(
+        tx,
+        tenant,
+        workspace,
+        request.run_id,
+        run_row.11,
+        attempt_id,
+        output_id,
+        result.as_ref().map(|value| value.id),
+        planning_input,
+    )
+    .await?;
+    let principal = session_principal(tx, session).await?;
     let outcome = PipelineMutationOutcome {
-        context: load_context(tx, tenant, workspace, request.run_id)
+        context: load_context(tx, tenant, workspace, principal, request.run_id)
             .await?
             .ok_or(Error::InternalInvariant)?,
         result,
@@ -209,25 +242,6 @@ pub(crate) async fn complete_phase(
     sqlx::query("UPDATE slice_pipeline_phase_attempts SET result_payload=$4 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
         .bind(tenant).bind(workspace).bind(attempt_id).bind(json(&outcome)?).execute(&mut **tx).await.map_err(storage_error)?;
     Ok(outcome)
-}
-
-fn validate_output_integrity(output: &PipelinePhaseOutputDraft) -> Result<()> {
-    if serde_json::to_vec(output).map_err(storage_error)?.len() > MAX_PIPELINE_OUTPUT_BYTES {
-        return Err(Error::InvalidArguments);
-    }
-    for artifact in &output.artifacts {
-        let actual = Sha256::digest(artifact.body.as_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        if actual != artifact.digest
-            || artifact.media_type == "application/json"
-                && serde_json::from_str::<serde_json::Value>(&artifact.body).is_err()
-        {
-            return Err(Error::InvalidArguments);
-        }
-    }
-    Ok(())
 }
 
 async fn validate_consumed_outputs(
@@ -481,5 +495,6 @@ async fn publish_result(
         pipeline_definition_digest: Some(run.6.clone()),
         pipeline_final_attempt_id: Some(attempt_id),
         pipeline_result_origin: Some(origin.into()),
+        knowledge_provenance: None,
     })
 }

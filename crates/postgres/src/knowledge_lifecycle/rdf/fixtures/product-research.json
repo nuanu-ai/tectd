@@ -1,0 +1,89 @@
+{
+  "id": "product-research",
+  "source_path": "tect/programs/tect-substrate-daemon-v1/durable-knowledge-preliminary-design-20260913.md",
+  "source_revision": "revision-6",
+  "source_sha256": "abd5ed735f993186f18cfb46fc46a7886fd57de818d27a129ef2487692d44c15",
+  "document": {
+    "title": "RDF substrate choice for TectD",
+    "canonical_text": "For the accepted RDF-first design, pgRDF is the first bounded integration candidate because it provides RDF/SPARQL/SHACL inside PostgreSQL. Apache AGE is a property-graph/Cypher system and is not selected as the native RDF substrate. This comparison is not a benchmark or production-readiness claim.",
+    "knowledge_kind": "product_research",
+    "epistemic_state": "declared",
+    "target_iris": [
+      "urn:tect:dk2:acceptance:product-research"
+    ],
+    "conditions": [
+      "Revision 6 source comparison; no benchmark or production-readiness claim."
+    ],
+    "exceptions": [],
+    "sources": [
+      {
+        "kind": "snapshot",
+        "snapshot": {
+          "title": "Durable knowledge preliminary design section 4",
+          "uri": "urn:tect:dk2:source:durable-knowledge-preliminary-design:r6:section4",
+          "text": "## 4. PostgreSQL: какое расширение действительно соответствует задаче\n\nНа исследовательском этапе проверены официальные repositories, release metadata и отдельные файлы закреплённых версий на 2026-09-14. Search snippets оказались местами устаревшими; они не использованы для вывода о текущей совместимости. В редакциях 1–4 расширения не устанавливались и не запускались; начавшиеся затем изолированные проверки DK-1 описаны в §14.\n\n| Вариант | Что это | Решение для TectD |\n|---|---|---|\n| Apache AGE | Property graph с openCypher внутри PostgreSQL | Не выбирать основой RDF. Понадобится собственный mapping RDF semantics, которого native RDF extension позволяет избежать |\n| `pgRDF` | RDF quad storage, SPARQL, SHACL и дополнительные semantic functions в PostgreSQL | Первый кандидат на интеграцию; использовать узкое ядро хранения/запросов/валидации |\n| `pg_ripple` | Native RDF/SPARQL extension, graph access и много дополнительных integrations | Второй кандидат. Найденный в release source RLS-путь требует разрешения до использования его как isolation boundary |\n| `rdf_fdw` | Доступ к внешним SPARQL endpoints через FDW | Не решает выбранное локальное хранение RDF в одной PostgreSQL |\n| `pgvector` | Векторный тип, distance operators и индексы | Использовать для производного поля RDF-ресурса; это дополнение к RDF, а не другой источник знаний |\n\nКлассификация AGE подтверждается [официальным FAQ](https://age.apache.org/faq/). FDW описывает свою роль в [репозитории rdf_fdw](https://github.com/jimjonesbr/rdf_fdw). Наличие графового расширения само по себе не определяет RDF semantics, provenance или versioning.\n\n### 4.1. Почему первым проверять pgRDF\n\nУ `pgRDF` есть непосредственно нужная поверхность RDF/SPARQL/SHACL, named graphs и экспорт. В выбранном release README указан PostgreSQL 18. Его предметный контракт ближе к требуемому semantic store; необязательные OWL/inference возможности можно не включать. Это мой выбор первого кандидата по соответствию задаче, не сравнительный benchmark и не заявление «лучший плагин». [Release README](https://github.com/styk-tv/pgRDF/blob/1b82842dcb60b74c060b0344310b47d1c84a8e8d/README.md).\n\nПроверенная версия — **v0.6.34**, release commit **`1b82842dcb60b74c060b0344310b47d1c84a8e8d`**, release опубликован 2026-08-26. В `LATEST.md` этого же snapshot ещё указан рекламируемый artifact 0.6.33, тогда как README ссылается на 0.6.34. Поэтому нельзя приравнять release tag, исходник и готовый OCI binary. Перед интеграцией следует выбрать конкретный согласованный artifact/digest либо воспроизводимую сборку из pin. [Release](https://github.com/styk-tv/pgRDF/releases/tag/v0.6.34), [LATEST.md](https://github.com/styk-tv/pgRDF/blob/1b82842dcb60b74c060b0344310b47d1c84a8e8d/LATEST.md).\n\nРазработчик описывает transaction-safe dictionary cache и выполнение ряда операций в транзакции вызывающей стороны. Это полезное основание для проверки, но не наше доказательство atomicity всех используемых путей. Готовая tenant isolation, совместимая с TectD, в прочитанных материалах не подтверждена. Её нельзя предполагать из наличия named graphs. [Storage documentation](https://github.com/styk-tv/pgRDF/blob/1b82842dcb60b74c060b0344310b47d1c84a8e8d/docs/02-storage.md).\n",
+          "evidence_kind": "research"
+        }
+      }
+    ],
+    "bindings": [
+      {
+        "target": {
+          "kind": "workspace"
+        },
+        "purpose": "reference",
+        "version_resolution": {
+          "kind": "current_accepted"
+        }
+      }
+    ],
+    "profiles": [
+      "general",
+      "product_research"
+    ],
+    "access_scope": "workspace_members",
+    "owner_ref": "isolated-workspace-owner",
+    "authority_basis": "Owner-authorized source-only DK-2 acceptance in an isolated fixture",
+    "sections": {
+      "constraint": null,
+      "general": null,
+      "runbook": null,
+      "protocol": null,
+      "devops": null,
+      "operations": null,
+      "product_research": {
+        "question": "Which PostgreSQL extension fits the accepted RDF-first contract?",
+        "evidence_map": [
+          {
+            "claim": "pgRDF matches the accepted native RDF/SPARQL/SHACL surface more directly than Apache AGE.",
+            "source_refs": [
+              0
+            ],
+            "synthetic": false
+          }
+        ],
+        "assumptions": [
+          "RDF is canonical from first publication"
+        ],
+        "segments": [
+          "TectD multi-project knowledge workspace"
+        ],
+        "alternatives": [
+          "pgRDF",
+          "Apache AGE",
+          "pg_ripple as a separately qualified fallback"
+        ],
+        "conclusions_and_decisions": [
+          "For the accepted RDF-first design, pgRDF is the first bounded integration candidate because it provides RDF/SPARQL/SHACL inside PostgreSQL. Apache AGE is a property-graph/Cypher system and is not selected as the native RDF substrate. This comparison is not a benchmark or production-readiness claim."
+        ],
+        "observation_limits": [
+          "source comparison and separately bounded qualification; no comparative performance or operational readiness proof"
+        ],
+        "negative_evidence": [
+          "AGE's property-graph model does not itself supply the required native RDF/SPARQL contract"
+        ]
+      },
+      "security": null
+    }
+  }
+}

@@ -145,6 +145,7 @@ pub(super) fn valid_completion() -> CompletePipelinePhase {
             artifacts: vec![],
             validator_receipts: vec![],
             followup_proposal: None,
+            knowledge_publication: None,
             reviewer_context: None,
             reference: Some("tdd-notes.md".into()),
         },

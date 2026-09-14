@@ -127,8 +127,10 @@ async fn run_upgrade(
         .fetch_one(&pool)
         .await
         .map_err(|error| error.to_string())?;
-    if migration_count != 9 {
-        return Err(format!("expected 9 migrations, observed {migration_count}"));
+    if migration_count != 25 {
+        return Err(format!(
+            "expected 25 migrations, observed {migration_count}"
+        ));
     }
     let knowledge_table_count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace \

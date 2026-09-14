@@ -245,6 +245,15 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
         {"name": tool["name"], "schema_sha256": sha256_json(tool.get("inputSchema")), "annotations": tool.get("annotations")}
         for tool in tools
     ]
+    route_counts = {
+        tool["name"]: len(tool.get("inputSchema", {}).get("properties", {}).get("route", {}).get("enum", []))
+        for tool in tools if tool["name"] in {"query", "command", "execute"}
+    }
+    proof.check(
+        "five-tool facade exposes the exact DK-2 route totals",
+        route_counts == {"query": 14, "command": 33, "execute": 1},
+        route_counts,
+    )
     proof.persist()
 
     search, failed = tool_result(app, thread_id, "help", {"mode": "search", "text": "program", "tool": "query"})
@@ -284,9 +293,16 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
         "knowledge.change_review",
         "knowledge.change_publish",
         "pipeline.knowledge_refresh",
+        "knowledge.lifecycle",
+        "knowledge.unit",
+        "knowledge.change_begin",
+        "knowledge.change_phase_complete",
+        "knowledge.change_record_input",
+        "knowledge.change_commit",
+        "knowledge.change_settle_effects",
     }
     proof.check(
-        "native help discovers all DK-1 routes",
+        "native help discovers the exact thirteen DK-1 and DK-2 routes",
         not failed and knowledge_routes == expected_knowledge_routes,
         sorted(route for route in knowledge_routes if isinstance(route, str)),
     )
@@ -308,15 +324,21 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
     )
     capability = knowledge.get("capability", {})
     proof.check(
-        "metadata-only DK context remains inactive and advertises the bounded lifecycle",
+        "metadata-only DK context remains inactive and reports its exact declared contract",
         not failed
         and capability.get("ready") is False
         and capability.get("lifecycle_complete") is False
-        and capability.get("supported_operations") == ["create", "revise", "retract"],
+        and capability.get("profile_id") == "tect:durable-knowledge:general-constraint"
+        and capability.get("profile_version") == "dk-1"
+        and capability.get("supported_operations") == ["create", "revise", "retract"]
+        and capability.get("supported_bindings") == ["workspace", "slice_phase"],
         {
             "ready": capability.get("ready"),
             "lifecycle_complete": capability.get("lifecycle_complete"),
+            "profile_id": capability.get("profile_id"),
+            "profile_version": capability.get("profile_version"),
             "supported_operations": capability.get("supported_operations"),
+            "supported_bindings": capability.get("supported_bindings"),
         },
     )
 

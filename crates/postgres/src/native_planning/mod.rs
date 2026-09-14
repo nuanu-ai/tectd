@@ -22,10 +22,6 @@ fn slice_state(value: &str) -> Result<SliceState> {
 fn pipeline(value: &str) -> Result<PipelineKind> {
     decode(serde_json::Value::String(value.into()))
 }
-fn result_outcome(value: &str) -> Result<SliceResultOutcome> {
-    decode(serde_json::Value::String(value.into()))
-}
-
 pub(super) async fn receipt(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,

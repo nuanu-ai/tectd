@@ -29,6 +29,18 @@ const LEGACY_MIGRATIONS: &[(&str, &str)] = &[
         "0006_scope_candidate_planning.sql",
         include_str!("../../postgres/migrations/0006_scope_candidate_planning.sql"),
     ),
+    (
+        "0007_native_scope_slice_planning.sql",
+        include_str!("../../postgres/migrations/0007_native_scope_slice_planning.sql"),
+    ),
+    (
+        "0008_native_slice_pipeline_execution.sql",
+        include_str!("../../postgres/migrations/0008_native_slice_pipeline_execution.sql"),
+    ),
+    (
+        "0009_durable_knowledge.sql",
+        include_str!("../../postgres/migrations/0009_durable_knowledge.sql"),
+    ),
 ];
 
 fn quoted_database(name: &str) -> String {
@@ -51,7 +63,7 @@ async fn connect_database(admin_url: &str, database: &str) -> PgPool {
 }
 
 #[tokio::test]
-async fn schema_six_program_and_scope_candidate_survive_native_planning_upgrade() {
+async fn schema_nine_metadata_survives_dk2_upgrade() {
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").expect("TECT_TEST_ADMIN_URL required");
     let runtime_role =
         std::env::var("TECT_TEST_RUNTIME_ROLE").expect("TECT_TEST_RUNTIME_ROLE required");
@@ -184,16 +196,65 @@ async fn run_upgrade(admin_url: &str, database: &str, runtime_role: &str) -> Res
     .bind(candidate_set)
     .bind(&legacy_draft)
     .execute(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    let principal = Uuid::new_v4();
+    let host = Uuid::new_v4();
+    let session = Uuid::new_v4();
+    sqlx::query("INSERT INTO principals(id,tenant_id,role) VALUES($1,$2,'owner')")
+        .bind(principal)
+        .bind(tenant)
+        .execute(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query("INSERT INTO memberships(tenant_id,workspace_id,principal_id) VALUES($1,$2,$3)")
+        .bind(tenant)
+        .bind(workspace)
+        .bind(principal)
+        .execute(&pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    sqlx::query(
+        "INSERT INTO hosts(id,tenant_id,principal_id,credential_digest) VALUES($1,$2,$3,$4)",
+    )
+    .bind(host)
+    .bind(tenant)
+    .bind(principal)
+    .bind("e".repeat(64))
+    .execute(&pool)
     .await
-    .map_err(|error| error.to_string())?;
+    .map_err(|e| e.to_string())?;
+    sqlx::query("INSERT INTO agent_sessions(id,tenant_id,host_id,workspace_id,native_session_id) VALUES($1,$2,$3,$4,$5)")
+        .bind(session).bind(tenant).bind(host).bind(workspace).bind(Uuid::new_v4().to_string()).execute(&pool).await.map_err(|e|e.to_string())?;
+    let unit = Uuid::new_v4();
+    let change = Uuid::new_v4();
+    let event = Uuid::new_v4();
+    let receipt = Uuid::new_v4();
+    sqlx::query("INSERT INTO knowledge_changes(id,tenant_id,workspace_id,unit_id,operation,stage,expected_generation,proposed_unit_revision,proposal_digest,semantic_diff,preparation_method,review_method,reason,authority_basis,prepared_principal_id,prepared_session_id) VALUES($1,$2,$3,$4,'retract','committed',0,1,$5,'legacy retract','{}','{}','legacy reason','legacy authority',$6,$7)")
+        .bind(change).bind(tenant).bind(workspace).bind(unit).bind("f".repeat(64)).bind(principal).bind(session).execute(&pool).await.map_err(|e|e.to_string())?;
+    sqlx::query("INSERT INTO knowledge_publication_events(id,tenant_id,workspace_id,unit_id,unit_revision,change_id,operation,actor_principal_id,actor_session_id,rdf_digest,rdf_digest_method,rdf_digest_scope,unit_iri,revision_iri,event_iri) VALUES($1,$2,$3,$4,1,$5,'retract',$6,$7,$8,'rdfc-1.0-sha256','lifecycle_event_payload',$9,$10,$11)")
+        .bind(event).bind(tenant).bind(workspace).bind(unit).bind(change).bind(principal).bind(session).bind("a".repeat(64)).bind(format!("urn:unit:{unit}")).bind(format!("urn:revision:{unit}:1")).bind(format!("urn:event:{event}")).execute(&pool).await.map_err(|e|e.to_string())?;
+    sqlx::query("INSERT INTO knowledge_revisions(tenant_id,workspace_id,unit_id,revision,constraint_payload,source_sha256,rdf_digest,rdf_digest_method,rdf_digest_scope,publication_event_id,unit_iri,revision_iri,source_iri,publication_event_iri) VALUES($1,$2,$3,1,'{}',$4,$5,'rdfc-1.0-sha256','revision_publication_payload',$6,$7,$8,$9,$10)")
+        .bind(tenant).bind(workspace).bind(unit).bind("b".repeat(64)).bind("c".repeat(64)).bind(event).bind(format!("urn:unit:{unit}")).bind(format!("urn:revision:{unit}:1")).bind(format!("urn:source:{unit}")).bind(format!("urn:event:{event}")).execute(&pool).await.map_err(|e|e.to_string())?;
+    sqlx::query("INSERT INTO knowledge_unit_heads(tenant_id,workspace_id,unit_id,accepted_revision,active,proposal_fingerprint,last_event_id) VALUES($1,$2,$3,1,false,'legacy-head',$4)")
+        .bind(tenant).bind(workspace).bind(unit).bind(event).execute(&pool).await.map_err(|e|e.to_string())?;
+    sqlx::query("INSERT INTO knowledge_command_receipts(tenant_id,workspace_id,operation,request_id,actor_session_id,request_payload,result_payload) VALUES($1,$2,'publish',$3,$4,$5,$6)")
+        .bind(tenant).bind(workspace).bind(receipt).bind(session).bind(serde_json::json!({"change_id":change})).bind(serde_json::json!({"published":{"change_id":change}})).execute(&pool).await.map_err(|e|e.to_string())?;
 
     let before = legacy_rows(&pool, program, candidate_set).await?;
+    let dk1_before = dk1_rows(&pool, change, event, unit, receipt).await?;
     admin::migrate(&pool, runtime_role)
         .await
         .map_err(|error| error.to_string())?;
     let after = legacy_rows(&pool, program, candidate_set).await?;
+    let dk1_after = dk1_rows(&pool, change, event, unit, receipt).await?;
     if before != after {
         return Err("legacy Program or ScopeCandidate rows changed during upgrade".into());
+    }
+    if dk1_before != dk1_after {
+        return Err(
+            "populated DK-1 retract/event/revision/receipt bytes changed during upgrade".into(),
+        );
     }
     let migration_count: i64 = sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations")
         .fetch_one(&pool)
@@ -204,11 +265,23 @@ async fn run_upgrade(admin_url: &str, database: &str, runtime_role: &str) -> Res
             .fetch_one(&pool)
             .await
             .map_err(|error| error.to_string())?;
-    if migration_count != 9 || native_table.as_deref() != Some("native_scopes") {
-        return Err("schema 9 was not installed after preserving legacy rows".into());
+    if migration_count != 25 || native_table.as_deref() != Some("native_scopes") {
+        return Err("schema 25 was not installed after preserving legacy and DK-1 rows".into());
     }
     pool.close().await;
     Ok(())
+}
+
+async fn dk1_rows(
+    pool: &PgPool,
+    change: Uuid,
+    event: Uuid,
+    unit: Uuid,
+    receipt: Uuid,
+) -> Result<(String, String, String, String), String> {
+    let row=sqlx::query("SELECT jsonb_build_object('operation',c.operation,'proposal_fingerprint',c.proposal_fingerprint,'source_sha256',c.source_sha256,'proposal',c.proposal)::text,jsonb_build_object('rdf_digest',e.rdf_digest,'revision_iri',e.revision_iri,'event_iri',e.event_iri)::text,jsonb_build_object('source_sha256',r.source_sha256,'rdf_digest',r.rdf_digest,'constraint_payload',r.constraint_payload)::text,jsonb_build_object('operation',x.operation,'request_payload',x.request_payload,'result_payload',x.result_payload)::text FROM knowledge_changes c JOIN knowledge_publication_events e ON e.id=$2 JOIN knowledge_revisions r ON r.unit_id=$3 AND r.revision=1 JOIN knowledge_command_receipts x ON x.request_id=$4 WHERE c.id=$1")
+        .bind(change).bind(event).bind(unit).bind(receipt).fetch_one(pool).await.map_err(|e|e.to_string())?;
+    Ok((row.get(0), row.get(1), row.get(2), row.get(3)))
 }
 
 async fn legacy_rows(

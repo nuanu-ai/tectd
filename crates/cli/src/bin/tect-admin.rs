@@ -8,6 +8,9 @@ use std::process::ExitCode;
 use tect_domain::{Error, HostAuth, Result, validate_setup_path};
 use uuid::Uuid;
 
+#[path = "../knowledge_recovery_cli.rs"]
+mod knowledge_recovery_cli;
+
 #[derive(Parser)]
 #[command(name = "tect-admin")]
 struct Arguments {
@@ -46,6 +49,20 @@ enum Command {
     RevokeSession {
         #[arg(long)]
         session_id: Uuid,
+    },
+    KnowledgeSuppressionExport {
+        #[arg(long)]
+        out: PathBuf,
+    },
+    KnowledgeSuppressionApply {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        expected_lineage: Uuid,
+        #[arg(long)]
+        expected_sequence: i64,
+        #[arg(long)]
+        expected_digest: String,
     },
 }
 
@@ -119,6 +136,24 @@ async fn run(arguments: Arguments) -> Result<()> {
         Command::RevokeSession { session_id } => {
             tect_postgres::admin::revoke_session(&pool, session_id).await?;
             println!("revoked session {session_id}");
+        }
+        Command::KnowledgeSuppressionExport { out } => {
+            knowledge_recovery_cli::export(&pool, &out).await?;
+        }
+        Command::KnowledgeSuppressionApply {
+            manifest,
+            expected_lineage,
+            expected_sequence,
+            expected_digest,
+        } => {
+            knowledge_recovery_cli::apply(
+                &pool,
+                &manifest,
+                expected_lineage,
+                expected_sequence,
+                expected_digest,
+            )
+            .await?;
         }
     }
     pool.close().await;

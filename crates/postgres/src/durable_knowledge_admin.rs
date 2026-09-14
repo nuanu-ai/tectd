@@ -56,10 +56,23 @@ pub async fn enable_durable_knowledge(pool: &PgPool, runtime_role: &str) -> Resu
     let role = quote_identifier(runtime_role)?;
     let mut tx = pool.begin().await.map_err(storage_error)?;
     sqlx::query("SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('tect-dk-native-publisher',0))").execute(&mut *tx).await.map_err(storage_error)?;
-    sqlx::query("SELECT singleton FROM durable_knowledge_capability WHERE singleton FOR UPDATE")
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(storage_error)?;
+    let stored_identity: (Option<String>, Option<i64>) = sqlx::query_as(
+        "SELECT qualified_system_identifier,qualified_database_oid::bigint \
+         FROM durable_knowledge_capability WHERE singleton FOR UPDATE",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(storage_error)?;
+    let actual_identity =
+        crate::knowledge_recovery::current_knowledge_database_identity_in_tx(&mut tx).await?;
+    match stored_identity {
+        (None, None) => {}
+        (Some(system_identifier), Some(database_oid))
+            if system_identifier == actual_identity.system_identifier
+                && database_oid == i64::from(actual_identity.database_oid) => {}
+        (Some(_), Some(_)) => return Err(Error::KnowledgeUnavailable),
+        _ => return Err(Error::InvalidConfiguration),
+    }
     sqlx::query("SELECT tenant_id,workspace_id FROM workspace_knowledge_state ORDER BY tenant_id,workspace_id FOR UPDATE")
         .fetch_all(&mut *tx).await.map_err(storage_error)?;
     let current: String = sqlx::query_scalar("SELECT CURRENT_USER")
@@ -161,6 +174,11 @@ pub async fn enable_durable_knowledge(pool: &PgPool, runtime_role: &str) -> Resu
     {
         return Err(Error::InvalidConfiguration);
     }
+    if sqlx::query_scalar::<_,bool>("SELECT pg_catalog.to_regprocedure('public.tect_dk2_native_publish(uuid,uuid,uuid,text,text,text)') IS NOT NULL")
+        .fetch_one(&mut *tx).await.map_err(storage_error)?
+    {
+        crate::knowledge_lifecycle::rdf::qualify_native(&mut tx).await?;
+    }
     sqlx::query("SELECT pgrdf.drop_graph($1,true)")
         .bind(valid)
         .execute(&mut *tx)
@@ -171,12 +189,22 @@ pub async fn enable_durable_knowledge(pool: &PgPool, runtime_role: &str) -> Resu
         .execute(&mut *tx)
         .await
         .map_err(storage_error)?;
-    sqlx::query("UPDATE durable_knowledge_capability SET capability_ready=true,pgrdf_version='0.6.34',activated_at=pg_catalog.clock_timestamp() WHERE singleton").execute(&mut *tx).await.map_err(storage_error)?;
+    sqlx::query("UPDATE durable_knowledge_capability SET capability_ready=true,pgrdf_version='0.6.34',activated_at=pg_catalog.clock_timestamp(),qualified_system_identifier=$1,qualified_database_oid=$2::bigint::oid,qualified_at=pg_catalog.clock_timestamp() WHERE singleton")
+        .bind(&actual_identity.system_identifier).bind(i64::from(actual_identity.database_oid))
+        .execute(&mut *tx).await.map_err(storage_error)?;
     sqlx::query("INSERT INTO workspace_knowledge_state(tenant_id,workspace_id,capability_ready,pgrdf_version,activated_at) SELECT tenant_id,id,true,'0.6.34',pg_catalog.clock_timestamp() FROM workspaces ON CONFLICT(tenant_id,workspace_id) DO UPDATE SET capability_ready=true,pgrdf_version='0.6.34',activated_at=pg_catalog.clock_timestamp()")
         .execute(&mut *tx).await.map_err(storage_error)?;
-    for statement in [format!(
-        "GRANT EXECUTE ON FUNCTION public.tect_dk_native_publish(uuid,uuid,uuid,text,text,text),public.tect_dk_native_read(uuid,uuid,uuid,bigint,uuid) TO {role}"
-    )] {
+    for statement in [
+        format!(
+            "REVOKE ALL PRIVILEGES ON FUNCTION public.tect_dk_internal_native_publish(uuid,uuid,uuid,text,text,text),public.tect_dk_internal_native_read(uuid,uuid,uuid,bigint,uuid),public.tect_dk_internal_native_owned_residual(uuid,uuid,uuid),public.tect_dk2_internal_native_publish(uuid,uuid,uuid,text,text,text),public.tect_dk2_internal_native_read(uuid,uuid,uuid,bigint,uuid,boolean),public.tect_dk_internal_native_erase(uuid,uuid,uuid),public.tect_dk_internal_capability() FROM {role}"
+        ),
+        format!(
+            "GRANT EXECUTE ON FUNCTION public.tect_dk_database_identity_ready(),public.tect_dk_native_publish(uuid,uuid,uuid,text,text,text),public.tect_dk_native_read(uuid,uuid,uuid,bigint,uuid),public.tect_dk_native_owned_residual(uuid,uuid,uuid),public.tect_dk2_native_publish(uuid,uuid,uuid,text,text,text),public.tect_dk2_native_read(uuid,uuid,uuid,bigint,uuid,boolean),public.tect_dk_native_erase(uuid,uuid,uuid) TO {role}"
+        ),
+        format!(
+            "GRANT EXECUTE ON FUNCTION public.tect_dk_erased_no_change_proof_valid(jsonb) TO {role}"
+        ),
+    ] {
         sqlx::query(&statement)
             .execute(&mut *tx)
             .await
@@ -184,7 +212,7 @@ pub async fn enable_durable_knowledge(pool: &PgPool, runtime_role: &str) -> Resu
     }
     let native_access:bool=sqlx::query_scalar("SELECT pg_catalog.has_schema_privilege($1,'pgrdf','USAGE') OR EXISTS(SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='pgrdf' AND pg_catalog.has_function_privilege($1,p.oid,'EXECUTE')) OR EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='pgrdf' AND (CASE WHEN c.relkind='S' THEN pg_catalog.has_sequence_privilege($1,c.oid,'USAGE') ELSE pg_catalog.has_table_privilege($1,c.oid,'SELECT') END))")
         .bind(runtime_role).fetch_one(&mut *tx).await.map_err(storage_error)?;
-    let owns_wrapper:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname IN ('tect_dk_native_publish','tect_dk_native_read') AND pg_catalog.pg_has_role($1,p.proowner,'MEMBER'))").bind(runtime_role).fetch_one(&mut *tx).await.map_err(storage_error)?;
+    let owns_wrapper:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.proname IN ('tect_dk_native_publish','tect_dk_native_read','tect_dk_native_owned_residual','tect_dk2_native_publish','tect_dk2_native_read','tect_dk_native_erase','tect_dk_internal_native_publish','tect_dk_internal_native_read','tect_dk_internal_native_owned_residual','tect_dk2_internal_native_publish','tect_dk2_internal_native_read','tect_dk_internal_native_erase','tect_dk_internal_capability') AND pg_catalog.pg_has_role($1,p.proowner,'MEMBER'))").bind(runtime_role).fetch_one(&mut *tx).await.map_err(storage_error)?;
     if native_access || owns_wrapper {
         return Err(Error::InvalidConfiguration);
     }

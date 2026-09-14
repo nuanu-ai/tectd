@@ -1,0 +1,90 @@
+{
+  "id": "operations",
+  "source_path": "tect/programs/tect-substrate-daemon-v1/architecture-maintenance.md",
+  "source_revision": "2026-09-14",
+  "source_sha256": "16c7536cb654e5ecefe6a4786c1de9539459c23170b4704c81c7a7a5ddfa54fc",
+  "document": {
+    "title": "Update the Program architecture with the source increment",
+    "canonical_text": "The canonical architecture is architecture-v2.1.md; HTML is rendered from it. A source increment updates affected responsibilities, conditions and sequence diagrams in the same change, preserves stable IDs, and separates implemented from future behavior. Completion includes source/HTML hashes, Mermaid render and visual review.",
+    "knowledge_kind": "operating_model",
+    "epistemic_state": "declared",
+    "target_iris": [
+      "urn:tect:dk2:acceptance:operations"
+    ],
+    "conditions": [
+      "Applies to source increments affecting this Program architecture."
+    ],
+    "exceptions": [],
+    "sources": [
+      {
+        "kind": "snapshot",
+        "snapshot": {
+          "title": "Program architecture maintenance contract",
+          "uri": "urn:tect:dk2:source:architecture-maintenance:20260914",
+          "text": "## Единственный источник и уровень абстракции\n\nКанонический документ: `tect/programs/tect-substrate-daemon-v1/architecture-v2.1.md`.\n`architecture-v2.1.html` — производное представление того же документа. Источник Mermaid\nредактируется только в Markdown. Сборка: `architecture-view/render.mjs`; команда ниже.\nОбщая архитектура остаётся на уровне Program: ответственности, вызовы, данные, authority,\nусловия переходов и процессы. Детальные схемы конкретного компонента могут жить в Slice,\nно не заменяют актуальную общую схему и затронутые sequence-диаграммы Program.\n\n## Изменение вместе с системой\n\nКаждый Slice обновляет затронутые узлы, связи и условия A-00/C*, а также соответствующие\nдиаграммы S-* **в том же изменении**, которое меняет систему. Новые процессы получают\nсвои sequence-диаграммы. Положительный путь, отказ, повтор/восстановление и граница\nтранзакции показываются там, где они влияют на поведение. Реализованное, предложенное\nи отложенное имеют явный статус; стрелка не должна выдавать рекомендацию за исполнение.\n\nПосле каждого Scope общая схема сверяется с суммой всех его Slice: cross-component\nсвязи, данные, границы authority, следующая точка расширения. Scope не переписывает\nисторические доказательства дочерних Slice и не объявляет будущую схему реализованной.\n\nКаждый Scope и Slice добавляет запись в таблицу редакций архитектуры: свой точный ref,\nзатронутые IDs, фактическое изменение, ссылки на код/проверку и итоговый статус.\nНомер редакции, дату и статус в комментарии `architecture-meta` в начале Markdown\nобновить согласованно с заголовком и таблицей: из них собирается шапка HTML.\nЕсли изменение не влияет на архитектуру или наблюдаемый процесс, это явно объясняется\nв `architecture-impact.md` и фиксируется записью «схемы без изменений» в общей таблице.\nОтсутствие влияния нельзя использовать для пропуска обновления при новом вызове,\nусловии перехода, модели authority, канонических данных или поведении восстановления.\n\nПеред общей правкой перечитать последнюю версию Program-файлов. При параллельных Slice\nинтегрировать изменения последовательно и сохранять чужие принятые изменения. Нельзя\nперезаписывать общую диаграмму своей устаревшей копией.\n\n## Условие завершения\n\nScope/Slice не считается завершённым, пока его `architecture-impact.md` не содержит:\n\n- исходный hash и итоговый hash общей архитектуры;\n- изменённые diagram/condition IDs либо проверенное объяснение отсутствия влияния;\n- ссылки на фактическую реализацию и соответствующие проверки;\n- результат разбора Mermaid, сборки HTML и визуального просмотра изменённых диаграмм;\n- подтверждение, что будущие и непринятые решения не представлены как работающие.\n\nПри противоречии кода и схемы сначала установить, где ошибка относительно принятого\nтребования. Нельзя «чинить» документацию под непредусмотренную регрессию или переносить\nобновление схемы в неопределённую будущую задачу. Принятие новых продуктовых решений\nостаётся в обычной authority-модели Program.\n\n",
+          "evidence_kind": "declaration"
+        }
+      }
+    ],
+    "bindings": [
+      {
+        "target": {
+          "kind": "workspace"
+        },
+        "purpose": "reference",
+        "version_resolution": {
+          "kind": "current_accepted"
+        }
+      }
+    ],
+    "profiles": [
+      "general",
+      "operations"
+    ],
+    "access_scope": "workspace_members",
+    "owner_ref": "isolated-workspace-owner",
+    "authority_basis": "Owner-authorized source-only DK-2 acceptance in an isolated fixture",
+    "sections": {
+      "constraint": null,
+      "general": null,
+      "runbook": null,
+      "protocol": null,
+      "devops": null,
+      "operations": {
+        "operating_purpose": "Consistent reviewable source architecture.",
+        "roles": [
+          {
+            "role": "Astra",
+            "responsibilities": [
+              "semantic architecture and evidence review"
+            ]
+          },
+          {
+            "role": "executor",
+            "responsibilities": [
+              "mechanical renderer/checks under root packet"
+            ]
+          }
+        ],
+        "cadence": "each source increment affecting architecture, reconciled at Scope closeout",
+        "handoffs": [
+          "root-authored Markdown -> renderer -> root visual review"
+        ],
+        "escalation": [
+          "return code/diagram inconsistency to the owning change"
+        ],
+        "status_semantics": [
+          "implemented and verified differs from proposed/future"
+        ],
+        "metrics": [],
+        "signal_sources": [],
+        "exceptions": [
+          "a no-impact change records its checked explanation"
+        ],
+        "ownership_gaps": []
+      },
+      "product_research": null,
+      "security": null
+    }
+  }
+}

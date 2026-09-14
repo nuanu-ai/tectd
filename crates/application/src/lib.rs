@@ -25,6 +25,11 @@ pub use pipeline_execution_ports::{PipelineDefinitionProvider, PipelineExecution
 mod durable_knowledge;
 mod durable_knowledge_ports;
 pub use durable_knowledge_ports::DurableKnowledgeStore;
+mod knowledge_lifecycle;
+mod knowledge_lifecycle_ports;
+pub use knowledge_lifecycle_ports::{
+    KnowledgeLifecycleDefinitionProvider, KnowledgeLifecycleStore, KnowledgeOutputGuard,
+};
 
 mod setup_access;
 mod setup_apply;

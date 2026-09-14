@@ -1,0 +1,103 @@
+{
+  "id": "runbook",
+  "source_path": "sources/tectd-dk1/integrations/codex/tectd/README.md",
+  "source_revision": "26d5f0123a32e15c2a174ab003ffb6a1beab5e34",
+  "source_sha256": "3d24cefaf90bc190d3ff77d4a67a5af90af8ce670afbdbeeb0086d6efa655475",
+  "document": {
+    "title": "Package TectD MCP into a new owned output directory",
+    "canonical_text": "Use scripts/package-codex-plugin.py with an explicitly selected built tectd-mcp binary and a new output parent. The result is output-parent/tectd. Existing output is refused. Packaging does not install the plugin or operate the daemon/database.",
+    "knowledge_kind": "procedure",
+    "epistemic_state": "declared",
+    "target_iris": [
+      "urn:tect:dk2:acceptance:runbook"
+    ],
+    "conditions": [
+      "Declared pinned source contract; no installed-runtime claim."
+    ],
+    "exceptions": [],
+    "sources": [
+      {
+        "kind": "snapshot",
+        "snapshot": {
+          "title": "Pinned TectD package source contract",
+          "uri": "urn:tect:dk2:source:integration-readme:package",
+          "text": "Independent plugin ID and MCP server key: `tectd`. Display name: **TectD MCP**.\nMCP `serverInfo.name` and executable: `tectd-mcp`. This package does not replace\n`tect@tect-local` or its `tect-dynamic-materialization` server.\n\nThe source template is packaged together with a built binary by\n`scripts/package-codex-plugin.py --binary /absolute/tectd-mcp --output /absolute/new-parent`.\nThe output is `new-parent/tectd`; an existing output is refused. No installation,\nmarketplace mutation, daemon startup, migration or enrollment is performed.\n",
+          "evidence_kind": "document"
+        }
+      }
+    ],
+    "bindings": [
+      {
+        "target": {
+          "kind": "workspace"
+        },
+        "purpose": "reference",
+        "version_resolution": {
+          "kind": "current_accepted"
+        }
+      }
+    ],
+    "profiles": [
+      "general",
+      "runbook"
+    ],
+    "access_scope": "workspace_members",
+    "owner_ref": "isolated-workspace-owner",
+    "authority_basis": "Owner-authorized source-only DK-2 acceptance in an isolated fixture",
+    "sections": {
+      "constraint": null,
+      "general": null,
+      "runbook": {
+        "purpose_and_fit": "Build a reviewable package from the exact source template and selected binary.",
+        "target_environment_iris": [
+          "urn:tect:dk2:acceptance:source-checkout"
+        ],
+        "parameters": [
+          {
+            "name": "binary",
+            "description": "absolute selected built binary",
+            "required": true
+          },
+          {
+            "name": "output",
+            "description": "absolute new owned parent",
+            "required": true
+          }
+        ],
+        "prerequisites": [
+          "selected binary/source identity known and output absent"
+        ],
+        "required_authority": "Create only the task-owned package output.",
+        "steps": [
+          {
+            "ordinal": 1,
+            "action": "Inspect binary/source identity and output absence",
+            "expected_result": "selected inputs and absent output",
+            "verification": "read-only file/source inventory"
+          },
+          {
+            "ordinal": 2,
+            "action": "Execute the source packager with --binary <binary> --output <output>",
+            "expected_result": "<output>/tectd",
+            "verification": "package creation result and existence"
+          },
+          {
+            "ordinal": 3,
+            "action": "Read package manifest/launcher",
+            "expected_result": "selected binary and explicit configuration boundary",
+            "verification": "exact package contents, without installation"
+          }
+        ],
+        "failure_and_recovery": "Stop on mismatched input or existing output; do not overwrite; use a new owned output only under current authority.",
+        "proof_status": "documented",
+        "proof_evidence_refs": [],
+        "dependency_iris": []
+      },
+      "protocol": null,
+      "devops": null,
+      "operations": null,
+      "product_research": null,
+      "security": null
+    }
+  }
+}

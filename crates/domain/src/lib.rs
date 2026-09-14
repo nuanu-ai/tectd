@@ -3,6 +3,19 @@ mod durable_knowledge;
 mod durable_knowledge_validation;
 mod error;
 mod identity;
+mod knowledge_change_validation;
+mod knowledge_consumer;
+mod knowledge_document;
+mod knowledge_erased_no_change;
+mod knowledge_lifecycle;
+mod knowledge_lifecycle_execution;
+#[cfg(test)]
+mod knowledge_lifecycle_tests;
+mod knowledge_lifecycle_validation;
+mod knowledge_operation_validation;
+mod knowledge_phase_validation;
+mod knowledge_profile_registry;
+mod knowledge_time;
 mod program;
 mod program_page;
 mod state;
@@ -18,9 +31,16 @@ pub use error::{Error, Result};
 pub use identity::{
     HostAuth, HostIdentity, RequestContext, validate_native_id, validate_workspace_key,
 };
+pub use knowledge_consumer::*;
+pub use knowledge_document::*;
+pub use knowledge_erased_no_change::*;
+pub use knowledge_lifecycle::*;
+pub use knowledge_lifecycle_execution::*;
+pub use knowledge_profile_registry::*;
 pub use state::{
-    Created, EventKind, NativePipelineRunSummary, NativePlanningSummary, NativeSliceSummary,
-    NativeWorkCandidateSummary, Session, StateStatus, Workspace, WorkspaceState, WorktreeSummary,
+    Created, EventKind, NativeKnowledgeChangeSummary, NativePipelineRunSummary,
+    NativePlanningSummary, NativeSliceSummary, NativeWorkCandidateSummary, Session, StateStatus,
+    Workspace, WorkspaceState, WorktreeSummary,
 };
 
 mod sources;

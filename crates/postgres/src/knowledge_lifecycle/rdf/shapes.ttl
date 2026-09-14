@@ -1,0 +1,75 @@
+@prefix v2: <urn:tect:dk:v2:> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+v2:KnowledgeRevisionShape a sh:NodeShape ; sh:targetClass v2:KnowledgeRevision ;
+ sh:property [ sh:path v2:unit ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
+ sh:property [ sh:path v2:contentRevision ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:minInclusive 1 ] ;
+ sh:property [ sh:path v2:title ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+ sh:property [ sh:path v2:canonicalText ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+ sh:property [ sh:path v2:kind ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ; sh:in ( v2:kind:constraint v2:kind:claim v2:kind:decision v2:kind:hypothesis v2:kind:procedure v2:kind:protocol v2:kind:infrastructure v2:kind:operating_model v2:kind:product_research v2:kind:security ) ] ;
+ sh:property [ sh:path v2:epistemicState ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ; sh:in ( v2:epistemic:normative v2:epistemic:decision v2:epistemic:declared v2:epistemic:observed v2:epistemic:hypothesis v2:epistemic:negative_knowledge ) ] ;
+ sh:property [ sh:path v2:accessScope ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ; sh:in ( v2:access:workspace_members v2:access:owners_only ) ] ;
+ sh:property [ sh:path v2:ownerRef ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+ sh:property [ sh:path v2:authorityBasis ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+ sh:property [ sh:path v2:targets ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:TargetList ] ;
+ sh:property [ sh:path v2:profiles ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:RequiredList ] ;
+ sh:property [ sh:path v2:profile ; sh:minCount 1 ; sh:nodeKind sh:IRI ; sh:in ( v2:profile:general v2:profile:runbook v2:profile:protocol v2:profile:devops v2:profile:operations v2:profile:product_research v2:profile:security ) ] ;
+ sh:property [ sh:path v2:profileSection ; sh:minCount 1 ; sh:nodeKind sh:IRI ] ;
+ sh:property [ sh:path v2:sources ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:RequiredList ] ;
+ sh:property [ sh:path v2:bindings ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:RequiredList ] ;
+ sh:or ( [ sh:not [ sh:property [ sh:path v2:profile ; sh:hasValue v2:profile:runbook ] ] ] [ sh:property [ sh:path v2:runbookSection ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:RunbookSection ] ] ) ;
+ sh:or ( [ sh:not [ sh:property [ sh:path v2:profile ; sh:hasValue v2:profile:protocol ] ] ] [ sh:property [ sh:path v2:protocolSection ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:ProtocolSection ] ] ) ;
+ sh:or ( [ sh:not [ sh:property [ sh:path v2:profile ; sh:hasValue v2:profile:devops ] ] ] [ sh:property [ sh:path v2:devopsSection ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:DevopsSection ] ] ) ;
+ sh:or ( [ sh:not [ sh:property [ sh:path v2:profile ; sh:hasValue v2:profile:operations ] ] ] [ sh:property [ sh:path v2:operationsSection ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:OperationsSection ] ] ) ;
+ sh:or ( [ sh:not [ sh:property [ sh:path v2:profile ; sh:hasValue v2:profile:product_research ] ] ] [ sh:property [ sh:path v2:productResearchSection ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:ProductResearchSection ] ] ) ;
+ sh:or ( [ sh:not [ sh:property [ sh:path v2:profile ; sh:hasValue v2:profile:security ] ] ] [ sh:property [ sh:path v2:securitySection ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:SecuritySection ] ] ) ;
+ sh:or ( [ sh:not [ sh:property [ sh:path v2:kind ; sh:hasValue v2:kind:constraint ] ] ] [ sh:property [ sh:path v2:constraintSection ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:ConstraintSection ] ] ) ;
+ sh:or ( [ sh:not [ sh:property [ sh:path v2:kind ; sh:hasValue v2:kind:claim ] ] ] [ sh:property [ sh:path v2:generalSection ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:GeneralSection ] ] ) ;
+ sh:or ( [ sh:not [ sh:property [ sh:path v2:kind ; sh:hasValue v2:kind:decision ] ] ] [ sh:property [ sh:path v2:generalSection ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:GeneralSection ; sh:node v2:DecisionGeneralSectionShape ] ] ) ;
+ sh:or ( [ sh:not [ sh:property [ sh:path v2:kind ; sh:hasValue v2:kind:hypothesis ] ] ] [ sh:property [ sh:path v2:generalSection ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:GeneralSection ] ] ) .
+
+v2:PublicationEventShape a sh:NodeShape ; sh:targetClass v2:PublicationEvent ;
+ sh:property [ sh:path v2:unit ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
+ sh:property [ sh:path v2:change ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
+ sh:property [ sh:path v2:operation ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ; sh:in ( v2:operation:create v2:operation:revise v2:operation:revalidate v2:operation:supersede v2:operation:retract ) ] ;
+ sh:property [ sh:path v2:contentRevision ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:minInclusive 1 ] ;
+ sh:property [ sh:path v2:reason ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+ sh:property [ sh:path v2:authorityBasis ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+ sh:property [ sh:path v2:actorPrincipal ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
+ sh:property [ sh:path v2:actorSession ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] .
+
+v2:OrderedListShape a sh:NodeShape ; sh:targetClass v2:OrderedList ; sh:property [ sh:path v2:itemCount ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:minInclusive 0 ] .
+v2:TargetListShape a sh:NodeShape ; sh:targetClass v2:TargetList ; sh:property [ sh:path v2:itemCount ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:minInclusive 1 ] ; sh:property [ sh:path v2:entry ; sh:minCount 1 ; sh:nodeKind sh:IRI ] .
+v2:RequiredListShape a sh:NodeShape ; sh:targetClass v2:RequiredList ; sh:property [ sh:path v2:itemCount ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:minInclusive 1 ] ; sh:property [ sh:path v2:entry ; sh:minCount 1 ; sh:nodeKind sh:IRI ] .
+v2:ListEntryShape a sh:NodeShape ; sh:targetClass v2:ListEntry ; sh:property [ sh:path v2:parent ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ; sh:property [ sh:path v2:ordinal ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:minInclusive 1 ] .
+
+v2:SourceShape a sh:NodeShape ; sh:targetClass v2:Source ;
+ sh:property [ sh:path v2:sourceIndex ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:minInclusive 0 ] ;
+ sh:property [ sh:path v2:digest ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+ sh:property [ sh:path v2:evidenceKind ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ; sh:in ( v2:evidence:document v2:evidence:declaration v2:evidence:observation v2:evidence:decision_record v2:evidence:research v2:evidence:static_verification v2:evidence:runtime_verification v2:evidence:negative_evidence ) ] ;
+ sh:property [ sh:path v2:evidenceScope ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+ sh:property [ sh:path v2:originalSource ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
+ sh:property [ sh:path v2:title ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+ sh:property [ sh:path v2:uri ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
+ sh:property [ sh:path v2:text ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] .
+v2:BindingShape a sh:NodeShape ; sh:targetClass v2:Binding ;
+ sh:property [ sh:path v2:purpose ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ; sh:in ( v2:binding-purpose:required v2:binding-purpose:reference v2:binding-purpose:procedure v2:binding-purpose:proof_basis ) ] ;
+ sh:property [ sh:path v2:versionResolution ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ; sh:in ( v2:binding-version:current_accepted v2:binding-version:pinned_revision ) ] ;
+ sh:property [ sh:path v2:target ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
+ sh:property [ sh:path v2:phaseId ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+ sh:property [ sh:path v2:definitionKind ; sh:maxCount 1 ; sh:nodeKind sh:IRI ; sh:in ( v2:pipeline-kind:slice.lightweight-tdd-development v2:pipeline-kind:slice.full-design-to-execution v2:pipeline-kind:slice.debug-root-cause v2:pipeline-kind:slice.operational-preparation v2:pipeline-kind:slice.operational-execution v2:pipeline-kind:slice.research-to-durable-knowledge v2:pipeline-kind:slice.custom-procedure-capture v2:pipeline-kind:slice.promote-to-durable-knowledge ) ] ;
+ sh:property [ sh:path v2:definitionVersion ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+ sh:property [ sh:path v2:definitionDigest ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ;
+ sh:or ( [ sh:not [ sh:property [ sh:path v2:phaseId ; sh:minCount 1 ] ] ] [ sh:property [ sh:path v2:definitionKind ; sh:minCount 1 ] ; sh:property [ sh:path v2:definitionVersion ; sh:minCount 1 ] ; sh:property [ sh:path v2:definitionDigest ; sh:minCount 1 ] ] ) .
+
+v2:ConstraintSectionShape a sh:NodeShape ; sh:targetClass v2:ConstraintSection ; sh:property [ sh:path v2:modality ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ; sh:in ( v2:modality:must v2:modality:must_not v2:modality:should v2:modality:may ) ] ; sh:property [ sh:path v2:action ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:target ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] .
+v2:GeneralSectionShape a sh:NodeShape ; sh:targetClass v2:GeneralSection ; sh:property [ sh:path v2:statement ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:evidenceScope ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:rationale ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ] .
+v2:DecisionGeneralSectionShape a sh:NodeShape ; sh:property [ sh:path v2:rationale ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:alternatives ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:RequiredList ] .
+v2:RunbookSectionShape a sh:NodeShape ; sh:targetClass v2:RunbookSection ; sh:property [ sh:path v2:purposeAndFit ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:targetEnvironments ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:TargetList ] ; sh:property [ sh:path v2:requiredAuthority ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:failureAndRecovery ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:proofStatus ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ; sh:in ( v2:proof-status:documented v2:proof-status:static_verified v2:proof-status:runtime_verified ) ] ; sh:property [ sh:path v2:proofEvidenceRefs ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:OrderedList ] ; sh:property [ sh:path v2:steps ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:RequiredList ] .
+v2:RunbookStepShape a sh:NodeShape ; sh:targetClass v2:RunbookStep ; sh:property [ sh:path v2:action ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:expectedResult ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:verification ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] .
+v2:ProtocolSectionShape a sh:NodeShape ; sh:targetClass v2:ProtocolSection ; sh:property [ sh:path v2:specification ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ; sh:property [ sh:path v2:specificationVersion ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:observationBounds ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:assertions ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:RequiredList ] .
+v2:DevopsSectionShape a sh:NodeShape ; sh:targetClass v2:DevopsSection ; sh:property [ sh:path v2:configurationCustody ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:assets ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:TargetList ] ; sh:property [ sh:path v2:observations ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:RequiredList ] .
+v2:OperationsSectionShape a sh:NodeShape ; sh:targetClass v2:OperationsSection ; sh:property [ sh:path v2:operatingPurpose ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:cadence ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:roles ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:RequiredList ] ; sh:property [ sh:path v2:metrics ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:OrderedList ] .
+v2:ProductResearchSectionShape a sh:NodeShape ; sh:targetClass v2:ProductResearchSection ; sh:property [ sh:path v2:question ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:evidenceMap ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:RequiredList ] .
+v2:SecuritySectionShape a sh:NodeShape ; sh:targetClass v2:SecuritySection ; sh:property [ sh:path v2:assets ; sh:minCount 1 ; sh:maxCount 1 ; sh:class v2:TargetList ] ; sh:property [ sh:path v2:verificationStatus ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:sensitivity ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ; sh:in ( v2:sensitivity:public v2:sensitivity:internal v2:sensitivity:sensitive v2:sensitivity:restricted ) ] ; sh:property [ sh:path v2:applicableAuthority ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] ; sh:property [ sh:path v2:findingState ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ] .

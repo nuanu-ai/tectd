@@ -1,6 +1,7 @@
 use crate::{
-    ConsumedKnowledgeManifestRef, PipelineKind, PipelineKnowledgeManifest, PipelineKnowledgeStatus,
-    SliceResult, SliceResultEvidence,
+    ConsumedKnowledgeManifestRef, KnowledgePublicationReference, PipelineKind,
+    PipelineKnowledgeManifest, PipelineKnowledgeResourceManifest, PipelineKnowledgeResourceStatus,
+    PipelineKnowledgeStatus, SliceResult, SliceResultEvidence,
     pipeline_followups::{PipelineFollowupContract, PipelineFollowupProposal},
 };
 use serde::{Deserialize, Serialize};
@@ -56,6 +57,9 @@ pub enum PipelinePhaseRetryPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PipelineOutputConstraint {
+    ResolvedKnowledgePublication {
+        when_verdicts: Vec<String>,
+    },
     FieldEquals {
         field: String,
         value: String,
@@ -308,6 +312,8 @@ pub struct PipelinePhaseOutputDraft {
     pub reviewer_context: Option<PipelineReviewerAttestation>,
     #[serde(default)]
     pub reference: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_publication: Option<KnowledgePublicationReference>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -350,6 +356,8 @@ pub struct PipelinePhaseOutput {
     pub producer_context_id: String,
     pub digest: String,
     pub reference: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_publication: Option<KnowledgePublicationReference>,
     pub fields: BTreeMap<String, String>,
     pub verdict: Option<String>,
     pub dispositions: Vec<String>,
@@ -387,6 +395,10 @@ pub struct PipelineRunContext {
     pub knowledge: Option<PipelineKnowledgeManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge_status: Option<PipelineKnowledgeStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_resources: Option<PipelineKnowledgeResourceManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_resource_status: Option<PipelineKnowledgeResourceStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -396,100 +408,5 @@ pub enum BeginPipelineRunOutcome {
     Replay(PipelineRunContext),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BeginPipelineRun {
-    pub request_id: Uuid,
-    pub scope_id: Uuid,
-    pub slice_id: Uuid,
-    pub slice_revision: i64,
-    #[serde(default)]
-    pub delivery_mode: Option<PipelineDeliveryMode>,
-    pub qualification_reason: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PipelineRunContextQuery {
-    pub run_id: Uuid,
-    #[serde(default)]
-    pub view: PipelineRunContextView,
-    #[serde(default)]
-    pub output_id: Option<Uuid>,
-    #[serde(default)]
-    pub digest: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PipelineRunContextView {
-    #[default]
-    Current,
-    Output,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PipelineContextResponse {
-    Current(Box<PipelineRunContext>),
-    Output(Box<PipelinePhaseOutput>),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PipelineTerminalResultDraft {
-    pub summary: String,
-    pub evidence: Vec<SliceResultEvidence>,
-    pub scope_impact: String,
-    pub remaining_work: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CompletePipelinePhase {
-    pub request_id: Uuid,
-    pub run_id: Uuid,
-    pub run_revision: i64,
-    pub phase_id: String,
-    pub outcome: PipelinePhaseOutcome,
-    pub transition: PipelineTransition,
-    pub output: PipelinePhaseOutputDraft,
-    pub consumed_outputs: Vec<PipelineConsumedOutput>,
-    pub consumed_inputs: Vec<PipelineConsumedInput>,
-    #[serde(default)]
-    pub revisit_phase_id: Option<String>,
-    #[serde(default)]
-    pub escalation_target: Option<PipelineKind>,
-    #[serde(default)]
-    pub terminal_result: Option<PipelineTerminalResultDraft>,
-    #[serde(default)]
-    pub publish_blocked_result: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub consumed_knowledge: Option<ConsumedKnowledgeManifestRef>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RecordPipelineInput {
-    pub request_id: Uuid,
-    pub run_id: Uuid,
-    pub run_revision: i64,
-    pub phase_id: String,
-    pub input: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct EscalatePipelineDelivery {
-    pub request_id: Uuid,
-    pub run_id: Uuid,
-    pub run_revision: i64,
-    pub phase_id: String,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PipelineMutationOutcome {
-    pub context: PipelineRunContext,
-    pub result: Option<SliceResult>,
-}
+mod api;
+pub use api::*;

@@ -174,7 +174,7 @@ async fn procedure_capture_completes_no_match_and_stops_at_reuse_gates() {
     assert_eq!(discovery["run"]["delivery_mode"], "whole");
     assert_eq!(
         discovery["run"]["definition_digest"],
-        "30cbe0da5f26c8703341f4203c270ef158babf0672d07bbbbd637a06dbcdb1bc"
+        "3c89a8ccc9f4f932946da4494b97aeadaaf1199c38371fa85fb0516ed5ff817f"
     );
     assert_eq!(
         discovery["definition"]["phases"].as_array().unwrap().len(),

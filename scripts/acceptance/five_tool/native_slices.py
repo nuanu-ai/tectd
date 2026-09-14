@@ -5,11 +5,13 @@ from typing import Any, Callable
 import pipeline_execution
 import scope_candidates
 
-PIPELINES = {
+SLICE_RUN_PIPELINES = {
     "slice.lightweight-tdd-development", "slice.full-design-to-execution",
     "slice.debug-root-cause", "slice.operational-preparation", "slice.operational-execution",
     "slice.research-to-durable-knowledge", "slice.custom-procedure-capture",
 }
+PROMOTION_PIPELINE = "slice.promote-to-durable-knowledge"
+ALL_PIPELINES = SLICE_RUN_PIPELINES | {PROMOTION_PIPELINE}
 PIPELINE_MODES = {
     "slice.lightweight-tdd-development": ("whole", ["whole", "phasewise"], 14),
     "slice.full-design-to-execution": ("phasewise", ["phasewise"], 20),
@@ -145,16 +147,58 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
     catalogue = ok(call, "query", "slice.pipelines", {})
     entries = catalogue.get("pipelines", []); ids = {entry.get("kind") for entry in entries}
     by_kind = {entry.get("kind"):entry for entry in entries}
-    check("native Slice catalogue exposes all seven executable pipelines with exact delivery modes",
-          ids == PIPELINES and "slice.hybrid-implementation-operation" not in json.dumps(catalogue)
-          and catalogue.get("executable") is True and catalogue.get("executable_count") == 7
+    promotion = by_kind.get(PROMOTION_PIPELINE, {})
+    slice_run_ids = {kind for kind, entry in by_kind.items()
+                     if entry.get("execution_owner", "slice_pipeline_run") == "slice_pipeline_run"}
+    check("native catalogue separates eight kinds from seven ordinary SlicePipelineRun kinds",
+          ids == ALL_PIPELINES and slice_run_ids == SLICE_RUN_PIPELINES
+          and "slice.hybrid-implementation-operation" not in json.dumps(catalogue)
+          and catalogue.get("executable") is True and catalogue.get("executable_count") == 8
           and all(by_kind[kind].get("implementation_status") == "executable"
                   and by_kind[kind].get("description_status") == "refined"
                   and by_kind[kind].get("refinement_required") is False
                   and by_kind[kind].get("default_delivery_mode") == values[0]
                   and by_kind[kind].get("allowed_delivery_modes") == values[1]
-                  for kind,values in PIPELINE_MODES.items()),
-          {"pipeline_ids":sorted(ids),"executable_count":catalogue.get("executable_count")})
+                  for kind,values in PIPELINE_MODES.items())
+          and promotion.get("execution_owner") == "knowledge_change"
+          and promotion.get("default_delivery_mode") == "whole"
+          and promotion.get("allowed_delivery_modes") == ["whole", "phasewise"],
+          {"pipeline_ids":sorted(ids),"slice_run_pipeline_ids":sorted(slice_run_ids),
+           "executable_count":catalogue.get("executable_count"),
+           "promotion_owner":promotion.get("execution_owner")})
+
+    entry = catalogue.get("knowledge_change_entry", {})
+    definition = entry.get("definition", {})
+    phases = definition.get("phases", [])
+    phase_ids = [phase.get("id") for phase in phases]
+    phase_methods = {method.get("id") for phase in phases
+                     for method in phase.get("methods", [])
+                     if str(method.get("id", "")).startswith("tect:knowledge-change:kc-")}
+    profile_methods = {method.get("id") for phase in phases
+                       for method in phase.get("methods", [])
+                       if str(method.get("id", "")).startswith("tect:knowledge-profile:")}
+    expected_phases = [
+        "kc-intake", "kc-resolve-baseline", "kc-qualify-plan", "kc-qualify-evidence",
+        "kc-prepare-change", "kc-domain-checks", "kc-impact-plan", "kc-review-reconcile",
+        "kc-publication-gate", "kc-commit", "kc-settle-effects", "kc-result-handoff",
+    ]
+    expected_profiles = {
+        "tect:knowledge-profile:general", "tect:knowledge-profile:runbook",
+        "tect:knowledge-profile:protocol", "tect:knowledge-profile:devops",
+        "tect:knowledge-profile:operations", "tect:knowledge-profile:product_research",
+        "tect:knowledge-profile:security",
+    }
+    check("catalogue exposes the static twelve-phase Knowledge Change and seven profile methods",
+          entry.get("route") == "knowledge.change_begin"
+          and entry.get("context_route") == "knowledge.lifecycle"
+          and definition.get("default_mode") == "whole"
+          and definition.get("allowed_modes") == ["whole", "phasewise"]
+          and phase_ids == expected_phases and len(phase_methods) == 9
+          and profile_methods == expected_profiles
+          and catalogue.get("phase_counts", {}).get("knowledge_change_phases") == 12
+          and "not_configured" in catalogue.get("promotion_method", {}).get("body", ""),
+          {"phase_ids":phase_ids,"phase_method_ids":sorted(phase_methods),
+           "profile_method_ids":sorted(profile_methods),"search_status":"not_configured"})
 
     sc, cand = source["context"], source["candidate"]
     scope_request = {"request_id":str(uuid.uuid4()), "candidate_set_id":sc["candidate_set"]["id"],
@@ -366,6 +410,7 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
            "completed_result_id":completed["id"],"terminal_revision":terminal["revision"]})
     return {"scope_id":created["scope"]["id"],"debug_slice_id":slice_["id"],
         "result_id":result["id"],"followup_slice_id":follow["id"],"pipeline_ids":sorted(ids),
+        "slice_run_pipeline_ids":sorted(slice_run_ids),
         "rule_ids":sorted(rule_ids),"result_provenance":result["provenance"],
         "pipeline_probe_run_ids":probe_runs,
         "claim_boundary":"Proves native API persistence, exact pipeline delivery, durable managed transitions and structural receipt enforcement; caller-supplied fixture evidence does not prove independent semantic verification."}

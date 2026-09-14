@@ -1,8 +1,11 @@
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tect_domain::{PipelineCatalogueEntry, PipelineCatalogueSnapshot, PipelineKind};
+use tect_application::{KnowledgeLifecycleDefinitionProvider, PipelineDefinitionProvider};
+use tect_domain::{
+    PipelineCatalogueEntry, PipelineCatalogueSnapshot, PipelineExecutionOwner, PipelineKind,
+};
 
-pub(crate) const CATALOG_REVISION: &str = "1";
+pub(crate) const CATALOG_REVISION: &str = "2";
 
 struct SlicePipelineStub {
     kind: PipelineKind,
@@ -10,15 +13,17 @@ struct SlicePipelineStub {
     choose_when: &'static str,
     do_not_choose_when: &'static str,
     expected_result: &'static str,
+    execution_owner: PipelineExecutionOwner,
 }
 
-const PIPELINES: [SlicePipelineStub; 7] = [
+const PIPELINES: [SlicePipelineStub; 8] = [
     SlicePipelineStub {
         kind: PipelineKind::LightweightTddDevelopment,
         description: "A bounded development change with clear expected behavior, a minimally sufficient test cycle, and a verified implementation; this is the default development path.",
         choose_when: "The requested fix, bug resolution, or small vertical feature has a bounded outcome that can be implemented and verified directly.",
         do_not_choose_when: "Evidence shows irreducible design complexity, the work is solely diagnosis or research, or the requested outcome is an operational action or procedure capture.",
         expected_result: "The bounded behavior is implemented and verified against concrete acceptance evidence.",
+        execution_owner: PipelineExecutionOwner::SlicePipelineRun,
     },
     SlicePipelineStub {
         kind: PipelineKind::FullDesignToExecution,
@@ -26,6 +31,7 @@ const PIPELINES: [SlicePipelineStub; 7] = [
         choose_when: "Evidence shows that Lightweight is insufficient and no further sensible vertical decomposition can make the outcome independently deliverable.",
         do_not_choose_when: "The only reasons are size, a new-feature label, cross-component work, uncertainty that can be isolated, or use as a generic fallback.",
         expected_result: "A justified indivisible design is implemented and verified, with the reasons against Lightweight and further vertical division recorded.",
+        execution_owner: PipelineExecutionOwner::SlicePipelineRun,
     },
     SlicePipelineStub {
         kind: PipelineKind::DebugRootCause,
@@ -33,6 +39,7 @@ const PIPELINES: [SlicePipelineStub; 7] = [
         choose_when: "The cause of observed incorrect behavior is materially unknown and must be proven before selecting corrective work.",
         do_not_choose_when: "The cause is already established or the candidate silently includes implementing the fix.",
         expected_result: "A demonstrated root cause, evidence, affected boundary, and supported correction direction that can inform follow-up work.",
+        execution_owner: PipelineExecutionOwner::SlicePipelineRun,
     },
     SlicePipelineStub {
         kind: PipelineKind::OperationalPreparation,
@@ -40,6 +47,7 @@ const PIPELINES: [SlicePipelineStub; 7] = [
         choose_when: "A consequential operation needs a reviewable and bounded plan before execution can be authorized or safely attempted.",
         do_not_choose_when: "The requested outcome is implementation, research, diagnosis, or execution of an already prepared and authorized operation.",
         expected_result: "A complete operation plan with exact target, authority boundary, checks, stops, rollback, and evidence criteria, without performing the operation.",
+        execution_owner: PipelineExecutionOwner::SlicePipelineRun,
     },
     SlicePipelineStub {
         kind: PipelineKind::OperationalExecution,
@@ -47,6 +55,7 @@ const PIPELINES: [SlicePipelineStub; 7] = [
         choose_when: "The operation, target, authority, safety conditions, and success evidence are sufficiently specified for execution.",
         do_not_choose_when: "Authority or the operation plan is unresolved, or the outcome is preparatory planning or product implementation.",
         expected_result: "The authorized operation is executed within its boundary and its actual result and any recovery are evidenced.",
+        execution_owner: PipelineExecutionOwner::SlicePipelineRun,
     },
     SlicePipelineStub {
         kind: PipelineKind::ResearchToDurableKnowledge,
@@ -54,6 +63,7 @@ const PIPELINES: [SlicePipelineStub; 7] = [
         choose_when: "The bounded outcome is a durable answer to explicit research questions rather than a code or operational change.",
         do_not_choose_when: "Research is merely incidental to implementation, or publication and activation have not been separately requested.",
         expected_result: "Traceable reusable knowledge that answers the stated questions and honestly records conflicts and remaining gaps.",
+        execution_owner: PipelineExecutionOwner::SlicePipelineRun,
     },
     SlicePipelineStub {
         kind: PipelineKind::CustomProcedureCapture,
@@ -61,15 +71,38 @@ const PIPELINES: [SlicePipelineStub; 7] = [
         choose_when: "The explicitly requested bounded outcome is a reusable procedure for a recurring process.",
         do_not_choose_when: "Procedure capture was not requested, the process is not sufficiently repeatable, or this would automatically create or activate a skill after ordinary work.",
         expected_result: "A verified reusable procedure candidate with clear applicability and limits, without automatic activation.",
+        execution_owner: PipelineExecutionOwner::SlicePipelineRun,
+    },
+    SlicePipelineStub {
+        kind: PipelineKind::PromoteToDurableKnowledge,
+        description: "Publish or change reusable durable knowledge from available evidence through one qualified Knowledge Change.",
+        choose_when: "The explicitly requested bounded outcome is durable creation, revision, revalidation, replacement, withdrawal or erasure of known material.",
+        do_not_choose_when: "The main unanswered work is new research, brainstorming, product implementation or operational execution, or durable publication is outside current task authority.",
+        expected_result: "The exact durable outcome and required delivery/impact/erasure effects are evidenced by the Knowledge Change result and backend receipts.",
+        execution_owner: PipelineExecutionOwner::KnowledgeChange,
     },
 ];
 
 pub(crate) fn snapshot() -> PipelineCatalogueSnapshot {
-    let entries = PIPELINES
+    build_snapshot(CATALOG_REVISION, &PIPELINES)
+}
+
+fn build_snapshot(revision: &str, pipelines: &[SlicePipelineStub]) -> PipelineCatalogueSnapshot {
+    let entries = pipelines
         .iter()
         .map(|pipeline| {
-            let modes = crate::pipeline_definitions::delivery_modes(pipeline.kind);
-            let executable = modes.is_some();
+            let modes = if pipeline.execution_owner == PipelineExecutionOwner::KnowledgeChange {
+                Some((
+                    tect_domain::PipelineDeliveryMode::Whole,
+                    vec![
+                        tect_domain::PipelineDeliveryMode::Whole,
+                        tect_domain::PipelineDeliveryMode::Phasewise,
+                    ],
+                ))
+            } else {
+                crate::pipeline_definitions::delivery_modes(pipeline.kind)
+            };
+            let executable = true;
             PipelineCatalogueEntry {
                 kind: pipeline.kind,
                 description: pipeline.description.into(),
@@ -82,12 +115,13 @@ pub(crate) fn snapshot() -> PipelineCatalogueSnapshot {
                 executable,
                 default_delivery_mode: modes.as_ref().map(|(default, _)| *default),
                 allowed_delivery_modes: modes.map_or_else(Vec::new, |(_, allowed)| allowed),
+                execution_owner: pipeline.execution_owner,
             }
         })
         .collect::<Vec<_>>();
-    let digest = digest_entries(&entries);
+    let digest = digest_entries(revision, &entries);
     PipelineCatalogueSnapshot {
-        revision: CATALOG_REVISION.into(),
+        revision: revision.into(),
         digest,
         entries,
     }
@@ -100,6 +134,21 @@ pub(crate) fn value() -> Value {
         .iter()
         .filter(|entry| entry.executable)
         .count();
+    let definition = crate::knowledge_lifecycle_definitions::StaticKnowledgeLifecycleDefinitions
+        .definition()
+        .expect("static Knowledge Change definition validates");
+    let promotion_body = include_str!("../knowledge-methods/promotion-slice.md");
+    let knowledge_change_phase_count = definition.phases.len();
+    let slice_run_phase_count: usize = PipelineKind::SLICE_RUN_KINDS
+        .into_iter()
+        .map(|kind| {
+            crate::pipeline_definitions::StaticPipelineDefinitions
+                .definition(kind)
+                .expect("static Slice pipeline definition validates")
+                .phases
+                .len()
+        })
+        .sum();
     json!({
         "revision": snapshot.revision,
         "digest": snapshot.digest,
@@ -109,14 +158,22 @@ pub(crate) fn value() -> Value {
         "executable": executable_count > 0,
         "executable_count": executable_count,
         "pipelines": snapshot.entries,
+        "knowledge_change_entry":{"route":"knowledge.change_begin","context_route":"knowledge.lifecycle","definition":definition},
+        "promotion_method":{"version":"0.2.0-dk2.1","digest":hex(&Sha256::digest(promotion_body.as_bytes())),
+            "source_ref":"crates/host/knowledge-methods/promotion-slice.md","body":promotion_body},
+        "phase_counts":{"slice_pipeline_run_phases":slice_run_phase_count,
+            "knowledge_change_phases":knowledge_change_phase_count},
     })
 }
 
-fn digest_entries(entries: &[PipelineCatalogueEntry]) -> String {
-    let bytes =
-        serde_json::to_vec(&(CATALOG_REVISION, entries)).expect("static catalog serializes");
+fn digest_entries(revision: &str, entries: &[PipelineCatalogueEntry]) -> String {
+    let bytes = serde_json::to_vec(&(revision, entries)).expect("static catalog serializes");
     let hash = Sha256::digest(bytes);
     hash.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(test)]
@@ -125,14 +182,14 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn catalogue_contains_seven_executable_pipelines_and_no_retired_aliases() {
+    fn catalogue_contains_eight_entries_with_one_knowledge_owner() {
         let snapshot = snapshot();
         let ids = snapshot
             .entries
             .iter()
             .map(|pipeline| pipeline.kind.as_str())
             .collect::<BTreeSet<_>>();
-        assert_eq!(ids.len(), 7);
+        assert_eq!(ids.len(), 8);
         assert!(!ids.contains("slice.hybrid-implementation-operation"));
         assert!(!ids.contains("slice.research-to-durable-kb"));
         assert_eq!(
@@ -141,7 +198,7 @@ mod tests {
                 .iter()
                 .filter(|pipeline| pipeline.executable)
                 .count(),
-            7
+            8
         );
         let lightweight = snapshot
             .entries
@@ -161,10 +218,65 @@ mod tests {
         }));
         let catalog = value();
         assert_eq!(catalog["executable"], true);
-        assert_eq!(catalog["executable_count"], 7);
+        assert_eq!(catalog["executable_count"], 8);
         assert_eq!(catalog["implementation_status"], "executable");
         assert_eq!(catalog["description_status"], "refined");
         assert_eq!(catalog["refinement_required"], false);
         assert!(catalog.get("stages").is_none());
+        let promotion = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.kind == PipelineKind::PromoteToDurableKnowledge)
+            .unwrap();
+        assert_eq!(
+            promotion.execution_owner,
+            PipelineExecutionOwner::KnowledgeChange
+        );
+        assert_eq!(
+            catalog["knowledge_change_entry"]["route"],
+            "knowledge.change_begin"
+        );
+        assert_eq!(
+            catalog["knowledge_change_entry"]["definition"]["phases"]
+                .as_array()
+                .unwrap()
+                .len(),
+            12
+        );
+        assert_eq!(catalog["phase_counts"]["slice_pipeline_run_phases"], 125);
+        assert_eq!(catalog["phase_counts"]["knowledge_change_phases"], 12);
+        assert_eq!(
+            catalog["promotion_method"]["source_ref"],
+            "crates/host/knowledge-methods/promotion-slice.md"
+        );
+        assert_eq!(
+            catalog["promotion_method"]["digest"],
+            hex(&Sha256::digest(
+                catalog["promotion_method"]["body"]
+                    .as_str()
+                    .unwrap()
+                    .as_bytes()
+            ))
+        );
+    }
+
+    #[test]
+    fn historical_revision_one_remains_the_original_seven_slice_run_entries() {
+        let historical = build_snapshot("1", &PIPELINES[..7]);
+        historical.validate().unwrap();
+        assert_eq!(historical.revision, "1");
+        assert_eq!(historical.entries.len(), 7);
+        assert!(
+            historical
+                .entries
+                .iter()
+                .all(|entry| entry.execution_owner == PipelineExecutionOwner::SlicePipelineRun)
+        );
+        assert!(
+            !historical
+                .entries
+                .iter()
+                .any(|entry| entry.kind == PipelineKind::PromoteToDurableKnowledge)
+        );
     }
 }

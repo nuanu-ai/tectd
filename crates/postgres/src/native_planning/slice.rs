@@ -83,10 +83,14 @@ pub(crate) async fn record_result(
     let payload = json(request)?;
     if let Some((stored,result))=sqlx::query_as::<_,(serde_json::Value,Option<serde_json::Value>)>("SELECT request_payload,result_payload FROM slice_results WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3").bind(tenant).bind(workspace).bind(request.request_id).fetch_optional(&mut **tx).await.map_err(storage_error)?{if stored!=payload{return Err(Error::InputConflict)}let prior:RecordSliceResultOutcome=decode(result.ok_or(Error::InternalInvariant)?)?;let (result,context)=match prior{RecordSliceResultOutcome::Created{result,context}|RecordSliceResultOutcome::Replay{result,context}=>(result,context)};return Ok(RecordSliceResultOutcome::Replay{result,context})}
     let scope:(i64,Uuid)=sqlx::query_as("SELECT revision,slice_candidate_set_id FROM native_scopes WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE").bind(tenant).bind(workspace).bind(request.scope_id).fetch_optional(&mut **tx).await.map_err(storage_error)?.ok_or(Error::NotFound)?;
-    let row:(i64,String)=sqlx::query_as("SELECT revision,state FROM native_slices WHERE tenant_id=$1 AND workspace_id=$2 AND scope_id=$3 AND id=$4 FOR UPDATE").bind(tenant).bind(workspace).bind(request.scope_id).bind(request.slice_id).fetch_optional(&mut **tx).await.map_err(storage_error)?.ok_or(Error::NotFound)?;
+    let row:(i64,String,String,Option<Uuid>,Option<Uuid>)=sqlx::query_as("SELECT revision,state,pipeline,knowledge_change_id,knowledge_run_id FROM native_slices WHERE tenant_id=$1 AND workspace_id=$2 AND scope_id=$3 AND id=$4 FOR UPDATE").bind(tenant).bind(workspace).bind(request.scope_id).bind(request.slice_id).fetch_optional(&mut **tx).await.map_err(storage_error)?.ok_or(Error::NotFound)?;
     let managed:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND slice_id=$3)")
         .bind(tenant).bind(workspace).bind(request.slice_id).fetch_one(&mut **tx).await.map_err(storage_error)?;
-    if managed {
+    if managed
+        || row.2 == PipelineKind::PromoteToDurableKnowledge.as_str()
+        || row.3.is_some()
+        || row.4.is_some()
+    {
         return Err(Error::Forbidden);
     }
     if row.0 != request.slice_revision {
@@ -130,6 +134,7 @@ pub(crate) async fn record_result(
         pipeline_definition_digest: None,
         pipeline_final_attempt_id: None,
         pipeline_result_origin: None,
+        knowledge_provenance: None,
     };
     let mut context = load_context(tx, tenant, workspace, request.scope_id)
         .await?

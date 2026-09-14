@@ -236,6 +236,15 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 )
                 .await
             }
+            Invocation::KnowledgeLifecycle(invocation) => {
+                crate::knowledge_lifecycle_dispatch::execute(
+                    &request.context,
+                    invocation,
+                    service,
+                    request.output_capacity,
+                )
+                .await
+            }
             Invocation::Help(help_request) => {
                 service.authenticate_host(&request.context).await?;
                 Ok(responses::with_actions(

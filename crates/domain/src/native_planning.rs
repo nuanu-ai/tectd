@@ -1,5 +1,5 @@
 use crate::{CandidateBoundary, CandidateMethodSnapshot, CandidateRuleSnapshot};
-use crate::{PipelineCatalogueSnapshot, PipelineKind};
+use crate::{PipelineCatalogueSnapshot, PipelineKind, PipelineRunStatus};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -412,6 +412,12 @@ pub struct NativeSlice {
     pub pipeline_status: String,
     #[serde(default)]
     pub pipeline_run_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_change_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_run_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_status: Option<PipelineRunStatus>,
     pub execution_claimed: bool,
 }
 
@@ -435,63 +441,5 @@ pub struct OpenSlice {
     pub candidate_revision: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SliceResultOutcome {
-    Completed,
-    Blocked,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SliceResultEvidence {
-    pub kind: String,
-    pub reference: String,
-    pub observation: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SliceResult {
-    pub id: Uuid,
-    pub slice_id: Uuid,
-    pub slice_revision: i64,
-    pub revision: i64,
-    pub outcome: SliceResultOutcome,
-    pub summary: String,
-    pub evidence: Vec<SliceResultEvidence>,
-    pub scope_impact: String,
-    pub remaining_work: String,
-    pub provenance: String,
-    pub pipeline_run_id: Option<Uuid>,
-    pub pipeline_definition_version: Option<String>,
-    pub pipeline_definition_digest: Option<String>,
-    pub pipeline_final_attempt_id: Option<Uuid>,
-    pub pipeline_result_origin: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RecordSliceResultOutcome {
-    Created {
-        result: SliceResult,
-        context: SliceCandidateContext,
-    },
-    Replay {
-        result: SliceResult,
-        context: SliceCandidateContext,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RecordSliceResult {
-    pub request_id: Uuid,
-    pub scope_id: Uuid,
-    pub slice_id: Uuid,
-    pub slice_revision: i64,
-    pub outcome: SliceResultOutcome,
-    pub summary: String,
-    pub evidence: Vec<SliceResultEvidence>,
-    pub scope_impact: String,
-    pub remaining_work: String,
-}
+mod result;
+pub use result::*;

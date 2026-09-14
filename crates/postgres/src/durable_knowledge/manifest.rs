@@ -1,6 +1,13 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod delivery;
+mod generic;
+pub(crate) use delivery::{
+    authorize_manifest, authorize_owned_copy, load, load_resources, resource_status,
+};
+
+#[allow(clippy::too_many_arguments)]
 async fn projection(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -9,13 +16,23 @@ async fn projection(
     scope: Uuid,
     slice: Uuid,
     phase: &str,
+    principal: Uuid,
 ) -> Result<(Vec<KnowledgeUnitRevision>, Vec<String>)> {
-    let rows:Vec<(Uuid,bool,bool)>=sqlx::query_as("SELECT h.unit_id,(h.active AND b.active),(b.binding_kind='workspace' OR (b.definition_kind=r.definition_kind AND b.definition_version=r.definition_version AND b.definition_digest=r.definition_digest)) FROM knowledge_unit_heads h JOIN knowledge_bindings b ON b.tenant_id=h.tenant_id AND b.workspace_id=h.workspace_id AND b.unit_id=h.unit_id AND b.revision=h.accepted_revision JOIN slice_pipeline_runs r ON r.tenant_id=h.tenant_id AND r.workspace_id=h.workspace_id AND r.id=$3 WHERE h.tenant_id=$1 AND h.workspace_id=$2 AND (b.binding_kind='workspace' OR (b.binding_kind='slice_phase' AND b.scope_id=$4 AND b.slice_id=$5 AND b.phase_id=$6)) ORDER BY h.unit_id")
+    let owner: bool = sqlx::query_scalar("SELECT tect_dk_is_owner($1)")
+        .bind(principal)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(storage_error)?;
+    let rows:Vec<(Uuid,bool,bool,bool,bool)>=sqlx::query_as("SELECT h.unit_id,(h.active AND b.active),(b.binding_kind='workspace' OR (b.definition_kind=run.definition_kind AND b.definition_version=run.definition_version AND b.definition_digest=run.definition_digest)),(h.access_scope='owners_only' OR revision.access_scope='owners_only'),(h.payload_erased OR revision.payload_erased) FROM knowledge_unit_heads h JOIN knowledge_bindings b ON b.tenant_id=h.tenant_id AND b.workspace_id=h.workspace_id AND b.unit_id=h.unit_id AND b.revision=h.accepted_revision JOIN knowledge_revisions revision ON revision.tenant_id=h.tenant_id AND revision.workspace_id=h.workspace_id AND revision.unit_id=h.unit_id AND revision.revision=h.accepted_revision JOIN slice_pipeline_runs run ON run.tenant_id=h.tenant_id AND run.workspace_id=h.workspace_id AND run.id=$3 WHERE h.tenant_id=$1 AND h.workspace_id=$2 AND h.contract_version='dk-1' AND (b.binding_kind='workspace' OR (b.binding_kind='slice_phase' AND b.scope_id=$4 AND b.slice_id=$5 AND b.phase_id=$6)) ORDER BY h.unit_id")
         .bind(tenant).bind(workspace).bind(run).bind(scope).bind(slice).bind(phase).fetch_all(&mut **tx).await.map_err(storage_error)?;
     let mut active = Vec::new();
     let mut gaps = Vec::new();
-    for (unit, enabled, pin_matches) in rows {
-        if enabled && pin_matches {
+    for (unit, enabled, pin_matches, restricted, erased) in rows {
+        if restricted && !owner {
+            gaps.push("resource_inaccessible".into());
+        } else if erased {
+            gaps.push("resource_unavailable".into());
+        } else if enabled && pin_matches {
             active.push(
                 context::load_revision(tx, tenant, workspace, unit, None, false)
                     .await?
@@ -88,13 +105,21 @@ pub(crate) async fn capture(
     scope: Uuid,
     slice: Uuid,
     phase: &str,
+    session: Uuid,
 ) -> Result<Option<PipelineKnowledgeManifest>> {
     let state:Option<(i64,bool)>=sqlx::query_as("SELECT generation,capability_ready FROM workspace_knowledge_state WHERE tenant_id=$1 AND workspace_id=$2").bind(tenant).bind(workspace).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     let Some((generation, true)) = state else {
         return Ok(None);
     };
+    delivery::require_identity_ready(tx).await?;
+    let principal: Option<Uuid> = sqlx::query_scalar("SELECT tect_dk_session_principal($1)")
+        .bind(session)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(storage_error)?;
+    let principal = principal.ok_or(Error::Forbidden)?;
     let (revisions, unresolved) =
-        projection(tx, tenant, workspace, run, scope, slice, phase).await?;
+        projection(tx, tenant, workspace, run, scope, slice, phase, principal).await?;
     for value in &revisions {
         let rows = rdf::native_rows(
             tx,
@@ -117,6 +142,21 @@ pub(crate) async fn capture(
     }
     let semantic_digest = semantic(&selected, &unresolved)?;
     let id = Uuid::new_v4();
+    let mut resource = generic::snapshot(
+        tx,
+        tenant,
+        workspace,
+        principal,
+        run,
+        run_revision,
+        scope,
+        slice,
+        phase,
+        id,
+        String::new(),
+    )
+    .await?
+    .manifest;
     let digest_value = digest(&(
         id,
         generation,
@@ -126,7 +166,15 @@ pub(crate) async fn capture(
         &selected,
         &unresolved,
         &semantic_digest,
+        &resource.semantic_digest,
+        &resource.definition_version,
+        &resource.definition_digest,
+        &resource.method_requirements,
+        &resource.selected,
+        &resource.unresolved_needs,
+        &resource.freshness_warnings,
     ))?;
+    resource.digest = digest_value.clone();
     let value = PipelineKnowledgeManifest {
         id,
         digest: digest_value,
@@ -138,37 +186,23 @@ pub(crate) async fn capture(
         selected,
         unresolved_needs: unresolved,
     };
-    sqlx::query("INSERT INTO pipeline_knowledge_manifests(id,tenant_id,workspace_id,run_id,run_revision,phase_id,workspace_generation,digest,semantic_digest,selected,unresolved_needs) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)")
-        .bind(id).bind(tenant).bind(workspace).bind(run).bind(run_revision).bind(phase).bind(generation).bind(&value.digest).bind(&value.semantic_digest).bind(json(&value.selected)?).bind(json(&value.unresolved_needs)?).execute(&mut **tx).await.map_err(storage_error)?;
+    if serde_json::to_vec(&(&value, &resource))
+        .map_err(storage_error)?
+        .len()
+        > DK_MAX_MANIFEST_BYTES
+    {
+        return Err(Error::CapacityExceeded);
+    }
+    sqlx::query("INSERT INTO pipeline_knowledge_manifests(id,tenant_id,workspace_id,run_id,run_revision,phase_id,workspace_generation,digest,semantic_digest,selected,unresolved_needs,contract_version,definition_version,definition_digest,method_requirements,selected_resources,resource_unresolved_needs,freshness_warnings,resource_semantic_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'dk-2',$12,$13,$14,$15,$16,$17,$18)")
+        .bind(id).bind(tenant).bind(workspace).bind(run).bind(run_revision).bind(phase).bind(generation).bind(&value.digest).bind(&value.semantic_digest).bind(json(&value.selected)?).bind(json(&value.unresolved_needs)?)
+        .bind(&resource.definition_version).bind(&resource.definition_digest).bind(json(&resource.method_requirements)?).bind(json(&resource.selected)?).bind(json(&resource.unresolved_needs)?).bind(json(&resource.freshness_warnings)?).bind(&resource.semantic_digest)
+        .execute(&mut **tx).await.map_err(storage_error)?;
+    crate::knowledge_lifecycle::erase::register_pipeline_manifest_copies(tx, tenant, workspace, id)
+        .await?;
     Ok(Some(value))
 }
 
-#[allow(clippy::type_complexity)]
-pub(crate) async fn load(
-    tx: &mut Transaction<'_, Postgres>,
-    tenant: Uuid,
-    workspace: Uuid,
-    id: Option<Uuid>,
-) -> Result<Option<PipelineKnowledgeManifest>> {
-    let Some(id) = id else { return Ok(None) };
-    let row:Option<(String,String,i64,Uuid,i64,String,serde_json::Value,serde_json::Value)>=sqlx::query_as("SELECT digest,semantic_digest,workspace_generation,run_id,run_revision,phase_id,selected,unresolved_needs FROM pipeline_knowledge_manifests WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
-        .bind(tenant).bind(workspace).bind(id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
-    row.map(|v| {
-        Ok(PipelineKnowledgeManifest {
-            id,
-            digest: v.0,
-            semantic_digest: v.1,
-            workspace_generation: v.2,
-            run_id: v.3,
-            run_revision: v.4,
-            phase_id: v.5,
-            selected: decode(v.6)?,
-            unresolved_needs: decode(v.7)?,
-        })
-    })
-    .transpose()
-}
-
+#[allow(clippy::too_many_arguments)]
 async fn preview(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -177,6 +211,7 @@ async fn preview(
     scope: Uuid,
     slice: Uuid,
     phase: &str,
+    principal: Uuid,
 ) -> Result<(i64, bool, String, Vec<PipelineKnowledgeItem>, Vec<String>)> {
     let state:Option<(i64,bool)>=sqlx::query_as("SELECT generation,capability_ready FROM workspace_knowledge_state WHERE tenant_id=$1 AND workspace_id=$2").bind(tenant).bind(workspace).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     let Some((generation, ready)) = state else {
@@ -197,7 +232,9 @@ async fn preview(
             Vec::new(),
         ));
     }
-    let (revisions, gaps) = projection(tx, tenant, workspace, run, scope, slice, phase).await?;
+    delivery::require_identity_ready(tx).await?;
+    let (revisions, gaps) =
+        projection(tx, tenant, workspace, run, scope, slice, phase, principal).await?;
     let selected = items(&revisions);
     Ok((
         generation,
@@ -213,6 +250,7 @@ pub(crate) async fn status(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     workspace: Uuid,
+    principal: Uuid,
     run: Uuid,
     scope: Uuid,
     slice: Uuid,
@@ -221,7 +259,7 @@ pub(crate) async fn status(
 ) -> Result<Option<PipelineKnowledgeStatus>> {
     let Some(phase) = phase else { return Ok(None) };
     let (generation, ready, current, current_items, gaps) =
-        preview(tx, tenant, workspace, run, scope, slice, phase).await?;
+        preview(tx, tenant, workspace, run, scope, slice, phase, principal).await?;
     if !ready {
         return Ok(Some(PipelineKnowledgeStatus {
             state: PipelineKnowledgeState::Inactive,
@@ -279,11 +317,18 @@ pub(crate) async fn validate_completion(
     scope: Uuid,
     slice: Uuid,
     phase: &str,
+    session: Uuid,
     manifest: Option<&PipelineKnowledgeManifest>,
     consumed: Option<&ConsumedKnowledgeManifestRef>,
 ) -> Result<()> {
+    let principal: Option<Uuid> = sqlx::query_scalar("SELECT tect_dk_session_principal($1)")
+        .bind(session)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(storage_error)?;
+    let principal = principal.ok_or(Error::Forbidden)?;
     let (generation, ready, current, _, gaps) =
-        preview(tx, tenant, workspace, run, scope, slice, phase).await?;
+        preview(tx, tenant, workspace, run, scope, slice, phase, principal).await?;
     if !ready {
         return if manifest.is_none() && consumed.is_none() {
             Ok(())
@@ -294,13 +339,51 @@ pub(crate) async fn validate_completion(
     let Some(manifest) = manifest else {
         return Err(Error::NeedsContext);
     };
+    let current_run_revision: i64 = sqlx::query_scalar("SELECT revision FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND scope_id=$4 AND slice_id=$5")
+        .bind(tenant).bind(workspace).bind(run).bind(scope).bind(slice)
+        .fetch_one(&mut **tx).await.map_err(storage_error)?;
+    let resources = load_resources(tx, tenant, workspace, Some(manifest.id), principal).await?;
+    let current_resources = generic::snapshot(
+        tx,
+        tenant,
+        workspace,
+        principal,
+        run,
+        current_run_revision,
+        scope,
+        slice,
+        phase,
+        manifest.id,
+        manifest.digest.clone(),
+    )
+    .await?;
     if !gaps.is_empty() {
+        return Err(Error::NeedsContext);
+    }
+    if !current_resources.blocking_gaps.is_empty() {
         return Err(Error::NeedsContext);
     }
     if manifest.workspace_generation != generation || manifest.semantic_digest != current {
         return Err(Error::ContextChanged);
     }
-    if manifest.selected.is_empty() {
+    let Some(resources) = resources.as_ref() else {
+        return Err(Error::ContextChanged);
+    };
+    let resource_current = {
+        let stored = resources;
+        stored.workspace_generation == generation
+            && stored.run_revision == current_run_revision
+            && stored.digest == manifest.digest
+            && stored.semantic_digest == current_resources.manifest.semantic_digest
+            && stored.definition_version == current_resources.manifest.definition_version
+            && stored.definition_digest == current_resources.manifest.definition_digest
+            && stored.method_requirements == current_resources.manifest.method_requirements
+    };
+    if !resource_current {
+        return Err(Error::ContextChanged);
+    }
+    let resource_selected = !resources.selected.is_empty();
+    if manifest.selected.is_empty() && !resource_selected {
         if consumed.is_some() {
             return Err(Error::StaleContext);
         };
@@ -376,9 +459,15 @@ pub(crate) async fn refresh(
         scope,
         slice,
         &request.phase_id,
+        session,
     )
     .await?
     .ok_or(Error::KnowledgeUnavailable)?;
+    let blocking: serde_json::Value = sqlx::query_scalar("SELECT resource_unresolved_needs FROM pipeline_knowledge_manifests WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
+        .bind(tenant).bind(workspace).bind(value.id).fetch_one(&mut **tx).await.map_err(storage_error)?;
+    if !decode::<Vec<String>>(blocking)?.is_empty() {
+        return Err(Error::NeedsContext);
+    }
     sqlx::query("UPDATE slice_pipeline_runs SET knowledge_manifest_id=$4,knowledge_manifest_digest=$5 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3").bind(tenant).bind(workspace).bind(request.run_id).bind(value.id).bind(&value.digest).execute(&mut **tx).await.map_err(storage_error)?;
     let outcome = RefreshPipelineKnowledgeOutcome::Refreshed(value);
     save_receipt(

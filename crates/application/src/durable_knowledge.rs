@@ -98,7 +98,7 @@ impl WorkspaceService {
                         return Err(Error::Forbidden);
                     }
                     let definition = if let Some(run_id) = slice.pipeline_run_id {
-                        tx.pipeline_run_context(workspace.id, run_id)
+                        tx.pipeline_run_context(workspace.id, principal_id, run_id)
                             .await?
                             .ok_or(Error::NotFound)?
                             .definition

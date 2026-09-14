@@ -39,6 +39,9 @@ pub enum Error {
     ContextChanged,
     NeedsContext,
     CapacityExceeded,
+    KnowledgeLifecycleRequired,
+    UnsupportedCompletionRequirement,
+    KnowledgePayloadErased,
 }
 
 impl Error {
@@ -76,6 +79,9 @@ impl Error {
             Self::ContextChanged => "context_changed",
             Self::NeedsContext => "needs_context",
             Self::CapacityExceeded => "capacity_exceeded",
+            Self::KnowledgeLifecycleRequired => "knowledge_lifecycle_required",
+            Self::UnsupportedCompletionRequirement => "unsupported_completion_requirement",
+            Self::KnowledgePayloadErased => "knowledge_payload_erased",
         }
     }
 }

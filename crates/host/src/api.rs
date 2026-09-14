@@ -1,6 +1,7 @@
 mod candidate_schema;
 mod catalog;
 mod catalog_aliases;
+mod knowledge_lifecycle_schema;
 mod knowledge_schema;
 mod slice_schema;
 

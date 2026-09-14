@@ -110,6 +110,9 @@ fn fields(phase: &Value, verdict: &str) -> Map<String, Value> {
         })
         .collect::<Map<_, _>>();
     for constraint in phase["output_constraints"].as_array().unwrap() {
+        if constraint["kind"] == "resolved_knowledge_publication" {
+            continue;
+        }
         let applies = constraint["when_verdict"].is_null()
             || constraint["when_verdict"].as_str() == Some(verdict);
         if !applies {

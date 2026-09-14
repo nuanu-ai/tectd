@@ -83,6 +83,21 @@ impl RouteSpec {
             "pipeline.knowledge_refresh" => {
                 &["refresh pipeline knowledge", "обновить knowledge pipeline"]
             }
+            "knowledge.lifecycle" => &["read knowledge lifecycle", "прочитать lifecycle knowledge"],
+            "knowledge.unit" => &["read typed knowledge unit", "прочитать knowledge unit"],
+            "knowledge.change_begin" => &["begin knowledge change", "начать knowledge change"],
+            "knowledge.change_phase_complete" => &[
+                "complete knowledge change phase",
+                "завершить фазу knowledge change",
+            ],
+            "knowledge.change_record_input" => {
+                &["record knowledge change input", "уточнить knowledge change"]
+            }
+            "knowledge.change_commit" => &["commit knowledge change", "применить knowledge change"],
+            "knowledge.change_settle_effects" => &[
+                "settle knowledge change effects",
+                "завершить эффекты knowledge change",
+            ],
             _ => &[],
         }
     }

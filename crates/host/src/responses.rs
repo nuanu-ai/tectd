@@ -143,7 +143,7 @@ fn try_failure_with_state(
     state: Option<&Value>,
 ) -> tect_domain::Result<Value> {
     let mut actions = Vec::new();
-    let reload = if let Some((_, args)) = call {
+    let reload = if let Some((name, args)) = call {
         if let Some(id) = args.get("setup_id").filter(|id| id.is_string()) {
             Some(action(
                 "get_setup",
@@ -152,7 +152,22 @@ fn try_failure_with_state(
         } else if let Some(id) = args.get("program_id").filter(|id| id.is_string()) {
             Some(action("get_program", json!({"program_id":id}))?)
         } else if let Some(id) = args.get("change_id").filter(|id| id.is_string()) {
-            Some(action("knowledge_change", json!({"change_id":id}))?)
+            if matches!(
+                name,
+                "knowledge_lifecycle"
+                    | "knowledge_change_begin"
+                    | "knowledge_change_phase_complete"
+                    | "knowledge_change_record_input"
+                    | "knowledge_change_commit"
+                    | "knowledge_change_settle_effects"
+            ) {
+                Some(action(
+                    "knowledge_lifecycle",
+                    json!({"change_id":id,"view":"current"}),
+                )?)
+            } else {
+                Some(action("knowledge_change", json!({"change_id":id}))?)
+            }
         } else if let Some(id) = args.get("run_id").filter(|id| id.is_string()) {
             Some(action("slice_pipeline_context", json!({"run_id":id}))?)
         } else {
@@ -196,6 +211,32 @@ fn try_failure_with_state(
         Error::KnowledgeUnavailable => {
             actions.push(action("knowledge_context", json!({}))?);
         }
+        Error::KnowledgeLifecycleRequired => {
+            actions.push(action("knowledge_lifecycle", json!({}))?);
+            if let Some(("slice_pipeline_begin", arguments)) = call {
+                let mut params = json!({
+                    "request_id":arguments["request_id"],
+                    "intent":arguments["qualification_reason"],
+                    "owner":{"kind":"promotion_slice","scope_id":arguments["scope_id"],
+                        "slice_id":arguments["slice_id"],"slice_revision":arguments["slice_revision"]}
+                });
+                if let Some(mode) = arguments.get("delivery_mode") {
+                    params["delivery_mode"] = mode.clone();
+                }
+                actions.push(crate::api::needs_action(
+                    "needs_context",
+                    "knowledge_change_begin",
+                    params,
+                    "context_input",
+                    json!({"fields":[
+                        {"path":"arguments.params.desired_outcome","format":"The exact bounded durable outcome requested for this Promotion Slice."},
+                        {"path":"arguments.params.sources","format":"Exact saved source snapshots or authenticated producer output references."},
+                        {"path":"arguments.params.operation_hints","format":"One to sixteen create, revise, revalidate, supersede, retract, or erase hints; backend assigns canonical identities."},
+                        {"path":"arguments.params.completion","format":"Exact canonical, delivery, impact, search, and erasure completion contract."}
+                    ]}),
+                )?);
+            }
+        }
         Error::SetupExists if state.is_some() => {
             let context = state.and_then(|state| {
                 serde_json::from_value::<tect_domain::SetupContext>(state["setup_context"].clone())
@@ -238,13 +279,16 @@ pub(crate) fn error_intro(error: Error) -> &'static str {
             "A newer revision exists. Reload the saved record and merge before saving."
         }
         Error::StaleContext | Error::ContextChanged => {
-            "The durable knowledge selected for this phase changed. Reload the pipeline context and use its exact refresh call."
+            "The saved context changed. Reload its exact owner context and follow the supplied recovery action."
         }
         Error::NeedsContext => {
-            "This phase has unresolved durable knowledge needs. Reload the pipeline context and use its exact refresh call."
+            "The current operation has unresolved context needs. Reload its exact owner context and follow the supplied recovery action."
         }
         Error::KnowledgeUnavailable => {
-            "Durable knowledge is not activated for this database. An operator must activate the pinned native capability before publication."
+            "Durable knowledge is unavailable because its capability, database identity, or integrity check is not ready. Follow the supplied context or operator recovery action."
+        }
+        Error::KnowledgeLifecycleRequired => {
+            "This durable change is owned by the Knowledge Change lifecycle. Continue with its exact owner and source-bound begin contract."
         }
         Error::CapacityExceeded => {
             "The complete required durable knowledge context exceeds the bounded transport capacity. No partial context was returned."
@@ -321,5 +365,37 @@ mod tests {
         let parsed: Value =
             serde_json::from_str(response["content"][1]["text"].as_str().unwrap()).unwrap();
         assert_eq!(parsed["large"], large);
+    }
+
+    #[test]
+    fn promotion_refusal_returns_the_same_slice_owner_continuation() {
+        let id = uuid::Uuid::new_v4();
+        let arguments = json!({"request_id":id,"scope_id":id,"slice_id":id,
+            "slice_revision":3,"qualification_reason":"Publish this bounded evidence.",
+            "delivery_mode":"whole"});
+        let value = try_failure_with_state(
+            Error::KnowledgeLifecycleRequired,
+            Some(("slice_pipeline_begin", &arguments)),
+            None,
+        )
+        .unwrap();
+        let value: Value =
+            serde_json::from_str(value["content"][1]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            value["actions"][0]["arguments"]["route"],
+            "knowledge.lifecycle"
+        );
+        assert_eq!(
+            value["actions"][1]["arguments"]["route"],
+            "knowledge.change_begin"
+        );
+        assert_eq!(
+            value["actions"][1]["arguments"]["params"]["owner"]["kind"],
+            "promotion_slice"
+        );
+        assert_eq!(
+            value["actions"][1]["arguments"]["params"]["owner"]["slice_revision"],
+            3
+        );
     }
 }

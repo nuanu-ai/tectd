@@ -124,6 +124,16 @@ pub(super) fn pipeline_phase_complete() -> Value {
         }),
         json!(["nodes", "dependencies"]),
     );
+    let knowledge_publication = object_schema(
+        json!({"change_id":uuid(),"publisher_receipt_id":uuid(),"publisher_receipt_digest":text(),
+            "operation_ids":{"type":"array","items":uuid(),"minItems":1,"maxItems":16,"uniqueItems":true}}),
+        json!([
+            "change_id",
+            "publisher_receipt_id",
+            "publisher_receipt_digest",
+            "operation_ids"
+        ]),
+    );
     let output = object_schema(
         json!({
             "body":{"type":"string","minLength":1,"maxLength":2097152},
@@ -135,7 +145,7 @@ pub(super) fn pipeline_phase_complete() -> Value {
             "artifacts":{"type":"array","items":artifact,"uniqueItems":true},
             "validator_receipts":{"type":"array","items":validator_receipt,"uniqueItems":true},
             "followup_proposal":followup_proposal,
-            "reviewer_context":reviewer,"reference":text()
+            "reviewer_context":reviewer,"reference":text(),"knowledge_publication":knowledge_publication
         }),
         json!(["body", "producer_context_id"]),
     );
@@ -391,7 +401,8 @@ fn pipelines() -> Value {
         "slice.operational-preparation",
         "slice.operational-execution",
         "slice.research-to-durable-knowledge",
-        "slice.custom-procedure-capture"
+        "slice.custom-procedure-capture",
+        "slice.promote-to-durable-knowledge"
     ])
 }
 fn uuid() -> Value {

@@ -1,5 +1,5 @@
 use super::recovery_support::{Daemon, Mcp};
-use super::support::route;
+use super::support::{route, route_error};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::{fs, path::Path};
@@ -47,6 +47,13 @@ pub(super) async fn assert_application_roundtrip(
     unit_id: &Value,
     expected: &Value,
 ) {
+    let suppression = tect_postgres::prepare_knowledge_suppression_manifest(source_pool)
+        .await
+        .unwrap();
+    assert_eq!(suppression.high_water_erasure_sequence, 0);
+    let checkpoint = tect_postgres::record_knowledge_suppression_export(source_pool, &suppression)
+        .await
+        .unwrap();
     let source_database: String = sqlx::query_scalar("SELECT pg_catalog.current_database()")
         .fetch_one(source_pool)
         .await
@@ -153,7 +160,31 @@ pub(super) async fn assert_application_roundtrip(
         .expect("pg_restore is required for the opt-in DK test");
     assert!(restore_status.success(), "application pg_restore failed");
     let restored_pool = PgPool::connect(&restored_admin_url).await.unwrap();
-    tect_postgres::enable_durable_knowledge(&restored_pool, runtime_role)
+    assert!(
+        tect_postgres::enable_durable_knowledge(&restored_pool, runtime_role)
+            .await
+            .is_err(),
+        "ordinary enable must refuse a restored qualified database identity"
+    );
+    let socket = socket_dir.join("restored-knowledge-blocked.sock");
+    let restored_runtime_url = database_url(runtime_url, &database);
+    let mut blocked_daemon = Daemon::start(&restored_runtime_url, socket.clone()).await;
+    let mut blocked_client = Mcp::start(&socket, config, native, workspace_key).await;
+    blocked_client.call("open_workspace", json!({})).await;
+    let blocked = route_error(
+        &mut blocked_client,
+        "query",
+        "knowledge.context",
+        json!({"unit_id":unit_id,"revision":1}),
+    )
+    .await;
+    assert_eq!(blocked["error"]["code"], "knowledge_unavailable");
+    blocked_client.finish().await;
+    blocked_daemon.crash().await;
+    blocked_daemon.remove_owned_stale_socket();
+
+    sqlx::query("CREATE EXTENSION pgrdf VERSION '0.6.34'")
+        .execute(&restored_pool)
         .await
         .unwrap();
     for graph in &graphs {
@@ -208,10 +239,18 @@ pub(super) async fn assert_application_roundtrip(
             graph.iri
         );
     }
-    restored_pool.close().await;
+    let recovered = tect_postgres::apply_knowledge_suppression_manifest(
+        &restored_pool,
+        &suppression,
+        &checkpoint,
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered.entries_applied, 0);
+    assert_eq!(recovered.units_suppressed, 0);
+    assert_eq!(recovered.remaining, 0);
 
     let socket = socket_dir.join("restored-knowledge.sock");
-    let restored_runtime_url = database_url(runtime_url, &database);
     let mut daemon = Daemon::start(&restored_runtime_url, socket.clone()).await;
     let mut client = Mcp::start(&socket, config, native, workspace_key).await;
     let restored = route(
@@ -225,6 +264,7 @@ pub(super) async fn assert_application_roundtrip(
     client.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();
+    restored_pool.close().await;
     sqlx::query(&format!(
         "DROP DATABASE {} WITH (FORCE)",
         quoted_database(&database)

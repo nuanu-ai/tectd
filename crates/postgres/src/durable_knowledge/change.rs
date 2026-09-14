@@ -46,6 +46,15 @@ pub(crate) async fn prepare(
             other => other,
         });
     }
+    let lifecycle_required: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='knowledge_changes' AND column_name='contract_version')",
+    )
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    if lifecycle_required {
+        return Err(Error::KnowledgeLifecycleRequired);
+    }
     let (generation, ready, _) = lock_state(tx, tenant, workspace).await?;
     if let Some(prior) = receipt::<PrepareKnowledgeChangeOutcome>(
         tx,

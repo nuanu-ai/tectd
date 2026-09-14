@@ -1,0 +1,97 @@
+{
+  "version": "0.2.0-dk2.1",
+  "contract": "Every listed obligation is required for its exact operation; collect its substantive receipt at kc-domain-checks. Evidence is prepared at kc-qualify-evidence. Impact and terminal rules are the corresponding sections of each pinned profile method and are enforced at kc-impact-plan and kc-review-reconcile. No discretionary not_applicable waiver exists in this version. General composes with every selected profile.",
+  "profiles": [
+    {
+      "id": "general",
+      "method_file": "profile-general.md",
+      "obligations": [
+        {"id": "general.evidence", "operations": ["create", "revise", "revalidate", "supersede"], "requirement": "Trace each material assertion to exact evidence and preserve source authority, scope, epistemic state, conditions, exceptions, uncertainty and freshness."},
+        {"id": "general.create", "operations": ["create"], "requirement": "Establish a new semantic identity or exact duplicate disposition, complete meaning, applicability, ownership and composed profiles without conflicting domain copies."},
+        {"id": "general.revise", "operations": ["revise"], "requirement": "Explain the lossless semantic diff against the accepted revision, including modality, conditions, exceptions, authority, applicability, profile changes and any explicit reactivation."},
+        {"id": "general.revalidate", "operations": ["revalidate"], "requirement": "Show new suitable evidence for unchanged meaning and authority; reject timestamp-only renewal and route semantic changes to revise."},
+        {"id": "general.supersede", "operations": ["supersede"], "requirement": "Prove eligible noncyclic successor coverage for the exact enumerated replacement bindings and material conditions, retaining uncovered and pinned consumer obligations."},
+        {"id": "general.retract", "operations": ["retract"], "requirement": "Establish withdrawal identity, scope, current authority and reason; distinguish historical retention and consumer gaps from deletion or repaired downstream work."},
+        {"id": "general.erase", "operations": ["erase"], "requirement": "Establish authorized payload ownership, exact copy/shared-source scope and retention boundaries; do not treat hidden triples as full payload or backup erasure."}
+      ]
+    },
+    {
+      "id": "runbook",
+      "method_file": "profile-runbook.md",
+      "obligations": [
+        {"id": "runbook.evidence", "operations": ["create", "revise", "revalidate", "supersede"], "requirement": "Qualify environment fit, prerequisites, authority and dated proof; keep documented, static and runtime verification distinct and exclude secret parameter values."},
+        {"id": "runbook.create", "operations": ["create"], "requirement": "Provide ordered usable steps with expected results, verification, preflight, stops, failure/recovery and proof for the declared target and authority."},
+        {"id": "runbook.revise", "operations": ["revise"], "requirement": "Trace changed steps, parameters, dependencies, authority and recovery to invalidated downstream behavior and proof; preserve only compatible prior evidence."},
+        {"id": "runbook.revalidate", "operations": ["revalidate"], "requirement": "Recheck unchanged operational fit with new suitable evidence in the exact environment; do not claim runtime validation from a document reread."},
+        {"id": "runbook.supersede", "operations": ["supersede"], "requirement": "Compare successor eligibility, parameters, results, authority, recovery and proof level for each replaced binding; preserve transition and pinned execution needs."},
+        {"id": "runbook.retract", "operations": ["retract"], "requirement": "Identify unsafe or unsupported use and affected operations without claiming external execution was stopped or rolled back."},
+        {"id": "runbook.erase", "operations": ["erase"], "requirement": "Identify owned recipes, parameter examples, execution evidence and derivative copies; separate unrelated operational records and any credential-rotation follow-up."}
+      ]
+    },
+    {
+      "id": "protocol",
+      "method_file": "profile-protocol.md",
+      "obligations": [
+        {"id": "protocol.evidence", "operations": ["create", "revise", "revalidate", "supersede"], "requirement": "Pin specification version and provider/network scope; distinguish declared contracts, observed behavior, capability limits, negative states and conflicting evidence."},
+        {"id": "protocol.create", "operations": ["create"], "requirement": "Represent versioned contract, capabilities, compatibility, invariants and failure/quirk scope without generalizing provider observations."},
+        {"id": "protocol.revise", "operations": ["revise"], "requirement": "Explain contract/schema/version and compatibility changes, affected integrations and invalidated observations; distinguish corrected interpretation from upstream change."},
+        {"id": "protocol.revalidate", "operations": ["revalidate"], "requirement": "Use new suitable authoritative and provider-specific evidence for unchanged scoped meaning; do not call saved-response replay fresh observation."},
+        {"id": "protocol.supersede", "operations": ["supersede"], "requirement": "Show successor coverage of capabilities, compatibility and negative behavior for each replaced integration binding, retaining uncovered legacy needs."},
+        {"id": "protocol.retract", "operations": ["retract"], "requirement": "Withdraw the scoped unsupported assertion and identify dependent integration gaps without claiming deployed integrations changed."},
+        {"id": "protocol.erase", "operations": ["erase"], "requirement": "Identify owned specification/response fragments, observations and derived summaries while preserving independently owned shared protocol sources."}
+      ]
+    },
+    {
+      "id": "devops",
+      "method_file": "profile-devops.md",
+      "obligations": [
+        {"id": "devops.evidence", "operations": ["create", "revise", "revalidate", "supersede"], "requirement": "Establish exact asset/environment identity, source authority, custody and dated observation scope; distinguish declared topology/configuration from observed deployed state and health."},
+        {"id": "devops.create", "operations": ["create"], "requirement": "Represent bounded asset/topology, ownership, configuration references, deployment surfaces and observation limits without copying secrets or inferring runtime health."},
+        {"id": "devops.revise", "operations": ["revise"], "requirement": "Trace asset/configuration/topology/ownership changes and corrected documentation to affected dependencies, stale observations and preserved identity history."},
+        {"id": "devops.revalidate", "operations": ["revalidate"], "requirement": "Use new suitable observations for the unchanged assertion and exact environment; preserve reachability/authority gaps and route changed topology meaning to revise."},
+        {"id": "devops.supersede", "operations": ["supersede"], "requirement": "Compare successor topology role, scope, ownership and custody; enumerate migration dependencies without claiming cutover, data migration or decommissioning occurred."},
+        {"id": "devops.retract", "operations": ["retract"], "requirement": "Withdraw unreliable infrastructure assertions and expose consumer gaps without changing or shutting down resources."},
+        {"id": "devops.erase", "operations": ["erase"], "requirement": "Inventory owned asset notes, configuration snapshots, observations and topology derivatives; preserve unrelated resources and separately own rotation/decommissioning actions."}
+      ]
+    },
+    {
+      "id": "operations",
+      "method_file": "profile-operations.md",
+      "obligations": [
+        {"id": "operations.evidence", "operations": ["create", "revise", "revalidate", "supersede"], "requirement": "Establish operating authority, owners, role/cadence/handoff/status meaning and metric definitions; distinguish agreed rules, proposals and observed practice."},
+        {"id": "operations.create", "operations": ["create"], "requirement": "Describe usable trigger/input, responsibility, output, cadence, handoff, escalation, metrics and exceptions with explicit ownership gaps instead of invented organizational facts."},
+        {"id": "operations.revise", "operations": ["revise"], "requirement": "Trace changed responsibilities, status/cadence, metrics and exceptions to affected consumers while preserving historical metric interpretation and adoption limits."},
+        {"id": "operations.revalidate", "operations": ["revalidate"], "requirement": "Use new suitable evidence that unchanged authority, owners, cadence and signal sources remain applicable; actual-practice assertions need dated practice evidence."},
+        {"id": "operations.supersede", "operations": ["supersede"], "requirement": "Compare successor purpose, responsibilities, handoffs, metrics and exception coverage; retain transition ownership, unresolved commitments and old metric meaning."},
+        {"id": "operations.retract", "operations": ["retract"], "requirement": "Withdraw the scoped model and identify unsupported handoffs without claiming external commitments, incidents or notifications were handled."},
+        {"id": "operations.erase", "operations": ["erase"], "requirement": "Identify owned model text, role/source examples, metric snapshots and derivatives while preserving unrelated operational and independently retained records."}
+      ]
+    },
+    {
+      "id": "product_research",
+      "method_file": "profile-product-research.md",
+      "obligations": [
+        {"id": "product_research.evidence", "operations": ["create", "revise", "revalidate", "supersede"], "requirement": "Map the question and segment/context to real observations, reports, inferences and synthetic material with sample/time limits, assumptions and negative evidence."},
+        {"id": "product_research.create", "operations": ["create"], "requirement": "Trace conclusions, decisions or hypotheses to evidence and alternatives, preserving synthetic-vs-real distinction and proposal status for product/Program suggestions."},
+        {"id": "product_research.revise", "operations": ["revise"], "requirement": "Explain changed evidence, assumptions, segments or reasoning and affected decisions without upgrading hypotheses or erasing disconfirming history by omission."},
+        {"id": "product_research.revalidate", "operations": ["revalidate"], "requirement": "Use new suitable evidence for the unchanged bounded assertion; synthetic reruns and old reports do not become fresh customer evidence."},
+        {"id": "product_research.supersede", "operations": ["supersede"], "requirement": "Compare question/segment, evidence quality, assumptions and conclusion coverage for replaced bindings while retaining negative evidence and competing explanations."},
+        {"id": "product_research.retract", "operations": ["retract"], "requirement": "Withdraw the unsupported assertion/recommendation and identify dependent assumptions without changing a roadmap or Program automatically."},
+        {"id": "product_research.erase", "operations": ["erase"], "requirement": "Inventory owned interviews, excerpts, analysis, synthetic outputs and derivatives with explicit shared-source and independent-decision-record boundaries."}
+      ]
+    },
+    {
+      "id": "security",
+      "method_file": "profile-security.md",
+      "obligations": [
+        {"id": "security.evidence", "operations": ["create", "revise", "revalidate", "supersede"], "requirement": "Map scoped assets/boundaries, threats and controls to authority and verification evidence; preserve sensitivity/access, exceptions, residual risk and separate finding/remediation status."},
+        {"id": "security.create", "operations": ["create"], "requirement": "Represent supported control coverage and gaps without treating proposals, configurations or closed findings as verified effectiveness; restricted evidence must remain OwnersOnly or unavailable."},
+        {"id": "security.revise", "operations": ["revise"], "requirement": "Trace changed boundaries, controls, authority, sensitivity, exceptions or status to invalidated proof and mappings without silently weakening access or risk obligations."},
+        {"id": "security.revalidate", "operations": ["revalidate"], "requirement": "Use new suitable evidence for unchanged asset/boundary assertions; an old scan, unchanged document or closed issue cannot establish current effectiveness."},
+        {"id": "security.supersede", "operations": ["supersede"], "requirement": "Compare successor scope, control coverage, authority, exceptions, sensitivity and verification; preserve uncovered threats and prevent silent weakening for replaced bindings."},
+        {"id": "security.retract", "operations": ["retract"], "requirement": "Withdraw unsupported security guidance and expose dependent gaps without claiming a control was disabled, vulnerability remediated or finding closed."},
+        {"id": "security.erase", "operations": ["erase"], "requirement": "Inventory restricted owned evidence, findings and derivative/replay copies without reproducing their payload; resolve retention scope and separate remediation/rotation authority."}
+      ]
+    }
+  ]
+}

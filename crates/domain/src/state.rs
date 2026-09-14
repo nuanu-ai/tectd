@@ -1,5 +1,6 @@
 use crate::{
-    CandidateSetSummary, ProgramSummary, SetupContext, SliceCandidateSetStatus, SliceState,
+    CandidateSetSummary, KnowledgeChangePhaseId, PipelineRunStatus, ProgramSummary, SetupContext,
+    SliceCandidateSetStatus, SliceState,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -68,6 +69,15 @@ pub struct NativePipelineRunSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeKnowledgeChangeSummary {
+    pub change_id: Uuid,
+    pub run_id: Uuid,
+    pub slice_id: Uuid,
+    pub status: PipelineRunStatus,
+    pub current_phase_id: Option<KnowledgeChangePhaseId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativePlanningSummary {
     pub scope_id: Uuid,
     pub scope_revision: i64,
@@ -79,6 +89,8 @@ pub struct NativePlanningSummary {
     pub eligible_work: Vec<NativeWorkCandidateSummary>,
     pub slices_needing_result: Vec<NativeSliceSummary>,
     pub pipeline_runs: Vec<NativePipelineRunSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub knowledge_changes: Vec<NativeKnowledgeChangeSummary>,
 }
 
 impl WorkspaceState {

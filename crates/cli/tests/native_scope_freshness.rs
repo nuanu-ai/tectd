@@ -10,9 +10,10 @@ use tect_application::{CandidateGuidance, NativePlanningGuidance, WorkspaceServi
 use tect_domain::{
     CandidateDecision, CandidateDecisionKind, CandidateMethodSnapshot, CandidateReviewDraft,
     CandidateRuleSnapshot, CandidateSetStatus, CandidateSnapshotMaterial, Error, OpenScope,
-    OpenScopeOutcome, PipelineCatalogueEntry, PipelineCatalogueSnapshot, PipelineKind, Program,
-    RefreshCandidateSet, RequestContext, Result, ReviewCandidateSet, ReviewVerdict, ScopeOpenBasis,
-    SlicePlanningInput, SlicePlanningSnapshotMaterial, SliceResult, WorktreeSummary,
+    OpenScopeOutcome, PipelineCatalogueEntry, PipelineCatalogueSnapshot, PipelineExecutionOwner,
+    PipelineKind, Program, RefreshCandidateSet, RequestContext, Result, ReviewCandidateSet,
+    ReviewVerdict, ScopeOpenBasis, SlicePlanningInput, SlicePlanningSnapshotMaterial, SliceResult,
+    WorktreeSummary,
 };
 use tect_host::{CandidateEncoding, GitSourceInspector, LocalSetupFiles};
 use tect_postgres::{PgStore, admin};
@@ -71,6 +72,11 @@ impl NativePlanningGuidance for SliceGuidance {
                 executable: false,
                 default_delivery_mode: None,
                 allowed_delivery_modes: Vec::new(),
+                execution_owner: if kind == PipelineKind::PromoteToDurableKnowledge {
+                    PipelineExecutionOwner::KnowledgeChange
+                } else {
+                    PipelineExecutionOwner::SlicePipelineRun
+                },
                 choose_when: "evidence matches".into(),
                 do_not_choose_when: "evidence does not match".into(),
                 expected_result: "bounded result".into(),

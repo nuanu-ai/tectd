@@ -1,0 +1,61 @@
+{
+  "id": "general-constraint",
+  "source_path": "sources/tectd-dk1/integrations/codex/tectd/README.md",
+  "source_revision": "26d5f0123a32e15c2a174ab003ffb6a1beab5e34",
+  "source_sha256": "2253da076bcd45cccc869756a8b37eabb03bee7b25852e9753f1afdfcd9a8b0a",
+  "document": {
+    "title": "TectD business operations require enrolled host and native session identity",
+    "canonical_text": "A TectD MCP business operation requires both the enrolled host credential and the host-generated native session UUID. Model-supplied identity and environment-only fallback are not accepted.",
+    "knowledge_kind": "constraint",
+    "epistemic_state": "normative",
+    "target_iris": [
+      "urn:tect:dk2:acceptance:business-operation"
+    ],
+    "conditions": [
+      "Declared TectD source contract; no claim about an installed runtime."
+    ],
+    "exceptions": [],
+    "sources": [
+      {
+        "kind": "snapshot",
+        "snapshot": {
+          "title": "Pinned TectD integration identity contract",
+          "uri": "urn:tect:dk2:source:integration-readme:identity",
+          "text": "Native identity comes from each tool call's host-generated `params._meta.threadId`.\nNo CODEX_SESSION_ID or CODEX_THREAD_ID environment setting is required or accepted\nas an identity fallback. Both the Codex-generated native UUID and host credential\nare required before a business operation. Model tool arguments contain no identity.\n",
+          "evidence_kind": "declaration"
+        }
+      }
+    ],
+    "bindings": [
+      {
+        "target": {
+          "kind": "workspace"
+        },
+        "purpose": "required",
+        "version_resolution": {
+          "kind": "current_accepted"
+        }
+      }
+    ],
+    "profiles": [
+      "general"
+    ],
+    "access_scope": "workspace_members",
+    "owner_ref": "isolated-workspace-owner",
+    "authority_basis": "Owner-authorized source-only DK-2 acceptance in an isolated fixture",
+    "sections": {
+      "constraint": {
+        "modality": "must",
+        "action": "Authenticate with the enrolled host credential and host-generated native session UUID",
+        "target_iri": "urn:tect:dk2:acceptance:business-operation"
+      },
+      "general": null,
+      "runbook": null,
+      "protocol": null,
+      "devops": null,
+      "operations": null,
+      "product_research": null,
+      "security": null
+    }
+  }
+}

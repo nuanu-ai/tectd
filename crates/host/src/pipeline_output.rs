@@ -3,7 +3,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use tect_domain::{
     BeginPipelineRunOutcome, Error, PipelineContextResponse, PipelineKnowledgeState,
-    PipelineMutationOutcome, PipelineRunContext, PipelineRunStatus, Result,
+    PipelineMutationOutcome, PipelineOutputConstraint, PipelineRunContext, PipelineRunStatus,
+    Result,
 };
 
 pub(crate) fn begin(mut value: BeginPipelineRunOutcome, capacity: usize) -> Result<Value> {
@@ -110,17 +111,40 @@ fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
                 params["consumed_knowledge"] =
                     json!({"manifest_id":manifest.id,"digest":manifest.digest});
             }
+            let mut fields = vec![
+                json!({"path":"arguments.params.outcome","format":"Caller-reported phase outcome allowed by the current verdict route."}),
+                json!({"path":"arguments.params.transition","format":"Transition allowed by the current verdict route."}),
+                json!({"path":"arguments.params.output","format":"Complete phase output body, producer context, typed fields, verdict, exact route dispositions, pinned skill/resource reads, artifacts, validator receipts, any route-required follow-up proposal, and reviewer attestation/reference."}),
+                json!({"path":"arguments.params.terminal_result","format":"Required only for a terminal complete, published block, or pipeline-kind escalation."}),
+            ];
+            let current = context
+                .delivered_phases
+                .iter()
+                .find(|phase| &phase.id == phase_id)
+                .or_else(|| {
+                    context
+                        .definition
+                        .phases
+                        .iter()
+                        .find(|phase| &phase.id == phase_id)
+                });
+            if current.is_some_and(|phase| {
+                phase.output_constraints.iter().any(|constraint| {
+                    matches!(
+                        constraint,
+                        PipelineOutputConstraint::ResolvedKnowledgePublication { .. }
+                    )
+                })
+            }) {
+                fields.push(json!({"path":"arguments.params.output.knowledge_publication",
+                    "format":"For promoted verdicts only: exact backend-issued change_id, publisher_receipt_id, publisher_receipt_digest, and covered operation_ids. The backend resolves producer lineage; unrelated or forged receipts fail."}));
+            }
             crate::api::needs_action(
                 "needs_context",
                 "slice_pipeline_phase_complete",
                 params,
                 "context_input",
-                json!({"fields":[
-                    {"path":"arguments.params.outcome","format":"Caller-reported phase outcome allowed by the current verdict route."},
-                    {"path":"arguments.params.transition","format":"Transition allowed by the current verdict route."},
-                    {"path":"arguments.params.output","format":"Complete phase output body, producer context, typed fields, verdict, exact route dispositions, pinned skill/resource reads, artifacts, validator receipts, any route-required follow-up proposal, and reviewer attestation/reference."},
-                    {"path":"arguments.params.terminal_result","format":"Required only for a terminal complete, published block, or pipeline-kind escalation."}
-                ]}),
+                json!({"fields":fields}),
             )?
         }
         PipelineRunStatus::WaitingInput | PipelineRunStatus::Blocked => crate::api::needs_action(

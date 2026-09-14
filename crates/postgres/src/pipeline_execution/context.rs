@@ -1,16 +1,74 @@
 use super::*;
 
+type OwnedCopyKey = (String, Uuid, i64, Option<String>, Option<Uuid>);
+
+async fn authorize_copy_keys(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    keys: Vec<OwnedCopyKey>,
+) -> Result<()> {
+    for (relation, row, revision, operation, request) in keys {
+        crate::durable_knowledge::manifest::authorize_owned_copy(
+            tx,
+            tenant,
+            workspace,
+            principal,
+            &relation,
+            row,
+            revision,
+            operation.as_deref(),
+            request,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+pub(super) async fn authorize_run_origin(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    run: Uuid,
+) -> Result<()> {
+    let keys:Vec<OwnedCopyKey>=sqlx::query_as("SELECT relation_name,row_id,row_revision,row_operation,row_request_id FROM knowledge_owned_copies WHERE tenant_id=$1 AND workspace_id=$2 AND relation_name='slice_pipeline_runs' AND row_id=$3 ORDER BY row_revision,row_operation,row_request_id")
+        .bind(tenant).bind(workspace).bind(run).fetch_all(&mut **tx).await.map_err(storage_error)?;
+    if keys.is_empty() {
+        return Err(Error::InternalInvariant);
+    }
+    authorize_copy_keys(tx, tenant, workspace, principal, keys).await
+}
+
+async fn authorize_context_copies(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    run: Uuid,
+) -> Result<()> {
+    let keys:Vec<OwnedCopyKey>=sqlx::query_as("SELECT DISTINCT c.relation_name,c.row_id,c.row_revision,c.row_operation,c.row_request_id FROM knowledge_owned_copies c WHERE c.tenant_id=$1 AND c.workspace_id=$2 AND ((c.relation_name='slice_pipeline_runs' AND c.row_id=$3) OR (c.relation_name='slice_pipeline_phase_attempts' AND EXISTS(SELECT 1 FROM slice_pipeline_phase_attempts a WHERE a.tenant_id=c.tenant_id AND a.workspace_id=c.workspace_id AND a.id=c.row_id AND a.run_id=$3)) OR (c.relation_name='slice_pipeline_phase_outputs' AND EXISTS(SELECT 1 FROM slice_pipeline_phase_outputs o WHERE o.tenant_id=c.tenant_id AND o.workspace_id=c.workspace_id AND o.id=c.row_id AND o.run_id=$3)) OR (c.relation_name='slice_pipeline_inputs' AND EXISTS(SELECT 1 FROM slice_pipeline_inputs i WHERE i.tenant_id=c.tenant_id AND i.workspace_id=c.workspace_id AND i.id=c.row_id AND i.run_id=$3)) OR (c.relation_name='slice_pipeline_receipts' AND c.row_id=$3) OR (c.relation_name='slice_results' AND EXISTS(SELECT 1 FROM slice_results r WHERE r.tenant_id=c.tenant_id AND r.workspace_id=c.workspace_id AND r.id=c.row_id AND r.pipeline_run_id=$3))) ORDER BY c.relation_name,c.row_id,c.row_revision,c.row_operation,c.row_request_id")
+        .bind(tenant).bind(workspace).bind(run).fetch_all(&mut **tx).await.map_err(storage_error)?;
+    authorize_copy_keys(tx, tenant, workspace, principal, keys).await
+}
+
 #[allow(clippy::type_complexity)]
 pub(crate) async fn load_context(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     workspace: Uuid,
+    principal: Uuid,
     run_id: Uuid,
 ) -> Result<Option<PipelineRunContext>> {
-    let row:Option<(Uuid,Uuid,Uuid,i64,i64,String,String,String,serde_json::Value,String,String,String,Option<String>,Option<i32>,Option<Uuid>)>=sqlx::query_as(
-        "SELECT id,scope_id,slice_id,slice_revision,revision,definition_kind,definition_version,definition_digest,definition,delivery_mode,qualification_reason,status,current_phase_id,current_phase_ordinal,knowledge_manifest_id FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
+    let row:Option<(Uuid,Uuid,Uuid,i64,i64,String,String,String,serde_json::Value,String,Option<String>,String,Option<String>,Option<i32>,Option<Uuid>,bool)>=sqlx::query_as(
+        "SELECT id,scope_id,slice_id,slice_revision,revision,definition_kind,definition_version,definition_digest,definition,delivery_mode,qualification_reason,status,current_phase_id,current_phase_ordinal,knowledge_manifest_id,payload_erased FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
         .bind(tenant).bind(workspace).bind(run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     let Some(row) = row else { return Ok(None) };
+    authorize_context_copies(tx, tenant, workspace, principal, run_id).await?;
+    if row.15 {
+        return Err(Error::KnowledgePayloadErased);
+    }
     let definition: PipelineDefinitionSnapshot = decode(row.8)?;
     let run = PipelineRun {
         id: row.0,
@@ -22,13 +80,13 @@ pub(crate) async fn load_context(
         definition_version: row.6,
         definition_digest: row.7,
         delivery_mode: mode(&row.9)?,
-        qualification_reason: row.10,
+        qualification_reason: row.10.ok_or(Error::InternalInvariant)?,
         status: run_status(&row.11)?,
         current_phase_id: row.12,
         current_phase_ordinal: row.13.map(|value| value as u32),
     };
     let attempt_rows:Vec<(Uuid,String,i32,i64,String,String,i64,Uuid,String,Option<String>,Uuid,Option<serde_json::Value>)>=sqlx::query_as(
-        "SELECT a.id,a.phase_id,a.phase_ordinal,a.attempt,a.outcome,a.transition,o.revision,o.id,o.body_digest,o.reference,a.actor_session_id,a.reviewer_context FROM slice_pipeline_phase_attempts a JOIN slice_pipeline_phase_outputs o ON o.tenant_id=a.tenant_id AND o.workspace_id=a.workspace_id AND o.attempt_id=a.id WHERE a.tenant_id=$1 AND a.workspace_id=$2 AND a.run_id=$3 ORDER BY a.created_at,a.id")
+        "SELECT a.id,a.phase_id,a.phase_ordinal,a.attempt,a.outcome,a.transition,o.revision,o.id,o.body_digest,o.reference,a.actor_session_id,a.reviewer_context FROM slice_pipeline_phase_attempts a JOIN slice_pipeline_phase_outputs o ON o.tenant_id=a.tenant_id AND o.workspace_id=a.workspace_id AND o.attempt_id=a.id WHERE a.tenant_id=$1 AND a.workspace_id=$2 AND a.run_id=$3 AND NOT a.payload_erased AND NOT o.payload_erased ORDER BY a.created_at,a.id")
         .bind(tenant).bind(workspace).bind(run_id).fetch_all(&mut **tx).await.map_err(storage_error)?;
     let attempts = attempt_rows
         .into_iter()
@@ -51,7 +109,7 @@ pub(crate) async fn load_context(
         })
         .collect::<Result<Vec<_>>>()?;
     let binding_rows:Vec<(String,i32,i64,Uuid,String,Option<String>,bool,Option<String>)>=sqlx::query_as(
-        "SELECT b.phase_id,b.phase_ordinal,b.output_revision,o.id,o.body_digest,o.reference,b.stale,b.stale_reason FROM slice_pipeline_output_bindings b JOIN slice_pipeline_phase_outputs o ON o.tenant_id=b.tenant_id AND o.workspace_id=b.workspace_id AND o.id=b.output_id WHERE b.tenant_id=$1 AND b.workspace_id=$2 AND b.run_id=$3 ORDER BY b.phase_ordinal")
+        "SELECT b.phase_id,b.phase_ordinal,b.output_revision,o.id,o.body_digest,o.reference,b.stale,b.stale_reason FROM slice_pipeline_output_bindings b JOIN slice_pipeline_phase_outputs o ON o.tenant_id=b.tenant_id AND o.workspace_id=b.workspace_id AND o.id=b.output_id WHERE b.tenant_id=$1 AND b.workspace_id=$2 AND b.run_id=$3 AND NOT o.payload_erased ORDER BY b.phase_ordinal")
         .bind(tenant).bind(workspace).bind(run_id).fetch_all(&mut **tx).await.map_err(storage_error)?;
     let bindings = binding_rows
         .into_iter()
@@ -67,14 +125,14 @@ pub(crate) async fn load_context(
         })
         .collect();
     let output_rows:Vec<serde_json::Value>=sqlx::query_scalar(
-        "SELECT pg_catalog.jsonb_build_object('id',o.id,'run_id',o.run_id,'phase_id',o.phase_id,'phase_ordinal',o.phase_ordinal,'revision',o.revision,'body',o.body,'producer_context_id',o.producer_context_id,'digest',o.body_digest,'reference',o.reference,'fields',o.fields,'verdict',o.verdict,'dispositions',o.dispositions,'skill_reads',o.skill_reads,'resource_reads',o.resource_reads,'artifacts',o.artifacts,'validator_receipts',o.validator_receipts,'followup_proposal',o.followup_proposal,'stale',b.stale,'stale_reason',b.stale_reason) FROM slice_pipeline_output_bindings b JOIN slice_pipeline_phase_outputs o ON o.tenant_id=b.tenant_id AND o.workspace_id=b.workspace_id AND o.id=b.output_id WHERE b.tenant_id=$1 AND b.workspace_id=$2 AND b.run_id=$3 ORDER BY b.phase_ordinal")
+        "SELECT pg_catalog.jsonb_build_object('id',o.id,'run_id',o.run_id,'phase_id',o.phase_id,'phase_ordinal',o.phase_ordinal,'revision',o.revision,'body',o.body,'producer_context_id',o.producer_context_id,'digest',o.body_digest,'reference',o.reference,'knowledge_publication',o.knowledge_publication,'fields',o.fields,'verdict',o.verdict,'dispositions',o.dispositions,'skill_reads',o.skill_reads,'resource_reads',o.resource_reads,'artifacts',o.artifacts,'validator_receipts',o.validator_receipts,'followup_proposal',o.followup_proposal,'stale',b.stale,'stale_reason',b.stale_reason) FROM slice_pipeline_output_bindings b JOIN slice_pipeline_phase_outputs o ON o.tenant_id=b.tenant_id AND o.workspace_id=b.workspace_id AND o.id=b.output_id WHERE b.tenant_id=$1 AND b.workspace_id=$2 AND b.run_id=$3 AND NOT o.payload_erased ORDER BY b.phase_ordinal")
         .bind(tenant).bind(workspace).bind(run_id).fetch_all(&mut **tx).await.map_err(storage_error)?;
     let outputs = output_rows
         .into_iter()
         .map(decode)
         .collect::<Result<Vec<_>>>()?;
     let input_rows:Vec<(Uuid,i64,String,String,String,Uuid)>=sqlx::query_as(
-        "SELECT id,sequence,phase_id,input,input_digest,actor_session_id FROM slice_pipeline_inputs WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 ORDER BY sequence")
+        "SELECT id,sequence,phase_id,input,input_digest,actor_session_id FROM slice_pipeline_inputs WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND NOT payload_erased ORDER BY sequence")
         .bind(tenant).bind(workspace).bind(run_id).fetch_all(&mut **tx).await.map_err(storage_error)?;
     let inputs = input_rows
         .into_iter()
@@ -88,7 +146,7 @@ pub(crate) async fn load_context(
         })
         .collect();
     let result_row:Option<(Uuid,Uuid,i64,i64,String,String,serde_json::Value,String,String,String,Option<Uuid>,Option<String>,Option<String>,Option<Uuid>,Option<String>)>=sqlx::query_as(
-        "SELECT id,slice_id,slice_revision,revision,outcome,summary,evidence,scope_impact,remaining_work,provenance,pipeline_run_id,pipeline_definition_version,pipeline_definition_digest,pipeline_final_attempt_id,pipeline_result_origin FROM slice_results WHERE tenant_id=$1 AND workspace_id=$2 AND pipeline_run_id=$3 ORDER BY revision DESC LIMIT 1")
+        "SELECT id,slice_id,slice_revision,revision,outcome,summary,evidence,scope_impact,remaining_work,provenance,pipeline_run_id,pipeline_definition_version,pipeline_definition_digest,pipeline_final_attempt_id,pipeline_result_origin FROM slice_results WHERE tenant_id=$1 AND workspace_id=$2 AND pipeline_run_id=$3 AND NOT payload_erased ORDER BY revision DESC LIMIT 1")
         .bind(tenant).bind(workspace).bind(run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     let result = result_row
         .map(|row| {
@@ -108,6 +166,7 @@ pub(crate) async fn load_context(
                 pipeline_definition_digest: row.12,
                 pipeline_final_attempt_id: row.13,
                 pipeline_result_origin: row.14,
+                knowledge_provenance: None,
             })
         })
         .transpose()?;
@@ -126,16 +185,34 @@ pub(crate) async fn load_context(
             .into_iter()
             .collect(),
     };
-    let knowledge = crate::durable_knowledge::manifest::load(tx, tenant, workspace, row.14).await?;
+    let knowledge =
+        crate::durable_knowledge::manifest::load(tx, tenant, workspace, row.14, principal).await?;
     let knowledge_status = crate::durable_knowledge::manifest::status(
         tx,
         tenant,
         workspace,
+        principal,
         run.id,
         run.scope_id,
         run.slice_id,
         run.current_phase_id.as_deref(),
         knowledge.as_ref(),
+    )
+    .await?;
+    let knowledge_resources = crate::durable_knowledge::manifest::load_resources(
+        tx, tenant, workspace, row.14, principal,
+    )
+    .await?;
+    let knowledge_resource_status = crate::durable_knowledge::manifest::resource_status(
+        tx,
+        tenant,
+        workspace,
+        principal,
+        run.id,
+        run.scope_id,
+        run.slice_id,
+        run.current_phase_id.as_deref(),
+        knowledge_resources.as_ref(),
     )
     .await?;
     Ok(Some(PipelineRunContext {
@@ -145,11 +222,13 @@ pub(crate) async fn load_context(
         attempts,
         bindings,
         outputs,
-        outputs_complete: true,
+        outputs_complete: sqlx::query_scalar::<_,bool>("SELECT NOT EXISTS(SELECT 1 FROM slice_pipeline_phase_outputs WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND payload_erased)").bind(tenant).bind(workspace).bind(run_id).fetch_one(&mut **tx).await.map_err(storage_error)?,
         inputs,
         result,
         knowledge,
         knowledge_status,
+        knowledge_resources,
+        knowledge_resource_status,
     }))
 }
 
@@ -161,8 +240,13 @@ pub(crate) async fn load_output(
     output_id: Uuid,
     digest: &str,
 ) -> Result<Option<PipelinePhaseOutput>> {
+    let erased:Option<bool>=sqlx::query_scalar("SELECT payload_erased FROM slice_pipeline_phase_outputs WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND id=$4")
+        .bind(tenant).bind(workspace).bind(run_id).bind(output_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
+    if erased == Some(true) {
+        return Err(Error::KnowledgePayloadErased);
+    }
     let row:Option<serde_json::Value>=sqlx::query_scalar(
-        "SELECT pg_catalog.jsonb_build_object('id',o.id,'run_id',o.run_id,'phase_id',o.phase_id,'phase_ordinal',o.phase_ordinal,'revision',o.revision,'body',o.body,'producer_context_id',o.producer_context_id,'digest',o.body_digest,'reference',o.reference,'fields',o.fields,'verdict',o.verdict,'dispositions',o.dispositions,'skill_reads',o.skill_reads,'resource_reads',o.resource_reads,'artifacts',o.artifacts,'validator_receipts',o.validator_receipts,'followup_proposal',o.followup_proposal,'stale',COALESCE(b.stale,true),'stale_reason',CASE WHEN b.output_id IS NULL THEN 'not_current_binding' ELSE b.stale_reason END) FROM slice_pipeline_phase_outputs o LEFT JOIN slice_pipeline_output_bindings b ON b.tenant_id=o.tenant_id AND b.workspace_id=o.workspace_id AND b.run_id=o.run_id AND b.output_id=o.id WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.run_id=$3 AND o.id=$4 AND o.body_digest=$5")
+        "SELECT pg_catalog.jsonb_build_object('id',o.id,'run_id',o.run_id,'phase_id',o.phase_id,'phase_ordinal',o.phase_ordinal,'revision',o.revision,'body',o.body,'producer_context_id',o.producer_context_id,'digest',o.body_digest,'reference',o.reference,'knowledge_publication',o.knowledge_publication,'fields',o.fields,'verdict',o.verdict,'dispositions',o.dispositions,'skill_reads',o.skill_reads,'resource_reads',o.resource_reads,'artifacts',o.artifacts,'validator_receipts',o.validator_receipts,'followup_proposal',o.followup_proposal,'stale',COALESCE(b.stale,true),'stale_reason',CASE WHEN b.output_id IS NULL THEN 'not_current_binding' ELSE b.stale_reason END) FROM slice_pipeline_phase_outputs o LEFT JOIN slice_pipeline_output_bindings b ON b.tenant_id=o.tenant_id AND b.workspace_id=o.workspace_id AND b.run_id=o.run_id AND b.output_id=o.id WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.run_id=$3 AND o.id=$4 AND o.body_digest=$5")
         .bind(tenant).bind(workspace).bind(run_id).bind(output_id).bind(digest)
         .fetch_optional(&mut **tx).await.map_err(storage_error)?;
     row.map(decode).transpose()

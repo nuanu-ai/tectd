@@ -48,6 +48,7 @@ impl DurableKnowledgeStore for PgUnitOfWork {
         review: &KnowledgeMethodSnapshot,
     ) -> Result<KnowledgeContext> {
         let tenant = self.tenant_id()?;
+        durable_knowledge::require_identity_ready(self.transaction()?).await?;
         durable_knowledge::context::context(
             self.transaction()?,
             tenant,
@@ -64,6 +65,7 @@ impl DurableKnowledgeStore for PgUnitOfWork {
         change_id: Uuid,
     ) -> Result<Option<KnowledgeChange>> {
         let tenant = self.tenant_id()?;
+        durable_knowledge::require_identity_ready(self.transaction()?).await?;
         durable_knowledge::context::load_change(
             self.transaction()?,
             tenant,
@@ -83,6 +85,7 @@ impl DurableKnowledgeStore for PgUnitOfWork {
         review: &KnowledgeMethodSnapshot,
     ) -> Result<PrepareKnowledgeChangeOutcome> {
         let tenant = self.tenant_id()?;
+        durable_knowledge::require_identity_ready(self.transaction()?).await?;
         durable_knowledge::change::prepare(
             self.transaction()?,
             tenant,
@@ -104,6 +107,7 @@ impl DurableKnowledgeStore for PgUnitOfWork {
         request: &ReviewKnowledgeChange,
     ) -> Result<ReviewKnowledgeChangeOutcome> {
         let tenant = self.tenant_id()?;
+        durable_knowledge::require_identity_ready(self.transaction()?).await?;
         durable_knowledge::change::review(
             self.transaction()?,
             tenant,
@@ -122,6 +126,7 @@ impl DurableKnowledgeStore for PgUnitOfWork {
         request: &PublishKnowledgeChange,
     ) -> Result<PublishKnowledgeChangeOutcome> {
         let tenant = self.tenant_id()?;
+        durable_knowledge::require_identity_ready(self.transaction()?).await?;
         durable_knowledge::publish::publish(
             self.transaction()?,
             tenant,
@@ -139,6 +144,7 @@ impl DurableKnowledgeStore for PgUnitOfWork {
         request: &RefreshPipelineKnowledge,
     ) -> Result<RefreshPipelineKnowledgeOutcome> {
         let tenant = self.tenant_id()?;
+        durable_knowledge::require_identity_ready(self.transaction()?).await?;
         durable_knowledge::manifest::refresh(
             self.transaction()?,
             tenant,

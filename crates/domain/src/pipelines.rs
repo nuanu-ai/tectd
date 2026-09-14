@@ -11,10 +11,11 @@ pub enum PipelineKind {
     OperationalExecution,
     ResearchToDurableKnowledge,
     CustomProcedureCapture,
+    PromoteToDurableKnowledge,
 }
 
 impl PipelineKind {
-    pub const ALL: [Self; 7] = [
+    pub const SLICE_RUN_KINDS: [Self; 7] = [
         Self::LightweightTddDevelopment,
         Self::FullDesignToExecution,
         Self::DebugRootCause,
@@ -22,6 +23,16 @@ impl PipelineKind {
         Self::OperationalExecution,
         Self::ResearchToDurableKnowledge,
         Self::CustomProcedureCapture,
+    ];
+    pub const ALL: [Self; 8] = [
+        Self::LightweightTddDevelopment,
+        Self::FullDesignToExecution,
+        Self::DebugRootCause,
+        Self::OperationalPreparation,
+        Self::OperationalExecution,
+        Self::ResearchToDurableKnowledge,
+        Self::CustomProcedureCapture,
+        Self::PromoteToDurableKnowledge,
     ];
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -32,7 +43,22 @@ impl PipelineKind {
             Self::OperationalExecution => "slice.operational-execution",
             Self::ResearchToDurableKnowledge => "slice.research-to-durable-knowledge",
             Self::CustomProcedureCapture => "slice.custom-procedure-capture",
+            Self::PromoteToDurableKnowledge => "slice.promote-to-durable-knowledge",
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineExecutionOwner {
+    #[default]
+    SlicePipelineRun,
+    KnowledgeChange,
+}
+
+impl PipelineExecutionOwner {
+    pub const fn is_slice_pipeline_run(&self) -> bool {
+        matches!(self, Self::SlicePipelineRun)
     }
 }
 impl Serialize for PipelineKind {
@@ -67,6 +93,11 @@ pub struct PipelineCatalogueEntry {
     pub default_delivery_mode: Option<PipelineDeliveryMode>,
     #[serde(default)]
     pub allowed_delivery_modes: Vec<PipelineDeliveryMode>,
+    #[serde(
+        default,
+        skip_serializing_if = "PipelineExecutionOwner::is_slice_pipeline_run"
+    )]
+    pub execution_owner: PipelineExecutionOwner,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -79,12 +110,22 @@ impl PipelineCatalogueSnapshot {
     pub fn validate(&self) -> Result<()> {
         if self.revision.trim().is_empty()
             || self.digest.trim().is_empty()
-            || self.entries.len() != 7
+            || !matches!(self.entries.len(), 7 | 8)
         {
             return Err(Error::InvalidArguments);
         }
         let kinds = self.entries.iter().map(|e| e.kind).collect::<BTreeSet<_>>();
-        if kinds.len() != 7
+        if kinds.len() != self.entries.len()
+            || (self.entries.len() == 7
+                && self.entries.iter().any(|entry| {
+                    entry.kind == PipelineKind::PromoteToDurableKnowledge
+                        || entry.execution_owner != PipelineExecutionOwner::SlicePipelineRun
+                }))
+            || (self.entries.len() == 8
+                && self.entries.iter().any(|entry| {
+                    (entry.kind == PipelineKind::PromoteToDurableKnowledge)
+                        != (entry.execution_owner == PipelineExecutionOwner::KnowledgeChange)
+                }))
             || self.entries.iter().any(|e| {
                 e.description.trim().is_empty()
                     || !matches!(e.implementation_status.as_str(), "stub" | "executable")
