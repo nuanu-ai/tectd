@@ -72,6 +72,14 @@ impl SearchWorkerConfig {
     }
 }
 
+pub(crate) fn maintenance_enabled() -> Result<bool> {
+    match std::env::var("TECT_KNOWLEDGE_MAINTENANCE") {
+        Err(std::env::VarError::NotPresent) => Ok(false),
+        Ok(value) if value == "1" => Ok(true),
+        _ => Err(Error::InvalidConfiguration),
+    }
+}
+
 fn validate_and_open(path: &Path) -> Result<std::fs::File> {
     if !path.is_absolute()
         || path
@@ -96,15 +104,27 @@ fn validate_and_open(path: &Path) -> Result<std::fs::File> {
     Ok(file)
 }
 
-pub(crate) async fn run(service: Arc<WorkspaceService>, config: SearchWorkerConfig) {
+pub(crate) async fn run(
+    service: Arc<WorkspaceService>,
+    config: SearchWorkerConfig,
+    search_enabled: bool,
+    maintenance_enabled: bool,
+) {
     let mut interval = tokio::time::interval(Duration::from_secs(config.interval_seconds));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         interval.tick().await;
         for context in &config.contexts {
-            let _ = service
-                .process_knowledge_search_jobs(context, config.batch_limit)
-                .await;
+            if maintenance_enabled {
+                let _ = service
+                    .process_knowledge_maintenance_tasks(context, config.batch_limit)
+                    .await;
+            }
+            if search_enabled {
+                let _ = service
+                    .process_knowledge_search_jobs(context, config.batch_limit)
+                    .await;
+            }
         }
     }
 }

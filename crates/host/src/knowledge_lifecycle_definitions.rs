@@ -4,7 +4,7 @@ use tect_application::KnowledgeLifecycleDefinitionProvider;
 use tect_domain::*;
 
 const REGISTRY_VERSION: &str = "0.2.0-dk2.1";
-const DEFINITION_VERSION: &str = "0.3.0-dk3.1";
+const DEFINITION_VERSION: &str = "0.4.0-dk4.1";
 const ROOT: &str = "crates/host/knowledge-methods/";
 
 pub(crate) struct StaticKnowledgeLifecycleDefinitions;
@@ -15,8 +15,8 @@ impl KnowledgeLifecycleDefinitionProvider for StaticKnowledgeLifecycleDefinition
         let overview = snapshot_version(
             "tect:knowledge-change:overview",
             DEFINITION_VERSION,
-            "overview-dk3.md",
-            include_str!("../knowledge-methods/overview-dk3.md"),
+            "overview-dk4.md",
+            include_str!("../knowledge-methods/overview-dk4.md"),
         );
         let profile_methods: Vec<_> = registry
             .profiles
@@ -26,10 +26,21 @@ impl KnowledgeLifecycleDefinitionProvider for StaticKnowledgeLifecycleDefinition
         let mut phases = Vec::new();
         for (index, id) in KnowledgeChangePhaseId::ALL.into_iter().enumerate() {
             let phase_method = phase_method(id);
-            let instructions = phase_method.clone().into_iter().collect();
+            let maintenance = matches!(
+                id,
+                KnowledgeChangePhaseId::KcResolveBaseline
+                    | KnowledgeChangePhaseId::KcReviewReconcile
+            )
+            .then(maintenance_method);
+            let instructions = phase_method
+                .clone()
+                .into_iter()
+                .chain(maintenance.clone())
+                .collect();
             let methods = if id.agent_authored() {
                 phase_method
                     .into_iter()
+                    .chain(maintenance)
                     .chain(
                         matches!(id.ordinal(), 4..=8)
                             .then_some(profile_methods.clone())
@@ -93,14 +104,14 @@ impl KnowledgeLifecycleDefinitionProvider for StaticKnowledgeLifecycleDefinition
             completion_contract_ref: contract_ref_version(
                 "tect:knowledge-change:completion",
                 DEFINITION_VERSION,
-                "overview-dk3.md",
-                include_str!("../knowledge-methods/overview-dk3.md"),
+                "overview-dk4.md",
+                include_str!("../knowledge-methods/overview-dk4.md"),
             ),
             escalation_contract_ref: contract_ref_version(
                 "tect:knowledge-change:escalation",
                 DEFINITION_VERSION,
-                "overview-dk3.md",
-                include_str!("../knowledge-methods/overview-dk3.md"),
+                "overview-dk4.md",
+                include_str!("../knowledge-methods/overview-dk4.md"),
             ),
         };
         value.digest = material_digest(&value)?;
@@ -178,6 +189,19 @@ impl KnowledgeLifecycleDefinitionProvider for StaticKnowledgeLifecycleDefinition
         registry.digest = material_digest(&registry)?;
         Ok(registry)
     }
+
+    fn maintenance_method(&self) -> Result<PipelineInstructionSnapshot> {
+        Ok(maintenance_method())
+    }
+}
+
+pub(crate) fn maintenance_method() -> PipelineInstructionSnapshot {
+    snapshot_version(
+        "tect:knowledge-maintenance:method",
+        DEFINITION_VERSION,
+        "maintenance.md",
+        include_str!("../knowledge-methods/maintenance.md"),
+    )
 }
 
 #[derive(Deserialize)]
@@ -315,7 +339,11 @@ fn profile_body(file: &str) -> Result<&'static str> {
     }
 }
 fn phase_method(id: KnowledgeChangePhaseId) -> Option<PipelineInstructionSnapshot> {
-    let file = format!("{}.md", id.as_str());
+    let file = match id {
+        KnowledgeChangePhaseId::KcPrepareChange => "kc-prepare-change-dk4.md".into(),
+        KnowledgeChangePhaseId::KcReviewReconcile => "kc-review-reconcile-dk4.md".into(),
+        _ => format!("{}.md", id.as_str()),
+    };
     id.method_id().map(|mid| {
         snapshot_version(
             mid,
@@ -335,7 +363,7 @@ fn phase_method(id: KnowledgeChangePhaseId) -> Option<PipelineInstructionSnapsho
                     include_str!("../knowledge-methods/kc-qualify-evidence.md")
                 }
                 KnowledgeChangePhaseId::KcPrepareChange => {
-                    include_str!("../knowledge-methods/kc-prepare-change.md")
+                    include_str!("../knowledge-methods/kc-prepare-change-dk4.md")
                 }
                 KnowledgeChangePhaseId::KcDomainChecks => {
                     include_str!("../knowledge-methods/kc-domain-checks.md")
@@ -344,7 +372,7 @@ fn phase_method(id: KnowledgeChangePhaseId) -> Option<PipelineInstructionSnapsho
                     include_str!("../knowledge-methods/kc-impact-plan.md")
                 }
                 KnowledgeChangePhaseId::KcReviewReconcile => {
-                    include_str!("../knowledge-methods/kc-review-reconcile.md")
+                    include_str!("../knowledge-methods/kc-review-reconcile-dk4.md")
                 }
                 KnowledgeChangePhaseId::KcResultHandoff => {
                     include_str!("../knowledge-methods/kc-result-handoff.md")

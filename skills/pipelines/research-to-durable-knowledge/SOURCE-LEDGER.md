@@ -65,3 +65,32 @@ Phase 20 records `promotion_approved`, `promotion_not_required`, or `promotion_b
 Phase 22 supports every exact completion-contract terminal token. `promoted_to_durable_kb` and `promoted_with_restrictions` are permitted only with non-`none` external promotion evidence from that downstream owner; the Research Slice itself must still report `durable_write_performed=false`. Otherwise it reports synthesized/proposed/blocked/rejected/handoff/escalated truth without upgrading the proposal boundary. All supported, gapped, blocked, rejected, source-only, restricted and deferred claims remain visible, with zero unowned follow-up.
 
 Backend run/attempt/revision, exact artifact binding, skill-read receipts, typed constraints, transition and stale-on-revisit state replace only duplicate lifecycle carriers. Source observations, citations, authority, freshness, claim semantics, actual source access, subagent work and external promotion proof remain caller-reported evidence obligations. No current external research, subagent dispatch, durable publication or installation is performed by these assets.
+
+## Superpowers v6.3.0 native adaptation
+
+- Update class: selected upstream bodies only; native phase order and output contracts are unchanged.
+- Previous active snapshot: `crates/host/pipeline-definitions/research-to-durable-knowledge-0.2.0-native.dk2.1.json`, version `0.2.0-native.dk2.1`, semantic digest `dcbfce20667d3c72157278df5948829fb212a7a8fca24dde8cdec4fca07467e3`, physical SHA-256 `8df9d96c5e973bfc234e0e3de8a87e9dc62804eb69161d35d69b674d5bbb3b06`.
+- Current snapshot: `crates/host/pipeline-definitions/research-to-durable-knowledge.json`, version `0.4.0-native.skills.1`, semantic digest `374987b7516fe57c4de4282ace1a0fd80712e0bcac664ee08057ab340fc0b8ce`, physical SHA-256 `c454f774641337cb790ef9fa8c52e0908909865b3ece7259e5c2b947f0190317`.
+- Exact selected source package: `skills/references/superpowers-v6.3.0-b36e0829`, upstream commit `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`, tag `v6.3.0`, package manifest SHA-256 `2973ac33ed683d9c50e15fab14a5045f768b6b765d29849237f95371d99b5dde`, MIT license SHA-256 `a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400`.
+
+### Selected body replacements
+
+| Previous ID | Previous version | Previous digest | Current ID | Current version | Current digest | Current source |
+|---|---:|---|---|---:|---|---|
+| `superpowers:writing-plans` | `5.0.7` | `90056bad3d5f196fa7c9fec0ffe592e6d9c86bc983e406642a51d1a4198b7024` | `superpowers:writing-plans` | `6.3.0` | `48508f44bbfd7d24b029fbf3a314f3cd14c9615599059366e922f47b8dc08cf2` | `skills/references/superpowers-v6.3.0-b36e0829/skills/writing-plans/SKILL.md` |
+
+### Native adapters
+
+| Phase | Resource ID | Version | Digest | Source |
+|---|---|---:|---|---|
+| `slice-research-evidence-plan-builder` | `tect:superpowers-v6-native-boundary` | `0.4.0-native.skills.1` | `13012dd0ec17ae94125d0cd3ce78baca13302a728a066ba3bd0e5d4fc73c302f` | `skills/pipelines/shared/superpowers-v6-native-boundary.md` |
+| `slice-research-evidence-plan-builder` | `tect:superpowers-v6-planning-and-execution` | `0.4.0-native.skills.1` | `260e0fea1363583d2b201f1022f25a5b870749972a0cfa7cedfefcd1bf8d2ad0` | `skills/pipelines/shared/superpowers-v6-planning-and-execution.md` |
+
+### Deliberately retained Superpowers bodies
+
+| ID | Version | Digest | Preserved source |
+|---|---:|---|---|
+| `superpowers:dispatching-parallel-agents` | `5.0.7` | `76806091c7f923ba2596546b19cccd98a08e57a68745df77c3a7b998fe838e2b` | `skills/references/superpowers/dispatching-parallel-agents/SKILL.md` |
+| `superpowers:verification-before-completion` | `5.0.7` | `ea52d15aabaf72bc6b558efe2c126f161b53961090ddcd712000273bfe8c7b6c` | `skills/references/superpowers/verification-before-completion/SKILL.md` |
+
+The archived snapshot remains the exact carrier for stored runs created against the previous definition version.

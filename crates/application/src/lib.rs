@@ -1,9 +1,13 @@
 //! Application policy and ports. Adapters depend on this crate, never the reverse.
+mod planning_knowledge_ports;
 mod ports;
 mod programs;
 mod service;
 
-pub use ports::{ProgramOutputGuard, SourceInspector, Store, TransactionMode, UnitOfWork};
+pub use planning_knowledge_ports::PlanningKnowledgeStore;
+pub use ports::{
+    ProgramGuidance, ProgramOutputGuard, SourceInspector, Store, TransactionMode, UnitOfWork,
+};
 pub use service::WorkspaceService;
 
 mod sources;
@@ -17,7 +21,9 @@ pub use scope_candidate_ports::{CandidateGuidance, CandidateOutputGuard, ScopeCa
 
 mod native_planning_ports;
 mod scope_candidates;
-pub use native_planning_ports::{NativePlanningGuidance, NativePlanningStore};
+pub use native_planning_ports::{
+    NativePlanningGuidance, NativePlanningOutputGuard, NativePlanningStore,
+};
 mod native_planning;
 mod pipeline_execution;
 mod pipeline_execution_ports;
@@ -30,6 +36,9 @@ mod knowledge_lifecycle_ports;
 pub use knowledge_lifecycle_ports::{
     KnowledgeLifecycleDefinitionProvider, KnowledgeLifecycleStore, KnowledgeOutputGuard,
 };
+mod knowledge_maintenance;
+mod knowledge_maintenance_ports;
+pub use knowledge_maintenance_ports::{KnowledgeMaintenanceOutputGuard, KnowledgeMaintenanceStore};
 mod knowledge_search;
 mod knowledge_search_ports;
 pub use knowledge_search_ports::{

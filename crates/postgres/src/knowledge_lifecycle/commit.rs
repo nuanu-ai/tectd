@@ -262,6 +262,8 @@ pub(crate) async fn commit(
     sqlx::query("UPDATE knowledge_change_runs SET publisher_receipt=$4 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
         .bind(tenant).bind(workspace).bind(request.run_id).bind(json(&receipt)?)
         .execute(&mut **tx).await.map_err(storage_error)?;
+    crate::knowledge_maintenance::publication_applied(tx, tenant, workspace, principal, &receipt)
+        .await?;
     let result = CommitKnowledgeChangeOutcome::Applied(receipt);
     save_receipt(
         tx,

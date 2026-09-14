@@ -198,6 +198,8 @@ pub struct SaveCandidateDraft {
     pub input_cursor: i64,
     pub request_id: Uuid,
     pub draft: ScopeCandidateDraft,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_knowledge: Option<crate::PlanningManifestGuard>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -283,6 +285,8 @@ pub struct ReviewCandidateSet {
     pub input_cursor: i64,
     pub request_id: Uuid,
     pub review: CandidateReviewDraft,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_knowledge: Option<crate::PlanningManifestGuard>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

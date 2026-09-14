@@ -13,12 +13,20 @@ fn iri(value: &str) -> bool {
 }
 
 fn valid_fragment(value: &KnowledgeLifecycleFragmentQuery) -> bool {
-    (1..=262_144).contains(&value.limit)
-        && value
-            .snapshot_digest
-            .as_deref()
-            .is_none_or(|digest| text(digest, 256))
-        && (value.offset == 0 || value.snapshot_digest.is_some())
+    value.validate().is_ok()
+}
+
+impl KnowledgeLifecycleFragmentQuery {
+    pub fn validate(&self) -> Result<()> {
+        ((1..=262_144).contains(&self.limit)
+            && self
+                .snapshot_digest
+                .as_deref()
+                .is_none_or(|digest| text(digest, 256))
+            && (self.offset == 0 || self.snapshot_digest.is_some()))
+        .then_some(())
+        .ok_or(Error::InvalidArguments)
+    }
 }
 
 impl KnowledgeRevalidationDraft {

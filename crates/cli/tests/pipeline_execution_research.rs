@@ -4,7 +4,7 @@ mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;
 
-use pipeline_support::{completion, successful_route};
+use pipeline_support::{completion, refresh_knowledge, successful_route};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -100,7 +100,7 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
     assert_eq!(context["run"]["delivery_mode"], "whole");
     assert_eq!(
         context["run"]["definition_digest"],
-        "dcbfce20667d3c72157278df5948829fb212a7a8fca24dde8cdec4fca07467e3"
+        "374987b7516fe57c4de4282ace1a0fd80712e0bcac664ee08057ab340fc0b8ce"
     );
     assert_eq!(
         context["definition"]["phases"].as_array().unwrap().len(),
@@ -131,6 +131,7 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
     .await["context"]
         .clone();
     assert_eq!(context["run"]["delivery_mode"], "phasewise");
+    context = refresh_knowledge(&mut client, &context).await;
 
     while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 8 {
         context = advance(&mut client, context).await;
@@ -195,6 +196,7 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
     )
     .await["context"]
         .clone();
+    context = refresh_knowledge(&mut client, &context).await;
     context = route(
         &mut client,
         "command",

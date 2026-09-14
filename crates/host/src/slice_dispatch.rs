@@ -5,7 +5,7 @@ use crate::slice_tools::SliceInvocation;
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tect_application::WorkspaceService;
+use tect_application::{NativePlanningOutputGuard, WorkspaceService};
 use tect_domain::{
     OpenScopeOutcome, OpenSliceOutcome, RecordSliceResultOutcome, RequestContext, Result,
     SliceCandidateContext, SliceCandidateContextQuery, SliceCandidateContextView,
@@ -44,9 +44,10 @@ pub(crate) async fn execute(
     context: &RequestContext,
     invocation: SliceInvocation,
     service: &WorkspaceService,
-    _capacity: usize,
+    capacity: usize,
 ) -> Result<Value> {
     let guidance = StaticSliceGuidance;
+    let guard = NativePlanningEncoding { capacity };
     match invocation {
         SliceInvocation::ScopeContext { scope_id } => {
             output(service.scope_context(context, scope_id).await?, vec![])
@@ -59,12 +60,12 @@ pub(crate) async fn execute(
             let value = service
                 .slice_candidate_context(context, &query, &guidance)
                 .await?;
-            candidate_page(value, &query)
+            candidate_page(value, &query, capacity)
         }
         SliceInvocation::OpenScope(request) => {
             let source_guidance = StaticCandidateGuidance;
             let value = service
-                .scope_open(context, &request, &source_guidance, &guidance)
+                .scope_open(context, &request, &source_guidance, &guidance, &guard)
                 .await?;
             let context = match &value {
                 OpenScopeOutcome::Created(context) | OpenScopeOutcome::Replay(context) => {
@@ -75,12 +76,12 @@ pub(crate) async fn execute(
         }
         SliceInvocation::SaveDraft(request) => candidate_context(
             service
-                .save_slice_candidate_draft(context, &request, &guidance)
+                .save_slice_candidate_draft(context, &request, &guidance, &guard)
                 .await?,
         ),
         SliceInvocation::Review(request) => candidate_context(
             service
-                .review_slice_candidate_set(context, &request, &guidance)
+                .review_slice_candidate_set(context, &request, &guidance, &guard)
                 .await?,
         ),
         SliceInvocation::RecordInput(request) => candidate_context(
@@ -90,7 +91,7 @@ pub(crate) async fn execute(
         ),
         SliceInvocation::Refresh(request) => candidate_context(
             service
-                .refresh_slice_candidate_set(context, &request, &guidance)
+                .refresh_slice_candidate_set(context, &request, &guidance, &guard)
                 .await?,
         ),
         SliceInvocation::OpenSlice(request) => {
@@ -153,6 +154,7 @@ fn candidate_context(value: SliceCandidateContext) -> Result<Value> {
 fn candidate_page(
     context: SliceCandidateContext,
     query: &SliceCandidateContextQuery,
+    capacity: usize,
 ) -> Result<Value> {
     let actions = candidate_actions(&context)?;
     let offset = usize::try_from(query.after.unwrap_or(0))
@@ -164,6 +166,7 @@ fn candidate_page(
         "candidate_set":context.candidate_set,
         "snapshot":context.snapshot,
         "stale_reasons":context.stale_reasons,
+        "planning_knowledge":context.planning_knowledge,
     });
     let value = match query.view {
         SliceCandidateContextView::Overview => common,
@@ -179,7 +182,38 @@ fn candidate_page(
         SliceCandidateContextView::Results => page(common, context.results, offset, limit)?,
     };
     let recommended = (!actions.is_empty()).then_some(0);
-    Ok(responses::with_actions(value, actions, recommended))
+    let value = responses::with_actions(value, actions, recommended);
+    ensure_capacity(&value, capacity)?;
+    Ok(value)
+}
+
+pub struct NativePlanningEncoding {
+    pub capacity: usize,
+}
+
+impl NativePlanningOutputGuard for NativePlanningEncoding {
+    fn check_context(&self, value: &SliceCandidateContext) -> Result<()> {
+        ensure_capacity(&candidate_context(value.clone())?, self.capacity)
+    }
+
+    fn check_open_scope(&self, value: &OpenScopeOutcome) -> Result<()> {
+        let planning = match value {
+            OpenScopeOutcome::Created(context) | OpenScopeOutcome::Replay(context) => {
+                &context.planning
+            }
+        };
+        ensure_capacity(&output(value, candidate_actions(planning)?)?, self.capacity)
+    }
+}
+
+fn ensure_capacity(value: &Value, capacity: usize) -> Result<()> {
+    if capacity > crate::frame::MAX_FRAME_BYTES {
+        return Err(tect_domain::Error::InvalidArguments);
+    }
+    if responses::encoded_len(value)? > capacity {
+        return Err(tect_domain::Error::RequestTooLarge);
+    }
+    Ok(())
 }
 
 fn page<T: Serialize>(
@@ -208,14 +242,18 @@ fn page<T: Serialize>(
 fn candidate_actions(context: &SliceCandidateContext) -> Result<Vec<Value>> {
     let mut actions = Vec::new();
     if !context.stale_reasons.is_empty() {
+        let mut params = json!({
+            "scope_id":context.scope.id,
+            "candidate_set_id":context.candidate_set.id,
+            "revision":context.candidate_set.revision,
+            "request_id":request_id(context.candidate_set.id, context.candidate_set.revision, "refresh")
+        });
+        if let Some(manifest) = context.planning_knowledge.as_ref().and_then(|v|v.manifest.as_ref()) {
+            params["task_context"] = json!(manifest.task_context);
+        }
         actions.push(responses::action(
             "refresh_slice_candidate_set",
-            json!({
-                "scope_id":context.scope.id,
-                "candidate_set_id":context.candidate_set.id,
-                "revision":context.candidate_set.revision,
-                "request_id":request_id(context.candidate_set.id, context.candidate_set.revision, "refresh")
-            }),
+            params,
         )?);
     } else if matches!(context.candidate_set.status, SliceCandidateSetStatus::Draft) {
         actions.push(save_action(context, "draft", "Complete schema-valid Slice-candidate graph covering the whole Scope." )?);
@@ -266,14 +304,22 @@ fn candidate_actions(context: &SliceCandidateContext) -> Result<Vec<Value>> {
 }
 
 fn save_action(context: &SliceCandidateContext, kind: &str, format: &str) -> Result<Value> {
+    let mut params = json!({"kind":kind,"scope_id":context.scope.id,
+        "candidate_set_id":context.candidate_set.id,
+        "revision":context.candidate_set.revision,"snapshot_id":context.snapshot.id,
+        "input_cursor":context.candidate_set.latest_input,
+        "request_id":request_id(context.candidate_set.id, context.candidate_set.revision, kind)});
+    if let Some(manifest) = context
+        .planning_knowledge
+        .as_ref()
+        .and_then(|v| v.manifest.as_ref())
+    {
+        params["consumed_knowledge"] = json!({"manifest_id":manifest.id,"digest":manifest.digest,"workspace_generation":manifest.workspace_generation});
+    }
     crate::api::needs_action(
         "needs_input",
         "save_slice_candidate_set",
-        json!({"kind":kind,"scope_id":context.scope.id,
-            "candidate_set_id":context.candidate_set.id,
-            "revision":context.candidate_set.revision,"snapshot_id":context.snapshot.id,
-            "input_cursor":context.candidate_set.latest_input,
-            "request_id":request_id(context.candidate_set.id, context.candidate_set.revision, kind)}),
+        params,
         "input",
         json!({"fields":[{"path":format!("arguments.params.{kind}"),"format":format}]}),
     )

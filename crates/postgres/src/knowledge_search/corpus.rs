@@ -270,6 +270,7 @@ pub(super) async fn load_one(
         tx,
         tenant,
         workspace,
+        principal,
         unit,
         revision,
         value.document.review_due_at.as_deref(),
@@ -307,6 +308,7 @@ async fn effective_review_warning(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     workspace: Uuid,
+    principal: Uuid,
     unit: Uuid,
     revision: i64,
     document_due: Option<&str>,
@@ -326,7 +328,17 @@ async fn effective_review_warning(
     } else {
         document_due.map(String::from)
     };
-    review_warning(tx, due.as_deref()).await
+    let mut warnings = review_warning(tx, due.as_deref()).await?;
+    let status = crate::knowledge_maintenance::current_unit_review_status(
+        tx, tenant, workspace, principal, unit, revision,
+    )
+    .await?;
+    if !status.maintenance_bases.is_empty() {
+        warnings.push("knowledge_needs_review".into());
+    }
+    warnings.sort();
+    warnings.dedup();
+    Ok(warnings)
 }
 
 async fn projection_matches(

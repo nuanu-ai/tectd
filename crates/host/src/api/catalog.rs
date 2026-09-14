@@ -1,41 +1,14 @@
 use crate::tools::object_schema;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::sync::OnceLock;
 use tect_domain::{MAX_SOURCE_PATH_BYTES, MAX_WORKTREES};
 
+pub(crate) use super::catalog_support::RouteSpec;
+use super::catalog_support::{nullable_text, page_limit, text, uuid};
 use super::{
-    candidate_schema, knowledge_lifecycle_schema, knowledge_schema, knowledge_search_schema,
-    slice_schema,
+    candidate_schema, knowledge_lifecycle_schema, knowledge_maintenance_schema, knowledge_schema,
+    knowledge_search_schema, slice_schema,
 };
-
-#[derive(Clone)]
-pub(crate) struct RouteSpec {
-    pub tool: &'static str,
-    pub route: &'static str,
-    pub internal: &'static str,
-    pub summary: &'static str,
-    pub conditions: &'static str,
-    pub effects: &'static str,
-    pub retry: &'static str,
-    pub schema: Value,
-    pub example: Value,
-}
-
-fn uuid() -> Value {
-    json!({"type":"string","format":"uuid"})
-}
-
-fn text() -> Value {
-    json!({"type":"string","minLength":1})
-}
-
-fn nullable_text() -> Value {
-    json!({"type":["string","null"]})
-}
-
-fn page_limit() -> Value {
-    json!({"type":"integer","minimum":1,"maximum":100,"default":25})
-}
 
 macro_rules! route {
     ($tool:expr, $name:expr, $internal:expr, $summary:expr, $conditions:expr,
@@ -166,7 +139,7 @@ fn build_routes() -> Vec<RouteSpec> {
             "Creates one database Program and first immutable input in one transaction.",
             "Repeat only with the same request_id and byte-identical input; changed input conflicts.",
             object_schema(
-                json!({"request_id":uuid(),"input":text()}),
+                json!({"request_id":uuid(),"input":text(),"task_context":super::planning_task_context()}),
                 json!(["request_id", "input"]),
             ),
             json!({"request_id":example_id,"input":"Complete original user narrative"}),
@@ -180,7 +153,7 @@ fn build_routes() -> Vec<RouteSpec> {
             "Atomically updates the Program revision; it does not create Scope or execute work.",
             "On stale or uncertain result, reload program.get and reconcile before retrying.",
             object_schema(
-                json!({"program_id":uuid(),"revision":{"type":"integer","minimum":1},"input_cursor":{"type":"integer","minimum":0},"name":nullable_text(),"intent":nullable_text(),"basis":nullable_text(),"boundaries":nullable_text(),"constraints":nullable_text(),"success":nullable_text(),"working_notes":nullable_text(),"pending_question":nullable_text(),"complete":{"type":"boolean","default":false}}),
+                json!({"program_id":uuid(),"revision":{"type":"integer","minimum":1},"input_cursor":{"type":"integer","minimum":0},"name":nullable_text(),"intent":nullable_text(),"basis":nullable_text(),"boundaries":nullable_text(),"constraints":nullable_text(),"success":nullable_text(),"working_notes":nullable_text(),"pending_question":nullable_text(),"complete":{"type":"boolean","default":false},"consumed_knowledge":super::planning_manifest_guard()}),
                 json!(["program_id", "revision", "input_cursor"]),
             ),
             json!({"program_id":example_id,"revision":1,"input_cursor":1,"name":"Example Program","complete":false}),
@@ -194,10 +167,24 @@ fn build_routes() -> Vec<RouteSpec> {
             "Atomically appends immutable input and advances the Program revision.",
             "Repeat only with the same request_id and byte-identical input.",
             object_schema(
-                json!({"program_id":uuid(),"request_id":uuid(),"input":text()}),
+                json!({"program_id":uuid(),"request_id":uuid(),"input":text(),"task_context":super::planning_task_context()}),
                 json!(["program_id", "request_id", "input"]),
             ),
             json!({"program_id":example_id,"request_id":"00000000-0000-4000-8000-000000000002","input":"Complete original reply"}),
+        ),
+        route!(
+            "command",
+            "program.knowledge.refresh",
+            "refresh_program_knowledge",
+            "Refresh the immutable Program planning-knowledge context.",
+            "Requires the current Program revision and saved input cursor. Omitted task_context preserves the prior normalized context; an explicit object replaces it completely.",
+            "Atomically advances the Program revision and records one immutable manifest and exact replay receipt without adding user input or changing Program fields.",
+            "Repeat with the same request_id and byte-identical parameters; changed parameters conflict.",
+            object_schema(
+                json!({"program_id":uuid(),"revision":{"type":"integer","minimum":1},"input_cursor":{"type":"integer","minimum":0},"request_id":uuid(),"task_context":super::planning_task_context()}),
+                json!(["program_id", "revision", "input_cursor", "request_id"]),
+            ),
+            json!({"program_id":example_id,"revision":1,"input_cursor":0,"request_id":"00000000-0000-4000-8000-000000000003"}),
         ),
         route!(
             "command",
@@ -492,6 +479,7 @@ fn build_routes() -> Vec<RouteSpec> {
     ];
     routes.extend(knowledge_schema::routes(example_id));
     routes.extend(knowledge_lifecycle_schema::routes(example_id));
+    routes.extend(knowledge_maintenance_schema::routes(example_id));
     routes.push(knowledge_search_schema::route());
     routes
 }

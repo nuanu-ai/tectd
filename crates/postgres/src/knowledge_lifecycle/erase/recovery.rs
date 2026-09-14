@@ -1,4 +1,4 @@
-use super::registry::{CopyRelation, register, register_receipt};
+use super::registry::{CopyRelation, register, register_exact, register_receipt};
 use super::*;
 
 const MAX_OWNED_COPIES: i64 = 4096;
@@ -184,12 +184,158 @@ async fn register_legacy(
     Ok(())
 }
 
+async fn register_planning_delivery(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    unit: Uuid,
+) -> Result<()> {
+    let manifests: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT DISTINCT m.id FROM planning_knowledge_manifests m CROSS JOIN LATERAL \
+         pg_catalog.jsonb_array_elements(COALESCE(m.selected,'[]'::jsonb)) item \
+         WHERE m.tenant_id=$1 AND m.workspace_id=$2 AND NOT m.payload_erased \
+           AND (item->>'unit_id')::uuid=$3 ORDER BY m.id",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(unit)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    for manifest in manifests {
+        crate::planning_knowledge::register_manifest_lineage(tx, tenant, workspace, manifest)
+            .await?;
+        let receipts: Vec<(Uuid, Uuid, i64)> = sqlx::query_as(
+            "SELECT program_id,request_id,result_revision FROM program_knowledge_refresh_receipts \
+             WHERE tenant_id=$1 AND workspace_id=$2 AND manifest_id=$3 AND NOT payload_erased",
+        )
+        .bind(tenant)
+        .bind(workspace)
+        .bind(manifest)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(storage_error)?;
+        for (program, request, revision) in receipts {
+            register_exact(
+                tx,
+                tenant,
+                workspace,
+                unit,
+                "planning_refresh_receipt",
+                CopyRelation::ProgramRefreshReceipt,
+                program,
+                revision,
+                Some("refresh"),
+                Some(request),
+            )
+            .await?;
+        }
+        let consumptions: Vec<(Uuid, String, Uuid, i64)> = sqlx::query_as(
+            "SELECT id,relation_name,row_id,row_revision FROM planning_knowledge_consumptions \
+             WHERE tenant_id=$1 AND workspace_id=$2 AND manifest_id=$3 AND NOT redacted",
+        )
+        .bind(tenant)
+        .bind(workspace)
+        .bind(manifest)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(storage_error)?;
+        for (id, relation, row, revision) in consumptions {
+            register(
+                tx,
+                tenant,
+                workspace,
+                unit,
+                "planning_consumption",
+                CopyRelation::PlanningKnowledgeConsumption,
+                id,
+                revision,
+            )
+            .await?;
+            let derived = match relation.as_str() {
+                "programs" => CopyRelation::Program,
+                "scope_candidate_drafts" => CopyRelation::ScopeCandidateDraft,
+                "scope_candidate_reviews" => CopyRelation::ScopeCandidateReview,
+                "native_scopes" => CopyRelation::NativeScope,
+                "slice_candidate_drafts" => CopyRelation::CandidateDraft,
+                "slice_candidate_reviews" => CopyRelation::CandidateReview,
+                _ => return Err(Error::InternalInvariant),
+            };
+            register(
+                tx,
+                tenant,
+                workspace,
+                unit,
+                "planning_derived",
+                derived,
+                row,
+                revision,
+            )
+            .await?;
+            let (copy_relation, operation, requests) = match relation.as_str() {
+                "scope_candidate_drafts" | "scope_candidate_reviews" => {
+                    let operation = if relation == "scope_candidate_drafts" {
+                        "save_draft"
+                    } else {
+                        "save_review"
+                    };
+                    let requests = sqlx::query_scalar(
+                        "SELECT request_id FROM scope_candidate_receipts WHERE tenant_id=$1 AND workspace_id=$2 \
+                         AND candidate_set_id=$3 AND operation=$4 AND result_revision=$5 \
+                         AND result_payload IS NOT NULL AND NOT payload_erased ORDER BY request_id",
+                    ).bind(tenant).bind(workspace).bind(row).bind(operation).bind(revision)
+                        .fetch_all(&mut **tx).await.map_err(storage_error)?;
+                    (
+                        Some(CopyRelation::ScopeCandidateReceipt),
+                        operation,
+                        requests,
+                    )
+                }
+                "slice_candidate_drafts" | "slice_candidate_reviews" => {
+                    let operation = if relation == "slice_candidate_drafts" {
+                        "save_slice_draft"
+                    } else {
+                        "review_slice_set"
+                    };
+                    let requests = sqlx::query_scalar(
+                        "SELECT request_id FROM native_planning_receipts WHERE tenant_id=$1 AND workspace_id=$2 \
+                         AND entity_id=$3 AND operation=$4 AND result_payload IS NOT NULL \
+                         AND NOT payload_erased ORDER BY request_id",
+                    ).bind(tenant).bind(workspace).bind(row).bind(operation)
+                        .fetch_all(&mut **tx).await.map_err(storage_error)?;
+                    (Some(CopyRelation::PlanningReceipt), operation, requests)
+                }
+                _ => (None, "", Vec::new()),
+            };
+            if let Some(copy_relation) = copy_relation {
+                for request in requests {
+                    register_exact(
+                        tx,
+                        tenant,
+                        workspace,
+                        unit,
+                        "planning_derived_receipt",
+                        copy_relation,
+                        row,
+                        revision,
+                        Some(operation),
+                        Some(request),
+                    )
+                    .await?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) async fn reconcile_unit_direct(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     workspace: Uuid,
     unit: Uuid,
 ) -> Result<()> {
+    register_planning_delivery(tx, tenant, workspace, unit).await?;
     let target:Vec<Uuid>=sqlx::query_scalar("SELECT DISTINCT change_id FROM knowledge_change_operations WHERE tenant_id=$1 AND workspace_id=$2 AND unit_id=$3")
         .bind(tenant).bind(workspace).bind(unit).fetch_all(&mut **tx).await.map_err(storage_error)?;
     for change in target {

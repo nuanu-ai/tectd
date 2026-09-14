@@ -7,6 +7,8 @@ use tect_domain::{
     ReviewCandidateSet, SaveCandidateDraft, StoredCandidateContext, validate_program_input,
 };
 
+mod write;
+
 impl WorkspaceService {
     pub async fn candidate_fragment(
         &self,
@@ -76,7 +78,31 @@ impl WorkspaceService {
         let (mut tx, workspace, session) = self
             .candidate_transaction(context, TransactionMode::ReadWrite)
             .await?;
-        if let Some(outcome) = tx.candidate_begin_replay(workspace.id, request).await? {
+        request.task_context.validate()?;
+        if let Some(mut outcome) = tx.candidate_begin_replay(workspace.id, request).await? {
+            let candidate = candidate_outcome_context_mut(&mut outcome);
+            let principal = tx.session_principal(session.id).await?;
+            let manifest = tx
+                .capture_planning_knowledge(
+                    workspace.id,
+                    principal,
+                    tect_domain::PlanningStage::Scope,
+                    candidate.candidate_set.id,
+                    candidate.candidate_set.revision,
+                    candidate.candidate_set.latest_input,
+                    request.request_id,
+                    Some(candidate.candidate_set.program_id),
+                    None,
+                    Some(&request.task_context),
+                    &tect_domain::PlanningMethodSnapshot::from_candidate(
+                        &candidate.snapshot.method,
+                    ),
+                )
+                .await?;
+            candidate.planning_knowledge = Some(
+                tx.planning_manifest_status(workspace.id, principal, manifest)
+                    .await?,
+            );
             guard.check_begin(&outcome)?;
             tx.commit().await?;
             return Ok(outcome);
@@ -97,7 +123,8 @@ impl WorkspaceService {
             .await?;
         let material = guidance.snapshot(program, selected)?;
         guard.check_material(&material)?;
-        let outcome = tx
+        let planning_method = tect_domain::PlanningMethodSnapshot::from_candidate(&material.method);
+        let mut outcome = tx
             .ensure_candidate_set(
                 workspace.id,
                 session.id,
@@ -106,6 +133,27 @@ impl WorkspaceService {
                 &material,
             )
             .await?;
+        let candidate = candidate_outcome_context_mut(&mut outcome);
+        let principal = tx.session_principal(session.id).await?;
+        let manifest = tx
+            .capture_planning_knowledge(
+                workspace.id,
+                principal,
+                tect_domain::PlanningStage::Scope,
+                candidate.candidate_set.id,
+                candidate.candidate_set.revision,
+                candidate.candidate_set.latest_input,
+                request.request_id,
+                Some(candidate.candidate_set.program_id),
+                None,
+                Some(&request.task_context),
+                &planning_method,
+            )
+            .await?;
+        candidate.planning_knowledge = Some(
+            tx.planning_manifest_status(workspace.id, principal, manifest)
+                .await?,
+        );
         guard.check_begin(&outcome)?;
         tx.commit().await?;
         Ok(outcome)
@@ -139,6 +187,16 @@ impl WorkspaceService {
         let current = guidance.snapshot(current_program, selected)?;
         stored.context.current_program_revision = current.program.revision;
         stored.context.stale_reasons = stale_reasons(&stored.context, &current);
+        let principal = tx.session_principal(session.id).await?;
+        stored.context.planning_knowledge = Some(
+            tx.planning_knowledge_status(
+                workspace.id,
+                principal,
+                tect_domain::PlanningStage::Scope,
+                stored.context.candidate_set.id,
+            )
+            .await?,
+        );
         let page = crate::scope_candidate_pages::context_page(
             &mut *tx,
             workspace.id,
@@ -151,84 +209,6 @@ impl WorkspaceService {
         .await?;
         tx.commit().await?;
         Ok(page)
-    }
-
-    pub async fn save_candidate_draft(
-        &self,
-        context: &tect_domain::RequestContext,
-        request: &SaveCandidateDraft,
-        guidance: &dyn CandidateGuidance,
-        guard: &dyn CandidateOutputGuard,
-    ) -> Result<StoredCandidateContext> {
-        let (mut tx, workspace, session) = self
-            .candidate_transaction(context, TransactionMode::ReadWrite)
-            .await?;
-        let receipt = tect_domain::CandidateReceiptRequest::SaveDraft(request.clone());
-        if let Some(stored) = tx.candidate_receipt(workspace.id, &receipt).await? {
-            guard.check_stored(&stored)?;
-            tx.commit().await?;
-            return Ok(stored);
-        }
-        request.draft.validate()?;
-        validate_write(
-            request.candidate_set_id,
-            request.snapshot_id,
-            request.revision,
-            request.input_cursor,
-            request.request_id,
-        )?;
-        ensure_fresh(
-            &mut *tx,
-            workspace.id,
-            session.host_id,
-            session.id,
-            request.candidate_set_id,
-            guidance,
-        )
-        .await?;
-        let stored = tx.save_candidate_draft(workspace.id, request).await?;
-        guard.check_draft(stored.draft.as_ref().ok_or(Error::InternalInvariant)?)?;
-        guard.check_stored(&stored)?;
-        tx.commit().await?;
-        Ok(stored)
-    }
-
-    pub async fn review_candidate_set(
-        &self,
-        context: &tect_domain::RequestContext,
-        request: &ReviewCandidateSet,
-        guidance: &dyn CandidateGuidance,
-        guard: &dyn CandidateOutputGuard,
-    ) -> Result<StoredCandidateContext> {
-        let (mut tx, workspace, session) = self
-            .candidate_transaction(context, TransactionMode::ReadWrite)
-            .await?;
-        let receipt = tect_domain::CandidateReceiptRequest::Review(request.clone());
-        if let Some(stored) = tx.candidate_receipt(workspace.id, &receipt).await? {
-            guard.check_stored(&stored)?;
-            tx.commit().await?;
-            return Ok(stored);
-        }
-        validate_write(
-            request.candidate_set_id,
-            request.snapshot_id,
-            request.revision,
-            request.input_cursor,
-            request.request_id,
-        )?;
-        ensure_fresh(
-            &mut *tx,
-            workspace.id,
-            session.host_id,
-            session.id,
-            request.candidate_set_id,
-            guidance,
-        )
-        .await?;
-        let stored = tx.save_candidate_review(workspace.id, request).await?;
-        guard.check_stored(&stored)?;
-        tx.commit().await?;
-        Ok(stored)
     }
 
     pub async fn record_candidate_input(
@@ -276,7 +256,32 @@ impl WorkspaceService {
             .candidate_transaction(context, TransactionMode::ReadWrite)
             .await?;
         let receipt = tect_domain::CandidateReceiptRequest::Refresh(request.clone());
-        if let Some(stored) = tx.candidate_receipt(workspace.id, &receipt).await? {
+        if let Some(task_context) = &request.task_context {
+            task_context.validate()?;
+        }
+        if let Some(mut stored) = tx.candidate_receipt(workspace.id, &receipt).await? {
+            let principal = tx.session_principal(session.id).await?;
+            let manifest = tx
+                .capture_planning_knowledge(
+                    workspace.id,
+                    principal,
+                    tect_domain::PlanningStage::Scope,
+                    stored.context.candidate_set.id,
+                    stored.context.candidate_set.revision,
+                    stored.context.candidate_set.latest_input,
+                    request.request_id,
+                    Some(stored.context.candidate_set.program_id),
+                    None,
+                    request.task_context.as_ref(),
+                    &tect_domain::PlanningMethodSnapshot::from_candidate(
+                        &stored.context.snapshot.method,
+                    ),
+                )
+                .await?;
+            stored.context.planning_knowledge = Some(
+                tx.planning_manifest_status(workspace.id, principal, manifest)
+                    .await?,
+            );
             guard.check_stored(&stored)?;
             tx.commit().await?;
             return Ok(stored);
@@ -302,14 +307,44 @@ impl WorkspaceService {
         let selected = tx
             .selected_worktrees(workspace.id, session.host_id, session.id)
             .await?;
+        let program_id = stored.context.candidate_set.program_id;
         let material = guidance.snapshot(program, selected)?;
+        let planning_method = tect_domain::PlanningMethodSnapshot::from_candidate(&material.method);
         guard.check_material(&material)?;
-        let stored = tx
+        let mut stored = tx
             .refresh_candidate_set(workspace.id, request, &material)
             .await?;
+        let principal = tx.session_principal(session.id).await?;
+        let manifest = tx
+            .capture_planning_knowledge(
+                workspace.id,
+                principal,
+                tect_domain::PlanningStage::Scope,
+                stored.context.candidate_set.id,
+                stored.context.candidate_set.revision,
+                stored.context.candidate_set.latest_input,
+                request.request_id,
+                Some(program_id),
+                None,
+                request.task_context.as_ref(),
+                &planning_method,
+            )
+            .await?;
+        stored.context.planning_knowledge = Some(
+            tx.planning_manifest_status(workspace.id, principal, manifest)
+                .await?,
+        );
         guard.check_stored(&stored)?;
         tx.commit().await?;
         Ok(stored)
+    }
+}
+
+fn candidate_outcome_context_mut(outcome: &mut BeginCandidateSetOutcome) -> &mut CandidateContext {
+    match outcome {
+        BeginCandidateSetOutcome::Created(value)
+        | BeginCandidateSetOutcome::Replay(value)
+        | BeginCandidateSetOutcome::Existing(value) => value,
     }
 }
 

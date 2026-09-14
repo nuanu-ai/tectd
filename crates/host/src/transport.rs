@@ -239,6 +239,12 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
             Invocation::KnowledgeSearch(query) => {
                 crate::knowledge_search_dispatch::execute(context, query, service, capacity).await
             }
+            Invocation::KnowledgeMaintenance(invocation) => {
+                crate::knowledge_maintenance_dispatch::execute(
+                    context, invocation, service, capacity,
+                )
+                .await
+            }
             Invocation::Help(help_request) => {
                 service.authenticate_host(&request.context).await?;
                 Ok(responses::with_actions(
@@ -318,9 +324,21 @@ async fn execute_program(
     capacity: usize,
 ) -> Result<Value> {
     let guard = ProgramEncoding { capacity };
+    let guidance = program_output::StaticProgramGuidance;
     match invocation {
-        ProgramInvocation::Begin { request_id, input } => service
-            .begin_program(context, request_id, &input, &guard)
+        ProgramInvocation::Begin {
+            request_id,
+            input,
+            task_context,
+        } => service
+            .begin_program(
+                context,
+                request_id,
+                &input,
+                &task_context,
+                &guidance,
+                &guard,
+            )
             .await
             .and_then(program_output::program),
         ProgramInvocation::Get {
@@ -328,19 +346,32 @@ async fn execute_program(
             after_input,
             limit,
         } => service
-            .get_program(context, program_id, after_input, limit)
+            .get_program(context, program_id, after_input, limit, &guidance)
             .await
             .and_then(|page| program_output::page(page, capacity)),
         ProgramInvocation::Save(changes) => service
-            .save_program(context, &changes, &guard)
+            .save_program(context, &changes, &guidance, &guard)
             .await
             .and_then(program_output::program),
         ProgramInvocation::Record {
             program_id,
             request_id,
             input,
+            task_context,
         } => service
-            .record_program_input(context, program_id, request_id, &input, &guard)
+            .record_program_input(
+                context,
+                program_id,
+                request_id,
+                &input,
+                task_context.as_ref(),
+                &guidance,
+                &guard,
+            )
+            .await
+            .and_then(program_output::program),
+        ProgramInvocation::Refresh(request) => service
+            .refresh_program_knowledge(context, &request, &guidance, &guard)
             .await
             .and_then(program_output::program),
         ProgramInvocation::List { after, limit } => service
@@ -421,72 +452,4 @@ fn validate_socket(path: &Path) -> Result<SocketIdentity> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde::Deserialize;
-    use serde_json::json;
-    use tect_domain::HostAuth;
-    use uuid::Uuid;
-
-    fn context() -> RequestContext {
-        RequestContext {
-            auth: HostAuth {
-                host_id: Uuid::new_v4(),
-                credential: "0".repeat(64),
-            },
-            native_session_id: Uuid::new_v4().to_string(),
-            workspace_key: "wire-version-test".into(),
-        }
-    }
-
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct LegacyWireRequest {
-        #[allow(dead_code)]
-        context: RequestContext,
-        #[allow(dead_code)]
-        tool_name: String,
-        #[allow(dead_code)]
-        arguments: Value,
-        #[allow(dead_code)]
-        output_capacity: usize,
-    }
-
-    #[test]
-    fn new_daemon_rejects_old_or_wrong_wire_before_operation_decode() {
-        let legacy = json!({
-            "context":context(),"tool_name":"open_workspace","arguments":{},
-            "output_capacity":MAX_FRAME_BYTES
-        });
-        let request: WireRequest = serde_json::from_value(legacy).unwrap();
-        assert_eq!(
-            validate_wire_version(&request),
-            Err(Error::InvalidConfiguration)
-        );
-
-        let wrong = WireRequest {
-            api_version: Some(crate::api::WIRE_API_VERSION + 1),
-            context: context(),
-            tool_name: "open_workspace".into(),
-            arguments: json!({}),
-            output_capacity: MAX_FRAME_BYTES,
-        };
-        assert_eq!(
-            validate_wire_version(&wrong),
-            Err(Error::InvalidConfiguration)
-        );
-    }
-
-    #[test]
-    fn old_daemon_shape_rejects_new_bridge_request_before_operation_decode() {
-        let current = WireRequest {
-            api_version: Some(crate::api::WIRE_API_VERSION),
-            context: context(),
-            tool_name: "open_workspace".into(),
-            arguments: json!({}),
-            output_capacity: MAX_FRAME_BYTES,
-        };
-        let encoded = serde_json::to_value(current).unwrap();
-        assert!(serde_json::from_value::<LegacyWireRequest>(encoded).is_err());
-    }
-}
+mod tests;

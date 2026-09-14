@@ -19,6 +19,16 @@ Start a record when the user is opening a new Program. Resume an existing record
 
 A free-form narrative is normal and sufficient input. Reuse the user's current and previously persisted context. Do not turn opening a Program into a fixed questionnaire, require one human answer per step, or ask the user to repeat information already available.
 
+## Use strategic durable knowledge
+
+Read the backend-supplied Program knowledge manifest and its declared needs before shaping the PRD. It contains reviewed Program-level briefs from applicable published knowledge, with exact revision references, conditions, exceptions and unresolved needs. A saved snapshot tells you what was issued; its digest does not prove that you applied it correctly. A read-only reload reports changes but does not refresh the snapshot.
+
+At this level use business purpose, strategic constraints, accepted high-level decisions and criteria for choosing a direction. Do not copy library versions, commands, infrastructure inventories or detailed implementation plans into Program fields simply because the underlying unit contains them. When a technical detail changes the strategic decision, retain the reviewed strategic consequence and its necessary conditions; refer to the precise underlying resource rather than importing its whole body.
+
+Supply only known task subjects through the advertised typed context. Unknown targets/environments/actions stay unknown; do not declare an empty set or invent IDs to make a required selector disappear. Resolve a meaningful `needs_context` through the supplied input or refresh action. An empty knowledge base permits bootstrap; it is not a reason to manufacture company policies.
+
+Use the exact consumed-manifest guard supplied for saving. If its required knowledge changed, refresh through the backend command, reconsider affected PRD concerns, preserve user inputs and retry with the new guard. Knowledge does not silently override the user's intent or authorize a Program revision: state a material contradiction and obtain the missing decision when necessary. Source references and the current PRD remain distinct records.
+
 Structure the narrative into exactly these PRD concerns:
 
 - `name`: a concise identity for the Program.

@@ -175,6 +175,7 @@ fn reject_optional_nulls(value: &Value) -> Result<()> {
         "revision",
         "change_rationale",
         "draft_revision",
+        "task_context",
     ];
     match value {
         Value::Object(object) => {
@@ -246,5 +247,26 @@ mod tests {
             parse("save_candidate_set", review).err(),
             Some(Error::InvalidArguments)
         );
+    }
+
+    #[test]
+    fn save_draft_accepts_a_planning_manifest_guard() {
+        let id = Uuid::new_v4();
+        let value = json!({
+            "kind":"draft","candidate_set_id":id,"revision":1,"snapshot_id":Uuid::new_v4(),
+            "input_cursor":1,"request_id":Uuid::new_v4(),
+            "consumed_knowledge":{"manifest_id":Uuid::new_v4(),"digest":"digest","workspace_generation":1},
+            "draft":{"boundary":"finite","goals":[{"identity":{"local":"goal"},"text":"goal",
+              "source_ref_id":Uuid::new_v4(),"resolution":{"kind":"candidate","reference":{"local":"scope"}}}],
+              "evidence":[],"candidates":[{"identity":{"local":"scope"},"title":"scope","outcome":"outcome",
+              "trigger":"trigger","delivered_behavior":"behavior","proof":"proof","coverage_goals":[{"local":"goal"}]}],
+              "blockers":[],"protected_changes":[]}
+        });
+        assert!(matches!(
+            parse("save_candidate_set", value),
+            Ok(ScopeCandidateInvocation::SaveDraft(request))
+                if request.candidate_set_id == id && request.consumed_knowledge.is_some()
+                    && request.draft.validate().is_ok()
+        ));
     }
 }

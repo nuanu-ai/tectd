@@ -57,3 +57,35 @@ The V1 external-skill registry recorded primary paths under `skills/references/s
 ## Definition digest rule
 
 The top-level definition digest is lowercase SHA256 of the `serde_json` serialization of `PipelineDefinitionSnapshot` after setting only its top-level `digest` field to the empty string. Instruction and skill digests are lowercase SHA256 of their exact body bytes.
+
+## Superpowers v6.3.0 native adaptation
+
+- Update class: selected upstream bodies only; native phase order and output contracts are unchanged.
+- Previous active snapshot: `crates/host/pipeline-definitions/lightweight-tdd-0.1.0-native.1.json`, version `0.1.0-native.1`, semantic digest `5a5152233000b741f6364666a539917395a72cfa8e592271a96216ec2e69c40a`, physical SHA-256 `a844609332cfd35943cf77599b1140eba5a4102a8e15afc57136dd33c350bb1c`.
+- Current snapshot: `crates/host/pipeline-definitions/lightweight-tdd.json`, version `0.4.0-native.skills.1`, semantic digest `b80b3472ebf4acc38996fa1946a2fe76e1b17fbcc39c6594f87a00e63a437768`, physical SHA-256 `66983d90c2fc8f17f91cec02a29dcd3bc382c2967f683a7392dc1378561fb921`.
+- Exact selected source package: `skills/references/superpowers-v6.3.0-b36e0829`, upstream commit `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`, tag `v6.3.0`, package manifest SHA-256 `2973ac33ed683d9c50e15fab14a5045f768b6b765d29849237f95371d99b5dde`, MIT license SHA-256 `a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400`.
+
+### Selected body replacements
+
+| Previous ID | Previous version | Previous digest | Current ID | Current version | Current digest | Current source |
+|---|---:|---|---|---:|---|---|
+| `superpowers:test-driven-development` | `5.0.7` | `7dee67b4af6bdccc7a914ca34533184d64592d0f5b23aeae631538168db14994` | `superpowers:test-driven-development` | `6.3.0` | `bf1b8216e523851a411e91d429a7c1c2a173e79d88957bc78e348218d50edd54` | `skills/references/superpowers-v6.3.0-b36e0829/skills/test-driven-development/SKILL.md` |
+| `superpowers:test-driven-development/testing-anti-patterns` | `5.0.7` | `bde453bc258f06543987477c837939afaa774ea2acbd9f308d702fc452bc4283` | `superpowers:test-driven-development/writing-good-tests` | `6.3.0` | `51471c853306ff92ca8bb41dcaea05f31c0e46b03651f8f3c99754b7172f4ae1` | `skills/references/superpowers-v6.3.0-b36e0829/skills/test-driven-development/writing-good-tests.md` |
+| `superpowers:using-git-worktrees` | `5.0.7` | `dcd1a83a2488bd557ceb7f14f2b6384ec209f551d18752dd9ceb70b9089dfb3b` | `superpowers:using-git-worktrees` | `6.3.0` | `8cfb86f121269e8f7f12361e6795c4f6738828340e28964c9229d365666c9edd` | `skills/references/superpowers-v6.3.0-b36e0829/skills/using-git-worktrees/SKILL.md` |
+
+### Native adapters
+
+| Phase | Resource ID | Version | Digest | Source |
+|---|---|---:|---|---|
+| `slice-workspace-preflight-lite` | `tect:superpowers-v6-native-boundary` | `0.4.0-native.skills.1` | `13012dd0ec17ae94125d0cd3ce78baca13302a728a066ba3bd0e5d4fc73c302f` | `skills/pipelines/shared/superpowers-v6-native-boundary.md` |
+| `slice-workspace-preflight-lite` | `tect:superpowers-v6-workspace-and-finish` | `0.4.0-native.skills.1` | `1be702b53fa3c813bb67d09780fd117d2d1b4d12c416b9ffeb4f8248da7dae21` | `skills/pipelines/shared/superpowers-v6-workspace-and-finish.md` |
+| `slice-tdd-cycle-runner` | `tect:superpowers-v6-native-boundary` | `0.4.0-native.skills.1` | `13012dd0ec17ae94125d0cd3ce78baca13302a728a066ba3bd0e5d4fc73c302f` | `skills/pipelines/shared/superpowers-v6-native-boundary.md` |
+| `slice-tdd-cycle-runner` | `tect:superpowers-v6-test-quality` | `0.4.0-native.skills.1` | `892f63a5253c9d6517f9345bc1c102428d0abe50389e6347bff917556a7bbe39` | `skills/pipelines/shared/superpowers-v6-test-quality.md` |
+
+### Deliberately retained Superpowers bodies
+
+| ID | Version | Digest | Preserved source |
+|---|---:|---|---|
+| `superpowers:verification-before-completion` | `5.0.7` | `ea52d15aabaf72bc6b558efe2c126f161b53961090ddcd712000273bfe8c7b6c` | `skills/references/superpowers/verification-before-completion/SKILL.md` |
+
+The archived snapshot remains the exact carrier for stored runs created against the previous definition version.

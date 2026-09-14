@@ -33,6 +33,22 @@ pub(crate) use phase::complete_phase;
 pub(crate) use plan::compile_plan;
 pub(crate) use settle::settle;
 
+pub(crate) async fn review_receipt(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    run: Uuid,
+) -> Result<KnowledgeReviewReceipt> {
+    phase_data::load_phase_data(
+        tx,
+        tenant,
+        workspace,
+        run,
+        KnowledgeChangePhaseId::KcReviewReconcile,
+    )
+    .await
+}
+
 pub(crate) fn json<T: Serialize + ?Sized>(value: &T) -> Result<serde_json::Value> {
     serde_json::to_value(value).map_err(storage_error)
 }

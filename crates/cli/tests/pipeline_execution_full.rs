@@ -4,7 +4,7 @@ mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;
 
-use full_support::{completion, successful_route};
+use full_support::{completion, refresh_knowledge, successful_route};
 use recovery_support::{
     Daemon, Mcp, host_file, private_temp, public_call, tagged_url, tool_payload,
 };
@@ -130,7 +130,7 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     assert_eq!(context["run"]["delivery_mode"], "phasewise");
     assert_eq!(
         context["run"]["definition_digest"],
-        "5e4fd372ee9c07c720732f444056a32a512171c202c2d2c53af74f81568a98c7"
+        "13fd152337abc76d7bbfa15c0875d7b6fbe4719ccfd6fadab5f31825cd39769b"
     );
     assert_eq!(context["definition"]["phases"].as_array().unwrap().len(), 1);
     assert_eq!(context["delivered_phases"].as_array().unwrap().len(), 1);
@@ -390,6 +390,7 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     )
     .await["context"]
         .clone();
+    context = refresh_knowledge(&mut client, &context).await;
     context = advance(&mut client, context).await;
 
     while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 20 {
@@ -406,7 +407,7 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     assert_eq!(completed["context"]["run"]["status"], "completed");
     assert_eq!(
         completed["result"]["pipeline_definition_digest"],
-        "5e4fd372ee9c07c720732f444056a32a512171c202c2d2c53af74f81568a98c7"
+        "13fd152337abc76d7bbfa15c0875d7b6fbe4719ccfd6fadab5f31825cd39769b"
     );
     assert_eq!(
         completed["context"]["attempts"].as_array().unwrap().len(),

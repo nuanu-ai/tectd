@@ -41,7 +41,8 @@ pub(super) fn begin() -> Value {
             "program_id":uuid(),
             "program_revision":{"type":"integer","minimum":1},
             "boundary":{"type":"string","enum":["finite","ongoing"]},
-            "input":text()
+            "input":text(),
+            "task_context":super::planning_task_context()
         }),
         json!([
             "request_id",
@@ -210,6 +211,7 @@ pub(super) fn save() -> Value {
                     "snapshot_id":uuid(),
                     "input_cursor":{"type":"integer","minimum":0},
                     "request_id":uuid(),
+                    "consumed_knowledge":super::planning_manifest_guard(),
                     "draft":draft
                 }),
                 json!(["kind","candidate_set_id","revision","snapshot_id","input_cursor","request_id","draft"])
@@ -222,6 +224,7 @@ pub(super) fn save() -> Value {
                     "snapshot_id":uuid(),
                     "input_cursor":{"type":"integer","minimum":0},
                     "request_id":uuid(),
+                    "consumed_knowledge":super::planning_manifest_guard(),
                     "review":review
                 }),
                 json!(["kind","candidate_set_id","revision","snapshot_id","input_cursor","request_id","review"])
@@ -248,7 +251,8 @@ pub(super) fn refresh() -> Value {
             "candidate_set_id":uuid(),
             "revision":{"type":"integer","minimum":1},
             "request_id":uuid(),
-            "program_revision":{"type":"integer","minimum":1}
+            "program_revision":{"type":"integer","minimum":1},
+            "task_context":super::planning_task_context()
         }),
         json!([
             "candidate_set_id",

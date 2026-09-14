@@ -191,7 +191,7 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
         .await;
     let current = &refreshed["context"];
     assert!(current["stale_reasons"].as_array().unwrap().is_empty());
-    assert_eq!(current["snapshot"]["method"]["revision"], "3");
+    assert_eq!(current["snapshot"]["method"]["revision"], "4");
     assert_eq!(
         current["snapshot"]["selected_worktree_ids"][0],
         source["id"]

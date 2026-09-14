@@ -11,6 +11,9 @@ mod knowledge_lifecycle_dispatch;
 mod knowledge_lifecycle_encoding;
 mod knowledge_lifecycle_output;
 mod knowledge_lifecycle_tools;
+mod knowledge_maintenance_dispatch;
+mod knowledge_maintenance_output;
+mod knowledge_maintenance_tools;
 mod knowledge_output;
 mod knowledge_search_dispatch;
 mod knowledge_search_output;
@@ -48,6 +51,8 @@ pub use mcp::run_stdio;
 #[doc(hidden)]
 pub use scope_guidance::CandidateEncoding;
 pub use setup_files::LocalSetupFiles;
+#[doc(hidden)]
+pub use slice_dispatch::NativePlanningEncoding;
 pub use transport::{call, call_tool, serve};
 
 pub type Result<T> = tect_domain::Result<T>;

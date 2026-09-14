@@ -94,6 +94,17 @@ async fn rich_program_draft_question_correction_and_restart_preserve_one_record(
     }
     assert!(created.get("inputs").is_none());
     assert!(created.get("input").is_none());
+    assert_eq!(
+        initial["planning_knowledge"]["manifest"]["selected"],
+        json!([]),
+        "inactive DK must produce a readable empty planning manifest"
+    );
+    let manifest_count_before_query: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM planning_knowledge_manifests WHERE owner_id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
     let page = first
         .call("get_program", json!({"program_id":id,"limit":1}))
@@ -105,6 +116,17 @@ async fn rich_program_draft_question_correction_and_restart_preserve_one_record(
     assert_eq!(page["next_after_input"], Value::Null);
     assert_eq!(page["inputs"][0]["session_id"], first_open["session"]["id"]);
     assert!(page["inputs"][0]["id"].as_str().is_some());
+    assert_eq!(
+        page["program"]["planning_knowledge"]["manifest"]["id"],
+        initial["planning_knowledge"]["manifest"]["id"]
+    );
+    let manifest_count_after_query: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM planning_knowledge_manifests WHERE owner_id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(manifest_count_after_query, manifest_count_before_query);
 
     let question = "Which existing recovery promise is normative?";
     let paused = first
@@ -136,6 +158,15 @@ async fn rich_program_draft_question_correction_and_restart_preserve_one_record(
     assert_eq!(resumed["program"]["current_step"], "compose");
     assert_eq!(resumed["program"]["pending_question"], question);
     assert_eq!(resumed["program"]["latest_input"], 2);
+    assert_eq!(
+        resumed["program"]["planning_knowledge"]["manifest"]["selected"],
+        json!([]),
+        "a second inactive-DK capture must remain usable"
+    );
+    assert_ne!(
+        resumed["program"]["planning_knowledge"]["manifest"]["id"],
+        initial["planning_knowledge"]["manifest"]["id"]
+    );
     let answer_page = second
         .call(
             "get_program",

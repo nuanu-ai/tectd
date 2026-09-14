@@ -29,6 +29,12 @@ Read the complete method body and all rule texts matched to this operation befor
 
 Classify context honestly. Distinguish user statements, verified existing work, source-backed Program facts, agent proposals, stale material, and missing evidence. A familiar title, old candidate, generated digest, or prior review is not current evidence by itself.
 
+Read the captured Scope-planning knowledge manifest and its versioned needs. Use the supplied reviewed Scope-level briefs: capability boundaries, accepted domain decisions, cross-component dependencies, material risks and proof constraints. Retain their conditions/exceptions and exact sources. Do not substitute a whole runbook or package-version inventory for this coordination-level context; such details belong to later implementation unless their reviewed consequence changes the Scope boundary.
+
+Knowledge is selected by declared bindings and explicit task subjects, not by an embedding or an assumption that one domain is the only relevant domain. Supply known target/environment/action values through the live typed context; preserve unknowns. An unresolved required need is a concrete gap, not permission to drop the norm, fabricate an empty selector or mark a candidate ready. Empty DK can legitimately produce no applicable briefs.
+
+Bind draft/review writes to the consumed manifest issued by the backend. A fresh query does not acknowledge a new context. On knowledge change, use the explicit refresh action, preserve accepted/open work, and review the candidates whose basis changed. Exact historical pins remain evidence of earlier planning, not permission to apply a withdrawn norm now. Publishing knowledge never rewrites the Program or candidate set for you.
+
 If a material source is missing or stale, follow the exact refresh-context action supplied by the backend. A read-only query may reload data or report staleness but cannot write or rebind the planning snapshot. After a Program revision, new request, policy revision, method revision, or incompatible rule revision, refresh through the supplied mutation action and review every affected candidate again. Never reuse a review bound to earlier context as approval for changed context.
 
 ## B · Boundary

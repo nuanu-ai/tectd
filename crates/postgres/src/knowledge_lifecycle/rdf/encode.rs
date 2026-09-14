@@ -4,6 +4,8 @@ use super::{RdfPublicationInput, ResolvedSourcePayload};
 use serde::Serialize;
 use tect_domain::*;
 
+mod planning;
+
 pub(super) fn build(input: &RdfPublicationInput) -> Result<RdfDocument> {
     input.planned.validate()?;
     if input.content_revision < 1 || input.change_id.is_nil() || input.event_id.is_nil() {
@@ -140,6 +142,7 @@ fn build_revision(builder: &mut Builder, input: &RdfPublicationInput) -> Result<
     }
     encode_sources(builder, &revision, &revision, &input.resolved_sources)?;
     encode_bindings(builder, &revision, &revision, &document.bindings, input)?;
+    planning::encode_planning_briefs(builder, &revision, document)?;
     sections::encode(builder, &revision, document)?;
     build_event(builder, input)?;
     builder.iri(

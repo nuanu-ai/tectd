@@ -1,0 +1,134 @@
+{
+  "id": "planning-abstraction",
+  "source_path": "crates/cli/tests/planning_knowledge_delivery.rs",
+  "source_revision": "dk4-fixture-1",
+  "source_sha256": "9b2691997317e243da953101795ef6a9c1e3666d0daedb8f2908267d3073ec39",
+  "document": {
+    "title": "Fixture region service operation boundary",
+    "canonical_text": "Service operation is permitted only in fixture region R1; other regions must be refused. Expansion requires a new owner decision. Deployment and isolation verification belong to one delivery boundary. Runbook implementation uses ExampleDriver 7.4.2-fixture and command examplectl deploy --region=R1.",
+    "knowledge_kind": "constraint",
+    "epistemic_state": "normative",
+    "target_iris": [
+      "urn:tect:dk4:fixture:service-operation"
+    ],
+    "conditions": [
+      "Applies only to service operation in fixture region R1."
+    ],
+    "exceptions": [
+      "Expansion requires a new owner decision."
+    ],
+    "sources": [
+      {
+        "kind": "snapshot",
+        "snapshot": {
+          "title": "Pinned fixture-region owner decision",
+          "uri": "urn:tect:dk4:source:fixture-region-owner-decision",
+          "text": "Service operation is permitted only in fixture region R1; other regions must be refused. Expansion requires a new owner decision. Deployment and isolation verification belong to one delivery boundary. Runbook implementation uses ExampleDriver 7.4.2-fixture and command examplectl deploy --region=R1.",
+          "evidence_kind": "declaration"
+        }
+      }
+    ],
+    "bindings": [
+      {
+        "target": {
+          "kind": "workspace"
+        },
+        "purpose": "required",
+        "version_resolution": {
+          "kind": "current_accepted"
+        }
+      }
+    ],
+    "profiles": [
+      "general"
+    ],
+    "access_scope": "workspace_members",
+    "owner_ref": "isolated-workspace-owner",
+    "authority_basis": "Owner-authored DK-4 planning abstraction fixture",
+    "planning_briefs": [
+      {
+        "local_id": "program-r1-boundary",
+        "stage": "program",
+        "instruction": "Plan service operation within region R1; expansion beyond that boundary requires a new owner decision.",
+        "conditions": [
+          "Applies only to service operation in fixture region R1."
+        ],
+        "exceptions": [
+          "Expansion requires a new owner decision."
+        ],
+        "purpose": "Preserve the owner-approved regional boundary in Program formation.",
+        "selectors": {
+          "target_iris": [
+            "urn:tect:dk4:fixture:service-operation"
+          ],
+          "environment_iris": [
+            "urn:tect:dk4:fixture:region:R1"
+          ],
+          "action_classes": [
+            "deploy"
+          ]
+        }
+      },
+      {
+        "local_id": "scope-r1-delivery-boundary",
+        "stage": "scope",
+        "instruction": "Keep R1 deployment capability and regional isolation verification in the same Scope boundary; other regions remain excluded.",
+        "conditions": [
+          "Applies only to service operation in fixture region R1."
+        ],
+        "exceptions": [
+          "Expansion requires a new owner decision."
+        ],
+        "purpose": "Keep deployment and negative regional proof in one Scope.",
+        "selectors": {
+          "target_iris": [
+            "urn:tect:dk4:fixture:service-operation"
+          ],
+          "environment_iris": [
+            "urn:tect:dk4:fixture:region:R1"
+          ],
+          "action_classes": [
+            "deploy"
+          ]
+        }
+      },
+      {
+        "local_id": "slice-r1-vertical-proof",
+        "stage": "slice_candidates",
+        "instruction": "Plan vertical outcomes containing a working R1 path and negative proof that another region is refused.",
+        "conditions": [
+          "Applies only to service operation in fixture region R1."
+        ],
+        "exceptions": [
+          "Expansion requires a new owner decision."
+        ],
+        "purpose": "Require vertical positive and negative regional proof.",
+        "selectors": {
+          "target_iris": [
+            "urn:tect:dk4:fixture:service-operation"
+          ],
+          "environment_iris": [
+            "urn:tect:dk4:fixture:region:R1"
+          ],
+          "action_classes": [
+            "deploy"
+          ]
+        }
+      }
+    ],
+    "sections": {
+      "constraint": {
+        "modality": "must",
+        "action": "Operate only in fixture region R1 and refuse other regions",
+        "target_iri": "urn:tect:dk4:fixture:service-operation"
+      },
+      "general": null,
+      "runbook": null,
+      "protocol": null,
+      "devops": null,
+      "operations": null,
+      "product_research": null,
+      "security": null
+    }
+  }
+}

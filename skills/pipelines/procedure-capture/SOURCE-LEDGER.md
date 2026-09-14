@@ -60,3 +60,34 @@ Those downstream publishing pipelines are outside the current seven-Slice catalo
 ## Verification
 
 The native definition passed direct `tect_domain::PipelineDefinitionSnapshot` deserialization, blank-digest serde SHA-256 recomputation and `validate()` against the current compile-green DTO. The semantic digest is `30cbe0da5f26c8703341f4203c270ef158babf0672d07bbbbd637a06dbcdb1bc`; the physical JSON SHA-256 is `d546eb4dd143bc969c3ae383b07282c9edd699692daa50565441b61d88c98e9c`.
+
+## Superpowers v6.3.0 native adaptation
+
+- Update class: selected upstream bodies only; native phase order and output contracts are unchanged.
+- Previous active snapshot: `crates/host/pipeline-definitions/procedure-capture-0.2.0-native.dk2.1.json`, version `0.2.0-native.dk2.1`, semantic digest `3c89a8ccc9f4f932946da4494b97aeadaaf1199c38371fa85fb0516ed5ff817f`, physical SHA-256 `a7efc016eed71d14aef218535fb77c537b8b7076b97ec4ba65676feda2ab302e`.
+- Current snapshot: `crates/host/pipeline-definitions/procedure-capture.json`, version `0.4.0-native.skills.1`, semantic digest `b8bb5affd153f1642f120625f71fd6f0b0a1b5dd877f2e46cc0cb589f8153b8c`, physical SHA-256 `1625e8951c19abd5b28032c5d8482bce8dfe745c5155d985b1ca0ad6b807b968`.
+- Exact selected source package: `skills/references/superpowers-v6.3.0-b36e0829`, upstream commit `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`, tag `v6.3.0`, package manifest SHA-256 `2973ac33ed683d9c50e15fab14a5045f768b6b765d29849237f95371d99b5dde`, MIT license SHA-256 `a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400`.
+
+### Selected body replacements
+
+| Previous ID | Previous version | Previous digest | Current ID | Current version | Current digest | Current source |
+|---|---:|---|---|---:|---|---|
+| `superpowers:using-git-worktrees` | `5.0.7` | `dcd1a83a2488bd557ceb7f14f2b6384ec209f551d18752dd9ceb70b9089dfb3b` | `superpowers:using-git-worktrees` | `6.3.0` | `8cfb86f121269e8f7f12361e6795c4f6738828340e28964c9229d365666c9edd` | `skills/references/superpowers-v6.3.0-b36e0829/skills/using-git-worktrees/SKILL.md` |
+| `superpowers:writing-plans` | `5.0.7` | `90056bad3d5f196fa7c9fec0ffe592e6d9c86bc983e406642a51d1a4198b7024` | `superpowers:writing-plans` | `6.3.0` | `48508f44bbfd7d24b029fbf3a314f3cd14c9615599059366e922f47b8dc08cf2` | `skills/references/superpowers-v6.3.0-b36e0829/skills/writing-plans/SKILL.md` |
+
+### Native adapters
+
+| Phase | Resource ID | Version | Digest | Source |
+|---|---|---:|---|---|
+| `slice-procedure-capture-entry-gate` | `tect:superpowers-v6-native-boundary` | `0.4.0-native.skills.1` | `13012dd0ec17ae94125d0cd3ce78baca13302a728a066ba3bd0e5d4fc73c302f` | `skills/pipelines/shared/superpowers-v6-native-boundary.md` |
+| `slice-procedure-capture-entry-gate` | `tect:superpowers-v6-planning-and-execution` | `0.4.0-native.skills.1` | `260e0fea1363583d2b201f1022f25a5b870749972a0cfa7cedfefcd1bf8d2ad0` | `skills/pipelines/shared/superpowers-v6-planning-and-execution.md` |
+| `slice-procedure-maintenance-and-handoff` | `tect:superpowers-v6-native-boundary` | `0.4.0-native.skills.1` | `13012dd0ec17ae94125d0cd3ce78baca13302a728a066ba3bd0e5d4fc73c302f` | `skills/pipelines/shared/superpowers-v6-native-boundary.md` |
+| `slice-procedure-maintenance-and-handoff` | `tect:superpowers-v6-workspace-and-finish` | `0.4.0-native.skills.1` | `1be702b53fa3c813bb67d09780fd117d2d1b4d12c416b9ffeb4f8248da7dae21` | `skills/pipelines/shared/superpowers-v6-workspace-and-finish.md` |
+
+### Deliberately retained Superpowers bodies
+
+| ID | Version | Digest | Preserved source |
+|---|---:|---|---|
+| `superpowers:verification-before-completion` | `5.0.7` | `ea52d15aabaf72bc6b558efe2c126f161b53961090ddcd712000273bfe8c7b6c` | `skills/references/superpowers/verification-before-completion/SKILL.md` |
+
+The archived snapshot remains the exact carrier for stored runs created against the previous definition version.

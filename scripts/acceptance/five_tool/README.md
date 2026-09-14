@@ -42,9 +42,12 @@ terminal when completed. This proves five-tool persistence, freshness, history a
 mechanics. It does not claim that TectD executed either selected pipeline or
 independently verified caller-supplied evidence.
 
-The deterministic discovery checks keep the five public tools and verify the exact `14` query,
-`33` command, and `1` execute routes. Knowledge discovery covers the six DK-1 routes plus seven
-DK-2 lifecycle routes. The Slice catalogue contains eight executable kinds while only the seven
+The deterministic discovery checks keep the five public tools and verify the exact `16` query,
+`36` command, and `1` execute routes. Knowledge discovery covers the six DK-1 routes, seven
+DK-2 lifecycle routes, DK-3 search, and three DK-4 maintenance routes. Strict maintenance help
+schemas expose the bounded owner query, the three accepted external signal kinds, and exactly one
+revalidate, revise, or supersede operation; invalid inputs are rejected before native state. The
+Slice catalogue contains eight executable kinds while only the seven
 ordinary kinds create `SlicePipelineRun`; Promotion is owned by the twelve-phase Knowledge Change,
 defaults to whole delivery, allows both delivery modes, exposes the seven profile methods, and
 reports DK-2 search as `not_configured`. The metadata-only fixture remains inactive, so these are

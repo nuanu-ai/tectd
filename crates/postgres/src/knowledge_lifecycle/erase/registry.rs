@@ -1,63 +1,6 @@
 use super::*;
 
-#[derive(Clone, Copy)]
-pub(super) enum CopyRelation {
-    LegacyChange,
-    LegacyReceipt,
-    LifecycleChange,
-    LifecycleRun,
-    LifecycleOperation,
-    LifecycleOutput,
-    LifecycleAttempt,
-    LifecycleInput,
-    LifecycleReceipt,
-    Manifest,
-    PipelineRun,
-    PipelineAttempt,
-    PipelineOutput,
-    PipelineInput,
-    PipelineReceipt,
-    SliceResult,
-    PlanningInput,
-    PlanningSnapshot,
-    CandidateDraft,
-    CandidateReview,
-    PlanningReceipt,
-    SearchResource,
-    SearchJob,
-    SearchVector,
-}
-
-impl CopyRelation {
-    fn name(self) -> &'static str {
-        match self {
-            Self::LegacyChange => "knowledge_changes",
-            Self::LegacyReceipt => "knowledge_command_receipts",
-            Self::LifecycleChange => "knowledge_lifecycle_changes",
-            Self::LifecycleRun => "knowledge_change_runs",
-            Self::LifecycleOperation => "knowledge_change_operations",
-            Self::LifecycleOutput => "knowledge_change_outputs",
-            Self::LifecycleAttempt => "knowledge_change_attempts",
-            Self::LifecycleInput => "knowledge_change_inputs",
-            Self::LifecycleReceipt => "knowledge_lifecycle_command_receipts",
-            Self::Manifest => "pipeline_knowledge_manifests",
-            Self::PipelineRun => "slice_pipeline_runs",
-            Self::PipelineAttempt => "slice_pipeline_phase_attempts",
-            Self::PipelineOutput => "slice_pipeline_phase_outputs",
-            Self::PipelineInput => "slice_pipeline_inputs",
-            Self::PipelineReceipt => "slice_pipeline_receipts",
-            Self::SliceResult => "slice_results",
-            Self::PlanningInput => "slice_planning_inputs",
-            Self::PlanningSnapshot => "slice_planning_snapshots",
-            Self::CandidateDraft => "slice_candidate_drafts",
-            Self::CandidateReview => "slice_candidate_reviews",
-            Self::PlanningReceipt => "native_planning_receipts",
-            Self::SearchResource => "knowledge_search_resources",
-            Self::SearchJob => "knowledge_search_embedding_jobs",
-            Self::SearchVector => "knowledge_search_vectors",
-        }
-    }
-}
+pub(super) use super::relation::CopyRelation;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn register(
@@ -152,6 +95,8 @@ pub(crate) async fn register_pipeline_manifest_copies(
         )
         .await?;
     }
+    crate::knowledge_maintenance::register_manifest_consumers(tx, tenant, workspace, manifest)
+        .await?;
     Ok(())
 }
 

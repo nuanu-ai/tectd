@@ -219,6 +219,22 @@ pub(in crate::knowledge_lifecycle) async fn process_agent_data(
         }
         KnowledgeAgentPhaseData::KcReviewReconcile(value) => {
             require_prior_findings(tx, tenant, workspace, run, value).await?;
+            if matches!(
+                value.outcome,
+                KnowledgeReviewOutcome::Ready | KnowledgeReviewOutcome::NoChange
+            ) {
+                let linked =
+                    crate::knowledge_maintenance::linked_tasks(tx, tenant, workspace, change, run)
+                        .await?;
+                if linked.iter().any(|task| {
+                    !value
+                        .reviewed_digests
+                        .iter()
+                        .any(|digest| digest == &task.signal.basis_digest)
+                }) {
+                    return Err(Error::NeedsContext);
+                }
+            }
             if value.outcome == KnowledgeReviewOutcome::NoChange {
                 validate_no_change(tx, tenant, workspace, principal, run).await?;
             }

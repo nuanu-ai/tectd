@@ -95,6 +95,15 @@ pub(super) fn phase_output(phase: &Value, marker: &str, outcome: &str, transitio
             json!({"instruction_id":skill["id"],"version":skill["version"],"digest":skill["digest"]})
         })
         .collect::<Vec<_>>();
+    let resources = phase["resources"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(|resource| {
+            json!({"instruction_id":resource["id"],"version":resource["version"],"digest":resource["digest"]})
+        })
+        .collect::<Vec<_>>();
     let route = phase["verdict_routes"].as_array().and_then(|routes| {
         routes
             .iter()
@@ -109,6 +118,7 @@ pub(super) fn phase_output(phase: &Value, marker: &str, outcome: &str, transitio
         "fields":fields,
         "dispositions":dispositions,
         "skill_reads":skills,
+        "resource_reads":resources,
         "reference":format!("fixture/{marker}.md")
     });
     if let Some(verdict) = route

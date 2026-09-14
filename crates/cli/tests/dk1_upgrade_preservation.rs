@@ -11,10 +11,14 @@ use recovery_support::{Daemon, Mcp, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use std::fs;
+use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::process::Command;
 use std::str::FromStr;
 use support::{route, route_error};
+use tect_domain::{HostAuth, RequestContext};
 use tect_postgres::admin;
 use uuid::Uuid;
 
@@ -328,7 +332,7 @@ async fn published_and_approved_dk1_changes_survive_current_upgrade_without_byte
         .unwrap();
     assert_eq!(graph_after, graph_before);
 
-    let daemon = Daemon::start(
+    let mut daemon = Daemon::start(
         &tagged_url(&target_runtime, "dk1-current-daemon"),
         socket.clone(),
     )
@@ -346,6 +350,22 @@ async fn published_and_approved_dk1_changes_survive_current_upgrade_without_byte
         current_old_exact["exact_revision"],
         old_exact["exact_revision"]
     );
+    let begun = current
+        .call(
+            "begin_program",
+            json!({
+                "request_id":Uuid::new_v4(),
+                "input":"Plan without projecting the legacy phase-only constraint.",
+                "task_context":{"target_iris":["urn:tect:target:dk1-published"]}
+            }),
+        )
+        .await;
+    let planning = &begun["program"]["planning_knowledge"]["manifest"];
+    assert_eq!(planning["selected"], json!([]), "{planning}");
+    assert_eq!(planning["unresolved_needs"], json!([]), "{planning}");
+    let delivered = serde_json::to_string(planning).unwrap();
+    assert!(!delivered.contains(published_source));
+    assert!(!delivered.contains("Retain the exact approved Published DK-1 fixture"));
     assert_eq!(
         route(
             &mut current,
@@ -403,8 +423,64 @@ async fn published_and_approved_dk1_changes_survive_current_upgrade_without_byte
         .await["error"]["code"],
         "knowledge_lifecycle_required"
     );
+    let observed_digest = "3d748f34f7a214c4c606373671fe56dac440ee97ebd58fe3c66cc3daf25b2832";
+    let observed = route(
+        &mut current,
+        "command",
+        "knowledge.maintenance_observe",
+        json!({"request_id":Uuid::new_v4(),"unit_id":published_unit,"unit_revision":1,
+            "basis":{"kind":"source_changed","source_iri":revision_before["source_iri"],
+                "accepted_digest":revision_before["source_sha256"],
+                "observed_digest":observed_digest}}),
+    )
+    .await;
+    let maintenance_task = Uuid::parse_str(observed["created"]["id"].as_str().unwrap()).unwrap();
+    assert_eq!(observed["created"]["state"], "pending");
     current.finish().await;
-    drop(daemon);
+    daemon.crash().await;
+    daemon.remove_owned_stale_socket();
+    let auth: HostAuth = serde_json::from_slice(&fs::read(&config).unwrap()).unwrap();
+    let contexts = root.join("maintenance-contexts.json");
+    let mut contexts_file = fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&contexts)
+        .unwrap();
+    contexts_file
+        .write_all(
+            &serde_json::to_vec(&json!({"contexts":[RequestContext{
+                auth,native_session_id:native.clone(),workspace_key:workspace.clone()
+            }],"batch_limit":1,"interval_seconds":5}))
+            .unwrap(),
+        )
+        .unwrap();
+    drop(contexts_file);
+    let worker_socket = root.join("dk1-maintenance-worker.sock");
+    let mut maintenance_daemon = Daemon::start_maintenance(
+        &tagged_url(&target_runtime, "dk1-maintenance-worker"),
+        worker_socket,
+        &contexts,
+    )
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let state: String =
+                sqlx::query_scalar("SELECT state FROM knowledge_maintenance_tasks WHERE id=$1")
+                    .bind(maintenance_task)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            if state == "needs_review" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("opt-in maintenance daemon must process the legacy source signal");
+    maintenance_daemon.crash().await;
+    maintenance_daemon.remove_owned_stale_socket();
     pool.close().await;
     sqlx::query(&format!(
         "DROP DATABASE {} WITH (FORCE)",

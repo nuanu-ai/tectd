@@ -186,14 +186,43 @@ pub(super) async fn receipt(
     request_id: Uuid,
     payload: &serde_json::Value,
 ) -> Result<Option<serde_json::Value>> {
-    let row: Option<(serde_json::Value, serde_json::Value)> = sqlx::query_as(
-        "SELECT request_payload,result_payload FROM scope_candidate_receipts \
+    let row: Option<(Option<serde_json::Value>, Option<serde_json::Value>, bool)> = sqlx::query_as(
+        "SELECT request_payload,result_payload,payload_erased FROM scope_candidate_receipts \
          WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 AND operation=$4 AND request_id=$5",
     ).bind(tenant_id).bind(workspace_id).bind(id).bind(operation).bind(request_id)
     .fetch_optional(&mut **transaction).await.map_err(storage_error)?;
     match row {
-        Some((stored, result)) if stored == *payload => Ok(Some(result)),
-        Some(_) => Err(Error::InputConflict),
+        Some((_, _, true)) => Err(Error::KnowledgePayloadErased),
+        Some((Some(stored), Some(result), false)) if stored == *payload => {
+            let program: Uuid = sqlx::query_scalar(
+                "SELECT program_id FROM scope_candidate_sets WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
+            )
+            .bind(tenant_id)
+            .bind(workspace_id)
+            .bind(id)
+            .fetch_one(&mut **transaction)
+            .await
+            .map_err(storage_error)?;
+            crate::planning_knowledge::require_owned_payload_identity(
+                transaction,
+                tenant_id,
+                workspace_id,
+                &["programs"],
+                Some(program),
+            )
+            .await?;
+            crate::planning_knowledge::require_owned_payload_identity(
+                transaction,
+                tenant_id,
+                workspace_id,
+                &["scope_candidate_receipts"],
+                Some(id),
+            )
+            .await?;
+            Ok(Some(result))
+        }
+        Some((Some(_), Some(_), false)) => Err(Error::InputConflict),
+        Some(_) => Err(Error::InternalInvariant),
         None => Ok(None),
     }
 }

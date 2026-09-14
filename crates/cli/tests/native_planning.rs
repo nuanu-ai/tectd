@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;

@@ -58,7 +58,16 @@ pub async fn ready_single(client: &mut Mcp, spec: SingleOperation) -> Value {
 pub async fn ready_single_from_baseline(
     client: &mut Mcp,
     spec: SingleOperation,
+    current: Value,
+) -> Value {
+    ready_single_from_baseline_with_reviewed(client, spec, current, &[]).await
+}
+
+pub async fn ready_single_from_baseline_with_reviewed(
+    client: &mut Mcp,
+    spec: SingleOperation,
     mut current: Value,
+    additional_reviewed_digests: &[Value],
 ) -> Value {
     let candidate = context(&current)["candidate_baseline"].clone();
     current = complete_agent(
@@ -155,13 +164,14 @@ pub async fn ready_single_from_baseline(
     )
     .await;
     let ctx = context(&current);
-    let reviewed = vec![
+    let mut reviewed = vec![
         ctx["plan"]["digest"].clone(),
         output_data(ctx, "kc-prepare-change")["digest"].clone(),
         output_data(ctx, "kc-qualify-evidence")["source_pin_digest"].clone(),
         output_data(ctx, "kc-impact-plan")["digest"].clone(),
         output_digest(ctx, "kc-domain-checks").clone(),
     ];
+    reviewed.extend_from_slice(additional_reviewed_digests);
     let obligations = ctx["plan"]["obligations"]
         .as_array()
         .unwrap()

@@ -5,6 +5,7 @@ use uuid::Uuid;
 pub trait KnowledgeLifecycleDefinitionProvider: Send + Sync {
     fn definition(&self) -> Result<KnowledgeChangeDefinition>;
     fn registry(&self) -> Result<KnowledgeProfileRegistry>;
+    fn maintenance_method(&self) -> Result<PipelineInstructionSnapshot>;
 }
 
 pub trait KnowledgeOutputGuard: Send + Sync {

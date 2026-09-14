@@ -39,7 +39,12 @@ fn consumed_bindings(context: &Value) -> Value {
 
 fn completion(context: &Value, body: String) -> Value {
     let phase_id = context["run"]["current_phase_id"].as_str().unwrap();
-    let phase = &context["definition"]["phases"][0];
+    let phase = context["definition"]["phases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|phase| phase["id"].as_str() == Some(phase_id))
+        .expect("current phase must exist in the pinned definition");
     let route = phase["verdict_routes"]
         .as_array()
         .unwrap()

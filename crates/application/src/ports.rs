@@ -27,7 +27,9 @@ pub trait UnitOfWork:
     + crate::PipelineExecutionStore
     + crate::DurableKnowledgeStore
     + crate::KnowledgeLifecycleStore
+    + crate::KnowledgeMaintenanceStore
     + crate::KnowledgeSearchStore
+    + crate::PlanningKnowledgeStore
 {
     async fn authenticate(&mut self, auth: &HostAuth) -> Result<HostIdentity>;
     async fn set_tenant(&mut self, tenant_id: Uuid) -> Result<()>;
@@ -131,6 +133,10 @@ pub trait UnitOfWork:
 pub trait ProgramOutputGuard: Send + Sync {
     fn input_bytes(&self, input: &str) -> Result<i64>;
     fn check(&self, program: &Program) -> Result<()>;
+}
+
+pub trait ProgramGuidance: Send + Sync {
+    fn planning_method(&self) -> tect_domain::PlanningMethodSnapshot;
 }
 
 /// Host adapter validates real Git paths without mutating repositories.

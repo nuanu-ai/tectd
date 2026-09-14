@@ -169,6 +169,8 @@ pub struct BeginCandidateSet {
     pub program_revision: i64,
     pub boundary: CandidateBoundary,
     pub input: String,
+    #[serde(default)]
+    pub task_context: crate::PlanningTaskContext,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,6 +189,8 @@ pub struct RefreshCandidateSet {
     pub revision: i64,
     pub request_id: Uuid,
     pub program_revision: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_context: Option<crate::PlanningTaskContext>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -203,6 +207,8 @@ pub struct CandidateContext {
     pub snapshot: CandidateSnapshot,
     pub current_program_revision: i64,
     pub stale_reasons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planning_knowledge: Option<crate::PlanningKnowledgeStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

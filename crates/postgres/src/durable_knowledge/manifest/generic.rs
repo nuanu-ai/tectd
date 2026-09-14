@@ -445,6 +445,25 @@ pub(super) async fn snapshot(
             }
             continue;
         }
+        let review = crate::knowledge_maintenance::current_unit_review_status(
+            tx,
+            tenant,
+            workspace,
+            principal,
+            resource.unit_id,
+            resource.revision,
+        )
+        .await?;
+        if review.needs_review {
+            if blocking(purpose) {
+                gaps.push(format!("knowledge_needs_review:{}", resource.unit_id));
+            } else {
+                warnings.push(format!(
+                    "optional_knowledge_needs_review:{}",
+                    resource.unit_id
+                ));
+            }
+        }
         if review_due {
             warnings.push(format!("review_due:{}", resource.unit_id));
         }

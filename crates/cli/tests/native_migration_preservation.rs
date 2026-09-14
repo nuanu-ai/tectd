@@ -251,6 +251,15 @@ async fn run_upgrade(admin_url: &str, database: &str, runtime_role: &str) -> Res
     if before != after {
         return Err("legacy Program or ScopeCandidate rows changed during upgrade".into());
     }
+    let program_payload_erased: Option<bool> =
+        sqlx::query_scalar("SELECT payload_erased FROM programs WHERE id=$1")
+            .bind(program)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
+    if program_payload_erased != Some(false) {
+        return Err("migrated legacy Program payload_erased was not exact false".into());
+    }
     if dk1_before != dk1_after {
         return Err(
             "populated DK-1 retract/event/revision/receipt bytes changed during upgrade".into(),
@@ -265,8 +274,8 @@ async fn run_upgrade(admin_url: &str, database: &str, runtime_role: &str) -> Res
             .fetch_one(&pool)
             .await
             .map_err(|error| error.to_string())?;
-    if migration_count != 28 || native_table.as_deref() != Some("native_scopes") {
-        return Err("schema 28 was not installed after preserving legacy and DK-1 rows".into());
+    if migration_count != 30 || native_table.as_deref() != Some("native_scopes") {
+        return Err("schema 30 was not installed after preserving legacy and DK-1 rows".into());
     }
     pool.close().await;
     Ok(())
@@ -290,7 +299,7 @@ async fn legacy_rows(
     candidate_set: Uuid,
 ) -> Result<(String, String, String, String), String> {
     let row = sqlx::query(
-        "SELECT row_to_json(p)::text, row_to_json(s)::text, row_to_json(n)::text, d.payload::text \
+        "SELECT (to_jsonb(p)-'payload_erased')::text, row_to_json(s)::text, row_to_json(n)::text, d.payload::text \
          FROM programs p JOIN scope_candidate_sets s ON s.program_id=p.id \
          JOIN scope_candidate_snapshots n ON n.candidate_set_id=s.id \
          JOIN scope_candidate_drafts d ON d.candidate_set_id=s.id \

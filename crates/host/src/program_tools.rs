@@ -1,12 +1,15 @@
 use serde::Deserialize;
 use serde_json::Value;
-use tect_domain::{Error, ProgramCursor, Result, SaveProgram};
+use tect_domain::{
+    Error, PlanningTaskContext, ProgramCursor, RefreshProgramKnowledge, Result, SaveProgram,
+};
 use uuid::Uuid;
 
 pub(crate) enum ProgramInvocation {
     Begin {
         request_id: Uuid,
         input: String,
+        task_context: PlanningTaskContext,
     },
     Get {
         program_id: Uuid,
@@ -18,7 +21,9 @@ pub(crate) enum ProgramInvocation {
         program_id: Uuid,
         request_id: Uuid,
         input: String,
+        task_context: Option<PlanningTaskContext>,
     },
+    Refresh(Box<RefreshProgramKnowledge>),
     List {
         after: Option<ProgramCursor>,
         limit: u32,
@@ -31,6 +36,8 @@ pub(crate) enum ProgramInvocation {
 struct BeginArguments {
     request_id: Uuid,
     input: String,
+    #[serde(default)]
+    task_context: PlanningTaskContext,
 }
 
 #[derive(Deserialize)]
@@ -39,6 +46,8 @@ struct RecordArguments {
     program_id: Uuid,
     request_id: Uuid,
     input: String,
+    #[serde(default)]
+    task_context: Option<PlanningTaskContext>,
 }
 
 #[derive(Deserialize)]
@@ -81,6 +90,7 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<ProgramInvocation> {
             Ok(ProgramInvocation::Begin {
                 request_id: args.request_id,
                 input: args.input,
+                task_context: args.task_context,
             })
         }
         "get_program" => {
@@ -92,14 +102,23 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<ProgramInvocation> {
                 limit: args.limit,
             })
         }
-        "save_program" => Ok(ProgramInvocation::Save(Box::new(decode(arguments)?))),
+        "save_program" => {
+            reject_null(&arguments, "consumed_knowledge")?;
+            Ok(ProgramInvocation::Save(Box::new(decode(arguments)?)))
+        }
         "record_program_input" => {
+            reject_null(&arguments, "task_context")?;
             let args: RecordArguments = decode(arguments)?;
             Ok(ProgramInvocation::Record {
                 program_id: args.program_id,
                 request_id: args.request_id,
                 input: args.input,
+                task_context: args.task_context,
             })
+        }
+        "refresh_program_knowledge" => {
+            reject_null(&arguments, "task_context")?;
+            Ok(ProgramInvocation::Refresh(Box::new(decode(arguments)?)))
         }
         "list_programs" => {
             reject_null(&arguments, "after")?;
@@ -164,6 +183,20 @@ mod tests {
         for name in ["../SKILL.md", "/etc/passwd", "tectd-program/../other"] {
             assert!(parse("read_skill", json!({"name":name})).is_err());
         }
+        assert!(
+            parse(
+                "save_program",
+                json!({"program_id":Uuid::new_v4(),"revision":1,"input_cursor":0,"consumed_knowledge":null})
+            )
+            .is_err()
+        );
+        assert!(
+            parse(
+                "record_program_input",
+                json!({"program_id":Uuid::new_v4(),"request_id":Uuid::new_v4(),"input":"x","task_context":null})
+            )
+            .is_err()
+        );
         assert!(parse("list_programs", json!({"after":null})).is_err());
         assert!(
             parse(

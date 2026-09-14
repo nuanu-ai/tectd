@@ -1,7 +1,8 @@
 use crate::frame::MAX_FRAME_BYTES;
 use crate::responses::{action, encoded_len, with_actions};
 use serde_json::{Value, json};
-use tect_application::ProgramOutputGuard;
+use sha2::Digest;
+use tect_application::{ProgramGuidance, ProgramOutputGuard};
 use tect_domain::{
     Error, MAX_SOURCE_PATH_BYTES, MAX_WORKTREES, Program, ProgramInput, ProgramList, ProgramPage,
     ProgramStep, ProgramSummary, Result, Session, Workspace, WorkspaceState, WorktreeSummary,
@@ -9,6 +10,25 @@ use tect_domain::{
 use uuid::Uuid;
 
 pub(crate) const PROGRAM_SKILL: &str = include_str!("../../../skills/tectd-program/SKILL.md");
+pub(crate) const PROGRAM_METHOD_ID: &str = "tectd-program";
+pub(crate) const PROGRAM_METHOD_REVISION: &str = "1";
+
+pub(crate) struct StaticProgramGuidance;
+
+impl ProgramGuidance for StaticProgramGuidance {
+    fn planning_method(&self) -> tect_domain::PlanningMethodSnapshot {
+        let hash = sha2::Sha256::digest(PROGRAM_SKILL.as_bytes());
+        tect_domain::PlanningMethodSnapshot {
+            id: PROGRAM_METHOD_ID.into(),
+            version: PROGRAM_METHOD_REVISION.into(),
+            digest: hash.iter().map(|byte| format!("{byte:02x}")).collect(),
+            body: PROGRAM_SKILL.into(),
+            origin_refs: vec![format!(
+                "skills/tectd-program/SKILL.md@{PROGRAM_METHOD_REVISION}"
+            )],
+        }
+    }
+}
 
 pub(crate) mod paging;
 
@@ -31,10 +51,19 @@ pub(crate) fn begin_action() -> Result<Value> {
 }
 
 fn save_action(program: &Program, cursor: i64) -> Result<Value> {
+    let mut params =
+        json!({"program_id":program.id,"revision":program.revision,"input_cursor":cursor});
+    if let Some(manifest) = program
+        .planning_knowledge
+        .as_ref()
+        .and_then(|v| v.manifest.as_ref())
+    {
+        params["consumed_knowledge"] = json!({"manifest_id":manifest.id,"digest":manifest.digest,"workspace_generation":manifest.workspace_generation});
+    }
     crate::api::needs_action(
         "needs_input",
         "save_program",
-        json!({"program_id":program.id,"revision":program.revision,"input_cursor":cursor}),
+        params,
         "input",
         json!({"fields":[
             {"path":"arguments.params.name","format":"Optional string-or-null patch; omission preserves and null clears."},
@@ -55,7 +84,19 @@ fn program_actions(
     delivered: Option<i64>,
     next: Option<i64>,
 ) -> Result<Vec<Value>> {
-    let mut actions = vec![skill_action()?];
+    let mut actions = Vec::new();
+    if program
+        .planning_knowledge
+        .as_ref()
+        .is_some_and(|v| !v.stale_reasons.is_empty())
+    {
+        actions.push(action(
+            "refresh_program_knowledge",
+            json!({"program_id":program.id,"revision":program.revision,
+                "input_cursor":program.input_cursor,"request_id":Uuid::new_v4()}),
+        )?);
+    }
+    actions.push(skill_action()?);
     match program.current_step {
         ProgramStep::Compose => {
             if let Some(after_input) = next {
@@ -74,10 +115,16 @@ fn program_actions(
             )?);
         }
         ProgramStep::WaitingInput | ProgramStep::Ready => {
-            actions.push(input_action(
-                "record_program_input",
-                json!({"program_id":program.id,"request_id":Uuid::new_v4()}),
-            )?);
+            let mut params = json!({"program_id":program.id,"request_id":Uuid::new_v4()});
+            if let Some(manifest) = program
+                .planning_knowledge
+                .as_ref()
+                .and_then(|v| v.manifest.as_ref())
+            {
+                params["task_context"] = serde_json::to_value(&manifest.task_context)
+                    .map_err(|_| Error::TransportUnavailable)?;
+            }
+            actions.push(input_action("record_program_input", params)?);
         }
     }
     Ok(actions)

@@ -20,6 +20,7 @@ fn request(verdict: ReviewVerdict) -> ReviewCandidateSet {
             candidate_decisions: Vec::new(),
             protected_change_reviews: Vec::new(),
         },
+        consumed_knowledge: None,
     }
 }
 

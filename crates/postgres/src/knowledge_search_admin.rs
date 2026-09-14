@@ -134,6 +134,7 @@ pub(crate) async fn qualify_restored_search(
     .map_err(storage_error)?;
     sqlx::query("UPDATE knowledge_search_embedding_jobs SET state='pending',lease_token=NULL,lease_expires_at=NULL,available_at=pg_catalog.clock_timestamp(),updated_at=pg_catalog.clock_timestamp() WHERE state='leased'")
         .execute(&mut **tx).await.map_err(storage_error)?;
+    crate::knowledge_maintenance::reset_restored_leases(tx).await?;
     if !ready {
         return Ok(());
     }

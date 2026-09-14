@@ -12,18 +12,20 @@ mod knowledge_lifecycle_execution;
 #[cfg(test)]
 mod knowledge_lifecycle_tests;
 mod knowledge_lifecycle_validation;
+mod knowledge_maintenance;
 mod knowledge_operation_validation;
 mod knowledge_phase_validation;
 mod knowledge_profile_registry;
 mod knowledge_search;
 mod knowledge_time;
+mod planning_knowledge;
 mod program;
 mod program_page;
 mod state;
 
 pub use program::{
-    NewProgramInput, Program, ProgramStatus, ProgramStep, SaveProgram, TextPatch,
-    validate_program_input,
+    NewProgramInput, Program, ProgramStatus, ProgramStep, RefreshProgramKnowledge, SaveProgram,
+    TextPatch, validate_program_input,
 };
 pub use program_page::{ProgramCursor, ProgramInput, ProgramList, ProgramPage, ProgramSummary};
 
@@ -37,8 +39,10 @@ pub use knowledge_document::*;
 pub use knowledge_erased_no_change::*;
 pub use knowledge_lifecycle::*;
 pub use knowledge_lifecycle_execution::*;
+pub use knowledge_maintenance::*;
 pub use knowledge_profile_registry::*;
 pub use knowledge_search::*;
+pub use planning_knowledge::*;
 pub use state::{
     Created, EventKind, NativeKnowledgeChangeSummary, NativePipelineRunSummary,
     NativePlanningSummary, NativeSliceSummary, NativeWorkCandidateSummary, Session, StateStatus,

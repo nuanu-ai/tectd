@@ -247,14 +247,16 @@ fn terminal_actions(page: &CandidateContextPage) -> Result<(Vec<Value>, Option<u
 
 fn draft_action(context: &CandidateContext) -> Result<Value> {
     let set = &context.candidate_set;
+    let mut params = json!({
+        "kind":"draft","candidate_set_id":set.id,"revision":set.revision,
+        "snapshot_id":set.current_snapshot_id,"input_cursor":set.latest_input,
+        "request_id":request_id(set.id, set.revision, "save_draft")
+    });
+    add_knowledge_guard(&mut params, context);
     crate::api::needs_action(
         "needs_input",
         "save_candidate_set",
-        json!({
-            "kind":"draft","candidate_set_id":set.id,"revision":set.revision,
-            "snapshot_id":set.current_snapshot_id,"input_cursor":set.latest_input,
-            "request_id":request_id(set.id, set.revision, "save_draft")
-        }),
+        params,
         "input",
         json!({"fields":[{"path":"arguments.params.draft","format":"Complete schema-valid candidate draft. Reuse backend IDs and revisions; include change_rationale for changed candidates and an explicit supersession for every omitted ordinary candidate. Temporary local labels exist only inside this payload; durable UUIDs come from the backend reply."}]}),
     )
@@ -275,15 +277,17 @@ fn review_action(
             value
         })
         .collect::<Vec<_>>();
+    let mut params = json!({
+        "kind":"review","candidate_set_id":set.id,"revision":set.revision,
+        "snapshot_id":set.current_snapshot_id,"input_cursor":set.latest_input,
+        "request_id":request_id(set.id, set.revision, "save_review"),
+        "review":{"protected_change_reviews":protected_change_reviews}
+    });
+    add_knowledge_guard(&mut params, context);
     crate::api::needs_action(
         "needs_input",
         "save_candidate_set",
-        json!({
-            "kind":"review","candidate_set_id":set.id,"revision":set.revision,
-            "snapshot_id":set.current_snapshot_id,"input_cursor":set.latest_input,
-            "request_id":request_id(set.id, set.revision, "save_review"),
-            "review":{"protected_change_reviews":protected_change_reviews}
-        }),
+        params,
         "input",
         json!({"fields":[
             {"path":"arguments.params.review.verdict","format":"ready, revise, or blocked after critical semantic review"},
@@ -297,13 +301,28 @@ fn review_action(
 
 fn refresh_action(context: &CandidateContext) -> Result<Value> {
     let set = &context.candidate_set;
-    crate::api::ready_action(
-        "refresh_candidate_set",
-        json!({
-            "candidate_set_id":set.id,"revision":set.revision,
-            "request_id":request_id(set.id, set.revision, "refresh"),"program_revision":context.current_program_revision
-        }),
-    )
+    let mut params = json!({
+        "candidate_set_id":set.id,"revision":set.revision,
+        "request_id":request_id(set.id, set.revision, "refresh"),"program_revision":context.current_program_revision
+    });
+    if let Some(manifest) = context
+        .planning_knowledge
+        .as_ref()
+        .and_then(|v| v.manifest.as_ref())
+    {
+        params["task_context"] = json!(manifest.task_context);
+    }
+    crate::api::ready_action("refresh_candidate_set", params)
+}
+
+fn add_knowledge_guard(params: &mut Value, context: &CandidateContext) {
+    if let Some(manifest) = context
+        .planning_knowledge
+        .as_ref()
+        .and_then(|v| v.manifest.as_ref())
+    {
+        params["consumed_knowledge"] = json!({"manifest_id":manifest.id,"digest":manifest.digest,"workspace_generation":manifest.workspace_generation});
+    }
 }
 
 fn record_input_action(id: Uuid, revision: i64) -> Result<Value> {

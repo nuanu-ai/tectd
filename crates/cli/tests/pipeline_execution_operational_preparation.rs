@@ -4,7 +4,7 @@ mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;
 
-use pipeline_support::{completion, successful_route};
+use pipeline_support::{completion, refresh_knowledge, successful_route};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -93,7 +93,7 @@ async fn operational_preparation_builds_safe_handoff_without_executing() {
     assert_eq!(context["run"]["delivery_mode"], "whole");
     assert_eq!(
         context["run"]["definition_digest"],
-        "dbe2313ec9b8ccb06768edc330c92d91520c0d5fb61aaa3717a2e0daa2202d30"
+        "db83e347ee7970d2122dc999ec6cefd8e2e88ac9e6a944e3be3fc1554cbc414a"
     );
     assert_eq!(
         context["definition"]["phases"].as_array().unwrap().len(),
@@ -132,6 +132,7 @@ async fn operational_preparation_builds_safe_handoff_without_executing() {
         "phase_id":context["run"]["current_phase_id"],
         "reason":"The remaining authority, rollback and proof contracts warrant phase-local delivery."})).await["context"].clone();
     assert_eq!(context["run"]["delivery_mode"], "phasewise");
+    context = refresh_knowledge(&mut client, &context).await;
 
     while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 16 {
         context = advance(&mut client, context).await;

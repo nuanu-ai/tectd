@@ -21,6 +21,15 @@ PIPELINE_MODES = {
     "slice.research-to-durable-knowledge": ("phasewise", ["whole", "phasewise"], 22),
     "slice.custom-procedure-capture": ("whole", ["whole", "phasewise"], 17),
 }
+PIPELINE_DEFINITIONS = {
+    "slice.lightweight-tdd-development": ("0.4.0-native.skills.1", "b80b3472ebf4acc38996fa1946a2fe76e1b17fbcc39c6594f87a00e63a437768"),
+    "slice.full-design-to-execution": ("0.4.0-native.skills.1", "13fd152337abc76d7bbfa15c0875d7b6fbe4719ccfd6fadab5f31825cd39769b"),
+    "slice.debug-root-cause": ("0.4.0-native.skills.1", "ecd89aaae1265455b79b400f200a7f932a596dbd0c06700a90b0116f7aaeb2ac"),
+    "slice.operational-preparation": ("0.4.0-native.skills.1", "db83e347ee7970d2122dc999ec6cefd8e2e88ac9e6a944e3be3fc1554cbc414a"),
+    "slice.operational-execution": ("0.4.0-native.skills.1", "8a1be05166244cffae5456f476d9748051f4786f3c9c2f4744b1abace4facdb9"),
+    "slice.research-to-durable-knowledge": ("0.4.0-native.skills.1", "374987b7516fe57c4de4282ace1a0fd80712e0bcac664ee08057ab340fc0b8ce"),
+    "slice.custom-procedure-capture": ("0.4.0-native.skills.1", "b8bb5affd153f1642f120625f71fd6f0b0a1b5dd877f2e46cc0cb589f8153b8c"),
+}
 RULES = {
     "vertical-provable-slices", "no-unrequested-or-unauthorized-work",
     "autonomous-local-technical-decisions", "no-product-test-harness-work",
@@ -124,6 +133,7 @@ def open_params(context, candidate, request_id=None):
 
 def assert_exact_pipeline_delivery(context: dict[str, Any], kind: str, check: Callable) -> None:
     default, allowed, phase_count = PIPELINE_MODES[kind]
+    version, digest = PIPELINE_DEFINITIONS[kind]
     mode = context["run"]["delivery_mode"]
     phases = context["definition"].get("phases", [])
     delivered = context.get("delivered_phases", [])
@@ -131,7 +141,12 @@ def assert_exact_pipeline_delivery(context: dict[str, Any], kind: str, check: Ca
              for item in phase.get(field, [])]
     expected = phase_count if mode == "whole" else 1
     check(f"{kind} delivers exact pinned bodies through the native Codex MCP surface",
-          context["definition"].get("kind") == kind and len(phases) == expected
+          context["definition"].get("kind") == kind
+          and context["definition"].get("version") == version
+          and context["definition"].get("digest") == digest
+          and context["run"].get("definition_version") == version
+          and context["run"].get("definition_digest") == digest
+          and len(phases) == expected
           and len(delivered) == expected and bool(items)
           and all(isinstance(item.get("id"),str) and item["id"].strip()
                   and isinstance(item.get("version"),str) and item["version"].strip()
@@ -140,6 +155,8 @@ def assert_exact_pipeline_delivery(context: dict[str, Any], kind: str, check: Ca
                   and isinstance(item.get("origin_refs"),list) and item["origin_refs"]
                   for item in items),
           {"kind":kind,"mode":mode,"default":default,"allowed":allowed,
+           "version":context["definition"].get("version"),
+           "digest":context["definition"].get("digest"),
            "delivered_phases":len(delivered),"delivered_items":len(items)})
 
 def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
@@ -153,6 +170,7 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
     check("native catalogue separates eight kinds from seven ordinary SlicePipelineRun kinds",
           ids == ALL_PIPELINES and slice_run_ids == SLICE_RUN_PIPELINES
           and "slice.hybrid-implementation-operation" not in json.dumps(catalogue)
+          and catalogue.get("revision") == "3"
           and catalogue.get("executable") is True and catalogue.get("executable_count") == 8
           and all(by_kind[kind].get("implementation_status") == "executable"
                   and by_kind[kind].get("description_status") == "refined"
@@ -197,15 +215,15 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
           and entry.get("context_route") == "knowledge.lifecycle"
           and definition.get("default_mode") == "whole"
           and definition.get("allowed_modes") == ["whole", "phasewise"]
-          and definition.get("version") == "0.3.0-dk3.1"
+          and definition.get("version") == "0.4.0-dk4.1"
           and definition.get("registry_version") == "0.2.0-dk2.1"
-          and overview.get("version") == "0.3.0-dk3.1"
-          and overview.get("origin_refs") == ["crates/host/knowledge-methods/overview-dk3.md"]
+          and overview.get("version") == "0.4.0-dk4.1"
+          and overview.get("origin_refs") == ["crates/host/knowledge-methods/overview-dk4.md"]
           and "With optional vector capability enabled" in overview.get("body", "")
           and "Vector/search work is not configured" not in overview.get("body", "")
           and "Required unavailable capabilities block" not in overview.get("body", "")
-          and definition.get("completion_contract_ref", {}).get("version") == "0.3.0-dk3.1"
-          and definition.get("escalation_contract_ref", {}).get("version") == "0.3.0-dk3.1"
+          and definition.get("completion_contract_ref", {}).get("version") == "0.4.0-dk4.1"
+          and definition.get("escalation_contract_ref", {}).get("version") == "0.4.0-dk4.1"
           and phase_ids == expected_phases and len(phase_methods) == 9
           and profile_methods == expected_profiles
           and catalogue.get("phase_counts", {}).get("knowledge_change_phases") == 12
@@ -348,6 +366,7 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
         final["scope"]["id"],follow["id"],follow["revision"]))
     context=pipeline_execution.outcome(begun,"created")
     pipeline_execution.assert_lightweight_whole_context(context,check)
+    assert_exact_pipeline_delivery(context,"slice.lightweight-tdd-development",check)
     bypass, bypass_failed=call("command",{"route":"slice.result.record","params":{
         "request_id":str(uuid.uuid4()),"scope_id":final["scope"]["id"],"slice_id":follow["id"],
         "slice_revision":follow["revision"],"outcome":"blocked","summary":"Managed bypass attempt.",

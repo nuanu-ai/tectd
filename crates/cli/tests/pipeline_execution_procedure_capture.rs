@@ -4,7 +4,7 @@ mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;
 
-use pipeline_support::{completion, successful_route};
+use pipeline_support::{completion, refresh_knowledge, successful_route};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -174,7 +174,7 @@ async fn procedure_capture_completes_no_match_and_stops_at_reuse_gates() {
     assert_eq!(discovery["run"]["delivery_mode"], "whole");
     assert_eq!(
         discovery["run"]["definition_digest"],
-        "3c89a8ccc9f4f932946da4494b97aeadaaf1199c38371fa85fb0516ed5ff817f"
+        "b8bb5affd153f1642f120625f71fd6f0b0a1b5dd877f2e46cc0cb589f8153b8c"
     );
     assert_eq!(
         discovery["definition"]["phases"].as_array().unwrap().len(),
@@ -204,6 +204,7 @@ async fn procedure_capture_completes_no_match_and_stops_at_reuse_gates() {
     )
     .await["context"]
         .clone();
+    discovery = refresh_knowledge(&mut client, &discovery).await;
     while discovery["run"]["current_phase_ordinal"].as_u64().unwrap() < 6 {
         discovery = advance(&mut client, discovery).await;
     }
@@ -258,6 +259,7 @@ async fn procedure_capture_completes_no_match_and_stops_at_reuse_gates() {
     )
     .await["context"]
         .clone();
+    discovery = refresh_knowledge(&mut client, &discovery).await;
     discovery = complete(
         &mut client,
         discovery,

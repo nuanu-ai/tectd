@@ -14,6 +14,7 @@ fn patch(p: &Program) -> SaveProgram {
         working_notes: TextPatch::Unchanged,
         pending_question: TextPatch::Unchanged,
         complete: false,
+        consumed_knowledge: None,
     }
 }
 

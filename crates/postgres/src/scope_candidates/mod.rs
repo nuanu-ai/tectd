@@ -1,5 +1,6 @@
 mod begin;
 mod continuation;
+mod fragment;
 mod history;
 mod protected;
 mod resolve;
@@ -10,6 +11,7 @@ mod write;
 mod write_tests;
 
 pub(crate) use begin::{ensure, replay as begin_replay};
+pub(crate) use fragment::fragment;
 pub(crate) use history::{historical, history};
 pub(crate) use save::{record_input, refresh, replay, save_draft, save_review};
 
@@ -94,6 +96,14 @@ pub(crate) async fn load(
     workspace_id: Uuid,
     candidate_set_id: Uuid,
 ) -> Result<Option<StoredCandidateContext>> {
+    crate::planning_knowledge::require_owned_payload_identity(
+        transaction,
+        tenant_id,
+        workspace_id,
+        &["scope_candidate_drafts", "scope_candidate_reviews"],
+        Some(candidate_set_id),
+    )
+    .await?;
     let row = sqlx::query_as::<_, SetRow>(
         "SELECT id,workspace_id,program_id,revision,status,boundary,current_snapshot_id,\
                 input_cursor,latest_input,max_input_bytes \
@@ -106,6 +116,26 @@ pub(crate) async fn load(
     .await
     .map_err(storage_error)?;
     let Some(row) = row else { return Ok(None) };
+    crate::planning_knowledge::require_owned_payload_identity(
+        transaction,
+        tenant_id,
+        workspace_id,
+        &["programs"],
+        Some(row.program_id),
+    )
+    .await?;
+    let program_erased: bool = sqlx::query_scalar(
+        "SELECT payload_erased FROM programs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
+    )
+    .bind(tenant_id)
+    .bind(workspace_id)
+    .bind(row.program_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(storage_error)?;
+    if program_erased {
+        return Err(Error::KnowledgePayloadErased);
+    }
     let snapshot_id = row.current_snapshot_id.ok_or(Error::InternalInvariant)?;
     let snapshot_row = sqlx::query_as::<_, SnapshotRow>(
         "SELECT s.id,s.sequence,s.program_revision,s.program_latest_input,\
@@ -136,8 +166,8 @@ pub(crate) async fn load(
     .fetch_all(&mut **transaction)
     .await
     .map_err(storage_error)?;
-    let draft: Option<serde_json::Value> = sqlx::query_scalar(
-        "SELECT payload FROM scope_candidate_drafts \
+    let draft: Option<(Option<serde_json::Value>, bool)> = sqlx::query_as(
+        "SELECT payload,payload_erased FROM scope_candidate_drafts \
          WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 \
          ORDER BY set_revision DESC LIMIT 1",
     )
@@ -147,8 +177,8 @@ pub(crate) async fn load(
     .fetch_optional(&mut **transaction)
     .await
     .map_err(storage_error)?;
-    let reviews: Vec<serde_json::Value> = sqlx::query_scalar(
-        "SELECT payload FROM scope_candidate_reviews \
+    let reviews: Vec<(Option<serde_json::Value>, bool)> = sqlx::query_as(
+        "SELECT payload,payload_erased FROM scope_candidate_reviews \
          WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 \
          ORDER BY set_revision",
     )
@@ -210,18 +240,33 @@ pub(crate) async fn load(
             snapshot,
             current_program_revision: snapshot_row.program_revision,
             stale_reasons: Vec::new(),
+            planning_knowledge: None,
         },
         program: serde_json::from_str::<Program>(&snapshot_row.program_body)
             .map_err(storage_error)?,
         draft: draft
-            .map(serde_json::from_value::<ResolvedCandidateDraft>)
-            .transpose()
-            .map_err(storage_error)?,
+            .map(|(payload, erased)| {
+                if erased {
+                    return Err(Error::KnowledgePayloadErased);
+                }
+                serde_json::from_value::<ResolvedCandidateDraft>(
+                    payload.ok_or(Error::InternalInvariant)?,
+                )
+                .map_err(storage_error)
+            })
+            .transpose()?,
         reviews: reviews
             .into_iter()
-            .map(serde_json::from_value::<ScopeCandidateReview>)
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(storage_error)?,
+            .map(|(payload, erased)| {
+                if erased {
+                    return Err(Error::KnowledgePayloadErased);
+                }
+                serde_json::from_value::<ScopeCandidateReview>(
+                    payload.ok_or(Error::InternalInvariant)?,
+                )
+                .map_err(storage_error)
+            })
+            .collect::<Result<Vec<_>>>()?,
     }))
 }
 
@@ -297,98 +342,6 @@ pub(crate) async fn heads(
             })
         })
         .collect()
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn fragment(
-    transaction: &mut Transaction<'_, Postgres>,
-    tenant_id: Uuid,
-    workspace_id: Uuid,
-    candidate_set_id: Uuid,
-    snapshot_id: Option<Uuid>,
-    source_ref_id: Uuid,
-    cursor: usize,
-    max_bytes: usize,
-) -> Result<CandidateTextFragment> {
-    if max_bytes < 4 {
-        return Err(Error::InvalidArguments);
-    }
-    let row = sqlx::query_as::<_, FragmentRow>(
-        "SELECT r.snapshot_id,r.kind,r.input_sequence,r.program_field,r.label,c.body \
-         FROM scope_candidate_source_refs r \
-         JOIN scope_candidate_sets s ON s.tenant_id=r.tenant_id AND s.workspace_id=r.workspace_id \
-          AND s.id=r.candidate_set_id \
-         JOIN scope_candidate_contents c ON c.tenant_id=r.tenant_id \
-          AND c.workspace_id=r.workspace_id AND c.digest=r.body_digest \
-         WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.candidate_set_id=$3 AND r.id=$4 \
-           AND (($5::uuid IS NULL AND s.current_snapshot_id=r.snapshot_id) OR r.snapshot_id=$5)",
-    )
-    .bind(tenant_id)
-    .bind(workspace_id)
-    .bind(candidate_set_id)
-    .bind(source_ref_id)
-    .bind(snapshot_id)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(storage_error)?;
-    let Some(row) = row else {
-        return Err(Error::NotFound);
-    };
-    let FragmentRow {
-        snapshot_id,
-        kind,
-        input_sequence,
-        program_field,
-        label,
-        body,
-    } = row;
-    if cursor > body.len() || !body.is_char_boundary(cursor) {
-        return Err(Error::InvalidArguments);
-    }
-    let mut end = cursor.saturating_add(max_bytes).min(body.len());
-    while end > cursor && !body.is_char_boundary(end) {
-        end -= 1;
-    }
-    if cursor < body.len() && end == cursor {
-        return Err(Error::InternalInvariant);
-    }
-    let next_source_ref_id = if kind == "program_field" || kind == "program_success" {
-        let refs: Vec<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM scope_candidate_source_refs \
-             WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 AND snapshot_id=$4 \
-               AND kind IN ('program_field','program_success') \
-             ORDER BY CASE program_field WHEN 'name' THEN 1 WHEN 'intent' THEN 2 \
-               WHEN 'basis' THEN 3 WHEN 'boundaries' THEN 4 WHEN 'constraints' THEN 5 \
-               WHEN 'success' THEN 6 ELSE 7 END,id",
-        )
-        .bind(tenant_id)
-        .bind(workspace_id)
-        .bind(candidate_set_id)
-        .bind(snapshot_id)
-        .fetch_all(&mut **transaction)
-        .await
-        .map_err(storage_error)?;
-        refs.iter()
-            .position(|id| *id == source_ref_id)
-            .and_then(|position| refs.get(position + 1))
-            .copied()
-    } else {
-        None
-    };
-    Ok(CandidateTextFragment {
-        source_ref: CandidateSourceRef {
-            id: source_ref_id,
-            kind: parse_source_kind(&kind)?,
-            input_sequence,
-            program_field,
-            label,
-        },
-        snapshot_id,
-        cursor,
-        next_cursor: (end < body.len()).then_some(end),
-        next_source_ref_id,
-        text: body[cursor..end].to_owned(),
-    })
 }
 
 fn parse_status(value: &str) -> Result<CandidateSetStatus> {

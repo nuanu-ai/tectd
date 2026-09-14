@@ -141,6 +141,14 @@ impl KnowledgeDocumentDraft {
             || self.sources.len() > DK2_MAX_LIST_ITEMS
             || self.bindings.is_empty()
             || self.bindings.len() > DK2_MAX_LIST_ITEMS
+            || self.planning_briefs.len() > PLANNING_KNOWLEDGE_MAX_BRIEFS
+            || self
+                .planning_briefs
+                .iter()
+                .map(|brief| brief.local_id.as_str())
+                .collect::<BTreeSet<_>>()
+                .len()
+                != self.planning_briefs.len()
             || !text(&self.owner_ref, 1024)
             || !text(&self.authority_basis, 4096)
             || valid_from.is_some_and(|value| value.is_none())
@@ -168,6 +176,9 @@ impl KnowledgeDocumentDraft {
         }
         for binding in &self.bindings {
             binding.validate()?;
+        }
+        for brief in &self.planning_briefs {
+            brief.validate()?;
         }
         self.validate_sections()?;
         if serde_json::to_vec(self)

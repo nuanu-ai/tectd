@@ -1,4 +1,5 @@
 //! Actual 8 MiB adapter-capacity rollback and whole-entry pagination.
+#[allow(dead_code)]
 mod recovery_support;
 
 use recovery_support::{

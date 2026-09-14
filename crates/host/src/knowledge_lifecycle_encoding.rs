@@ -98,6 +98,20 @@ pub(crate) fn unit_fragment(
     )
 }
 
+pub(crate) fn maintenance_fragment(
+    value: Value,
+    query: &KnowledgeMaintenanceQuery,
+    capacity: usize,
+) -> Result<Value> {
+    fragment_value_for_query(
+        value,
+        serde_json::to_value(query).map_err(|_| Error::TransportUnavailable)?,
+        query.fragment.as_ref(),
+        "knowledge_maintenance",
+        capacity,
+    )
+}
+
 fn fragment_value_for_query(
     value: Value,
     mut params: Value,

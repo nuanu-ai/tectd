@@ -104,6 +104,7 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "knowledge.change",
             "knowledge.lifecycle",
             "knowledge.unit",
+            "knowledge.maintenance",
             "knowledge.search"
         ])
     );
@@ -117,6 +118,7 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "program.begin",
             "program.save",
             "program.record_input",
+            "program.knowledge.refresh",
             "setup.inspect",
             "setup.begin",
             "setup.save",
@@ -143,7 +145,9 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "knowledge.change_phase_complete",
             "knowledge.change_record_input",
             "knowledge.change_commit",
-            "knowledge.change_settle_effects"
+            "knowledge.change_settle_effects",
+            "knowledge.maintenance_observe",
+            "knowledge.maintenance_begin"
         ])
     );
     let help = tools.iter().find(|tool| tool["name"] == "help").unwrap();

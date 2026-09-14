@@ -3,6 +3,7 @@ mod recovery_support;
 mod support;
 
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::sync::Arc;
 use support::{id, ready_source_candidate, repository};
@@ -15,7 +16,7 @@ use tect_domain::{
     ReviewVerdict, ScopeOpenBasis, SlicePlanningInput, SlicePlanningSnapshotMaterial, SliceResult,
     WorktreeSummary,
 };
-use tect_host::{CandidateEncoding, GitSourceInspector, LocalSetupFiles};
+use tect_host::{CandidateEncoding, GitSourceInspector, LocalSetupFiles, NativePlanningEncoding};
 use tect_postgres::{PgStore, admin};
 use uuid::Uuid;
 
@@ -23,12 +24,21 @@ struct SourceGuidance {
     revision: &'static str,
     selected_digest: String,
 }
+
+fn digest(body: &str) -> String {
+    Sha256::digest(body.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
 impl CandidateGuidance for SourceGuidance {
     fn snapshot(
         &self,
         program: Program,
         selected_worktrees: Vec<WorktreeSummary>,
     ) -> Result<CandidateSnapshotMaterial> {
+        let method_body = format!("source method {}", self.revision);
         Ok(CandidateSnapshotMaterial {
             program,
             selected_worktrees,
@@ -36,8 +46,8 @@ impl CandidateGuidance for SourceGuidance {
             method: CandidateMethodSnapshot {
                 id: "source-drift-fixture".into(),
                 revision: self.revision.into(),
-                digest: self.revision.repeat(64),
-                body: format!("source method {}", self.revision),
+                digest: digest(&method_body),
+                body: method_body,
                 origin_refs: vec!["test".into()],
             },
             registry_revision: self.revision.into(),
@@ -61,6 +71,7 @@ impl NativePlanningGuidance for SliceGuidance {
         _inputs: &[SlicePlanningInput],
         _results: &[SliceResult],
     ) -> Result<SlicePlanningSnapshotMaterial> {
+        let method_body = "slice method";
         let entries = PipelineKind::ALL
             .into_iter()
             .map(|kind| PipelineCatalogueEntry {
@@ -86,8 +97,8 @@ impl NativePlanningGuidance for SliceGuidance {
             method: CandidateMethodSnapshot {
                 id: "slice-fixture".into(),
                 revision: "1".into(),
-                digest: "a".repeat(64),
-                body: "slice method".into(),
+                digest: digest(method_body),
+                body: method_body.into(),
                 origin_refs: vec!["test".into()],
             },
             registry_revision: "1".into(),
@@ -158,10 +169,15 @@ async fn new_scope_open_rejects_source_guidance_drift_but_receipt_replays() {
         candidate_snapshot_id: id(&ready["snapshot"]["id"]),
         candidate_id: id(&candidate["id"]),
         candidate_revision: candidate["revision"].as_i64().unwrap(),
+        task_context: Default::default(),
+        consumed_knowledge: None,
+    };
+    let native_guard = NativePlanningEncoding {
+        capacity: 8 * 1024 * 1024,
     };
     assert_eq!(
         service
-            .scope_open(&context, &request, &source, &SliceGuidance)
+            .scope_open(&context, &request, &source, &SliceGuidance, &native_guard,)
             .await
             .unwrap_err(),
         Error::StaleContext
@@ -177,6 +193,7 @@ async fn new_scope_open_rejects_source_guidance_drift_but_receipt_replays() {
                 revision: request.candidate_set_revision,
                 request_id: Uuid::new_v4(),
                 program_revision: ready["snapshot"]["program_revision"].as_i64().unwrap(),
+                task_context: Default::default(),
             },
             &source,
             &guard,
@@ -208,6 +225,7 @@ async fn new_scope_open_rejects_source_guidance_drift_but_receipt_replays() {
                     }],
                     protected_change_reviews: vec![],
                 },
+                consumed_knowledge: None,
             },
             &source,
             &guard,
@@ -225,7 +243,7 @@ async fn new_scope_open_rejects_source_guidance_drift_but_receipt_replays() {
         ..request
     };
     let created = service
-        .scope_open(&context, &current, &source, &SliceGuidance)
+        .scope_open(&context, &current, &source, &SliceGuidance, &native_guard)
         .await
         .unwrap();
     assert!(matches!(created, OpenScopeOutcome::Created(_)));
@@ -235,7 +253,7 @@ async fn new_scope_open_rejects_source_guidance_drift_but_receipt_replays() {
     };
     assert!(matches!(
         service
-            .scope_open(&context, &current, &newer, &SliceGuidance)
+            .scope_open(&context, &current, &newer, &SliceGuidance, &native_guard,)
             .await
             .unwrap(),
         OpenScopeOutcome::Replay(_)
@@ -246,7 +264,13 @@ async fn new_scope_open_rejects_source_guidance_drift_but_receipt_replays() {
     };
     assert_eq!(
         service
-            .scope_open(&context, &fresh_request, &newer, &SliceGuidance)
+            .scope_open(
+                &context,
+                &fresh_request,
+                &newer,
+                &SliceGuidance,
+                &native_guard,
+            )
             .await
             .unwrap_err(),
         Error::StaleContext

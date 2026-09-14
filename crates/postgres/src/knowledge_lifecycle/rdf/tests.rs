@@ -5,6 +5,8 @@ use sha2::{Digest, Sha256};
 use tect_domain::*;
 use uuid::Uuid;
 
+mod planning;
+
 #[derive(Deserialize)]
 struct CorpusFixture {
     id: String,
@@ -14,7 +16,7 @@ struct CorpusFixture {
     document: KnowledgeDocumentDraft,
 }
 
-const CORPUS: [&str; 7] = [
+const CORPUS: [&str; 8] = [
     include_str!("fixtures/general-constraint.json"),
     include_str!("fixtures/runbook.json"),
     include_str!("fixtures/protocol.json"),
@@ -22,6 +24,7 @@ const CORPUS: [&str; 7] = [
     include_str!("fixtures/operations.json"),
     include_str!("fixtures/product-research.json"),
     include_str!("fixtures/security.json"),
+    include_str!("fixtures/planning-abstraction.json"),
 ];
 
 fn source_ref() -> KnowledgeSourceRef {
@@ -63,6 +66,7 @@ fn document() -> KnowledgeDocumentDraft {
         access_scope: KnowledgeAccessScope::OwnersOnly,
         owner_ref: "owner".into(),
         authority_basis: "authority".into(),
+        planning_briefs: vec![],
         valid_from: None,
         valid_until: None,
         review_due_at: None,
@@ -293,7 +297,7 @@ fn required_section(fixture: &CorpusFixture) -> &'static str {
 }
 
 #[test]
-fn seven_source_corpus_documents_roundtrip_as_exact_typed_sets() {
+fn source_corpus_documents_roundtrip_as_exact_typed_sets() {
     for (index, raw) in CORPUS.iter().enumerate() {
         let fixture: CorpusFixture = serde_json::from_str(raw).unwrap();
         assert!(!fixture.source_path.is_empty());

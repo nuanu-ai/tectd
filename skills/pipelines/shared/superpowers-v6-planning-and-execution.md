@@ -1,0 +1,9 @@
+# Apply planning improvements without replacing the native pipeline
+
+Use the pinned plan's exact specification and requirement references. Carry its global constraints, exact values, interfaces, dependencies, stop conditions and proof obligations into the native output. Size work around independently useful, verifiable outcomes; fold necessary setup/documentation into the outcome it enables. Fixed two-minute steps, automatic subprojects and one review per trivial edit are not independent product requirements.
+
+Use the phase's assigned artifact paths and structured fields. Upstream `docs/superpowers/plans`, checkbox files, commit examples and an execution-choice menu are defaults for another carrier; they do not replace native output bindings or create another plan lifecycle. Code-level detail belongs only where it helps the assigned implementation/proof task. Program intent and other high-level knowledge are not filled with package versions by this method.
+
+In Debug, Preparation, Research and Procedure planning phases, produce the required decomposition, interfaces and evidence plan without starting implementation, committing files or dispatching workers. In Operational Execution, apply only the single currently authorized action and its verification/rollback boundary. In Full execution, retain the selected native mode and current phase gates; availability of subagents does not switch modes automatically.
+
+When a requirement is unclear, distinguish a routine implementation choice within recorded authority from a material unresolved decision. Resolve the former with evidence and record the decision; return the latter through the native input/revisit/block path. Do not request the same approval again or silently broaden scope. Existing current-task instructions control who performs the analysis and practical work.

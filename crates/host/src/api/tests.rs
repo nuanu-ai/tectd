@@ -12,26 +12,26 @@ fn names(definitions: &Value) -> BTreeSet<&str> {
 }
 
 #[test]
-fn public_surface_is_exactly_five_tools_and_forty_nine_registry_routes() {
+fn public_surface_is_exactly_five_tools_and_fifty_three_registry_routes() {
     let definitions = definitions();
     assert_eq!(
         names(&definitions),
         BTreeSet::from(["command", "execute", "get_state", "help", "query"])
     );
-    assert_eq!(routes().len(), 49);
+    assert_eq!(routes().len(), 53);
     assert_eq!(
         routes()
             .iter()
             .filter(|route| route.tool == "query")
             .count(),
-        15
+        16
     );
     assert_eq!(
         routes()
             .iter()
             .filter(|route| route.tool == "command")
             .count(),
-        33
+        36
     );
     assert_eq!(
         routes()
@@ -170,7 +170,7 @@ fn help_branches_are_strict_and_descriptions_come_from_registry() {
     let candidates =
         help(parse_help(json!({"mode":"describe","method":"tectd-scope-candidates"})).unwrap())
             .unwrap();
-    assert_eq!(candidates["method_revision"], "3");
+    assert_eq!(candidates["method_revision"], "4");
     assert!(
         candidates["body"]
             .as_str()
@@ -181,7 +181,7 @@ fn help_branches_are_strict_and_descriptions_come_from_registry() {
     let slices =
         help(parse_help(json!({"mode":"describe","method":"tectd-slice-candidates"})).unwrap())
             .unwrap();
-    assert_eq!(slices["method_revision"], "1");
+    assert_eq!(slices["method_revision"], "2");
     assert_eq!(
         slices["pipeline_catalog"]["pipelines"]
             .as_array()
@@ -195,7 +195,7 @@ fn help_branches_are_strict_and_descriptions_come_from_registry() {
 #[test]
 fn help_search_is_bounded_stable_filtered_and_bilingual() {
     let all = help(parse_help(json!({"mode":"search"})).unwrap()).unwrap();
-    assert_eq!(all["total_matches"], 58);
+    assert_eq!(all["total_matches"], 62);
     assert_eq!(all["returned"], 25);
     assert_eq!(all["truncated"], true);
     assert_eq!(all["hits"][0]["tool"], "get_state");

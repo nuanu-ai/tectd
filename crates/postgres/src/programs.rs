@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 const PROGRAM_COLUMNS: &str = "id, workspace_id, status, revision, name, intent, basis, \
     boundaries, constraints, success, working_notes, pending_question, current_step, \
-    input_cursor, latest_input, max_input_bytes";
+    input_cursor, latest_input, max_input_bytes, payload_erased";
 
 #[derive(sqlx::FromRow)]
 struct ProgramRow {
@@ -28,6 +28,7 @@ struct ProgramRow {
     input_cursor: i64,
     latest_input: i64,
     max_input_bytes: i64,
+    payload_erased: bool,
 }
 
 pub(crate) async fn ensure_program(
@@ -95,6 +96,14 @@ pub(crate) async fn program(
     program_id: Uuid,
     for_update: bool,
 ) -> Result<Option<Program>> {
+    crate::planning_knowledge::require_owned_payload_identity(
+        transaction,
+        tenant_id,
+        workspace_id,
+        &["programs"],
+        Some(program_id),
+    )
+    .await?;
     let query = format!(
         "SELECT {PROGRAM_COLUMNS} FROM programs \
          WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3{}",
@@ -199,6 +208,23 @@ pub(crate) async fn update_program(
     if result.rows_affected() != 1 {
         return Err(Error::NotFound);
     }
+    sqlx::query(
+        "INSERT INTO knowledge_owned_copies \
+         (id,tenant_id,workspace_id,unit_id,copy_kind,relation_name,row_id,source_revision,row_revision) \
+         SELECT pg_catalog.gen_random_uuid(),tenant_id,workspace_id,unit_id,'planning_derived', \
+                'programs',row_id,source_revision,$4 \
+         FROM (SELECT DISTINCT tenant_id,workspace_id,unit_id,row_id,source_revision \
+           FROM knowledge_owned_copies WHERE tenant_id=$1 AND workspace_id=$2 \
+             AND relation_name='programs' AND row_id=$3 AND NOT redacted) copies \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(tenant_id)
+    .bind(program.workspace_id)
+    .bind(program.id)
+    .bind(program.revision)
+    .execute(&mut **transaction)
+    .await
+    .map_err(storage_error)?;
     Ok(())
 }
 
@@ -233,6 +259,14 @@ pub(crate) async fn list_programs(
     after: Option<ProgramCursor>,
     limit: u32,
 ) -> Result<Vec<ProgramSummary>> {
+    crate::planning_knowledge::require_owned_payload_identity(
+        transaction,
+        tenant_id,
+        workspace_id,
+        &["programs"],
+        None,
+    )
+    .await?;
     let after_ready = after.map(|cursor| cursor.ready);
     let after_id = after.map(|cursor| cursor.id);
     let rows: Vec<(Uuid, String, i64, Option<String>, String)> = sqlx::query_as(
@@ -300,6 +334,9 @@ async fn insert_program(
 
 impl ProgramRow {
     fn into_domain(self) -> Result<Program> {
+        if self.payload_erased {
+            return Err(Error::KnowledgePayloadErased);
+        }
         Ok(Program {
             id: self.id,
             workspace_id: self.workspace_id,
@@ -316,6 +353,7 @@ impl ProgramRow {
             current_step: parse_step(&self.current_step)?,
             input_cursor: self.input_cursor,
             latest_input: self.latest_input,
+            planning_knowledge: None,
             max_input_bytes: self.max_input_bytes,
         })
     }

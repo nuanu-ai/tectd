@@ -1,4 +1,5 @@
 //! Real concurrent Program idempotency, pagination, and atomic refusal acceptance.
+#[allow(dead_code)]
 mod recovery_support;
 
 use recovery_support::{

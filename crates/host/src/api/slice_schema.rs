@@ -199,7 +199,9 @@ pub(super) fn open_scope() -> Value {
             "request_id":uuid(),"candidate_set_id":uuid(),
             "candidate_set_revision":{"type":"integer","minimum":1},
             "candidate_snapshot_id":uuid(),"candidate_id":uuid(),
-            "candidate_revision":{"type":"integer","minimum":1}
+            "candidate_revision":{"type":"integer","minimum":1},
+            "task_context":super::planning_task_context(),
+            "consumed_knowledge":super::planning_manifest_guard()
         }),
         json!([
             "request_id",
@@ -303,7 +305,8 @@ pub(super) fn save() -> Value {
             json!({
                 "kind":{"const":kind},"scope_id":uuid(),"candidate_set_id":uuid(),
                 "revision":{"type":"integer","minimum":1},"snapshot_id":uuid(),
-                "input_cursor":{"type":"integer","minimum":0},"request_id":uuid(),payload.0:payload.1
+                "input_cursor":{"type":"integer","minimum":0},"request_id":uuid(),
+                "consumed_knowledge":super::planning_manifest_guard(),payload.0:payload.1
             }),
             json!([
                 "kind",
@@ -341,7 +344,7 @@ pub(super) fn record_input() -> Value {
 
 pub(super) fn refresh() -> Value {
     object_schema(
-        json!({"scope_id":uuid(),"candidate_set_id":uuid(),"revision":{"type":"integer","minimum":1},"request_id":uuid()}),
+        json!({"scope_id":uuid(),"candidate_set_id":uuid(),"revision":{"type":"integer","minimum":1},"request_id":uuid(),"task_context":super::planning_task_context()}),
         json!(["scope_id", "candidate_set_id", "revision", "request_id"]),
     )
 }

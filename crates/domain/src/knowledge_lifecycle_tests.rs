@@ -32,6 +32,7 @@ fn security_document(access_scope: KnowledgeAccessScope) -> KnowledgeDocumentDra
         access_scope,
         owner_ref: "workspace-owner".into(),
         authority_basis: "authenticated workspace owner".into(),
+        planning_briefs: vec![],
         valid_from: None,
         valid_until: None,
         review_due_at: None,

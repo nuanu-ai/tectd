@@ -382,6 +382,8 @@ pub struct KnowledgeDocumentDraft {
     pub access_scope: KnowledgeAccessScope,
     pub owner_ref: String,
     pub authority_basis: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub planning_briefs: Vec<crate::PlanningBrief>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub valid_from: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

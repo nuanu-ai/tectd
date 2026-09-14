@@ -24,6 +24,7 @@ fn context(revision: i64) -> KnowledgeChangeContext {
             operation_hints: Vec::new(),
             operations: Vec::new(),
         }),
+        maintenance_tasks: Vec::new(),
         run: KnowledgeChangeRun {
             id: Uuid::new_v4(),
             change_id,

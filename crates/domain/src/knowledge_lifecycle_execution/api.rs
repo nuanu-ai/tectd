@@ -5,6 +5,8 @@ pub struct KnowledgeChangeContext {
     pub change_id: Uuid,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<KnowledgeChangeOrigin>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub maintenance_tasks: Vec<crate::KnowledgeMaintenanceTask>,
     pub run: KnowledgeChangeRun,
     pub definition: crate::KnowledgeChangeDefinition,
     pub delivered_phases: Vec<crate::KnowledgeChangePhaseDefinition>,

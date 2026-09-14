@@ -1,0 +1,53 @@
+{
+  "schema": "tect.superpowers.source-package.v1",
+  "repository": "https://github.com/obra/superpowers",
+  "release": "v6.3.0",
+  "tag_object": "86babb696875227929e85420f287d6309374b93f",
+  "commit": "b36e0829c6d0140e93cfef2ca599b1b07d4a7797",
+  "tree": "21219529a4e224bcb27baf8816b039c8bf7c6673",
+  "license": "MIT",
+  "selected_upstream_object_count": 9,
+  "files": {
+    "LICENSE": {
+      "sha256": "a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400",
+      "bytes": 1070
+    },
+    "skills/executing-plans/SKILL.md": {
+      "sha256": "c4c3d8b628c51114cd165fb8246fe02744cd8be180032328391252e653028d9b",
+      "bytes": 2305
+    },
+    "skills/finishing-a-development-branch/SKILL.md": {
+      "sha256": "8db5a922b242dd4e1bf824cb91c13b3e8d8e8a86d6ceaf7f0774eb9cce909d65",
+      "bytes": 7781
+    },
+    "skills/requesting-code-review/SKILL.md": {
+      "sha256": "d71cc01ba56d2325cf8af5f7c11837819b63ecd57de0bfdb812f7f3ff7751df8",
+      "bytes": 2956
+    },
+    "skills/requesting-code-review/code-reviewer.md": {
+      "sha256": "bd0a281a0d983e53bca422eaa02fe496003fde40d5d5561775ad5f82a344416a",
+      "bytes": 5669
+    },
+    "skills/systematic-debugging/SKILL.md": {
+      "sha256": "808fc5717aa88ad65efff312b11c186294d3e6ee301afb584e2f86599b137787",
+      "bytes": 9465
+    },
+    "skills/test-driven-development/SKILL.md": {
+      "sha256": "bf1b8216e523851a411e91d429a7c1c2a173e79d88957bc78e348218d50edd54",
+      "bytes": 9015
+    },
+    "skills/test-driven-development/writing-good-tests.md": {
+      "sha256": "51471c853306ff92ca8bb41dcaea05f31c0e46b03651f8f3c99754b7172f4ae1",
+      "bytes": 8268
+    },
+    "skills/using-git-worktrees/SKILL.md": {
+      "sha256": "8cfb86f121269e8f7f12361e6795c4f6738828340e28964c9229d365666c9edd",
+      "bytes": 6813
+    },
+    "skills/writing-plans/SKILL.md": {
+      "sha256": "48508f44bbfd7d24b029fbf3a314f3cd14c9615599059366e922f47b8dc08cf2",
+      "bytes": 7053
+    }
+  },
+  "boundary": "Exact upstream bytes; SOURCE.json is local provenance metadata and is not an upstream instruction body."
+}

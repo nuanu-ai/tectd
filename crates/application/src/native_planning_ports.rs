@@ -18,6 +18,11 @@ pub trait NativePlanningGuidance: Send + Sync {
     ) -> Result<SlicePlanningSnapshotMaterial>;
 }
 
+pub trait NativePlanningOutputGuard: Send + Sync {
+    fn check_context(&self, value: &SliceCandidateContext) -> Result<()>;
+    fn check_open_scope(&self, value: &OpenScopeOutcome) -> Result<()>;
+}
+
 #[async_trait]
 pub trait NativePlanningStore: Send {
     async fn native_planning_receipt(

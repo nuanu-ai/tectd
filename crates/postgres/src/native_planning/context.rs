@@ -145,10 +145,21 @@ pub(crate) async fn load_scope(
     workspace: Uuid,
     scope_id: Uuid,
 ) -> Result<Option<NativeScope>> {
-    let row:Option<(Uuid,i64,Uuid,i64,Uuid,Uuid,i64,String,String,String,serde_json::Value,serde_json::Value,Option<Uuid>,Option<i64>,Option<i64>)>=sqlx::query_as(
-        "SELECT n.id,n.revision,n.source_candidate_set_id,n.source_candidate_set_revision,n.source_snapshot_id,n.source_candidate_id,n.source_candidate_revision,n.boundary,n.title,n.outcome,n.includes,n.excludes,n.slice_candidate_set_id,s.input_cursor,s.latest_input FROM native_scopes n LEFT JOIN slice_candidate_sets s ON s.tenant_id=n.tenant_id AND s.workspace_id=n.workspace_id AND s.id=n.slice_candidate_set_id WHERE n.tenant_id=$1 AND n.workspace_id=$2 AND n.id=$3")
+    crate::planning_knowledge::require_owned_payload_identity(
+        tx,
+        tenant,
+        workspace,
+        &["native_scopes"],
+        Some(scope_id),
+    )
+    .await?;
+    let row:Option<(Uuid,i64,Uuid,i64,Uuid,Uuid,i64,String,String,String,serde_json::Value,serde_json::Value,Option<Uuid>,Option<i64>,Option<i64>,bool)>=sqlx::query_as(
+        "SELECT n.id,n.revision,n.source_candidate_set_id,n.source_candidate_set_revision,n.source_snapshot_id,n.source_candidate_id,n.source_candidate_revision,n.boundary,n.title,n.outcome,n.includes,n.excludes,n.slice_candidate_set_id,s.input_cursor,s.latest_input,n.payload_erased FROM native_scopes n LEFT JOIN slice_candidate_sets s ON s.tenant_id=n.tenant_id AND s.workspace_id=n.workspace_id AND s.id=n.slice_candidate_set_id WHERE n.tenant_id=$1 AND n.workspace_id=$2 AND n.id=$3")
         .bind(tenant).bind(workspace).bind(scope_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     row.map(|r| {
+        if r.15 {
+            return Err(Error::KnowledgePayloadErased);
+        }
         Ok(NativeScope {
             id: r.0,
             workspace_id: workspace,
@@ -186,9 +197,18 @@ pub(crate) async fn load_context(
     let snap_row:(Uuid,i64,i64,i64,Uuid,i64,serde_json::Value,String,String,serde_json::Value,serde_json::Value,Vec<Uuid>)=sqlx::query_as(
         "SELECT id,sequence,scope_revision,source_candidate_set_revision,source_snapshot_id,planning_latest_input,method,registry_revision,registry_digest,rules,catalogue,result_ids FROM slice_planning_snapshots WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 AND id=$4")
         .bind(tenant).bind(workspace).bind(set_row.0).bind(set_row.3).fetch_one(&mut **tx).await.map_err(storage_error)?;
-    let draft=sqlx::query_scalar::<_,serde_json::Value>("SELECT payload FROM slice_candidate_drafts WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 ORDER BY set_revision DESC LIMIT 1")
-        .bind(tenant).bind(workspace).bind(set_row.0).fetch_optional(&mut **tx).await.map_err(storage_error)?.map(decode).transpose()?;
-    let review_values:Vec<serde_json::Value>=sqlx::query_scalar("SELECT payload FROM slice_candidate_reviews WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 ORDER BY set_revision")
+    crate::planning_knowledge::require_owned_payload_identity(
+        tx,
+        tenant,
+        workspace,
+        &["slice_candidate_drafts", "slice_candidate_reviews"],
+        Some(set_row.0),
+    )
+    .await?;
+    let draft=sqlx::query_as::<_,(Option<serde_json::Value>,bool)>("SELECT payload,payload_erased FROM slice_candidate_drafts WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 ORDER BY set_revision DESC LIMIT 1")
+        .bind(tenant).bind(workspace).bind(set_row.0).fetch_optional(&mut **tx).await.map_err(storage_error)?
+        .map(|(payload,erased)| if erased { Err(Error::KnowledgePayloadErased) } else { decode(payload.ok_or(Error::InternalInvariant)?) }).transpose()?;
+    let review_values:Vec<(Option<serde_json::Value>,bool)>=sqlx::query_as("SELECT payload,payload_erased FROM slice_candidate_reviews WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 ORDER BY set_revision")
         .bind(tenant).bind(workspace).bind(set_row.0).fetch_all(&mut **tx).await.map_err(storage_error)?;
     let input_rows:Vec<(Uuid,i64,Option<Uuid>,String)>=sqlx::query_as("SELECT id,sequence,source_result_id,input FROM slice_planning_inputs WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 ORDER BY sequence")
         .bind(tenant).bind(workspace).bind(set_row.0).fetch_all(&mut **tx).await.map_err(storage_error)?;
@@ -241,13 +261,20 @@ pub(crate) async fn load_context(
         draft: draft_value,
         reviews: review_values
             .into_iter()
-            .map(decode)
+            .map(|(payload, erased)| {
+                if erased {
+                    Err(Error::KnowledgePayloadErased)
+                } else {
+                    decode(payload.ok_or(Error::InternalInvariant)?)
+                }
+            })
             .collect::<Result<Vec<_>>>()?,
         inputs,
         history,
         slices,
         results,
         stale_reasons: Vec::new(),
+        planning_knowledge: None,
     }))
 }
 

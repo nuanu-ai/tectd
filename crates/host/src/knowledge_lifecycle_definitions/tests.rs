@@ -56,26 +56,18 @@ fn definition_pins_all_twelve_phases_and_composed_methods() {
     assert_eq!(definition.overview.version, DEFINITION_VERSION);
     assert_eq!(
         definition.overview.origin_refs,
-        [format!("{ROOT}overview-dk3.md")]
+        [format!("{ROOT}overview-dk4.md")]
     );
-    assert!(
-        definition
-            .overview
-            .body
-            .contains("With optional vector capability enabled")
-    );
-    assert!(
-        !definition
-            .overview
-            .body
-            .contains("Vector/search work is not configured")
-    );
+    let maintenance = maintenance_method();
+    assert_eq!(maintenance.version, DEFINITION_VERSION);
+    assert_eq!(maintenance.digest, digest(maintenance.body.as_bytes()));
+    assert_eq!(maintenance.origin_refs, [format!("{ROOT}maintenance.md")]);
     for contract in [
         &definition.completion_contract_ref,
         &definition.escalation_contract_ref,
     ] {
         assert_eq!(contract.version, DEFINITION_VERSION);
-        assert_eq!(contract.source_ref, format!("{ROOT}overview-dk3.md"));
+        assert_eq!(contract.source_ref, format!("{ROOT}overview-dk4.md"));
     }
     assert_eq!(definition.phases.len(), 12);
     for (index, phase) in definition.phases.iter().enumerate() {
@@ -115,7 +107,14 @@ fn definition_pins_all_twelve_phases_and_composed_methods() {
             assert!(phase.methods.is_empty());
         }
         if matches!(phase.ordinal, 4..=8) {
-            assert_eq!(phase.methods.len(), 8);
+            assert_eq!(
+                phase.methods.len(),
+                if phase.id == KnowledgeChangePhaseId::KcReviewReconcile {
+                    9
+                } else {
+                    8
+                }
+            );
         }
     }
     assert!(
@@ -123,6 +122,36 @@ fn definition_pins_all_twelve_phases_and_composed_methods() {
             .phases
             .iter()
             .all(|phase| phase.required_obligation_ids.is_empty())
+    );
+    for id in [
+        KnowledgeChangePhaseId::KcResolveBaseline,
+        KnowledgeChangePhaseId::KcReviewReconcile,
+    ] {
+        let phase = definition
+            .phases
+            .iter()
+            .find(|phase| phase.id == id)
+            .unwrap();
+        assert!(
+            phase
+                .instructions
+                .iter()
+                .any(|method| method.id == maintenance.id)
+        );
+        assert!(
+            phase
+                .methods
+                .iter()
+                .any(|method| method.id == maintenance.id)
+        );
+    }
+    assert_eq!(
+        definition.phases[4].instructions[0].origin_refs,
+        [format!("{ROOT}kc-prepare-change-dk4.md")]
+    );
+    assert_eq!(
+        definition.phases[7].instructions[0].origin_refs,
+        [format!("{ROOT}kc-review-reconcile-dk4.md")]
     );
     assert!(
         definition

@@ -5,7 +5,7 @@ use tect_domain::{
     PipelineCatalogueEntry, PipelineCatalogueSnapshot, PipelineExecutionOwner, PipelineKind,
 };
 
-pub(crate) const CATALOG_REVISION: &str = "2";
+pub(crate) const CATALOG_REVISION: &str = "3";
 
 struct SlicePipelineStub {
     kind: PipelineKind,

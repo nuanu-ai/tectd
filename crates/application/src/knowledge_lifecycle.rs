@@ -253,7 +253,7 @@ impl WorkspaceService {
         Ok(response)
     }
 
-    async fn knowledge_owner_transaction(
+    pub(crate) async fn knowledge_owner_transaction(
         &self,
         context: &RequestContext,
     ) -> Result<(Box<dyn crate::UnitOfWork>, Workspace, Session, uuid::Uuid)> {

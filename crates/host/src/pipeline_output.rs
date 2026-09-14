@@ -2,9 +2,9 @@ use crate::responses;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tect_domain::{
-    BeginPipelineRunOutcome, Error, PipelineContextResponse, PipelineKnowledgeState,
-    PipelineMutationOutcome, PipelineOutputConstraint, PipelineRunContext, PipelineRunStatus,
-    Result,
+    BeginPipelineRunOutcome, Error, PipelineContextResponse, PipelineKnowledgeResourceState,
+    PipelineKnowledgeState, PipelineMutationOutcome, PipelineOutputConstraint, PipelineRunContext,
+    PipelineRunStatus, Result,
 };
 
 pub(crate) fn begin(mut value: BeginPipelineRunOutcome, capacity: usize) -> Result<Value> {
@@ -69,6 +69,12 @@ fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
     if matches!(
         context.knowledge_status.as_ref().map(|status| status.state),
         Some(PipelineKnowledgeState::Stale | PipelineKnowledgeState::NeedsContext)
+    ) || matches!(
+        context
+            .knowledge_resource_status
+            .as_ref()
+            .map(|status| status.state),
+        Some(PipelineKnowledgeResourceState::Stale | PipelineKnowledgeResourceState::NeedsContext)
     ) {
         return Ok(vec![
             responses::action(
@@ -103,13 +109,18 @@ fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
             let mut params = json!({"request_id":request_id(run.id,run.revision,"complete"),
                 "run_id":run.id,"run_revision":run.revision,"phase_id":phase_id,
                 "consumed_outputs":consumed_outputs,"consumed_inputs":consumed_inputs});
-            if let Some(manifest) = context
+            let legacy = context
                 .knowledge
                 .as_ref()
                 .filter(|manifest| !manifest.selected.is_empty())
-            {
-                params["consumed_knowledge"] =
-                    json!({"manifest_id":manifest.id,"digest":manifest.digest});
+                .map(|manifest| (manifest.id, manifest.digest.as_str()));
+            let generic = context
+                .knowledge_resources
+                .as_ref()
+                .filter(|manifest| !manifest.selected.is_empty())
+                .map(|manifest| (manifest.id, manifest.digest.as_str()));
+            if let Some((manifest_id, digest)) = legacy.or(generic) {
+                params["consumed_knowledge"] = json!({"manifest_id":manifest_id,"digest":digest});
             }
             let mut fields = vec![
                 json!({"path":"arguments.params.outcome","format":"Caller-reported phase outcome allowed by the current verdict route."}),
@@ -220,4 +231,206 @@ fn request_id(id: uuid::Uuid, revision: i64, operation: &str) -> uuid::Uuid {
     bytes[6] = (bytes[6] & 0x0f) | 0x50;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     uuid::Uuid::from_bytes(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tect_domain::{
+        KnowledgeAccessScope, KnowledgeBindingPurpose, KnowledgeBindingTarget,
+        KnowledgeBindingVersion, KnowledgeEpistemicState, KnowledgeKind, KnowledgeLifecycleState,
+        KnowledgeProfileId, KnowledgeProfileSections, PipelineDefinitionSnapshot,
+        PipelineDeliveryMode, PipelineInstructionSnapshot, PipelineKnowledgeBindingPin,
+        PipelineKnowledgeResource, PipelineKnowledgeResourceManifest,
+        PipelineKnowledgeResourceStatus, PipelinePhaseDefinition, PipelinePhaseRetryPolicy,
+        PipelineRun,
+    };
+
+    fn instruction() -> PipelineInstructionSnapshot {
+        PipelineInstructionSnapshot {
+            id: "fixture:instruction".into(),
+            version: "1".into(),
+            digest: "instruction-digest".into(),
+            body: "fixture instruction".into(),
+            origin_refs: vec!["fixture".into()],
+        }
+    }
+
+    fn phase() -> PipelinePhaseDefinition {
+        PipelinePhaseDefinition {
+            id: "fixture-phase".into(),
+            ordinal: 1,
+            title: "Fixture phase".into(),
+            required: true,
+            disposition_required: false,
+            instructions: vec![instruction()],
+            skills: Vec::new(),
+            resources: Vec::new(),
+            required_artifacts: Vec::new(),
+            validator_contracts: Vec::new(),
+            required_fields: Vec::new(),
+            allowed_verdicts: Vec::new(),
+            required_dispositions: Vec::new(),
+            allowed_dispositions: Vec::new(),
+            output_constraints: Vec::new(),
+            verdict_routes: Vec::new(),
+            followup_contracts: Vec::new(),
+            allowed_backward_to: Vec::new(),
+            fresh_reviewer_input: false,
+            retry_policy: PipelinePhaseRetryPolicy::Repeatable,
+            output_contract: "fixture output".into(),
+        }
+    }
+
+    fn resource() -> PipelineKnowledgeResource {
+        PipelineKnowledgeResource {
+            unit_id: uuid::Uuid::new_v4(),
+            revision: 1,
+            lifecycle: KnowledgeLifecycleState::Active,
+            access_scope: KnowledgeAccessScope::WorkspaceMembers,
+            rdf_digest: "rdf-digest".into(),
+            unit_iri: "urn:fixture:unit".into(),
+            revision_iri: "urn:fixture:revision".into(),
+            title: "Fixture knowledge".into(),
+            canonical_text: "Fixture canonical text.".into(),
+            knowledge_kind: KnowledgeKind::Constraint,
+            epistemic_state: KnowledgeEpistemicState::Normative,
+            target_iris: vec!["urn:fixture:target".into()],
+            profiles: vec![KnowledgeProfileId::General],
+            conditions: Vec::new(),
+            exceptions: Vec::new(),
+            sections: KnowledgeProfileSections::default(),
+            source_pins: Vec::new(),
+            latest_validation: None,
+            binding: PipelineKnowledgeBindingPin {
+                binding_iri: "urn:fixture:binding".into(),
+                target: KnowledgeBindingTarget::Workspace,
+                purpose: KnowledgeBindingPurpose::Required,
+                version_resolution: KnowledgeBindingVersion::CurrentAccepted,
+                definition_kind: None,
+                definition_version: None,
+                definition_digest: None,
+            },
+            why_included: "workspace_binding".into(),
+        }
+    }
+
+    fn context(state: PipelineKnowledgeResourceState, selected: bool) -> PipelineRunContext {
+        let run_id = uuid::Uuid::new_v4();
+        let phase = phase();
+        PipelineRunContext {
+            run: PipelineRun {
+                id: run_id,
+                scope_id: uuid::Uuid::new_v4(),
+                slice_id: uuid::Uuid::new_v4(),
+                slice_revision: 1,
+                revision: 7,
+                definition_kind: tect_domain::PipelineKind::LightweightTddDevelopment,
+                definition_version: "fixture-version".into(),
+                definition_digest: "definition-digest".into(),
+                delivery_mode: PipelineDeliveryMode::Phasewise,
+                qualification_reason: "fixture".into(),
+                status: PipelineRunStatus::Active,
+                current_phase_id: Some(phase.id.clone()),
+                current_phase_ordinal: Some(phase.ordinal),
+            },
+            definition: PipelineDefinitionSnapshot {
+                kind: tect_domain::PipelineKind::LightweightTddDevelopment,
+                version: "fixture-version".into(),
+                digest: "definition-digest".into(),
+                overview: instruction(),
+                default_mode: PipelineDeliveryMode::Phasewise,
+                allowed_modes: vec![PipelineDeliveryMode::Phasewise],
+                phases: vec![phase.clone()],
+                completion_contract: "fixture completion".into(),
+                escalation_contract: "fixture escalation".into(),
+                forbidden_claims: Vec::new(),
+            },
+            delivered_phases: vec![phase],
+            attempts: Vec::new(),
+            bindings: Vec::new(),
+            outputs: Vec::new(),
+            outputs_complete: true,
+            inputs: Vec::new(),
+            result: None,
+            knowledge: None,
+            knowledge_status: None,
+            knowledge_resources: Some(PipelineKnowledgeResourceManifest {
+                id: uuid::Uuid::new_v4(),
+                digest: "manifest-digest".into(),
+                semantic_digest: "semantic-digest".into(),
+                workspace_generation: 1,
+                run_id,
+                run_revision: if matches!(
+                    state,
+                    PipelineKnowledgeResourceState::Stale
+                        | PipelineKnowledgeResourceState::NeedsContext
+                ) {
+                    6
+                } else {
+                    7
+                },
+                phase_id: "fixture-phase".into(),
+                definition_version: "fixture-version".into(),
+                definition_digest: "definition-digest".into(),
+                method_requirements: Vec::new(),
+                selected: selected.then(resource).into_iter().collect(),
+                unresolved_needs: Vec::new(),
+                freshness_warnings: Vec::new(),
+            }),
+            knowledge_resource_status: Some(PipelineKnowledgeResourceStatus {
+                state,
+                current_generation: 1,
+                changed_unit_ids: Vec::new(),
+                freshness_warnings: Vec::new(),
+                access_changed: false,
+            }),
+        }
+    }
+
+    fn action<'a>(values: &'a [Value], route: &str) -> &'a Value {
+        values
+            .iter()
+            .find(|value| value["arguments"]["route"] == route)
+            .expect("expected action route")
+    }
+
+    #[test]
+    fn generic_stale_manifest_advertises_only_exact_refresh_before_completion() {
+        let context = context(PipelineKnowledgeResourceState::Stale, true);
+        let values = actions(&context).unwrap();
+        assert_eq!(values.len(), 2);
+        assert!(
+            !values
+                .iter()
+                .any(|value| value["arguments"]["route"] == "slice.pipeline.phase.complete")
+        );
+        let refresh = action(&values, "pipeline.knowledge_refresh");
+        assert_eq!(
+            refresh["arguments"]["params"]["run_id"],
+            context.run.id.to_string()
+        );
+        assert_eq!(refresh["arguments"]["params"]["run_revision"], 7);
+        assert_eq!(refresh["arguments"]["params"]["phase_id"], "fixture-phase");
+    }
+
+    #[test]
+    fn generic_current_selection_supplies_exact_consumed_manifest_guard() {
+        let current = context(PipelineKnowledgeResourceState::Current, true);
+        let values = actions(&current).unwrap();
+        let complete = action(&values, "slice.pipeline.phase.complete");
+        let manifest = current.knowledge_resources.as_ref().unwrap();
+        assert_eq!(
+            complete["arguments"]["params"]["consumed_knowledge"],
+            json!({"manifest_id":manifest.id,"digest":manifest.digest})
+        );
+
+        let inactive = context(PipelineKnowledgeResourceState::Inactive, false);
+        let values = actions(&inactive).unwrap();
+        assert!(
+            action(&values, "slice.pipeline.phase.complete")["arguments"]["params"]
+                .get("consumed_knowledge")
+                .is_none()
+        );
+    }
 }

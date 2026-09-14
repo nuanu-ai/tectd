@@ -45,3 +45,39 @@ Authority fields separate read, prepare, execute, deploy, write/delete, rollback
 Phases 12, 15, and 16 are optional in V1 but progress-mandatory natively: each reports read-only/not-required/blocked; promotion/no-promotion/procedure/deferred/authority; and prepared/handoff/preflight-blocked dispositions respectively. Blocked, waiting, and rework routes never receive success markers. Rework targets name exact prior phases.
 
 Execution authority creates a separate Operational Execution Slice. Implementation creates a Lightweight or Full Slice; unknown cause creates Debug. Phase 1 splits those single-target routes from the V1 Hybrid replacement. Only `escalate_to_implementation_operational_graph` requires a proposal containing future implementation and operational nodes plus a truthful ordered or unresolved dependency. Operational Preparation cannot satisfy the implementation node; the graph preserves target, evidence, authority, owner, dynamic order, rollback, and proof without selecting retired Hybrid, inventing a primary successor, or activating a successor. Backend run/attempt/revision state replaces duplicate V1 lifecycle carriers only. The agent remains responsible for factual current-state/read-only command evidence and authority truth.
+
+## Superpowers v6.3.0 native adaptation
+
+- Update class: selected upstream bodies only; native phase order and output contracts are unchanged.
+- Previous active snapshot: `crates/host/pipeline-definitions/operational-preparation-0.1.0-native.1.json`, version `0.1.0-native.1`, semantic digest `dbe2313ec9b8ccb06768edc330c92d91520c0d5fb61aaa3717a2e0daa2202d30`, physical SHA-256 `bfb00041921d1e0bdc37fe588ebf1f7a056285ead17c390cc93d9f4dab49ce14`.
+- Current snapshot: `crates/host/pipeline-definitions/operational-preparation.json`, version `0.4.0-native.skills.1`, semantic digest `db83e347ee7970d2122dc999ec6cefd8e2e88ac9e6a944e3be3fc1554cbc414a`, physical SHA-256 `0542c1d07f594503fe8c152ce1c3098acb2c4b4424a018b41646e076b03eaa8d`.
+- Exact selected source package: `skills/references/superpowers-v6.3.0-b36e0829`, upstream commit `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`, tag `v6.3.0`, package manifest SHA-256 `2973ac33ed683d9c50e15fab14a5045f768b6b765d29849237f95371d99b5dde`, MIT license SHA-256 `a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400`.
+
+### Selected body replacements
+
+| Previous ID | Previous version | Previous digest | Current ID | Current version | Current digest | Current source |
+|---|---:|---|---|---:|---|---|
+| `superpowers:executing-plans` | `5.0.7` | `a711f83fb762e2ea0fa151f598893da9911a408895c91cc7a7e0770dd59a27b3` | `superpowers:executing-plans` | `6.3.0` | `c4c3d8b628c51114cd165fb8246fe02744cd8be180032328391252e653028d9b` | `skills/references/superpowers-v6.3.0-b36e0829/skills/executing-plans/SKILL.md` |
+| `superpowers:finishing-a-development-branch` | `5.0.7` | `dd2f82c6dc8582b621f9eb57fcb65f557f88eadf872727ac81d0840ae12c504e` | `superpowers:finishing-a-development-branch` | `6.3.0` | `8db5a922b242dd4e1bf824cb91c13b3e8d8e8a86d6ceaf7f0774eb9cce909d65` | `skills/references/superpowers-v6.3.0-b36e0829/skills/finishing-a-development-branch/SKILL.md` |
+| `superpowers:using-git-worktrees` | `5.0.7` | `dcd1a83a2488bd557ceb7f14f2b6384ec209f551d18752dd9ceb70b9089dfb3b` | `superpowers:using-git-worktrees` | `6.3.0` | `8cfb86f121269e8f7f12361e6795c4f6738828340e28964c9229d365666c9edd` | `skills/references/superpowers-v6.3.0-b36e0829/skills/using-git-worktrees/SKILL.md` |
+| `superpowers:writing-plans` | `5.0.7` | `90056bad3d5f196fa7c9fec0ffe592e6d9c86bc983e406642a51d1a4198b7024` | `superpowers:writing-plans` | `6.3.0` | `48508f44bbfd7d24b029fbf3a314f3cd14c9615599059366e922f47b8dc08cf2` | `skills/references/superpowers-v6.3.0-b36e0829/skills/writing-plans/SKILL.md` |
+
+### Native adapters
+
+| Phase | Resource ID | Version | Digest | Source |
+|---|---|---:|---|---|
+| `slice-op-prep-contract-writer` | `tect:superpowers-v6-native-boundary` | `0.4.0-native.skills.1` | `13012dd0ec17ae94125d0cd3ce78baca13302a728a066ba3bd0e5d4fc73c302f` | `skills/pipelines/shared/superpowers-v6-native-boundary.md` |
+| `slice-op-prep-contract-writer` | `tect:superpowers-v6-planning-and-execution` | `0.4.0-native.skills.1` | `260e0fea1363583d2b201f1022f25a5b870749972a0cfa7cedfefcd1bf8d2ad0` | `skills/pipelines/shared/superpowers-v6-planning-and-execution.md` |
+| `slice-op-target-state-baseliner` | `tect:superpowers-v6-native-boundary` | `0.4.0-native.skills.1` | `13012dd0ec17ae94125d0cd3ce78baca13302a728a066ba3bd0e5d4fc73c302f` | `skills/pipelines/shared/superpowers-v6-native-boundary.md` |
+| `slice-op-target-state-baseliner` | `tect:superpowers-v6-workspace-and-finish` | `0.4.0-native.skills.1` | `1be702b53fa3c813bb67d09780fd117d2d1b4d12c416b9ffeb4f8248da7dae21` | `skills/pipelines/shared/superpowers-v6-workspace-and-finish.md` |
+| `slice-op-command-plan-builder` | `tect:superpowers-v6-native-boundary` | `0.4.0-native.skills.1` | `13012dd0ec17ae94125d0cd3ce78baca13302a728a066ba3bd0e5d4fc73c302f` | `skills/pipelines/shared/superpowers-v6-native-boundary.md` |
+| `slice-op-command-plan-builder` | `tect:superpowers-v6-workspace-and-finish` | `0.4.0-native.skills.1` | `1be702b53fa3c813bb67d09780fd117d2d1b4d12c416b9ffeb4f8248da7dae21` | `skills/pipelines/shared/superpowers-v6-workspace-and-finish.md` |
+| `slice-op-command-plan-builder` | `tect:superpowers-v6-planning-and-execution` | `0.4.0-native.skills.1` | `260e0fea1363583d2b201f1022f25a5b870749972a0cfa7cedfefcd1bf8d2ad0` | `skills/pipelines/shared/superpowers-v6-planning-and-execution.md` |
+
+### Deliberately retained Superpowers bodies
+
+| ID | Version | Digest | Preserved source |
+|---|---:|---|---|
+| `superpowers:verification-before-completion` | `5.0.7` | `ea52d15aabaf72bc6b558efe2c126f161b53961090ddcd712000273bfe8c7b6c` | `skills/references/superpowers/verification-before-completion/SKILL.md` |
+
+The archived snapshot remains the exact carrier for stored runs created against the previous definition version.

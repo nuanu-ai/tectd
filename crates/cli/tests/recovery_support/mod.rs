@@ -131,21 +131,46 @@ impl Daemon {
     }
 
     pub async fn start_with(binary: &Path, url: &str, socket: PathBuf) -> Self {
+        Self::start_configured(binary, url, socket, None).await
+    }
+
+    #[allow(dead_code)]
+    pub async fn start_maintenance(url: &str, socket: PathBuf, contexts: &Path) -> Self {
+        Self::start_configured(
+            Path::new(env!("CARGO_BIN_EXE_tectd")),
+            url,
+            socket,
+            Some(contexts),
+        )
+        .await
+    }
+
+    async fn start_configured(
+        binary: &Path,
+        url: &str,
+        socket: PathBuf,
+        maintenance_contexts: Option<&Path>,
+    ) -> Self {
         let log = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
             .open(socket.with_extension("stderr"))
             .unwrap();
-        let mut child = Command::new(binary)
+        let mut command = Command::new(binary);
+        command
             .env("TECT_DATABASE_URL", url)
             .env("TECT_SOCKET", &socket)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(log))
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
+            .kill_on_drop(true);
+        if let Some(contexts) = maintenance_contexts {
+            command
+                .env("TECT_KNOWLEDGE_MAINTENANCE", "1")
+                .env("TECT_KNOWLEDGE_SEARCH_CONTEXTS", contexts);
+        }
+        let mut child = command.spawn().unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 assert!(

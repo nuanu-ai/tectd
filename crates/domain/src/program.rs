@@ -34,6 +34,8 @@ pub struct Program {
     pub current_step: ProgramStep,
     pub input_cursor: i64,
     pub latest_input: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planning_knowledge: Option<crate::PlanningKnowledgeStatus>,
     /// Adapter-measured maximum original-input encoding cost, never a business field.
     #[serde(skip)]
     pub max_input_bytes: i64,
@@ -57,6 +59,7 @@ impl Program {
             current_step: ProgramStep::Compose,
             input_cursor: 0,
             latest_input: 1,
+            planning_knowledge: None,
             max_input_bytes,
         }
     }
@@ -148,6 +151,26 @@ impl Program {
         Ok(next)
     }
 
+    pub fn refreshed(&self, request: &RefreshProgramKnowledge) -> Result<Self> {
+        request.validate()?;
+        if request.program_id != self.id {
+            return Err(Error::NotFound);
+        }
+        if request.revision != self.revision {
+            return Err(Error::StaleRevision);
+        }
+        if request.input_cursor != self.input_cursor {
+            return Err(Error::StaleContext);
+        }
+        let mut next = self.clone();
+        next.revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(Error::StorageUnavailable)?;
+        next.planning_knowledge = None;
+        Ok(next)
+    }
+
     pub fn summary(&self) -> ProgramSummary {
         ProgramSummary {
             id: self.id,
@@ -218,12 +241,44 @@ pub struct SaveProgram {
     pub pending_question: TextPatch,
     #[serde(default)]
     pub complete: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_knowledge: Option<crate::PlanningManifestGuard>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RefreshProgramKnowledge {
+    pub program_id: Uuid,
+    pub revision: i64,
+    pub input_cursor: i64,
+    pub request_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_context: Option<crate::PlanningTaskContext>,
+}
+
+impl RefreshProgramKnowledge {
+    pub fn validate(&self) -> Result<()> {
+        if self.program_id.is_nil()
+            || self.request_id.is_nil()
+            || self.revision < 1
+            || self.input_cursor < 0
+        {
+            return Err(Error::InvalidArguments);
+        }
+        if let Some(context) = &self.task_context {
+            context.validate()?;
+        }
+        Ok(())
+    }
 }
 
 impl SaveProgram {
     pub fn validate(&self) -> Result<()> {
         if self.program_id.is_nil() || self.revision < 1 || self.input_cursor < 0 {
             return Err(Error::InvalidArguments);
+        }
+        if let Some(guard) = &self.consumed_knowledge {
+            guard.validate()?;
         }
         Ok(())
     }

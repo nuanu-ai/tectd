@@ -82,12 +82,17 @@ async fn refresh(client: &mut Mcp, context: &Value) -> Value {
         json!({"run_id":context["run"]["id"]}),
     )
     .await;
+    assert_eq!(stale["knowledge_resource_status"]["state"], "stale");
     let action = find_action(&stale, "pipeline.knowledge_refresh").unwrap();
+    let params = action_params(action);
+    assert_eq!(params["run_id"], stale["run"]["id"]);
+    assert_eq!(params["run_revision"], stale["run"]["revision"]);
+    assert_eq!(params["phase_id"], stale["run"]["current_phase_id"]);
     route(
         client,
         "command",
         "pipeline.knowledge_refresh",
-        action_params(action).clone(),
+        params.clone(),
     )
     .await;
     route(
@@ -186,6 +191,25 @@ async fn generic_binding_applicability_freshness_and_supersession_are_exact() {
     let captured = begin(&mut client, &scope, &slice).await;
     let selected = selected_for(&captured, &applicable_unit);
     assert_eq!(selected.len(), 3);
+    let advertised = route(
+        &mut client,
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":captured["run"]["id"]}),
+    )
+    .await;
+    assert_eq!(advertised["run"]["id"], captured["run"]["id"]);
+    assert_eq!(advertised["run"]["revision"], captured["run"]["revision"]);
+    assert_eq!(
+        advertised["knowledge_resources"]["id"],
+        captured["knowledge_resources"]["id"]
+    );
+    let completion = find_action(&advertised, "slice.pipeline.phase.complete").unwrap();
+    assert_eq!(
+        action_params(completion)["consumed_knowledge"],
+        json!({"manifest_id":captured["knowledge_resources"]["id"],
+            "digest":captured["knowledge_resources"]["digest"]})
+    );
     let kinds = selected
         .iter()
         .map(|value| value["binding"]["target"]["kind"].as_str().unwrap())
@@ -369,6 +393,31 @@ async fn generic_binding_applicability_freshness_and_supersession_are_exact() {
     assert_eq!(
         selected_for(&superseded_pin, &pinned_successor_unit).len(),
         1
+    );
+    let run_id = Uuid::parse_str(superseded_pin["run"]["id"].as_str().unwrap()).unwrap();
+    let current_manifest = Uuid::parse_str(
+        superseded_pin["knowledge_resources"]["id"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let consumer_states: Vec<(Uuid, bool)> = sqlx::query_as(
+        "SELECT m.id,COALESCE(pg_catalog.bool_or(c.active),false) \
+         FROM pipeline_knowledge_manifests m LEFT JOIN knowledge_maintenance_consumers c \
+          ON c.tenant_id=m.tenant_id AND c.workspace_id=m.workspace_id \
+         AND c.relation_name='pipeline_knowledge_manifests' AND c.row_id=m.id \
+         WHERE m.run_id=$1 GROUP BY m.id ORDER BY m.created_at,m.id",
+    )
+    .bind(run_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(consumer_states.len() > 1);
+    assert!(consumer_states.contains(&(current_manifest, true)));
+    assert!(
+        consumer_states
+            .iter()
+            .all(|(manifest, active)| *manifest == current_manifest || !active)
     );
 
     let (unrelated_scope, unrelated_slice) = open_target(&mut client, &repo).await;

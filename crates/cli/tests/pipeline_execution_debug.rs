@@ -1,10 +1,11 @@
 #[path = "pipeline_execution/full_support.rs"]
 mod pipeline_support;
+#[allow(dead_code)]
 mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;
 
-use pipeline_support::{completion, successful_route};
+use pipeline_support::{completion, refresh_knowledge, successful_route};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -98,7 +99,7 @@ async fn debug_pipeline_preserves_diagnosis_and_composes_fix_as_future_slice() {
     assert_eq!(context["run"]["delivery_mode"], "whole");
     assert_eq!(
         context["run"]["definition_digest"],
-        "4bdb3a67d910784007d0dd9c52f6112dddc24c7c317e512a6ec6bd441f347457"
+        "ecd89aaae1265455b79b400f200a7f932a596dbd0c06700a90b0116f7aaeb2ac"
     );
     assert_eq!(
         context["definition"]["phases"].as_array().unwrap().len(),
@@ -137,6 +138,7 @@ async fn debug_pipeline_preserves_diagnosis_and_composes_fix_as_future_slice() {
         .clone();
     assert_eq!(context["run"]["delivery_mode"], "phasewise");
     assert_eq!(context["definition"]["phases"].as_array().unwrap().len(), 1);
+    context = refresh_knowledge(&mut client, &context).await;
 
     while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 12 {
         context = advance(&mut client, context).await;

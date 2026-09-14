@@ -1,7 +1,9 @@
 mod candidate_schema;
 mod catalog;
 mod catalog_aliases;
+mod catalog_support;
 mod knowledge_lifecycle_schema;
+mod knowledge_maintenance_schema;
 mod knowledge_schema;
 mod knowledge_search_schema;
 mod slice_schema;
@@ -22,6 +24,22 @@ const SCOPE_CANDIDATE_METHOD: &str =
     include_str!("../../../skills/tectd-scope-candidates/SKILL.md");
 const SLICE_CANDIDATE_METHOD: &str =
     include_str!("../../../skills/tectd-slice-candidates/SKILL.md");
+
+fn planning_task_context() -> Value {
+    let iris = json!({"type":"array","items":{"type":"string","minLength":1,"maxLength":4096,"pattern":"^(https?://|urn:)"},"maxItems":128,"uniqueItems":true});
+    let classes = json!({"type":"array","items":{"type":"string","minLength":1,"maxLength":1024},"maxItems":128,"uniqueItems":true});
+    object_schema(
+        json!({"target_iris":iris.clone(),"environment_iris":iris,"action_classes":classes}),
+        json!([]),
+    )
+}
+
+fn planning_manifest_guard() -> Value {
+    object_schema(
+        json!({"manifest_id":{"type":"string","format":"uuid"},"digest":{"type":"string","minLength":1,"maxLength":256},"workspace_generation":{"type":"integer","minimum":0}}),
+        json!(["manifest_id", "digest", "workspace_generation"]),
+    )
+}
 
 #[derive(Debug)]
 pub(crate) struct InternalCall {
@@ -339,8 +357,8 @@ fn describe_route(spec: &RouteSpec) -> Value {
 fn tool_summary(tool: &str) -> &'static str {
     match tool {
         "get_state" => "Read bounded DB-only state for the current native session.",
-        "query" => "Run one of fifteen named read-only routes.",
-        "command" => "Run one of thirty-three named logical state-transition routes.",
+        "query" => "Run one of sixteen named read-only routes.",
+        "command" => "Run one of thirty-six named logical state-transition routes.",
         "execute" => "Run the single explicit external-effect route setup.apply.",
         "help" => "Search or describe this API and its four embedded methods.",
         _ => "",

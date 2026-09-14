@@ -1,11 +1,14 @@
 #[path = "pipeline_execution/lifecycle_support.rs"]
 mod lifecycle_support;
+#[allow(dead_code)]
 mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;
 
 use lifecycle_support::{LIGHTWEIGHT_PHASES, complete, lightweight_draft, phase_output, terminal};
-use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
+use recovery_support::{
+    Daemon, Mcp, action_params, find_action, host_file, private_temp, tagged_url,
+};
 use serde_json::json;
 use sqlx::PgPool;
 use support::{
@@ -13,6 +16,57 @@ use support::{
 };
 use tect_postgres::admin;
 use uuid::Uuid;
+
+async fn refresh_pipeline_knowledge(
+    client: &mut Mcp,
+    context: &serde_json::Value,
+) -> serde_json::Value {
+    let stale = route(
+        client,
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":context["run"]["id"]}),
+    )
+    .await;
+    assert_eq!(stale["run"]["id"], context["run"]["id"]);
+    assert_eq!(stale["run"]["revision"], context["run"]["revision"]);
+    assert_eq!(
+        stale["run"]["current_phase_id"],
+        context["run"]["current_phase_id"]
+    );
+    if stale["knowledge_resource_status"]["state"] == "inactive" {
+        assert!(stale["knowledge_resources"].is_null());
+        assert!(stale["knowledge"].is_null());
+        assert!(find_action(&stale, "pipeline.knowledge_refresh").is_none());
+        return stale;
+    }
+    assert_eq!(stale["knowledge_resource_status"]["state"], "stale");
+    assert_eq!(
+        stale["run"]["revision"].as_i64().unwrap(),
+        stale["knowledge_resources"]["run_revision"]
+            .as_i64()
+            .unwrap()
+            + 1
+    );
+    let action = find_action(&stale, "pipeline.knowledge_refresh")
+        .expect("stale pipeline knowledge must expose its exact refresh action");
+    route(
+        client,
+        "command",
+        "pipeline.knowledge_refresh",
+        action_params(action).clone(),
+    )
+    .await;
+    let current = route(
+        client,
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":context["run"]["id"]}),
+    )
+    .await;
+    assert_eq!(current["knowledge_resource_status"]["state"], "current");
+    current
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_results() {
@@ -189,6 +243,7 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
         .await["error"]["code"],
         "forbidden"
     );
+    context = refresh_pipeline_knowledge(&mut client, &context).await;
 
     let (waiting, _) = complete(
         &mut client,
@@ -214,6 +269,7 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
     context = input["context"].clone();
     assert_eq!(context["run"]["status"], "active");
     assert_eq!(context["inputs"].as_array().unwrap().len(), 1);
+    context = refresh_pipeline_knowledge(&mut client, &context).await;
 
     let resume = route(
         &mut client,
@@ -295,6 +351,7 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
     )
     .await;
     context = resumed["context"].clone();
+    context = refresh_pipeline_knowledge(&mut client, &context).await;
     let (completed, _) = complete(
         &mut client,
         &context,

@@ -1,15 +1,18 @@
 //! Trusted application guidance changes stale the head and retain old snapshot bodies.
+#[allow(dead_code)]
 mod recovery_support;
 
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::sync::Arc;
-use tect_application::{CandidateGuidance, WorkspaceService};
+use tect_application::{CandidateGuidance, ProgramGuidance, ProgramOutputGuard, WorkspaceService};
 use tect_domain::{
     CandidateContextQuery, CandidateContextView, CandidateMethodSnapshot, CandidateRuleSnapshot,
-    CandidateSetStatus, CandidateSnapshotMaterial, Program, RefreshCandidateSet, RequestContext,
-    Result, WorktreeSummary,
+    CandidateSetStatus, CandidateSnapshotMaterial, Error, PlanningMethodSnapshot, Program,
+    RefreshCandidateSet, RefreshProgramKnowledge, RequestContext, Result, SaveProgram, TextPatch,
+    WorktreeSummary,
 };
 use tect_host::{CandidateEncoding, GitSourceInspector, LocalSetupFiles};
 use tect_postgres::{PgStore, admin};
@@ -21,6 +24,16 @@ struct Guidance {
     method_body: &'static str,
     rule_body: &'static str,
 }
+
+fn digest(body: &str) -> String {
+    Sha256::digest(body.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[path = "scope_candidate_guidance_revision/program.rs"]
+mod program;
 
 impl CandidateGuidance for Guidance {
     fn snapshot(
@@ -36,7 +49,7 @@ impl CandidateGuidance for Guidance {
             method: CandidateMethodSnapshot {
                 id: "trusted-guidance-fixture".into(),
                 revision: self.revision.into(),
-                digest: if changed { "2" } else { "1" }.repeat(64),
+                digest: digest(self.method_body),
                 body: self.method_body.into(),
                 origin_refs: vec![format!("test:method@{}", self.revision)],
             },
@@ -193,6 +206,7 @@ async fn method_and_registry_change_require_refresh_and_retain_old_bodies() {
                 revision: 3,
                 request_id: Uuid::new_v4(),
                 program_revision: 2,
+                task_context: Default::default(),
             },
             &new,
             &guard,
@@ -216,7 +230,7 @@ async fn method_and_registry_change_require_refresh_and_retain_old_bodies() {
     .await
     .unwrap();
     assert_eq!(snapshots.len(), 2);
-    assert_eq!(snapshots[0].1, "3");
+    assert_eq!(snapshots[0].1, "4");
     assert!(snapshots[0].2.contains("# TectD Scope candidates"));
     assert_eq!(snapshots[0].3, "3");
     assert_eq!(snapshots[0].4.as_array().unwrap().len(), 4);

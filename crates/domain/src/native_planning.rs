@@ -45,6 +45,10 @@ pub struct OpenScope {
     pub candidate_snapshot_id: Uuid,
     pub candidate_id: Uuid,
     pub candidate_revision: i64,
+    #[serde(default)]
+    pub task_context: crate::PlanningTaskContext,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_knowledge: Option<crate::PlanningManifestGuard>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,6 +327,8 @@ pub struct SliceCandidateContext {
     pub slices: Vec<NativeSlice>,
     pub results: Vec<SliceResult>,
     pub stale_reasons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planning_knowledge: Option<crate::PlanningKnowledgeStatus>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -356,6 +362,8 @@ pub struct SaveSliceCandidateDraft {
     pub input_cursor: i64,
     pub request_id: Uuid,
     pub draft: SliceCandidateDraft,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_knowledge: Option<crate::PlanningManifestGuard>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -368,6 +376,8 @@ pub struct ReviewSliceCandidateSet {
     pub input_cursor: i64,
     pub request_id: Uuid,
     pub review: SliceCandidateReviewDraft,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_knowledge: Option<crate::PlanningManifestGuard>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -387,6 +397,8 @@ pub struct RefreshSliceCandidateSet {
     pub candidate_set_id: Uuid,
     pub revision: i64,
     pub request_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_context: Option<crate::PlanningTaskContext>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

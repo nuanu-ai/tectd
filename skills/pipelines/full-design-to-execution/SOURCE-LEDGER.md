@@ -72,3 +72,51 @@ Native output body, fields, typed artifacts, references, and route receipts repl
 Blocked and waiting routes never receive success dispositions. Existing authorization and no-question paths continue autonomously; unresolved material human decisions wait or block. Deployment, live validation, promotion, cleanup, merge, and branch operations require their own current authority. At phase 15, ordinary handoff remains distinct from the V1 Hybrid replacement. The current-run graph may satisfy exactly one Full node only when bound to consumed execution-runner and verification-runner outputs; a newly discovered implementation scope keeps all nodes future candidates. Both graph variants require implementation and Operational Preparation/Execution kind coverage plus a truthful ordered or unresolved dependency, preserve trigger/evidence/owner/authority/proof conditions, and neither invents nor activates a primary successor.
 
 Phase 19 preserves the union of the selected body and manifest maintenance contracts. The selected body names front-door synchronization while the manifest receipt names repair-proposal routing; native fields require both, plus variant shape, Result presence, promotion readiness, stale projection, and validation/deployment proof shape. Maintenance remains request/routing only and cannot claim executed repair.
+
+## Superpowers v6.3.0 native adaptation
+
+- Update class: selected upstream bodies only; native phase order and output contracts are unchanged.
+- Previous active snapshot: `crates/host/pipeline-definitions/full-design-to-execution-0.1.0-native.1.json`, version `0.1.0-native.1`, semantic digest `5e4fd372ee9c07c720732f444056a32a512171c202c2d2c53af74f81568a98c7`, physical SHA-256 `5ad905f9153b780b2f6303fa3214b1a23f72471902bf0f1acc71397076891919`.
+- Current snapshot: `crates/host/pipeline-definitions/full-design-to-execution.json`, version `0.4.0-native.skills.1`, semantic digest `13fd152337abc76d7bbfa15c0875d7b6fbe4719ccfd6fadab5f31825cd39769b`, physical SHA-256 `eb36e20697b38204a5a10261f5454e854538b6c719213f9d9b6be0303663bab1`.
+- Exact selected source package: `skills/references/superpowers-v6.3.0-b36e0829`, upstream commit `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`, tag `v6.3.0`, package manifest SHA-256 `2973ac33ed683d9c50e15fab14a5045f768b6b765d29849237f95371d99b5dde`, MIT license SHA-256 `a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400`.
+
+### Selected body replacements
+
+| Previous ID | Previous version | Previous digest | Current ID | Current version | Current digest | Current source |
+|---|---:|---|---|---:|---|---|
+| `superpowers:executing-plans` | `5.0.7` | `a711f83fb762e2ea0fa151f598893da9911a408895c91cc7a7e0770dd59a27b3` | `superpowers:executing-plans` | `6.3.0` | `c4c3d8b628c51114cd165fb8246fe02744cd8be180032328391252e653028d9b` | `skills/references/superpowers-v6.3.0-b36e0829/skills/executing-plans/SKILL.md` |
+| `superpowers:finishing-a-development-branch` | `5.0.7` | `dd2f82c6dc8582b621f9eb57fcb65f557f88eadf872727ac81d0840ae12c504e` | `superpowers:finishing-a-development-branch` | `6.3.0` | `8db5a922b242dd4e1bf824cb91c13b3e8d8e8a86d6ceaf7f0774eb9cce909d65` | `skills/references/superpowers-v6.3.0-b36e0829/skills/finishing-a-development-branch/SKILL.md` |
+| `superpowers:requesting-code-review` | `5.0.7` | `a5ff68586ccf62d1803cedeb71d60fd96ec05591d29c8d123196117eefd34cd0` | `superpowers:requesting-code-review` | `6.3.0` | `d71cc01ba56d2325cf8af5f7c11837819b63ecd57de0bfdb812f7f3ff7751df8` | `skills/references/superpowers-v6.3.0-b36e0829/skills/requesting-code-review/SKILL.md` |
+| `superpowers:requesting-code-review/code-reviewer` | `5.0.7` | `7f5328dca12cb200005ae9d4386f63a9b0acb735ece57f82db206b4a3189ccae` | `superpowers:requesting-code-review/code-reviewer` | `6.3.0` | `bd0a281a0d983e53bca422eaa02fe496003fde40d5d5561775ad5f82a344416a` | `skills/references/superpowers-v6.3.0-b36e0829/skills/requesting-code-review/code-reviewer.md` |
+| `superpowers:test-driven-development` | `5.0.7` | `7dee67b4af6bdccc7a914ca34533184d64592d0f5b23aeae631538168db14994` | `superpowers:test-driven-development` | `6.3.0` | `bf1b8216e523851a411e91d429a7c1c2a173e79d88957bc78e348218d50edd54` | `skills/references/superpowers-v6.3.0-b36e0829/skills/test-driven-development/SKILL.md` |
+| `superpowers:test-driven-development/testing-anti-patterns` | `5.0.7` | `bde453bc258f06543987477c837939afaa774ea2acbd9f308d702fc452bc4283` | `superpowers:test-driven-development/writing-good-tests` | `6.3.0` | `51471c853306ff92ca8bb41dcaea05f31c0e46b03651f8f3c99754b7172f4ae1` | `skills/references/superpowers-v6.3.0-b36e0829/skills/test-driven-development/writing-good-tests.md` |
+| `superpowers:using-git-worktrees` | `5.0.7` | `dcd1a83a2488bd557ceb7f14f2b6384ec209f551d18752dd9ceb70b9089dfb3b` | `superpowers:using-git-worktrees` | `6.3.0` | `8cfb86f121269e8f7f12361e6795c4f6738828340e28964c9229d365666c9edd` | `skills/references/superpowers-v6.3.0-b36e0829/skills/using-git-worktrees/SKILL.md` |
+| `superpowers:writing-plans` | `5.0.7` | `90056bad3d5f196fa7c9fec0ffe592e6d9c86bc983e406642a51d1a4198b7024` | `superpowers:writing-plans` | `6.3.0` | `48508f44bbfd7d24b029fbf3a314f3cd14c9615599059366e922f47b8dc08cf2` | `skills/references/superpowers-v6.3.0-b36e0829/skills/writing-plans/SKILL.md` |
+
+### Native adapters
+
+| Phase | Resource ID | Version | Digest | Source |
+|---|---|---:|---|---|
+| `slice-plan-builder` | `tect:superpowers-v6-native-boundary` | `0.4.0-native.skills.1` | `13012dd0ec17ae94125d0cd3ce78baca13302a728a066ba3bd0e5d4fc73c302f` | `skills/pipelines/shared/superpowers-v6-native-boundary.md` |
+| `slice-plan-builder` | `tect:superpowers-v6-planning-and-execution` | `0.4.0-native.skills.1` | `260e0fea1363583d2b201f1022f25a5b870749972a0cfa7cedfefcd1bf8d2ad0` | `skills/pipelines/shared/superpowers-v6-planning-and-execution.md` |
+| `slice-execution-runner` | `tect:superpowers-v6-native-boundary` | `0.4.0-native.skills.1` | `13012dd0ec17ae94125d0cd3ce78baca13302a728a066ba3bd0e5d4fc73c302f` | `skills/pipelines/shared/superpowers-v6-native-boundary.md` |
+| `slice-execution-runner` | `tect:superpowers-v6-test-quality` | `0.4.0-native.skills.1` | `892f63a5253c9d6517f9345bc1c102428d0abe50389e6347bff917556a7bbe39` | `skills/pipelines/shared/superpowers-v6-test-quality.md` |
+| `slice-execution-runner` | `tect:superpowers-v6-workspace-and-finish` | `0.4.0-native.skills.1` | `1be702b53fa3c813bb67d09780fd117d2d1b4d12c416b9ffeb4f8248da7dae21` | `skills/pipelines/shared/superpowers-v6-workspace-and-finish.md` |
+| `slice-execution-runner` | `tect:superpowers-v6-planning-and-execution` | `0.4.0-native.skills.1` | `260e0fea1363583d2b201f1022f25a5b870749972a0cfa7cedfefcd1bf8d2ad0` | `skills/pipelines/shared/superpowers-v6-planning-and-execution.md` |
+| `slice-execution-runner` | `tect:superpowers-v6-code-review` | `0.4.0-native.skills.1` | `0bec6a0936effcf74f978747f84a880ad2067a2333d6de397f8ef44d865143e6` | `skills/pipelines/shared/superpowers-v6-code-review.md` |
+| `slice-handoff-builder` | `tect:superpowers-v6-native-boundary` | `0.4.0-native.skills.1` | `13012dd0ec17ae94125d0cd3ce78baca13302a728a066ba3bd0e5d4fc73c302f` | `skills/pipelines/shared/superpowers-v6-native-boundary.md` |
+| `slice-handoff-builder` | `tect:superpowers-v6-workspace-and-finish` | `0.4.0-native.skills.1` | `1be702b53fa3c813bb67d09780fd117d2d1b4d12c416b9ffeb4f8248da7dae21` | `skills/pipelines/shared/superpowers-v6-workspace-and-finish.md` |
+
+### Deliberately retained Superpowers bodies
+
+| ID | Version | Digest | Preserved source |
+|---|---:|---|---|
+| `superpowers:brainstorming` | `5.0.7` | `bba47904a7f6bbee3bf8a107ebbe84e65d392be683bbb898ded736b29e415f90` | `skills/references/superpowers/brainstorming/SKILL.md` |
+| `superpowers:brainstorming/visual-companion` | `5.0.7` | `0d3a8e7d63c665361f6a40b8dc48a259dceb98edb0c79a5931175f910373d6c1` | `skills/references/superpowers/brainstorming/visual-companion.md` |
+| `superpowers:subagent-driven-development` | `5.0.7` | `081ad3869e55c80bf8f890b4768a90c0e8057daf94b1b6fadebfc85ea5b8304a` | `skills/references/superpowers/subagent-driven-development/SKILL.md` |
+| `superpowers:subagent-driven-development/code-quality-reviewer-prompt` | `5.0.7` | `06d1e7c2287e5a00bd1809bf39038abd5f413b4cf917c37d30f00c48f6293421` | `skills/references/superpowers/subagent-driven-development/code-quality-reviewer-prompt.md` |
+| `superpowers:subagent-driven-development/implementer-prompt` | `5.0.7` | `a416193f881e5a712c988fffabfe1d5a97bffcd091eb95577c84fe2136588617` | `skills/references/superpowers/subagent-driven-development/implementer-prompt.md` |
+| `superpowers:subagent-driven-development/spec-reviewer-prompt` | `5.0.7` | `631980e472eec5394de8b89b69d432e54fd3f7f523ecf9afa7eb4cda0c9b2baf` | `skills/references/superpowers/subagent-driven-development/spec-reviewer-prompt.md` |
+| `superpowers:verification-before-completion` | `5.0.7` | `ea52d15aabaf72bc6b558efe2c126f161b53961090ddcd712000273bfe8c7b6c` | `skills/references/superpowers/verification-before-completion/SKILL.md` |
+
+The archived snapshot remains the exact carrier for stored runs created against the previous definition version.

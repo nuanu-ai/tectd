@@ -1,10 +1,11 @@
 #[path = "pipeline_execution/full_support.rs"]
 mod pipeline_support;
+#[allow(dead_code)]
 mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;
 
-use pipeline_support::{completion, successful_route};
+use pipeline_support::{completion, refresh_knowledge, successful_route};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -104,7 +105,7 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
     assert_eq!(context["run"]["delivery_mode"], "phasewise");
     assert_eq!(
         context["run"]["definition_digest"],
-        "5c56887c41cfe9b6cae3309101059b4d643bb47e3db56ceb7d7ec80ae7214882"
+        "8a1be05166244cffae5456f476d9748051f4786f3c9c2f4744b1abace4facdb9"
     );
     assert_eq!(context["definition"]["phases"].as_array().unwrap().len(), 1);
 
@@ -209,6 +210,7 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
     )
     .await["context"]
         .clone();
+    context = refresh_knowledge(&mut client, &context).await;
     context = route(
         &mut client,
         "command",
@@ -308,6 +310,7 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
     )
     .await["context"]
         .clone();
+    context = refresh_knowledge(&mut client, &context).await;
 
     while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 18 {
         if context["run"]["current_phase_id"] == "slice-op-exec-rollback-or-recovery-runner" {
@@ -332,6 +335,7 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
             )
             .await["context"]
                 .clone();
+            context = refresh_knowledge(&mut client, &context).await;
         }
         context = advance(&mut client, context).await;
     }

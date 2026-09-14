@@ -31,16 +31,45 @@ pub(super) async fn receipt(
     request_id: Uuid,
     payload: &serde_json::Value,
 ) -> Result<Option<SliceCandidateContext>> {
-    let row:Option<(serde_json::Value,serde_json::Value)>=sqlx::query_as("SELECT request_payload,result_payload FROM native_planning_receipts WHERE tenant_id=$1 AND workspace_id=$2 AND entity_id=$3 AND operation=$4 AND request_id=$5")
+    let row:Option<(Option<serde_json::Value>,Option<serde_json::Value>,bool)>=sqlx::query_as("SELECT request_payload,result_payload,payload_erased FROM native_planning_receipts WHERE tenant_id=$1 AND workspace_id=$2 AND entity_id=$3 AND operation=$4 AND request_id=$5")
         .bind(tenant).bind(workspace).bind(entity).bind(operation).bind(request_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     match row {
         None => Ok(None),
-        Some((stored, result)) => {
+        Some((_, _, true)) => Err(Error::KnowledgePayloadErased),
+        Some((Some(stored), Some(result), false)) => {
             if &stored != payload {
                 return Err(Error::InputConflict);
             }
+            let scope: Option<Uuid> = sqlx::query_scalar(
+                "SELECT scope_id FROM slice_candidate_sets WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
+            )
+            .bind(tenant)
+            .bind(workspace)
+            .bind(entity)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(storage_error)?;
+            if let Some(scope) = scope {
+                crate::planning_knowledge::require_owned_payload_identity(
+                    tx,
+                    tenant,
+                    workspace,
+                    &["native_scopes"],
+                    Some(scope),
+                )
+                .await?;
+            }
+            crate::planning_knowledge::require_owned_payload_identity(
+                tx,
+                tenant,
+                workspace,
+                &["native_planning_receipts"],
+                Some(entity),
+            )
+            .await?;
             Ok(Some(decode(result)?))
         }
+        Some(_) => Err(Error::InternalInvariant),
     }
 }
 #[allow(clippy::too_many_arguments)]

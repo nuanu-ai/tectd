@@ -40,9 +40,20 @@ async fn run() -> tect_domain::Result<()> {
         Ok(None) | Err(_) => false,
     };
     let service = Arc::new(service);
-    let search_worker = if embedding_enabled {
-        knowledge_search_worker::SearchWorkerConfig::from_env()?
-            .map(|config| tokio::spawn(knowledge_search_worker::run(service.clone(), config)))
+    let maintenance_enabled = knowledge_search_worker::maintenance_enabled()?;
+    let knowledge_worker = if embedding_enabled || maintenance_enabled {
+        let config = knowledge_search_worker::SearchWorkerConfig::from_env()?;
+        if maintenance_enabled && config.is_none() {
+            return Err(Error::InvalidConfiguration);
+        }
+        config.map(|config| {
+            tokio::spawn(knowledge_search_worker::run(
+                service.clone(),
+                config,
+                embedding_enabled,
+                maintenance_enabled,
+            ))
+        })
     } else {
         None
     };
@@ -53,13 +64,13 @@ async fn run() -> tect_domain::Result<()> {
     let mut server = tokio::spawn(tect_host::serve(listener, service));
     tokio::select! {
         result = &mut server => {
-            if let Some(worker) = &search_worker { worker.abort(); }
+            if let Some(worker) = &knowledge_worker { worker.abort(); }
             result.map_err(|_| Error::TransportUnavailable)?
         }
         signal = tokio::signal::ctrl_c() => {
             signal.map_err(|_| Error::TransportUnavailable)?;
             server.abort();
-            if let Some(worker) = &search_worker { worker.abort(); }
+            if let Some(worker) = &knowledge_worker { worker.abort(); }
             let _ = server.await;
             Ok(())
         }

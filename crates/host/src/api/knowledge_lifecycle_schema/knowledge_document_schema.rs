@@ -26,6 +26,29 @@ fn artifact() -> Value {
     )
 }
 
+fn planning_brief() -> Value {
+    let selectors = object_schema(
+        json!({
+            "target_iris":{"type":"array","items":iri(),"maxItems":128,"uniqueItems":true},
+            "environment_iris":{"type":"array","items":iri(),"maxItems":128,"uniqueItems":true},
+            "action_classes":{"type":"array","items":text(1024),"maxItems":128,"uniqueItems":true}
+        }),
+        json!([]),
+    );
+    object_schema(
+        json!({
+            "local_id":text(128),
+            "stage":{"enum":["program","scope","slice_candidates"]},
+            "instruction":text(65536),
+            "conditions":{"type":"array","items":text(4096),"maxItems":128,"uniqueItems":true},
+            "exceptions":{"type":"array","items":text(4096),"maxItems":128,"uniqueItems":true},
+            "purpose":text(4096),
+            "selectors":selectors
+        }),
+        json!(["local_id", "stage", "instruction", "purpose"]),
+    )
+}
+
 pub(super) fn source() -> Value {
     let evidence = json!({"enum":["document","declaration","observation","decision_record",
         "research","static_verification","runtime_verification","negative_evidence"]});
@@ -86,6 +109,7 @@ pub(super) fn document() -> Value {
             "valid_from":{"type":"string","format":"date-time","maxLength":128},
             "valid_until":{"type":"string","format":"date-time","maxLength":128},
             "review_due_at":{"type":"string","format":"date-time","maxLength":128},
+            "planning_briefs":{"type":"array","items":planning_brief(),"maxItems":tect_domain::PLANNING_KNOWLEDGE_MAX_BRIEFS,"uniqueItems":true},
             "sections":knowledge_profile_schema::sections()}),
         json!([
             "title",

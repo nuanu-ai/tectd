@@ -1,188 +1,26 @@
 use super::recovery_support::{Daemon, Mcp};
 use super::support::{route, route_error};
+#[path = "knowledge_maintenance_restore_support.rs"]
+mod knowledge_maintenance_restore_support;
 #[path = "knowledge_search_restore_support.rs"]
 mod knowledge_search_restore_support;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{
     PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
-use std::{
-    env, fs,
-    io::Write,
-    os::unix::fs::OpenOptionsExt,
-    path::{Path, PathBuf},
-    process::Stdio,
-    time::Duration,
-};
+use std::{env, fs, path::Path, process::Stdio, time::Duration};
 use tect_domain::KnowledgeEmbeddingJobCompletion;
 use tect_postgres::{KnowledgeSuppressionCheckpoint, KnowledgeSuppressionManifest};
 use tokio::process::Command;
 use uuid::Uuid;
 
-#[derive(Clone, Serialize, Deserialize)]
-struct GraphBackup {
-    iri: String,
-    digest: String,
-    file: String,
-}
-
-pub struct ApplicationBackup {
-    dump: PathBuf,
-    graph_dir: PathBuf,
-}
-
-fn database_url(url: &str, database: &str) -> String {
-    let (base, query) = url
-        .split_once('?')
-        .map_or((url, None), |(a, b)| (a, Some(b)));
-    let slash = base.rfind('/').unwrap();
-    let mut value = format!("{}/{database}", &base[..slash]);
-    if let Some(query) = query {
-        value.push('?');
-        value.push_str(query);
-    }
-    value
-}
-
-fn quoted_database(name: &str) -> String {
-    assert!(
-        name.bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
-    );
-    format!("\"{name}\"")
-}
-
-fn restore_pgpass(directory: &Path, database: &str) -> PathBuf {
-    let source = env::var("PGPASSFILE").expect("PGPASSFILE is required for managed restore");
-    let source = fs::read_to_string(source).expect("read source pgpass");
-    let mut restored = String::new();
-    for line in source
-        .lines()
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-    {
-        let fields: Vec<&str> = line.splitn(5, ':').collect();
-        assert_eq!(fields.len(), 5, "invalid pgpass entry");
-        restored.push_str(&format!(
-            "{}:{}:{}:{}:{}\n",
-            fields[0], fields[1], database, fields[3], fields[4]
-        ));
-    }
-    assert!(!restored.is_empty(), "source pgpass has no usable entry");
-    let path = directory.join(format!("restore-{}.pgpass", Uuid::new_v4().simple()));
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&path)
-        .unwrap();
-    file.write_all(restored.as_bytes()).unwrap();
-    path
-}
-
-fn pgpass_password(path: &Path, user: &str) -> String {
-    fs::read_to_string(path)
-        .unwrap()
-        .lines()
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .find_map(|line| {
-            let fields: Vec<&str> = line.splitn(5, ':').collect();
-            (fields.len() == 5 && fields[3] == user).then(|| fields[4].to_owned())
-        })
-        .expect("restore pgpass entry for user")
-}
-
-fn authenticated_url(url: &str, password: &str) -> String {
-    let password = password.bytes().fold(String::new(), |mut value, byte| {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            value.push(char::from(byte));
-        } else {
-            value.push_str(&format!("%{byte:02X}"));
-        }
-        value
-    });
-    let user_end = url.find('@').expect("database URL user separator");
-    format!("{}:{password}{}", &url[..user_end], &url[user_end..])
-}
-
-pub async fn capture(pool: &PgPool, admin_url: &str, directory: &Path) -> ApplicationBackup {
-    let source_database: String = sqlx::query_scalar("SELECT pg_catalog.current_database()")
-        .fetch_one(pool)
-        .await
-        .unwrap();
-    let dump = directory.join("suppression-application.dump");
-    let graph_dir = directory.join("suppression-graphs");
-    fs::create_dir(&graph_dir).unwrap();
-    let mut snapshot = pool.begin().await.unwrap();
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        .execute(&mut *snapshot)
-        .await
-        .unwrap();
-    let snapshot_id: String = sqlx::query_scalar("SELECT pg_catalog.pg_export_snapshot()")
-        .fetch_one(&mut *snapshot)
-        .await
-        .unwrap();
-    let inventory: Vec<(i64, String)> =
-        sqlx::query_as("SELECT graph_id,iri FROM pgrdf.graph_inventory() ORDER BY iri")
-            .fetch_all(&mut *snapshot)
-            .await
-            .unwrap();
-    assert!(
-        inventory
-            .iter()
-            .all(|(_, iri)| !iri.starts_with("urn:tect:dk:scratch:"))
-    );
-    let mut graphs = Vec::new();
-    for (index, (graph_id, iri)) in inventory.iter().enumerate() {
-        let lines: Vec<String> = sqlx::query_scalar("SELECT * FROM pgrdf.export_graph($1)")
-            .bind(graph_id)
-            .fetch_all(&mut *snapshot)
-            .await
-            .unwrap();
-        let payload = if lines.is_empty() {
-            String::new()
-        } else {
-            lines.join("\n") + "\n"
-        };
-        let digest: String = sqlx::query_scalar("SELECT pgrdf.graph_digest($1)")
-            .bind(graph_id)
-            .fetch_one(&mut *snapshot)
-            .await
-            .unwrap();
-        let file = format!("graph-{index}.nt");
-        fs::write(graph_dir.join(&file), payload).unwrap();
-        graphs.push(GraphBackup {
-            iri: iri.clone(),
-            digest,
-            file,
-        });
-    }
-    fs::write(
-        graph_dir.join("manifest.json"),
-        serde_json::to_vec_pretty(&graphs).unwrap(),
-    )
-    .unwrap();
-    let status = Command::new("pg_dump")
-        .args([
-            "--no-password",
-            "--format=custom",
-            "--exclude-schema=pgrdf",
-            "--exclude-extension=pgrdf",
-            "--snapshot",
-        ])
-        .arg(&snapshot_id)
-        .arg("--file")
-        .arg(&dump)
-        .arg("--dbname")
-        .arg(database_url(admin_url, &source_database))
-        .status()
-        .await
-        .unwrap();
-    assert!(status.success());
-    snapshot.commit().await.unwrap();
-    ApplicationBackup { dump, graph_dir }
-}
+#[path = "knowledge_suppression_backup_capture_support.rs"]
+mod knowledge_suppression_backup_capture_support;
+pub use knowledge_suppression_backup_capture_support::{ApplicationBackup, capture};
+use knowledge_suppression_backup_capture_support::{
+    GraphBackup, authenticated_url, database_url, pgpass_password, quoted_database, restore_pgpass,
+};
 
 #[allow(clippy::too_many_arguments)]
 pub async fn restore_apply_and_verify(
@@ -205,6 +43,14 @@ pub async fn restore_apply_and_verify(
     survivor_unit: &Value,
     survivor_expected: &Value,
     restored_completion: &KnowledgeEmbeddingJobCompletion,
+    target_maintenance_task: Uuid,
+    survivor_maintenance_task: Uuid,
+    survivor_maintenance_revision: i64,
+    restored_maintenance_lease: Uuid,
+    planning_program: &Value,
+    planning_begin_request: &Value,
+    planning_refresh_request: &Value,
+    planning_marker: &str,
 ) {
     let database = format!("tect_dk_suppression_restore_{}", Uuid::new_v4().simple());
     let maintenance = PgPool::connect(&database_url(admin_url, "postgres"))
@@ -250,6 +96,17 @@ pub async fn restore_apply_and_verify(
             .await
             .is_err()
     );
+    let protected_planning: (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM planning_knowledge_manifests \
+           WHERE owner_id=$1 AND pg_catalog.jsonb_array_length(selected)>0), \
+         (SELECT count(*) FROM knowledge_owned_copies \
+           WHERE relation_name='programs' AND row_id=$1 AND NOT redacted)",
+    )
+    .bind(Uuid::parse_str(planning_program.as_str().unwrap()).unwrap())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(protected_planning.0 > 0 && protected_planning.1 > 0);
     sqlx::query("CREATE EXTENSION pgrdf VERSION '0.6.34'")
         .execute(&pool)
         .await
@@ -306,6 +163,13 @@ pub async fn restore_apply_and_verify(
     assert!(blocked_native.is_err());
     runtime_pool.close().await;
     knowledge_search_restore_support::verify_blocked(&pool, &runtime, restored_completion).await;
+    knowledge_maintenance_restore_support::verify_blocked(
+        &pool,
+        target_maintenance_task,
+        survivor_maintenance_task,
+        restored_maintenance_lease,
+    )
+    .await;
     let blocked_socket = directory.join("suppression-blocked.sock");
     let mut blocked_daemon = Command::new(env!("CARGO_BIN_EXE_tectd"))
         .env("TECT_DATABASE_URL", &runtime)
@@ -338,6 +202,11 @@ pub async fn restore_apply_and_verify(
         .unwrap();
     assert_eq!(report.remaining, 0);
     assert_eq!(report.units_suppressed, manifest.entries.len() as i64);
+    let entry = manifest
+        .entries
+        .iter()
+        .find(|entry| entry.unit_id.to_string() == erased_unit.as_str().unwrap())
+        .unwrap();
     knowledge_search_restore_support::verify_requalified(
         &pool,
         &runtime,
@@ -348,11 +217,19 @@ pub async fn restore_apply_and_verify(
         runtime_role,
     )
     .await;
-    let entry = manifest
-        .entries
-        .iter()
-        .find(|entry| entry.unit_id.to_string() == erased_unit.as_str().unwrap())
-        .unwrap();
+    knowledge_maintenance_restore_support::verify_requalified(
+        &pool,
+        &runtime,
+        config,
+        workspace,
+        entry.unit_id,
+        target_maintenance_task,
+        Uuid::parse_str(survivor_unit.as_str().unwrap()).unwrap(),
+        survivor_maintenance_task,
+        survivor_maintenance_revision,
+        restored_maintenance_lease,
+    )
+    .await;
     let erased_search: (i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM knowledge_search_resources WHERE unit_id=$1),\
          (SELECT count(*) FROM knowledge_search_embedding_jobs WHERE unit_id=$1),\
@@ -443,6 +320,38 @@ pub async fn restore_apply_and_verify(
         .await["error"]["code"],
         "knowledge_payload_erased"
     );
+    assert_eq!(
+        route_error(
+            &mut client,
+            "query",
+            "program.get",
+            json!({"program_id":planning_program})
+        )
+        .await["error"]["code"],
+        "knowledge_payload_erased"
+    );
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "program.begin",
+            planning_begin_request.clone()
+        )
+        .await["error"]["code"],
+        "knowledge_payload_erased"
+    );
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "program.knowledge.refresh",
+            planning_refresh_request.clone()
+        )
+        .await["error"]["code"],
+        "knowledge_payload_erased"
+    );
+    let listed = route(&mut client, "query", "program.list", json!({"limit":100})).await;
+    assert!(!listed.to_string().contains(planning_marker));
     assert_eq!(
         route_error(
             &mut client,

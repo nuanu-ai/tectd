@@ -250,8 +250,8 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
         for tool in tools if tool["name"] in {"query", "command", "execute"}
     }
     proof.check(
-        "five-tool facade exposes the exact DK-3 route totals",
-        route_counts == {"query": 15, "command": 33, "execute": 1},
+        "five-tool facade exposes the exact DK-4 route totals",
+        route_counts == {"query": 16, "command": 36, "execute": 1},
         route_counts,
     )
     proof.persist()
@@ -301,9 +301,12 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
         "knowledge.change_commit",
         "knowledge.change_settle_effects",
         "knowledge.search",
+        "knowledge.maintenance",
+        "knowledge.maintenance_observe",
+        "knowledge.maintenance_begin",
     }
     proof.check(
-        "native help discovers the exact fourteen DK-1 through DK-3 routes",
+        "native help discovers the exact seventeen DK-1 through DK-4 routes",
         not failed and knowledge_routes == expected_knowledge_routes,
         sorted(route for route in knowledge_routes if isinstance(route, str)),
     )
@@ -410,6 +413,90 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
         and inactive_search.get("error", {}).get("code") == "knowledge_unavailable"
         and all(key not in inactive_search for key in ("results", "vector_status", "graph")),
         {"error_code": inactive_search.get("error", {}).get("code")},
+    )
+
+    maintenance_descriptions = {}
+    for tool, route in [
+        ("query", "knowledge.maintenance"),
+        ("command", "knowledge.maintenance_observe"),
+        ("command", "knowledge.maintenance_begin"),
+    ]:
+        described, failed = tool_result(
+            app, thread_id, "help", {"mode": "describe", "tool": tool, "route": route},
+        )
+        proof.check(
+            f"native help describes strict {route} parameters",
+            not failed
+            and described.get("kind") == "route"
+            and described.get("tool") == tool
+            and described.get("route") == route
+            and described.get("params_schema", {}).get("additionalProperties") is False,
+        )
+        maintenance_descriptions[route] = described
+
+    maintenance_schema = maintenance_descriptions["knowledge.maintenance"]["params_schema"]
+    observe_schema = maintenance_descriptions["knowledge.maintenance_observe"]["params_schema"]
+    observe_variants = observe_schema.get("properties", {}).get("basis", {}).get("oneOf", [])
+    begin_schema = maintenance_descriptions["knowledge.maintenance_begin"]["params_schema"]
+    begin_change = begin_schema.get("properties", {}).get("change", {}).get("allOf", [])
+    begin_overlay = begin_change[1] if len(begin_change) == 2 else {}
+    proof.check(
+        "maintenance discovery exposes bounded owner query external signals and one exact lifecycle operation",
+        maintenance_schema.get("required") == ["limit"]
+        and maintenance_schema.get("properties", {}).get("limit", {}).get("maximum") == 100
+        and maintenance_schema.get("properties", {}).get("states", {}).get("maxItems") == 7
+        and maintenance_schema.get("properties", {}).get("fragment", {}).get("additionalProperties") is False
+        and [variant.get("properties", {}).get("kind", {}).get("const") for variant in observe_variants]
+        == ["source_changed", "application_failed", "operator_requested"]
+        and all(variant.get("additionalProperties") is False for variant in observe_variants)
+        and begin_schema.get("required") == ["request_id", "task_id", "task_revision", "change"]
+        and begin_overlay.get("properties", {}).get("operation_hints", {}).get("minItems") == 1
+        and begin_overlay.get("properties", {}).get("operation_hints", {}).get("maxItems") == 1
+        and begin_overlay.get("properties", {}).get("operation_hints", {}).get("items", {})
+        .get("properties", {}).get("operation", {}).get("enum")
+        == ["revalidate", "revise", "supersede"],
+        {
+            "query_required": maintenance_schema.get("required"),
+            "observe_basis_kinds": [
+                variant.get("properties", {}).get("kind", {}).get("const")
+                for variant in observe_variants
+            ],
+            "begin_required": begin_schema.get("required"),
+        },
+    )
+    invalid_maintenance_calls = [
+        ("query", {"route": "knowledge.maintenance", "params": {"limit": 25, "fragment": None}}),
+        ("command", {
+            "route": "knowledge.maintenance_observe",
+            "params": {
+                "request_id": str(uuid.uuid4()),
+                "unit_id": str(uuid.uuid4()),
+                "unit_revision": 1,
+                "basis": {"kind": "review_due", "review_due_at": "2026-09-15T00:00:00Z"},
+            },
+        }),
+    ]
+    begin_invalid = json.loads(json.dumps(
+        maintenance_descriptions["knowledge.maintenance_begin"]["example"]["arguments"]
+    ))
+    begin_invalid["params"]["change"]["operation_hints"][0]["operation"] = "erase"
+    invalid_maintenance_calls.append(("command", begin_invalid))
+    invalid_results = []
+    for tool, arguments in invalid_maintenance_calls:
+        payload, failed = tool_result(app, thread_id, tool, arguments)
+        invalid_results.append({
+            "route": arguments["route"],
+            "failed": failed,
+            "code": payload.get("error", {}).get("code"),
+            "leaked_tasks": "tasks" in payload,
+        })
+    proof.check(
+        "inactive fixture rejects invalid maintenance query observe and begin inputs before native state",
+        all(
+            item["failed"] and item["code"] == "invalid_arguments" and not item["leaked_tasks"]
+            for item in invalid_results
+        ),
+        invalid_results,
     )
 
     programs, failed = tool_result(app, thread_id, "query", {"route": "program.list", "params": {"limit": 25}})

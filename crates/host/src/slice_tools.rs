@@ -101,6 +101,8 @@ fn reject_optional_nulls(value: &Value) -> Result<()> {
         "change_rationale",
         "why_lightweight_insufficient",
         "why_further_vertical_split_not_viable",
+        "consumed_knowledge",
+        "task_context",
     ];
     match value {
         Value::Object(object) => {

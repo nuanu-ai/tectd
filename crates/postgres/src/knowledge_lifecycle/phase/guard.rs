@@ -116,6 +116,28 @@ pub(super) async fn verify_envelope(
             .find(|value| value.id == id)
             .ok_or(Error::InvalidConfiguration)?;
         methods.insert((own.id.clone(), own.version.clone(), own.digest.clone()));
+        let linked_maintenance: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM knowledge_maintenance_tasks \
+             WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND state='linked')",
+        )
+        .bind(tenant)
+        .bind(workspace)
+        .bind(run)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(storage_error)?;
+        if linked_maintenance
+            && let Some(method) = current
+                .methods
+                .iter()
+                .find(|value| value.id == KNOWLEDGE_MAINTENANCE_METHOD_ID)
+        {
+            methods.insert((
+                method.id.clone(),
+                method.version.clone(),
+                method.digest.clone(),
+            ));
+        }
     }
     if let Some(plan) = plan.as_ref() {
         for obligation in &plan.obligations {

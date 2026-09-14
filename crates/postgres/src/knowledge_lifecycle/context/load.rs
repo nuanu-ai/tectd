@@ -36,6 +36,10 @@ pub(crate) async fn load_context(
     .map_err(storage_error)?;
     let Some(row) = row else { return Ok(None) };
     let run_id: Uuid = row.get(0);
+    let maintenance_tasks =
+        crate::knowledge_maintenance::linked_tasks(tx, tenant, workspace, change_id, run_id)
+            .await?;
+    let has_maintenance_task = !maintenance_tasks.is_empty();
     let definition: KnowledgeChangeDefinition = decode(row.get(2))?;
     let current_phase_id = row
         .try_get::<Option<String>, _>(7)
@@ -58,6 +62,7 @@ pub(crate) async fn load_context(
     let filter_phase = |mut value: KnowledgeChangePhaseDefinition| {
         value.methods.retain(|method| {
             value.id.method_id() == Some(method.id.as_str())
+                || (has_maintenance_task && method.id == KNOWLEDGE_MAINTENANCE_METHOD_ID)
                 || allowed_methods.as_ref().is_some_and(|allowed| {
                     allowed.contains(&(&method.id, &method.version, &method.digest))
                 })
@@ -307,6 +312,7 @@ pub(crate) async fn load_context(
     Ok(Some(KnowledgeChangeContext {
         change_id,
         origin,
+        maintenance_tasks,
         run,
         definition,
         delivered_phases,

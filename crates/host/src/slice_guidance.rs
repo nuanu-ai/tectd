@@ -7,7 +7,7 @@ use tect_domain::{
 };
 
 pub(crate) const METHOD_ID: &str = "tectd-slice-candidates";
-pub(crate) const METHOD_REVISION: &str = "1";
+pub(crate) const METHOD_REVISION: &str = "2";
 pub(crate) const METHOD_BODY: &str =
     include_str!("../../../skills/tectd-slice-candidates/SKILL.md");
 
@@ -72,6 +72,6 @@ mod tests {
                 .iter()
                 .all(|rule| rule.revision == "2" && !rule.text.trim().is_empty())
         );
-        assert_eq!(method_snapshot().revision, "1");
+        assert_eq!(method_snapshot().revision, "2");
     }
 }

@@ -170,7 +170,7 @@ fn operation_hint() -> Value {
         object_schema(json!({"client_label":text(128),"operation":{"enum":["revise","revalidate","supersede","retract","erase"]},"unit_id":uuid(),"expected_revision":revision(),"expected_lifecycle":{"enum":["active","retracted","superseded","erasure_pending","erased"]},"reason":text(4096),"authority_basis":text(4096),"depends_on_labels":strings(128)}),json!(["client_label","operation","unit_id","expected_revision","expected_lifecycle","reason","authority_basis"]))
     ]})
 }
-fn begin() -> Value {
+pub(super) fn begin() -> Value {
     object_schema(
         json!({
             "request_id":uuid(),"intent":text(262144),"desired_outcome":text(4096),"sources":{"type":"array","items":knowledge_document_schema::source(),"maxItems":128},

@@ -1571,6 +1571,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "tect-application",
  "tect-domain",

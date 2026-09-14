@@ -97,12 +97,58 @@ async fn managed_restore_reapplies_complete_suppression_and_preserves_survivor()
     let mut client = Mcp::start(&socket, &config, &native, &workspace_key).await;
 
     let marker = format!("recovery-erased-marker-{}", Uuid::new_v4());
-    let seed = promotion_support::open(&mut client, &repo, &marker).await;
+    let mut seed = promotion_support::open(&mut client, &repo, &marker).await;
+    seed.document["planning_briefs"] = json!([{
+        "local_id":"restore-program","stage":"program",
+        "instruction":"Retain the restore fixture only while its canonical unit remains available.",
+        "conditions":[],"exceptions":[],"purpose":"Managed restore delivery proof.",
+        "selectors":{}
+    }]);
     let target = commit_create_from_current(&mut client, seed.document.clone(), seed.begun).await;
     settle_and_finish(&mut client, &target).await;
     let target_unit = target.receipt["applied_operations"][0]["unit_id"].clone();
     let target_change = Uuid::parse_str(target.receipt["change_id"].as_str().unwrap()).unwrap();
     let target_run = Uuid::parse_str(target.receipt["run_id"].as_str().unwrap()).unwrap();
+    let program_begin_request = json!({
+        "request_id":Uuid::new_v4(),"input":"Create a restore-sensitive Program draft."
+    });
+    let begun = client
+        .call("begin_program", program_begin_request.clone())
+        .await;
+    let program_id = begun["program"]["id"].clone();
+    let program_manifest = &begun["program"]["planning_knowledge"]["manifest"];
+    assert_eq!(program_manifest["selected"].as_array().unwrap().len(), 1);
+    let draft_marker = format!("restore-program-draft-{}", Uuid::new_v4());
+    let saved = client
+        .call(
+            "save_program",
+            json!({
+                "program_id":program_id,"revision":begun["program"]["revision"],
+                "input_cursor":0,"name":draft_marker,"complete":false,
+                "consumed_knowledge":{"manifest_id":program_manifest["id"],
+                    "digest":program_manifest["digest"],
+                    "workspace_generation":program_manifest["workspace_generation"]}
+            }),
+        )
+        .await;
+    let refresh_request = json!({
+        "program_id":program_id,"revision":saved["program"]["revision"],
+        "input_cursor":saved["program"]["input_cursor"],"request_id":Uuid::new_v4()
+    });
+    let refreshed = route(
+        &mut client,
+        "command",
+        "program.knowledge.refresh",
+        refresh_request.clone(),
+    )
+    .await;
+    assert_eq!(
+        refreshed["program"]["planning_knowledge"]["manifest"]["selected"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 
     let mut survivor_document = seed.document.clone();
     survivor_document["title"] = json!("Independent recovery survivor");
@@ -111,6 +157,7 @@ async fn managed_restore_reapplies_complete_suppression_and_preserves_survivor()
     let survivor = commit_create(&mut client, survivor_document).await;
     let survivor_unit = survivor.receipt["applied_operations"][0]["unit_id"].clone();
     let survivor_uuid = Uuid::parse_str(survivor_unit.as_str().unwrap()).unwrap();
+    let target_uuid = Uuid::parse_str(target_unit.as_str().unwrap()).unwrap();
     let (survivor_job, survivor_input): (Uuid, String) = sqlx::query_as(
         "SELECT id,input_digest FROM knowledge_search_embedding_jobs WHERE unit_id=$1",
     )
@@ -147,6 +194,53 @@ async fn managed_restore_reapplies_complete_suppression_and_preserves_survivor()
             .iter()
             .any(|value| value["unit_id"] == target_unit)
     );
+    let unit_iris: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT unit_id,unit_iri FROM knowledge_revisions WHERE unit_id=ANY($1) AND revision=1",
+    )
+    .bind(vec![target_uuid, survivor_uuid])
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let maintenance_task = |unit: Uuid, marker: &str| {
+        let unit_iri = unit_iris
+            .iter()
+            .find_map(|(id, iri)| (*id == unit).then(|| iri.clone()))
+            .unwrap();
+        json!({"request_id":Uuid::new_v4(),"unit_id":unit,"unit_revision":1,
+            "basis":{"kind":"operator_requested","subject_ref":unit_iri,
+                "observation_digest":marker}})
+    };
+    let target_maintenance = route(
+        &mut client,
+        "command",
+        "knowledge.maintenance_observe",
+        maintenance_task(target_uuid, "restore-target-maintenance"),
+    )
+    .await;
+    let target_maintenance_task =
+        Uuid::parse_str(target_maintenance["created"]["id"].as_str().unwrap()).unwrap();
+    let survivor_maintenance = route(
+        &mut client,
+        "command",
+        "knowledge.maintenance_observe",
+        maintenance_task(survivor_uuid, "restore-survivor-maintenance"),
+    )
+    .await;
+    let survivor_maintenance_task =
+        Uuid::parse_str(survivor_maintenance["created"]["id"].as_str().unwrap()).unwrap();
+    let survivor_maintenance_revision = survivor_maintenance["created"]["revision"]
+        .as_i64()
+        .unwrap();
+    let restored_maintenance_lease = Uuid::new_v4();
+    sqlx::query(
+        "UPDATE knowledge_maintenance_tasks SET state='leased',attempts=1,lease_token=$2,\
+         lease_expires_at=pg_catalog.clock_timestamp()+interval '1 hour' WHERE id=$1",
+    )
+    .bind(survivor_maintenance_task)
+    .bind(restored_maintenance_lease)
+    .execute(&pool)
+    .await
+    .unwrap();
 
     let managed: (Uuid, bool, i64) = sqlx::query_as(
         "SELECT r.id,r.payload_erased,(SELECT count(*) FROM slice_planning_inputs i WHERE i.source_result_id=r.id) \
@@ -154,7 +248,6 @@ async fn managed_restore_reapplies_complete_suppression_and_preserves_survivor()
         .bind(target_change).bind(target_run).fetch_one(&pool).await.unwrap();
     assert!(!managed.1);
     assert_eq!(managed.2, 1);
-    let target_uuid = Uuid::parse_str(target_unit.as_str().unwrap()).unwrap();
     let owned_before: Vec<String> = sqlx::query_scalar(
         "SELECT DISTINCT relation_name FROM knowledge_owned_copies WHERE unit_id=$1 ORDER BY relation_name")
         .bind(target_uuid).fetch_all(&pool).await.unwrap();
@@ -239,6 +332,14 @@ async fn managed_restore_reapplies_complete_suppression_and_preserves_survivor()
         &survivor_unit,
         &survivor.exact,
         &restored_completion,
+        target_maintenance_task,
+        survivor_maintenance_task,
+        survivor_maintenance_revision,
+        restored_maintenance_lease,
+        &program_id,
+        &program_begin_request,
+        &refresh_request,
+        &draft_marker,
     )
     .await;
     pool.close().await;
