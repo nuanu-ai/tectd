@@ -43,8 +43,9 @@ mechanics. It does not claim that TectD executed either selected pipeline or
 independently verified caller-supplied evidence.
 
 The deterministic discovery checks keep the five public tools and verify the exact `16` query,
-`36` command, and `1` execute routes. Knowledge discovery covers the six DK-1 routes, seven
-DK-2 lifecycle routes, DK-3 search, and three DK-4 maintenance routes. Strict maintenance help
+`36` command, and `1` execute routes. Knowledge discovery covers the exact eighteen DK-1 through
+DK-4 routes: six DK-1 routes, seven DK-2 lifecycle routes, DK-3 search, the DK-4 Program knowledge
+refresh, and three DK-4 maintenance routes. Strict maintenance help
 schemas expose the bounded owner query, the three accepted external signal kinds, and exactly one
 revalidate, revise, or supersede operation; invalid inputs are rejected before native state. The
 Slice catalogue contains eight executable kinds while only the seven

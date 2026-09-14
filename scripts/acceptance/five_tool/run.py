@@ -304,9 +304,10 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
         "knowledge.maintenance",
         "knowledge.maintenance_observe",
         "knowledge.maintenance_begin",
+        "program.knowledge.refresh",
     }
     proof.check(
-        "native help discovers the exact seventeen DK-1 through DK-4 routes",
+        "native help discovers the exact eighteen DK-1 through DK-4 routes",
         not failed and knowledge_routes == expected_knowledge_routes,
         sorted(route for route in knowledge_routes if isinstance(route, str)),
     )
