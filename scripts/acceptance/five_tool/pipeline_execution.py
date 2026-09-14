@@ -70,7 +70,7 @@ def assert_lightweight_whole_context(context: dict[str, Any], check: Callable) -
     instructions = [
         instruction
         for phase in phases
-        for field in ("instructions", "skills")
+        for field in ("instructions", "skills", "resources")
         for instruction in phase.get(field, [])
     ]
     check(
@@ -129,6 +129,17 @@ def skill_reads(phase: dict[str, Any]) -> list[dict[str, str]]:
             "digest": skill["digest"],
         }
         for skill in phase.get("skills", [])
+    ]
+
+
+def resource_reads(phase: dict[str, Any]) -> list[dict[str, str]]:
+    return [
+        {
+            "instruction_id": resource["id"],
+            "version": resource["version"],
+            "digest": resource["digest"],
+        }
+        for resource in phase.get("resources", [])
     ]
 
 
@@ -220,6 +231,7 @@ def phase_output(
             route.get("dispositions", []) if route else phase.get("required_dispositions", [])
         ),
         "skill_reads": skill_reads(phase),
+        "resource_reads": resource_reads(phase),
         "reference": f"isolated-acceptance/{marker}.md",
     }
     verdicts = phase.get("allowed_verdicts", [])
