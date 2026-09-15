@@ -7,6 +7,95 @@ use uuid::Uuid;
 const JSON_DIGEST: &str = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
 const MARKDOWN_DIGEST: &str = "a6ca93bcc504efd31c0b1f31b2e646d1d6e390c6531a3822a1eb115e3e66bf0c";
 
+pub(super) fn assert_non_coding_definition(context: &Value, expected_kind: &str) {
+    assert_eq!(context["definition"]["kind"], expected_kind);
+    for phase in context["definition"]["phases"].as_array().unwrap() {
+        assert!(
+            phase["output_constraints"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .all(|constraint| !matches!(
+                    constraint["kind"].as_str(),
+                    Some("engineering_review" | "code_authorization")
+                )),
+            "{} unexpectedly carries an engineering authority constraint",
+            phase["id"]
+        );
+        assert!(
+            phase["resources"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .all(|resource| !matches!(
+                    resource["id"].as_str(),
+                    Some(
+                        "tect:engineering-standards"
+                            | "tect:engineering-review"
+                            | "tect:engineering-review-schema"
+                    )
+                )),
+            "{} unexpectedly carries an engineering authority resource",
+            phase["id"]
+        );
+    }
+}
+
+pub(super) fn add_opaque_authority_labels(request: &mut Value) {
+    request["output"]["fields"]["engineering_review"] = json!("pass");
+    request["output"]["fields"]["code_authorization"] = json!("granted");
+}
+
+pub(super) async fn assert_forged_implementation_phase_rejected(
+    client: &mut Mcp,
+    context: &Value,
+    request: Value,
+    expected_kind: &str,
+) {
+    let mut forged_constraints = request.clone();
+    forged_constraints["request_id"] = json!(Uuid::new_v4());
+    forged_constraints["output_constraints"] = json!([
+        {"kind":"engineering_review"},
+        {"kind":"code_authorization"}
+    ]);
+    let refused = client
+        .call_error(
+            "command",
+            json!({"route":"slice.pipeline.phase.complete","params":forged_constraints}),
+        )
+        .await;
+    assert_eq!(refused["error"]["code"], "invalid_arguments");
+
+    let mut request = request;
+    request["request_id"] = json!(Uuid::new_v4());
+    request["phase_id"] = json!("slice-execution-runner");
+    let refused = client
+        .call_error(
+            "command",
+            json!({"route":"slice.pipeline.phase.complete","params":request}),
+        )
+        .await;
+    assert_eq!(refused["error"]["code"], "invalid_arguments");
+    let current = client
+        .call(
+            "query",
+            json!({"route":"slice.pipeline.context","params":{"run_id":context["run"]["id"]}}),
+        )
+        .await;
+    assert_eq!(current["run"]["revision"], context["run"]["revision"]);
+    assert_eq!(
+        current["run"]["current_phase_id"],
+        context["run"]["current_phase_id"]
+    );
+    assert_eq!(
+        current["run"]["definition_digest"],
+        context["run"]["definition_digest"]
+    );
+    assert_non_coding_definition(&current, expected_kind);
+}
+
 fn pattern_matches(pattern: &str, name: &str) -> bool {
     pattern
         .split_once('*')

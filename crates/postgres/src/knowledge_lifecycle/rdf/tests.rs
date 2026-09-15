@@ -224,6 +224,7 @@ fn input() -> RdfPublicationInput {
             text: "exact bytes".into(),
         }],
         successor_unit: None,
+        include_empty_planning_briefs: true,
     }
 }
 
@@ -280,6 +281,7 @@ fn corpus_input(fixture: &CorpusFixture, ordinal: u128) -> RdfPublicationInput {
             text: snapshot.text.clone(),
         }],
         successor_unit: None,
+        include_empty_planning_briefs: true,
     }
 }
 

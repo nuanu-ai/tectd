@@ -72,6 +72,11 @@ pub(crate) fn omit_nulls(value: &mut Value) {
 }
 
 pub(crate) async fn complete_agent(client: &mut Mcp, current: &Value, data: Value) -> Value {
+    let params = complete_agent_params(current, data);
+    route(client, "command", "knowledge.change_phase_complete", params).await
+}
+
+pub(crate) fn complete_agent_params(current: &Value, data: Value) -> Value {
     let action = &current["actions"][0];
     let mut params = action_params(action).clone();
     let output = &mut params["output"];
@@ -84,7 +89,7 @@ pub(crate) async fn complete_agent(client: &mut Mcp, current: &Value, data: Valu
     output["findings"] = json!([]);
     output["dispositions"] = json!([]);
     omit_nulls(&mut params);
-    route(client, "command", "knowledge.change_phase_complete", params).await
+    params
 }
 
 pub async fn query_current(client: &mut Mcp, change_id: &Value) -> Value {

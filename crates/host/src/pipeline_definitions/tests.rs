@@ -492,3 +492,280 @@ fn inquiry_definition_special_reads_and_terminal_routes_are_exact() {
     );
     assert_eq!(b10.resources[0].id, "tect:superpowers-v6-native-boundary");
 }
+
+#[test]
+fn research_contract_derives_all_phases_classifications_provenance_and_publication_boundary() {
+    use tect_domain::PipelineOutputConstraint;
+
+    let definition = StaticPipelineDefinitions
+        .definition(PipelineKind::Research)
+        .unwrap();
+    assert_eq!(
+        definition
+            .phases
+            .iter()
+            .map(|phase| phase.id.as_str())
+            .collect::<Vec<_>>(),
+        (1..=12)
+            .map(|ordinal| format!("R{ordinal:02}"))
+            .collect::<Vec<_>>()
+    );
+    assert!(definition.phases.iter().all(|phase| {
+        phase.required
+            && !phase.instructions.is_empty()
+            && !phase.skills.is_empty()
+            && phase.output_constraints.iter().all(|constraint| {
+                !matches!(
+                    constraint,
+                    PipelineOutputConstraint::ResolvedKnowledgePublication { .. }
+                        | PipelineOutputConstraint::EngineeringReview { .. }
+                        | PipelineOutputConstraint::CodeAuthorization { .. }
+                )
+            })
+    }));
+    let r09 = &definition.phases[8];
+    assert_eq!(r09.id, "R09");
+    for (verdict, outcome) in [
+        ("ready", tect_domain::PipelinePhaseOutcome::Completed),
+        (
+            "bounded_inconclusive",
+            tect_domain::PipelinePhaseOutcome::Completed,
+        ),
+        (
+            "waiting_source",
+            tect_domain::PipelinePhaseOutcome::WaitingInput,
+        ),
+    ] {
+        assert!(
+            r09.verdict_routes
+                .iter()
+                .any(|route| { route.verdict == verdict && route.outcome == outcome })
+        );
+    }
+    let r12 = &definition.phases[11];
+    for verdict in ["answered", "negative_result", "inconclusive"] {
+        assert!(r12.verdict_routes.iter().any(|route| {
+            route.verdict == verdict
+                && route.outcome == tect_domain::PipelinePhaseOutcome::Completed
+                && route.transition == tect_domain::PipelineTransition::Complete
+        }));
+        assert!(r12.output_constraints.iter().any(|constraint| matches!(
+            constraint,
+            PipelineOutputConstraint::FieldEquals { field, value, when_verdict }
+                if field == "publication_status"
+                    && value == "not_performed"
+                    && when_verdict.as_deref() == Some(verdict)
+        )));
+    }
+    for phase_id in ["R06", "R07", "R08", "R09", "R11", "R12"] {
+        let phase = definition
+            .phases
+            .iter()
+            .find(|phase| phase.id == phase_id)
+            .unwrap();
+        assert!(
+            phase
+                .output_contract
+                .to_ascii_lowercase()
+                .contains("source")
+                || phase
+                    .output_contract
+                    .to_ascii_lowercase()
+                    .contains("evidence")
+                || phase
+                    .output_contract
+                    .to_ascii_lowercase()
+                    .contains("provenance"),
+            "{phase_id} must preserve evidence provenance"
+        );
+    }
+}
+
+#[test]
+fn brainstorming_contract_derives_all_phases_and_exact_b05_research_checkpoint() {
+    let definition = StaticPipelineDefinitions
+        .definition(PipelineKind::DeepBrainstorming)
+        .unwrap();
+    assert_eq!(
+        definition
+            .phases
+            .iter()
+            .map(|phase| phase.id.as_str())
+            .collect::<Vec<_>>(),
+        (1..=10)
+            .map(|ordinal| format!("B{ordinal:02}"))
+            .collect::<Vec<_>>()
+    );
+    let b05 = &definition.phases[4];
+    assert!(b05.verdict_routes.iter().any(|route| {
+        route.verdict == "waiting_research"
+            && route.outcome == tect_domain::PipelinePhaseOutcome::WaitingInput
+            && route.transition == tect_domain::PipelineTransition::Continue
+    }));
+    assert!(b05.required_artifacts.iter().any(|artifact| {
+        artifact.name_pattern == "evidence-checkpoint.md"
+            && artifact.when_verdict.as_deref() == Some("waiting_research")
+    }));
+    assert!(b05.output_contract.contains("exact typed checkpoint"));
+    assert!(b05.output_contract.contains("returned Research result"));
+    assert!(definition.overview.body.contains("B05"));
+    assert!(definition.overview.body.contains("accepted exact result"));
+    assert!(
+        b05.skills[0]
+            .body
+            .contains("exact result from the bound Research")
+    );
+    assert!(b05.skills[0].body.contains("On resume"));
+}
+
+#[test]
+fn frozen_v04_pipeline_definitions_preserve_bytes_digest_parse_and_phase_identity() {
+    let fixtures = [
+        (
+            include_str!("../../pipeline-definitions/lightweight-tdd-0.4.0-native.skills.1.json"),
+            PipelineKind::LightweightTddDevelopment,
+            "66983d90c2fc8f17f91cec02a29dcd3bc382c2967f683a7392dc1378561fb921",
+            "b80b3472ebf4acc38996fa1946a2fe76e1b17fbcc39c6594f87a00e63a437768",
+            &[
+                "slice-lightweight-entry-gate",
+                "slice-lightweight-intent-capture",
+                "slice-lightweight-context-loader",
+                "slice-workspace-preflight-lite",
+                "slice-lightweight-contract-writer",
+                "slice-lightweight-escalation-checker",
+                "slice-test-target-selector",
+                "slice-tdd-cycle-runner",
+                "slice-implementation-note-writer",
+                "slice-lightweight-verification-runner",
+                "slice-deploy-impact-checker",
+                "slice-lightweight-result-writer",
+                "slice-lightweight-promotion-router",
+                "slice-lightweight-maintenance-and-handoff",
+            ][..],
+        ),
+        (
+            include_str!(
+                "../../pipeline-definitions/full-design-to-execution-0.4.0-native.skills.1.json"
+            ),
+            PipelineKind::FullDesignToExecution,
+            "eb36e20697b38204a5a10261f5454e854538b6c719213f9d9b6be0303663bab1",
+            "13fd152337abc76d7bbfa15c0875d7b6fbe4719ccfd6fadab5f31825cd39769b",
+            &[
+                "slice-full-dev-entry-gate",
+                "slice-workspace-preflight",
+                "slice-design-spec-shaper",
+                "slice-contract-writer",
+                "slice-component-decision-interrogator",
+                "slice-cross-cutting-reviewer",
+                "slice-reconciliation-runner",
+                "slice-implementation-spec-synthesizer",
+                "slice-spec-readiness-checker",
+                "slice-plan-builder",
+                "slice-human-decision-queue-manager",
+                "slice-execution-runner",
+                "slice-verification-runner",
+                "slice-validation-deployment-contract-shaper",
+                "slice-deployment-or-handoff-gate",
+                "slice-live-validation-runner",
+                "slice-result-writer",
+                "slice-promotion-and-deferred-router",
+                "slice-maintenance-check-requester",
+                "slice-handoff-builder",
+            ][..],
+        ),
+    ];
+
+    for (source, kind, file_sha256, definition_digest, phases) in fixtures {
+        assert_eq!(hex(&Sha256::digest(source.as_bytes())), file_sha256);
+        let parsed: PipelineDefinitionSnapshot = serde_json::from_str(source).unwrap();
+        assert_eq!(parsed.kind, kind);
+        assert_eq!(parsed.version, "0.4.0-native.skills.1");
+        assert_eq!(parsed.digest, definition_digest);
+        assert_eq!(
+            parsed
+                .phases
+                .iter()
+                .map(|phase| phase.id.as_str())
+                .collect::<Vec<_>>(),
+            phases
+        );
+        let loaded = load(source, kind).unwrap();
+        assert_eq!(loaded, parsed);
+    }
+}
+
+#[test]
+fn non_coding_pipeline_definitions_expose_no_engineering_or_code_authority() {
+    use tect_domain::PipelineOutputConstraint;
+
+    for kind in [
+        PipelineKind::DebugRootCause,
+        PipelineKind::OperationalPreparation,
+        PipelineKind::OperationalExecution,
+        PipelineKind::Research,
+        PipelineKind::DeepBrainstorming,
+        PipelineKind::ResearchToDurableKnowledge,
+        PipelineKind::CustomProcedureCapture,
+    ] {
+        let definition = StaticPipelineDefinitions.definition(kind).unwrap();
+        assert!(
+            definition.phases.iter().all(|phase| {
+                phase.output_constraints.iter().all(|constraint| {
+                    !matches!(
+                        constraint,
+                        PipelineOutputConstraint::EngineeringReview { .. }
+                            | PipelineOutputConstraint::CodeAuthorization { .. }
+                    )
+                })
+            }),
+            "{} exposed engineering or code authority",
+            kind.as_str()
+        );
+    }
+}
+
+#[test]
+fn non_coding_pipeline_definitions_reject_forged_engineering_authority_constraints() {
+    use tect_domain::PipelineOutputConstraint;
+
+    for kind in [
+        PipelineKind::DebugRootCause,
+        PipelineKind::OperationalPreparation,
+        PipelineKind::OperationalExecution,
+        PipelineKind::Research,
+        PipelineKind::DeepBrainstorming,
+        PipelineKind::ResearchToDurableKnowledge,
+        PipelineKind::CustomProcedureCapture,
+    ] {
+        let mut definition = StaticPipelineDefinitions.definition(kind).unwrap();
+        definition.phases[0]
+            .output_constraints
+            .push(PipelineOutputConstraint::CodeAuthorization {
+                required_plan_review_phase_id: "forged-engineering-review".into(),
+            });
+        assert!(
+            definition.validate().is_err(),
+            "{} accepted forged code authority",
+            kind.as_str()
+        );
+
+        let mut definition = StaticPipelineDefinitions.definition(kind).unwrap();
+        let forged_success_verdict = definition.phases[0].allowed_verdicts[0].clone();
+        definition.phases[0]
+            .output_constraints
+            .push(PipelineOutputConstraint::EngineeringReview {
+                stage: "plan".into(),
+                standards_resource_id: "tect:engineering-standards".into(),
+                standards_resource_digest: "forged".into(),
+                artifact_name: "engineering-review.json".into(),
+                success_verdicts: vec![forged_success_verdict],
+                required_prior_review_phase_ids: vec![],
+                required_reconciliation_phase_id: None,
+            });
+        assert!(
+            definition.validate().is_err(),
+            "{} accepted forged review authority",
+            kind.as_str()
+        );
+    }
+}

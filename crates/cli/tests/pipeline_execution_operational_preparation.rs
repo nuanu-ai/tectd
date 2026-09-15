@@ -4,7 +4,10 @@ mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;
 
-use pipeline_support::{completion, refresh_knowledge, successful_route};
+use pipeline_support::{
+    add_opaque_authority_labels, assert_forged_implementation_phase_rejected,
+    assert_non_coding_definition, completion, refresh_knowledge, successful_route,
+};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -126,7 +129,25 @@ async fn operational_preparation_builds_safe_handoff_without_executing() {
         .await["error"]["code"],
         "invalid_arguments"
     );
-    context = advance(&mut client, context).await;
+    assert_non_coding_definition(&context, "slice.operational-preparation");
+    let mut first = completion(&context, verdict, outcome, transition, None, None);
+    assert_forged_implementation_phase_rejected(
+        &mut client,
+        &context,
+        first.clone(),
+        "slice.operational-preparation",
+    )
+    .await;
+    add_opaque_authority_labels(&mut first);
+    context = route(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        first,
+    )
+    .await["context"]
+        .clone();
+    assert_non_coding_definition(&context, "slice.operational-preparation");
     context=route(&mut client,"command","slice.pipeline.delivery.escalate",json!({
         "request_id":Uuid::new_v4(),"run_id":context["run"]["id"],"run_revision":context["run"]["revision"],
         "phase_id":context["run"]["current_phase_id"],

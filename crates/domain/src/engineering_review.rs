@@ -346,13 +346,28 @@ fn validate_report(
         {
             return Err(Error::InvalidArguments);
         }
-        if requires_finding_lineage
-            && report.stage == ReviewStage::Specification
-            && (report.prior_finding_ids.is_none()
-                || report.resolved_finding_ids.is_none()
-                || report.prior_finding_ids != report.resolved_finding_ids)
-        {
-            return Err(Error::InvalidArguments);
+        if requires_finding_lineage {
+            let prior = report
+                .prior_finding_ids
+                .as_ref()
+                .ok_or(Error::InvalidArguments)?;
+            let resolved = report
+                .resolved_finding_ids
+                .as_ref()
+                .ok_or(Error::InvalidArguments)?;
+            match report.stage {
+                ReviewStage::Specification if prior != resolved => {
+                    return Err(Error::InvalidArguments);
+                }
+                ReviewStage::Plan
+                    if prior
+                        .iter()
+                        .any(|finding_id| !resolved.contains(finding_id)) =>
+                {
+                    return Err(Error::InvalidArguments);
+                }
+                _ => {}
+            }
         }
     } else {
         if report.assessments.is_empty()

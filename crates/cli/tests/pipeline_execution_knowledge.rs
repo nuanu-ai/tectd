@@ -74,7 +74,7 @@ async fn durable_knowledge_lifecycle_is_bound_to_real_pipeline_and_access() {
     let key = format!("pipeline-knowledge-{}", Uuid::new_v4());
     let native = Uuid::new_v4().to_string();
     let mut client = Mcp::start(&socket, &config, &native, &key).await;
-    let (source, candidate) = ready_source_candidate(&mut client, &repo).await;
+    let (_source, _candidate) = ready_source_candidate(&mut client, &repo).await;
 
     let initial = route(&mut client, "query", "knowledge.context", json!({})).await;
     assert_eq!(initial["generation"], 0);
@@ -187,6 +187,8 @@ async fn durable_knowledge_lifecycle_is_bound_to_real_pipeline_and_access() {
     )
     .await;
     assert_eq!(context(&cold)["publisher_receipt"], receipt);
+
+    let (source, candidate) = ready_source_candidate(&mut client, &repo).await;
 
     let opened_scope = route(
         &mut client,

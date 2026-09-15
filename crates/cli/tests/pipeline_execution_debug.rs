@@ -5,7 +5,10 @@ mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;
 
-use pipeline_support::{completion, refresh_knowledge, successful_route};
+use pipeline_support::{
+    add_opaque_authority_labels, assert_forged_implementation_phase_rejected,
+    assert_non_coding_definition, completion, refresh_knowledge, successful_route,
+};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -125,7 +128,26 @@ async fn debug_pipeline_preserves_diagnosis_and_composes_fix_as_future_slice() {
             )
     );
 
-    context = advance(&mut client, context).await;
+    assert_non_coding_definition(&context, "slice.debug-root-cause");
+    let (verdict, outcome, transition) = successful_route(&context);
+    let mut first = completion(&context, verdict, outcome, transition, None, None);
+    assert_forged_implementation_phase_rejected(
+        &mut client,
+        &context,
+        first.clone(),
+        "slice.debug-root-cause",
+    )
+    .await;
+    add_opaque_authority_labels(&mut first);
+    context = route(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        first,
+    )
+    .await["context"]
+        .clone();
+    assert_non_coding_definition(&context, "slice.debug-root-cause");
     context = route(
         &mut client,
         "command",

@@ -245,6 +245,30 @@ pub(super) async fn complete(
     terminal_result: Option<Value>,
     publish_blocked_result: bool,
 ) -> (Value, Value) {
+    let params = completion_request(
+        context,
+        outcome,
+        transition,
+        terminal_result,
+        publish_blocked_result,
+    );
+    let response = route(
+        client,
+        "command",
+        "slice.pipeline.phase.complete",
+        params.clone(),
+    )
+    .await;
+    (response, params)
+}
+
+pub(super) fn completion_request(
+    context: &Value,
+    outcome: &str,
+    transition: &str,
+    terminal_result: Option<Value>,
+    publish_blocked_result: bool,
+) -> Value {
     let phase_id = context["run"]["current_phase_id"].as_str().unwrap();
     let phase = context["definition"]["phases"]
         .as_array()
@@ -285,21 +309,18 @@ pub(super) async fn complete(
     if let Some(result) = terminal_result {
         params["terminal_result"] = result;
     }
-    if context["knowledge"]["selected"]
-        .as_array()
-        .is_some_and(|selected| !selected.is_empty())
-    {
+    let consumed_knowledge = [&context["knowledge_resources"], &context["knowledge"]]
+        .into_iter()
+        .find(|manifest| {
+            manifest["selected"]
+                .as_array()
+                .is_some_and(|selected| !selected.is_empty())
+        });
+    if let Some(manifest) = consumed_knowledge {
         params["consumed_knowledge"] = json!({
-            "manifest_id":context["knowledge"]["id"],
-            "digest":context["knowledge"]["digest"]
+            "manifest_id":manifest["id"],
+            "digest":manifest["digest"]
         });
     }
-    let response = route(
-        client,
-        "command",
-        "slice.pipeline.phase.complete",
-        params.clone(),
-    )
-    .await;
-    (response, params)
+    params
 }

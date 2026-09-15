@@ -411,7 +411,6 @@ async fn erased_origin_begin_replay_refuses_the_frozen_knowledge_copy() {
         begun["created"]["knowledge_resources"]["selected"][0]["unit_id"],
         unit
     );
-    let origin_manifest = begun["created"]["knowledge_resources"]["id"].clone();
     let retracted = commit_single(
         &mut client,
         SingleOperation {
@@ -443,19 +442,22 @@ async fn erased_origin_begin_replay_refuses_the_frozen_knowledge_copy() {
     )
     .await;
     let refresh = find_action(&stale, "pipeline.knowledge_refresh").unwrap();
-    let refreshed = route(
-        &mut client,
-        "command",
-        "pipeline.knowledge_refresh",
-        action_params(refresh).clone(),
-    )
-    .await;
-    assert_ne!(refreshed["refreshed"]["id"], origin_manifest);
+    assert_eq!(stale["knowledge_resource_status"]["state"], "needs_context");
     assert!(
-        refreshed["refreshed"]["selected"]
+        stale["knowledge_resource_status"]["changed_unit_ids"]
             .as_array()
             .unwrap()
-            .is_empty()
+            .contains(&unit)
+    );
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "pipeline.knowledge_refresh",
+            action_params(refresh).clone(),
+        )
+        .await["error"]["code"],
+        "needs_context"
     );
     let erased = commit_single(
         &mut client,

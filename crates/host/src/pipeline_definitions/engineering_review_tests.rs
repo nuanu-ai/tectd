@@ -170,6 +170,160 @@ fn engineering_gate_instructions_and_active_ordinals_are_exact() {
     assert!(code_review.body.contains("phase-13 contract"));
 }
 
+#[test]
+fn every_engineering_gate_pins_exact_standards_schema_and_reviewer_resources() {
+    let expected = [
+        (
+            "tect:engineering-standards",
+            "f4374bc9f68fc9bcc7c844765d0ea4ccc581042f169ed7756a5d6e106fef9f50",
+        ),
+        (
+            "tect:engineering-review",
+            "0d21e199f1e0e33570c898f4266253d45621c6b4b5d7e4f326c7bdc0834a423f",
+        ),
+        (
+            "tect:engineering-review-schema",
+            "6af26dca3d825e8f31e9f7ad0e9156458595d51b76df477607424673f7048141",
+        ),
+    ];
+    for kind in [
+        PipelineKind::LightweightTddDevelopment,
+        PipelineKind::FullDesignToExecution,
+    ] {
+        let definition = StaticPipelineDefinitions.definition(kind).unwrap();
+        for phase in definition.phases.iter().filter(|phase| {
+            phase.output_constraints.iter().any(|constraint| {
+                matches!(
+                    constraint,
+                    tect_domain::PipelineOutputConstraint::EngineeringReview { .. }
+                )
+            })
+        }) {
+            for (id, digest) in expected {
+                let resource = phase
+                    .resources
+                    .iter()
+                    .find(|resource| resource.id == id)
+                    .unwrap_or_else(|| panic!("{} missing {id}", phase.id));
+                assert_eq!(resource.version, "1.0.0", "{} {id}", phase.id);
+                assert_eq!(resource.digest, digest, "{} {id}", phase.id);
+                if id == "tect:engineering-standards" {
+                    let body = &resource.body;
+                    for normative_clause in [
+                        "Up to 500 lines is the target for every file",
+                        "501–1000 lines requires one cohesive responsibility and an explicit",
+                        "1001–1500 lines is allowed only for genuinely declarative definitions",
+                        "fields, types, schemas and enumerations without substantial execution",
+                        "More than 1500 lines is prohibited. There is no exception above this ceiling.",
+                        "a generated label, or arbitrary file fragments",
+                        "Creating an unsolicited standalone audit/test harness",
+                        "then diverting the task into developing or debugging it, is strictly prohibited.",
+                    ] {
+                        assert!(
+                            body.contains(normative_clause),
+                            "{} standards resource omitted {normative_clause:?}",
+                            phase.id
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn engineering_definition_rejects_missing_substituted_or_wrong_version_resources() {
+    for mutation in 0..4 {
+        let mut definition = StaticPipelineDefinitions
+            .definition(PipelineKind::LightweightTddDevelopment)
+            .unwrap();
+        let phase = definition
+            .phases
+            .iter_mut()
+            .find(|phase| phase.id == "slice-lightweight-pre-implementation-review")
+            .unwrap();
+        match mutation {
+            0 => phase
+                .resources
+                .retain(|resource| resource.id != "tect:engineering-standards"),
+            1 => {
+                phase
+                    .resources
+                    .iter_mut()
+                    .find(|resource| resource.id == "tect:engineering-review")
+                    .unwrap()
+                    .id = "tect:substituted-reviewer".into()
+            }
+            2 => {
+                phase
+                    .resources
+                    .iter_mut()
+                    .find(|resource| resource.id == "tect:engineering-standards")
+                    .unwrap()
+                    .version = "wrong".into()
+            }
+            3 => {
+                phase
+                    .resources
+                    .iter_mut()
+                    .find(|resource| resource.id == "tect:engineering-standards")
+                    .unwrap()
+                    .digest = "wrong".into()
+            }
+            _ => unreachable!(),
+        }
+        assert!(definition.validate().is_err(), "mutation {mutation}");
+    }
+}
+
+#[test]
+fn engineering_review_requires_typed_independent_reviewer_authority() {
+    for mutation in 0..4 {
+        let (definition, mut request) = completion();
+        let reviewer = request.output.reviewer_context.as_mut().unwrap();
+        match mutation {
+            0 => reviewer.reviewer_identity.clear(),
+            1 => reviewer.fresh_input = false,
+            2 => reviewer.producer_context_ids.clear(),
+            3 => reviewer
+                .producer_context_ids
+                .push(reviewer.reviewer_context_id.clone()),
+            _ => unreachable!(),
+        }
+        assert!(
+            request.validate(&definition).is_err(),
+            "mutation {mutation}"
+        );
+    }
+}
+
+#[test]
+fn lightweight_review_precedes_tdd_and_current_review_binding_is_mandatory() {
+    let definition = StaticPipelineDefinitions
+        .definition(PipelineKind::LightweightTddDevelopment)
+        .unwrap();
+    let review = definition
+        .phases
+        .iter()
+        .find(|phase| phase.id == "slice-lightweight-pre-implementation-review")
+        .unwrap();
+    let tdd = definition
+        .phases
+        .iter()
+        .find(|phase| phase.id == "slice-tdd-cycle-runner")
+        .unwrap();
+    assert_eq!(review.ordinal + 1, tdd.ordinal);
+    assert!(tdd.output_constraints.iter().any(|constraint| matches!(
+        constraint,
+        tect_domain::PipelineOutputConstraint::CodeAuthorization { required_plan_review_phase_id }
+            if required_plan_review_phase_id == &review.id
+    )));
+
+    let (definition, mut request) = completion();
+    request.consumed_outputs[0].digest = "changed-reviewed-input".into();
+    assert!(request.validate(&definition).is_err());
+}
+
 fn report(request: &CompletePipelinePhase) -> Value {
     serde_json::from_str(&request.output.artifacts[0].body).unwrap()
 }
@@ -257,6 +411,137 @@ fn engineering_review_records_honest_rework_without_pass_shape() {
     request.output.dispositions = vec!["engineering_review_rework".into()];
     request.revisit_phase_id = Some("slice-lightweight-contract-writer".into());
     assert!(request.validate(&definition).is_ok());
+}
+
+#[test]
+fn full_review_chain_preserves_findings_and_grants_authority_only_after_plan_review() {
+    let definition = StaticPipelineDefinitions
+        .definition(PipelineKind::FullDesignToExecution)
+        .unwrap();
+    let expected = [
+        "slice-cross-cutting-reviewer",
+        "slice-reconciliation-runner",
+        "slice-implementation-spec-synthesizer",
+        "slice-spec-readiness-checker",
+        "slice-plan-builder",
+        "slice-engineering-plan-review",
+        "slice-human-decision-queue-manager",
+        "slice-execution-runner",
+    ];
+    let ordinals = expected
+        .iter()
+        .map(|id| {
+            definition
+                .phases
+                .iter()
+                .find(|phase| phase.id == *id)
+                .unwrap()
+                .ordinal
+        })
+        .collect::<Vec<_>>();
+    assert!(ordinals.windows(2).all(|pair| pair[0] < pair[1]));
+    let execution = definition
+        .phases
+        .iter()
+        .find(|phase| phase.id == "slice-execution-runner")
+        .unwrap();
+    assert!(execution.output_constraints.iter().any(|constraint| matches!(
+        constraint,
+        tect_domain::PipelineOutputConstraint::CodeAuthorization { required_plan_review_phase_id }
+            if required_plan_review_phase_id == "slice-engineering-plan-review"
+    )));
+
+    let (mut definition, mut request) = completion();
+    let phase = definition
+        .phases
+        .iter_mut()
+        .find(|phase| phase.id == request.phase_id)
+        .unwrap();
+    let review_constraint = phase
+        .output_constraints
+        .iter()
+        .find(|constraint| {
+            matches!(
+                constraint,
+                tect_domain::PipelineOutputConstraint::EngineeringReview { .. }
+            )
+        })
+        .cloned()
+        .expect("lightweight review phase has an engineering constraint");
+    phase.output_constraints = match review_constraint {
+        tect_domain::PipelineOutputConstraint::EngineeringReview {
+            stage,
+            standards_resource_id,
+            standards_resource_digest,
+            artifact_name,
+            success_verdicts,
+            ..
+        } => vec![tect_domain::PipelineOutputConstraint::EngineeringReview {
+            stage,
+            standards_resource_id,
+            standards_resource_digest,
+            artifact_name,
+            success_verdicts,
+            required_prior_review_phase_ids: vec!["slice-test-target-selector".into()],
+            required_reconciliation_phase_id: None,
+        }],
+        _ => unreachable!(),
+    };
+    let mut baseline = report(&request);
+    baseline["prior_finding_ids"] = json!(["ENG-F1"]);
+    baseline["resolved_finding_ids"] = json!(["ENG-F1"]);
+    replace_report(&mut request, baseline);
+    assert!(request.validate(&definition).is_ok());
+
+    let mut dropped = request.clone();
+    let mut dropped_report = report(&dropped);
+    dropped_report["resolved_finding_ids"] = json!([]);
+    replace_report(&mut dropped, dropped_report);
+    assert!(dropped.validate(&definition).is_err());
+
+    let mut reconciled_with_new_finding = request.clone();
+    let mut reconciled_report = report(&reconciled_with_new_finding);
+    reconciled_report["resolved_finding_ids"] = json!(["ENG-F1", "ENG-F2"]);
+    reconciled_report["findings"] = json!([{
+        "id":"ENG-F2",
+        "rule_id":"ENG-03",
+        "status":"resolved",
+        "resolution":"The plan review reconciled the newly discovered finding."
+    }]);
+    replace_report(&mut reconciled_with_new_finding, reconciled_report);
+    assert!(reconciled_with_new_finding.validate(&definition).is_ok());
+
+    let mut stale = request.clone();
+    stale.consumed_outputs[0].digest = "stale-plan-approval".into();
+    assert!(stale.validate(&definition).is_err());
+
+    let mut expanded = request;
+    let mut expanded_report = report(&expanded);
+    expanded_report["scope_expansion_authority"] = json!("invented");
+    replace_report(&mut expanded, expanded_report);
+    assert!(expanded.validate(&definition).is_err());
+}
+
+#[test]
+fn implementation_authority_rejects_missing_or_substituted_plan_review() {
+    let (mut definition, mut request) = completion();
+    let phase = &mut definition.phases[0];
+    phase.id = "slice-execution-runner".into();
+    phase.output_constraints = vec![tect_domain::PipelineOutputConstraint::CodeAuthorization {
+        required_plan_review_phase_id: "slice-engineering-plan-review".into(),
+    }];
+    request.phase_id = phase.id.clone();
+    request.output.artifacts.clear();
+    request.output.reviewer_context = None;
+    request.output.resource_reads.clear();
+    request.consumed_outputs.clear();
+    assert!(request.validate(&definition).is_err());
+    request.consumed_outputs.push(PipelineConsumedOutput {
+        phase_id: "substituted-review".into(),
+        output_revision: 1,
+        digest: "substituted".into(),
+    });
+    assert!(request.validate(&definition).is_err());
 }
 
 #[test]

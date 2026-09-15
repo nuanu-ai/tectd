@@ -4,7 +4,10 @@ mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;
 
-use pipeline_support::{completion, refresh_knowledge, successful_route};
+use pipeline_support::{
+    add_opaque_authority_labels, assert_forged_implementation_phase_rejected,
+    assert_non_coding_definition, completion, refresh_knowledge, successful_route,
+};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -125,7 +128,28 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
             )
     );
 
-    context = advance(&mut client, context).await;
+    assert_non_coding_definition(&context, "slice.research");
+    let (verdict, outcome, transition) = successful_route(&context);
+    let mut first = completion(&context, verdict, outcome, transition, None, None);
+    first["output"]["fields"]["topic_level"] = json!("scope");
+    first["output"]["fields"]["allow_inconclusive"] = json!("false");
+    assert_forged_implementation_phase_rejected(
+        &mut client,
+        &context,
+        first.clone(),
+        "slice.research",
+    )
+    .await;
+    add_opaque_authority_labels(&mut first);
+    context = route(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        first,
+    )
+    .await["context"]
+        .clone();
+    assert_non_coding_definition(&context, "slice.research");
     assert_eq!(context["outputs"][0]["fields"]["topic_level"], "scope");
     assert_eq!(
         context["outputs"][0]["fields"]["allow_inconclusive"],
@@ -287,6 +311,49 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
         )
         .await["error"]["code"],
         "invalid_arguments"
+    );
+    let mut failed_publication = completion(
+        &context,
+        "negative_result",
+        "completed",
+        "complete",
+        None,
+        Some(terminal.clone()),
+    );
+    failed_publication["output"]["fields"]["publication_status"] = json!("failed");
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "slice.pipeline.phase.complete",
+            failed_publication,
+        )
+        .await["error"]["code"],
+        "invalid_arguments"
+    );
+    let mut direct_publish = completion(
+        &context,
+        "negative_result",
+        "completed",
+        "complete",
+        None,
+        Some(terminal.clone()),
+    );
+    direct_publish["output"]["knowledge_publication"] = json!({
+        "change_id":Uuid::new_v4(),
+        "publisher_receipt_id":Uuid::new_v4(),
+        "publisher_receipt_digest":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "operation_ids":[Uuid::new_v4()]
+    });
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "slice.pipeline.phase.complete",
+            direct_publish,
+        )
+        .await["error"]["code"],
+        "invalid_source"
     );
     assert_eq!(
         route_error(

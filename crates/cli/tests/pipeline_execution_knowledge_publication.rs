@@ -267,7 +267,6 @@ async fn producer_accepts_only_exact_publisher_receipt_and_lineage() {
             .unwrap()["knowledge_publication"]["publisher_receipt_id"],
         committed.receipt["id"]
     );
-    producer_research::prove(&mut client, &repo).await;
     let erased = commit_single(
         &mut client,
         SingleOperation {

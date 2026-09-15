@@ -70,6 +70,7 @@ pub(super) async fn apply_operation(
         session_id: session,
         resolved_sources: sources.clone(),
         successor_unit: successor,
+        include_empty_planning_briefs: true,
     };
     let document = rdf::build(&input)?;
     let rdf_digest =

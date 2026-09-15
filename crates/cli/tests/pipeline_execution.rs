@@ -5,7 +5,9 @@ mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;
 
-use lifecycle_support::{LIGHTWEIGHT_PHASES, complete, lightweight_draft, phase_output, terminal};
+use lifecycle_support::{
+    LIGHTWEIGHT_PHASES, complete, completion_request, lightweight_draft, phase_output, terminal,
+};
 use recovery_support::{
     Daemon, Mcp, action_params, find_action, host_file, private_temp, tagged_url,
 };
@@ -317,6 +319,72 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
             .filter(|attempt| attempt["phase_ordinal"] == 2)
             .count(),
         2
+    );
+
+    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 8 {
+        let (advanced, _) =
+            complete(&mut client, &context, "completed", "continue", None, false).await;
+        context = advanced["context"].clone();
+    }
+
+    assert_eq!(
+        context["run"]["current_phase_id"],
+        "slice-lightweight-pre-implementation-review"
+    );
+    let review_request = completion_request(&context, "completed", "continue", None, false);
+    let mut early_code = review_request.clone();
+    early_code["request_id"] = json!(Uuid::new_v4());
+    early_code["phase_id"] = json!("slice-tdd-cycle-runner");
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "slice.pipeline.phase.complete",
+            early_code,
+        )
+        .await["error"]["code"],
+        "invalid_arguments"
+    );
+    let mut substituted_resource = review_request.clone();
+    substituted_resource["request_id"] = json!(Uuid::new_v4());
+    substituted_resource["output"]["resource_reads"][0]["digest"] = json!("substituted");
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "slice.pipeline.phase.complete",
+            substituted_resource,
+        )
+        .await["error"]["code"],
+        "invalid_arguments"
+    );
+    context = route(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        review_request,
+    )
+    .await["context"]
+        .clone();
+    assert_eq!(context["run"]["current_phase_id"], "slice-tdd-cycle-runner");
+
+    let mut stale_approval = completion_request(&context, "completed", "continue", None, false);
+    let plan_review = stale_approval["consumed_outputs"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|binding| binding["phase_id"] == "slice-lightweight-pre-implementation-review")
+        .unwrap();
+    plan_review["digest"] = json!("stale-reviewed-input-digest");
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "slice.pipeline.phase.complete",
+            stale_approval,
+        )
+        .await["error"]["code"],
+        "stale_context"
     );
 
     while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 15 {

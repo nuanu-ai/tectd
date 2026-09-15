@@ -34,6 +34,8 @@ pub(crate) struct RdfPublicationInput {
     pub session_id: Uuid,
     pub resolved_sources: Vec<ResolvedSourcePayload>,
     pub successor_unit: Option<Uuid>,
+    #[serde(default)]
+    pub include_empty_planning_briefs: bool,
 }
 
 pub(crate) fn build(input: &RdfPublicationInput) -> Result<RdfDocument> {

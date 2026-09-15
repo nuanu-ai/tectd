@@ -11,6 +11,23 @@ pub(super) async fn complete_research_and_accept(
     mut research: Value,
     checkpoint: &Value,
 ) -> ResearchResolution {
+    let incomplete = json!({"request_id":Uuid::new_v4(),
+        "producer_run_id":checkpoint["producer_run_id"],
+        "producer_run_revision":checkpoint["producer_run_revision"],
+        "checkpoint":checkpoint["checkpoint"],"action":"accept",
+        "reason":"Attempt to advance before Research reaches a terminal result.",
+        "terminal":{"result_id":Uuid::new_v4(),"output_id":Uuid::new_v4(),
+            "output_digest":"nonterminal-research-output"}});
+    assert_eq!(
+        route_error(
+            client,
+            "command",
+            "slice.pipeline.checkpoint.resolve",
+            incomplete,
+        )
+        .await["error"]["code"],
+        "forbidden"
+    );
     while research["run"]["current_phase_ordinal"].as_u64().unwrap() < 9 {
         research = advance(client, research).await;
     }

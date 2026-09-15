@@ -5,7 +5,10 @@ mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;
 
-use pipeline_support::{completion, refresh_knowledge, successful_route};
+use pipeline_support::{
+    add_opaque_authority_labels, assert_forged_implementation_phase_rejected,
+    assert_non_coding_definition, completion, refresh_knowledge, successful_route,
+};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -108,6 +111,27 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
         "8a1be05166244cffae5456f476d9748051f4786f3c9c2f4744b1abace4facdb9"
     );
     assert_eq!(context["definition"]["phases"].as_array().unwrap().len(), 1);
+
+    assert_non_coding_definition(&context, "slice.operational-execution");
+    let (verdict, outcome, transition) = successful_route(&context);
+    let mut first = completion(&context, verdict, outcome, transition, None, None);
+    assert_forged_implementation_phase_rejected(
+        &mut client,
+        &context,
+        first.clone(),
+        "slice.operational-execution",
+    )
+    .await;
+    add_opaque_authority_labels(&mut first);
+    context = route(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        first,
+    )
+    .await["context"]
+        .clone();
+    assert_non_coding_definition(&context, "slice.operational-execution");
 
     while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 8 {
         context = advance(&mut client, context).await;

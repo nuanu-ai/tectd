@@ -14,6 +14,7 @@ struct OpenProgram {
     program_id: Uuid,
     workspace_id: Uuid,
     session_id: Uuid,
+    canary: String,
 }
 
 async fn open_program(
@@ -27,12 +28,13 @@ async fn open_program(
     let config = root.join(format!("{label}.json"));
     host_file(&config, &enrollment.auth);
     let workspace = format!("program-access-{label}-{}", Uuid::new_v4().simple());
+    let canary = format!("sec01-canary-{label}-{}", Uuid::new_v4().simple());
     let mut client = Mcp::start(socket, &config, &Uuid::new_v4().to_string(), &workspace).await;
     let opened = client.call("open_workspace", json!({})).await;
     let created = client
         .call(
             "begin_program",
-            json!({"request_id":Uuid::new_v4(),"input":format!("Program for {label}")}),
+            json!({"request_id":Uuid::new_v4(),"input":format!("Program for {label}: {canary}")}),
         )
         .await;
     OpenProgram {
@@ -40,6 +42,7 @@ async fn open_program(
         workspace_id: Uuid::parse_str(opened["workspace"]["id"].as_str().unwrap()).unwrap(),
         session_id: Uuid::parse_str(opened["session"]["id"].as_str().unwrap()).unwrap(),
         program_id: Uuid::parse_str(created["program"]["id"].as_str().unwrap()).unwrap(),
+        canary,
         client,
     }
 }
@@ -63,7 +66,7 @@ fn calls(program_id: Uuid) -> Vec<(&'static str, Value)> {
     ]
 }
 
-async fn assert_all_denied(client: &mut Mcp, program_id: Uuid, code: &str) {
+async fn assert_all_denied(client: &mut Mcp, program_id: Uuid, canary: &str, code: &str) {
     for (name, arguments) in calls(program_id) {
         let payload = client.call_error(name, arguments).await;
         assert_eq!(payload["error"]["code"], code, "{name}: {payload}");
@@ -73,6 +76,7 @@ async fn assert_all_denied(client: &mut Mcp, program_id: Uuid, code: &str) {
         );
         assert!(payload["recommended_action"].is_null(), "{name}: {payload}");
         assert!(!payload.to_string().contains(&program_id.to_string()));
+        assert!(!payload.to_string().contains(canary));
         assert!(payload.get("program").is_none());
         assert!(payload.get("programs").is_none());
     }
@@ -92,7 +96,7 @@ async fn counts(pool: &PgPool, tenant: Uuid) -> (i64, i64) {
     (programs, inputs)
 }
 
-async fn assert_foreign(client: &mut Mcp, id: Uuid) {
+async fn assert_foreign(client: &mut Mcp, id: Uuid, canary: &str) {
     for (name, arguments) in [
         ("get_program", json!({"program_id":id})),
         (
@@ -107,6 +111,7 @@ async fn assert_foreign(client: &mut Mcp, id: Uuid) {
         let payload = client.call_error(name, arguments).await;
         assert_eq!(payload["error"]["code"], "not_found", "{name}: {payload}");
         assert!(!payload.to_string().contains(&id.to_string()));
+        assert!(!payload.to_string().contains(canary));
         assert!(payload.get("program").is_none());
     }
 }
@@ -138,10 +143,17 @@ async fn program_tools_hide_foreign_rows_and_honor_every_revocation_layer() {
     )
     .await;
     let mut outsider = open_program(&pool, &socket, &root, "outsider", None).await;
-    assert_foreign(&mut main.client, sibling.program_id).await;
-    assert_foreign(&mut sibling.client, main.program_id).await;
-    assert_foreign(&mut main.client, outsider.program_id).await;
-    assert_foreign(&mut outsider.client, main.program_id).await;
+    let main_before = counts(&pool, main.enrollment.tenant_id).await;
+    let outsider_before = counts(&pool, outsider.enrollment.tenant_id).await;
+    assert_foreign(&mut main.client, sibling.program_id, &sibling.canary).await;
+    assert_foreign(&mut sibling.client, main.program_id, &main.canary).await;
+    assert_foreign(&mut main.client, outsider.program_id, &outsider.canary).await;
+    assert_foreign(&mut outsider.client, main.program_id, &main.canary).await;
+    assert_eq!(counts(&pool, main.enrollment.tenant_id).await, main_before);
+    assert_eq!(
+        counts(&pool, outsider.enrollment.tenant_id).await,
+        outsider_before
+    );
     let sibling_list = sibling.client.call("list_programs", json!({})).await;
     let sibling_ids: Vec<_> = sibling_list["programs"]
         .as_array()
@@ -150,6 +162,8 @@ async fn program_tools_hide_foreign_rows_and_honor_every_revocation_layer() {
         .map(|program| program["id"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(sibling_ids, [sibling.program_id.to_string()]);
+    assert!(!sibling_list.to_string().contains(&main.canary));
+    assert!(!sibling_list.to_string().contains(&outsider.canary));
 
     let mut host_revoked = open_program(&pool, &socket, &root, "host", None).await;
     let host_before = counts(&pool, host_revoked.enrollment.tenant_id).await;
@@ -164,6 +178,7 @@ async fn program_tools_hide_foreign_rows_and_honor_every_revocation_layer() {
     assert_all_denied(
         &mut host_revoked.client,
         host_revoked.program_id,
+        &host_revoked.canary,
         "unauthorized",
     )
     .await;
@@ -185,6 +200,7 @@ async fn program_tools_hide_foreign_rows_and_honor_every_revocation_layer() {
     assert_all_denied(
         &mut session_revoked.client,
         session_revoked.program_id,
+        &session_revoked.canary,
         "session_revoked",
     )
     .await;
@@ -212,6 +228,7 @@ async fn program_tools_hide_foreign_rows_and_honor_every_revocation_layer() {
     assert_all_denied(
         &mut member_revoked.client,
         member_revoked.program_id,
+        &member_revoked.canary,
         "forbidden",
     )
     .await;

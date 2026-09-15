@@ -261,6 +261,10 @@ async fn seed_schema_eight(pool: &PgPool) -> Result<SeedIds, String> {
     let slice = Uuid::new_v4();
     let result = Uuid::new_v4();
     let run = Uuid::new_v4();
+    let legacy_definition: serde_json::Value = serde_json::from_str(include_str!(
+        "../../host/pipeline-definitions/lightweight-tdd-0.4.0-native.skills.1.json"
+    ))
+    .map_err(|error| error.to_string())?;
 
     sqlx::query("INSERT INTO tenants(id) VALUES($1)")
         .bind(tenant)
@@ -404,14 +408,15 @@ async fn seed_schema_eight(pool: &PgPool) -> Result<SeedIds, String> {
     .map_err(|error| error.to_string())?;
     sqlx::query(
         "INSERT INTO slice_pipeline_runs(id,tenant_id,workspace_id,scope_id,slice_id,slice_revision,revision,definition_kind,definition_version,definition_digest,definition,delivery_mode,qualification_reason,status,current_phase_id,current_phase_ordinal,origin_request_id,origin_payload,origin_result) \
-         VALUES($1,$2,$3,$4,$5,1,2,'lightweight_tdd_development','schema-8',$6,'{}','phasewise','Preserve schema 8 pipeline','active','slice-lightweight-entry-gate',1,$7,'{}','{}')",
+         VALUES($1,$2,$3,$4,$5,1,2,'lightweight_tdd_development','0.4.0-native.skills.1',$6,$7,'phasewise','Preserve schema 8 pipeline','active','slice-lightweight-entry-gate',1,$8,'{}','{}')",
     )
     .bind(run)
     .bind(tenant)
     .bind(workspace)
     .bind(scope)
     .bind(slice)
-    .bind("f".repeat(64))
+    .bind("b80b3472ebf4acc38996fa1946a2fe76e1b17fbcc39c6594f87a00e63a437768")
+    .bind(legacy_definition)
     .bind(Uuid::new_v4())
     .execute(pool)
     .await
@@ -438,7 +443,7 @@ async fn preserved_rows(pool: &PgPool, ids: &SeedIds) -> Result<Vec<String>, Str
          (SELECT jsonb_build_object('sequence',sequence,'registry_digest',registry_digest)::text FROM slice_planning_snapshots WHERE id=$4), \
          (SELECT jsonb_build_object('revision',revision,'state',state,'pipeline',pipeline)::text FROM native_slices WHERE id=$5), \
          (SELECT jsonb_build_object('revision',revision,'outcome',outcome,'summary',summary,'evidence',evidence,'provenance',provenance)::text FROM slice_results WHERE id=$6), \
-         (SELECT jsonb_build_object('revision',revision,'definition_digest',definition_digest,'status',status)::text FROM slice_pipeline_runs WHERE id=$7)",
+         (SELECT jsonb_build_object('revision',revision,'definition_version',definition_version,'definition_digest',definition_digest,'definition',definition,'status',status,'current_phase_id',current_phase_id,'current_phase_ordinal',current_phase_ordinal)::text FROM slice_pipeline_runs WHERE id=$7)",
     )
     .bind(ids.program)
     .bind(ids.scope)

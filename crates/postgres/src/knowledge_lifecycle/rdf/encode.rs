@@ -142,7 +142,9 @@ fn build_revision(builder: &mut Builder, input: &RdfPublicationInput) -> Result<
     }
     encode_sources(builder, &revision, &revision, &input.resolved_sources)?;
     encode_bindings(builder, &revision, &revision, &document.bindings, input)?;
-    planning::encode_planning_briefs(builder, &revision, document)?;
+    if input.include_empty_planning_briefs || !document.planning_briefs.is_empty() {
+        planning::encode_planning_briefs(builder, &revision, document)?;
+    }
     sections::encode(builder, &revision, document)?;
     build_event(builder, input)?;
     builder.iri(

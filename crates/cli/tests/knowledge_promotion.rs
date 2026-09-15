@@ -8,7 +8,8 @@ mod recovery_support;
 mod support;
 
 use knowledge_lifecycle_support::{
-    begin_create_request, commit_create_from_current, context, settle_and_finish,
+    begin_create_request, commit_create_from_current, complete_agent_params, context,
+    settle_and_finish,
 };
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
@@ -33,6 +34,27 @@ fn promotion_draft() -> Value {
         }],
         "supersessions":[]
     })
+}
+
+fn assert_promotion_definition_has_no_engineering_gate(current: &Value) {
+    for phase in current["definition"]["phases"].as_array().unwrap() {
+        assert!(!phase["id"].as_str().unwrap().contains("implementation"));
+        assert!(
+            phase["instructions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .chain(phase["methods"].as_array().unwrap().iter())
+                .all(|resource| !matches!(
+                    resource["id"].as_str(),
+                    Some(
+                        "tect:engineering-standards"
+                            | "tect:engineering-review"
+                            | "tect:engineering-review-schema"
+                    )
+                ))
+        );
+    }
 }
 
 #[tokio::test]
@@ -135,6 +157,69 @@ async fn promotion_change_writes_one_managed_result_and_planning_input() {
         begin_request.clone(),
     )
     .await;
+    let catalogue = route(&mut client, "query", "slice.pipelines", json!({})).await;
+    let promotion_entry = catalogue["pipelines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["kind"] == "slice.promote-to-durable-knowledge")
+        .unwrap();
+    assert_eq!(promotion_entry["execution_owner"], "knowledge_change");
+    assert_eq!(
+        catalogue["knowledge_change_entry"]["definition"]["digest"],
+        context(&begun)["definition"]["digest"]
+    );
+    assert_promotion_definition_has_no_engineering_gate(context(&begun));
+    let origin = &context(&begun)["origin"];
+    let mut forged = complete_agent_params(
+        &begun,
+        json!({"phase":"kc-intake","data":{
+            "bounded_outcome":origin["desired_outcome"],
+            "operation_hints":origin["operation_hints"],
+            "authority_boundary":"Current authenticated workspace owner.",
+            "completion":origin["completion"]}}),
+    );
+    let mut forged_constraints = forged.clone();
+    forged_constraints["request_id"] = json!(Uuid::new_v4());
+    forged_constraints["output_constraints"] = json!([
+        {"kind":"engineering_review"},
+        {"kind":"code_authorization"}
+    ]);
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "knowledge.change_phase_complete",
+            forged_constraints,
+        )
+        .await["error"]["code"],
+        "invalid_arguments"
+    );
+    forged["request_id"] = json!(Uuid::new_v4());
+    forged["phase_id"] = json!("slice-execution-runner");
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "knowledge.change_phase_complete",
+            forged,
+        )
+        .await["error"]["code"],
+        "invalid_arguments"
+    );
+    let unchanged = route(
+        &mut client,
+        "query",
+        "knowledge.lifecycle",
+        json!({"change_id":context(&begun)["change_id"],"view":"current"}),
+    )
+    .await;
+    assert_eq!(context(&unchanged)["run"], context(&begun)["run"]);
+    assert_eq!(
+        context(&unchanged)["definition"]["digest"],
+        context(&begun)["definition"]["digest"]
+    );
+    assert_promotion_definition_has_no_engineering_gate(context(&unchanged));
     let replay = route(
         &mut client,
         "command",

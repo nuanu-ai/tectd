@@ -14,7 +14,10 @@ mod support;
 
 use knowledge_lifecycle_support::commit_create;
 use knowledge_operation_support::{SingleOperation, commit_single};
-use pipeline_support::{completion as base_completion, successful_route};
+use pipeline_support::{
+    add_opaque_authority_labels, assert_forged_implementation_phase_rejected,
+    assert_non_coding_definition, completion as base_completion, successful_route,
+};
 use recovery_support::{
     Daemon, Mcp, action_params, find_action, host_file, private_temp, tagged_url,
 };
@@ -132,6 +135,28 @@ async fn checkpoint_handoff_is_exact_replayable_and_rework_safe() {
         None,
     )
     .await;
+    assert_non_coding_definition(&producer, "slice.deep-brainstorming");
+    let (verdict, outcome, transition) = successful_route(&producer);
+    let mut first = completion(&producer, verdict, outcome, transition, None, None);
+    first["output"]["fields"]["topic_level"] = producer["inquiry"]["topic_level"].clone();
+    first["output"]["fields"]["requested_outcome"] = json!("decision");
+    assert_forged_implementation_phase_rejected(
+        &mut client,
+        &producer,
+        first.clone(),
+        "slice.deep-brainstorming",
+    )
+    .await;
+    add_opaque_authority_labels(&mut first);
+    producer = route(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        first,
+    )
+    .await["context"]
+        .clone();
+    assert_non_coding_definition(&producer, "slice.deep-brainstorming");
     assert!(contains_unit(&producer, &public_unit));
     assert!(!contains_unit(&producer, &private_unit));
     while producer["run"]["current_phase_ordinal"].as_u64().unwrap() < 5 {
@@ -239,6 +264,20 @@ async fn checkpoint_handoff_is_exact_replayable_and_rework_safe() {
         research_inquiry(),
         Some(&source_ref),
     );
+    let mut wrong_continuation = research_begin.clone();
+    wrong_continuation["request_id"] = json!(Uuid::new_v4());
+    wrong_continuation["source_checkpoint"]["digest"] = json!("wrong-checkpoint-digest");
+    assert!(matches!(
+        route_error(
+            &mut client,
+            "command",
+            "slice.pipeline.begin",
+            wrong_continuation,
+        )
+        .await["error"]["code"]
+            .as_str(),
+        Some("forbidden" | "invalid_arguments" | "stale_context")
+    ));
     let research = route(
         &mut client,
         "command",

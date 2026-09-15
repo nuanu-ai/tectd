@@ -10,6 +10,15 @@ async fn inquiry_topic_projects_only_exact_brief_height_and_preserves_full_slice
     let role = std::env::var("TECT_TEST_RUNTIME_ROLE").unwrap();
     let pool = PgPool::connect(&admin_url).await.unwrap();
     admin::migrate(&pool, &role).await.unwrap();
+    for statement in [
+        "REVOKE ALL PRIVILEGES ON SCHEMA pgrdf FROM PUBLIC",
+        "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA pgrdf FROM PUBLIC",
+        "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA pgrdf FROM PUBLIC",
+        "REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA pgrdf FROM PUBLIC",
+        "REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA pgrdf FROM PUBLIC",
+    ] {
+        sqlx::query(statement).execute(&pool).await.unwrap();
+    }
     let temp = private_temp();
     let root = temp.path().canonicalize().unwrap();
     let repo = root.join("source");
