@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import uuid
 from typing import Any, Callable
 
@@ -15,6 +16,7 @@ LIGHTWEIGHT_PHASES = [
     "slice-lightweight-contract-writer",
     "slice-lightweight-escalation-checker",
     "slice-test-target-selector",
+    "slice-lightweight-pre-implementation-review",
     "slice-tdd-cycle-runner",
     "slice-implementation-note-writer",
     "slice-lightweight-verification-runner",
@@ -74,7 +76,7 @@ def assert_lightweight_whole_context(context: dict[str, Any], check: Callable) -
         for instruction in phase.get(field, [])
     ]
     check(
-        "Lightweight whole delivery binds all fourteen ordered phases",
+        "Lightweight whole delivery binds all fifteen ordered phases",
         definition.get("kind") == "slice.lightweight-tdd-development"
         and definition.get("default_mode") == "whole"
         and phase_ids == LIGHTWEIGHT_PHASES
@@ -177,7 +179,10 @@ def consumed_inputs(context: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def phase_output(
-    phase: dict[str, Any], outcome_name: str = "completed", transition: str = "continue"
+    phase: dict[str, Any],
+    consumed: list[dict[str, Any]],
+    outcome_name: str = "completed",
+    transition: str = "continue",
 ) -> dict[str, Any]:
     marker = phase["id"]
     fields = {
@@ -239,6 +244,54 @@ def phase_output(
         output["verdict"] = route["verdict"]
     elif verdicts:
         output["verdict"] = verdicts[0]
+    review = next(
+        (
+            constraint
+            for constraint in phase.get("output_constraints", [])
+            if constraint.get("kind") == "engineering_review"
+        ),
+        None,
+    )
+    if review is not None:
+        stage = review["stage"]
+        file = {
+            "path": "src/fixture.rs",
+            "content_kind": "behavioral",
+            "line_count": 20,
+            "count_basis": "observed" if stage == "implementation" else "estimate",
+            "responsibility": "Own the bounded fixture behavior.",
+        }
+        if stage == "implementation":
+            file["content_digest"] = hashlib.sha256(b"fixture").hexdigest()
+        report = {
+            "stage": stage,
+            "rules_digest": review["standards_resource_digest"],
+            "verdict": "pass",
+            "reviewed_outputs": consumed,
+            "source_basis": "Current durable predecessor outputs for this fixture.",
+            "assessments": [
+                {
+                    "rule_id": f"ENG-{number:02}",
+                    "status": "satisfied",
+                    "rationale": "The fixture supplies current concrete evidence.",
+                    "evidence_refs": [f"fixture:{marker}"],
+                }
+                for number in range(1, 11)
+            ],
+            "findings": [],
+            "files": [file],
+            "summary": "The fixture conforms to the pinned engineering standards.",
+        }
+        body = json.dumps(report, separators=(",", ":"))
+        output["artifacts"] = [
+            {
+                "name": "engineering-review.json",
+                "media_type": "application/json",
+                "digest": hashlib.sha256(body.encode()).hexdigest(),
+                "body": body,
+                "reference": f"isolated-acceptance/{marker}/engineering-review.json",
+            }
+        ]
     return output
 
 
@@ -252,6 +305,22 @@ def completion_params(
 ) -> dict[str, Any]:
     phase_id = context["run"]["current_phase_id"]
     phase = next(item for item in context["definition"]["phases"] if item["id"] == phase_id)
+    consumed = consumed_outputs(context)
+    output = phase_output(phase, consumed, outcome_name, transition)
+    if phase.get("fresh_reviewer_input") is True:
+        producer_context_ids = sorted(
+            {
+                item["producer_context_id"]
+                for item in context.get("outputs", [])
+                if item.get("stale") is False
+            }
+        )
+        output["reviewer_context"] = {
+            "reviewer_identity": "reported-independent-reviewer",
+            "reviewer_context_id": output["producer_context_id"],
+            "producer_context_ids": producer_context_ids,
+            "fresh_input": True,
+        }
     params = {
         "request_id": str(uuid.uuid4()),
         "run_id": context["run"]["id"],
@@ -259,8 +328,8 @@ def completion_params(
         "phase_id": phase_id,
         "outcome": outcome_name,
         "transition": transition,
-        "output": phase_output(phase, outcome_name, transition),
-        "consumed_outputs": consumed_outputs(context),
+        "output": output,
+        "consumed_outputs": consumed,
         "consumed_inputs": consumed_inputs(context),
         "publish_blocked_result": publish_blocked_result,
     }
@@ -270,8 +339,6 @@ def completion_params(
 
 
 def _instruction_identity_digest(instructions: list[dict[str, Any]]) -> str:
-    import hashlib
-
     identities = [
         [item.get("id"), item.get("version"), item.get("digest")]
         for item in instructions

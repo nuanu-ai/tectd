@@ -1,4 +1,5 @@
 use crate::{
+    engineering_review::{validate_completion_constraints, validate_definition_constraints},
     pipeline_artifacts::{validate_artifact_definition, validate_artifacts},
     pipeline_constraints::{output_constraint_satisfied, validate_output_constraint},
     pipeline_followups::{validate_followup_definitions, validate_followup_proposal},
@@ -117,6 +118,7 @@ impl PipelineDefinitionSnapshot {
         }) {
             return Err(Error::InvalidArguments);
         }
+        validate_definition_constraints(self)?;
         Ok(())
     }
 }
@@ -301,6 +303,7 @@ impl CompletePipelinePhase {
                 return Err(Error::InvalidArguments);
             }
         }
+        validate_completion_constraints(self, definition, phase)?;
         validate_artifacts(phase, &self.output)?;
         if let Some(verdict) = &self.output.verdict {
             let route = phase

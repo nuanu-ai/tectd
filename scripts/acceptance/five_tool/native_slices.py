@@ -13,8 +13,8 @@ SLICE_RUN_PIPELINES = {
 PROMOTION_PIPELINE = "slice.promote-to-durable-knowledge"
 ALL_PIPELINES = SLICE_RUN_PIPELINES | {PROMOTION_PIPELINE}
 PIPELINE_MODES = {
-    "slice.lightweight-tdd-development": ("whole", ["whole", "phasewise"], 14),
-    "slice.full-design-to-execution": ("phasewise", ["phasewise"], 20),
+    "slice.lightweight-tdd-development": ("whole", ["whole", "phasewise"], 15),
+    "slice.full-design-to-execution": ("phasewise", ["phasewise"], 21),
     "slice.debug-root-cause": ("whole", ["whole", "phasewise"], 18),
     "slice.operational-preparation": ("whole", ["whole", "phasewise"], 16),
     "slice.operational-execution": ("phasewise", ["phasewise"], 18),
@@ -23,8 +23,8 @@ PIPELINE_MODES = {
     "slice.custom-procedure-capture": ("whole", ["whole", "phasewise"], 17),
 }
 PIPELINE_DEFINITIONS = {
-    "slice.lightweight-tdd-development": ("0.4.0-native.skills.1", "b80b3472ebf4acc38996fa1946a2fe76e1b17fbcc39c6594f87a00e63a437768"),
-    "slice.full-design-to-execution": ("0.4.0-native.skills.1", "13fd152337abc76d7bbfa15c0875d7b6fbe4719ccfd6fadab5f31825cd39769b"),
+    "slice.lightweight-tdd-development": ("0.6.0-native.engineering.1", "7a74a02b059ad6a5e74174153407a0b7551a7a669bf64fb325645a8ed0044608"),
+    "slice.full-design-to-execution": ("0.6.0-native.engineering.1", "09f4c903a417537c6059cbccd73b9faafe8f91ee536e43034a883a81d818d7fd"),
     "slice.debug-root-cause": ("0.4.0-native.skills.1", "ecd89aaae1265455b79b400f200a7f932a596dbd0c06700a90b0116f7aaeb2ac"),
     "slice.operational-preparation": ("0.4.0-native.skills.1", "db83e347ee7970d2122dc999ec6cefd8e2e88ac9e6a944e3be3fc1554cbc414a"),
     "slice.operational-execution": ("0.4.0-native.skills.1", "8a1be05166244cffae5456f476d9748051f4786f3c9c2f4744b1abace4facdb9"),
@@ -183,7 +183,7 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
           and "slice.hybrid-implementation-operation" not in json.dumps(catalogue)
           and catalogue.get("revision") == "4"
           and catalogue.get("executable") is True and catalogue.get("executable_count") == 9
-          and catalogue.get("phase_counts", {}).get("slice_pipeline_run_phases") == 125
+          and catalogue.get("phase_counts", {}).get("slice_pipeline_run_phases") == 127
           and all(by_kind[kind].get("implementation_status") == "executable"
                   and by_kind[kind].get("description_status") == "refined"
                   and by_kind[kind].get("refinement_required") is False
@@ -417,7 +417,7 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
     resumed=ok(call,"command","slice.pipeline.phase.complete",
                pipeline_execution.completion_params(context))
     context=resumed["context"]
-    while context["run"]["current_phase_ordinal"] < 14:
+    while context["run"]["current_phase_ordinal"] < 15:
         context=ok(call,"command","slice.pipeline.phase.complete",
                    pipeline_execution.completion_params(context))["context"]
 

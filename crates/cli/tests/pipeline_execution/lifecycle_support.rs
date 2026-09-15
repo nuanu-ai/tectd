@@ -1,8 +1,10 @@
 use super::{Mcp, route};
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use uuid::Uuid;
 
-pub(super) const LIGHTWEIGHT_PHASES: [&str; 14] = [
+pub(super) const LIGHTWEIGHT_PHASES: [&str; 15] = [
     "slice-lightweight-entry-gate",
     "slice-lightweight-intent-capture",
     "slice-lightweight-context-loader",
@@ -10,6 +12,7 @@ pub(super) const LIGHTWEIGHT_PHASES: [&str; 14] = [
     "slice-lightweight-contract-writer",
     "slice-lightweight-escalation-checker",
     "slice-test-target-selector",
+    "slice-lightweight-pre-implementation-review",
     "slice-tdd-cycle-runner",
     "slice-implementation-note-writer",
     "slice-lightweight-verification-runner",
@@ -34,6 +37,16 @@ pub(super) fn lightweight_draft() -> Value {
 }
 
 pub(super) fn phase_output(phase: &Value, marker: &str, outcome: &str, transition: &str) -> Value {
+    phase_output_with_consumed(phase, marker, outcome, transition, &json!([]))
+}
+
+fn phase_output_with_consumed(
+    phase: &Value,
+    marker: &str,
+    outcome: &str,
+    transition: &str,
+    consumed_outputs: &Value,
+) -> Value {
     let mut fields = phase["required_fields"]
         .as_array()
         .unwrap()
@@ -126,6 +139,42 @@ pub(super) fn phase_output(phase: &Value, marker: &str, outcome: &str, transitio
         .or_else(|| phase["allowed_verdicts"].as_array().unwrap().first())
     {
         output["verdict"] = verdict.clone();
+        if let Some(constraint) = phase["output_constraints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|constraint| constraint["kind"] == "engineering_review")
+        {
+            let stage = constraint["stage"].as_str().unwrap();
+            let files = if stage == "implementation" {
+                json!([{"path":"src/fixture.rs","content_kind":"behavioral","line_count":20,
+                    "count_basis":"observed","content_digest":format!("{:x}",Sha256::digest(b"fixture")),
+                    "responsibility":"Own the bounded fixture behavior."}])
+            } else {
+                json!([{"path":"src/fixture.rs","content_kind":"behavioral","line_count":20,
+                    "count_basis":"estimate","responsibility":"Own the bounded fixture behavior."}])
+            };
+            let report = json!({
+                "stage":stage,
+                "rules_digest":constraint["standards_resource_digest"],
+                "verdict":"pass",
+                "reviewed_outputs":consumed_outputs,
+                "source_basis":"Current durable predecessor outputs for this fixture.",
+                "assessments":(1..=10).map(|number| json!({
+                    "rule_id":format!("ENG-{number:02}"),"status":"satisfied",
+                    "rationale":"The fixture supplies current concrete evidence.",
+                    "evidence_refs":[format!("fixture:{marker}")]
+                })).collect::<Vec<_>>(),
+                "findings":[],"files":files,
+                "summary":"The fixture conforms to the pinned engineering standards."
+            });
+            let body = serde_json::to_string(&report).unwrap();
+            output["artifacts"] = json!([{
+                "name":"engineering-review.json","media_type":"application/json",
+                "digest":format!("{:x}",Sha256::digest(body.as_bytes())),"body":body,
+                "reference":format!("fixture/{marker}/engineering-review.json")
+            }]);
+        }
     }
     output
 }
@@ -204,12 +253,32 @@ pub(super) async fn complete(
         .find(|phase| phase["id"] == phase_id)
         .unwrap();
     let request_id = Uuid::new_v4();
+    let consumed_outputs = consumed_outputs(context);
+    let mut output =
+        phase_output_with_consumed(phase, phase_id, outcome, transition, &consumed_outputs);
+    if phase["fresh_reviewer_input"] == true {
+        let producers = context["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["stale"] == false)
+            .map(|item| item["producer_context_id"].as_str().unwrap().to_owned())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        output["reviewer_context"] = json!({
+            "reviewer_identity":"reported-independent-reviewer",
+            "reviewer_context_id":output["producer_context_id"],
+            "producer_context_ids":producers,
+            "fresh_input":true
+        });
+    }
     let mut params = json!({
         "request_id":request_id,"run_id":context["run"]["id"],
         "run_revision":context["run"]["revision"],"phase_id":phase_id,
         "outcome":outcome,"transition":transition,
-        "output":phase_output(phase,phase_id,outcome,transition),
-        "consumed_outputs":consumed_outputs(context),
+        "output":output,
+        "consumed_outputs":consumed_outputs,
         "consumed_inputs":consumed_inputs(context),
         "publish_blocked_result":publish_blocked_result
     });

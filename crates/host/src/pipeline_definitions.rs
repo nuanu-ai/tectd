@@ -96,4 +96,6 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
+mod engineering_review_tests;
+#[cfg(test)]
 mod tests;

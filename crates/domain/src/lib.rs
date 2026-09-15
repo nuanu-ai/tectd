@@ -1,6 +1,7 @@
 //! Pure identities, values and invariants. No environment, transport or persistence.
 mod durable_knowledge;
 mod durable_knowledge_validation;
+mod engineering_review;
 mod error;
 mod identity;
 mod knowledge_change_validation;

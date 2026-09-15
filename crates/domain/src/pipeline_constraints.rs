@@ -21,6 +21,43 @@ pub(crate) fn validate_output_constraint(
         })
     };
     let valid = match constraint {
+        PipelineOutputConstraint::EngineeringReview {
+            stage,
+            standards_resource_id,
+            standards_resource_digest,
+            artifact_name,
+            success_verdicts,
+            required_prior_review_phase_ids,
+            required_reconciliation_phase_id,
+        } => {
+            matches!(stage.as_str(), "specification" | "plan" | "implementation")
+                && !standards_resource_id.trim().is_empty()
+                && !standards_resource_digest.trim().is_empty()
+                && artifact_name == "engineering-review.json"
+                && !success_verdicts.is_empty()
+                && success_verdicts
+                    .iter()
+                    .all(|value| phase.allowed_verdicts.contains(value))
+                && success_verdicts
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    == success_verdicts.len()
+                && required_prior_review_phase_ids
+                    .iter()
+                    .all(|value| !value.trim().is_empty())
+                && required_prior_review_phase_ids
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    == required_prior_review_phase_ids.len()
+                && required_reconciliation_phase_id
+                    .as_ref()
+                    .is_none_or(|value| !value.trim().is_empty())
+        }
+        PipelineOutputConstraint::CodeAuthorization {
+            required_plan_review_phase_id,
+        } => !required_plan_review_phase_id.trim().is_empty(),
         PipelineOutputConstraint::ResolvedKnowledgePublication { when_verdicts } => {
             !when_verdicts.is_empty()
                 && when_verdicts.iter().all(|value| {
@@ -97,6 +134,8 @@ pub(crate) fn output_constraint_satisfied(
             .is_none_or(|value| output.verdict.as_ref() == Some(value))
     };
     match constraint {
+        PipelineOutputConstraint::EngineeringReview { .. }
+        | PipelineOutputConstraint::CodeAuthorization { .. } => true,
         PipelineOutputConstraint::ResolvedKnowledgePublication { when_verdicts } => {
             let required = output
                 .verdict

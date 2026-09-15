@@ -142,7 +142,7 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
             .collect::<Vec<_>>(),
         LIGHTWEIGHT_PHASES
     );
-    assert_eq!(context["delivered_phases"].as_array().unwrap().len(), 14);
+    assert_eq!(context["delivered_phases"].as_array().unwrap().len(), 15);
     assert!(
         context["definition"]["phases"]
             .as_array()
@@ -319,7 +319,7 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
         2
     );
 
-    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 14 {
+    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 15 {
         let (advanced, _) =
             complete(&mut client, &context, "completed", "continue", None, false).await;
         context = advanced["context"].clone();
@@ -377,11 +377,11 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
     assert_ne!(completed_result["id"], blocked_result["id"]);
     assert_eq!(
         completed["context"]["attempts"].as_array().unwrap().len(),
-        16
+        17
     );
     assert_eq!(
         completed["context"]["outputs"].as_array().unwrap().len(),
-        14
+        15
     );
 
     let read = route(

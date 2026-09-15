@@ -58,6 +58,20 @@ pub enum PipelinePhaseRetryPolicy {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PipelineOutputConstraint {
+    EngineeringReview {
+        stage: String,
+        standards_resource_id: String,
+        standards_resource_digest: String,
+        artifact_name: String,
+        success_verdicts: Vec<String>,
+        #[serde(default)]
+        required_prior_review_phase_ids: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        required_reconciliation_phase_id: Option<String>,
+    },
+    CodeAuthorization {
+        required_plan_review_phase_id: String,
+    },
     ResolvedKnowledgePublication {
         when_verdicts: Vec<String>,
     },

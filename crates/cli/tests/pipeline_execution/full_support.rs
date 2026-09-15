@@ -1,5 +1,6 @@
 use super::recovery_support::{Mcp, action_params, find_action};
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
@@ -21,7 +22,69 @@ fn artifact_name(pattern: &str, sequence: usize) -> String {
     )
 }
 
-fn artifacts(phase: &Value, verdict: &str) -> Vec<Value> {
+fn engineering_report(
+    phase: &Value,
+    verdict: &str,
+    outcome: &str,
+    consumed: &[Value],
+) -> Option<String> {
+    let constraint = phase["output_constraints"]
+        .as_array()?
+        .iter()
+        .find(|constraint| constraint["kind"] == "engineering_review")?;
+    let pass = constraint["success_verdicts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value == verdict);
+    let stage = constraint["stage"].as_str().unwrap();
+    let assessments = if pass {
+        (1..=10)
+            .map(|number| {
+                json!({
+                    "rule_id":format!("ENG-{number:02}"),"status":"satisfied",
+                    "rationale":"The fixture supplies concrete current phase evidence.",
+                    "evidence_refs":[format!("fixture:{}",phase["id"].as_str().unwrap())]
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        vec![json!({"rule_id":"ENG-07","status":"unassessed",
+            "rationale":"A required fixture basis is unavailable.",
+            "evidence_refs":[format!("missing:{}",phase["id"].as_str().unwrap())]})]
+    };
+    let files = if !pass || stage == "specification" {
+        vec![]
+    } else if stage == "implementation" {
+        vec![
+            json!({"path":"src/fixture.rs","content_kind":"behavioral","line_count":20,
+            "count_basis":"observed","content_digest":format!("{:x}",Sha256::digest(b"fixture")),
+            "responsibility":"Fixture implementation owner."}),
+        ]
+    } else {
+        vec![
+            json!({"path":"src/fixture.rs","content_kind":"behavioral","line_count":20,
+            "count_basis":"estimate","responsibility":"Fixture implementation owner."}),
+        ]
+    };
+    let mut report = json!({"stage":stage,"rules_digest":constraint["standards_resource_digest"],
+        "verdict":if pass {"pass"} else if outcome == "completed" {"rework"} else {"blocked"},"reviewed_outputs":consumed,
+        "source_basis":"Current durable predecessor outputs.","assessments":assessments,
+        "findings":if pass {json!([])} else {json!([{"id":"fixture-missing-basis","rule_id":"ENG-07","status":"open","evidence":"The required fixture basis is unavailable."}])},
+        "files":files,"summary":if pass {"Fixture engineering review passes."} else {"Fixture engineering review cannot pass without the missing basis."}});
+    if stage == "specification"
+        && !constraint["required_prior_review_phase_ids"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    {
+        report["prior_finding_ids"] = json!([]);
+        report["resolved_finding_ids"] = json!([]);
+    }
+    Some(serde_json::to_string(&report).unwrap())
+}
+
+fn artifacts(phase: &Value, verdict: &str, outcome: &str, consumed: &[Value]) -> Vec<Value> {
     let mut values: Vec<Value> = vec![];
     for requirement in phase["required_artifacts"].as_array().into_iter().flatten() {
         let applies = requirement["when_verdict"].is_null()
@@ -42,10 +105,19 @@ fn artifacts(phase: &Value, verdict: &str) -> Vec<Value> {
                 break;
             }
             let media_type = requirement["media_type"].as_str().unwrap();
-            let (body, digest) = if media_type == "application/json" {
-                ("{}", JSON_DIGEST)
+            let review = (name == "engineering-review.json")
+                .then(|| engineering_report(phase, verdict, outcome, consumed))
+                .flatten();
+            let (body, digest) = if let Some(body) = review {
+                let digest = format!("{:x}", Sha256::digest(body.as_bytes()));
+                (body, digest)
+            } else if media_type == "application/json" {
+                ("{}".to_owned(), JSON_DIGEST.to_owned())
             } else {
-                ("Full pipeline fixture artifact.\n", MARKDOWN_DIGEST)
+                (
+                    "Full pipeline fixture artifact.\n".to_owned(),
+                    MARKDOWN_DIGEST.to_owned(),
+                )
             };
             values.push(json!({"name":name,"media_type":media_type,"body":body,
                 "digest":digest,"reference":format!("fixture-artifact:{pattern}")}));
@@ -111,8 +183,18 @@ fn fields(phase: &Value, verdict: &str) -> Map<String, Value> {
         })
         .collect::<Map<_, _>>();
     for constraint in phase["output_constraints"].as_array().unwrap() {
-        if constraint["kind"] == "resolved_knowledge_publication" {
-            continue;
+        let kind = constraint["kind"].as_str().unwrap();
+        match kind {
+            "engineering_review" | "code_authorization" | "resolved_knowledge_publication" => {
+                continue;
+            }
+            "field_equals"
+            | "field_integer_equals"
+            | "field_integer_minimum"
+            | "field_boolean_equals"
+            | "field_one_of"
+            | "field_required" => {}
+            _ => continue,
         }
         let applies = constraint["when_verdict"].is_null()
             || constraint["when_verdict"].as_str() == Some(verdict);
@@ -120,7 +202,7 @@ fn fields(phase: &Value, verdict: &str) -> Map<String, Value> {
             continue;
         }
         let field = constraint["field"].as_str().unwrap();
-        match constraint["kind"].as_str().unwrap() {
+        match kind {
             "field_equals" => fields.insert(field.into(), constraint["value"].clone()),
             "field_integer_equals" => fields.insert(
                 field.into(),
@@ -145,7 +227,7 @@ fn fields(phase: &Value, verdict: &str) -> Map<String, Value> {
                     .or_insert_with(|| json!("fixture evidence"));
                 None
             }
-            _ => continue,
+            _ => unreachable!("field constraint kinds are filtered above"),
         };
     }
     for constraint in phase["output_constraints"].as_array().unwrap() {
@@ -170,7 +252,34 @@ fn fields(phase: &Value, verdict: &str) -> Map<String, Value> {
             fields.insert(other.into(), equal);
         }
     }
+    for field in [
+        "engineering_finding_ids",
+        "resolved_engineering_finding_ids",
+        "deferred_engineering_finding_ids",
+    ] {
+        if fields.contains_key(field) {
+            fields.insert(field.into(), json!("[]"));
+        }
+    }
+    if fields.contains_key("engineering_finding_authority") {
+        fields.insert(
+            "engineering_finding_authority".into(),
+            json!("not_applicable"),
+        );
+    }
     fields
+}
+
+#[test]
+fn non_field_engineering_constraints_do_not_enter_field_dispatch() {
+    let phase = json!({
+        "required_fields":[],
+        "output_constraints":[
+            {"kind":"engineering_review","stage":"plan"},
+            {"kind":"code_authorization","required_plan_review_phase_id":"review"}
+        ]
+    });
+    assert!(fields(&phase, "pass").is_empty());
 }
 
 pub(super) fn consumed_outputs(context: &Value) -> Vec<Value> {
@@ -211,7 +320,8 @@ pub(super) fn completion(
     terminal_result: Option<Value>,
 ) -> Value {
     let phase = &context["definition"]["phases"][0];
-    let artifacts = artifacts(phase, verdict);
+    let consumed = consumed_outputs(context);
+    let artifacts = artifacts(phase, verdict, outcome, &consumed);
     let producer = format!("full-producer:{}", phase["id"].as_str().unwrap());
     let body = format!(
         "Full lifecycle receipt for {}.",
@@ -249,7 +359,7 @@ pub(super) fn completion(
     let mut request = json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
         "run_revision":context["run"]["revision"],"phase_id":phase["id"],
         "outcome":outcome,"transition":transition,"output":output,
-        "consumed_outputs":consumed_outputs(context),"consumed_inputs":consumed_inputs(context),
+        "consumed_outputs":consumed,"consumed_inputs":consumed_inputs(context),
         "publish_blocked_result":false});
     if let Some(target) = revisit_phase_id {
         request["revisit_phase_id"] = json!(target);

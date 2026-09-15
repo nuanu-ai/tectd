@@ -1,4 +1,5 @@
 use super::*;
+mod engineering_findings;
 
 pub(super) async fn validate_consumed_outputs(
     tx: &mut Transaction<'_, Postgres>,
@@ -48,6 +49,94 @@ pub(super) async fn validate_consumed_inputs(
     } else {
         Err(Error::StaleContext)
     }
+}
+
+pub(super) async fn validate_review_authorization(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    run: Uuid,
+    definition: &PipelineDefinitionSnapshot,
+    phase: &PipelinePhaseDefinition,
+    output: &PipelinePhaseOutputDraft,
+) -> Result<()> {
+    let mut required = Vec::new();
+    let mut specification_lineage: Option<(Vec<String>, String)> = None;
+    for constraint in &phase.output_constraints {
+        match constraint {
+            PipelineOutputConstraint::EngineeringReview {
+                stage,
+                success_verdicts,
+                required_prior_review_phase_ids,
+                required_reconciliation_phase_id,
+                ..
+            } if output
+                .verdict
+                .as_deref()
+                .is_some_and(|value| success_verdicts.iter().any(|success| success == value)) =>
+            {
+                required.extend(required_prior_review_phase_ids.iter().cloned());
+                if stage == "specification"
+                    && let Some(reconciliation_id) = required_reconciliation_phase_id
+                {
+                    specification_lineage = Some((
+                        required_prior_review_phase_ids.clone(),
+                        reconciliation_id.clone(),
+                    ));
+                }
+            }
+            PipelineOutputConstraint::CodeAuthorization {
+                required_plan_review_phase_id,
+            } => {
+                required.push(required_plan_review_phase_id.clone());
+            }
+            _ => {}
+        }
+    }
+    required.sort_unstable();
+    required.dedup();
+    for required_id in required {
+        let prior = definition
+            .phases
+            .iter()
+            .find(|candidate| candidate.id == required_id)
+            .ok_or(Error::InternalInvariant)?;
+        let accepted = prior
+            .output_constraints
+            .iter()
+            .find_map(|constraint| match constraint {
+                PipelineOutputConstraint::EngineeringReview {
+                    success_verdicts, ..
+                } => Some(success_verdicts),
+                _ => None,
+            })
+            .ok_or(Error::InternalInvariant)?;
+        let prior_verdict: Option<String> = sqlx::query_scalar(
+            "SELECT o.verdict FROM slice_pipeline_output_bindings b JOIN slice_pipeline_phase_outputs o ON o.tenant_id=b.tenant_id AND o.workspace_id=b.workspace_id AND o.id=b.output_id WHERE b.tenant_id=$1 AND b.workspace_id=$2 AND b.run_id=$3 AND b.phase_id=$4 AND b.stale=false AND NOT o.payload_erased",
+        )
+        .bind(tenant).bind(workspace).bind(run).bind(&required_id)
+        .fetch_optional(&mut **tx).await.map_err(storage_error)?
+        .flatten();
+        if prior_verdict
+            .as_ref()
+            .is_none_or(|value| !accepted.contains(value))
+        {
+            return Err(Error::Forbidden);
+        }
+    }
+    if let Some((prior_phase_ids, reconciliation_phase_id)) = specification_lineage {
+        engineering_findings::validate_specification_finding_lineage(
+            tx,
+            tenant,
+            workspace,
+            run,
+            output,
+            &prior_phase_ids,
+            &reconciliation_phase_id,
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 pub(super) async fn validate_reviewer_boundary(

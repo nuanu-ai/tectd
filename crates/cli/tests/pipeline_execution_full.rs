@@ -130,7 +130,7 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     assert_eq!(context["run"]["delivery_mode"], "phasewise");
     assert_eq!(
         context["run"]["definition_digest"],
-        "13fd152337abc76d7bbfa15c0875d7b6fbe4719ccfd6fadab5f31825cd39769b"
+        "09f4c903a417537c6059cbccd73b9faafe8f91ee536e43034a883a81d818d7fd"
     );
     assert_eq!(context["definition"]["phases"].as_array().unwrap().len(), 1);
     assert_eq!(context["delivered_phases"].as_array().unwrap().len(), 1);
@@ -393,7 +393,7 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     context = refresh_knowledge(&mut client, &context).await;
     context = advance(&mut client, context).await;
 
-    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 20 {
+    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 21 {
         context = advance(&mut client, context).await;
     }
     let (verdict, outcome, transition) = successful_route(&context);
@@ -401,16 +401,16 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
         completion(&context,verdict,outcome,transition,None,Some(json!({
             "summary":"Caller reports Full Slice completion after exact phase contracts.",
             "evidence":[{"kind":"integration_test","reference":"pipeline_execution_full.rs",
-                "observation":"Twenty phases, rework, review, validators and cold retrieval completed."}],
+                "observation":"Twenty-one phases, rework, review, validators and cold retrieval completed."}],
             "scope_impact":"Refresh future planning once.","remaining_work":"No remaining work in this Slice."
         })))).await;
     assert_eq!(completed["context"]["run"]["status"], "completed");
     assert_eq!(
         completed["result"]["pipeline_definition_digest"],
-        "13fd152337abc76d7bbfa15c0875d7b6fbe4719ccfd6fadab5f31825cd39769b"
+        "09f4c903a417537c6059cbccd73b9faafe8f91ee536e43034a883a81d818d7fd"
     );
     assert_eq!(
         completed["context"]["attempts"].as_array().unwrap().len(),
-        24
+        25
     );
 }

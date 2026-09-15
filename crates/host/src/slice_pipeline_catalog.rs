@@ -292,7 +292,7 @@ mod tests {
                 .len(),
             12
         );
-        assert_eq!(catalog["phase_counts"]["slice_pipeline_run_phases"], 125);
+        assert_eq!(catalog["phase_counts"]["slice_pipeline_run_phases"], 127);
         assert_eq!(catalog["phase_counts"]["knowledge_change_phases"], 12);
         assert_eq!(
             catalog["promotion_method"]["source_ref"],

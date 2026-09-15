@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tect:engineering-review:v1.0.0",
+  "title": "Engineering review report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["stage", "rules_digest", "verdict", "reviewed_outputs", "assessments", "findings", "files", "summary"],
+  "properties": {
+    "stage": {"enum": ["specification", "plan", "implementation"]},
+    "rules_digest": {"type": "string", "minLength": 1},
+    "verdict": {"enum": ["pass", "rework", "blocked"]},
+    "reviewed_outputs": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["phase_id", "output_revision", "digest"],
+        "properties": {
+          "phase_id": {"type": "string", "minLength": 1},
+          "output_revision": {"type": "integer", "minimum": 1},
+          "digest": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "source_basis": {"type": "string", "minLength": 1},
+    "prior_finding_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "resolved_finding_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "assessments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rule_id", "status", "rationale", "evidence_refs"],
+        "properties": {
+          "rule_id": {"pattern": "^ENG-(0[1-9]|10)$"},
+          "status": {"enum": ["satisfied", "not_applicable", "violation", "unassessed"]},
+          "rationale": {"type": "string", "minLength": 1},
+          "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "rule_id", "status"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "rule_id": {"pattern": "^ENG-(0[1-9]|10)$"},
+          "status": {"enum": ["open", "resolved"]},
+          "evidence": {"type": "string", "minLength": 1},
+          "resolution": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "content_kind", "line_count", "count_basis", "responsibility"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "content_kind": {"enum": ["behavioral", "mixed", "declarative"]},
+          "line_count": {"type": "integer", "minimum": 0},
+          "count_basis": {"enum": ["estimate", "observed"]},
+          "content_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "responsibility": {"type": "string", "minLength": 1},
+          "justification": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "summary": {"type": "string", "minLength": 1}
+  }
+}

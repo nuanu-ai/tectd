@@ -130,6 +130,16 @@ pub(crate) async fn complete_phase(
         &request.consumed_outputs,
     )
     .await?;
+    validate_review_authorization(
+        tx,
+        tenant,
+        workspace,
+        request.run_id,
+        &definition,
+        phase,
+        &request.output,
+    )
+    .await?;
     validate_consumed_inputs(
         tx,
         tenant,
@@ -304,5 +314,5 @@ mod helpers;
 
 use helpers::{
     enforce_retry_policy, next_state, publish_result, validate_consumed_inputs,
-    validate_consumed_outputs, validate_reviewer_boundary,
+    validate_consumed_outputs, validate_review_authorization, validate_reviewer_boundary,
 };
