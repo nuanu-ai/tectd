@@ -23,6 +23,7 @@ pub(super) fn pipeline_begin() -> Value {
             "request_id":uuid(),"scope_id":uuid(),"slice_id":uuid(),
             "slice_revision":{"type":"integer","minimum":1},
             "delivery_mode":{"type":"string","enum":["whole","phasewise"]},
+            "inquiry":inquiry(),"source_checkpoint":checkpoint_ref(),
             "qualification_reason":text()
         }),
         json!([
@@ -157,6 +158,10 @@ pub(super) fn pipeline_phase_complete() -> Value {
         json!({"summary":text(),"evidence":{"type":"array","items":evidence,"minItems":1,"maxItems":100},"scope_impact":text(),"remaining_work":text()}),
         json!(["summary", "evidence", "scope_impact", "remaining_work"]),
     );
+    let research_checkpoint = object_schema(
+        json!({"question":text(),"answer_criteria":text(),"inquiry":inquiry(),"reason":text()}),
+        json!(["question", "answer_criteria", "inquiry", "reason"]),
+    );
     object_schema(
         json!({
             "request_id":uuid(),"run_id":uuid(),"run_revision":{"type":"integer","minimum":1},
@@ -166,6 +171,7 @@ pub(super) fn pipeline_phase_complete() -> Value {
             "consumed_inputs":{"type":"array","items":consumed_input,"uniqueItems":true},
             "consumed_knowledge":consumed_knowledge,"revisit_phase_id":text(),"escalation_target":{"type":"string","enum":pipelines()},
             "terminal_result":terminal,"publish_blocked_result":{"type":"boolean","default":false}
+            ,"research_checkpoint":research_checkpoint
         }),
         json!([
             "request_id",
@@ -177,6 +183,27 @@ pub(super) fn pipeline_phase_complete() -> Value {
             "output",
             "consumed_outputs",
             "consumed_inputs"
+        ]),
+    )
+}
+
+pub(super) fn pipeline_checkpoint_resolve() -> Value {
+    let terminal = object_schema(
+        json!({"result_id":uuid(),"output_id":uuid(),"output_digest":text()}),
+        json!(["result_id", "output_id", "output_digest"]),
+    );
+    object_schema(
+        json!({"request_id":uuid(),"producer_run_id":uuid(),
+            "producer_run_revision":{"type":"integer","minimum":1},
+            "checkpoint":checkpoint_ref(),"action":{"type":"string","enum":["accept","reject","cancel"]},
+            "reason":text(),"terminal":terminal}),
+        json!([
+            "request_id",
+            "producer_run_id",
+            "producer_run_revision",
+            "checkpoint",
+            "action",
+            "reason"
         ]),
     )
 }
@@ -243,6 +270,7 @@ pub(super) fn save() -> Value {
                 "proof":{"type":"array","items":text(),"minItems":1,"maxItems":100},
                 "pipeline":{"type":"string","enum":pipelines()},"pipeline_reason":text(),
                 "why_lightweight_insufficient":text(),"why_further_vertical_split_not_viable":text()
+                ,"source_checkpoint":checkpoint_ref()
             }),
         ),
         json!([
@@ -403,10 +431,34 @@ fn pipelines() -> Value {
         "slice.debug-root-cause",
         "slice.operational-preparation",
         "slice.operational-execution",
+        "slice.research",
+        "slice.deep-brainstorming",
         "slice.research-to-durable-knowledge",
         "slice.custom-procedure-capture",
         "slice.promote-to-durable-knowledge"
     ])
+}
+fn checkpoint_ref() -> Value {
+    object_schema(
+        json!({"checkpoint_id":uuid(),"digest":text()}),
+        json!(["checkpoint_id", "digest"]),
+    )
+}
+fn inquiry() -> Value {
+    let research = object_schema(
+        json!({"kind":{"const":"research"},"allow_inconclusive":{"type":"boolean"}}),
+        json!(["kind", "allow_inconclusive"]),
+    );
+    let decision = object_schema(
+        json!({"kind":{"const":"decision"},"requested_outcome":{"type":"string","enum":["decision","recommendation"]}}),
+        json!(["kind", "requested_outcome"]),
+    );
+    object_schema(
+        json!({"topic_level":{"type":"string","enum":["program","scope","slice"]},
+            "task_context":super::planning_task_context(),
+            "completion":{"oneOf":[research,decision]}}),
+        json!(["topic_level", "task_context", "completion"]),
+    )
 }
 fn uuid() -> Value {
     json!({"type":"string","format":"uuid"})

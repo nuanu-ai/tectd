@@ -1,8 +1,11 @@
-use crate::{PipelineDefinitionProvider, TransactionMode, WorkspaceService};
+use crate::{
+    PipelineDefinitionProvider, PipelineExecutionOutputGuard, TransactionMode, WorkspaceService,
+};
 use tect_domain::{
     BeginPipelineRun, BeginPipelineRunOutcome, CompletePipelinePhase, Error,
     EscalatePipelineDelivery, PipelineContextResponse, PipelineMutationOutcome,
-    PipelineRunContextQuery, PipelineRunContextView, RecordPipelineInput, Result, SliceState,
+    PipelineRunContextQuery, PipelineRunContextView, RecordPipelineInput,
+    ResolvePipelineCheckpoint, ResolvePipelineCheckpointOutcome, Result, SliceState,
 };
 
 impl WorkspaceService {
@@ -11,6 +14,7 @@ impl WorkspaceService {
         context: &tect_domain::RequestContext,
         request: &BeginPipelineRun,
         definitions: &dyn PipelineDefinitionProvider,
+        guard: &dyn PipelineExecutionOutputGuard,
     ) -> Result<BeginPipelineRunOutcome> {
         let (mut tx, workspace, session) = self
             .native_planning_transaction(context, TransactionMode::ReadWrite)
@@ -20,6 +24,7 @@ impl WorkspaceService {
             .pipeline_begin_replay(workspace.id, principal_id, request)
             .await?
         {
+            guard.check_begin(&replay)?;
             tx.commit().await?;
             return Ok(replay);
         }
@@ -36,6 +41,7 @@ impl WorkspaceService {
         let value = tx
             .begin_pipeline_run(workspace.id, session.id, request, &definition)
             .await?;
+        guard.check_begin(&value)?;
         tx.commit().await?;
         Ok(value)
     }
@@ -75,6 +81,7 @@ impl WorkspaceService {
         &self,
         context: &tect_domain::RequestContext,
         request: &CompletePipelinePhase,
+        guard: &dyn PipelineExecutionOutputGuard,
     ) -> Result<PipelineMutationOutcome> {
         let (mut tx, workspace, session) = self
             .native_planning_transaction(context, TransactionMode::ReadWrite)
@@ -88,6 +95,7 @@ impl WorkspaceService {
         let value = tx
             .complete_pipeline_phase(workspace.id, session.id, request)
             .await?;
+        guard.check_mutation(&value)?;
         tx.commit().await?;
         Ok(value)
     }
@@ -120,6 +128,24 @@ impl WorkspaceService {
         let value = tx
             .escalate_pipeline_delivery(workspace.id, session.id, request)
             .await?;
+        tx.commit().await?;
+        Ok(value)
+    }
+
+    pub async fn pipeline_checkpoint_resolve(
+        &self,
+        context: &tect_domain::RequestContext,
+        request: &ResolvePipelineCheckpoint,
+        guard: &dyn PipelineExecutionOutputGuard,
+    ) -> Result<ResolvePipelineCheckpointOutcome> {
+        request.validate()?;
+        let (mut tx, workspace, session) = self
+            .native_planning_transaction(context, TransactionMode::ReadWrite)
+            .await?;
+        let value = tx
+            .resolve_pipeline_checkpoint(workspace.id, session.id, request)
+            .await?;
+        guard.check_checkpoint_resolution(&value)?;
         tx.commit().await?;
         Ok(value)
     }

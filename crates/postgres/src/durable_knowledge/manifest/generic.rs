@@ -2,6 +2,8 @@ use super::super::*;
 use crate::knowledge_lifecycle::rdf;
 use sqlx::Row;
 
+mod resource;
+
 #[derive(Clone)]
 pub(super) struct Snapshot {
     pub manifest: PipelineKnowledgeResourceManifest,
@@ -151,186 +153,6 @@ fn methods(
     Ok(values)
 }
 
-async fn latest_validation(
-    tx: &mut Transaction<'_, Postgres>,
-    tenant: Uuid,
-    workspace: Uuid,
-    unit: Uuid,
-    revision: i64,
-) -> Result<Option<PipelineKnowledgeValidationPin>> {
-    let row: Option<(Uuid, i64)> = sqlx::query_as(
-        "SELECT v.id,(SELECT count(*) FROM knowledge_validation_events x WHERE x.tenant_id=v.tenant_id AND x.workspace_id=v.workspace_id AND x.unit_id=v.unit_id AND x.unit_revision=v.unit_revision AND NOT x.payload_erased AND (x.created_at,x.id)<=(v.created_at,v.id)) FROM knowledge_validation_events v WHERE v.tenant_id=$1 AND v.workspace_id=$2 AND v.unit_id=$3 AND v.unit_revision=$4 AND NOT v.payload_erased ORDER BY v.created_at DESC,v.id DESC LIMIT 1",
-    ).bind(tenant).bind(workspace).bind(unit).bind(revision).fetch_optional(&mut **tx).await.map_err(storage_error)?;
-    let Some((event_id, sequence)) = row else {
-        return Ok(None);
-    };
-    let verified = crate::knowledge_lifecycle::verify_publication_event(
-        tx, tenant, workspace, unit, revision, event_id, false,
-    )
-    .await?;
-    if verified.input.planned.operation != KnowledgeLifecycleOperation::Revalidate {
-        return Err(Error::InternalInvariant);
-    }
-    let revalidation = verified
-        .input
-        .planned
-        .revalidation
-        .as_ref()
-        .ok_or(Error::InternalInvariant)?;
-    let source_pin_digest = digest(&verified.input.resolved_sources)?;
-    let exact: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM knowledge_validation_events WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND unit_id=$4 AND unit_revision=$5 AND NOT payload_erased AND sources=$6 AND source_pin_digest=$7 AND evidence_basis=$8 AND valid_until IS NOT DISTINCT FROM $9::timestamptz AND review_due_at IS NOT DISTINCT FROM $10::timestamptz)")
-        .bind(tenant).bind(workspace).bind(event_id).bind(unit).bind(revision)
-        .bind(json(&revalidation.sources)?).bind(source_pin_digest).bind(&revalidation.evidence_basis)
-        .bind(&revalidation.valid_until).bind(&revalidation.review_due_at)
-        .fetch_one(&mut **tx).await.map_err(storage_error)?;
-    if !exact {
-        return Err(Error::InternalInvariant);
-    }
-    Ok(Some(PipelineKnowledgeValidationPin {
-        event_id,
-        event_iri: format!("urn:tect:dk:event:{tenant}:{workspace}:{event_id}"),
-        event_digest: verified.rdf_digest,
-        sequence,
-        valid_until: revalidation.valid_until.clone(),
-        review_due_at: revalidation.review_due_at.clone(),
-        source_pins: verified
-            .input
-            .resolved_sources
-            .into_iter()
-            .map(|value| PipelineKnowledgeSourcePin {
-                source_iri: value.pin.source_iri,
-                digest: value.pin.digest,
-                evidence_kind: value.pin.evidence_kind,
-                observed_at: value.pin.observed_at,
-                evidence_scope: value.pin.evidence_scope,
-                title: value.title,
-                uri: value.uri,
-            })
-            .collect(),
-    }))
-}
-
-async fn typed_resource(
-    tx: &mut Transaction<'_, Postgres>,
-    tenant: Uuid,
-    workspace: Uuid,
-    row: &BindingRow,
-) -> Result<PipelineKnowledgeResource> {
-    let event_id = row.event_id.ok_or(Error::InternalInvariant)?;
-    let verified = crate::knowledge_lifecycle::verify_publication_event(
-        tx,
-        tenant,
-        workspace,
-        row.unit_id,
-        row.revision,
-        event_id,
-        true,
-    )
-    .await?;
-    if row.rdf_digest.as_deref() != Some(verified.rdf_digest.as_str()) {
-        return Err(Error::InternalInvariant);
-    }
-    let input = verified.input;
-    let document = input
-        .planned
-        .document
-        .as_ref()
-        .ok_or(Error::InternalInvariant)?;
-    if input.planned.unit_id != row.unit_id || input.content_revision != row.revision {
-        return Err(Error::InternalInvariant);
-    }
-    let expected = rdf::build(&input)?;
-    let latest = latest_validation(tx, tenant, workspace, row.unit_id, row.revision).await?;
-    Ok(PipelineKnowledgeResource {
-        unit_id: row.unit_id,
-        revision: row.revision,
-        lifecycle: decode(serde_json::Value::String(row.lifecycle.clone()))?,
-        access_scope: decode(serde_json::Value::String(row.head_access.clone()))?,
-        rdf_digest: row.rdf_digest.clone().ok_or(Error::InternalInvariant)?,
-        unit_iri: expected.refs.unit,
-        revision_iri: expected.refs.revision,
-        title: document.title.clone(),
-        canonical_text: document.canonical_text.clone(),
-        knowledge_kind: document.knowledge_kind,
-        epistemic_state: document.epistemic_state,
-        target_iris: document.target_iris.clone(),
-        profiles: document.profiles.clone(),
-        conditions: document.conditions.clone(),
-        exceptions: document.exceptions.clone(),
-        sections: document.sections.clone(),
-        source_pins: input
-            .resolved_sources
-            .into_iter()
-            .map(|value| PipelineKnowledgeSourcePin {
-                source_iri: value.pin.source_iri,
-                digest: value.pin.digest,
-                evidence_kind: value.pin.evidence_kind,
-                observed_at: value.pin.observed_at,
-                evidence_scope: value.pin.evidence_scope,
-                title: value.title,
-                uri: value.uri,
-            })
-            .collect(),
-        latest_validation: latest,
-        binding: binding(row)?,
-        why_included: format!("{}_binding", row.binding_kind),
-    })
-}
-
-async fn legacy_resource(
-    tx: &mut Transaction<'_, Postgres>,
-    tenant: Uuid,
-    workspace: Uuid,
-    row: &BindingRow,
-) -> Result<PipelineKnowledgeResource> {
-    let value =
-        context::load_revision(tx, tenant, workspace, row.unit_id, Some(row.revision), true)
-            .await?
-            .ok_or(Error::InternalInvariant)?;
-    let target = value.constraint.target_iri.clone();
-    Ok(PipelineKnowledgeResource {
-        unit_id: value.unit_id,
-        revision: value.revision,
-        lifecycle: if value.active {
-            KnowledgeLifecycleState::Active
-        } else {
-            KnowledgeLifecycleState::Retracted
-        },
-        access_scope: decode(serde_json::Value::String(row.head_access.clone()))?,
-        rdf_digest: value.rdf_digest,
-        unit_iri: value.unit_iri,
-        revision_iri: value.revision_iri,
-        title: value.constraint.title.clone(),
-        canonical_text: value.constraint.statement.clone(),
-        knowledge_kind: KnowledgeKind::Constraint,
-        epistemic_state: KnowledgeEpistemicState::Normative,
-        target_iris: vec![target.clone()],
-        profiles: vec![KnowledgeProfileId::General],
-        conditions: value.constraint.conditions.clone(),
-        exceptions: value.constraint.exceptions.clone(),
-        sections: KnowledgeProfileSections {
-            constraint: Some(KnowledgeConstraintSection {
-                modality: value.constraint.modality,
-                action: value.constraint.action.clone(),
-                target_iri: target,
-            }),
-            ..Default::default()
-        },
-        source_pins: vec![PipelineKnowledgeSourcePin {
-            source_iri: value.source_iri,
-            digest: value.source_sha256,
-            evidence_kind: KnowledgeEvidenceKind::Document,
-            observed_at: None,
-            evidence_scope: "legacy_dk1_revision".into(),
-            title: value.constraint.source.title,
-            uri: value.constraint.source.uri,
-        }],
-        latest_validation: None,
-        binding: binding(row)?,
-        why_included: format!("{}_binding", row.binding_kind),
-    })
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn snapshot(
     tx: &mut Transaction<'_, Postgres>,
@@ -346,6 +168,7 @@ pub(super) async fn snapshot(
     shared_digest: String,
 ) -> Result<Snapshot> {
     super::delivery::require_identity_ready(tx).await?;
+    let projection = super::inquiry::load(tx, tenant, workspace, run).await?;
     let (generation, definition_version, definition_digest, definition): (i64, String, String, serde_json::Value) = sqlx::query_as(
         "SELECT k.generation,r.definition_version,r.definition_digest,r.definition FROM workspace_knowledge_state k JOIN slice_pipeline_runs r ON r.tenant_id=k.tenant_id AND r.workspace_id=k.workspace_id WHERE k.tenant_id=$1 AND k.workspace_id=$2 AND r.id=$3 AND r.scope_id=$4 AND r.slice_id=$5",
     ).bind(tenant).bind(workspace).bind(run).bind(scope).bind(slice).fetch_one(&mut **tx).await.map_err(storage_error)?;
@@ -372,6 +195,20 @@ pub(super) async fn snapshot(
     let mut gaps = Vec::new();
     let mut warnings = Vec::new();
     for row in rows {
+        if projection
+            .as_ref()
+            .is_some_and(|value| !value.allows_binding(&row.binding_kind))
+        {
+            continue;
+        }
+        if projection
+            .as_ref()
+            .and_then(|value| value.stage())
+            .is_some()
+            && row.revision_contract.as_deref() != Some("dk-2")
+        {
+            continue;
+        }
         if !row.binding_active && covered_supersession(tx, tenant, workspace, &row).await? {
             continue;
         }
@@ -392,6 +229,38 @@ pub(super) async fn snapshot(
             && pin_matches
             && row.event_id.is_some();
         if inaccessible || !available {
+            if let Some(value) = projection.as_ref().filter(|value| value.stage().is_some()) {
+                let selection = row
+                    .event_payload
+                    .as_ref()
+                    .and_then(|payload| payload.pointer("/planned/document/planning_briefs"))
+                    .filter(|briefs| briefs.is_array())
+                    .map(|briefs| {
+                        let briefs: Vec<PlanningBrief> = decode(briefs.clone())?;
+                        Ok(value.select_briefs(&briefs, purpose))
+                    })
+                    .transpose()?;
+                match selection {
+                    Some(super::inquiry::BriefSelection::Full) => {
+                        return Err(Error::InternalInvariant);
+                    }
+                    Some(super::inquiry::BriefSelection::Omit {
+                        needs_context: false,
+                    }) => continue,
+                    Some(super::inquiry::BriefSelection::Omit {
+                        needs_context: true,
+                    }) => {
+                        gaps.push("required_selector_context_missing".into());
+                        continue;
+                    }
+                    Some(super::inquiry::BriefSelection::Briefs { needs_context, .. }) => {
+                        if needs_context {
+                            gaps.push("required_selector_context_missing".into());
+                        }
+                    }
+                    None => continue,
+                }
+            }
             let revision_missing = row.revision_contract.is_none();
             let reason = if inaccessible {
                 "resource_inaccessible"
@@ -409,32 +278,31 @@ pub(super) async fn snapshot(
             }
             continue;
         }
-        let resource = if row.revision_contract.as_deref() == Some("dk-2") {
-            typed_resource(tx, tenant, workspace, &row).await?
-        } else {
-            legacy_resource(tx, tenant, workspace, &row).await?
-        };
-        let (valid_from, valid_until, review_due_at) =
-            if row.revision_contract.as_deref() == Some("dk-2") {
-                let input: rdf::RdfPublicationInput =
-                    decode(row.event_payload.clone().ok_or(Error::InternalInvariant)?)?;
-                let document = input.planned.document.ok_or(Error::InternalInvariant)?;
-                (
-                    document.valid_from,
-                    resource
-                        .latest_validation
-                        .as_ref()
-                        .and_then(|v| v.valid_until.clone())
-                        .or(document.valid_until),
-                    resource
-                        .latest_validation
-                        .as_ref()
-                        .and_then(|v| v.review_due_at.clone())
-                        .or(document.review_due_at),
-                )
-            } else {
-                (None, None, None)
+        let (resource, valid_from, valid_until, review_due_at) = if row.revision_contract.as_deref()
+            == Some("dk-2")
+        {
+            let value =
+                resource::typed(tx, tenant, workspace, &row, projection.as_ref(), purpose).await?;
+            if value.needs_context && blocking(purpose) {
+                gaps.push("required_selector_context_missing".into());
+            }
+            let Some(resource) = value.resource else {
+                continue;
             };
+            (
+                resource,
+                value.valid_from,
+                value.valid_until,
+                value.review_due_at,
+            )
+        } else {
+            (
+                resource::legacy(tx, tenant, workspace, &row).await?,
+                None,
+                None,
+                None,
+            )
+        };
         let (valid, review_due): (bool, bool) = sqlx::query_as("SELECT ($1::timestamptz IS NULL OR $1::timestamptz<=pg_catalog.clock_timestamp()) AND ($2::timestamptz IS NULL OR $2::timestamptz>=pg_catalog.clock_timestamp()),($3::timestamptz IS NOT NULL AND $3::timestamptz<pg_catalog.clock_timestamp())")
             .bind(valid_from).bind(valid_until).bind(review_due_at).fetch_one(&mut **tx).await.map_err(storage_error)?;
         if !valid {
@@ -469,7 +337,7 @@ pub(super) async fn snapshot(
         }
         selected.push(resource);
     }
-    let semantic_digest = digest(&(
+    let base_semantic_digest = digest(&(
         &definition_version,
         &definition_digest,
         &method_requirements,
@@ -477,6 +345,11 @@ pub(super) async fn snapshot(
         &gaps,
         &warnings,
     ))?;
+    let semantic_digest = if let Some(value) = projection.as_ref() {
+        digest(&(&base_semantic_digest, &value.inquiry, value.policy))?
+    } else {
+        base_semantic_digest
+    };
     Ok(Snapshot {
         blocking_gaps: gaps.clone(),
         manifest: PipelineKnowledgeResourceManifest {
@@ -490,6 +363,8 @@ pub(super) async fn snapshot(
             definition_version,
             definition_digest,
             method_requirements,
+            inquiry: projection.as_ref().map(|value| value.inquiry.clone()),
+            projection_policy: projection.as_ref().map(|value| value.policy),
             selected,
             unresolved_needs: gaps,
             freshness_warnings: warnings,

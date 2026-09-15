@@ -45,8 +45,23 @@ pub(crate) async fn save_review(
     let ctx = load_context(tx, tenant, workspace, request.scope_id)
         .await?
         .ok_or(Error::NotFound)?;
-    if ctx.draft.is_none() {
-        return Err(Error::InvalidArguments);
+    let draft = ctx.draft.as_ref().ok_or(Error::InvalidArguments)?;
+    for node in &draft.nodes {
+        if let SliceCandidateNode::Work {
+            source_checkpoint: Some(source),
+            ..
+        } = node
+        {
+            crate::pipeline_execution::validate_candidate_lineage(
+                tx,
+                tenant,
+                workspace,
+                request.scope_id,
+                node.id(),
+                source,
+            )
+            .await?;
+        }
     }
     let next = locked.0.checked_add(1).ok_or(Error::StorageUnavailable)?;
     let review = SliceCandidateReview {

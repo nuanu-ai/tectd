@@ -5,8 +5,9 @@ use tect_domain::{
     PipelineCatalogueEntry, PipelineCatalogueSnapshot, PipelineExecutionOwner, PipelineKind,
 };
 
-pub(crate) const CATALOG_REVISION: &str = "3";
+pub(crate) const CATALOG_REVISION: &str = "4";
 
+#[derive(Clone, Copy)]
 struct SlicePipelineStub {
     kind: PipelineKind,
     description: &'static str,
@@ -16,7 +17,7 @@ struct SlicePipelineStub {
     execution_owner: PipelineExecutionOwner,
 }
 
-const PIPELINES: [SlicePipelineStub; 8] = [
+const KNOWN_PIPELINES: [SlicePipelineStub; 10] = [
     SlicePipelineStub {
         kind: PipelineKind::LightweightTddDevelopment,
         description: "A bounded development change with clear expected behavior, a minimally sufficient test cycle, and a verified implementation; this is the default development path.",
@@ -81,16 +82,61 @@ const PIPELINES: [SlicePipelineStub; 8] = [
         expected_result: "The exact durable outcome and required delivery/impact/erasure effects are evidenced by the Knowledge Change result and backend receipts.",
         execution_owner: PipelineExecutionOwner::KnowledgeChange,
     },
+    SlicePipelineStub {
+        kind: PipelineKind::Research,
+        description: "Answer explicit research questions with traceable evidence, qualified sources, contradictions, bounded negative findings and a usable conclusion.",
+        choose_when: "The outcome requires substantial evidence collection and synthesis rather than a small incidental lookup, implementation, diagnosis or choosing among primarily value-dependent alternatives.",
+        do_not_choose_when: "The task is a simple lookup, an unknown behavioral failure, a product change, an operational action, or only durable publication of already known material.",
+        expected_result: "A verified operational research result: answered, bounded negative_result, or explicitly contract-permitted inconclusive, with limitations and optional separate publication handoff.",
+        execution_owner: PipelineExecutionOwner::SlicePipelineRun,
+    },
+    SlicePipelineStub {
+        kind: PipelineKind::DeepBrainstorming,
+        description: "Frame a consequential decision, explore viable alternatives, test assumptions and reconcile trade-offs into an explicit decision or recommendation.",
+        choose_when: "The main uncertainty concerns intent, alternatives, criteria or trade-offs and needs sustained exploration before execution or publication.",
+        do_not_choose_when: "A brief clarification is enough, evidence gathering is the main outcome, or a ready design must now be implemented.",
+        expected_result: "A traceable selected, recommended or rejected decision disposition with rationale, unresolved conditions and next work; pending decisions remain unfinished when a decision was requested.",
+        execution_owner: PipelineExecutionOwner::SlicePipelineRun,
+    },
+];
+
+#[cfg(test)]
+const HISTORICAL_CATALOGUE_KINDS: [PipelineKind; 7] = PipelineKind::HISTORICAL_SLICE_RUN_KINDS;
+#[cfg(test)]
+const HISTORICAL_PROMOTION_CATALOGUE_KINDS: [PipelineKind; 8] = [
+    PipelineKind::LightweightTddDevelopment,
+    PipelineKind::FullDesignToExecution,
+    PipelineKind::DebugRootCause,
+    PipelineKind::OperationalPreparation,
+    PipelineKind::OperationalExecution,
+    PipelineKind::ResearchToDurableKnowledge,
+    PipelineKind::CustomProcedureCapture,
+    PipelineKind::PromoteToDurableKnowledge,
+];
+const CURRENT_CATALOGUE_KINDS: [PipelineKind; 9] = [
+    PipelineKind::LightweightTddDevelopment,
+    PipelineKind::FullDesignToExecution,
+    PipelineKind::DebugRootCause,
+    PipelineKind::OperationalPreparation,
+    PipelineKind::OperationalExecution,
+    PipelineKind::Research,
+    PipelineKind::DeepBrainstorming,
+    PipelineKind::CustomProcedureCapture,
+    PipelineKind::PromoteToDurableKnowledge,
 ];
 
 pub(crate) fn snapshot() -> PipelineCatalogueSnapshot {
-    build_snapshot(CATALOG_REVISION, &PIPELINES)
+    build_snapshot(CATALOG_REVISION, &CURRENT_CATALOGUE_KINDS)
 }
 
-fn build_snapshot(revision: &str, pipelines: &[SlicePipelineStub]) -> PipelineCatalogueSnapshot {
-    let entries = pipelines
+fn build_snapshot(revision: &str, kinds: &[PipelineKind]) -> PipelineCatalogueSnapshot {
+    let entries = kinds
         .iter()
-        .map(|pipeline| {
+        .map(|kind| {
+            let pipeline = KNOWN_PIPELINES
+                .iter()
+                .find(|pipeline| pipeline.kind == *kind)
+                .expect("catalogue kind has a known description");
             let modes = if pipeline.execution_owner == PipelineExecutionOwner::KnowledgeChange {
                 Some((
                     tect_domain::PipelineDeliveryMode::Whole,
@@ -139,7 +185,7 @@ pub(crate) fn value() -> Value {
         .expect("static Knowledge Change definition validates");
     let promotion_body = include_str!("../knowledge-methods/promotion-slice.md");
     let knowledge_change_phase_count = definition.phases.len();
-    let slice_run_phase_count: usize = PipelineKind::SLICE_RUN_KINDS
+    let slice_run_phase_count: usize = PipelineKind::CURRENT_SLICE_RUN_KINDS
         .into_iter()
         .map(|kind| {
             crate::pipeline_definitions::StaticPipelineDefinitions
@@ -182,23 +228,26 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn catalogue_contains_eight_entries_with_one_knowledge_owner() {
+    fn catalogue_contains_nine_current_entries_with_one_knowledge_owner() {
         let snapshot = snapshot();
         let ids = snapshot
             .entries
             .iter()
             .map(|pipeline| pipeline.kind.as_str())
             .collect::<BTreeSet<_>>();
-        assert_eq!(ids.len(), 8);
+        assert_eq!(ids.len(), 9);
         assert!(!ids.contains("slice.hybrid-implementation-operation"));
         assert!(!ids.contains("slice.research-to-durable-kb"));
+        assert!(!ids.contains("slice.research-to-durable-knowledge"));
+        assert!(ids.contains("slice.research"));
+        assert!(ids.contains("slice.deep-brainstorming"));
         assert_eq!(
             snapshot
                 .entries
                 .iter()
                 .filter(|pipeline| pipeline.executable)
                 .count(),
-            8
+            9
         );
         let lightweight = snapshot
             .entries
@@ -218,7 +267,7 @@ mod tests {
         }));
         let catalog = value();
         assert_eq!(catalog["executable"], true);
-        assert_eq!(catalog["executable_count"], 8);
+        assert_eq!(catalog["executable_count"], 9);
         assert_eq!(catalog["implementation_status"], "executable");
         assert_eq!(catalog["description_status"], "refined");
         assert_eq!(catalog["refinement_required"], false);
@@ -258,11 +307,53 @@ mod tests {
                     .as_bytes()
             ))
         );
+        let research = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.kind == PipelineKind::Research)
+            .unwrap();
+        assert_eq!(
+            research.description,
+            "Answer explicit research questions with traceable evidence, qualified sources, contradictions, bounded negative findings and a usable conclusion."
+        );
+        assert_eq!(
+            research.choose_when,
+            "The outcome requires substantial evidence collection and synthesis rather than a small incidental lookup, implementation, diagnosis or choosing among primarily value-dependent alternatives."
+        );
+        assert_eq!(
+            research.do_not_choose_when,
+            "The task is a simple lookup, an unknown behavioral failure, a product change, an operational action, or only durable publication of already known material."
+        );
+        assert_eq!(
+            research.expected_result,
+            "A verified operational research result: answered, bounded negative_result, or explicitly contract-permitted inconclusive, with limitations and optional separate publication handoff."
+        );
+        let brainstorming = snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.kind == PipelineKind::DeepBrainstorming)
+            .unwrap();
+        assert_eq!(
+            brainstorming.description,
+            "Frame a consequential decision, explore viable alternatives, test assumptions and reconcile trade-offs into an explicit decision or recommendation."
+        );
+        assert_eq!(
+            brainstorming.choose_when,
+            "The main uncertainty concerns intent, alternatives, criteria or trade-offs and needs sustained exploration before execution or publication."
+        );
+        assert_eq!(
+            brainstorming.do_not_choose_when,
+            "A brief clarification is enough, evidence gathering is the main outcome, or a ready design must now be implemented."
+        );
+        assert_eq!(
+            brainstorming.expected_result,
+            "A traceable selected, recommended or rejected decision disposition with rationale, unresolved conditions and next work; pending decisions remain unfinished when a decision was requested."
+        );
     }
 
     #[test]
     fn historical_revision_one_remains_the_original_seven_slice_run_entries() {
-        let historical = build_snapshot("1", &PIPELINES[..7]);
+        let historical = build_snapshot("1", &HISTORICAL_CATALOGUE_KINDS);
         historical.validate().unwrap();
         assert_eq!(historical.revision, "1");
         assert_eq!(historical.entries.len(), 7);
@@ -278,5 +369,28 @@ mod tests {
                 .iter()
                 .any(|entry| entry.kind == PipelineKind::PromoteToDurableKnowledge)
         );
+    }
+
+    #[test]
+    fn historical_promotion_catalogue_remains_the_exact_eight_entry_set() {
+        let historical = build_snapshot("3", &HISTORICAL_PROMOTION_CATALOGUE_KINDS);
+        historical.validate().unwrap();
+        assert_eq!(historical.entries.len(), 8);
+        assert!(
+            historical
+                .entries
+                .iter()
+                .any(|entry| entry.kind == PipelineKind::ResearchToDurableKnowledge)
+        );
+        assert!(
+            historical
+                .entries
+                .iter()
+                .any(|entry| entry.kind == PipelineKind::PromoteToDurableKnowledge)
+        );
+        assert!(!historical.entries.iter().any(|entry| matches!(
+            entry.kind,
+            PipelineKind::Research | PipelineKind::DeepBrainstorming
+        )));
     }
 }

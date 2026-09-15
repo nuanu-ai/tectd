@@ -70,7 +70,21 @@ impl NativePlanningStore for PgUnitOfWork {
         scope_id: Uuid,
     ) -> Result<Option<SliceCandidateContext>> {
         let tenant = self.tenant_id()?;
-        native_planning::load_context(self.transaction()?, tenant, workspace_id, scope_id).await
+        let principal = self.principal_id()?;
+        let value =
+            native_planning::load_context(self.transaction()?, tenant, workspace_id, scope_id)
+                .await?;
+        if let Some(context) = &value {
+            crate::pipeline_execution::authorize_checkpoints(
+                self.transaction()?,
+                tenant,
+                workspace_id,
+                principal,
+                &context.checkpoints,
+            )
+            .await?;
+        }
+        Ok(value)
     }
     async fn save_slice_candidate_draft(
         &mut self,

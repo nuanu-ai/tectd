@@ -43,16 +43,22 @@ mechanics. It does not claim that TectD executed either selected pipeline or
 independently verified caller-supplied evidence.
 
 The deterministic discovery checks keep the five public tools and verify the exact `16` query,
-`36` command, and `1` execute routes. Knowledge discovery covers the exact eighteen DK-1 through
+`37` command, and `1` execute routes, including `slice.pipeline.checkpoint.resolve`.
+Knowledge discovery covers the exact eighteen DK-1 through
 DK-4 routes: six DK-1 routes, seven DK-2 lifecycle routes, DK-3 search, the DK-4 Program knowledge
 refresh, and three DK-4 maintenance routes. Strict maintenance help
 schemas expose the bounded owner query, the three accepted external signal kinds, and exactly one
 revalidate, revise, or supersede operation; invalid inputs are rejected before native state. The
-Slice catalogue contains eight executable kinds while only the seven
+Slice catalogue revision4 contains nine executable kinds while only the eight
 ordinary kinds create `SlicePipelineRun`; Promotion is owned by the twelve-phase Knowledge Change,
 defaults to whole delivery, allows both delivery modes, exposes the seven profile methods, and
 reports DK-2 search as `not_configured`. The metadata-only fixture remains inactive, so these are
 static public-contract checks rather than positive RDF or complete lifecycle acceptance.
+
+Current inquiry discovery checks include Research12 and Deep Brainstorming10 with
+their exact version/digest and immutable begin contract. The optional model smoke
+below is not a full research quality assessment; any separately authored model
+scenario must report its actual completed phases and source/result evidence.
 
 Add `--model-turn` only for the separately authorized fresh native model smoke. Use
 `--postgres-bin /absolute/postgresql-18/bin` when PostgreSQL is elsewhere. `--keep-fixture`

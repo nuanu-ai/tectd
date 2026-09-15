@@ -57,13 +57,21 @@ async fn session_principal(tx: &mut Transaction<'_, Postgres>, session: Uuid) ->
         .ok_or(Error::Forbidden)
 }
 
+mod checkpoint;
+mod checkpoint_resolution;
 mod context;
 mod input;
+mod inquiry_contract;
 mod knowledge_publication;
 mod phase;
 mod phase_validation;
 mod run;
 
+pub(crate) use checkpoint::{
+    authorize_many as authorize_checkpoints, load_for_scope as load_checkpoints_for_scope,
+    validate_candidate_lineage, validate_candidate_source,
+};
+pub(crate) use checkpoint_resolution::resolve as resolve_checkpoint;
 pub(crate) use context::{load_context, load_output};
 pub(crate) use input::{escalate_delivery, record_input};
 pub(crate) use phase::complete_phase;

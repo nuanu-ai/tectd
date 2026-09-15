@@ -1,5 +1,14 @@
 use super::*;
 
+type BeginReplayRow = (
+    Uuid,
+    Option<serde_json::Value>,
+    Option<serde_json::Value>,
+    bool,
+    bool,
+);
+type NativeSliceBeginRow = (Uuid, i64, String, String, Option<Uuid>, Option<String>);
+
 pub(crate) async fn begin_replay(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -8,10 +17,10 @@ pub(crate) async fn begin_replay(
     request: &BeginPipelineRun,
 ) -> Result<Option<BeginPipelineRunOutcome>> {
     let payload = json(request)?;
-    let row:Option<(Uuid,Option<serde_json::Value>,Option<serde_json::Value>,bool)>=sqlx::query_as(
-        "SELECT id,origin_payload,origin_result,payload_erased FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND origin_request_id=$3")
+    let row: Option<BeginReplayRow> = sqlx::query_as(
+        "SELECT id,origin_payload,origin_result,payload_erased,source_checkpoint_id IS NOT NULL FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND origin_request_id=$3")
         .bind(tenant).bind(workspace).bind(request.request_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
-    let Some((run_id, stored, result, erased)) = row else {
+    let Some((run_id, stored, result, erased, checkpoint_origin)) = row else {
         return Ok(None);
     };
     if erased {
@@ -20,6 +29,9 @@ pub(crate) async fn begin_replay(
     }
     if stored != Some(payload) {
         return Err(Error::InputConflict);
+    }
+    if checkpoint_origin {
+        context::authorize_run_origin_if_present(tx, tenant, workspace, principal, run_id).await?;
     }
     let result = result.ok_or(Error::InternalInvariant)?;
     if let Some(manifest) = origin_manifest_id(&result)? {
@@ -65,10 +77,11 @@ pub(crate) async fn begin(
     // DK lock order: workspace knowledge state precedes Slice/run locks.
     let _ = crate::durable_knowledge::lock_state(tx, tenant, workspace).await?;
     let principal = session_principal(tx, session).await?;
-    let row:Option<(Uuid,i64,String,String)>=sqlx::query_as(
-        "SELECT scope_id,revision,pipeline,state FROM native_slices WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
+    let row: Option<NativeSliceBeginRow> = sqlx::query_as(
+        "SELECT scope_id,revision,pipeline,state,source_checkpoint_id,source_checkpoint_digest FROM native_slices WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
         .bind(tenant).bind(workspace).bind(request.slice_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
-    let (scope, revision, kind, state) = row.ok_or(Error::NotFound)?;
+    let (scope, revision, kind, state, checkpoint_id, checkpoint_digest) =
+        row.ok_or(Error::NotFound)?;
     if let Some(replay) = begin_replay(tx, tenant, workspace, principal, request).await? {
         return Ok(replay);
     }
@@ -78,16 +91,41 @@ pub(crate) async fn begin(
     if state != "open" || pipeline(&kind)? != definition.kind {
         return Err(Error::Forbidden);
     }
+    let expected_checkpoint = checkpoint_id
+        .map(|checkpoint_id| {
+            Ok(PipelineCheckpointRef {
+                checkpoint_id,
+                digest: checkpoint_digest.ok_or(Error::InternalInvariant)?,
+            })
+        })
+        .transpose()?;
+    if request.source_checkpoint != expected_checkpoint {
+        return Err(Error::StaleContext);
+    }
     if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND slice_id=$3)")
         .bind(tenant).bind(workspace).bind(request.slice_id).fetch_one(&mut **tx).await.map_err(storage_error)? { return Err(Error::Forbidden) }
     let first = definition.phases.first().ok_or(Error::InternalInvariant)?;
     let selected_mode = request.delivery_mode.unwrap_or(definition.default_mode);
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO slice_pipeline_runs(id,tenant_id,workspace_id,scope_id,slice_id,slice_revision,definition_kind,definition_version,definition_digest,definition,delivery_mode,qualification_reason,current_phase_id,current_phase_ordinal,origin_request_id,origin_payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)")
+    sqlx::query("INSERT INTO slice_pipeline_runs(id,tenant_id,workspace_id,scope_id,slice_id,slice_revision,definition_kind,definition_version,definition_digest,definition,delivery_mode,qualification_reason,current_phase_id,current_phase_ordinal,origin_request_id,origin_payload,inquiry,source_checkpoint_id,source_checkpoint_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)")
         .bind(id).bind(tenant).bind(workspace).bind(scope).bind(request.slice_id).bind(revision)
         .bind(definition.kind.as_str()).bind(&definition.version).bind(&definition.digest).bind(json(definition)?)
         .bind(enum_text(&selected_mode)?).bind(&request.qualification_reason).bind(&first.id).bind(first.ordinal as i32)
-        .bind(request.request_id).bind(json(request)?).execute(&mut **tx).await.map_err(storage_error)?;
+        .bind(request.request_id).bind(json(request)?)
+        .bind(request.inquiry.as_ref().map(json).transpose()?)
+        .bind(request.source_checkpoint.as_ref().map(|value| value.checkpoint_id))
+        .bind(request.source_checkpoint.as_ref().map(|value| value.digest.as_str()))
+        .execute(&mut **tx).await.map_err(storage_error)?;
+    checkpoint::bind_consumer(
+        tx,
+        tenant,
+        workspace,
+        id,
+        scope,
+        request.inquiry.as_ref(),
+        request.source_checkpoint.as_ref(),
+    )
+    .await?;
     let origin_manifest = if let Some(manifest) = crate::durable_knowledge::manifest::capture(
         tx,
         tenant,

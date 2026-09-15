@@ -137,6 +137,7 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "slice.pipeline.phase.complete",
             "slice.pipeline.input",
             "slice.pipeline.delivery.escalate",
+            "slice.pipeline.checkpoint.resolve",
             "knowledge.change_prepare",
             "knowledge.change_review",
             "knowledge.change_publish",

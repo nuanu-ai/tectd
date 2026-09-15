@@ -16,6 +16,8 @@ fn begin(delivery_mode: Option<PipelineDeliveryMode>) -> BeginPipelineRun {
         slice_id: Uuid::new_v4(),
         slice_revision: 1,
         delivery_mode,
+        inquiry: None,
+        source_checkpoint: None,
         qualification_reason: "Agent reports that this mode fits the bounded task.".into(),
     }
 }

@@ -14,6 +14,8 @@ type GenericManifestRow = (
     serde_json::Value,
     serde_json::Value,
     serde_json::Value,
+    Option<serde_json::Value>,
+    Option<String>,
 );
 
 pub(super) async fn require_identity_ready(tx: &mut Transaction<'_, Postgres>) -> Result<()> {
@@ -171,9 +173,16 @@ pub(crate) async fn load_resources(
     if contract != "dk-2" {
         return Err(Error::InternalInvariant);
     }
-    let row: Option<GenericManifestRow> = sqlx::query_as("SELECT digest,resource_semantic_digest,workspace_generation,run_id,run_revision,phase_id,definition_version,definition_digest,method_requirements,selected_resources,resource_unresolved_needs,freshness_warnings FROM pipeline_knowledge_manifests WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND contract_version='dk-2' AND NOT payload_erased")
+    let row: Option<GenericManifestRow> = sqlx::query_as("SELECT digest,resource_semantic_digest,workspace_generation,run_id,run_revision,phase_id,definition_version,definition_digest,method_requirements,selected_resources,resource_unresolved_needs,freshness_warnings,resource_inquiry,resource_projection_policy FROM pipeline_knowledge_manifests WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND contract_version='dk-2' AND NOT payload_erased")
         .bind(tenant).bind(workspace).bind(id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     row.map(|v| {
+        let inquiry = v.12.map(decode).transpose()?;
+        let projection_policy =
+            v.13.map(|value| decode(serde_json::Value::String(value)))
+                .transpose()?;
+        if inquiry.is_some() != projection_policy.is_some() {
+            return Err(Error::InternalInvariant);
+        }
         Ok(PipelineKnowledgeResourceManifest {
             id,
             digest: v.0,
@@ -185,6 +194,8 @@ pub(crate) async fn load_resources(
             definition_version: v.6,
             definition_digest: v.7,
             method_requirements: decode(v.8)?,
+            inquiry,
+            projection_policy,
             selected: decode(v.9)?,
             unresolved_needs: decode(v.10)?,
             freshness_warnings: decode(v.11)?,
@@ -289,7 +300,9 @@ pub(crate) async fn resource_status(
         && old.semantic_digest == current.manifest.semantic_digest
         && old.definition_version == current.manifest.definition_version
         && old.definition_digest == current.manifest.definition_digest
-        && old.method_requirements == current.manifest.method_requirements;
+        && old.method_requirements == current.manifest.method_requirements
+        && old.inquiry == current.manifest.inquiry
+        && old.projection_policy == current.manifest.projection_policy;
     let state = if !current.blocking_gaps.is_empty() {
         PipelineKnowledgeResourceState::NeedsContext
     } else if same_basis {

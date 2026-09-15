@@ -34,11 +34,13 @@ pub(super) async fn relational(
             "knowledge_change_attempts"=>id_clean(tx,tenant,workspace,"knowledge_change_attempts",row,"payload_erased AND output_digest IS NULL").await?,
             "knowledge_change_inputs"=>id_clean(tx,tenant,workspace,"knowledge_change_inputs",row,"payload_erased AND reason IS NULL AND input IS NULL AND digest IS NULL AND applied_basis_amendment IS NULL").await?,
             "knowledge_lifecycle_command_receipts"=>receipt_clean(tx,tenant,workspace,"knowledge_lifecycle_command_receipts",None,operation.as_deref().ok_or(Error::InternalInvariant)?,request.ok_or(Error::InternalInvariant)?).await?,
-            "pipeline_knowledge_manifests"=>id_clean(tx,tenant,workspace,"pipeline_knowledge_manifests",row,"payload_erased AND digest IS NULL AND semantic_digest IS NULL AND selected IS NULL AND unresolved_needs IS NULL AND definition_version IS NULL AND definition_digest IS NULL AND method_requirements IS NULL AND selected_resources IS NULL AND resource_unresolved_needs IS NULL AND freshness_warnings IS NULL AND resource_semantic_digest IS NULL").await?,
-            "slice_pipeline_runs"=>id_clean(tx,tenant,workspace,"slice_pipeline_runs",row,"payload_erased AND origin_payload IS NULL AND origin_result IS NULL AND qualification_reason IS NULL").await?,
+            "pipeline_knowledge_manifests"=>id_clean(tx,tenant,workspace,"pipeline_knowledge_manifests",row,"payload_erased AND digest IS NULL AND semantic_digest IS NULL AND selected IS NULL AND unresolved_needs IS NULL AND definition_version IS NULL AND definition_digest IS NULL AND method_requirements IS NULL AND selected_resources IS NULL AND resource_unresolved_needs IS NULL AND freshness_warnings IS NULL AND resource_semantic_digest IS NULL AND resource_inquiry IS NULL AND resource_projection_policy IS NULL").await?,
+            "slice_pipeline_runs"=>id_clean(tx,tenant,workspace,"slice_pipeline_runs",row,"payload_erased AND origin_payload IS NULL AND origin_result IS NULL AND qualification_reason IS NULL AND inquiry IS NULL AND source_checkpoint_digest IS NULL").await?,
             "slice_pipeline_phase_attempts"=>id_clean(tx,tenant,workspace,"slice_pipeline_phase_attempts",row,"payload_erased AND reviewer_context IS NULL AND request_payload IS NULL AND result_payload IS NULL").await?,
             "slice_pipeline_phase_outputs"=>id_clean(tx,tenant,workspace,"slice_pipeline_phase_outputs",row,"payload_erased AND body='[erased]' AND producer_context_id='[erased]' AND body_digest IS NULL AND reference IS NULL AND fields='{}'::jsonb AND verdict IS NULL AND dispositions='[]'::jsonb AND skill_reads='[]'::jsonb AND resource_reads='[]'::jsonb AND artifacts='[]'::jsonb AND validator_receipts='[]'::jsonb AND followup_proposal IS NULL AND knowledge_publication IS NULL").await?,
-            "slice_pipeline_inputs"=>id_clean(tx,tenant,workspace,"slice_pipeline_inputs",row,"payload_erased AND input='[erased]' AND input_digest IS NULL AND request_payload IS NULL AND result_payload IS NULL").await?,
+            "slice_pipeline_inputs"=>id_clean(tx,tenant,workspace,"slice_pipeline_inputs",row,"payload_erased AND input='[erased]' AND input_digest IS NULL AND request_payload IS NULL AND result_payload IS NULL AND checkpoint_digest IS NULL").await?,
+            "pipeline_research_checkpoints"=>id_clean(tx,tenant,workspace,"pipeline_research_checkpoints",row,"payload_erased AND digest IS NULL AND producer_output_digest IS NULL AND basis IS NULL AND question IS NULL AND answer_criteria IS NULL AND inquiry IS NULL AND reason IS NULL AND consumer_terminal_output_digest IS NULL AND resolution_reason IS NULL").await?,
+            "pipeline_checkpoint_receipts"=>checkpoint_receipt_clean(tx,tenant,workspace,row,request.ok_or(Error::InternalInvariant)?).await?,
             "slice_pipeline_receipts"=>receipt_clean(tx,tenant,workspace,"slice_pipeline_receipts",Some(row),operation.as_deref().ok_or(Error::InternalInvariant)?,request.ok_or(Error::InternalInvariant)?).await?,
             "slice_results"=>id_clean(tx,tenant,workspace,"slice_results",row,"payload_erased AND summary IS NULL AND evidence IS NULL AND scope_impact IS NULL AND remaining_work IS NULL AND request_payload IS NULL AND result_payload IS NULL AND knowledge_definition_version IS NULL AND knowledge_definition_digest IS NULL AND knowledge_publisher_receipt_digest IS NULL AND knowledge_result_origin IS NULL").await?,
             "slice_planning_inputs"=>id_clean(tx,tenant,workspace,"slice_planning_inputs",row,"payload_erased AND input IS NULL").await?,
@@ -68,6 +70,18 @@ pub(super) async fn relational(
         }
     }
     Ok(readable)
+}
+
+async fn checkpoint_receipt_clean(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    checkpoint: Uuid,
+    request: Uuid,
+) -> Result<bool> {
+    sqlx::query_scalar("SELECT COALESCE((SELECT payload_erased AND request_payload IS NULL AND result_payload IS NULL FROM pipeline_checkpoint_receipts WHERE tenant_id=$1 AND workspace_id=$2 AND checkpoint_id=$3 AND request_id=$4),true)")
+        .bind(tenant).bind(workspace).bind(checkpoint).bind(request)
+        .fetch_one(&mut **tx).await.map_err(storage_error)
 }
 
 async fn scope_candidate_receipt_clean(

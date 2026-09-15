@@ -16,6 +16,9 @@ impl WorkspaceService {
         request.task_context.validate()?;
         if let Some(mut replay) = tx.scope_open_replay(workspace.id, request).await? {
             let opened = open_scope_context_mut(&mut replay);
+            tx.slice_candidate_context(workspace.id, opened.scope.id)
+                .await?
+                .ok_or(Error::NotFound)?;
             let source = tx
                 .candidate_context(workspace.id, opened.scope.source_candidate_set_id)
                 .await?
@@ -149,6 +152,9 @@ impl WorkspaceService {
         let (mut tx, workspace, _) = self
             .native_planning_transaction(context, TransactionMode::ReadWrite)
             .await?;
+        tx.slice_candidate_context(workspace.id, request.scope_id)
+            .await?
+            .ok_or(Error::NotFound)?;
         let value = tx.open_slice(workspace.id, request).await?;
         tx.commit().await?;
         Ok(value)
@@ -182,6 +188,9 @@ impl WorkspaceService {
         let (mut tx, workspace, session) = self
             .native_planning_transaction(context, TransactionMode::ReadWrite)
             .await?;
+        tx.slice_candidate_context(workspace.id, request.scope_id)
+            .await?
+            .ok_or(Error::NotFound)?;
         let value = tx
             .record_slice_result(workspace.id, session.id, request)
             .await?;

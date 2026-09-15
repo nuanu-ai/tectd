@@ -73,6 +73,9 @@ impl WorkspaceService {
             .await?;
         let receipt = tect_domain::NativePlanningReceiptRequest::SaveDraft(request.clone());
         if let Some(mut value) = tx.native_planning_receipt(workspace.id, &receipt).await? {
+            tx.slice_candidate_context(workspace.id, request.scope_id)
+                .await?
+                .ok_or(Error::NotFound)?;
             let principal = tx.session_principal(session.id).await?;
             value.planning_knowledge = tx
                 .planning_consumption_status(
@@ -156,6 +159,9 @@ impl WorkspaceService {
             .await?;
         let receipt = tect_domain::NativePlanningReceiptRequest::Review(request.clone());
         if let Some(mut value) = tx.native_planning_receipt(workspace.id, &receipt).await? {
+            tx.slice_candidate_context(workspace.id, request.scope_id)
+                .await?
+                .ok_or(Error::NotFound)?;
             let principal = tx.session_principal(session.id).await?;
             value.planning_knowledge = tx
                 .planning_consumption_status(
@@ -232,6 +238,9 @@ impl WorkspaceService {
         let (mut tx, workspace, session) = self
             .native_planning_transaction(context, TransactionMode::ReadWrite)
             .await?;
+        tx.slice_candidate_context(workspace.id, request.scope_id)
+            .await?
+            .ok_or(Error::NotFound)?;
         let receipt = tect_domain::NativePlanningReceiptRequest::RecordInput(request.clone());
         if let Some(mut value) = tx.native_planning_receipt(workspace.id, &receipt).await? {
             value.stale_reasons = vec!["planning_inputs".into()];
@@ -263,6 +272,9 @@ impl WorkspaceService {
         let (mut tx, workspace, session) = self
             .native_planning_transaction(context, TransactionMode::ReadWrite)
             .await?;
+        tx.slice_candidate_context(workspace.id, request.scope_id)
+            .await?
+            .ok_or(Error::NotFound)?;
         let receipt = tect_domain::NativePlanningReceiptRequest::Refresh(request.clone());
         if let Some(task_context) = &request.task_context {
             task_context.validate()?;

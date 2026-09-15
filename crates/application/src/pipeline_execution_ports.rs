@@ -2,12 +2,18 @@ use async_trait::async_trait;
 use tect_domain::{
     BeginPipelineRun, BeginPipelineRunOutcome, CompletePipelinePhase, EscalatePipelineDelivery,
     PipelineDefinitionSnapshot, PipelineKind, PipelineMutationOutcome, PipelineRunContext,
-    RecordPipelineInput, Result,
+    RecordPipelineInput, ResolvePipelineCheckpoint, ResolvePipelineCheckpointOutcome, Result,
 };
 use uuid::Uuid;
 
 pub trait PipelineDefinitionProvider: Send + Sync {
     fn definition(&self, kind: PipelineKind) -> Result<PipelineDefinitionSnapshot>;
+}
+
+pub trait PipelineExecutionOutputGuard: Send + Sync {
+    fn check_begin(&self, value: &BeginPipelineRunOutcome) -> Result<()>;
+    fn check_mutation(&self, value: &PipelineMutationOutcome) -> Result<()>;
+    fn check_checkpoint_resolution(&self, value: &ResolvePipelineCheckpointOutcome) -> Result<()>;
 }
 
 #[async_trait]
@@ -56,4 +62,10 @@ pub trait PipelineExecutionStore: Send {
         session_id: Uuid,
         request: &EscalatePipelineDelivery,
     ) -> Result<PipelineMutationOutcome>;
+    async fn resolve_pipeline_checkpoint(
+        &mut self,
+        workspace_id: Uuid,
+        session_id: Uuid,
+        request: &ResolvePipelineCheckpoint,
+    ) -> Result<ResolvePipelineCheckpointOutcome>;
 }

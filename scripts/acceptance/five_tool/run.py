@@ -251,7 +251,7 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
     }
     proof.check(
         "five-tool facade exposes the exact DK-4 route totals",
-        route_counts == {"query": 16, "command": 36, "execute": 1},
+        route_counts == {"query": 16, "command": 37, "execute": 1},
         route_counts,
     )
     proof.persist()

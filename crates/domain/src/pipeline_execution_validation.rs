@@ -140,6 +140,24 @@ fn validate_instruction(value: &PipelineInstructionSnapshot) -> Result<()> {
 
 impl BeginPipelineRun {
     pub fn validate(&self, definition: &PipelineDefinitionSnapshot) -> Result<()> {
+        let inquiry_valid = match definition.kind {
+            PipelineKind::Research => self
+                .inquiry
+                .as_ref()
+                .is_some_and(|inquiry| inquiry.require_research().is_ok()),
+            PipelineKind::DeepBrainstorming => self
+                .inquiry
+                .as_ref()
+                .is_some_and(|inquiry| inquiry.validate().is_ok() && inquiry.is_decision()),
+            _ => self.inquiry.is_none(),
+        };
+        let checkpoint_valid = match definition.kind {
+            PipelineKind::Research => self
+                .source_checkpoint
+                .as_ref()
+                .is_none_or(|checkpoint| checkpoint.validate().is_ok()),
+            _ => self.source_checkpoint.is_none(),
+        };
         if self.request_id.is_nil()
             || self.scope_id.is_nil()
             || self.slice_id.is_nil()
@@ -148,6 +166,8 @@ impl BeginPipelineRun {
             || !definition
                 .allowed_modes
                 .contains(&self.delivery_mode.unwrap_or(definition.default_mode))
+            || !inquiry_valid
+            || !checkpoint_valid
         {
             Err(Error::InvalidArguments)
         } else {
@@ -205,6 +225,23 @@ impl CompletePipelinePhase {
             .iter()
             .find(|phase| phase.id == self.phase_id)
             .ok_or(Error::InvalidArguments)?;
+        let creates_checkpoint = definition.kind == PipelineKind::DeepBrainstorming
+            && phase.ordinal == 5
+            && self.output.verdict.as_deref() == Some("waiting_research");
+        if creates_checkpoint != self.research_checkpoint.is_some() {
+            return Err(Error::InvalidArguments);
+        }
+        if let Some(checkpoint) = &self.research_checkpoint {
+            checkpoint.validate()?;
+            if definition.kind != PipelineKind::DeepBrainstorming
+                || phase.ordinal != 5
+                || self.outcome != PipelinePhaseOutcome::WaitingInput
+                || self.transition != PipelineTransition::Continue
+                || self.output.verdict.as_deref() != Some("waiting_research")
+            {
+                return Err(Error::InvalidArguments);
+            }
+        }
         if phase.required_fields.iter().any(|key| {
             self.output
                 .fields

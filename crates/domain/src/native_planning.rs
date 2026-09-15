@@ -176,6 +176,8 @@ pub enum SliceCandidateDraftNode {
         why_further_vertical_split_not_viable: Option<String>,
         #[serde(default)]
         source_result_ids: Vec<Uuid>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_checkpoint: Option<crate::PipelineCheckpointRef>,
     },
     Decision {
         identity: SliceDraftIdentity,
@@ -229,6 +231,8 @@ pub enum SliceCandidateNode {
         why_lightweight_insufficient: Option<String>,
         why_further_vertical_split_not_viable: Option<String>,
         source_result_ids: Vec<Uuid>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_checkpoint: Option<crate::PipelineCheckpointRef>,
     },
     Decision {
         id: Uuid,
@@ -326,6 +330,8 @@ pub struct SliceCandidateContext {
     pub history: Vec<SliceCandidateHistoryEntry>,
     pub slices: Vec<NativeSlice>,
     pub results: Vec<SliceResult>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checkpoints: Vec<crate::PipelineResearchCheckpoint>,
     pub stale_reasons: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planning_knowledge: Option<crate::PlanningKnowledgeStatus>,
@@ -430,6 +436,8 @@ pub struct NativeSlice {
     pub knowledge_run_id: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge_status: Option<PipelineRunStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_checkpoint: Option<crate::PipelineCheckpointRef>,
     pub execution_claimed: bool,
 }
 

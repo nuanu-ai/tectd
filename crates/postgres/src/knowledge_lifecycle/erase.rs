@@ -11,10 +11,11 @@ mod search;
 
 pub(crate) use recovery::reconcile_change_owned_copies;
 pub(crate) use registry::{
-    register_knowledge_change_input_copies, register_knowledge_change_output_copies,
-    register_pipeline_input_copies, register_pipeline_manifest_copies,
-    register_pipeline_phase_copies, register_pipeline_receipt_copies,
-    register_pipeline_run_origin_copies,
+    register_checkpoint_consumer_copies, register_checkpoint_copies,
+    register_checkpoint_resolution_copies, register_knowledge_change_input_copies,
+    register_knowledge_change_output_copies, register_pipeline_input_copies,
+    register_pipeline_manifest_copies, register_pipeline_phase_copies,
+    register_pipeline_receipt_copies, register_pipeline_run_origin_copies,
 };
 pub(crate) use search::{reconcile_absent_search_copies, register_search_copies};
 

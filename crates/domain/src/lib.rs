@@ -71,10 +71,12 @@ mod native_planning;
 mod native_planning_receipt;
 mod native_planning_validation;
 mod pipeline_artifacts;
+mod pipeline_checkpoint;
 mod pipeline_constraints;
 mod pipeline_execution;
 mod pipeline_execution_validation;
 mod pipeline_followups;
+mod pipeline_inquiry;
 mod pipelines;
 mod scope_candidate_draft;
 mod scope_candidate_validation;
@@ -82,8 +84,10 @@ mod scope_candidates;
 pub use native_planning::*;
 pub use native_planning_receipt::NativePlanningReceiptRequest;
 pub use native_planning_validation::validate_slice_graph;
+pub use pipeline_checkpoint::*;
 pub use pipeline_execution::*;
 pub use pipeline_followups::*;
+pub use pipeline_inquiry::*;
 pub use pipelines::*;
 pub use scope_candidate_draft::{
     BlockerDraft, BlockerEntity, CandidateAdded, CandidateChanged, CandidateDecision,

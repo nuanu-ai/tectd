@@ -1,7 +1,8 @@
 use crate::{
-    ConsumedKnowledgeManifestRef, KnowledgePublicationReference, PipelineKind,
-    PipelineKnowledgeManifest, PipelineKnowledgeResourceManifest, PipelineKnowledgeResourceStatus,
-    PipelineKnowledgeStatus, SliceResult, SliceResultEvidence,
+    ConsumedKnowledgeManifestRef, KnowledgePublicationReference, PipelineCheckpointRef,
+    PipelineInquiryContract, PipelineKind, PipelineKnowledgeManifest,
+    PipelineKnowledgeResourceManifest, PipelineKnowledgeResourceStatus, PipelineKnowledgeStatus,
+    PipelineResearchCheckpoint, SliceResult, SliceResultEvidence,
     pipeline_followups::{PipelineFollowupContract, PipelineFollowupProposal},
 };
 use serde::{Deserialize, Serialize};
@@ -59,6 +60,11 @@ pub enum PipelinePhaseRetryPolicy {
 pub enum PipelineOutputConstraint {
     ResolvedKnowledgePublication {
         when_verdicts: Vec<String>,
+    },
+    FieldRequired {
+        field: String,
+        #[serde(default)]
+        when_verdict: Option<String>,
     },
     FieldEquals {
         field: String,
@@ -384,6 +390,12 @@ pub struct PipelineInput {
 pub struct PipelineRunContext {
     pub run: PipelineRun,
     pub definition: PipelineDefinitionSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inquiry: Option<PipelineInquiryContract>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_checkpoint: Option<PipelineCheckpointRef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checkpoints: Vec<PipelineResearchCheckpoint>,
     pub delivered_phases: Vec<PipelinePhaseDefinition>,
     pub attempts: Vec<PipelinePhaseAttempt>,
     pub bindings: Vec<PipelineOutputBinding>,

@@ -11,32 +11,7 @@ pub struct PgStore {
     pool: PgPool,
 }
 
-impl PgStore {
-    pub async fn connect(url: &str, max_connections: u32) -> Result<Self> {
-        if max_connections == 0 {
-            return Err(Error::InvalidConfiguration);
-        }
-        let pool = PgPoolOptions::new()
-            .max_connections(max_connections)
-            .connect(url)
-            .await
-            .map_err(storage_error)?;
-        if let Err(error) = runtime::verify_runtime_role(&pool).await {
-            pool.close().await;
-            return Err(error);
-        }
-        Ok(Self { pool })
-    }
-
-    /// Test convenience for pools whose runtime-role contract is established by the fixture.
-    pub fn from_pool(pool: PgPool) -> Self {
-        Self { pool }
-    }
-
-    pub fn pool(&self) -> &PgPool {
-        &self.pool
-    }
-}
+mod connection;
 
 pub(crate) struct PgUnitOfWork {
     transaction: Option<Transaction<'static, Postgres>>,
@@ -52,6 +27,13 @@ impl PgUnitOfWork {
 
     pub(crate) fn tenant_id(&self) -> Result<Uuid> {
         self.tenant_id.ok_or(Error::Forbidden)
+    }
+
+    pub(crate) fn principal_id(&self) -> Result<Uuid> {
+        self.identity
+            .as_ref()
+            .map(|identity| identity.principal_id)
+            .ok_or(Error::Forbidden)
     }
 }
 

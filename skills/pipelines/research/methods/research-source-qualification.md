@@ -1,0 +1,13 @@
+# Research ingestion and source qualification
+
+Use at R06 on the exact collected corpus and log. Account for custody first, then qualify each source. Do not refresh sources inside qualification; route new reads to R05.
+
+Inventory every collected pointer. Preserve raw pointers immutably and distinguish excerpts, normalized observations, paraphrases and generated reports as derived records with source parents. Assign stable evidence IDs; a source may yield separate observations, but aliases must retain one canonical identity. Never erase a rejected, stale, restricted or contradictory input merely to simplify the corpus.
+
+Each intake pointer has exactly one disposition: accepted, duplicate alias, rejected, restricted, blocked or deferred. Reconcile `collected_count = accounted_count`, where accounted is the sum of those disjoint intake dispositions, not the count of extracted observations. For each accepted item retain source-map ID, question/task, path or safe pointer, locator, source owner or explicit unknown, collector, retrieval method, collection time, source date/version or unknown reason, raw/derived relation, allowed citation, sensitivity/retention, status and next action. Excerpts and paraphrases respect source usage restrictions.
+
+Qualify dimensions separately. Provenance identifies primary/official/source-code/runtime/user-stated/third-party/history/generated/unknown evidence and derivation parents. Freshness distinguishes live-checked, current-at-collection, snapshot-only, historical, stale-risk, superseded, undated and needs-refresh. Authority states for what scope the source may speak; allowed use and restrictions determine whether it may support current truth, historical context, comparison, a conflict or no claim. A source can be authoritative but stale or fresh but advisory. Confidence cannot repair missing provenance.
+
+Write `evidence-log.md` and the normalized `evidence-corpus/index.md`; both carry stable custody links and all intake dispositions. Write `source-provenance.md` and `freshness-authority.md` with evidence-by-evidence labels, safe citation, derivation/aliases, scope, limitations, refresh/owner-review needs and blocked reasons. Even an empty corpus needs a reconciled intake count and its collection gaps.
+
+Set `collected_count`, `accounted_count`, `custody_complete=true` only after reconciliation. Every evidence item must be labeled or explicitly blocked/restricted/rejected/deferred. Return to R05 for missing custody, untraceable snapshots or required refresh. Do not infer dates or primary evidence from memory, turn reports into independent sources, resolve contradictions or draft final claims here.

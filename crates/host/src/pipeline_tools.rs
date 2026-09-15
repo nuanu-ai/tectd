@@ -1,7 +1,7 @@
 use serde_json::Value;
 use tect_domain::{
     BeginPipelineRun, CompletePipelinePhase, Error, EscalatePipelineDelivery,
-    PipelineRunContextQuery, RecordPipelineInput, Result,
+    PipelineRunContextQuery, RecordPipelineInput, ResolvePipelineCheckpoint, Result,
 };
 
 pub(crate) enum PipelineInvocation {
@@ -10,6 +10,7 @@ pub(crate) enum PipelineInvocation {
     Complete(Box<CompletePipelinePhase>),
     Input(RecordPipelineInput),
     EscalateDelivery(EscalatePipelineDelivery),
+    ResolveCheckpoint(ResolvePipelineCheckpoint),
 }
 
 pub(crate) fn parse(name: &str, arguments: Value) -> Result<PipelineInvocation> {
@@ -23,6 +24,9 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<PipelineInvocation> 
         "slice_pipeline_input" => decode(arguments).map(PipelineInvocation::Input),
         "slice_pipeline_delivery_escalate" => {
             decode(arguments).map(PipelineInvocation::EscalateDelivery)
+        }
+        "slice_pipeline_checkpoint_resolve" => {
+            decode(arguments).map(PipelineInvocation::ResolveCheckpoint)
         }
         _ => Err(Error::InvalidArguments),
     }
@@ -46,6 +50,10 @@ fn reject_optional_nulls(value: &Value) -> Result<()> {
         "escalation_target",
         "terminal_result",
         "consumed_knowledge",
+        "inquiry",
+        "source_checkpoint",
+        "research_checkpoint",
+        "terminal",
     ];
     match value {
         Value::Object(object) => {

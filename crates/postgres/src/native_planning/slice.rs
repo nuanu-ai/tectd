@@ -35,21 +35,33 @@ pub(crate) async fn open_slice(
     if node.revision() != request.candidate_revision {
         return Err(Error::StaleRevision);
     }
-    let (title, outcome, pipeline_kind, deps) = match node {
+    let (title, outcome, pipeline_kind, deps, source_checkpoint) = match node {
         SliceCandidateNode::Decision { .. } => return Err(Error::Forbidden),
         SliceCandidateNode::Work {
             title,
             outcome,
             pipeline,
             dependencies,
+            source_checkpoint,
             ..
         } => (
             title.clone(),
             outcome.clone(),
             *pipeline,
             dependencies.clone(),
+            source_checkpoint.clone(),
         ),
     };
+    if let Some(source) = &source_checkpoint {
+        crate::pipeline_execution::validate_candidate_source(
+            tx,
+            tenant,
+            workspace,
+            request.scope_id,
+            source,
+        )
+        .await?;
+    }
     if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM native_slices WHERE tenant_id=$1 AND workspace_id=$2 AND scope_id=$3 AND candidate_id=$4)").bind(tenant).bind(workspace).bind(request.scope_id).bind(request.candidate_id).fetch_one(&mut **tx).await.map_err(storage_error)?{return Err(Error::Forbidden)}
     for dep in deps {
         let Some(dep_node) = draft.nodes.iter().find(|n| n.id() == dep) else {
@@ -64,7 +76,7 @@ pub(crate) async fn open_slice(
         }
     }
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO native_slices(id,tenant_id,workspace_id,scope_id,candidate_id,candidate_revision,opening_snapshot_id,title,outcome,pipeline,origin_request_id,origin_payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)").bind(id).bind(tenant).bind(workspace).bind(request.scope_id).bind(request.candidate_id).bind(request.candidate_revision).bind(request.candidate_snapshot_id).bind(title).bind(outcome).bind(pipeline_kind.as_str()).bind(request.request_id).bind(&payload).execute(&mut **tx).await.map_err(storage_error)?;
+    sqlx::query("INSERT INTO native_slices(id,tenant_id,workspace_id,scope_id,candidate_id,candidate_revision,opening_snapshot_id,title,outcome,pipeline,origin_request_id,origin_payload,source_checkpoint_id,source_checkpoint_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)").bind(id).bind(tenant).bind(workspace).bind(request.scope_id).bind(request.candidate_id).bind(request.candidate_revision).bind(request.candidate_snapshot_id).bind(title).bind(outcome).bind(pipeline_kind.as_str()).bind(request.request_id).bind(&payload).bind(source_checkpoint.as_ref().map(|value|value.checkpoint_id)).bind(source_checkpoint.as_ref().map(|value|value.digest.as_str())).execute(&mut **tx).await.map_err(storage_error)?;
     let slice = load_slice(tx, tenant, workspace, id)
         .await?
         .ok_or(Error::InternalInvariant)?;

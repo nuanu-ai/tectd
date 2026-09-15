@@ -72,8 +72,9 @@ impl NativePlanningGuidance for SliceGuidance {
         _results: &[SliceResult],
     ) -> Result<SlicePlanningSnapshotMaterial> {
         let method_body = "slice method";
-        let entries = PipelineKind::ALL
+        let entries = PipelineKind::CURRENT_SLICE_RUN_KINDS
             .into_iter()
+            .chain([PipelineKind::PromoteToDurableKnowledge])
             .map(|kind| PipelineCatalogueEntry {
                 kind,
                 description: "provisional description".into(),

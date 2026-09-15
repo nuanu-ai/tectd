@@ -114,7 +114,8 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
              slice_planning_inputs, slice_planning_snapshots, slice_candidate_drafts, \
              slice_candidate_reviews, native_slices, slice_results, native_planning_receipts, \
              slice_pipeline_runs, slice_pipeline_phase_attempts, slice_pipeline_phase_outputs, \
-             slice_pipeline_output_bindings, slice_pipeline_inputs, slice_pipeline_receipts \
+             slice_pipeline_output_bindings, slice_pipeline_inputs, slice_pipeline_receipts, \
+             pipeline_research_checkpoints, pipeline_checkpoint_receipts \
              FROM {quoted_role}"
         ),
         format!(
@@ -133,7 +134,10 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
         format!(
             "GRANT SELECT, INSERT ON TABLE slice_pipeline_phase_attempts, \
              slice_pipeline_phase_outputs, slice_pipeline_inputs, \
-             slice_pipeline_receipts TO {quoted_role}"
+             slice_pipeline_receipts, pipeline_checkpoint_receipts TO {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT, UPDATE ON TABLE pipeline_research_checkpoints TO {quoted_role}"
         ),
         format!(
             "GRANT UPDATE (result_payload) ON TABLE slice_pipeline_phase_attempts, \
@@ -239,7 +243,7 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
             "GRANT UPDATE(request_payload,result_payload,payload_erased) ON TABLE knowledge_command_receipts TO {quoted_role}"
         ),
         format!(
-            "GRANT UPDATE(digest,semantic_digest,selected,unresolved_needs,definition_version,definition_digest,method_requirements,selected_resources,resource_unresolved_needs,freshness_warnings,resource_semantic_digest,payload_erased) ON TABLE pipeline_knowledge_manifests TO {quoted_role}"
+            "GRANT UPDATE(digest,semantic_digest,selected,unresolved_needs,definition_version,definition_digest,method_requirements,selected_resources,resource_unresolved_needs,freshness_warnings,resource_semantic_digest,resource_inquiry,resource_projection_policy,payload_erased) ON TABLE pipeline_knowledge_manifests TO {quoted_role}"
         ),
         format!(
             "GRANT UPDATE(reviewer_context,request_payload,result_payload,payload_erased) ON TABLE slice_pipeline_phase_attempts TO {quoted_role}"
@@ -248,7 +252,13 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
             "GRANT UPDATE(body,producer_context_id,body_digest,reference,fields,verdict,dispositions,skill_reads,resource_reads,artifacts,validator_receipts,followup_proposal,knowledge_publication,payload_erased) ON TABLE slice_pipeline_phase_outputs TO {quoted_role}"
         ),
         format!(
-            "GRANT UPDATE(input,input_digest,request_payload,result_payload,payload_erased,owner_unit_ids) ON TABLE slice_pipeline_inputs TO {quoted_role}"
+            "GRANT UPDATE(input,input_digest,request_payload,result_payload,checkpoint_digest,payload_erased,owner_unit_ids) ON TABLE slice_pipeline_inputs TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(digest,producer_output_digest,basis,question,answer_criteria,inquiry,reason,consumer_terminal_output_digest,resolution_reason,payload_erased) ON TABLE pipeline_research_checkpoints TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(request_payload,result_payload,owner_unit_ids,payload_erased) ON TABLE pipeline_checkpoint_receipts TO {quoted_role}"
         ),
         format!(
             "GRANT UPDATE(request_payload,result_payload,payload_erased,owner_unit_ids) ON TABLE slice_pipeline_receipts TO {quoted_role}"

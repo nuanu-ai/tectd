@@ -5,7 +5,12 @@ pub(crate) fn validate_output_constraint(
     constraint: &PipelineOutputConstraint,
 ) -> Result<()> {
     let valid_field = |field: &str| {
-        !field.trim().is_empty() && phase.required_fields.iter().any(|value| value == field)
+        !field.trim().is_empty()
+            && field.len() <= 256
+            && (phase.required_fields.iter().any(|value| value == field)
+                || phase.output_constraints.iter().any(|constraint| {
+                    matches!(constraint, PipelineOutputConstraint::FieldRequired { field: declared, .. } if declared == field)
+                }))
     };
     let valid_verdict = |verdict: &Option<String>| {
         verdict.as_ref().is_none_or(|value| {
@@ -25,6 +30,10 @@ pub(crate) fn validate_output_constraint(
                         .any(|allowed| allowed == value)
                 })
         }
+        PipelineOutputConstraint::FieldRequired {
+            field,
+            when_verdict,
+        } => !field.trim().is_empty() && field.len() <= 256 && valid_verdict(when_verdict),
         PipelineOutputConstraint::FieldEquals {
             field,
             value,
@@ -94,6 +103,16 @@ pub(crate) fn output_constraint_satisfied(
                 .as_ref()
                 .is_some_and(|verdict| when_verdicts.contains(verdict));
             required == output.knowledge_publication.is_some()
+        }
+        PipelineOutputConstraint::FieldRequired {
+            field,
+            when_verdict,
+        } => {
+            !applies(when_verdict)
+                || output
+                    .fields
+                    .get(field)
+                    .is_some_and(|value| !value.trim().is_empty())
         }
         PipelineOutputConstraint::FieldEquals {
             field,
@@ -183,5 +202,88 @@ pub(crate) fn output_constraint_satisfied(
                 || output.fields.contains_key(field)
                     && output.fields.get(field) == output.fields.get(other_field)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn phase(constraint: PipelineOutputConstraint) -> PipelinePhaseDefinition {
+        PipelinePhaseDefinition {
+            id: "r".into(),
+            ordinal: 1,
+            title: "Research".into(),
+            required: true,
+            disposition_required: false,
+            instructions: vec![],
+            skills: vec![],
+            resources: vec![],
+            required_artifacts: vec![],
+            validator_contracts: vec![],
+            required_fields: vec![],
+            allowed_verdicts: vec!["ready".into(), "waiting_source".into()],
+            required_dispositions: vec![],
+            allowed_dispositions: vec![],
+            output_constraints: vec![constraint],
+            verdict_routes: vec![],
+            followup_contracts: vec![],
+            allowed_backward_to: vec![],
+            fresh_reviewer_input: false,
+            retry_policy: PipelinePhaseRetryPolicy::Repeatable,
+            output_contract: "output".into(),
+        }
+    }
+
+    fn output(verdict: &str, value: Option<&str>) -> PipelinePhaseOutputDraft {
+        PipelinePhaseOutputDraft {
+            body: "body".into(),
+            producer_context_id: "context".into(),
+            fields: value
+                .map(|value| BTreeMap::from([("proof".into(), value.into())]))
+                .unwrap_or_default(),
+            verdict: Some(verdict.into()),
+            dispositions: vec![],
+            skill_reads: vec![],
+            resource_reads: vec![],
+            artifacts: vec![],
+            validator_receipts: vec![],
+            followup_proposal: None,
+            reviewer_context: None,
+            reference: None,
+            knowledge_publication: None,
+        }
+    }
+
+    #[test]
+    fn conditional_required_field_is_exact() {
+        let required = PipelineOutputConstraint::FieldRequired {
+            field: "proof".into(),
+            when_verdict: Some("ready".into()),
+        };
+        let phase = phase(required.clone());
+        assert!(validate_output_constraint(&phase, &required).is_ok());
+        assert!(!output_constraint_satisfied(
+            &output("ready", None),
+            &required
+        ));
+        assert!(!output_constraint_satisfied(
+            &output("ready", Some("  ")),
+            &required
+        ));
+        assert!(output_constraint_satisfied(
+            &output("waiting_source", None),
+            &required
+        ));
+        let undeclared = PipelineOutputConstraint::FieldEquals {
+            field: "other".into(),
+            value: "true".into(),
+            when_verdict: Some("ready".into()),
+        };
+        assert_eq!(
+            validate_output_constraint(&phase, &undeclared),
+            Err(Error::InvalidArguments)
+        );
     }
 }

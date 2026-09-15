@@ -35,6 +35,8 @@ pub(super) enum CopyRelation {
     ProgramRefreshReceipt,
     Program,
     NativeScope,
+    ResearchCheckpoint,
+    CheckpointReceipt,
 }
 
 impl CopyRelation {
@@ -75,6 +77,8 @@ impl CopyRelation {
             Self::ProgramRefreshReceipt => "program_knowledge_refresh_receipts",
             Self::Program => "programs",
             Self::NativeScope => "native_scopes",
+            Self::ResearchCheckpoint => "pipeline_research_checkpoints",
+            Self::CheckpointReceipt => "pipeline_checkpoint_receipts",
         }
     }
 }

@@ -93,6 +93,21 @@ async fn resolve_draft(
     draft: &SliceCandidateDraft,
     previous: Option<&ResolvedSliceCandidateDraft>,
 ) -> Result<ResolvedSliceCandidateDraft> {
+    let catalogue: serde_json::Value = sqlx::query_scalar(
+        "SELECT p.catalogue FROM native_scopes n JOIN slice_candidate_sets s ON s.tenant_id=n.tenant_id AND s.workspace_id=n.workspace_id AND s.id=n.slice_candidate_set_id JOIN slice_planning_snapshots p ON p.tenant_id=s.tenant_id AND p.workspace_id=s.workspace_id AND p.candidate_set_id=s.id AND p.id=s.current_snapshot_id WHERE n.tenant_id=$1 AND n.workspace_id=$2 AND n.id=$3",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(scope)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(storage_error)?
+    .ok_or(Error::NotFound)?;
+    let selectable = decode::<PipelineCatalogueSnapshot>(catalogue)?
+        .entries
+        .into_iter()
+        .map(|entry| entry.kind)
+        .collect::<BTreeSet<_>>();
     let previous_nodes = previous
         .map(|p| {
             p.nodes
@@ -187,6 +202,7 @@ async fn resolve_draft(
                 why_lightweight_insufficient,
                 why_further_vertical_split_not_viable,
                 source_result_ids,
+                source_checkpoint,
                 ..
             } => {
                 if source_result_ids
@@ -213,6 +229,7 @@ async fn resolve_draft(
                     why_further_vertical_split_not_viable: why_further_vertical_split_not_viable
                         .clone(),
                     source_result_ids: source_result_ids.clone(),
+                    source_checkpoint: source_checkpoint.clone(),
                 }
             }
             SliceCandidateDraftNode::Decision {
@@ -260,6 +277,15 @@ async fn resolve_draft(
         } else {
             candidate
         };
+        let unchanged = previous_nodes
+            .get(&id)
+            .is_some_and(|previous| previous == &candidate);
+        if !unchanged
+            && let SliceCandidateNode::Work { pipeline, .. } = &candidate
+            && !selectable.contains(pipeline)
+        {
+            return Err(Error::Forbidden);
+        }
         nodes.push(candidate);
     }
     for id in &opened {
@@ -318,11 +344,46 @@ async fn resolve_draft(
         }
     }
     validate_slice_graph(&nodes)?;
+    for node in &nodes {
+        let SliceCandidateNode::Work {
+            id,
+            source_checkpoint: Some(source),
+            dependencies,
+            ..
+        } = node
+        else {
+            continue;
+        };
+        let (_, producer_candidate) = crate::pipeline_execution::validate_candidate_lineage(
+            tx, tenant, workspace, scope, *id, source,
+        )
+        .await?;
+        if *id == producer_candidate || reaches_candidate(&nodes, dependencies, producer_candidate)
+        {
+            return Err(Error::Forbidden);
+        }
+    }
     Ok(ResolvedSliceCandidateDraft {
         coverage_summary: draft.coverage_summary.clone(),
         nodes,
         supersessions,
     })
+}
+
+fn reaches_candidate(nodes: &[SliceCandidateNode], roots: &[Uuid], target: Uuid) -> bool {
+    let mut pending = roots.to_vec();
+    let mut seen = BTreeSet::new();
+    while let Some(id) = pending.pop() {
+        if id == target {
+            return true;
+        }
+        if seen.insert(id)
+            && let Some(node) = nodes.iter().find(|node| node.id() == id)
+        {
+            pending.extend_from_slice(node.dependencies());
+        }
+    }
+    false
 }
 fn with_revision(mut node: SliceCandidateNode, revision: i64) -> SliceCandidateNode {
     match &mut node {

@@ -1,0 +1,13 @@
+# Research contradictions and negative knowledge
+
+Use at R08 to preserve everything that narrows or limits the answer. Read the exact claims, qualified evidence, collection searches and prior negative findings. Do not treat an unavailable source as proof of absence.
+
+Write `negative-knowledge.md` with reviewed artifacts, questions, sources, inspection depth/time and known limits even if there are no negative entries. Each entry records stable ID, affected claim/question, negative type, exact inspected or attempted scope, terms/locators, time/version, evidence/provenance, restriction, confidence, bounded conclusion, revisit trigger and next owner. Types include disproven claim, absence-in-inspected-scope, dead end, stale documentation, version mismatch, reported non-working procedure, rejected hypothesis, inaccessible or excluded source, unsafe/restricted evidence and insufficient proof. A non-working command is evidence only if actually observed in authorized work; this phase does not run it.
+
+Preserve source exclusions with their reason, authority/safety/freshness basis and conditions for revisiting. Distinguish material not worth durable retention from a false claim. Negative results remain operational evidence; they are not automatically a positive universal rule or a published KB unit.
+
+Write `contradictions-and-gaps.md`. For every claim record no issue or stable contradiction/gap/staleness/question handles. Compare opposing statements, source dependencies and dates. Classify factual conflict, temporal change, definition/scope mismatch, authority or interpretation conflict, provenance mismatch, source-version drift and contradiction with negative evidence. Apparent conflicts resolved by an already evidenced scope/date distinction retain both original claims and the reconciliation basis. Otherwise do not pick a winning source by assertion.
+
+Each issue names affected claims/evidence, missing proof or competing premises, currentness/authority comparison, consequence for the answer, blocking versus non-blocking status, handling owner and exact next proof. Separate missing primary evidence, current verification, runtime observation, owner preference and restricted access: they require different next actions. Contradicted, uncited, source-only, stale or restricted claims cannot silently become synthesis-ready.
+
+Reconcile every material claim and negative candidate to a disposition; multi-issue claims keep all relevant handles. Set `reviewed_scope`, `claim_dispositions_complete=true` and `blocking_unknowns`. Return to R05/R06/R07 for a specific collection, qualification or ledger defect. Otherwise R09 decides the value of further evidence. Do not hide unresolved contradictions behind a smooth synthesis.

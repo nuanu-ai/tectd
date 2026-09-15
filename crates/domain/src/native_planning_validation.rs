@@ -24,6 +24,7 @@ impl SliceCandidateDraft {
                     why_further_vertical_split_not_viable,
                     dependencies,
                     source_result_ids,
+                    source_checkpoint,
                     ..
                 } => {
                     if title.trim().is_empty()
@@ -45,6 +46,13 @@ impl SliceCandidateDraft {
                                 .unwrap_or("")
                                 .trim()
                                 .is_empty())
+                    {
+                        return Err(Error::InvalidArguments);
+                    }
+                    if source_checkpoint
+                        .as_ref()
+                        .is_some_and(|value| value.validate().is_err())
+                        || source_checkpoint.is_some() && *pipeline != PipelineKind::Research
                     {
                         return Err(Error::InvalidArguments);
                     }

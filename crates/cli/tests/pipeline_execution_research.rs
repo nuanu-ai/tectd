@@ -15,27 +15,25 @@ use tect_postgres::admin;
 use uuid::Uuid;
 
 fn research_draft() -> Value {
-    json!({"coverage_summary":"Bounded evidence synthesis and proposal-only durable handoff","nodes":[{
+    json!({"coverage_summary":"Bounded standalone evidence synthesis","nodes":[{
         "kind":"work","identity":{"local":"research"},"title":"Research a bounded technical question",
-        "outcome":"Claims, negative knowledge, contradictions and gaps are traceable without publication",
-        "includes":["sources","provenance","freshness","claims","negative knowledge","proposal"],
-        "excludes":["canonical write","automatic promotion"],"dependencies":[],
-        "proof":["Cited claim ledger and proposal-only handoff"],"pipeline":"slice.research-to-durable-knowledge",
-        "pipeline_reason":"The bounded question can start whole, then deepen as evidence and gaps accumulate",
+        "outcome":"A bounded negative result with traceable evidence and limitations",
+        "includes":["sources","provenance","claims","contradictions","negative knowledge"],
+        "excludes":["canonical write","automatic promotion","implementation"],"dependencies":[],
+        "proof":["Cited claim ledger and bounded negative result"],"pipeline":"slice.research",
+        "pipeline_reason":"The explicit question requires substantial evidence collection and synthesis.",
         "source_result_ids":[]
     }],"supersessions":[]})
 }
 
 async fn advance(client: &mut Mcp, context: Value) -> Value {
     let (verdict, outcome, transition) = successful_route(&context);
-    route(
-        client,
-        "command",
-        "slice.pipeline.phase.complete",
-        completion(&context, verdict, outcome, transition, None, None),
-    )
-    .await["context"]
-        .clone()
+    let mut request = completion(&context, verdict, outcome, transition, None, None);
+    if context["run"]["current_phase_id"] == "R01" {
+        request["output"]["fields"]["topic_level"] = json!("scope");
+        request["output"]["fields"]["allow_inconclusive"] = json!("false");
+    }
+    route(client, "command", "slice.pipeline.phase.complete", request).await["context"].clone()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -92,19 +90,26 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
         "slice.pipeline.begin",
         json!({"request_id":Uuid::new_v4(),"scope_id":reviewed["scope"]["id"],
             "slice_id":slice["id"],"slice_revision":slice["revision"],"delivery_mode":"whole",
-            "qualification_reason":"The bounded research question fits whole delivery before evidence deepening."}),
+            "qualification_reason":"The bounded scope research question fits whole delivery before evidence deepening.",
+            "inquiry":{"topic_level":"scope","task_context":{"target_iris":[]},
+                "completion":{"kind":"research","allow_inconclusive":false}}}),
     )
     .await;
     let mut context = begun["created"].clone();
     assert!(!id(&context["run"]["id"]).is_nil());
     assert_eq!(context["run"]["delivery_mode"], "whole");
+    assert_eq!(context["inquiry"]["topic_level"], "scope");
+    assert_eq!(
+        context["inquiry"]["completion"]["allow_inconclusive"],
+        false
+    );
     assert_eq!(
         context["run"]["definition_digest"],
-        "374987b7516fe57c4de4282ace1a0fd80712e0bcac664ee08057ab340fc0b8ce"
+        "d3425b463b589897cc4c66157fa8d1bfc05ef200f7593ca46e7e4f566073e612"
     );
     assert_eq!(
         context["definition"]["phases"].as_array().unwrap().len(),
-        22
+        12
     );
     assert!(
         context["definition"]["phases"]
@@ -119,80 +124,128 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
                         .is_some_and(|digest| !digest.is_empty())
             )
     );
+
     context = advance(&mut client, context).await;
+    assert_eq!(context["outputs"][0]["fields"]["topic_level"], "scope");
+    assert_eq!(
+        context["outputs"][0]["fields"]["allow_inconclusive"],
+        "false"
+    );
     context = route(
         &mut client,
         "command",
         "slice.pipeline.delivery.escalate",
         json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
             "run_revision":context["run"]["revision"],"phase_id":context["run"]["current_phase_id"],
-            "reason":"Evidence provenance, contradictions and gaps now warrant phase-local delivery."}),
+            "reason":"Evidence provenance, contradictions and negative findings now warrant phase-local delivery."}),
     )
     .await["context"]
         .clone();
     assert_eq!(context["run"]["delivery_mode"], "phasewise");
     context = refresh_knowledge(&mut client, &context).await;
 
-    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 8 {
+    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 6 {
         context = advance(&mut client, context).await;
     }
-    let (verdict, outcome, transition) = successful_route(&context);
-    let mut dispatched = completion(&context, verdict, outcome, transition, None, None);
-    dispatched["output"]["fields"]["direct_dispatch_performed"] = json!("true");
+    let mut incomplete_custody = completion(&context, "ready", "completed", "continue", None, None);
+    incomplete_custody["output"]["fields"]["custody_complete"] = json!("false");
     assert_eq!(
         route_error(
             &mut client,
             "command",
             "slice.pipeline.phase.complete",
-            dispatched
+            incomplete_custody
         )
         .await["error"]["code"],
         "invalid_arguments"
     );
-    context = advance(&mut client, context).await;
-    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 17 {
-        context = advance(&mut client, context).await;
-    }
-    let (verdict, outcome, transition) = successful_route(&context);
-    let mut canonical_write = completion(&context, verdict, outcome, transition, None, None);
-    canonical_write["output"]["fields"]["canonical_write_performed"] = json!("true");
+    let mut unequal_custody = completion(&context, "ready", "completed", "continue", None, None);
+    unequal_custody["output"]["fields"]["collected_count"] = json!("1");
+    unequal_custody["output"]["fields"]["accounted_count"] = json!("0");
     assert_eq!(
         route_error(
             &mut client,
             "command",
             "slice.pipeline.phase.complete",
-            canonical_write
+            unequal_custody
         )
         .await["error"]["code"],
         "invalid_arguments"
     );
     context = advance(&mut client, context).await;
-    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 20 {
-        context = advance(&mut client, context).await;
-    }
-    let waiting = route(
+
+    let mut incomplete_trace = completion(&context, "ready", "completed", "continue", None, None);
+    incomplete_trace["output"]["fields"]["claim_trace_complete"] = json!("false");
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "slice.pipeline.phase.complete",
+            incomplete_trace
+        )
+        .await["error"]["code"],
+        "invalid_arguments"
+    );
+    context = advance(&mut client, context).await;
+
+    let reviewed_negative = completion(&context, "ready", "completed", "continue", None, None);
+    let artifact_names = reviewed_negative["output"]["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|artifact| artifact["name"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(artifact_names.contains(&"negative-knowledge.md"));
+    assert!(artifact_names.contains(&"contradictions-and-gaps.md"));
+    context = route(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        reviewed_negative,
+    )
+    .await["context"]
+        .clone();
+
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "slice.pipeline.phase.complete",
+            completion(
+                &context,
+                "bounded_inconclusive",
+                "completed",
+                "continue",
+                None,
+                None
+            ),
+        )
+        .await["error"]["code"],
+        "forbidden"
+    );
+    context = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         completion(
             &context,
-            "decision_waiting",
+            "waiting_source",
             "waiting_input",
             "continue",
             None,
             None,
         ),
     )
-    .await;
-    context = waiting["context"].clone();
+    .await["context"]
+        .clone();
     assert_eq!(context["run"]["status"], "waiting_input");
     context = route(
         &mut client,
         "command",
         "slice.pipeline.input",
         json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
-            "run_revision":context["run"]["revision"],"phase_id":context["run"]["current_phase_id"],
-            "input":"The durable owner records no promotion is required; retain the proposal and evidence."}),
+            "run_revision":context["run"]["revision"],"phase_id":"R09",
+            "input":"The bounded negative probe now has its exact source response."}),
     )
     .await["context"]
         .clone();
@@ -201,53 +254,130 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
-        completion(
-            &context,
-            "promotion_not_required",
-            "completed",
-            "continue",
-            None,
-            None,
-        ),
+        completion(&context, "ready", "completed", "continue", None, None),
     )
     .await["context"]
         .clone();
     context = advance(&mut client, context).await;
-    assert_eq!(context["run"]["current_phase_ordinal"], 22);
+    context = advance(&mut client, context).await;
+    assert_eq!(context["run"]["current_phase_id"], "R12");
+
+    let terminal = json!({
+        "summary":"The inspected boundary supports a bounded negative result.",
+        "evidence":[{"kind":"integration_test","reference":"pipeline_execution_research.rs",
+            "observation":"The current Research contract preserved traceability, contradiction and negative-knowledge evidence."}],
+        "scope_impact":"The scope can rely on the bounded negative finding within its recorded limits.",
+        "remaining_work":"Any durable publication remains a separate governed action."
+    });
+    let mut performed = completion(
+        &context,
+        "negative_result",
+        "completed",
+        "complete",
+        None,
+        Some(terminal.clone()),
+    );
+    performed["output"]["fields"]["publication_status"] = json!("performed");
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "slice.pipeline.phase.complete",
+            performed
+        )
+        .await["error"]["code"],
+        "invalid_arguments"
+    );
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "slice.pipeline.phase.complete",
+            completion(
+                &context,
+                "inconclusive",
+                "completed",
+                "complete",
+                None,
+                Some(terminal.clone()),
+            ),
+        )
+        .await["error"]["code"],
+        "forbidden"
+    );
     let completed = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         completion(
             &context,
-            "research_synthesized_not_promoted",
+            "negative_result",
             "completed",
             "complete",
             None,
-            Some(json!({
-                "summary":"The bounded research is synthesized with provenance, gaps and negative knowledge.",
-                "evidence":[{"kind":"integration_test","reference":"pipeline_execution_research.rs",
-                    "observation":"Claim, freshness, contradiction, proposal and promotion-boundary receipts completed."}],
-                "scope_impact":"A durable owner may review the proposal without any canonical write.",
-                "remaining_work":"Promotion remains a separately governed durable-domain action."
-            })),
+            Some(terminal),
         ),
     )
     .await;
     assert_eq!(completed["context"]["run"]["status"], "completed");
+    let outputs = completed["context"]["outputs"].as_array().unwrap();
+    assert_eq!(outputs.len(), 12);
+    assert_eq!(
+        outputs
+            .iter()
+            .map(|output| output["phase_ordinal"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        (1..=12).collect::<Vec<_>>()
+    );
     assert_eq!(
         completed["context"]["attempts"].as_array().unwrap().len(),
-        23
+        13
     );
-    let outputs = completed["context"]["outputs"].as_array().unwrap();
-    assert!(outputs.iter().all(
-        |output| output["fields"]["canonical_write_performed"].as_str() != Some("true")
-            && output["fields"]["durable_write_performed"].as_str() != Some("true")
-            && output["fields"]["index_update_performed"].as_str() != Some("true")
-    ));
-    assert!(outputs.iter().any(|output| output["phase_id"]
-        == "slice-research-negative-knowledge-capturer"
-        && output["fields"]["negative_record_count"] == "1"));
+    let r08 = outputs
+        .iter()
+        .find(|output| output["phase_id"] == "R08")
+        .unwrap();
+    assert!(
+        r08["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|artifact| artifact["name"] == "negative-knowledge.md")
+    );
+    assert!(
+        r08["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|artifact| artifact["name"] == "contradictions-and-gaps.md")
+    );
+    assert!(
+        completed["context"]["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|output| {
+                output["fields"]["publication_status"].as_str() != Some("performed")
+                    && output["fields"]["canonical_write_performed"].as_str() != Some("true")
+                    && output["fields"]["durable_write_performed"].as_str() != Some("true")
+            })
+    );
+    let workspace: Uuid =
+        sqlx::query_scalar("SELECT id FROM workspaces WHERE tenant_id=$1 AND key=$2")
+            .bind(enrollment.tenant_id)
+            .bind(&key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let knowledge_changes: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM knowledge_lifecycle_changes WHERE tenant_id=$1 AND workspace_id=$2",
+    )
+    .bind(enrollment.tenant_id)
+    .bind(workspace)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(knowledge_changes, 0);
     client.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();

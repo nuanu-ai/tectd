@@ -1,4 +1,5 @@
 use super::*;
+use crate::{PipelineCheckpointRef, PipelineInquiryContract, ResearchCheckpointDraft};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -9,6 +10,10 @@ pub struct BeginPipelineRun {
     pub slice_revision: i64,
     #[serde(default)]
     pub delivery_mode: Option<PipelineDeliveryMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inquiry: Option<PipelineInquiryContract>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_checkpoint: Option<PipelineCheckpointRef>,
     pub qualification_reason: String,
 }
 
@@ -70,6 +75,8 @@ pub struct CompletePipelinePhase {
     pub publish_blocked_result: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_knowledge: Option<ConsumedKnowledgeManifestRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub research_checkpoint: Option<ResearchCheckpointDraft>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

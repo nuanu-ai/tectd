@@ -52,8 +52,10 @@ implementation work.
 `scope.open` explicitly opens one native Scope from one current accepted Scope
 candidate and returns the initial complete Slice-candidate planning context. The
 plan is a revisable dependency graph of work candidates and unresolved decision
-points. The catalogue exposes seven executable, versioned pipeline definitions and
-no retired Hybrid pipeline. The same four
+points. Catalogue revision4 exposes nine executable choices: eight versioned Slice
+pipelines and Promotion through the Knowledge Change owner. Standalone Research12
+and Deep Brainstorming10 replace combined Research22 in new choices; old pinned
+runs remain supported. There is no Hybrid pipeline. The same four
 full design rules are captured for Scope and Slice-candidate design and review,
 then omitted from `slice.open` and `slice.context` because the opened Slice was
 already designed. One eligible accepted work candidate opens as one native Slice.

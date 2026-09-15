@@ -3,6 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod delivery;
 mod generic;
+mod inquiry;
+mod legacy;
 pub(crate) use delivery::{
     authorize_manifest, authorize_owned_copy, load, load_resources, resource_status,
 };
@@ -74,27 +76,6 @@ fn items(revisions: &[KnowledgeUnitRevision]) -> Vec<PipelineKnowledgeItem> {
         .collect()
 }
 
-fn semantic(selected: &[PipelineKnowledgeItem], unresolved: &[String]) -> Result<String> {
-    let material = selected
-        .iter()
-        .map(|v| {
-            (
-                &v.unit_id,
-                v.revision,
-                &v.rdf_digest,
-                &v.source_sha256,
-                &v.statement,
-                v.modality,
-                &v.action,
-                &v.target_iri,
-                &v.conditions,
-                &v.exceptions,
-            )
-        })
-        .collect::<Vec<_>>();
-    digest(&(material, unresolved))
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn capture(
     tx: &mut Transaction<'_, Postgres>,
@@ -118,8 +99,16 @@ pub(crate) async fn capture(
         .await
         .map_err(storage_error)?;
     let principal = principal.ok_or(Error::Forbidden)?;
-    let (revisions, unresolved) =
-        projection(tx, tenant, workspace, run, scope, slice, phase, principal).await?;
+    let inquiry_projection = inquiry::load(tx, tenant, workspace, run).await?;
+    let (revisions, unresolved) = if inquiry_projection
+        .as_ref()
+        .and_then(|value| value.stage())
+        .is_some()
+    {
+        (Vec::new(), Vec::new())
+    } else {
+        projection(tx, tenant, workspace, run, scope, slice, phase, principal).await?
+    };
     for value in &revisions {
         let rows = rdf::native_rows(
             tx,
@@ -140,7 +129,7 @@ pub(crate) async fn capture(
     {
         return Err(Error::CapacityExceeded);
     }
-    let semantic_digest = semantic(&selected, &unresolved)?;
+    let semantic_digest = legacy::semantic(&selected, &unresolved)?;
     let id = Uuid::new_v4();
     let mut resource = generic::snapshot(
         tx,
@@ -157,7 +146,7 @@ pub(crate) async fn capture(
     )
     .await?
     .manifest;
-    let digest_value = digest(&(
+    let base_digest = digest(&(
         id,
         generation,
         run,
@@ -174,6 +163,11 @@ pub(crate) async fn capture(
         &resource.unresolved_needs,
         &resource.freshness_warnings,
     ))?;
+    let digest_value = if resource.inquiry.is_some() {
+        digest(&(&base_digest, &resource.inquiry, &resource.projection_policy))?
+    } else {
+        base_digest
+    };
     resource.digest = digest_value.clone();
     let value = PipelineKnowledgeManifest {
         id,
@@ -193,9 +187,11 @@ pub(crate) async fn capture(
     {
         return Err(Error::CapacityExceeded);
     }
-    sqlx::query("INSERT INTO pipeline_knowledge_manifests(id,tenant_id,workspace_id,run_id,run_revision,phase_id,workspace_generation,digest,semantic_digest,selected,unresolved_needs,contract_version,definition_version,definition_digest,method_requirements,selected_resources,resource_unresolved_needs,freshness_warnings,resource_semantic_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'dk-2',$12,$13,$14,$15,$16,$17,$18)")
+    sqlx::query("INSERT INTO pipeline_knowledge_manifests(id,tenant_id,workspace_id,run_id,run_revision,phase_id,workspace_generation,digest,semantic_digest,selected,unresolved_needs,contract_version,definition_version,definition_digest,method_requirements,selected_resources,resource_unresolved_needs,freshness_warnings,resource_semantic_digest,resource_inquiry,resource_projection_policy) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'dk-2',$12,$13,$14,$15,$16,$17,$18,$19,$20)")
         .bind(id).bind(tenant).bind(workspace).bind(run).bind(run_revision).bind(phase).bind(generation).bind(&value.digest).bind(&value.semantic_digest).bind(json(&value.selected)?).bind(json(&value.unresolved_needs)?)
         .bind(&resource.definition_version).bind(&resource.definition_digest).bind(json(&resource.method_requirements)?).bind(json(&resource.selected)?).bind(json(&resource.unresolved_needs)?).bind(json(&resource.freshness_warnings)?).bind(&resource.semantic_digest)
+        .bind(resource.inquiry.as_ref().map(json).transpose()?)
+        .bind(inquiry_projection.as_ref().map(|value| value.policy_name()))
         .execute(&mut **tx).await.map_err(storage_error)?;
     crate::knowledge_lifecycle::erase::register_pipeline_manifest_copies(tx, tenant, workspace, id)
         .await?;
@@ -234,13 +230,21 @@ async fn preview(
         ));
     }
     delivery::require_identity_ready(tx).await?;
-    let (revisions, gaps) =
-        projection(tx, tenant, workspace, run, scope, slice, phase, principal).await?;
+    let inquiry_projection = inquiry::load(tx, tenant, workspace, run).await?;
+    let (revisions, gaps) = if inquiry_projection
+        .as_ref()
+        .and_then(|value| value.stage())
+        .is_some()
+    {
+        (Vec::new(), Vec::new())
+    } else {
+        projection(tx, tenant, workspace, run, scope, slice, phase, principal).await?
+    };
     let selected = items(&revisions);
     Ok((
         generation,
         true,
-        semantic(&selected, &gaps)?,
+        legacy::semantic(&selected, &gaps)?,
         selected,
         gaps,
     ))
@@ -379,6 +383,8 @@ pub(crate) async fn validate_completion(
             && stored.definition_version == current_resources.manifest.definition_version
             && stored.definition_digest == current_resources.manifest.definition_digest
             && stored.method_requirements == current_resources.manifest.method_requirements
+            && stored.inquiry == current_resources.manifest.inquiry
+            && stored.projection_policy == current_resources.manifest.projection_policy
     };
     if !resource_current {
         return Err(Error::ContextChanged);

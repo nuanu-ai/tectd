@@ -135,14 +135,32 @@ pub(crate) async fn execute(
 }
 
 fn pipeline_begin_action(slice: &tect_domain::NativeSlice) -> Result<Value> {
+    let mut params = json!({
+        "request_id":request_id(slice.id,slice.revision,"pipeline-begin"),
+        "scope_id":slice.scope_id,
+        "slice_id":slice.id,
+        "slice_revision":slice.revision,
+    });
+    let mut fields = vec![json!({"path":"arguments.params.qualification_reason",
+        "format":"Agent-supplied concrete reason this Slice fits the selected pipeline and its default delivery mode. Do not ask the human unless fit is genuinely ambiguous."})];
+    if matches!(
+        slice.pipeline,
+        tect_domain::PipelineKind::Research | tect_domain::PipelineKind::DeepBrainstorming
+    ) {
+        let inquiry_format = if let Some(source_checkpoint) = &slice.source_checkpoint {
+            params["source_checkpoint"] = json!(source_checkpoint);
+            "Exact inquiry from that checkpoint in current Scope planning, not a new authored contract."
+        } else {
+            "Immutable inquiry: topic_level program/scope/slice, task_context with unknown versus known-empty selectors, and completion matching this pipeline. Research uses research {allow_inconclusive}; Brainstorming uses decision {requested_outcome: decision|recommendation}. Choose from the actual task; do not invent a user decision."
+        };
+        fields.push(json!({"path":"arguments.params.inquiry","format":inquiry_format}));
+    }
     crate::api::needs_action(
         "needs_context",
         "slice_pipeline_begin",
-        json!({"request_id":request_id(slice.id,slice.revision,"pipeline-begin"),
-            "scope_id":slice.scope_id,"slice_id":slice.id,"slice_revision":slice.revision}),
+        params,
         "context_input",
-        json!({"fields":[{"path":"arguments.params.qualification_reason",
-            "format":"Agent-supplied concrete reason this Slice fits the selected pipeline and its default delivery mode. Do not ask the human unless fit is genuinely ambiguous."}]}),
+        json!({"fields":fields}),
     )
 }
 
@@ -165,6 +183,7 @@ fn candidate_page(
         "scope":context.scope,
         "candidate_set":context.candidate_set,
         "snapshot":context.snapshot,
+        "checkpoints":context.checkpoints,
         "stale_reasons":context.stale_reasons,
         "planning_knowledge":context.planning_knowledge,
     });
@@ -357,11 +376,13 @@ fn output<T: Serialize>(value: T, actions: Vec<Value>) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tect_domain::{NativeSlice, PipelineKind, SliceState};
+    use tect_domain::{NativeSlice, PipelineCheckpointRef, PipelineKind, SliceState};
 
-    #[test]
-    fn opened_slice_output_is_not_started_without_design_guidance_or_execution_claim() {
-        let slice = NativeSlice {
+    fn slice(
+        pipeline: PipelineKind,
+        source_checkpoint: Option<PipelineCheckpointRef>,
+    ) -> NativeSlice {
+        NativeSlice {
             id: Uuid::new_v4(),
             scope_id: Uuid::new_v4(),
             revision: 1,
@@ -370,20 +391,83 @@ mod tests {
             opening_snapshot_id: Uuid::new_v4(),
             title: "Bounded outcome".into(),
             outcome: "Observed result".into(),
-            pipeline: PipelineKind::LightweightTddDevelopment,
+            pipeline,
             state: SliceState::Open,
             pipeline_status: "not_started".into(),
             pipeline_run_id: None,
             knowledge_change_id: None,
             knowledge_run_id: None,
             knowledge_status: None,
+            source_checkpoint,
             execution_claimed: false,
-        };
+        }
+    }
+
+    #[test]
+    fn opened_slice_output_is_not_started_without_design_guidance_or_execution_claim() {
+        let slice = slice(PipelineKind::LightweightTddDevelopment, None);
         let value = output(slice, Vec::new()).unwrap();
         assert_eq!(value["pipeline_status"], "not_started");
         assert_eq!(value["execution_claimed"], false);
         assert!(value.get("rules").is_none());
         assert!(value.get("method").is_none());
         assert!(value.get("execute").is_none());
+    }
+
+    #[test]
+    fn new_inquiry_pipelines_require_the_authored_immutable_inquiry() {
+        for pipeline in [PipelineKind::Research, PipelineKind::DeepBrainstorming] {
+            let value = pipeline_begin_action(&slice(pipeline, None)).unwrap();
+            let fields = value["context_input"]["fields"].as_array().unwrap();
+            assert_eq!(fields.len(), 2);
+            assert_eq!(fields[1]["path"], "arguments.params.inquiry");
+            assert!(
+                fields[1]["format"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Immutable inquiry:")
+            );
+            assert!(value["arguments"]["params"].get("inquiry").is_none());
+            assert!(
+                value["arguments"]["params"]
+                    .get("source_checkpoint")
+                    .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn checkpoint_backed_research_begin_server_fills_exact_checkpoint() {
+        let checkpoint = PipelineCheckpointRef {
+            checkpoint_id: Uuid::new_v4(),
+            digest: "checkpoint-digest".into(),
+        };
+        let value = pipeline_begin_action(&slice(PipelineKind::Research, Some(checkpoint.clone())))
+            .unwrap();
+        assert_eq!(
+            value["arguments"]["params"]["source_checkpoint"],
+            json!(checkpoint)
+        );
+        assert_eq!(
+            value["context_input"]["fields"][1]["format"],
+            "Exact inquiry from that checkpoint in current Scope planning, not a new authored contract."
+        );
+        assert!(value["arguments"]["params"].get("inquiry").is_none());
+    }
+
+    #[test]
+    fn legacy_pipeline_begin_action_remains_qualification_only() {
+        let value =
+            pipeline_begin_action(&slice(PipelineKind::LightweightTddDevelopment, None)).unwrap();
+        assert_eq!(
+            value["context_input"]["fields"].as_array().unwrap().len(),
+            1
+        );
+        assert!(value["arguments"]["params"].get("inquiry").is_none());
+        assert!(
+            value["arguments"]["params"]
+                .get("source_checkpoint")
+                .is_none()
+        );
     }
 }

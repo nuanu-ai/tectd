@@ -63,11 +63,21 @@ pub struct PipelineKnowledgeResource {
     pub conditions: Vec<String>,
     pub exceptions: Vec<String>,
     pub sections: KnowledgeProfileSections,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inquiry_briefs: Option<Vec<crate::PlanningBrief>>,
     pub source_pins: Vec<PipelineKnowledgeSourcePin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest_validation: Option<PipelineKnowledgeValidationPin>,
     pub binding: PipelineKnowledgeBindingPin,
     pub why_included: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineKnowledgeProjectionPolicy {
+    FullResources,
+    ProgramPlanningBriefs,
+    ScopePlanningBriefs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +92,10 @@ pub struct PipelineKnowledgeResourceManifest {
     pub definition_version: String,
     pub definition_digest: String,
     pub method_requirements: Vec<KnowledgeContractRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inquiry: Option<crate::PipelineInquiryContract>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_policy: Option<PipelineKnowledgeProjectionPolicy>,
     pub selected: Vec<PipelineKnowledgeResource>,
     pub unresolved_needs: Vec<String>,
     pub freshness_warnings: Vec<String>,

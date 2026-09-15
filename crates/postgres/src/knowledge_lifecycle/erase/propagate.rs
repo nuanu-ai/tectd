@@ -55,7 +55,7 @@ async fn propagate_pipeline(
     workspace: Uuid,
     unit: Uuid,
 ) -> Result<()> {
-    let attempts:Vec<Uuid>=sqlx::query_scalar("SELECT DISTINCT a.id FROM slice_pipeline_phase_attempts a WHERE a.tenant_id=$1 AND a.workspace_id=$2 AND NOT a.payload_erased AND (EXISTS (SELECT 1 FROM knowledge_owned_copies c WHERE c.tenant_id=a.tenant_id AND c.workspace_id=a.workspace_id AND c.unit_id=$3 AND c.relation_name='pipeline_knowledge_manifests' AND c.row_id=NULLIF(a.request_payload->'consumed_knowledge'->>'manifest_id','')::uuid) OR EXISTS (SELECT 1 FROM pg_catalog.jsonb_array_elements(COALESCE(a.request_payload->'consumed_outputs','[]'::jsonb)) x JOIN slice_pipeline_phase_outputs source ON source.tenant_id=a.tenant_id AND source.workspace_id=a.workspace_id AND source.run_id=a.run_id AND source.phase_id=x->>'phase_id' AND source.revision=(x->>'output_revision')::bigint AND source.body_digest=x->>'digest' JOIN knowledge_owned_copies c ON c.tenant_id=source.tenant_id AND c.workspace_id=source.workspace_id AND c.unit_id=$3 AND c.relation_name='slice_pipeline_phase_outputs' AND c.row_id=source.id AND NOT c.redacted)) ORDER BY a.id")
+    let attempts:Vec<Uuid>=sqlx::query_scalar("SELECT DISTINCT a.id FROM slice_pipeline_phase_attempts a WHERE a.tenant_id=$1 AND a.workspace_id=$2 AND NOT a.payload_erased AND (EXISTS (SELECT 1 FROM knowledge_owned_copies c WHERE c.tenant_id=a.tenant_id AND c.workspace_id=a.workspace_id AND c.unit_id=$3 AND c.relation_name='pipeline_knowledge_manifests' AND c.row_id=NULLIF(a.request_payload->'consumed_knowledge'->>'manifest_id','')::uuid) OR EXISTS (SELECT 1 FROM pg_catalog.jsonb_array_elements(COALESCE(a.request_payload->'consumed_outputs','[]'::jsonb)) x JOIN slice_pipeline_phase_outputs source ON source.tenant_id=a.tenant_id AND source.workspace_id=a.workspace_id AND source.run_id=a.run_id AND source.phase_id=x->>'phase_id' AND source.revision=(x->>'output_revision')::bigint AND source.body_digest=x->>'digest' JOIN knowledge_owned_copies c ON c.tenant_id=source.tenant_id AND c.workspace_id=source.workspace_id AND c.unit_id=$3 AND c.relation_name='slice_pipeline_phase_outputs' AND c.row_id=source.id AND NOT c.redacted) OR EXISTS (SELECT 1 FROM pg_catalog.jsonb_array_elements(COALESCE(a.request_payload->'consumed_inputs','[]'::jsonb)) x JOIN slice_pipeline_inputs source ON source.tenant_id=a.tenant_id AND source.workspace_id=a.workspace_id AND source.run_id=a.run_id AND source.id=(x->>'input_id')::uuid AND source.sequence=(x->>'sequence')::bigint AND source.input_digest=x->>'digest' JOIN knowledge_owned_copies c ON c.tenant_id=source.tenant_id AND c.workspace_id=source.workspace_id AND c.unit_id=$3 AND c.relation_name='slice_pipeline_inputs' AND c.row_id=source.id AND NOT c.redacted)) ORDER BY a.id")
         .bind(tenant).bind(workspace).bind(unit).fetch_all(&mut **tx).await.map_err(storage_error)?;
     for attempt in attempts {
         registry::register_propagated(
@@ -81,6 +81,34 @@ async fn propagate_pipeline(
                 "slice_pipeline_phase_outputs",
                 output,
                 0,
+            )
+            .await?;
+        }
+    }
+    let checkpoints: Vec<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT DISTINCT id,producer_attempt_id FROM (SELECT p.id,p.producer_attempt_id FROM pipeline_research_checkpoints p JOIN knowledge_owned_copies c ON c.tenant_id=p.tenant_id AND c.workspace_id=p.workspace_id AND c.unit_id=$3 AND c.relation_name='slice_pipeline_phase_attempts' AND c.row_id=p.producer_attempt_id WHERE p.tenant_id=$1 AND p.workspace_id=$2 UNION SELECT p.id,p.producer_attempt_id FROM pipeline_research_checkpoints p JOIN knowledge_owned_copies c ON c.tenant_id=p.tenant_id AND c.workspace_id=p.workspace_id AND c.unit_id=$3 AND ((c.relation_name='slice_results' AND c.row_id=p.consumer_result_id) OR (c.relation_name='slice_pipeline_phase_outputs' AND c.row_id=p.consumer_terminal_output_id)) WHERE p.tenant_id=$1 AND p.workspace_id=$2) linked ORDER BY id",
+    )
+    .bind(tenant).bind(workspace).bind(unit)
+    .fetch_all(&mut **tx).await.map_err(storage_error)?;
+    for (checkpoint, attempt) in checkpoints {
+        registry::register_checkpoint_copies(tx, tenant, workspace, checkpoint, attempt).await?;
+        let consumers: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT consumer_run_id FROM pipeline_research_checkpoints WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND consumer_run_id IS NOT NULL",
+        )
+        .bind(tenant).bind(workspace).bind(checkpoint)
+        .fetch_all(&mut **tx).await.map_err(storage_error)?;
+        for run in consumers {
+            registry::register_checkpoint_consumer_copies(tx, tenant, workspace, checkpoint, run)
+                .await?;
+        }
+        let resolutions: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "SELECT i.id,r.request_id FROM pipeline_checkpoint_receipts r JOIN slice_pipeline_inputs i ON i.tenant_id=r.tenant_id AND i.workspace_id=r.workspace_id AND i.checkpoint_id=r.checkpoint_id AND i.request_id=r.request_id WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.checkpoint_id=$3 AND NOT r.payload_erased",
+        )
+        .bind(tenant).bind(workspace).bind(checkpoint)
+        .fetch_all(&mut **tx).await.map_err(storage_error)?;
+        for (input, request) in resolutions {
+            registry::register_checkpoint_resolution_copies(
+                tx, tenant, workspace, checkpoint, input, request,
             )
             .await?;
         }

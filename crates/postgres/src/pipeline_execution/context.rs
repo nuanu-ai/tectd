@@ -2,6 +2,29 @@ use super::*;
 
 type OwnedCopyKey = (String, Uuid, i64, Option<String>, Option<Uuid>);
 
+#[derive(serde::Deserialize)]
+struct StoredRunRow {
+    id: Uuid,
+    scope_id: Uuid,
+    slice_id: Uuid,
+    slice_revision: i64,
+    revision: i64,
+    definition_kind: String,
+    definition_version: String,
+    definition_digest: String,
+    definition: serde_json::Value,
+    delivery_mode: String,
+    qualification_reason: Option<String>,
+    status: String,
+    current_phase_id: Option<String>,
+    current_phase_ordinal: Option<i32>,
+    knowledge_manifest_id: Option<Uuid>,
+    payload_erased: bool,
+    inquiry: Option<serde_json::Value>,
+    source_checkpoint_id: Option<Uuid>,
+    source_checkpoint_digest: Option<String>,
+}
+
 async fn authorize_copy_keys(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -41,6 +64,18 @@ pub(super) async fn authorize_run_origin(
     authorize_copy_keys(tx, tenant, workspace, principal, keys).await
 }
 
+pub(super) async fn authorize_run_origin_if_present(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    run: Uuid,
+) -> Result<()> {
+    let keys:Vec<OwnedCopyKey>=sqlx::query_as("SELECT relation_name,row_id,row_revision,row_operation,row_request_id FROM knowledge_owned_copies WHERE tenant_id=$1 AND workspace_id=$2 AND relation_name='slice_pipeline_runs' AND row_id=$3 ORDER BY row_revision,row_operation,row_request_id")
+        .bind(tenant).bind(workspace).bind(run).fetch_all(&mut **tx).await.map_err(storage_error)?;
+    authorize_copy_keys(tx, tenant, workspace, principal, keys).await
+}
+
 async fn authorize_context_copies(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -61,30 +96,44 @@ pub(crate) async fn load_context(
     principal: Uuid,
     run_id: Uuid,
 ) -> Result<Option<PipelineRunContext>> {
-    let row:Option<(Uuid,Uuid,Uuid,i64,i64,String,String,String,serde_json::Value,String,Option<String>,String,Option<String>,Option<i32>,Option<Uuid>,bool)>=sqlx::query_as(
-        "SELECT id,scope_id,slice_id,slice_revision,revision,definition_kind,definition_version,definition_digest,definition,delivery_mode,qualification_reason,status,current_phase_id,current_phase_ordinal,knowledge_manifest_id,payload_erased FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
+    let row:Option<serde_json::Value>=sqlx::query_scalar(
+        "SELECT pg_catalog.jsonb_build_object('id',id,'scope_id',scope_id,'slice_id',slice_id,'slice_revision',slice_revision,'revision',revision,'definition_kind',definition_kind,'definition_version',definition_version,'definition_digest',definition_digest,'definition',definition,'delivery_mode',delivery_mode,'qualification_reason',qualification_reason,'status',status,'current_phase_id',current_phase_id,'current_phase_ordinal',current_phase_ordinal,'knowledge_manifest_id',knowledge_manifest_id,'payload_erased',payload_erased,'inquiry',inquiry,'source_checkpoint_id',source_checkpoint_id,'source_checkpoint_digest',source_checkpoint_digest) FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
         .bind(tenant).bind(workspace).bind(run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     let Some(row) = row else { return Ok(None) };
+    let row: StoredRunRow = decode(row)?;
     authorize_context_copies(tx, tenant, workspace, principal, run_id).await?;
-    if row.15 {
+    if row.payload_erased {
         return Err(Error::KnowledgePayloadErased);
     }
-    let definition: PipelineDefinitionSnapshot = decode(row.8)?;
+    let definition: PipelineDefinitionSnapshot = decode(row.definition)?;
     let run = PipelineRun {
-        id: row.0,
-        scope_id: row.1,
-        slice_id: row.2,
-        slice_revision: row.3,
-        revision: row.4,
-        definition_kind: pipeline(&row.5)?,
-        definition_version: row.6,
-        definition_digest: row.7,
-        delivery_mode: mode(&row.9)?,
-        qualification_reason: row.10.ok_or(Error::InternalInvariant)?,
-        status: run_status(&row.11)?,
-        current_phase_id: row.12,
-        current_phase_ordinal: row.13.map(|value| value as u32),
+        id: row.id,
+        scope_id: row.scope_id,
+        slice_id: row.slice_id,
+        slice_revision: row.slice_revision,
+        revision: row.revision,
+        definition_kind: pipeline(&row.definition_kind)?,
+        definition_version: row.definition_version,
+        definition_digest: row.definition_digest,
+        delivery_mode: mode(&row.delivery_mode)?,
+        qualification_reason: row.qualification_reason.ok_or(Error::InternalInvariant)?,
+        status: run_status(&row.status)?,
+        current_phase_id: row.current_phase_id,
+        current_phase_ordinal: row.current_phase_ordinal.map(|value| value as u32),
     };
+    let inquiry = row.inquiry.map(decode).transpose()?;
+    let source_checkpoint = row
+        .source_checkpoint_id
+        .map(|checkpoint_id| {
+            Ok(PipelineCheckpointRef {
+                checkpoint_id,
+                digest: row
+                    .source_checkpoint_digest
+                    .clone()
+                    .ok_or(Error::InternalInvariant)?,
+            })
+        })
+        .transpose()?;
     let attempt_rows:Vec<(Uuid,String,i32,i64,String,String,i64,Uuid,String,Option<String>,Uuid,Option<serde_json::Value>)>=sqlx::query_as(
         "SELECT a.id,a.phase_id,a.phase_ordinal,a.attempt,a.outcome,a.transition,o.revision,o.id,o.body_digest,o.reference,a.actor_session_id,a.reviewer_context FROM slice_pipeline_phase_attempts a JOIN slice_pipeline_phase_outputs o ON o.tenant_id=a.tenant_id AND o.workspace_id=a.workspace_id AND o.attempt_id=a.id WHERE a.tenant_id=$1 AND a.workspace_id=$2 AND a.run_id=$3 AND NOT a.payload_erased AND NOT o.payload_erased ORDER BY a.created_at,a.id")
         .bind(tenant).bind(workspace).bind(run_id).fetch_all(&mut **tx).await.map_err(storage_error)?;
@@ -185,8 +234,14 @@ pub(crate) async fn load_context(
             .into_iter()
             .collect(),
     };
-    let knowledge =
-        crate::durable_knowledge::manifest::load(tx, tenant, workspace, row.14, principal).await?;
+    let knowledge = crate::durable_knowledge::manifest::load(
+        tx,
+        tenant,
+        workspace,
+        row.knowledge_manifest_id,
+        principal,
+    )
+    .await?;
     let knowledge_status = crate::durable_knowledge::manifest::status(
         tx,
         tenant,
@@ -200,7 +255,11 @@ pub(crate) async fn load_context(
     )
     .await?;
     let knowledge_resources = crate::durable_knowledge::manifest::load_resources(
-        tx, tenant, workspace, row.14, principal,
+        tx,
+        tenant,
+        workspace,
+        row.knowledge_manifest_id,
+        principal,
     )
     .await?;
     let knowledge_resource_status = crate::durable_knowledge::manifest::resource_status(
@@ -218,6 +277,9 @@ pub(crate) async fn load_context(
     Ok(Some(PipelineRunContext {
         run,
         definition,
+        inquiry,
+        source_checkpoint,
+        checkpoints: checkpoint::load_for_run(tx, tenant, workspace, run_id).await?,
         delivered_phases,
         attempts,
         bindings,

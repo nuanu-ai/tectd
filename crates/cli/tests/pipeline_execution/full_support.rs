@@ -139,6 +139,12 @@ fn fields(phase: &Value, verdict: &str) -> Map<String, Value> {
                 json!(constraint["value"].as_bool().unwrap().to_string()),
             ),
             "field_one_of" => fields.insert(field.into(), constraint["values"][0].clone()),
+            "field_required" => {
+                fields
+                    .entry(field)
+                    .or_insert_with(|| json!("fixture evidence"));
+                None
+            }
             _ => continue,
         };
     }

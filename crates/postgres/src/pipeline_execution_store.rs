@@ -128,4 +128,21 @@ impl PipelineExecutionStore for PgUnitOfWork {
         )
         .await
     }
+
+    async fn resolve_pipeline_checkpoint(
+        &mut self,
+        workspace_id: Uuid,
+        session_id: Uuid,
+        request: &ResolvePipelineCheckpoint,
+    ) -> Result<ResolvePipelineCheckpointOutcome> {
+        let tenant = self.tenant_id()?;
+        pipeline_execution::resolve_checkpoint(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            session_id,
+            request,
+        )
+        .await
+    }
 }

@@ -123,7 +123,7 @@ fn selector(expected: &[String], actual: Option<&[String]>) -> SelectorMatch {
     }
 }
 
-fn applicable(
+pub(crate) fn applicable(
     brief: &PlanningBrief,
     context: &PlanningTaskContext,
 ) -> std::result::Result<bool, ()> {

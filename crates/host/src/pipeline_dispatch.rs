@@ -16,11 +16,20 @@ pub(crate) async fn execute(
             .await
             .and_then(|value| crate::pipeline_output::context(value, capacity)),
         PipelineInvocation::Begin(request) => service
-            .pipeline_run_begin(context, &request, &StaticPipelineDefinitions)
+            .pipeline_run_begin(
+                context,
+                &request,
+                &StaticPipelineDefinitions,
+                &crate::pipeline_output::PipelineEncoding::new(capacity),
+            )
             .await
             .and_then(|value| crate::pipeline_output::begin(value, capacity)),
         PipelineInvocation::Complete(request) => service
-            .pipeline_phase_complete(context, &request)
+            .pipeline_phase_complete(
+                context,
+                &request,
+                &crate::pipeline_output::PipelineEncoding::new(capacity),
+            )
             .await
             .and_then(|value| crate::pipeline_output::mutation(value, capacity)),
         PipelineInvocation::Input(request) => service
@@ -31,5 +40,13 @@ pub(crate) async fn execute(
             .pipeline_delivery_escalate(context, &request)
             .await
             .and_then(|value| crate::pipeline_output::mutation(value, capacity)),
+        PipelineInvocation::ResolveCheckpoint(request) => service
+            .pipeline_checkpoint_resolve(
+                context,
+                &request,
+                &crate::pipeline_output::PipelineEncoding::new(capacity),
+            )
+            .await
+            .and_then(|value| crate::pipeline_output::checkpoint_resolution(value, capacity)),
     }
 }

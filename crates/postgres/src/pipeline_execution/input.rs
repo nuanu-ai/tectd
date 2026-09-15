@@ -27,6 +27,19 @@ pub(crate) async fn record_input(
     if row.0 != request.run_revision {
         return Err(Error::StaleRevision);
     }
+    checkpoint::ensure_run_source_open(tx, tenant, workspace, request.run_id).await?;
+    if sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM pipeline_research_checkpoints WHERE tenant_id=$1 AND workspace_id=$2 AND producer_run_id=$3 AND status='open')",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(request.run_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(storage_error)?
+    {
+        return Err(Error::InputPending);
+    }
     if row.2.as_deref() != Some(&request.phase_id)
         || matches!(row.1.as_str(), "completed" | "escalated")
     {

@@ -107,7 +107,7 @@ not per-session secrets.
 
 ## Public MCP API
 
-The public surface has exactly five tools and 41 routes: 12 queries, 28 commands,
+The public surface has exactly five tools and 54 routes: 16 queries, 37 commands,
 and one execute route. `query`, `command`, and `execute` use
 `{"route":"...","params":{...}}`; `help` searches or describes the exact
 route schema. Unknown routes and route parameters fail before effects.
@@ -231,20 +231,39 @@ pass. The graph may contain work candidates and intentional unresolved decision
 points; dependencies are validated as a DAG. Each opened Slice comes from one
 accepted work candidate and carries one bounded outcome and one pipeline choice.
 
-The pipeline catalogue contains exactly seven executable, versioned pipelines:
+The current revision4 catalogue contains nine executable choices. Eight use a
+version-pinned Slice run:
 `slice.lightweight-tdd-development`, `slice.full-design-to-execution`,
 `slice.debug-root-cause`, `slice.operational-preparation`,
-`slice.operational-execution`, `slice.research-to-durable-knowledge`, and
-`slice.custom-procedure-capture`. Each run pins its complete definition, delivery
+`slice.operational-execution`, `slice.research`, `slice.deep-brainstorming`, and
+`slice.custom-procedure-capture`. The ninth, `slice.promote-to-durable-knowledge`,
+uses the existing twelve-phase Knowledge Change owner. Historical combined
+`slice.research-to-durable-knowledge` definitions remain available to persisted
+runs and already opened Slices. Each run pins its complete definition, delivery
 mode, instructions, skills, resources and gate contracts. TectD validates ordering,
 version bindings and reported receipt structure; the caller performs the work and
 reports evidence. The backend does not run an LLM or semantically verify the work.
+
+Research has twelve phases ending in an evidence-supported answer; Deep
+Brainstorming has ten ending in a decision or contract-sufficient recommendation.
+Both require an immutable inquiry specifying topic level and completion policy,
+default to phasewise, and allow whole delivery with the same ordered outputs.
+Program/Scope topics receive published briefs of that height within the existing
+knowledge manifest; Slice topics retain full-resource delivery. Publication is
+separate Knowledge Change work.
+
+Brainstorming B05 can create a typed Research checkpoint and wait. A normal
+reviewed Research candidate binds to that exact checkpoint. The command
+`slice.pipeline.checkpoint.resolve` accepts/rejects an exact completed consumer
+result or cancels the wait, then resumes the same B05. Freshness, current access,
+single-consumer binding, erase lineage and replay guards apply. Generic input
+cannot bypass an open checkpoint; cancellation does not complete the consumer.
 
 | Tool + route | Purpose |
 | --- | --- |
 | `command` · `scope.open` | Open a native Scope from an exact current accepted Scope candidate and return initial Slice-planning context |
 | `query` · `scope.context` | Read the durable Scope without candidate-design guidance |
-| `query` · `slice.pipelines` | Read the seven executable pipeline descriptions and allowed delivery modes |
+| `query` · `slice.pipelines` | Read the nine current pipeline descriptions, owners and allowed delivery modes |
 | `query` · `slice.candidates.context` | Read bounded current, history, input, review and Result planning views |
 | `command` · `slice.candidates.save` | Save a complete graph draft or its critical review |
 | `command` · `slice.candidates.input` | Record exact additional planning input |
