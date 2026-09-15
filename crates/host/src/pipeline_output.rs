@@ -172,7 +172,9 @@ fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
             let mut fields = vec![
                 json!({"path":"arguments.params.outcome","format":"Caller-reported phase outcome allowed by the current verdict route."}),
                 json!({"path":"arguments.params.transition","format":"Transition allowed by the current verdict route."}),
-                json!({"path":"arguments.params.output","format":"Complete phase output body, producer context, typed fields, verdict, exact route dispositions, pinned skill/resource reads, artifacts, validator receipts, any route-required follow-up proposal, and reviewer attestation/reference."}),
+                json!({"path":"arguments.params.output","format":"Complete phase output body, producer context, typed fields, verdict, exact route dispositions, pinned skill/resource reads, artifacts, validator receipts, any route-required follow-up proposal, and reviewer attestation/reference. Read phase.instructions as guidance; they have no receipt array. Artifact digests are SHA-256 of the exact submitted UTF-8 body bytes. Preserve the supplied consumed_outputs, consumed_inputs, and consumed_knowledge parameters. If consumed_knowledge is absent in this action, leave it absent; an empty knowledge manifest is not a consumption receipt."}),
+                json!({"path":"arguments.params.output.skill_reads","format":"After reading the current phase's skills, submit exactly its skills entries as {instruction_id: id, version, digest}. Include no entries from instructions or resources. Use [] when skills is empty."}),
+                json!({"path":"arguments.params.output.resource_reads","format":"After reading the current phase's resources, submit exactly its resources entries as {instruction_id: id, version, digest}. Include no entries from instructions or skills. Use [] when resources is empty."}),
                 json!({"path":"arguments.params.terminal_result","format":"Required only for a terminal complete, published block, or pipeline-kind escalation."}),
             ];
             let current = context
