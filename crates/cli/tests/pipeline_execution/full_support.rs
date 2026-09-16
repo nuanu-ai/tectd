@@ -7,6 +7,39 @@ use uuid::Uuid;
 const JSON_DIGEST: &str = "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a";
 const MARKDOWN_DIGEST: &str = "a6ca93bcc504efd31c0b1f31b2e646d1d6e390c6531a3822a1eb115e3e66bf0c";
 
+pub(super) fn requirements_ledger(count: usize) -> String {
+    let ids = (1..=count)
+        .map(|index| format!("REQ-{index:03}"))
+        .collect::<Vec<_>>();
+    let rows = ids
+        .iter()
+        .map(|id| json!({"id":id,"modality":"MUST"}))
+        .collect::<Vec<_>>();
+    json!({"schemaVersion":"1.0","source":{"path":"source-spec.md","digest":"sha256:fixture-source"},
+        "sourceRequirementIds":ids,"requirements":rows}).to_string()
+}
+
+#[allow(dead_code)] // This shared fixture is used by the Full pipeline integration test.
+pub(super) fn replace_ledger(output: &mut Value, count: usize) {
+    let artifact = output["artifacts"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|artifact| artifact["name"] == "requirements-ledger.json")
+        .unwrap();
+    let body = requirements_ledger(count);
+    let digest = format!("{:x}", Sha256::digest(body.as_bytes()));
+    artifact["body"] = json!(body);
+    artifact["digest"] = json!(digest);
+    for receipt in output["validator_receipts"].as_array_mut().unwrap() {
+        for bound in receipt["artifacts"].as_array_mut().unwrap() {
+            if bound["name"] == "requirements-ledger.json" {
+                bound["digest"] = json!(digest);
+            }
+        }
+    }
+}
+
 pub(super) fn assert_non_coding_definition(context: &Value, expected_kind: &str) {
     assert_eq!(context["definition"]["kind"], expected_kind);
     for phase in context["definition"]["phases"].as_array().unwrap() {
@@ -161,11 +194,10 @@ fn engineering_report(
         "source_basis":"Current durable predecessor outputs.","assessments":assessments,
         "findings":if pass {json!([])} else {json!([{"id":"fixture-missing-basis","rule_id":"ENG-07","status":"open","evidence":"The required fixture basis is unavailable."}])},
         "files":files,"summary":if pass {"Fixture engineering review passes."} else {"Fixture engineering review cannot pass without the missing basis."}});
-    if stage == "specification"
-        && !constraint["required_prior_review_phase_ids"]
-            .as_array()
-            .unwrap()
-            .is_empty()
+    if !constraint["required_prior_review_phase_ids"]
+        .as_array()
+        .unwrap()
+        .is_empty()
     {
         report["prior_finding_ids"] = json!([]);
         report["resolved_finding_ids"] = json!([]);
@@ -198,6 +230,15 @@ fn artifacts(phase: &Value, verdict: &str, outcome: &str, consumed: &[Value]) ->
                 .then(|| engineering_report(phase, verdict, outcome, consumed))
                 .flatten();
             let (body, digest) = if let Some(body) = review {
+                let digest = format!("{:x}", Sha256::digest(body.as_bytes()));
+                (body, digest)
+            } else if name == "requirements-ledger.json"
+                && matches!(
+                    phase["id"].as_str(),
+                    Some("slice-component-decision-interrogator" | "slice-reconciliation-runner")
+                )
+            {
+                let body = requirements_ledger(20);
                 let digest = format!("{:x}", Sha256::digest(body.as_bytes()));
                 (body, digest)
             } else if media_type == "application/json" {

@@ -1,5 +1,120 @@
 use super::*;
 mod engineering_findings;
+use std::collections::{BTreeMap, BTreeSet};
+
+pub(super) async fn validate_reconciliation_ledger_lineage(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    run: Uuid,
+    output: &PipelinePhaseOutputDraft,
+) -> Result<()> {
+    let prior_artifacts: serde_json::Value = sqlx::query_scalar(
+        "SELECT o.artifacts FROM slice_pipeline_output_bindings b JOIN slice_pipeline_phase_outputs o ON o.tenant_id=b.tenant_id AND o.workspace_id=b.workspace_id AND o.id=b.output_id WHERE b.tenant_id=$1 AND b.workspace_id=$2 AND b.run_id=$3 AND b.phase_id='slice-component-decision-interrogator' AND b.stale=false AND NOT o.payload_erased",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(run)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(storage_error)?
+    .ok_or(Error::Forbidden)?;
+    let prior_body = prior_artifacts
+        .as_array()
+        .and_then(|artifacts| {
+            artifacts
+                .iter()
+                .find(|artifact| artifact["name"] == "requirements-ledger.json")
+        })
+        .and_then(|artifact| artifact["body"].as_str())
+        .ok_or(Error::InvalidArguments)?;
+    let current_body = output
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == "requirements-ledger.json")
+        .map(|artifact| artifact.body.as_str())
+        .ok_or(Error::InvalidArguments)?;
+    let prior: serde_json::Value =
+        serde_json::from_str(prior_body).map_err(|_| Error::InvalidArguments)?;
+    let current: serde_json::Value =
+        serde_json::from_str(current_body).map_err(|_| Error::InvalidArguments)?;
+    let source_identity = |ledger: &serde_json::Value| -> Result<(String, String)> {
+        let source = ledger.get("source").ok_or(Error::InvalidArguments)?;
+        Ok((
+            source
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty() && *value == value.trim())
+                .ok_or(Error::InvalidArguments)?
+                .to_owned(),
+            source
+                .get("digest")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.trim().is_empty() && *value == value.trim())
+                .ok_or(Error::InvalidArguments)?
+                .to_owned(),
+        ))
+    };
+    if source_identity(&prior)? != source_identity(&current)? {
+        return Err(Error::InvalidArguments);
+    }
+    let inventory = |ledger: &serde_json::Value| -> Result<BTreeSet<String>> {
+        let ids = ledger
+            .get("sourceRequirementIds")
+            .and_then(serde_json::Value::as_array)
+            .ok_or(Error::InvalidArguments)?;
+        let set = ids
+            .iter()
+            .map(|id| {
+                id.as_str()
+                    .filter(|id| !id.trim().is_empty() && *id == id.trim())
+                    .map(str::to_owned)
+                    .ok_or(Error::InvalidArguments)
+            })
+            .collect::<Result<BTreeSet<_>>>()?;
+        if set.len() != ids.len() {
+            return Err(Error::InvalidArguments);
+        }
+        Ok(set)
+    };
+    let rows = |ledger: &serde_json::Value| -> Result<BTreeMap<String, String>> {
+        let requirements = ledger
+            .get("requirements")
+            .and_then(serde_json::Value::as_array)
+            .ok_or(Error::InvalidArguments)?;
+        let mut rows = BTreeMap::new();
+        for row in requirements {
+            let id = row
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|id| !id.trim().is_empty() && *id == id.trim())
+                .ok_or(Error::InvalidArguments)?;
+            let modality = row
+                .get("modality")
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| matches!(*value, "MUST" | "SHOULD" | "MAY"))
+                .ok_or(Error::InvalidArguments)?;
+            if rows.insert(id.to_owned(), modality.to_owned()).is_some() {
+                return Err(Error::InvalidArguments);
+            }
+        }
+        Ok(rows)
+    };
+    let prior_inventory = inventory(&prior)?;
+    let current_inventory = inventory(&current)?;
+    let prior_rows = rows(&prior)?;
+    let current_rows = rows(&current)?;
+    if prior_inventory != prior_rows.keys().cloned().collect()
+        || current_inventory != current_rows.keys().cloned().collect()
+        || !prior_inventory.is_subset(&current_inventory)
+        || prior_rows.iter().any(|(id, modality)| {
+            modality == "MUST" && current_rows.get(id).map(String::as_str) != Some("MUST")
+        })
+    {
+        return Err(Error::InvalidArguments);
+    }
+    Ok(())
+}
 
 pub(super) async fn validate_consumed_outputs(
     tx: &mut Transaction<'_, Postgres>,

@@ -4,7 +4,7 @@ mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;
 
-use full_support::{completion, refresh_knowledge, successful_route};
+use full_support::{completion, refresh_knowledge, replace_ledger, successful_route};
 use recovery_support::{
     Daemon, Mcp, host_file, private_temp, public_call, tagged_url, tool_payload,
 };
@@ -292,6 +292,45 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     .await["context"]
         .clone();
 
+    assert_eq!(
+        context["run"]["current_phase_id"],
+        "slice-reconciliation-runner"
+    );
+    let (verdict, outcome, transition) = successful_route(&context);
+    assert_eq!(verdict, "not_required");
+    let mut dropped = completion(&context, verdict, outcome, transition, None, None);
+    replace_ledger(&mut dropped["output"], 5);
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "slice.pipeline.phase.complete",
+            dropped
+        )
+        .await["error"]["code"],
+        "invalid_arguments"
+    );
+    let after_rejection = route(
+        &mut client,
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":context["run"]["id"]}),
+    )
+    .await;
+    assert_eq!(
+        after_rejection["run"]["revision"],
+        context["run"]["revision"]
+    );
+    assert_eq!(
+        after_rejection["run"]["current_phase_id"],
+        "slice-reconciliation-runner"
+    );
+    for collection in ["attempts", "outputs", "bindings"] {
+        assert_eq!(
+            after_rejection[collection], context[collection],
+            "{collection} persisted"
+        );
+    }
     context = advance(&mut client, context).await;
     assert_eq!(
         context["run"]["current_phase_id"],
