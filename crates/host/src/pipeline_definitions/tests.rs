@@ -484,6 +484,13 @@ fn inquiry_definition_special_reads_and_terminal_routes_are_exact() {
         artifact.name_pattern == "evidence-checkpoint.md"
             && artifact.when_verdict.as_deref() == Some("waiting_research")
     }));
+    let b08 = &brainstorming.phases[7];
+    assert!(b08.required_artifacts.iter().any(|artifact| {
+        artifact.name_pattern == "decision-disposition.md"
+            && artifact.media_type == "text/markdown"
+            && artifact.required
+            && artifact.when_verdict.as_deref() == Some("pending_decision")
+    }));
     let b10 = &brainstorming.phases[9];
     assert!(
         b10.skills

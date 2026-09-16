@@ -42,8 +42,8 @@ The native provider loads `crates/host/pipeline-definitions/deep-brainstorming.j
 ## Exact packaged identities
 
 - Definition version: `0.5.0-native.inquiry.1`
-- Semantic digest: `97f5188149266b43b4c73b290b15a85833543b070b4299599384d1d2b931108b`
-- Physical JSON SHA-256: `3e37c89614a7a1d92e0d7db2bbed8d32dcaf5f54a541d7ecfc778ab5d2adefeb`
+- Semantic digest: `2b7071f75bd5c9d61815c443b550ab452f7eeff3490e9fe7fe3dd71fc90d3227`
+- Physical JSON SHA-256: `8491f1cbef96423f99224f3c07e56d581fb106134a41e52ed96f788b0da88207`
 
 | Phase | Role | ID | Version | Body SHA-256 | Source |
 |---|---|---|---|---|---|
