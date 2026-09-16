@@ -131,20 +131,27 @@ pub(crate) async fn complete_phase(
     )
     .await?;
     if definition.kind == PipelineKind::FullDesignToExecution
-        && phase.id == "slice-reconciliation-runner"
+        && matches!(
+            phase.id.as_str(),
+            "slice-component-decision-interrogator" | "slice-reconciliation-runner"
+        )
         && phase
             .required_artifacts
             .iter()
             .any(|artifact| artifact.name_pattern == "requirements-ledger.json")
     {
-        helpers::validate_reconciliation_ledger_lineage(
-            tx,
-            tenant,
-            workspace,
-            request.run_id,
-            &request.output,
-        )
-        .await?;
+        if phase.id == "slice-component-decision-interrogator" {
+            helpers::validate_decision_requirements_ledger(&request.output)?;
+        } else {
+            helpers::validate_reconciliation_ledger_lineage(
+                tx,
+                tenant,
+                workspace,
+                request.run_id,
+                &request.output,
+            )
+            .await?;
+        }
     }
     validate_review_authorization(
         tx,

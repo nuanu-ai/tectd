@@ -194,6 +194,43 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
         context["run"]["current_phase_id"],
         "slice-component-decision-interrogator"
     );
+    let mut empty_ledger = completion(
+        &context,
+        "blocked_unresolved_questions",
+        "completed",
+        "continue",
+        Some("slice-design-spec-shaper"),
+        None,
+    );
+    let ledger = empty_ledger["output"]["artifacts"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|artifact| artifact["name"] == "requirements-ledger.json")
+        .unwrap();
+    ledger["body"] = json!("{}");
+    ledger["digest"] = json!("44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "slice.pipeline.phase.complete",
+            empty_ledger
+        )
+        .await["error"]["code"],
+        "invalid_arguments"
+    );
+    let after_empty_ledger = route(
+        &mut client,
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":context["run"]["id"]}),
+    )
+    .await;
+    assert_eq!(after_empty_ledger["run"], context["run"]);
+    for collection in ["attempts", "outputs", "bindings"] {
+        assert_eq!(after_empty_ledger[collection], context[collection]);
+    }
     let old_target = context["bindings"]
         .as_array()
         .unwrap()
@@ -222,18 +259,32 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
         "invalid_arguments"
     );
 
+    let valid_phase_five = completion(
+        &context,
+        "blocked_unresolved_questions",
+        "completed",
+        "continue",
+        Some("slice-design-spec-shaper"),
+        None,
+    );
+    let ledger = valid_phase_five["output"]["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|artifact| artifact["name"] == "requirements-ledger.json")
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(ledger["body"].as_str().unwrap()).unwrap()["requirements"]
+            .as_array()
+            .unwrap()
+            .len(),
+        20
+    );
     let reworked = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
-        completion(
-            &context,
-            "blocked_unresolved_questions",
-            "completed",
-            "continue",
-            Some("slice-design-spec-shaper"),
-            None,
-        ),
+        valid_phase_five,
     )
     .await;
     context = reworked["context"].clone();
