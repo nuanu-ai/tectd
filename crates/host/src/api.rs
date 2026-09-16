@@ -354,6 +354,18 @@ fn describe_route(spec: &RouteSpec) -> Value {
         "example":{"tool":spec.tool,"arguments":{"route":spec.route,"params":spec.example}}})
 }
 
+pub(crate) fn attach_route_contract(action: &mut Value) -> Result<()> {
+    let Some(tool) = action["tool"].as_str() else {
+        return Ok(());
+    };
+    let Some(route) = action["arguments"]["route"].as_str() else {
+        return Ok(());
+    };
+    let spec = route_for(tool, route).ok_or(Error::InternalInvariant)?;
+    action["route_contract"] = describe_route(&spec);
+    Ok(())
+}
+
 fn tool_summary(tool: &str) -> &'static str {
     match tool {
         "get_state" => "Read bounded DB-only state for the current native session.",

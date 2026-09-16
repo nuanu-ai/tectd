@@ -55,10 +55,11 @@ pub(crate) fn context(value: PipelineContextResponse, capacity: usize) -> Result
             encode_context(*context, actions, capacity)
         }
         PipelineContextResponse::Output(output) => {
-            let actions = vec![responses::action(
+            let mut actions = vec![responses::action(
                 "slice_pipeline_context",
                 json!({"run_id":output.run_id}),
             )?];
+            crate::api::attach_route_contract(&mut actions[0])?;
             encode(*output, actions, capacity)
         }
     }
@@ -95,7 +96,7 @@ fn restrict_definition_delivery(context: &mut PipelineRunContext, explicit_rerea
 fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
     let run = &context.run;
     let Some(phase_id) = &run.current_phase_id else {
-        return Ok(vec![responses::action(
+        return with_route_contracts(vec![responses::action(
             "slice_context",
             json!({"slice_id":run.slice_id}),
         )?]);
@@ -106,7 +107,7 @@ fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
                 && checkpoint.status != PipelineCheckpointStatus::Open
         })
     {
-        return Ok(vec![
+        return with_route_contracts(vec![
             responses::action(
                 "slice_pipeline_context",
                 json!({"run_id":checkpoint.producer_run_id}),
@@ -124,10 +125,10 @@ fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
                 && checkpoint.producer_phase_id == *phase_id
         })
     {
-        return checkpoint_wait_actions(context, checkpoint);
+        return with_route_contracts(checkpoint_wait_actions(context, checkpoint)?);
     }
     if knowledge_is_stale(context) {
-        return Ok(vec![
+        return with_route_contracts(vec![
             knowledge_refresh_action(context)?,
             responses::action("slice_pipeline_context", json!({"run_id":run.id}))?,
         ]);
@@ -223,10 +224,17 @@ fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
         )?,
         PipelineRunStatus::Completed | PipelineRunStatus::Escalated => unreachable!(),
     };
-    Ok(vec![
+    with_route_contracts(vec![
         action,
         responses::action("slice_pipeline_context", json!({"run_id":run.id}))?,
     ])
+}
+
+fn with_route_contracts(mut actions: Vec<Value>) -> Result<Vec<Value>> {
+    for action in &mut actions {
+        crate::api::attach_route_contract(action)?;
+    }
+    Ok(actions)
 }
 
 fn knowledge_is_stale(context: &PipelineRunContext) -> bool {
@@ -335,11 +343,13 @@ fn encode_mutation(
 
 fn add_output_actions(context: &PipelineRunContext, actions: &mut Vec<Value>) -> Result<()> {
     for binding in &context.bindings {
-        actions.push(responses::action(
+        let mut action = responses::action(
             "slice_pipeline_context",
             json!({"run_id":context.run.id,"view":"output","output_id":binding.output_id,
                 "digest":binding.output_digest}),
-        )?);
+        )?;
+        crate::api::attach_route_contract(&mut action)?;
+        actions.push(action);
     }
     Ok(())
 }

@@ -236,6 +236,33 @@ fn generic_current_selection_supplies_exact_consumed_manifest_guard() {
         complete["arguments"]["params"]["consumed_knowledge"],
         json!({"manifest_id":manifest.id,"digest":manifest.digest})
     );
+    let complete_help = crate::api::help(
+        crate::api::parse_help(json!({
+            "mode":"describe","tool":"command","route":"slice.pipeline.phase.complete"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(complete["route_contract"], complete_help);
+    assert_eq!(
+        complete["route_contract"]["params_schema"]["properties"]["output"]["properties"]["producer_context_id"]
+            ["type"],
+        "string"
+    );
+
+    let context_call = action(&values, "slice.pipeline.context");
+    let context_help = crate::api::help(
+        crate::api::parse_help(json!({
+            "mode":"describe","tool":"query","route":"slice.pipeline.context"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(context_call["route_contract"], context_help);
+    assert_eq!(
+        context_call["route_contract"]["params_schema"]["properties"]["run_id"]["format"],
+        "uuid"
+    );
 
     let inactive = context(PipelineKnowledgeResourceState::Inactive, false);
     let values = actions(&inactive).unwrap();
