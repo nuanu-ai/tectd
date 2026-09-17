@@ -37,8 +37,42 @@ pub(super) fn pipeline_begin() -> Value {
 }
 
 pub(super) fn pipeline_input() -> Value {
+    let artifact = object_schema(
+        json!({"name":text(),"media_type":text(),"body":{"type":"string","minLength":1,"maxLength":2097152},
+            "digest":text(),"reference":text()}),
+        json!(["name", "media_type", "body", "digest"]),
+    );
+    let predecessor = object_schema(
+        json!({"output_id":uuid(),"output_revision":{"type":"integer","minimum":1},
+            "output_digest":text(),"artifact_name":text(),"artifact_digest":text(),
+            "source_path":text(),"source_digest":text()}),
+        json!([
+            "output_id",
+            "output_revision",
+            "output_digest",
+            "artifact_name",
+            "artifact_digest",
+            "source_path",
+            "source_digest"
+        ]),
+    );
+    let successor = object_schema(
+        json!({"path":text(),"artifact":artifact}),
+        json!(["path", "artifact"]),
+    );
+    let amendment = object_schema(
+        json!({"target_phase_id":text(),"predecessor":predecessor,"successor":successor,
+            "authorization_scope":text(),"authorization_provenance":text()}),
+        json!([
+            "target_phase_id",
+            "predecessor",
+            "successor",
+            "authorization_scope",
+            "authorization_provenance"
+        ]),
+    );
     object_schema(
-        json!({"request_id":uuid(),"run_id":uuid(),"run_revision":{"type":"integer","minimum":1},"phase_id":text(),"input":{"type":"string","minLength":1,"maxLength":65536}}),
+        json!({"request_id":uuid(),"run_id":uuid(),"run_revision":{"type":"integer","minimum":1},"phase_id":text(),"input":{"type":"string","minLength":1,"maxLength":65536},"source_amendment":amendment}),
         json!(["request_id", "run_id", "run_revision", "phase_id", "input"]),
     )
 }

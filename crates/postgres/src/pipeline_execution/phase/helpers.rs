@@ -771,8 +771,30 @@ pub(super) async fn apply_rework(
         return Ok(());
     };
     let target_id = plan.next_id.as_deref().ok_or(Error::InternalInvariant)?;
+    stale_from_ordinal(
+        tx,
+        tenant,
+        workspace,
+        session,
+        run,
+        target_ordinal,
+        &format!("rework_from:{target_id}"),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn stale_from_ordinal(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    session: Uuid,
+    run: Uuid,
+    target_ordinal: u32,
+    reason: &str,
+) -> Result<()> {
     sqlx::query("UPDATE slice_pipeline_output_bindings SET stale=true,stale_reason=$4,updated_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND phase_ordinal>=$5")
-        .bind(tenant).bind(workspace).bind(run).bind(format!("rework_from:{target_id}")).bind(target_ordinal as i32)
+        .bind(tenant).bind(workspace).bind(run).bind(reason).bind(target_ordinal as i32)
         .execute(&mut **tx).await.map_err(storage_error)?;
     checkpoint::mark_superseded_after_rework(tx, tenant, workspace, run, target_ordinal, session)
         .await

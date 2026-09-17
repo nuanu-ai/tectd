@@ -5,6 +5,7 @@ use crate::{
     pipeline_followups::{validate_followup_definitions, validate_followup_proposal},
     *,
 };
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 impl PipelineDefinitionSnapshot {
@@ -426,10 +427,84 @@ impl RecordPipelineInput {
             || self.input.trim().is_empty()
             || self.input.len() > MAX_PIPELINE_INPUT_BYTES
         {
-            Err(Error::InvalidArguments)
-        } else {
-            Ok(())
+            return Err(Error::InvalidArguments);
         }
+        if let Some(amendment) = &self.source_amendment {
+            validate_source_amendment(amendment)?;
+        }
+        Ok(())
+    }
+}
+
+fn valid_relative_source_path(value: &str) -> bool {
+    !value.is_empty()
+        && value.trim() == value
+        && value.len() <= MAX_SOURCE_PATH_BYTES
+        && !value.starts_with('/')
+        && !value.contains(['\\', '\0'])
+        && value
+            .split('/')
+            .all(|part| !matches!(part, "" | "." | ".."))
+}
+
+fn valid_media_type(value: &str) -> bool {
+    value.trim() == value
+        && value.len() <= 255
+        && value.split_once('/').is_some_and(|(kind, subtype)| {
+            !kind.is_empty()
+                && !subtype.is_empty()
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric()
+                        || matches!(
+                            byte,
+                            b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-' | b'/'
+                        )
+                })
+        })
+}
+
+fn validate_source_amendment(amendment: &PipelineSourceAmendment) -> Result<()> {
+    let successor = &amendment.successor;
+    let artifact = &successor.artifact;
+    let digest = Sha256::digest(artifact.body.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if amendment.target_phase_id.trim().is_empty()
+        || amendment.predecessor.output_id.is_nil()
+        || amendment.predecessor.output_revision < 1
+        || amendment.predecessor.output_digest.trim().is_empty()
+        || amendment.predecessor.output_digest.len() > 128
+        || amendment.predecessor.artifact_name.trim().is_empty()
+        || amendment.predecessor.artifact_name.len() > MAX_SOURCE_PATH_BYTES
+        || amendment.predecessor.artifact_digest.trim().is_empty()
+        || amendment.predecessor.artifact_digest.len() > 128
+        || !valid_relative_source_path(&amendment.predecessor.source_path)
+        || amendment.predecessor.source_digest.trim().is_empty()
+        || amendment.predecessor.source_digest.len() > 128
+        || !valid_relative_source_path(&successor.path)
+        || !valid_relative_source_path(&artifact.name)
+        || successor.path != artifact.name
+        || !valid_media_type(&artifact.media_type)
+        || artifact.body.trim().is_empty()
+        || artifact.body.len() > MAX_PIPELINE_OUTPUT_BYTES
+        || artifact.digest.len() != 64
+        || !artifact
+            .digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || artifact.digest != digest
+        || artifact.reference.as_ref().is_some_and(|reference| {
+            reference.trim().is_empty() || reference.len() > MAX_SOURCE_PATH_BYTES
+        })
+        || amendment.authorization_scope.trim().is_empty()
+        || amendment.authorization_scope.len() > MAX_PIPELINE_INPUT_BYTES
+        || amendment.authorization_provenance.trim().is_empty()
+        || amendment.authorization_provenance.len() > MAX_PIPELINE_INPUT_BYTES
+    {
+        Err(Error::InvalidArguments)
+    } else {
+        Ok(())
     }
 }
 
@@ -445,5 +520,103 @@ impl EscalatePipelineDelivery {
         } else {
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod source_amendment_tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn request(body: String) -> RecordPipelineInput {
+        let digest = Sha256::digest(body.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        RecordPipelineInput {
+            request_id: Uuid::new_v4(),
+            run_id: Uuid::new_v4(),
+            run_revision: 2,
+            phase_id: "slice-implementation-spec-synthesizer".to_owned(),
+            input: "Direct source amendment authority.".to_owned(),
+            source_amendment: Some(PipelineSourceAmendment {
+                target_phase_id: "slice-component-decision-interrogator".to_owned(),
+                predecessor: PipelineSourcePredecessor {
+                    output_id: Uuid::new_v4(),
+                    output_revision: 1,
+                    output_digest: "a".repeat(64),
+                    artifact_name: "requirements-ledger.json".to_owned(),
+                    artifact_digest: "b".repeat(64),
+                    source_path: "source.md".to_owned(),
+                    source_digest: "c".repeat(64),
+                },
+                successor: PipelineSourceSuccessor {
+                    path: "source.md".to_owned(),
+                    artifact: PipelineSourceArtifactDraft {
+                        name: "source.md".to_owned(),
+                        media_type: "text/markdown".to_owned(),
+                        body,
+                        digest,
+                        reference: None,
+                    },
+                },
+                authorization_scope: "Amend the current Full Design source.".to_owned(),
+                authorization_provenance: "Exact direct operator input.".to_owned(),
+            }),
+        }
+    }
+
+    #[test]
+    fn source_amendment_accepts_one_bounded_hash_valid_artifact() {
+        assert_eq!(request("changed".to_owned()).validate(), Ok(()));
+    }
+
+    #[test]
+    fn source_amendment_rejects_empty_even_with_the_empty_sha256() {
+        assert_eq!(
+            request(String::new()).validate(),
+            Err(Error::InvalidArguments)
+        );
+    }
+
+    #[test]
+    fn source_amendment_rejects_unsafe_and_untrimmed_paths() {
+        for path in ["../source.md", "/source.md", " source.md", "source.md "] {
+            let mut value = request("changed".to_owned());
+            let amendment = value.source_amendment.as_mut().unwrap();
+            amendment.successor.path = path.to_owned();
+            amendment.successor.artifact.name = path.to_owned();
+            assert_eq!(value.validate(), Err(Error::InvalidArguments), "{path}");
+        }
+    }
+
+    #[test]
+    fn source_amendment_rejects_oversized_body() {
+        assert_eq!(
+            request("x".repeat(MAX_PIPELINE_OUTPUT_BYTES + 1)).validate(),
+            Err(Error::InvalidArguments)
+        );
+    }
+
+    #[test]
+    fn source_amendment_rejects_path_name_or_digest_mismatch() {
+        let mut path = request("changed".to_owned());
+        path.source_amendment
+            .as_mut()
+            .unwrap()
+            .successor
+            .artifact
+            .name = "other.md".to_owned();
+        assert_eq!(path.validate(), Err(Error::InvalidArguments));
+
+        let mut digest = request("changed".to_owned());
+        digest
+            .source_amendment
+            .as_mut()
+            .unwrap()
+            .successor
+            .artifact
+            .digest = "0".repeat(64);
+        assert_eq!(digest.validate(), Err(Error::InvalidArguments));
     }
 }

@@ -8,7 +8,7 @@ pub(crate) enum PipelineInvocation {
     Context(PipelineRunContextQuery),
     Begin(BeginPipelineRun),
     Complete(Box<CompletePipelinePhase>),
-    Input(RecordPipelineInput),
+    Input(Box<RecordPipelineInput>),
     EscalateDelivery(EscalatePipelineDelivery),
     ResolveCheckpoint(ResolvePipelineCheckpoint),
 }
@@ -21,7 +21,9 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<PipelineInvocation> 
         "slice_pipeline_phase_complete" => decode(arguments)
             .map(Box::new)
             .map(PipelineInvocation::Complete),
-        "slice_pipeline_input" => decode(arguments).map(PipelineInvocation::Input),
+        "slice_pipeline_input" => decode(arguments)
+            .map(Box::new)
+            .map(PipelineInvocation::Input),
         "slice_pipeline_delivery_escalate" => {
             decode(arguments).map(PipelineInvocation::EscalateDelivery)
         }
@@ -53,6 +55,7 @@ fn reject_optional_nulls(value: &Value) -> Result<()> {
         "inquiry",
         "source_checkpoint",
         "research_checkpoint",
+        "source_amendment",
         "terminal",
     ];
     match value {

@@ -220,7 +220,10 @@ fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
             json!({"request_id":request_id(run.id,run.revision,"input"),
                 "run_id":run.id,"run_revision":run.revision,"phase_id":phase_id}),
             "input",
-            json!({"fields":[{"path":"arguments.params.input","format":"Exact phase-local operator answer, context, authority evidence, or resume input."}]}),
+            json!({"fields":[
+                {"path":"arguments.params.input","format":"Exact phase-local operator answer, context, direct authority instruction, or resume input."},
+                {"path":"arguments.params.source_amendment","format":"Optional Full Design source amendment. Supply the exact current non-stale phase-5 output/binding/artifact/source identity, a changed hash-valid successor source artifact whose name equals its path, target phase slice-component-decision-interrogator, and the direct authority scope and provenance. The backend records it as phase-5 input lineage and returns phase 5 current; do not ask for confirmation again when the exact input already grants authority."}
+            ]}),
         )?,
         PipelineRunStatus::Completed | PipelineRunStatus::Escalated => unreachable!(),
     };

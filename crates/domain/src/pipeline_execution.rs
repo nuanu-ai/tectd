@@ -398,6 +398,8 @@ pub struct PipelineInput {
     pub input: String,
     pub digest: String,
     pub actor_session_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_amendment: Option<PipelineSourceAmendment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

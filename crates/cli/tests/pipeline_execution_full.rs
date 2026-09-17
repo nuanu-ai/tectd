@@ -9,6 +9,7 @@ use recovery_support::{
     Daemon, Mcp, host_file, private_temp, public_call, tagged_url, tool_payload,
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use support::{
     id, open_slice, ready_source_candidate, repository, review, route, route_error, save,
@@ -52,6 +53,33 @@ async fn advance(client: &mut Mcp, context: Value) -> Value {
     let result = tool_payload(&response);
     assert!(result["result"].is_null());
     result["context"].clone()
+}
+
+fn replace_ledger_source(output: &mut Value, path: &str, source_digest: &str) {
+    let ledger_artifact = output["artifacts"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|artifact| artifact["name"] == "requirements-ledger.json")
+        .unwrap();
+    let mut ledger: Value =
+        serde_json::from_str(ledger_artifact["body"].as_str().unwrap()).unwrap();
+    ledger["source"]["path"] = json!(path);
+    ledger["source"]["digest"] = json!(source_digest);
+    let ledger_body = serde_json::to_string(&ledger).unwrap();
+    let ledger_digest = format!("{:x}", Sha256::digest(ledger_body.as_bytes()));
+    ledger_artifact["body"] = json!(ledger_body);
+    ledger_artifact["digest"] = json!(ledger_digest.clone());
+    for receipt in output["validator_receipts"].as_array_mut().unwrap() {
+        if let Some(bound) = receipt["artifacts"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|artifact| artifact["name"] == "requirements-ledger.json")
+        {
+            bound["digest"] = json!(ledger_digest);
+        }
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -601,6 +629,453 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
         context["run"]["current_phase_id"],
         "slice-implementation-spec-synthesizer"
     );
+
+    let phase_five_binding = context["bindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|binding| binding["phase_id"] == "slice-component-decision-interrogator")
+        .unwrap()
+        .clone();
+    let phase_five_output = context["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|output| output["id"] == phase_five_binding["output_id"])
+        .unwrap()
+        .clone();
+    let phase_five_artifact = phase_five_output["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|artifact| artifact["name"] == "requirements-ledger.json")
+        .unwrap();
+    let phase_five_ledger: Value =
+        serde_json::from_str(phase_five_artifact["body"].as_str().unwrap()).unwrap();
+    let definition_digest_before_amendment = context["run"]["definition_digest"].clone();
+    let successor_body = "# Amended design source\n\nThe direct operator instruction authorizes this bounded amendment.";
+    let successor_digest = format!("{:x}", Sha256::digest(successor_body.as_bytes()));
+    let authority_text = "Direct operator instruction: amend the Full Design source and rerun phase 5 through reconciliation.";
+    let amendment_request_id = Uuid::new_v4();
+    let amendment = json!({
+        "request_id":amendment_request_id,
+        "run_id":context["run"]["id"],
+        "run_revision":context["run"]["revision"],
+        "phase_id":context["run"]["current_phase_id"],
+        "input":authority_text,
+        "source_amendment":{
+            "target_phase_id":"slice-component-decision-interrogator",
+            "predecessor":{
+                "output_id":phase_five_binding["output_id"],
+                "output_revision":phase_five_binding["output_revision"],
+                "output_digest":phase_five_binding["output_digest"],
+                "artifact_name":"requirements-ledger.json",
+                "artifact_digest":phase_five_artifact["digest"],
+                "source_path":phase_five_ledger["source"]["path"],
+                "source_digest":phase_five_ledger["source"]["digest"]
+            },
+            "successor":{
+                "path":"source-spec.md",
+                "artifact":{
+                    "name":"source-spec.md","media_type":"text/markdown",
+                    "body":successor_body,"digest":successor_digest
+                }
+            },
+            "authorization_scope":"amend the current Full Design source and rerun phase 5 dependency closure",
+            "authorization_provenance":"exact direct operator instruction persisted in input"
+        }
+    });
+
+    let before_rejections = context.clone();
+    for (field, wrong) in [
+        ("output_id", json!(Uuid::new_v4())),
+        (
+            "output_revision",
+            json!(phase_five_binding["output_revision"].as_i64().unwrap() + 1),
+        ),
+        ("output_digest", json!("0".repeat(64))),
+        ("artifact_digest", json!("1".repeat(64))),
+        ("source_path", json!("other-source.md")),
+        ("source_digest", json!("sha256:other-source")),
+    ] {
+        let mut wrong_predecessor = amendment.clone();
+        wrong_predecessor["request_id"] = json!(Uuid::new_v4());
+        wrong_predecessor["source_amendment"]["predecessor"][field] = wrong;
+        let error = route_error(
+            &mut client,
+            "command",
+            "slice.pipeline.input",
+            wrong_predecessor,
+        )
+        .await;
+        assert_eq!(
+            error["error"]["details"]["code"], "source_amendment_predecessor_stale",
+            "{field}: {error}"
+        );
+    }
+    let mut wrong_artifact = amendment.clone();
+    wrong_artifact["request_id"] = json!(Uuid::new_v4());
+    wrong_artifact["source_amendment"]["predecessor"]["artifact_name"] =
+        json!("decision-traceability.json");
+    let wrong_artifact_error = route_error(
+        &mut client,
+        "command",
+        "slice.pipeline.input",
+        wrong_artifact,
+    )
+    .await;
+    assert!(
+        wrong_artifact_error["error"]["details"]["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value["code"] == "predecessor_artifact_invalid")
+    );
+
+    let mut out_of_scope = amendment.clone();
+    out_of_scope["request_id"] = json!(Uuid::new_v4());
+    out_of_scope["source_amendment"]["target_phase_id"] = json!("slice-design-spec-shaper");
+    let out_of_scope_error =
+        route_error(&mut client, "command", "slice.pipeline.input", out_of_scope).await;
+    assert!(
+        out_of_scope_error["error"]["details"]["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value["code"] == "target_phase_invalid")
+    );
+
+    let mut digest_mismatch = amendment.clone();
+    digest_mismatch["request_id"] = json!(Uuid::new_v4());
+    digest_mismatch["source_amendment"]["successor"]["artifact"]["digest"] = json!("0".repeat(64));
+    let digest_error = route_error(
+        &mut client,
+        "command",
+        "slice.pipeline.input",
+        digest_mismatch,
+    )
+    .await;
+    assert_eq!(digest_error["error"]["code"], "invalid_arguments");
+
+    let mut missing_authority = amendment.clone();
+    missing_authority["request_id"] = json!(Uuid::new_v4());
+    missing_authority["source_amendment"]["authorization_scope"] = json!("");
+    let authority_error = route_error(
+        &mut client,
+        "command",
+        "slice.pipeline.input",
+        missing_authority,
+    )
+    .await;
+    assert_eq!(authority_error["error"]["code"], "invalid_arguments");
+    let mut path_name_mismatch = amendment.clone();
+    path_name_mismatch["request_id"] = json!(Uuid::new_v4());
+    path_name_mismatch["source_amendment"]["successor"]["artifact"]["name"] =
+        json!("other-source.md");
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "slice.pipeline.input",
+            path_name_mismatch
+        )
+        .await["error"]["code"],
+        "invalid_arguments"
+    );
+    let after_rejections = route(
+        &mut client,
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":context["run"]["id"]}),
+    )
+    .await;
+    for collection in ["run", "inputs", "bindings"] {
+        assert_eq!(after_rejections[collection], before_rejections[collection]);
+    }
+    assert_eq!(
+        after_rejections["run"]["definition_digest"],
+        definition_digest_before_amendment
+    );
+
+    let amended = route(
+        &mut client,
+        "command",
+        "slice.pipeline.input",
+        amendment.clone(),
+    )
+    .await;
+    let replay = route(
+        &mut client,
+        "command",
+        "slice.pipeline.input",
+        amendment.clone(),
+    )
+    .await;
+    assert_eq!(replay, amended);
+    context = amended["context"].clone();
+    assert_eq!(
+        context["run"]["current_phase_id"],
+        "slice-component-decision-interrogator"
+    );
+    assert_eq!(
+        context["inputs"].as_array().unwrap().last().unwrap()["input"],
+        authority_text
+    );
+    assert_eq!(
+        context["inputs"].as_array().unwrap().last().unwrap()["phase_id"],
+        "slice-component-decision-interrogator"
+    );
+    let persisted: (String, Uuid, Value) = sqlx::query_as(
+        "SELECT input,actor_session_id,request_payload FROM slice_pipeline_inputs WHERE request_id=$1",
+    )
+    .bind(amendment_request_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(persisted.0, authority_text);
+    assert!(!persisted.1.is_nil());
+    assert_eq!(persisted.2["input"], amendment["input"]);
+    assert_eq!(
+        persisted.2["source_amendment"]["authorization_scope"],
+        amendment["source_amendment"]["authorization_scope"]
+    );
+    assert_eq!(
+        persisted.2["source_amendment"]["authorization_provenance"],
+        amendment["source_amendment"]["authorization_provenance"]
+    );
+
+    client.finish().await;
+    daemon.crash().await;
+    daemon.remove_owned_stale_socket();
+    daemon = Daemon::start(&runtime, socket.clone()).await;
+    let mut client = Mcp::start(&socket, &config, &native, &key).await;
+    client.call("open_workspace", json!({})).await;
+    context = route(
+        &mut client,
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":amendment["run_id"]}),
+    )
+    .await;
+    let cold_input = context["inputs"].as_array().unwrap().last().unwrap();
+    let cold_amendment = &cold_input["source_amendment"];
+    assert_eq!(cold_input["input"], authority_text);
+    assert_eq!(
+        cold_amendment["authorization_provenance"],
+        "exact direct operator instruction persisted in input"
+    );
+    assert_eq!(
+        cold_amendment["successor"]["artifact"]["body"],
+        successor_body
+    );
+    let successor_path = cold_amendment["successor"]["path"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let successor_digest = cold_amendment["successor"]["artifact"]["digest"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let successor_artifact = cold_amendment["successor"]["artifact"].clone();
+    assert_eq!(
+        context["run"]["definition_digest"],
+        definition_digest_before_amendment
+    );
+    for binding in context["bindings"].as_array().unwrap() {
+        if binding["phase_ordinal"].as_u64().unwrap() >= 5 {
+            assert_eq!(binding["stale"], true);
+            assert_eq!(binding["stale_reason"], "source_amendment");
+        }
+    }
+    let old_phase_five = route(
+        &mut client,
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":context["run"]["id"],"view":"output",
+            "output_id":phase_five_binding["output_id"],"digest":phase_five_binding["output_digest"]}),
+    )
+    .await;
+    assert_eq!(old_phase_five["stale"], true);
+    for field in [
+        "id",
+        "run_id",
+        "phase_id",
+        "phase_ordinal",
+        "revision",
+        "body",
+        "producer_context_id",
+        "digest",
+        "reference",
+        "fields",
+        "verdict",
+        "dispositions",
+        "skill_reads",
+        "resource_reads",
+        "artifacts",
+        "validator_receipts",
+        "followup_proposal",
+    ] {
+        assert_eq!(old_phase_five[field], phase_five_output[field], "{field}");
+    }
+
+    let mut conflict = amendment.clone();
+    conflict["input"] = json!("Conflicting replay text");
+    assert_eq!(
+        route_error(&mut client, "command", "slice.pipeline.input", conflict).await["error"]["code"],
+        "input_conflict"
+    );
+    let mut stale_predecessor = amendment.clone();
+    stale_predecessor["request_id"] = json!(Uuid::new_v4());
+    stale_predecessor["run_revision"] = context["run"]["revision"].clone();
+    stale_predecessor["phase_id"] = context["run"]["current_phase_id"].clone();
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "slice.pipeline.input",
+            stale_predecessor
+        )
+        .await["error"]["details"]["code"],
+        "source_amendment_predecessor_stale"
+    );
+
+    let (verdict, outcome, transition) = successful_route(&context);
+    let wrong_lineage_phase_five = completion(&context, verdict, outcome, transition, None, None);
+    let wrong_lineage_error = route_error(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        wrong_lineage_phase_five,
+    )
+    .await;
+    assert_eq!(
+        wrong_lineage_error["error"]["details"]["code"],
+        "source_amendment_lineage_invalid"
+    );
+    let after_wrong_lineage = route(
+        &mut client,
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":context["run"]["id"]}),
+    )
+    .await;
+    for collection in ["run", "attempts", "outputs", "bindings", "inputs"] {
+        assert_eq!(after_wrong_lineage[collection], context[collection]);
+    }
+
+    let mut amended_phase_five = completion(&context, verdict, outcome, transition, None, None);
+    replace_ledger_source(
+        &mut amended_phase_five["output"],
+        &successor_path,
+        &successor_digest,
+    );
+    context = route(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        amended_phase_five,
+    )
+    .await["context"]
+        .clone();
+    context = advance(&mut client, context).await;
+    let (verdict, outcome, transition) = successful_route(&context);
+    let mut amended_phase_seven = completion(&context, verdict, outcome, transition, None, None);
+    replace_ledger_source(
+        &mut amended_phase_seven["output"],
+        &successor_path,
+        &successor_digest,
+    );
+    context = route(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        amended_phase_seven,
+    )
+    .await["context"]
+        .clone();
+    assert_eq!(
+        context["run"]["current_phase_id"],
+        "slice-implementation-spec-synthesizer"
+    );
+    let fresh_phase_five = context["outputs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|output| {
+            output["phase_id"] == "slice-component-decision-interrogator"
+                && output["stale"] == false
+        })
+        .unwrap();
+    let fresh_ledger: Value = serde_json::from_str(
+        fresh_phase_five["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|artifact| artifact["name"] == "requirements-ledger.json")
+            .unwrap()["body"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(fresh_ledger["source"]["path"], successor_path);
+    assert_eq!(fresh_ledger["source"]["digest"], successor_digest);
+
+    let fresh_phase_five_binding = context["bindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|binding| binding["phase_id"] == "slice-component-decision-interrogator")
+        .unwrap();
+    let fresh_phase_five_artifact = fresh_phase_five["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|artifact| artifact["name"] == "requirements-ledger.json")
+        .unwrap();
+    let no_op = json!({
+        "request_id":Uuid::new_v4(),
+        "run_id":context["run"]["id"],
+        "run_revision":context["run"]["revision"],
+        "phase_id":context["run"]["current_phase_id"],
+        "input":"Direct operator instruction for a no-op amendment rejection check.",
+        "source_amendment":{
+            "target_phase_id":"slice-component-decision-interrogator",
+            "predecessor":{
+                "output_id":fresh_phase_five_binding["output_id"],
+                "output_revision":fresh_phase_five_binding["output_revision"],
+                "output_digest":fresh_phase_five_binding["output_digest"],
+                "artifact_name":"requirements-ledger.json",
+                "artifact_digest":fresh_phase_five_artifact["digest"],
+                "source_path":fresh_ledger["source"]["path"],
+                "source_digest":fresh_ledger["source"]["digest"]
+            },
+            "successor":{"path":successor_path,"artifact":successor_artifact},
+            "authorization_scope":"amend the current Full Design source",
+            "authorization_provenance":"exact direct operator input"
+        }
+    });
+    let before_no_op = context.clone();
+    let no_op_error = route_error(&mut client, "command", "slice.pipeline.input", no_op).await;
+    assert_eq!(
+        no_op_error["error"]["details"]["violations"],
+        json!([{"code":"source_unchanged","path":"$.source_amendment.successor.artifact.digest",
+            "expected":"digest different from predecessor source","actual":successor_digest}])
+    );
+    let after_no_op = route(
+        &mut client,
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":context["run"]["id"]}),
+    )
+    .await;
+    for collection in ["run", "inputs", "bindings"] {
+        assert_eq!(after_no_op[collection], before_no_op[collection]);
+    }
+    assert_eq!(
+        after_no_op["run"]["definition_digest"],
+        definition_digest_before_amendment
+    );
+
     let synthesis = advance(&mut client, context).await;
     let synthesis_output = synthesis["outputs"]
         .as_array()
@@ -715,6 +1190,15 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     );
     assert_eq!(
         completed["context"]["attempts"].as_array().unwrap().len(),
-        29
+        32
+    );
+    assert_eq!(
+        completed["context"]["run"]["definition_digest"],
+        definition_digest_before_amendment
+    );
+    admin::revoke_session(&pool, persisted.1).await.unwrap();
+    assert_eq!(
+        route_error(&mut client, "command", "slice.pipeline.input", amendment).await["error"]["code"],
+        "session_revoked"
     );
 }

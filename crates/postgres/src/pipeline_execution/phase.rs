@@ -78,6 +78,14 @@ pub(crate) async fn complete_phase(
     {
         if phase.id == "slice-component-decision-interrogator" {
             helpers::validate_decision_requirements_ledger(&request.output)?;
+            input::validate_source_amendment_ledger(
+                tx,
+                tenant,
+                workspace,
+                request.run_id,
+                &request.output,
+            )
+            .await?;
         } else if planned_next.revisit_ordinal.is_some() {
             // The submitted phase 7 output must remain valid, but recovery must
             // not depend on parsing the legacy phase 5 output being replaced.
@@ -350,7 +358,7 @@ pub(crate) async fn complete_phase(
     Ok(outcome)
 }
 
-mod helpers;
+pub(super) mod helpers;
 
 use helpers::{
     enforce_retry_policy, publish_result, validate_consumed_inputs, validate_consumed_outputs,

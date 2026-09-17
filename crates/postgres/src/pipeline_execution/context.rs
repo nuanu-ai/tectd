@@ -180,20 +180,23 @@ pub(crate) async fn load_context(
         .into_iter()
         .map(decode)
         .collect::<Result<Vec<_>>>()?;
-    let input_rows:Vec<(Uuid,i64,String,String,String,Uuid)>=sqlx::query_as(
-        "SELECT id,sequence,phase_id,input,input_digest,actor_session_id FROM slice_pipeline_inputs WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND NOT payload_erased ORDER BY sequence")
+    let input_rows:Vec<(Uuid,i64,String,String,String,Uuid,Option<serde_json::Value>)>=sqlx::query_as(
+        "SELECT id,sequence,phase_id,input,input_digest,actor_session_id,request_payload->'source_amendment' FROM slice_pipeline_inputs WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND NOT payload_erased ORDER BY sequence")
         .bind(tenant).bind(workspace).bind(run_id).fetch_all(&mut **tx).await.map_err(storage_error)?;
     let inputs = input_rows
         .into_iter()
-        .map(|row| PipelineInput {
-            id: row.0,
-            sequence: row.1,
-            phase_id: row.2,
-            input: row.3,
-            digest: row.4,
-            actor_session_id: row.5,
+        .map(|row| {
+            Ok(PipelineInput {
+                id: row.0,
+                sequence: row.1,
+                phase_id: row.2,
+                input: row.3,
+                digest: row.4,
+                actor_session_id: row.5,
+                source_amendment: row.6.map(decode).transpose()?,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     let result_row:Option<(Uuid,Uuid,i64,i64,String,String,serde_json::Value,String,String,String,Option<Uuid>,Option<String>,Option<String>,Option<Uuid>,Option<String>)>=sqlx::query_as(
         "SELECT id,slice_id,slice_revision,revision,outcome,summary,evidence,scope_impact,remaining_work,provenance,pipeline_run_id,pipeline_definition_version,pipeline_definition_digest,pipeline_final_attempt_id,pipeline_result_origin FROM slice_results WHERE tenant_id=$1 AND workspace_id=$2 AND pipeline_run_id=$3 AND NOT payload_erased ORDER BY revision DESC LIMIT 1")
         .bind(tenant).bind(workspace).bind(run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
