@@ -23,7 +23,6 @@ pub(crate) async fn complete_phase(
     session: Uuid,
     request: &CompletePipelinePhase,
 ) -> Result<PipelineMutationOutcome> {
-    phase_validation::validate_output_integrity(&request.output)?;
     let payload = json(request)?;
     if let Some((stored, result, erased)) = sqlx::query_as::<_, (Option<serde_json::Value>, Option<serde_json::Value>,bool)>(
         "SELECT request_payload,result_payload,payload_erased FROM slice_pipeline_phase_attempts WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3",
@@ -64,6 +63,37 @@ pub(crate) async fn complete_phase(
         .iter()
         .find(|phase| phase.id == request.phase_id)
         .ok_or(Error::InternalInvariant)?;
+    // Resolve and validate navigation before result-lineage checks. A permitted
+    // backward transition is the recovery path for legacy malformed outputs.
+    let planned_next = helpers::plan_next_state(request, &definition, phase)?;
+    if definition.kind == PipelineKind::FullDesignToExecution
+        && matches!(
+            phase.id.as_str(),
+            "slice-component-decision-interrogator" | "slice-reconciliation-runner"
+        )
+        && phase
+            .required_artifacts
+            .iter()
+            .any(|artifact| artifact.name_pattern == "requirements-ledger.json")
+    {
+        if phase.id == "slice-component-decision-interrogator" {
+            helpers::validate_decision_requirements_ledger(&request.output)?;
+        } else if planned_next.revisit_ordinal.is_some() {
+            // The submitted phase 7 output must remain valid, but recovery must
+            // not depend on parsing the legacy phase 5 output being replaced.
+            helpers::validate_reconciliation_requirements_ledger(&request.output)?;
+        } else {
+            helpers::validate_reconciliation_ledger_lineage(
+                tx,
+                tenant,
+                workspace,
+                request.run_id,
+                &request.output,
+            )
+            .await?;
+        }
+    }
+    phase_validation::validate_output_integrity(&request.output)?;
     let open_checkpoint = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM pipeline_research_checkpoints WHERE tenant_id=$1 AND workspace_id=$2 AND producer_run_id=$3 AND status='open')",
     )
@@ -130,29 +160,6 @@ pub(crate) async fn complete_phase(
         &request.consumed_outputs,
     )
     .await?;
-    if definition.kind == PipelineKind::FullDesignToExecution
-        && matches!(
-            phase.id.as_str(),
-            "slice-component-decision-interrogator" | "slice-reconciliation-runner"
-        )
-        && phase
-            .required_artifacts
-            .iter()
-            .any(|artifact| artifact.name_pattern == "requirements-ledger.json")
-    {
-        if phase.id == "slice-component-decision-interrogator" {
-            helpers::validate_decision_requirements_ledger(&request.output)?;
-        } else {
-            helpers::validate_reconciliation_ledger_lineage(
-                tx,
-                tenant,
-                workspace,
-                request.run_id,
-                &request.output,
-            )
-            .await?;
-        }
-    }
     validate_review_authorization(
         tx,
         tenant,
@@ -210,8 +217,18 @@ pub(crate) async fn complete_phase(
     sqlx::query("INSERT INTO slice_pipeline_output_bindings(tenant_id,workspace_id,run_id,phase_id,phase_ordinal,output_id,output_revision) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(tenant_id,workspace_id,run_id,phase_id) DO UPDATE SET output_id=EXCLUDED.output_id,output_revision=EXCLUDED.output_revision,stale=false,stale_reason=NULL,updated_at=pg_catalog.clock_timestamp()")
         .bind(tenant).bind(workspace).bind(request.run_id).bind(&request.phase_id).bind(phase.ordinal as i32).bind(output_id).bind(output_revision)
         .execute(&mut **tx).await.map_err(storage_error)?;
-    let (status, next_id, next_ordinal) =
-        next_state(tx, tenant, workspace, session, request, &definition, phase).await?;
+    helpers::apply_rework(
+        tx,
+        tenant,
+        workspace,
+        session,
+        request.run_id,
+        &planned_next,
+    )
+    .await?;
+    let status = planned_next.status;
+    let next_id = planned_next.next_id;
+    let next_ordinal = planned_next.next_ordinal;
     let next_revision = run_row.3.checked_add(1).ok_or(Error::StorageUnavailable)?;
     let created_checkpoint = checkpoint::create(
         tx,
@@ -336,6 +353,6 @@ pub(crate) async fn complete_phase(
 mod helpers;
 
 use helpers::{
-    enforce_retry_policy, next_state, publish_result, validate_consumed_inputs,
-    validate_consumed_outputs, validate_review_authorization, validate_reviewer_boundary,
+    enforce_retry_policy, publish_result, validate_consumed_inputs, validate_consumed_outputs,
+    validate_review_authorization, validate_reviewer_boundary,
 };

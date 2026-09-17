@@ -23,7 +23,7 @@ pub(crate) async fn response(
             | "record_setup_input"
             | "apply_setup"
     );
-    if !setup_tool || access_denial(error) || error == Error::WorkspaceNotOpen {
+    if !setup_tool || access_denial(&error) || error == Error::WorkspaceNotOpen {
         return responses::failure(error, call);
     }
     match transport::call_tool_bounded(
@@ -38,12 +38,12 @@ pub(crate) async fn response(
         Ok(state) if state["status"] == "ready" => {
             responses::failure_with_state(error, call, Some(&state))
         }
-        Err(current) if access_denial(current) => responses::failure(current, call),
+        Err(current) if access_denial(&current) => responses::failure(current, call),
         _ => responses::failure(error, call),
     }
 }
 
-fn access_denial(error: Error) -> bool {
+fn access_denial(error: &Error) -> bool {
     matches!(
         error,
         Error::Unauthorized

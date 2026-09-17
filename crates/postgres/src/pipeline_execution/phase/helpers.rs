@@ -2,59 +2,280 @@ use super::*;
 mod engineering_findings;
 use std::collections::{BTreeMap, BTreeSet};
 
-fn parse_requirements_ledger(body: &str) -> Result<((String, String), BTreeMap<String, String>)> {
-    let ledger: serde_json::Value =
-        serde_json::from_str(body).map_err(|_| Error::InvalidArguments)?;
-    let source = ledger.get("source").ok_or(Error::InvalidArguments)?;
-    let source_field = |field| {
+#[derive(Debug)]
+struct RequirementsLedger {
+    source: (String, String),
+    rows: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Default)]
+struct LedgerViolations {
+    retained: Vec<PipelineArtifactViolation>,
+    omitted: usize,
+    inherited_truncated: bool,
+}
+
+impl LedgerViolations {
+    fn push(&mut self, violation: PipelineArtifactViolation) {
+        if self.retained.len() < MAX_PIPELINE_ARTIFACT_DIAGNOSTIC_VIOLATIONS {
+            self.retained.push(violation);
+        } else {
+            self.omitted = self.omitted.saturating_add(1);
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.retained.is_empty() && self.omitted == 0
+    }
+}
+
+fn text_preview(value: &str) -> String {
+    const MAXIMUM: usize = 96;
+    if value.len() <= MAXIMUM {
+        return value.to_owned();
+    }
+    let mut end = MAXIMUM;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...[{} bytes]", &value[..end], value.len())
+}
+
+fn value_summary(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => "null".to_owned(),
+        serde_json::Value::Bool(value) => format!("boolean:{value}"),
+        serde_json::Value::Number(value) => format!("number:{value}"),
+        serde_json::Value::String(value) => {
+            format!("string:{}", text_preview(value))
+        }
+        serde_json::Value::Array(values) => format!("array(items={})", values.len()),
+        serde_json::Value::Object(values) => format!("object(keys={})", values.len()),
+    }
+}
+
+fn violation(
+    code: &str,
+    path: impl Into<String>,
+    expected: Option<String>,
+    actual: Option<String>,
+) -> PipelineArtifactViolation {
+    PipelineArtifactViolation {
+        code: code.to_owned(),
+        path: path.into(),
+        expected,
+        actual,
+    }
+}
+
+fn ledger_error(phase: &str, code: &str, violations: Vec<PipelineArtifactViolation>) -> Error {
+    ledger_error_with_recovery(
+        phase,
+        code,
+        violations,
+        format!(
+            "Correct requirements-ledger.json for {phase} and retry the same phase completion request with a new request_id."
+        ),
+    )
+}
+
+fn ledger_error_with_recovery(
+    phase: &str,
+    code: &str,
+    violations: Vec<PipelineArtifactViolation>,
+    recovery_action: String,
+) -> Error {
+    ledger_error_with_budget(
+        phase,
+        code,
+        LedgerViolations {
+            retained: violations,
+            ..LedgerViolations::default()
+        },
+        recovery_action,
+    )
+}
+
+fn ledger_error_with_budget(
+    phase: &str,
+    code: &str,
+    violations: LedgerViolations,
+    recovery_action: String,
+) -> Error {
+    Error::InvalidPipelineArtifact(Box::new(PipelineArtifactDiagnostic::bounded_with_omitted(
+        code.to_owned(),
+        phase.to_owned(),
+        "requirements-ledger.json".to_owned(),
+        violations.retained,
+        violations.omitted,
+        violations.inherited_truncated,
+        true,
+        recovery_action,
+    )))
+}
+
+fn parse_requirements_ledger(
+    body: &str,
+    phase: &str,
+) -> std::result::Result<RequirementsLedger, Error> {
+    let ledger: serde_json::Value = serde_json::from_str(body).map_err(|_| {
+        ledger_error(
+            phase,
+            "requirement_ledger_invalid",
+            vec![violation(
+                "invalid_json",
+                "$",
+                Some("valid JSON object".to_owned()),
+                Some("malformed_json".to_owned()),
+            )],
+        )
+    })?;
+    let mut violations = LedgerViolations::default();
+    let source = ledger.get("source").and_then(serde_json::Value::as_object);
+    let source_value = |field: &str| {
         source
-            .get(field)
+            .and_then(|value| value.get(field))
             .and_then(serde_json::Value::as_str)
             .filter(|value| !value.trim().is_empty() && *value == value.trim())
             .map(str::to_owned)
-            .ok_or(Error::InvalidArguments)
     };
-    let source_identity = (source_field("path")?, source_field("digest")?);
-    let ids = ledger
+    let source_path = source_value("path");
+    let source_digest = source_value("digest");
+    if source_path.is_none() {
+        violations.push(violation(
+            "source_path_required",
+            "$.source.path",
+            Some("non-empty trimmed string".to_owned()),
+            ledger.pointer("/source/path").map(value_summary),
+        ));
+    }
+    if source_digest.is_none() {
+        violations.push(violation(
+            "source_digest_required",
+            "$.source.digest",
+            Some("non-empty trimmed string".to_owned()),
+            ledger.pointer("/source/digest").map(value_summary),
+        ));
+    }
+
+    let mut inventory = BTreeSet::new();
+    match ledger
         .get("sourceRequirementIds")
         .and_then(serde_json::Value::as_array)
-        .ok_or(Error::InvalidArguments)?;
-    let inventory = ids
-        .iter()
-        .map(|id| {
-            id.as_str()
-                .filter(|id| !id.trim().is_empty() && *id == id.trim())
-                .map(str::to_owned)
-                .ok_or(Error::InvalidArguments)
-        })
-        .collect::<Result<BTreeSet<_>>>()?;
-    if inventory.len() != ids.len() {
-        return Err(Error::InvalidArguments);
+    {
+        Some(ids) => {
+            for (index, value) in ids.iter().enumerate() {
+                let id = value
+                    .as_str()
+                    .filter(|id| !id.trim().is_empty() && *id == id.trim());
+                match id {
+                    Some(id) if !inventory.insert(id.to_owned()) => violations.push(violation(
+                        "source_requirement_id_duplicate",
+                        format!("$.sourceRequirementIds[{index}]"),
+                        Some("unique requirement ID".to_owned()),
+                        Some(text_preview(id)),
+                    )),
+                    Some(_) => {}
+                    None => violations.push(violation(
+                        "source_requirement_id_invalid",
+                        format!("$.sourceRequirementIds[{index}]"),
+                        Some("non-empty trimmed string".to_owned()),
+                        Some(value_summary(value)),
+                    )),
+                }
+            }
+        }
+        None => violations.push(violation(
+            "source_requirement_ids_required",
+            "$.sourceRequirementIds",
+            Some("array".to_owned()),
+            ledger.get("sourceRequirementIds").map(value_summary),
+        )),
     }
-    let requirements = ledger
+
+    let mut rows = BTreeMap::new();
+    match ledger
         .get("requirements")
         .and_then(serde_json::Value::as_array)
-        .ok_or(Error::InvalidArguments)?;
-    let mut rows = BTreeMap::new();
-    for row in requirements {
-        let id = row
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .filter(|id| !id.trim().is_empty() && *id == id.trim())
-            .ok_or(Error::InvalidArguments)?;
-        let modality = row
-            .get("modality")
-            .and_then(serde_json::Value::as_str)
-            .filter(|value| matches!(*value, "MUST" | "SHOULD" | "MAY"))
-            .ok_or(Error::InvalidArguments)?;
-        if rows.insert(id.to_owned(), modality.to_owned()).is_some() {
-            return Err(Error::InvalidArguments);
+    {
+        Some(requirements) => {
+            for (index, row) in requirements.iter().enumerate() {
+                let id = row
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|id| !id.trim().is_empty() && *id == id.trim());
+                let modality = row.get("modality").and_then(serde_json::Value::as_str);
+                if id.is_none() {
+                    violations.push(violation(
+                        "requirement_id_required",
+                        format!("$.requirements[{index}].id"),
+                        Some("non-empty trimmed string".to_owned()),
+                        row.get("id").map(value_summary),
+                    ));
+                }
+                if !matches!(modality, Some("MUST" | "SHOULD" | "MAY")) {
+                    violations.push(violation(
+                        "requirement_modality_invalid",
+                        format!("$.requirements[{index}].modality"),
+                        Some("MUST, SHOULD, or MAY".to_owned()),
+                        row.get("modality").map(value_summary),
+                    ));
+                }
+                if let (Some(id), Some(modality)) = (id, modality)
+                    && matches!(modality, "MUST" | "SHOULD" | "MAY")
+                    && rows.insert(id.to_owned(), modality.to_owned()).is_some()
+                {
+                    violations.push(violation(
+                        "requirement_id_duplicate",
+                        format!("$.requirements[{index}].id"),
+                        Some("unique requirement ID".to_owned()),
+                        Some(text_preview(id)),
+                    ));
+                }
+            }
+        }
+        None => violations.push(violation(
+            "requirements_required",
+            "$.requirements",
+            Some("array".to_owned()),
+            ledger.get("requirements").map(value_summary),
+        )),
+    }
+
+    for id in &inventory {
+        if !rows.contains_key(id) {
+            violations.push(violation(
+                "source_requirement_missing_row",
+                "$.requirements",
+                Some(format!("row for {}", text_preview(id))),
+                None,
+            ));
         }
     }
-    if inventory != rows.keys().cloned().collect() {
-        return Err(Error::InvalidArguments);
+    for id in rows.keys() {
+        if !inventory.contains(id) {
+            violations.push(violation(
+                "requirement_id_not_in_source_inventory",
+                "$.sourceRequirementIds",
+                Some(format!("source inventory entry for {}", text_preview(id))),
+                None,
+            ));
+        }
     }
-    Ok((source_identity, rows))
+    if !violations.is_empty() {
+        return Err(ledger_error_with_budget(
+            phase,
+            "requirement_ledger_invalid",
+            violations,
+            format!(
+                "Correct requirements-ledger.json for {phase} and retry the same phase completion request with a new request_id."
+            ),
+        ));
+    }
+    Ok(RequirementsLedger {
+        source: (source_path.unwrap(), source_digest.unwrap()),
+        rows,
+    })
 }
 
 pub(super) fn validate_decision_requirements_ledger(
@@ -65,9 +286,68 @@ pub(super) fn validate_decision_requirements_ledger(
         .iter()
         .find(|artifact| artifact.name == "requirements-ledger.json")
         .map(|artifact| artifact.body.as_str())
-        .ok_or(Error::InvalidArguments)?;
-    parse_requirements_ledger(body)?;
+        .ok_or_else(|| {
+            ledger_error(
+                "slice-component-decision-interrogator",
+                "requirement_ledger_missing",
+                vec![violation(
+                    "required_artifact_missing",
+                    "$.output.artifacts",
+                    Some("requirements-ledger.json".to_owned()),
+                    None,
+                )],
+            )
+        })?;
+    parse_requirements_ledger(body, "slice-component-decision-interrogator")?;
     Ok(())
+}
+
+pub(super) fn validate_reconciliation_requirements_ledger(
+    output: &PipelinePhaseOutputDraft,
+) -> Result<()> {
+    let body = output
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == "requirements-ledger.json")
+        .map(|artifact| artifact.body.as_str())
+        .ok_or_else(|| {
+            ledger_error(
+                "slice-reconciliation-runner",
+                "requirement_ledger_missing",
+                vec![violation(
+                    "required_artifact_missing",
+                    "$.output.artifacts",
+                    Some("requirements-ledger.json".to_owned()),
+                    None,
+                )],
+            )
+        })?;
+    parse_requirements_ledger(body, "slice-reconciliation-runner")?;
+    Ok(())
+}
+
+fn wrap_prior_ledger_error(error: Error) -> Error {
+    match error {
+        Error::InvalidPipelineArtifact(diagnostic) => {
+            let mut violations = LedgerViolations {
+                omitted: diagnostic.omitted_violation_count,
+                inherited_truncated: diagnostic.truncated,
+                ..LedgerViolations::default()
+            };
+            for mut violation in diagnostic.violations {
+                violation.path = format!("phase5:{}", violation.path);
+                violations.push(violation);
+            }
+            ledger_error_with_budget(
+                "slice-reconciliation-runner",
+                "requirement_ledger_lineage_invalid",
+                violations,
+                "Submit a valid phase 7 output with completed/continue and revisit_phase_id slice-component-decision-interrogator; then rework phase 5 and rerun phases 6 and 7."
+                    .to_owned(),
+            )
+        }
+        other => other,
+    }
 }
 
 pub(super) async fn validate_reconciliation_ledger_lineage(
@@ -95,24 +375,82 @@ pub(super) async fn validate_reconciliation_ledger_lineage(
                 .find(|artifact| artifact["name"] == "requirements-ledger.json")
         })
         .and_then(|artifact| artifact["body"].as_str())
-        .ok_or(Error::InvalidArguments)?;
+        .ok_or_else(|| {
+            ledger_error(
+                "slice-reconciliation-runner",
+                "requirement_ledger_lineage_unavailable",
+                vec![violation(
+                    "prior_requirement_ledger_missing",
+                    "phase:slice-component-decision-interrogator/requirements-ledger.json",
+                    Some("non-stale phase 5 requirements ledger".to_owned()),
+                    None,
+                )],
+            )
+        })?;
     let current_body = output
         .artifacts
         .iter()
         .find(|artifact| artifact.name == "requirements-ledger.json")
         .map(|artifact| artifact.body.as_str())
-        .ok_or(Error::InvalidArguments)?;
-    let (prior_source, prior_rows) = parse_requirements_ledger(prior_body)?;
-    let (current_source, current_rows) = parse_requirements_ledger(current_body)?;
-    if prior_source != current_source {
-        return Err(Error::InvalidArguments);
+        .ok_or_else(|| {
+            ledger_error(
+                "slice-reconciliation-runner",
+                "requirement_ledger_missing",
+                vec![violation(
+                    "required_artifact_missing",
+                    "$.output.artifacts",
+                    Some("requirements-ledger.json".to_owned()),
+                    None,
+                )],
+            )
+        })?;
+    let prior = parse_requirements_ledger(prior_body, "slice-component-decision-interrogator")
+        .map_err(wrap_prior_ledger_error)?;
+    let current = parse_requirements_ledger(current_body, "slice-reconciliation-runner")?;
+    let mut violations = LedgerViolations::default();
+    if prior.source.0 != current.source.0 {
+        violations.push(violation(
+            "source_path_mismatch",
+            "$.source.path",
+            Some(text_preview(&prior.source.0)),
+            Some(text_preview(&current.source.0)),
+        ));
     }
-    if !prior_rows.keys().all(|id| current_rows.contains_key(id))
-        || prior_rows.iter().any(|(id, modality)| {
-            modality == "MUST" && current_rows.get(id).map(String::as_str) != Some("MUST")
-        })
-    {
-        return Err(Error::InvalidArguments);
+    if prior.source.1 != current.source.1 {
+        violations.push(violation(
+            "source_digest_mismatch",
+            "$.source.digest",
+            Some(text_preview(&prior.source.1)),
+            Some(text_preview(&current.source.1)),
+        ));
+    }
+    for (id, modality) in &prior.rows {
+        match current.rows.get(id) {
+            None => violations.push(violation(
+                "prior_requirement_missing",
+                format!("$.requirements[{}]", text_preview(id)),
+                Some(format!("preserved {modality} requirement")),
+                None,
+            )),
+            Some(current_modality) if modality == "MUST" && current_modality != "MUST" => {
+                violations.push(violation(
+                    "must_modality_changed",
+                    format!("$.requirements[{}].modality", text_preview(id)),
+                    Some("MUST".to_owned()),
+                    Some(current_modality.clone()),
+                ));
+            }
+            _ => {}
+        }
+    }
+    if !violations.is_empty() {
+        return Err(ledger_error_with_budget(
+            "slice-reconciliation-runner",
+            "requirement_ledger_lineage_invalid",
+            violations,
+            "Correct requirements-ledger.json for slice-reconciliation-runner and retry the same phase completion request with a new request_id."
+                .to_owned(),
+        ));
     }
     Ok(())
 }
@@ -322,25 +660,38 @@ pub(super) async fn enforce_retry_policy(
     }
 }
 
-pub(super) async fn next_state(
-    tx: &mut Transaction<'_, Postgres>,
-    tenant: Uuid,
-    workspace: Uuid,
-    session: Uuid,
+pub(super) struct PlannedNextState {
+    pub(super) status: &'static str,
+    pub(super) next_id: Option<String>,
+    pub(super) next_ordinal: Option<u32>,
+    pub(super) revisit_ordinal: Option<u32>,
+}
+
+pub(super) fn plan_next_state(
     request: &CompletePipelinePhase,
     definition: &PipelineDefinitionSnapshot,
     phase: &PipelinePhaseDefinition,
-) -> Result<(&'static str, Option<String>, Option<u32>)> {
+) -> Result<PlannedNextState> {
     if request.outcome == PipelinePhaseOutcome::WaitingInput {
         if request.transition != PipelineTransition::Continue {
             return Err(Error::InvalidArguments);
         }
-        return Ok(("waiting_input", Some(phase.id.clone()), Some(phase.ordinal)));
+        return Ok(PlannedNextState {
+            status: "waiting_input",
+            next_id: Some(phase.id.clone()),
+            next_ordinal: Some(phase.ordinal),
+            revisit_ordinal: None,
+        });
     }
     if request.outcome == PipelinePhaseOutcome::Blocked
         && request.transition == PipelineTransition::Continue
     {
-        return Ok(("blocked", Some(phase.id.clone()), Some(phase.ordinal)));
+        return Ok(PlannedNextState {
+            status: "blocked",
+            next_id: Some(phase.id.clone()),
+            next_ordinal: Some(phase.ordinal),
+            revisit_ordinal: None,
+        });
     }
     match request.transition {
         PipelineTransition::Continue => {
@@ -351,24 +702,11 @@ pub(super) async fn next_state(
                 if !phase.allowed_backward_to.contains(revisit) {
                     return Err(Error::Forbidden);
                 }
-                let target = definition
+                definition
                     .phases
                     .iter()
                     .find(|value| &value.id == revisit)
-                    .ok_or(Error::InvalidArguments)?;
-                sqlx::query("UPDATE slice_pipeline_output_bindings SET stale=true,stale_reason=$4,updated_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND phase_ordinal>=$5")
-                    .bind(tenant).bind(workspace).bind(request.run_id).bind(format!("rework_from:{}",target.id)).bind(target.ordinal as i32)
-                    .execute(&mut **tx).await.map_err(storage_error)?;
-                checkpoint::mark_superseded_after_rework(
-                    tx,
-                    tenant,
-                    workspace,
-                    request.run_id,
-                    target.ordinal,
-                    session,
-                )
-                .await?;
-                target
+                    .ok_or(Error::InvalidArguments)?
             } else {
                 definition
                     .phases
@@ -376,7 +714,12 @@ pub(super) async fn next_state(
                     .find(|value| value.ordinal == phase.ordinal + 1)
                     .ok_or(Error::InvalidArguments)?
             };
-            Ok(("active", Some(next.id.clone()), Some(next.ordinal)))
+            Ok(PlannedNextState {
+                status: "active",
+                next_id: Some(next.id.clone()),
+                next_ordinal: Some(next.ordinal),
+                revisit_ordinal: request.revisit_phase_id.as_ref().map(|_| next.ordinal),
+            })
         }
         PipelineTransition::Complete => {
             if request.outcome != PipelinePhaseOutcome::Completed
@@ -384,21 +727,55 @@ pub(super) async fn next_state(
             {
                 return Err(Error::Forbidden);
             }
-            Ok(("completed", None, None))
+            Ok(PlannedNextState {
+                status: "completed",
+                next_id: None,
+                next_ordinal: None,
+                revisit_ordinal: None,
+            })
         }
         PipelineTransition::Block => {
             if request.outcome != PipelinePhaseOutcome::Blocked {
                 return Err(Error::InvalidArguments);
             }
-            Ok(("blocked", Some(phase.id.clone()), Some(phase.ordinal)))
+            Ok(PlannedNextState {
+                status: "blocked",
+                next_id: Some(phase.id.clone()),
+                next_ordinal: Some(phase.ordinal),
+                revisit_ordinal: None,
+            })
         }
         PipelineTransition::Escalate => {
             if request.outcome == PipelinePhaseOutcome::WaitingInput {
                 return Err(Error::InvalidArguments);
             }
-            Ok(("escalated", None, None))
+            Ok(PlannedNextState {
+                status: "escalated",
+                next_id: None,
+                next_ordinal: None,
+                revisit_ordinal: None,
+            })
         }
     }
+}
+
+pub(super) async fn apply_rework(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    session: Uuid,
+    run: Uuid,
+    plan: &PlannedNextState,
+) -> Result<()> {
+    let Some(target_ordinal) = plan.revisit_ordinal else {
+        return Ok(());
+    };
+    let target_id = plan.next_id.as_deref().ok_or(Error::InternalInvariant)?;
+    sqlx::query("UPDATE slice_pipeline_output_bindings SET stale=true,stale_reason=$4,updated_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND phase_ordinal>=$5")
+        .bind(tenant).bind(workspace).bind(run).bind(format!("rework_from:{target_id}")).bind(target_ordinal as i32)
+        .execute(&mut **tx).await.map_err(storage_error)?;
+    checkpoint::mark_superseded_after_rework(tx, tenant, workspace, run, target_ordinal, session)
+        .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -468,4 +845,145 @@ pub(super) async fn publish_result(
         pipeline_result_origin: Some(origin.into()),
         knowledge_provenance: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requirement_ledger_reports_duplicate_identity_inventory_and_modality_violations_together() {
+        let body = serde_json::json!({
+            "source":{"path":"spec.md","digest":"abc"},
+            "sourceRequirementIds":["REQ-001","REQ-001","REQ-002"],
+            "requirements":[
+                {"id":"REQ-001","modality":"MUST"},
+                {"id":"REQ-001","modality":"SHOULD"},
+                {"id":"REQ-003","modality":"INVALID"}
+            ]
+        })
+        .to_string();
+        let error =
+            parse_requirements_ledger(&body, "slice-component-decision-interrogator").unwrap_err();
+        let diagnostic = error.pipeline_artifact_diagnostic().unwrap();
+        assert_eq!(diagnostic.code, "requirement_ledger_invalid");
+        assert_eq!(diagnostic.phase, "slice-component-decision-interrogator");
+        assert_eq!(diagnostic.artifact, "requirements-ledger.json");
+        assert!(diagnostic.retryable);
+        assert_eq!(
+            diagnostic
+                .violations
+                .iter()
+                .map(|violation| violation.code.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "source_requirement_id_duplicate",
+                "requirement_id_duplicate",
+                "requirement_modality_invalid",
+                "source_requirement_missing_row",
+            ]
+        );
+        assert_eq!(diagnostic.violations[2].path, "$.requirements[2].modality");
+        assert_eq!(
+            diagnostic.violations[2].actual.as_deref(),
+            Some("string:INVALID")
+        );
+        assert!(!diagnostic.truncated);
+        assert_eq!(diagnostic.omitted_violation_count, 0);
+    }
+
+    #[test]
+    fn malformed_and_large_raw_values_produce_bounded_stable_diagnostics() {
+        let malformed = format!("{{\"payload\":\"{}\"", "x".repeat(500_000));
+        let error = parse_requirements_ledger(&malformed, "phase-seven").unwrap_err();
+        let diagnostic = error.pipeline_artifact_diagnostic().unwrap();
+        assert_eq!(diagnostic.code, "requirement_ledger_invalid");
+        assert_eq!(diagnostic.violations[0].code, "invalid_json");
+        assert_eq!(
+            diagnostic.violations[0].actual.as_deref(),
+            Some("malformed_json")
+        );
+        assert!(serde_json::to_vec(diagnostic).unwrap().len() < 2_048);
+
+        let raw = serde_json::json!({
+            "source":{"path":"spec.md","digest":"abc"},
+            "sourceRequirementIds":[{"raw":"x".repeat(500_000)}],
+            "requirements":[]
+        })
+        .to_string();
+        let error = parse_requirements_ledger(&raw, "phase-seven").unwrap_err();
+        let diagnostic = error.pipeline_artifact_diagnostic().unwrap();
+        assert_eq!(
+            diagnostic.violations[0].code,
+            "source_requirement_id_invalid"
+        );
+        assert_eq!(
+            diagnostic.violations[0].actual.as_deref(),
+            Some("object(keys=1)")
+        );
+        assert!(!diagnostic.truncated);
+        assert_eq!(diagnostic.omitted_violation_count, 0);
+        assert!(serde_json::to_vec(diagnostic).unwrap().len() < 2_048);
+    }
+
+    #[test]
+    fn high_cardinality_diffs_are_capped_with_an_exact_omitted_count() {
+        let ids = (0..10_000)
+            .map(|index| format!("REQ-{index:03}"))
+            .collect::<Vec<_>>();
+        let body = serde_json::json!({
+            "source":{"path":"spec.md","digest":"abc"},
+            "sourceRequirementIds":ids,
+            "requirements":[]
+        })
+        .to_string();
+        let first = parse_requirements_ledger(&body, "phase-five").unwrap_err();
+        let second = parse_requirements_ledger(&body, "phase-five").unwrap_err();
+        let first = first.pipeline_artifact_diagnostic().unwrap();
+        let second = second.pipeline_artifact_diagnostic().unwrap();
+        assert_eq!(first.code, "requirement_ledger_invalid");
+        assert_eq!(
+            first.violations.len(),
+            MAX_PIPELINE_ARTIFACT_DIAGNOSTIC_VIOLATIONS
+        );
+        assert_eq!(first.omitted_violation_count, 9_976);
+        assert!(first.truncated);
+        assert_eq!(first, second);
+        assert!(serde_json::to_vec(first).unwrap().len() < 16_384);
+    }
+
+    #[test]
+    fn legacy_wrapper_preserves_nested_truncation_and_omitted_count() {
+        let violations = (0..40)
+            .map(|index| {
+                violation(
+                    "source_requirement_missing_row",
+                    format!("$.requirements[{index}]"),
+                    Some(format!("row for REQ-{index:03}")),
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        let nested = Error::InvalidPipelineArtifact(Box::new(PipelineArtifactDiagnostic::bounded(
+            "requirement_ledger_invalid".to_owned(),
+            "slice-component-decision-interrogator".to_owned(),
+            "requirements-ledger.json".to_owned(),
+            violations,
+            true,
+            "Correct phase 5.".to_owned(),
+        )));
+        let wrapped = wrap_prior_ledger_error(nested);
+        let diagnostic = wrapped.pipeline_artifact_diagnostic().unwrap();
+        assert_eq!(diagnostic.code, "requirement_ledger_lineage_invalid");
+        assert_eq!(diagnostic.violations.len(), 24);
+        assert_eq!(diagnostic.omitted_violation_count, 16);
+        assert!(diagnostic.truncated);
+        assert!(
+            diagnostic
+                .violations
+                .iter()
+                .all(|violation| violation.path.starts_with("phase5:"))
+        );
+        assert!(serde_json::to_vec(diagnostic).unwrap().len() < 16_384);
+    }
 }

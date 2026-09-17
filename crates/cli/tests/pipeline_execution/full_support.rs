@@ -40,6 +40,7 @@ pub(super) fn replace_ledger(output: &mut Value, count: usize) {
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn assert_non_coding_definition(context: &Value, expected_kind: &str) {
     assert_eq!(context["definition"]["kind"], expected_kind);
     for phase in context["definition"]["phases"].as_array().unwrap() {
@@ -76,11 +77,13 @@ pub(super) fn assert_non_coding_definition(context: &Value, expected_kind: &str)
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn add_opaque_authority_labels(request: &mut Value) {
     request["output"]["fields"]["engineering_review"] = json!("pass");
     request["output"]["fields"]["code_authorization"] = json!("granted");
 }
 
+#[allow(dead_code)]
 pub(super) async fn assert_forged_implementation_phase_rejected(
     client: &mut Mcp,
     context: &Value,

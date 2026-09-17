@@ -31,7 +31,10 @@ pub use program::{
 pub use program_page::{ProgramCursor, ProgramInput, ProgramList, ProgramPage, ProgramSummary};
 
 pub use durable_knowledge::*;
-pub use error::{Error, Result};
+pub use error::{
+    Error, MAX_PIPELINE_ARTIFACT_DIAGNOSTIC_VIOLATIONS, PipelineArtifactDiagnostic,
+    PipelineArtifactViolation, Result,
+};
 pub use identity::{
     HostAuth, HostIdentity, RequestContext, validate_native_id, validate_workspace_key,
 };

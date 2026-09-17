@@ -176,7 +176,7 @@ fn try_failure_with_state(
     } else {
         None
     };
-    match error {
+    match &error {
         Error::WorkspaceNotOpen => actions.push(action("open_workspace", json!({}))?),
         Error::StaleRevision
         | Error::StaleContext
@@ -260,8 +260,13 @@ fn try_failure_with_state(
         actions.push(crate::program_output::begin_action()?);
     }
     let recommended = recommended.or_else(|| (!actions.is_empty()).then_some(0));
-    let data = with_actions(json!({"error":{"code":error.code()}}), actions, recommended);
-    Ok(content(error_intro(error), data, true))
+    let mut error_data = json!({"code":error.code()});
+    if let Some(diagnostic) = error.pipeline_artifact_diagnostic() {
+        error_data["details"] =
+            serde_json::to_value(diagnostic).map_err(|_| Error::InternalInvariant)?;
+    }
+    let data = with_actions(json!({"error":error_data}), actions, recommended);
+    Ok(content(error_intro(&error), data, true))
 }
 
 fn internal_failure() -> Value {
@@ -270,10 +275,10 @@ fn internal_failure() -> Value {
         Vec::new(),
         None,
     );
-    content(error_intro(Error::InternalInvariant), data, true)
+    content(error_intro(&Error::InternalInvariant), data, true)
 }
 
-pub(crate) fn error_intro(error: Error) -> &'static str {
+pub(crate) fn error_intro(error: &Error) -> &'static str {
     match error {
         Error::StaleRevision => {
             "A newer revision exists. Reload the saved record and merge before saving."
@@ -327,6 +332,9 @@ pub(crate) fn error_intro(error: Error) -> &'static str {
         Error::InvalidArguments => {
             "The arguments do not match the current tool schema. Read current state and use the live schema."
         }
+        Error::InvalidPipelineArtifact(_) => {
+            "A pipeline artifact failed its phase contract. Correct every reported violation and retry the supplied phase action."
+        }
         Error::InternalInvariant => {
             "TectD could not construct a valid next call. No follow-up action was emitted."
         }
@@ -356,7 +364,7 @@ mod tests {
             Error::InvalidArguments,
             Error::Unauthorized,
         ] {
-            assert!(error_intro(error).len() <= 2000);
+            assert!(error_intro(&error).len() <= 2000);
         }
         let large = "narrative".repeat(10_000);
         let response = success(json!({"large":large}));

@@ -210,15 +210,40 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
         .unwrap();
     ledger["body"] = json!("{}");
     ledger["digest"] = json!("44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
+    let empty_ledger_error = route_error(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        empty_ledger,
+    )
+    .await;
+    assert_eq!(empty_ledger_error["error"]["code"], "invalid_arguments");
     assert_eq!(
-        route_error(
-            &mut client,
-            "command",
-            "slice.pipeline.phase.complete",
-            empty_ledger
-        )
-        .await["error"]["code"],
-        "invalid_arguments"
+        empty_ledger_error["error"]["details"]["code"],
+        "requirement_ledger_invalid"
+    );
+    assert_eq!(
+        empty_ledger_error["error"]["details"]["phase"],
+        "slice-component-decision-interrogator"
+    );
+    assert_eq!(
+        empty_ledger_error["error"]["details"]["artifact"],
+        "requirements-ledger.json"
+    );
+    assert_eq!(empty_ledger_error["error"]["details"]["retryable"], true);
+    assert_eq!(
+        empty_ledger_error["error"]["details"]["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|violation| violation["code"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            "source_path_required",
+            "source_digest_required",
+            "source_requirement_ids_required",
+            "requirements_required"
+        ]
     );
     let after_empty_ledger = route(
         &mut client,
@@ -351,15 +376,24 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     assert_eq!(verdict, "not_required");
     let mut dropped = completion(&context, verdict, outcome, transition, None, None);
     replace_ledger(&mut dropped["output"], 5);
+    let dropped_error = route_error(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        dropped,
+    )
+    .await;
+    assert_eq!(dropped_error["error"]["code"], "invalid_arguments");
     assert_eq!(
-        route_error(
-            &mut client,
-            "command",
-            "slice.pipeline.phase.complete",
-            dropped
-        )
-        .await["error"]["code"],
-        "invalid_arguments"
+        dropped_error["error"]["details"]["code"],
+        "requirement_ledger_lineage_invalid"
+    );
+    assert_eq!(
+        dropped_error["error"]["details"]["violations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        15
     );
     let after_rejection = route(
         &mut client,
@@ -382,6 +416,186 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
             "{collection} persisted"
         );
     }
+    let mut blocked_no_revisit = completion(&context, verdict, outcome, transition, None, None);
+    blocked_no_revisit["output"]["verdict"] = json!("blocked_unreconciled_findings");
+    blocked_no_revisit["output"]["dispositions"] = json!(["blocked_unreconciled_findings"]);
+    blocked_no_revisit["outcome"] = json!("blocked");
+    blocked_no_revisit["transition"] = json!("block");
+    context = route(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        blocked_no_revisit,
+    )
+    .await["context"]
+        .clone();
+    assert_eq!(context["run"]["status"], "blocked");
+    assert_eq!(
+        context["run"]["current_phase_id"],
+        "slice-reconciliation-runner"
+    );
+    assert!(
+        context["bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|binding| binding["stale"] == false)
+    );
+    let phase_five_binding = context["bindings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|binding| binding["phase_id"] == "slice-component-decision-interrogator")
+        .unwrap();
+    let mut phase_five_artifacts: Value =
+        sqlx::query_scalar("SELECT artifacts FROM slice_pipeline_phase_outputs WHERE id=$1")
+            .bind(id(&phase_five_binding["output_id"]))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let legacy_ledger = phase_five_artifacts
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|artifact| artifact["name"] == "requirements-ledger.json")
+        .unwrap();
+    legacy_ledger["body"] = json!("{}");
+    legacy_ledger["digest"] =
+        json!("44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
+    sqlx::query("UPDATE slice_pipeline_phase_outputs SET artifacts=$2 WHERE id=$1")
+        .bind(id(&phase_five_binding["output_id"]))
+        .bind(phase_five_artifacts)
+        .execute(&pool)
+        .await
+        .unwrap();
+    context = route(
+        &mut client,
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":context["run"]["id"]}),
+    )
+    .await;
+
+    let (verdict, outcome, transition) = successful_route(&context);
+    let forward_with_legacy_phase_five =
+        completion(&context, verdict, outcome, transition, None, None);
+    let legacy_forward_error = route_error(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        forward_with_legacy_phase_five,
+    )
+    .await;
+    assert_eq!(legacy_forward_error["error"]["code"], "invalid_arguments");
+    assert_eq!(
+        legacy_forward_error["error"]["details"]["code"],
+        "requirement_ledger_lineage_invalid"
+    );
+    assert_eq!(
+        legacy_forward_error["error"]["details"]["violations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|violation| violation["code"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec![
+            "source_path_required",
+            "source_digest_required",
+            "source_requirement_ids_required",
+            "requirements_required"
+        ]
+    );
+    assert_eq!(
+        legacy_forward_error["error"]["details"]["recovery_action"],
+        "Submit a valid phase 7 output with completed/continue and revisit_phase_id slice-component-decision-interrogator; then rework phase 5 and rerun phases 6 and 7."
+    );
+    let after_legacy_forward_rejection = route(
+        &mut client,
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":context["run"]["id"]}),
+    )
+    .await;
+    for collection in ["run", "attempts", "outputs", "bindings"] {
+        assert_eq!(
+            after_legacy_forward_rejection[collection], context[collection],
+            "{collection} persisted after rejected legacy lineage"
+        );
+    }
+
+    let recovery_verdict = "blocked_unreconciled_findings";
+    let mut invalid_recovery = completion(&context, verdict, outcome, transition, None, None);
+    invalid_recovery["output"]["verdict"] = json!(recovery_verdict);
+    invalid_recovery["output"]["dispositions"] = json!([recovery_verdict]);
+    invalid_recovery["revisit_phase_id"] = json!("slice-component-decision-interrogator");
+    let invalid_recovery_ledger = invalid_recovery["output"]["artifacts"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|artifact| artifact["name"] == "requirements-ledger.json")
+        .unwrap();
+    invalid_recovery_ledger["body"] = json!("{}");
+    invalid_recovery_ledger["digest"] =
+        json!("44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
+    invalid_recovery["output"]["validator_receipts"][0]["artifacts"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|artifact| artifact["name"] == "requirements-ledger.json")
+        .unwrap()["digest"] =
+        json!("44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
+    let invalid_recovery_error = route_error(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        invalid_recovery,
+    )
+    .await;
+    assert_eq!(invalid_recovery_error["error"]["code"], "invalid_arguments");
+    assert_eq!(
+        invalid_recovery_error["error"]["details"]["phase"], "slice-reconciliation-runner",
+        "{invalid_recovery_error}"
+    );
+    assert_eq!(
+        invalid_recovery_error["error"]["details"]["violations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+
+    let mut recovery_request = completion(&context, verdict, outcome, transition, None, None);
+    recovery_request["output"]["verdict"] = json!(recovery_verdict);
+    recovery_request["output"]["dispositions"] = json!([recovery_verdict]);
+    recovery_request["revisit_phase_id"] = json!("slice-component-decision-interrogator");
+    let recovery = route(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        recovery_request,
+    )
+    .await;
+    context = recovery["context"].clone();
+    assert_eq!(
+        context["run"]["current_phase_id"],
+        "slice-component-decision-interrogator"
+    );
+    for binding in context["bindings"].as_array().unwrap() {
+        let ordinal = binding["phase_ordinal"].as_u64().unwrap();
+        if ordinal >= 5 {
+            assert_eq!(binding["stale"], true);
+            assert_eq!(
+                binding["stale_reason"],
+                "rework_from:slice-component-decision-interrogator"
+            );
+        }
+    }
+    context = advance(&mut client, context).await;
+    context = advance(&mut client, context).await;
+    assert_eq!(
+        context["run"]["current_phase_id"],
+        "slice-reconciliation-runner"
+    );
     context = advance(&mut client, context).await;
     assert_eq!(
         context["run"]["current_phase_id"],
@@ -501,6 +715,6 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     );
     assert_eq!(
         completed["context"]["attempts"].as_array().unwrap().len(),
-        25
+        29
     );
 }
