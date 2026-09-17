@@ -2,6 +2,8 @@
 
 Native pipeline: `slice.research`. Initial native version: `0.5.0-native.inquiry.1`. Semantic methods and adaptation decisions authored personally by the primary Astra for Tony's approved Research12 design on 2026-09-15. This is a new executable definition; no prior combined Research definition is rewritten.
 
+Current native version: `0.5.1-native.inquiry.2`. The original snapshot is retained as `crates/host/pipeline-definitions/research-0.5.0-native.inquiry.1.json`. Version `0.5.1-native.inquiry.2` narrows the R09/R12 completion guidance: classifying a required material target as unresolved does not make the overall result ready or answered. R09 still uses targeted follow-up while authorized bounded work has useful information gain and waiting states when a necessary source or authority has not arrived. At the terminal decision, when no further such bounded work remains and the immutable inquiry permits inconclusive completion, unresolved required material is carried as `bounded_inconclusive` at R09 and `inconclusive` at R12. A valid bounded negative result still satisfies a contract that defines it as sufficient.
+
 ## Source and ownership
 
 The substantive source is the complete set of 22 retained Tect V1 bodies in [the combined Research package](../research-to-durable-knowledge/v1/), originating at Tect V1 commit `ea7259c9a30ff7ea9a9eef1eae116cfc525eedd8`. Their preserved native history, corrections and publisher boundaries are recorded in [its ledger](../research-to-durable-knowledge/SOURCE-LEDGER.md). Every source body was read, including collection/custody secondary outputs and publication/index/result duties.
@@ -45,7 +47,7 @@ Research12 answers questions independently of publication. It may complete witho
 
 The old seven-heading convention, stale HTML/manifest paths, V1 validator commands, per-artifact magic gate lines and mandatory subagent-themed filenames were packaging for a different runtime. They are replaced by the real native required artifacts/fields, exact read receipts, routes and preserved semantic methods. New methods do not instruct agents to run nonexistent V1 tools.
 
-R09 allows a targeted backward return with a named expected information gain and stop condition. The immutable inquiry controls bounded inconclusive completion. R11 checks a useful answer rather than counting documents; R12 cannot turn retrieval failure into disproof or operational output into durable authority.
+R09 allows a targeted backward return with a named expected information gain and stop condition, and it preserves source/authority waiting states. The immutable inquiry controls bounded inconclusive completion. A successfully classified unresolved required target remains unresolved: once the run reaches its terminal no-further-bounded-work decision, it requires `bounded_inconclusive` when permitted and cannot become R09 `ready` or R12 `answered`. R11 checks a useful answer rather than counting documents; R12 cannot turn retrieval failure into disproof or operational output into durable authority.
 
 ## Packaging and verification evidence
 
@@ -55,9 +57,9 @@ Behavioral verification includes question/result contract, negative and inconclu
 
 ## Exact packaged identities
 
-- Definition version: `0.5.0-native.inquiry.1`
-- Semantic digest: `d3425b463b589897cc4c66157fa8d1bfc05ef200f7593ca46e7e4f566073e612`
-- Physical JSON SHA-256: `cbcc8d377e7227990711e7630d9e71dd991f478b8c24efefb741f81f123efd06`
+- Definition version: `0.5.1-native.inquiry.2`
+- Semantic digest: `7d9a817dbbd4560aca33f46522027cf2aefad483bf5837bb98b494d533f115af`
+- Physical JSON SHA-256: `b3c15b3b55bc4400c01db28d77f47250c6ae10aa076df8db850ada1496696477`
 
 | Phase | Role | ID | Version | Body SHA-256 | Source |
 |---|---|---|---|---|---|
@@ -82,7 +84,7 @@ Behavioral verification includes question/result contract, negative and inconclu
 | R08 | instruction | `tect:inquiry-boundary` | `0.5.0-native.inquiry.1` | `09de122d23367442c85624c1ae7aa9c2b823915691ad0751c46706afcb31547e` | `skills/pipelines/shared/inquiry-boundary.md` |
 | R08 | skill | `tect:research-contradictions-negative` | `0.5.0-native.inquiry.1` | `54588cf164e047ed047a5bc656552b3e3ef3f3ba0757e29d08aaad6a0ddc176d` | `skills/pipelines/research/methods/research-contradictions-negative.md` |
 | R09 | instruction | `tect:inquiry-boundary` | `0.5.0-native.inquiry.1` | `09de122d23367442c85624c1ae7aa9c2b823915691ad0751c46706afcb31547e` | `skills/pipelines/shared/inquiry-boundary.md` |
-| R09 | skill | `tect:research-sufficiency` | `0.5.0-native.inquiry.1` | `fbde2b96da2628ac5915f21ce39b1c04b0066e757a5080c7c8a86484592b4aa8` | `skills/pipelines/research/methods/research-sufficiency.md` |
+| R09 | skill | `tect:research-sufficiency` | `0.5.1-native.inquiry.2` | `015d3d7159cef209fb594571468aabf9364ef475ef04f875443de64bb9653e4b` | `skills/pipelines/research/methods/research-sufficiency.md` |
 | R10 | instruction | `tect:inquiry-boundary` | `0.5.0-native.inquiry.1` | `09de122d23367442c85624c1ae7aa9c2b823915691ad0751c46706afcb31547e` | `skills/pipelines/shared/inquiry-boundary.md` |
 | R10 | skill | `tect:research-synthesis` | `0.5.0-native.inquiry.1` | `c69292588a5b112bed9bfa6a76187689c8cca23d47e2123f9eaadf3d394de76d` | `skills/pipelines/research/methods/research-synthesis.md` |
 | R11 | instruction | `tect:inquiry-boundary` | `0.5.0-native.inquiry.1` | `09de122d23367442c85624c1ae7aa9c2b823915691ad0751c46706afcb31547e` | `skills/pipelines/shared/inquiry-boundary.md` |
@@ -90,4 +92,4 @@ Behavioral verification includes question/result contract, negative and inconclu
 | R11 | skill | `superpowers:verification-before-completion` | `5.0.7` | `ea52d15aabaf72bc6b558efe2c126f161b53961090ddcd712000273bfe8c7b6c` | `https://github.com/obra/superpowers/tree/e7a2d16476bf042e9add4699c9d018a90f86e4a6/skills/verification-before-completion/SKILL.md`<br>`skills/references/superpowers/verification-before-completion/SKILL.md` |
 | R11 | resource | `tect:superpowers-v6-native-boundary` | `0.4.0-native.skills.1` | `13012dd0ec17ae94125d0cd3ce78baca13302a728a066ba3bd0e5d4fc73c302f` | `skills/pipelines/shared/superpowers-v6-native-boundary.md` |
 | R12 | instruction | `tect:inquiry-boundary` | `0.5.0-native.inquiry.1` | `09de122d23367442c85624c1ae7aa9c2b823915691ad0751c46706afcb31547e` | `skills/pipelines/shared/inquiry-boundary.md` |
-| R12 | skill | `tect:research-result` | `0.5.0-native.inquiry.1` | `c7056dc245ffab7f618342cd30a44162bbf681288d9fb2821d49e083754d12c2` | `skills/pipelines/research/methods/research-result.md` |
+| R12 | skill | `tect:research-result` | `0.5.1-native.inquiry.2` | `b0c7cadba1a2a2e20ce0bc8ff2f915bedab35017b2c437389a271d676a6d6864` | `skills/pipelines/research/methods/research-result.md` |

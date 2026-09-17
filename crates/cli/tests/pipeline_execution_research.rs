@@ -108,7 +108,7 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
     );
     assert_eq!(
         context["run"]["definition_digest"],
-        "d3425b463b589897cc4c66157fa8d1bfc05ef200f7593ca46e7e4f566073e612"
+        "7d9a817dbbd4560aca33f46522027cf2aefad483bf5837bb98b494d533f115af"
     );
     assert_eq!(
         context["definition"]["phases"].as_array().unwrap().len(),

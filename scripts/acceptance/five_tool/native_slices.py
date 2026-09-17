@@ -28,7 +28,7 @@ PIPELINE_DEFINITIONS = {
     "slice.debug-root-cause": ("0.4.0-native.skills.1", "ecd89aaae1265455b79b400f200a7f932a596dbd0c06700a90b0116f7aaeb2ac"),
     "slice.operational-preparation": ("0.4.0-native.skills.1", "db83e347ee7970d2122dc999ec6cefd8e2e88ac9e6a944e3be3fc1554cbc414a"),
     "slice.operational-execution": ("0.4.0-native.skills.1", "8a1be05166244cffae5456f476d9748051f4786f3c9c2f4744b1abace4facdb9"),
-    "slice.research": ("0.5.0-native.inquiry.1", "d3425b463b589897cc4c66157fa8d1bfc05ef200f7593ca46e7e4f566073e612"),
+    "slice.research": ("0.5.1-native.inquiry.2", "7d9a817dbbd4560aca33f46522027cf2aefad483bf5837bb98b494d533f115af"),
     "slice.deep-brainstorming": ("0.5.0-native.inquiry.1", "2b7071f75bd5c9d61815c443b550ab452f7eeff3490e9fe7fe3dd71fc90d3227"),
     "slice.custom-procedure-capture": ("0.4.0-native.skills.1", "b8bb5affd153f1642f120625f71fd6f0b0a1b5dd877f2e46cc0cb589f8153b8c"),
 }

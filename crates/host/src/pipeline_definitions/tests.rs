@@ -410,12 +410,17 @@ fn archived_snapshot_reads_validate_but_do_not_cover_updated_definition() {
 
 #[test]
 fn inquiry_definitions_package_exact_ordered_methods_and_delivery_modes() {
-    for (kind, expected_phases, terminal) in [
-        (PipelineKind::Research, 12, "R12"),
-        (PipelineKind::DeepBrainstorming, 10, "B10"),
+    for (kind, expected_version, expected_phases, terminal) in [
+        (PipelineKind::Research, "0.5.1-native.inquiry.2", 12, "R12"),
+        (
+            PipelineKind::DeepBrainstorming,
+            "0.5.0-native.inquiry.1",
+            10,
+            "B10",
+        ),
     ] {
         let definition = StaticPipelineDefinitions.definition(kind).unwrap();
-        assert_eq!(definition.version, "0.5.0-native.inquiry.1");
+        assert_eq!(definition.version, expected_version);
         assert_eq!(definition.phases.len(), expected_phases);
         assert_eq!(
             definition.default_mode,
@@ -532,6 +537,14 @@ fn research_contract_derives_all_phases_classifications_provenance_and_publicati
     }));
     let r09 = &definition.phases[8];
     assert_eq!(r09.id, "R09");
+    let sufficiency = &r09.skills[0].body;
+    assert!(sufficiency.contains("every required material target is supported or resolved"));
+    assert!(sufficiency.contains(
+        "classifying a required target as unresolved does not make the overall result ready"
+    ));
+    assert!(sufficiency.contains("specific authorized bounded read has useful information gain"));
+    assert!(sufficiency.contains("At the terminal decision"));
+    assert!(sufficiency.contains("immutable `allow_inconclusive` flag is true"));
     for (verdict, outcome) in [
         ("ready", tect_domain::PipelinePhaseOutcome::Completed),
         (
@@ -550,6 +563,11 @@ fn research_contract_derives_all_phases_classifications_provenance_and_publicati
         );
     }
     let r12 = &definition.phases[11];
+    assert!(
+        r12.skills[0]
+            .body
+            .contains("use the `inconclusive` verdict and `result_state=inconclusive`")
+    );
     for verdict in ["answered", "negative_result", "inconclusive"] {
         assert!(r12.verdict_routes.iter().any(|route| {
             route.verdict == verdict
@@ -586,6 +604,20 @@ fn research_contract_derives_all_phases_classifications_provenance_and_publicati
             "{phase_id} must preserve evidence provenance"
         );
     }
+}
+
+#[test]
+fn archived_research_inquiry_snapshot_preserves_initial_definition() {
+    let archived = load(
+        include_str!("../../pipeline-definitions/research-0.5.0-native.inquiry.1.json"),
+        PipelineKind::Research,
+    )
+    .unwrap();
+    assert_eq!(archived.version, "0.5.0-native.inquiry.1");
+    assert_eq!(
+        archived.digest,
+        "d3425b463b589897cc4c66157fa8d1bfc05ef200f7593ca46e7e4f566073e612"
+    );
 }
 
 #[test]
