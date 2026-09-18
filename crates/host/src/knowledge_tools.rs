@@ -61,7 +61,7 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<KnowledgeInvocation>
 }
 
 fn decode<T: for<'de> serde::Deserialize<'de>>(value: Value) -> Result<T> {
-    serde_json::from_value(value).map_err(|_| Error::InvalidArguments)
+    serde_json::from_value(value).map_err(Error::invalid_arguments_from)
 }
 
 fn reject_optional_nulls(value: &Value) -> Result<()> {

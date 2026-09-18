@@ -160,7 +160,7 @@ pub(crate) fn decode_public_call(name: &str, arguments: Value) -> Result<Interna
         "get_state" if empty_object(&arguments) => validate_internal("get_state", arguments),
         "query" | "command" | "execute" => {
             let routed: RoutedArguments =
-                serde_json::from_value(arguments).map_err(|_| Error::InvalidArguments)?;
+                serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
             if !routed.params.is_object() {
                 return Err(Error::InvalidArguments);
             }
@@ -190,7 +190,7 @@ pub(crate) fn parse_help(arguments: Value) -> Result<HelpRequest> {
         }
     }
     let args: HelpArguments =
-        serde_json::from_value(arguments).map_err(|_| Error::InvalidArguments)?;
+        serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
     if args.text.as_ref().is_some_and(|text| text.contains('\0'))
         || args
             .tool

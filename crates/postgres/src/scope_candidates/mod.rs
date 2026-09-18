@@ -2,6 +2,7 @@ mod begin;
 mod continuation;
 mod fragment;
 mod history;
+mod links;
 mod protected;
 mod resolve;
 mod save;

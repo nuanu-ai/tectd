@@ -199,7 +199,7 @@ mod tests {
         ] {
             assert!(matches!(
                 crate::knowledge_maintenance_tools::parse("knowledge_maintenance_observe", invalid),
-                Err(Error::InvalidArguments)
+                Err(Error::InvalidArguments | Error::InvalidArgumentsDetail(_))
             ));
         }
     }

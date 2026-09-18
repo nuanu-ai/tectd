@@ -352,7 +352,7 @@ async fn execute_program(
         ProgramInvocation::Save(changes) => service
             .save_program(context, &changes, &guidance, &guard)
             .await
-            .and_then(program_output::program),
+            .and_then(program_output::saved),
         ProgramInvocation::Record {
             program_id,
             request_id,

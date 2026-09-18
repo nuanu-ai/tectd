@@ -80,7 +80,7 @@ fn page_size() -> u32 {
 }
 
 fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T> {
-    serde_json::from_value(value).map_err(|_| Error::InvalidArguments)
+    serde_json::from_value(value).map_err(Error::invalid_arguments_from)
 }
 
 pub(crate) fn parse(name: &str, arguments: Value) -> Result<ProgramInvocation> {

@@ -26,6 +26,7 @@ mod pipeline_output;
 mod pipeline_tools;
 mod program_output;
 mod program_tools;
+mod response_diet;
 mod responses;
 mod scope_candidate_dispatch;
 mod scope_candidate_output;

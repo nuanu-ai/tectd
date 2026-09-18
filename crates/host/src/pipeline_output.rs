@@ -1,4 +1,4 @@
-use crate::responses;
+use crate::{response_diet, responses};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tect_domain::{
@@ -32,27 +32,48 @@ impl tect_application::PipelineExecutionOutputGuard for PipelineEncoding {
     }
 }
 
-pub(crate) fn begin(mut value: BeginPipelineRunOutcome, capacity: usize) -> Result<Value> {
-    let actions = actions(match &value {
-        BeginPipelineRunOutcome::Created(context) | BeginPipelineRunOutcome::Replay(context) => {
-            context
+/// How much of the run context a reply carries; see `response_diet`.
+#[derive(Clone)]
+struct Delivery {
+    reread: bool,
+    phase_map: Option<Value>,
+}
+
+impl Delivery {
+    fn reread(context: &PipelineRunContext) -> Self {
+        Self {
+            reread: true,
+            phase_map: Some(phase_map(context)),
         }
-    })?;
+    }
+
+    const fn mutation() -> Self {
+        Self {
+            reread: false,
+            phase_map: None,
+        }
+    }
+}
+
+pub(crate) fn begin(mut value: BeginPipelineRunOutcome, capacity: usize) -> Result<Value> {
     let context = match &mut value {
         BeginPipelineRunOutcome::Created(context) | BeginPipelineRunOutcome::Replay(context) => {
             context
         }
     };
+    let actions = actions(context)?;
+    let delivery = Delivery::reread(context);
     restrict_definition_delivery(context, true);
-    encode(value, actions, capacity)
+    encode(value, actions, capacity, Some(&delivery))
 }
 
 pub(crate) fn context(value: PipelineContextResponse, capacity: usize) -> Result<Value> {
     match value {
         PipelineContextResponse::Current(mut context) => {
             let actions = actions(&context)?;
+            let delivery = Delivery::reread(&context);
             restrict_definition_delivery(&mut context, true);
-            encode_context(*context, actions, capacity)
+            encode_context(*context, actions, capacity, &delivery)
         }
         PipelineContextResponse::Output(output) => {
             let mut actions = vec![responses::action(
@@ -60,24 +81,47 @@ pub(crate) fn context(value: PipelineContextResponse, capacity: usize) -> Result
                 json!({"run_id":output.run_id}),
             )?];
             crate::api::attach_route_contract(&mut actions[0])?;
-            encode(*output, actions, capacity)
+            encode(*output, actions, capacity, None)
         }
     }
 }
 
 pub(crate) fn mutation(mut value: PipelineMutationOutcome, capacity: usize) -> Result<Value> {
-    let actions = actions(&value.context)?;
+    let actions = without_route_contracts(actions(&value.context)?);
     restrict_definition_delivery(&mut value.context, false);
-    encode_mutation(value, actions, capacity)
+    encode_mutation(value, actions, capacity, &Delivery::mutation())
 }
 
 pub(crate) fn checkpoint_resolution(
     mut value: ResolvePipelineCheckpointOutcome,
     capacity: usize,
 ) -> Result<Value> {
-    let actions = actions(&value.context)?;
+    let actions = without_route_contracts(actions(&value.context)?);
     restrict_definition_delivery(&mut value.context, false);
-    encode(value, actions, capacity)
+    encode(value, actions, capacity, Some(&Delivery::mutation()))
+}
+
+/// Ordinal, id and title of every phase; replaces the legacy manifest overview.
+fn phase_map(context: &PipelineRunContext) -> Value {
+    Value::Array(
+        context
+            .definition
+            .phases
+            .iter()
+            .map(|phase| json!({"ordinal":phase.ordinal,"id":phase.id,"title":phase.title}))
+            .collect(),
+    )
+}
+
+/// Mutation replies repeat routes the agent has just used; their contracts stay
+/// available through begin, context and help.
+fn without_route_contracts(mut actions: Vec<Value>) -> Vec<Value> {
+    for action in &mut actions {
+        if let Some(object) = action.as_object_mut() {
+            object.remove("route_contract");
+        }
+    }
+    actions
 }
 
 fn restrict_definition_delivery(context: &mut PipelineRunContext, explicit_reread: bool) {
@@ -306,8 +350,18 @@ fn checkpoint_wait_actions(
     Ok(actions)
 }
 
-fn encode<T: Serialize>(value: T, actions: Vec<Value>, capacity: usize) -> Result<Value> {
-    let data = serde_json::to_value(value).map_err(|_| Error::TransportUnavailable)?;
+fn encode<T: Serialize>(
+    value: T,
+    actions: Vec<Value>,
+    capacity: usize,
+    delivery: Option<&Delivery>,
+) -> Result<Value> {
+    let mut data = serde_json::to_value(value).map_err(|_| Error::TransportUnavailable)?;
+    if let Some(delivery) = delivery
+        && let Some(context) = response_diet::pipeline_context_mut(&mut data)
+    {
+        response_diet::pipeline_context(context, delivery.reread, delivery.phase_map.clone());
+    }
     let result = responses::with_actions(data, actions, Some(0));
     if responses::encoded_len(&result)? > capacity {
         Err(Error::RequestTooLarge)
@@ -320,28 +374,30 @@ fn encode_context(
     mut value: PipelineRunContext,
     mut actions: Vec<Value>,
     capacity: usize,
+    delivery: &Delivery,
 ) -> Result<Value> {
-    if let Ok(result) = encode(value.clone(), actions.clone(), capacity) {
+    if let Ok(result) = encode(value.clone(), actions.clone(), capacity, Some(delivery)) {
         return Ok(result);
     }
     add_output_actions(&value, &mut actions)?;
     value.outputs.clear();
     value.outputs_complete = false;
-    encode(value, actions, capacity)
+    encode(value, actions, capacity, Some(delivery))
 }
 
 fn encode_mutation(
     mut value: PipelineMutationOutcome,
     mut actions: Vec<Value>,
     capacity: usize,
+    delivery: &Delivery,
 ) -> Result<Value> {
-    if let Ok(result) = encode(value.clone(), actions.clone(), capacity) {
+    if let Ok(result) = encode(value.clone(), actions.clone(), capacity, Some(delivery)) {
         return Ok(result);
     }
     add_output_actions(&value.context, &mut actions)?;
     value.context.outputs.clear();
     value.context.outputs_complete = false;
-    encode(value, actions, capacity)
+    encode(value, actions, capacity, Some(delivery))
 }
 
 fn add_output_actions(context: &PipelineRunContext, actions: &mut Vec<Value>) -> Result<()> {

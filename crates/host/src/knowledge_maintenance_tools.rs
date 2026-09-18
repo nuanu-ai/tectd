@@ -42,7 +42,7 @@ impl Validated for BeginKnowledgeMaintenanceChange {
 }
 
 fn checked<T: for<'de> serde::Deserialize<'de> + Validated>(value: Value) -> Result<T> {
-    let value = serde_json::from_value::<T>(value).map_err(|_| Error::InvalidArguments)?;
+    let value = serde_json::from_value::<T>(value).map_err(Error::invalid_arguments_from)?;
     value.validate_input()?;
     Ok(value)
 }
@@ -85,18 +85,18 @@ mod tests {
                 "knowledge_maintenance",
                 json!({"limit":25,"states":["pending","pending"]})
             ),
-            Err(Error::InvalidArguments)
+            Err(Error::InvalidArguments | Error::InvalidArgumentsDetail(_))
         ));
         assert!(matches!(
             parse("knowledge_maintenance", json!({"limit":25,"after":null})),
-            Err(Error::InvalidArguments)
+            Err(Error::InvalidArguments | Error::InvalidArgumentsDetail(_))
         ));
         assert!(matches!(
             parse(
                 "knowledge_maintenance",
                 json!({"limit":25,"sql":"select 1"})
             ),
-            Err(Error::InvalidArguments)
+            Err(Error::InvalidArguments | Error::InvalidArgumentsDetail(_))
         ));
     }
 }

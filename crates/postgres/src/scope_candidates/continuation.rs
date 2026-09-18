@@ -116,7 +116,9 @@ pub(super) fn candidate_delta(
                 .iter()
                 .any(|candidate| candidate.change_rationale.is_some())
         {
-            return Err(Error::InvalidArguments);
+            return Err(Error::invalid_arguments_from(
+                "the first draft takes no supersessions and no change_rationale",
+            ));
         }
         return Ok(CandidateDelta {
             added: candidates
@@ -130,7 +132,7 @@ pub(super) fn candidate_delta(
         });
     };
     let mut delta = CandidateDelta::default();
-    for (input, candidate) in draft.candidates.iter().zip(candidates) {
+    for (index, (input, candidate)) in draft.candidates.iter().zip(candidates).enumerate() {
         let old = previous
             .candidates
             .iter()
@@ -138,7 +140,9 @@ pub(super) fn candidate_delta(
         match old {
             None => {
                 if input.identity.local.is_none() || input.change_rationale.is_some() {
-                    return Err(Error::InvalidArguments);
+                    return Err(Error::invalid_arguments_from(format!(
+                        "candidates[{index}] is new: use a local label and no change_rationale"
+                    )));
                 }
                 delta.added.push(CandidateAdded {
                     candidate_id: candidate.id,
@@ -147,7 +151,10 @@ pub(super) fn candidate_delta(
             }
             Some(old) if old.revision == candidate.revision => {
                 if input.change_rationale.is_some() {
-                    return Err(Error::InvalidArguments);
+                    return Err(Error::invalid_arguments_from(format!(
+                        "candidates[{index}] is unchanged since revision {}; remove its change_rationale",
+                        old.revision
+                    )));
                 }
                 delta.unchanged.push(CandidateUnchanged {
                     candidate_id: candidate.id,
@@ -159,7 +166,12 @@ pub(super) fn candidate_delta(
                     .change_rationale
                     .as_ref()
                     .filter(|value| !value.trim().is_empty())
-                    .ok_or(Error::InvalidArguments)?;
+                    .ok_or_else(|| {
+                        Error::invalid_arguments_from(format!(
+                            "candidates[{index}] changed since revision {}; add change_rationale",
+                            old.revision
+                        ))
+                    })?;
                 delta.changed.push(CandidateChanged {
                     candidate_id: candidate.id,
                     from_revision: old.revision,
@@ -179,13 +191,22 @@ pub(super) fn candidate_delta(
         .filter(|candidate| !current_ids.contains(&candidate.id))
         .collect::<Vec<_>>();
     if omitted.len() != draft.supersessions.len() {
-        return Err(Error::InvalidArguments);
+        return Err(Error::invalid_arguments_from(format!(
+            "{} previous candidates are omitted but {} supersessions are supplied; supersede each omitted candidate once",
+            omitted.len(),
+            draft.supersessions.len()
+        )));
     }
     for supplied in &draft.supersessions {
         let prior = omitted
             .iter()
             .find(|candidate| candidate.id == supplied.candidate_id)
-            .ok_or(Error::InvalidArguments)?;
+            .ok_or_else(|| {
+                Error::invalid_arguments_from(format!(
+                    "supersession names candidate {}, which this draft does not omit",
+                    supplied.candidate_id
+                ))
+            })?;
         if supplied.revision != prior.revision {
             return Err(Error::StaleRevision);
         }

@@ -75,7 +75,7 @@ fn page_size() -> u32 {
     25
 }
 fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T> {
-    serde_json::from_value(value).map_err(|_| Error::InvalidArguments)
+    serde_json::from_value(value).map_err(Error::invalid_arguments_from)
 }
 fn reject_null(value: &Value, key: &str) -> Result<()> {
     if value.get(key).is_some_and(Value::is_null) {

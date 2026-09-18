@@ -265,6 +265,10 @@ fn try_failure_with_state(
         error_data["details"] =
             serde_json::to_value(diagnostic).map_err(|_| Error::InternalInvariant)?;
     }
+    if let Some(diagnostic) = error.argument_diagnostic() {
+        error_data["details"] =
+            serde_json::to_value(diagnostic).map_err(|_| Error::InternalInvariant)?;
+    }
     let data = with_actions(json!({"error":error_data}), actions, recommended);
     Ok(content(error_intro(&error), data, true))
 }
@@ -331,6 +335,9 @@ pub(crate) fn error_intro(error: &Error) -> &'static str {
         }
         Error::InvalidArguments => {
             "The arguments do not match the current tool schema. Read current state and use the live schema."
+        }
+        Error::InvalidArgumentsDetail(_) => {
+            "The arguments do not match the current tool schema; details.reason names the field. Correct that field and retry."
         }
         Error::InvalidPipelineArtifact(_) => {
             "A pipeline artifact failed its phase contract. Correct every reported violation and retry the supplied phase action."

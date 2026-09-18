@@ -85,7 +85,7 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<SliceInvocation> {
 }
 
 fn decode<T: for<'de> Deserialize<'de>>(arguments: Value) -> Result<T> {
-    serde_json::from_value(arguments).map_err(|_| Error::InvalidArguments)
+    serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)
 }
 
 fn empty_object(value: &Value) -> bool {

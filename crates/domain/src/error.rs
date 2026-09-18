@@ -43,7 +43,17 @@ pub enum Error {
     UnsupportedCompletionRequirement,
     KnowledgePayloadErased,
     InvalidPipelineArtifact(Box<PipelineArtifactDiagnostic>),
+    /// Tool arguments failed to deserialize; the reason names the offending field.
+    InvalidArgumentsDetail(Box<ArgumentDiagnostic>),
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArgumentDiagnostic {
+    pub reason: String,
+}
+
+/// Upper bound for a deserializer reason carried to the agent.
+const ARGUMENT_REASON_LIMIT: usize = 600;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PipelineArtifactViolation {
@@ -213,7 +223,29 @@ impl Error {
             Self::KnowledgePayloadErased => "knowledge_payload_erased",
             // Preserve the established MCP contract while returning the typed
             // artifact diagnostic in the structured error details.
-            Self::InvalidPipelineArtifact(_) => "invalid_arguments",
+            Self::InvalidPipelineArtifact(_) | Self::InvalidArgumentsDetail(_) => {
+                "invalid_arguments"
+            }
+        }
+    }
+
+    /// Invalid tool arguments with the deserializer's reason, which names the field.
+    pub fn invalid_arguments_from(reason: impl fmt::Display) -> Self {
+        let mut reason = reason.to_string();
+        if reason.len() > ARGUMENT_REASON_LIMIT {
+            let mut end = ARGUMENT_REASON_LIMIT;
+            while !reason.is_char_boundary(end) {
+                end -= 1;
+            }
+            reason.truncate(end);
+        }
+        Self::InvalidArgumentsDetail(Box::new(ArgumentDiagnostic { reason }))
+    }
+
+    pub fn argument_diagnostic(&self) -> Option<&ArgumentDiagnostic> {
+        match self {
+            Self::InvalidArgumentsDetail(diagnostic) => Some(diagnostic),
+            _ => None,
         }
     }
 

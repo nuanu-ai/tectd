@@ -6,7 +6,7 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<KnowledgeSearchQuery
         return Err(Error::InvalidArguments);
     }
     let query: KnowledgeSearchQuery =
-        serde_json::from_value(arguments).map_err(|_| Error::InvalidArguments)?;
+        serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
     query.validate()?;
     Ok(query)
 }

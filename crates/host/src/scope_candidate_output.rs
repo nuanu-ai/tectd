@@ -1,3 +1,4 @@
+use crate::response_diet;
 use crate::responses::{encoded_len, with_actions};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -13,9 +14,13 @@ pub(crate) fn begin(outcome: BeginCandidateSetOutcome, capacity: usize) -> Resul
         BeginCandidateSetOutcome::Replay(context) => ("replay", context),
         BeginCandidateSetOutcome::Existing(context) => ("existing", context),
     };
+    let mut value = json!({"disposition":disposition,"context":context});
+    if let Some(knowledge) = value.pointer_mut("/context/planning_knowledge") {
+        response_diet::planning_knowledge(knowledge);
+    }
     within(
         with_actions(
-            json!({"disposition":disposition,"context":context}),
+            value,
             vec![read_action(&context, CandidateContextView::Overview, None)?],
             Some(0),
         ),
@@ -23,7 +28,17 @@ pub(crate) fn begin(outcome: BeginCandidateSetOutcome, capacity: usize) -> Resul
     )
 }
 
+/// Refresh reply: the refreshed snapshot is delivered with its bodies.
 pub(crate) fn stored(stored: StoredCandidateContext, capacity: usize) -> Result<Value> {
+    stored_reply(stored, capacity, true)
+}
+
+/// Save, review and input replies: snapshot bodies came with the begin or context read.
+pub(crate) fn stored_mutation(stored: StoredCandidateContext, capacity: usize) -> Result<Value> {
+    stored_reply(stored, capacity, false)
+}
+
+fn stored_reply(stored: StoredCandidateContext, capacity: usize, bodies: bool) -> Result<Value> {
     let latest_review = stored.reviews.last().cloned();
     let actions = if !stored.context.stale_reasons.is_empty() {
         vec![refresh_action(&stored.context)?]
@@ -41,14 +56,12 @@ pub(crate) fn stored(stored: StoredCandidateContext, capacity: usize) -> Result<
         }
         actions
     };
-    within(
-        with_actions(
-            json!({"context":stored.context,"draft":stored.draft,"latest_review":latest_review}),
-            actions,
-            Some(0),
-        ),
-        capacity,
-    )
+    let mut value =
+        json!({"context":stored.context,"draft":stored.draft,"latest_review":latest_review});
+    if let Some(context) = value.get_mut("context") {
+        response_diet::planning_context(context, bodies);
+    }
+    within(with_actions(value, actions, Some(0)), capacity)
 }
 
 pub(crate) fn page(mut page: CandidateContextPage, after: i64, capacity: usize) -> Result<Value> {
@@ -58,7 +71,11 @@ pub(crate) fn page(mut page: CandidateContextPage, after: i64, capacity: usize) 
             page.next_after = Some(after + page.items.len() as i64);
         }
         let (actions, recommended) = page_actions(&page)?;
-        let value = with_actions(json!(&page), actions, recommended);
+        let mut data = json!(&page);
+        if let Some(knowledge) = data.pointer_mut("/context/planning_knowledge") {
+            response_diet::planning_knowledge(knowledge);
+        }
+        let value = with_actions(data, actions, recommended);
         if encoded_len(&value)? <= capacity {
             return Ok(value);
         }
@@ -258,7 +275,7 @@ fn draft_action(context: &CandidateContext) -> Result<Value> {
         "save_candidate_set",
         params,
         "input",
-        json!({"fields":[{"path":"arguments.params.draft","format":"Complete schema-valid candidate draft. Reuse backend IDs and revisions; include change_rationale for changed candidates and an explicit supersession for every omitted ordinary candidate. Temporary local labels exist only inside this payload; durable UUIDs come from the backend reply."}]}),
+        json!({"fields":[{"path":"arguments.params.draft","format":"Complete schema-valid candidate draft. Reuse backend IDs and revisions; include change_rationale only for changed candidates, never for new or unchanged ones, and an explicit supersession for every omitted ordinary candidate. Each goal is covered by exactly one candidate: list a goal only in the coverage_goals of the candidate its resolution names. Temporary local labels exist only inside this payload; durable UUIDs come from the backend reply."}]}),
     )
 }
 

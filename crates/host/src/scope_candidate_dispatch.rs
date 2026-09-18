@@ -65,15 +65,15 @@ pub(crate) async fn execute(
         ScopeCandidateInvocation::SaveDraft(request) => service
             .save_candidate_draft(context, &request, &guidance, &guard)
             .await
-            .and_then(|stored| scope_candidate_output::stored(stored, capacity)),
+            .and_then(|stored| scope_candidate_output::stored_mutation(stored, capacity)),
         ScopeCandidateInvocation::Review(request) => service
             .review_candidate_set(context, &request, &guidance, &guard)
             .await
-            .and_then(|stored| scope_candidate_output::stored(stored, capacity)),
+            .and_then(|stored| scope_candidate_output::stored_mutation(stored, capacity)),
         ScopeCandidateInvocation::RecordInput(request) => service
             .record_candidate_input(context, &request, &guard)
             .await
-            .and_then(|stored| scope_candidate_output::stored(stored, capacity)),
+            .and_then(|stored| scope_candidate_output::stored_mutation(stored, capacity)),
         ScopeCandidateInvocation::Refresh(request) => service
             .refresh_candidate_set(context, &request, &guidance, &guard)
             .await

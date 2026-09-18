@@ -157,7 +157,7 @@ fn page(args: PageArguments, view: CandidateContextView) -> Result<ScopeCandidat
 }
 
 fn decode<T: for<'de> Deserialize<'de>>(arguments: Value) -> Result<T> {
-    serde_json::from_value(arguments).map_err(|_| Error::InvalidArguments)
+    serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)
 }
 
 fn reject_optional_nulls(value: &Value) -> Result<()> {
@@ -236,16 +236,20 @@ mod tests {
             json!({"candidate_set_id":id,"view":"reviews"}),
         ] {
             assert_eq!(
-                parse("candidate_context", invalid).err(),
-                Some(Error::InvalidArguments)
+                parse("candidate_context", invalid)
+                    .err()
+                    .map(|error| error.code()),
+                Some("invalid_arguments")
             );
         }
         let review = json!({"kind":"review","candidate_set_id":id,"revision":2,
             "snapshot_id":id,"input_cursor":1,"request_id":id,"review":{"revision":3,
                 "verdict":"ready","summary":"reviewed","findings":[],"candidate_decisions":[]}});
         assert_eq!(
-            parse("save_candidate_set", review).err(),
-            Some(Error::InvalidArguments)
+            parse("save_candidate_set", review)
+                .err()
+                .map(|error| error.code()),
+            Some("invalid_arguments")
         );
     }
 

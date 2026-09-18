@@ -1,6 +1,6 @@
 use crate::storage_error;
 use sqlx::{Postgres, Transaction};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use tect_domain::{
     BlockerEntity, CandidateBoundary, CandidateDraft, CandidateEntity, CandidateRef,
     CoverageGoalEntity, CoverageResolutionEntity, CoverageResolutionKind, DraftIdentity, Error,
@@ -14,6 +14,21 @@ pub(super) enum Kind {
     Evidence,
     Candidate,
     Blocker,
+}
+
+impl Kind {
+    const fn noun(self) -> &'static str {
+        match self {
+            Self::Goal => "goal",
+            Self::Evidence => "evidence",
+            Self::Candidate => "candidate",
+            Self::Blocker => "blocker",
+        }
+    }
+}
+
+fn reason(text: String) -> Error {
+    Error::invalid_arguments_from(text)
 }
 
 pub(super) struct Source {
@@ -97,6 +112,10 @@ pub(super) async fn resolve(
         Kind::Blocker,
         draft.blockers.iter().map(|v| &v.identity),
     )?;
+    let labels: super::links::Labels = handles
+        .iter()
+        .map(|(local, (_, id))| (*id, local.clone()))
+        .collect();
     let old_goals = old_map(previous.map(|v| v.goals.as_slice()), |v| (v.id, v.revision));
     let old_evidence = old_map(previous.map(|v| v.evidence.as_slice()), |v| {
         (v.id, v.revision)
@@ -135,25 +154,44 @@ pub(super) async fn resolve(
         .goals
         .iter()
         .zip(&goal_ids)
-        .map(|(goal, (id, revision))| {
-            let source = sources
-                .get(&goal.source_ref_id)
-                .ok_or(Error::InvalidArguments)?;
+        .enumerate()
+        .map(|(index, (goal, (id, revision)))| {
+            let source = sources.get(&goal.source_ref_id).ok_or_else(|| {
+                reason(format!(
+                    "goals[{index}].source_ref_id is not a source of this candidate set"
+                ))
+            })?;
             let expected = match draft.boundary {
                 CandidateBoundary::Finite => "program_success",
                 CandidateBoundary::Ongoing => "planning_input",
             };
-            if source.snapshot_id != context.snapshot_id
-                || source.kind != expected
-                || source
-                    .input_sequence
-                    .is_some_and(|sequence| sequence > context.latest_input)
-                || goal
-                    .exact_quote
-                    .as_ref()
-                    .is_some_and(|quote| !source.body.contains(quote))
+            if source.snapshot_id != context.snapshot_id {
+                return Err(reason(format!(
+                    "goals[{index}] cites a source from another snapshot"
+                )));
+            }
+            if source.kind != expected {
+                return Err(reason(format!(
+                    "goals[{index}] must cite the {expected} source, not {}",
+                    source.kind
+                )));
+            }
+            if source
+                .input_sequence
+                .is_some_and(|sequence| sequence > context.latest_input)
             {
-                return Err(Error::InvalidArguments);
+                return Err(reason(format!(
+                    "goals[{index}] cites input newer than this candidate set"
+                )));
+            }
+            if goal
+                .exact_quote
+                .as_ref()
+                .is_some_and(|quote| !source.body.contains(quote))
+            {
+                return Err(reason(format!(
+                    "goals[{index}].exact_quote is not verbatim in its source; copy it exactly or omit it"
+                )));
             }
             let kind = goal.resolution.kind;
             let target = match kind {
@@ -191,21 +229,33 @@ pub(super) async fn resolve(
         .evidence
         .iter()
         .zip(&evidence_ids)
-        .map(|(value, (id, revision))| {
-            let source = sources
-                .get(&value.source_ref_id)
-                .ok_or(Error::InvalidArguments)?;
-            if source.snapshot_id != context.snapshot_id
-                || value.authority_input_sequence.is_some_and(|sequence| {
-                    sequence < 1
-                        || sequence > context.latest_input
-                        || source.kind != "planning_input"
-                        || source.input_sequence != Some(sequence)
-                })
-                || value.kind == EvidenceKind::AcceptedWork
-                    && value.authority_input_sequence.is_none()
+        .enumerate()
+        .map(|(index, (value, (id, revision)))| {
+            let source = sources.get(&value.source_ref_id).ok_or_else(|| {
+                reason(format!(
+                    "evidence[{index}].source_ref_id is not a source of this candidate set"
+                ))
+            })?;
+            if source.snapshot_id != context.snapshot_id {
+                return Err(reason(format!(
+                    "evidence[{index}] cites a source from another snapshot"
+                )));
+            }
+            if value.authority_input_sequence.is_some_and(|sequence| {
+                sequence < 1
+                    || sequence > context.latest_input
+                    || source.kind != "planning_input"
+                    || source.input_sequence != Some(sequence)
+            }) {
+                return Err(reason(format!(
+                    "evidence[{index}].authority_input_sequence must equal the input sequence of its planning_input source"
+                )));
+            }
+            if value.kind == EvidenceKind::AcceptedWork && value.authority_input_sequence.is_none()
             {
-                return Err(Error::InvalidArguments);
+                return Err(reason(format!(
+                    "evidence[{index}] of kind accepted_work needs authority_input_sequence"
+                )));
             }
             Ok(EvidenceEntity {
                 id: *id,
@@ -227,7 +277,9 @@ pub(super) async fn resolve(
                 .get(&value.source_ref_id)
                 .is_none_or(|source| source.snapshot_id != context.snapshot_id)
             {
-                return Err(Error::InvalidArguments);
+                return Err(reason(
+                    "a blocker cites a source that is not in this snapshot".into(),
+                ));
             }
             Ok(BlockerEntity {
                 id: *id,
@@ -255,7 +307,7 @@ pub(super) async fn resolve(
         })
         .collect::<Result<Vec<_>>>()?;
     super::continuation::stabilize_candidates(&mut candidates, previous)?;
-    validate_candidate_links(&goals, &candidates)?;
+    super::links::validate_candidate_links(&goals, &candidates, &labels)?;
     let protected_changes = super::protected::resolve_protected_changes(
         previous,
         draft,
@@ -266,13 +318,15 @@ pub(super) async fn resolve(
         &evidence,
         &candidates,
     )?;
-    validate_acyclic(&candidates)?;
+    super::links::validate_acyclic(&candidates, &labels)?;
     if draft.empty_disposition.as_ref().is_some_and(|value| {
         sources
             .get(&value.source_ref_id)
             .is_none_or(|source| source.snapshot_id != context.snapshot_id)
     }) {
-        return Err(Error::InvalidArguments);
+        return Err(reason(
+            "empty_disposition cites a source that is not in this snapshot".into(),
+        ));
     }
     let delta = super::continuation::candidate_delta(
         draft,
@@ -305,7 +359,9 @@ fn allocate<'a>(
                 .insert(local.clone(), (kind, Uuid::new_v4()))
                 .is_some()
         {
-            return Err(Error::InvalidArguments);
+            return Err(reason(format!(
+                "local label `{local}` is used by more than one draft entity"
+            )));
         }
     }
     Ok(())
@@ -332,12 +388,26 @@ fn entity_ids<T>(
             let identity = identity(value);
             if let Some(local) = &identity.local {
                 let (actual_kind, id) = handles.get(local).ok_or(Error::InvalidArguments)?;
-                return (*actual_kind == kind)
-                    .then_some((*id, 1))
-                    .ok_or(Error::InvalidArguments);
+                return (*actual_kind == kind).then_some((*id, 1)).ok_or_else(|| {
+                    reason(format!(
+                        "local label `{local}` names a {}, not a {}",
+                        actual_kind.noun(),
+                        kind.noun()
+                    ))
+                });
             }
-            let id = identity.id.ok_or(Error::InvalidArguments)?;
-            let revision = old.get(&id).copied().ok_or(Error::InvalidArguments)?;
+            let id = identity.id.ok_or_else(|| {
+                reason(format!(
+                    "a {} identity needs a local label or an id",
+                    kind.noun()
+                ))
+            })?;
+            let revision = old.get(&id).copied().ok_or_else(|| {
+                reason(format!(
+                    "{} id {id} is not in the previous revision; new entities use local labels",
+                    kind.noun()
+                ))
+            })?;
             if identity.revision != Some(revision) {
                 return Err(Error::StaleRevision);
             }
@@ -353,16 +423,34 @@ pub(super) fn resolve_ref(
     ids: &[(Uuid, i64)],
 ) -> Result<Uuid> {
     if let Some(local) = &value.local {
-        let (actual, id) = handles.get(local).ok_or(Error::InvalidArguments)?;
-        return (*actual == kind)
-            .then_some(*id)
-            .ok_or(Error::InvalidArguments);
+        let (actual, id) = handles.get(local).ok_or_else(|| {
+            reason(format!(
+                "reference `{local}` is not a local label declared in this draft"
+            ))
+        })?;
+        return (*actual == kind).then_some(*id).ok_or_else(|| {
+            reason(format!(
+                "reference `{local}` names a {}, where a {} is required",
+                actual.noun(),
+                kind.noun()
+            ))
+        });
     }
-    let id = value.id.ok_or(Error::InvalidArguments)?;
+    let id = value.id.ok_or_else(|| {
+        reason(format!(
+            "a {} reference needs a local label or an id",
+            kind.noun()
+        ))
+    })?;
     ids.iter()
         .any(|(candidate, _)| *candidate == id)
         .then_some(id)
-        .ok_or(Error::InvalidArguments)
+        .ok_or_else(|| {
+            reason(format!(
+                "reference {id} is not a {} of this draft",
+                kind.noun()
+            ))
+        })
 }
 
 fn candidate(
@@ -400,65 +488,4 @@ fn candidate(
             .map(|v| resolve_ref(v, handles, Kind::Evidence, evidence))
             .collect::<Result<_>>()?,
     })
-}
-
-fn validate_candidate_links(
-    goals: &[CoverageGoalEntity],
-    candidates: &[CandidateEntity],
-) -> Result<()> {
-    for goal in goals {
-        if goal.resolution.kind == CoverageResolutionKind::Candidate {
-            let candidate = candidates
-                .iter()
-                .find(|value| value.id == goal.resolution.id)
-                .ok_or(Error::InvalidArguments)?;
-            if !candidate.coverage_goal_ids.contains(&goal.id) {
-                return Err(Error::InvalidArguments);
-            }
-        }
-    }
-    for candidate in candidates {
-        for goal_id in &candidate.coverage_goal_ids {
-            let goal = goals
-                .iter()
-                .find(|value| value.id == *goal_id)
-                .ok_or(Error::InvalidArguments)?;
-            if goal.resolution.kind != CoverageResolutionKind::Candidate
-                || goal.resolution.id != candidate.id
-            {
-                return Err(Error::InvalidArguments);
-            }
-        }
-    }
-    Ok(())
-}
-
-fn validate_acyclic(candidates: &[CandidateEntity]) -> Result<()> {
-    let mut remaining: BTreeMap<_, BTreeSet<_>> = candidates
-        .iter()
-        .map(|value| (value.id, value.dependencies.iter().copied().collect()))
-        .collect();
-    loop {
-        let ready: Vec<_> = remaining
-            .iter()
-            .filter(|(_, deps)| deps.is_empty())
-            .map(|(id, _)| *id)
-            .collect();
-        if ready.is_empty() {
-            break;
-        }
-        for id in &ready {
-            remaining.remove(id);
-        }
-        for deps in remaining.values_mut() {
-            for id in &ready {
-                deps.remove(id);
-            }
-        }
-    }
-    if remaining.is_empty() {
-        Ok(())
-    } else {
-        Err(Error::InvalidArguments)
-    }
 }

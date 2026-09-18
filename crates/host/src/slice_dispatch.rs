@@ -72,19 +72,21 @@ pub(crate) async fn execute(
                     context.planning.clone()
                 }
             };
-            output(value, candidate_actions(&context)?)
+            let mut value = output(value, candidate_actions(&context)?)?;
+            crate::response_diet::outcome_planning(&mut value, "planning", true);
+            Ok(value)
         }
-        SliceInvocation::SaveDraft(request) => candidate_context(
+        SliceInvocation::SaveDraft(request) => candidate_mutation(
             service
                 .save_slice_candidate_draft(context, &request, &guidance, &guard)
                 .await?,
         ),
-        SliceInvocation::Review(request) => candidate_context(
+        SliceInvocation::Review(request) => candidate_mutation(
             service
                 .review_slice_candidate_set(context, &request, &guidance, &guard)
                 .await?,
         ),
-        SliceInvocation::RecordInput(request) => candidate_context(
+        SliceInvocation::RecordInput(request) => candidate_mutation(
             service
                 .record_slice_candidate_input(context, &request)
                 .await?,
@@ -129,7 +131,9 @@ pub(crate) async fn execute(
                 | RecordSliceResultOutcome::Replay { context, .. } => context,
             };
             let actions = candidate_actions(planning)?;
-            output(value, actions)
+            let mut value = output(value, actions)?;
+            crate::response_diet::outcome_planning(&mut value, "context", false);
+            Ok(value)
         }
     }
 }
@@ -164,9 +168,21 @@ fn pipeline_begin_action(slice: &tect_domain::NativeSlice) -> Result<Value> {
     )
 }
 
+/// Refresh reply and output guard: the snapshot is delivered with its bodies.
 fn candidate_context(value: SliceCandidateContext) -> Result<Value> {
+    candidate_reply(value, true)
+}
+
+/// Save, review and input replies: snapshot bodies came with scope.open or context.
+fn candidate_mutation(value: SliceCandidateContext) -> Result<Value> {
+    candidate_reply(value, false)
+}
+
+fn candidate_reply(value: SliceCandidateContext, bodies: bool) -> Result<Value> {
     let actions = candidate_actions(&value)?;
-    output(value, actions)
+    let mut value = output(value, actions)?;
+    crate::response_diet::planning_context(&mut value, bodies);
+    Ok(value)
 }
 
 fn candidate_page(
@@ -178,7 +194,7 @@ fn candidate_page(
     let offset = usize::try_from(query.after.unwrap_or(0))
         .map_err(|_| tect_domain::Error::InvalidArguments)?;
     let limit = query.limit as usize;
-    let common = json!({
+    let mut common = json!({
         "view":query.view,
         "scope":context.scope,
         "candidate_set":context.candidate_set,
@@ -187,6 +203,7 @@ fn candidate_page(
         "stale_reasons":context.stale_reasons,
         "planning_knowledge":context.planning_knowledge,
     });
+    crate::response_diet::planning_context(&mut common, true);
     let value = match query.view {
         SliceCandidateContextView::Overview => common,
         SliceCandidateContextView::Inputs => page(common, context.inputs, offset, limit)?,

@@ -135,6 +135,16 @@ pub(crate) fn program(program: Program) -> Result<Value> {
     Ok(with_actions(json!({"program":program}), actions, Some(0)))
 }
 
+/// Save reply: state and identities; the agent already holds the fields it submitted.
+pub(crate) fn saved(program: Program) -> Result<Value> {
+    let actions = program_actions(&program, None, None)?;
+    let mut value = json!({"program":program});
+    if let Some(program) = value.get_mut("program") {
+        crate::response_diet::saved_program(program);
+    }
+    Ok(with_actions(value, actions, Some(0)))
+}
+
 fn page_value(page: &ProgramPage) -> Result<Value> {
     let delivered = page
         .inputs

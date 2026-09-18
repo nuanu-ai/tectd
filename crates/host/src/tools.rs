@@ -47,14 +47,14 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
         "get_state" if empty_object(&arguments) => Ok(Invocation::GetState),
         "register_source" => {
             let arguments = serde_json::from_value::<RegisterSourceArguments>(arguments)
-                .map_err(|_| Error::InvalidArguments)?;
+                .map_err(Error::invalid_arguments_from)?;
             Ok(Invocation::RegisterSource {
                 path: arguments.path,
             })
         }
         "select_worktrees" => {
             let arguments = serde_json::from_value::<SelectWorktreesArguments>(arguments)
-                .map_err(|_| Error::InvalidArguments)?;
+                .map_err(Error::invalid_arguments_from)?;
             Ok(Invocation::SelectWorktrees {
                 worktree_ids: arguments.worktree_ids,
             })
@@ -64,7 +64,7 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
                 return Err(Error::InvalidArguments);
             }
             let arguments = serde_json::from_value::<ListSourcesArguments>(arguments)
-                .map_err(|_| Error::InvalidArguments)?;
+                .map_err(Error::invalid_arguments_from)?;
             Ok(Invocation::ListSources {
                 after: arguments.after,
                 limit: arguments.limit,
@@ -200,16 +200,16 @@ mod tests {
         ] {
             assert!(matches!(
                 parse_invocation("register_source", invalid),
-                Err(Error::InvalidArguments)
+                Err(Error::InvalidArguments | Error::InvalidArgumentsDetail(_))
             ));
         }
         assert!(matches!(
             parse_invocation("list_sources", json!({"after": null, "limit": 25})),
-            Err(Error::InvalidArguments)
+            Err(Error::InvalidArguments | Error::InvalidArgumentsDetail(_))
         ));
         assert!(matches!(
             parse_invocation("list_sources", json!({"limit": 1.5})),
-            Err(Error::InvalidArguments)
+            Err(Error::InvalidArguments | Error::InvalidArgumentsDetail(_))
         ));
     }
 }

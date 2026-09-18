@@ -13,38 +13,46 @@ impl ScopeCandidateDraft {
             || self.protected_changes.len() > 100
             || self.supersessions.len() > 100
         {
-            return Err(Error::InvalidArguments);
+            return Err(invalid("a draft list exceeds 100 items"));
         }
         let mut protected = BTreeSet::new();
-        for change in &self.protected_changes {
+        for (index, change) in self.protected_changes.iter().enumerate() {
             if change.accepted_evidence_id.is_nil()
                 || change.prior_candidate_id.is_some_and(|id| id.is_nil())
                 || change.authority_source_ref_id.is_nil()
                 || !protected.insert((change.accepted_evidence_id, change.prior_candidate_id))
             {
-                return Err(Error::InvalidArguments);
+                return Err(invalid(format!(
+                    "protected_changes[{index}] has a nil id or repeats an accepted evidence change"
+                )));
             }
-            required(&change.rationale)?;
+            required(&change.rationale, "protected_changes.rationale")?;
             match change.disposition {
                 ProtectedChangeDisposition::Delete
                     if change.replacement_evidence.is_some()
                         || change.target_candidate.is_some() =>
                 {
-                    return Err(Error::InvalidArguments);
+                    return Err(invalid(format!(
+                        "protected_changes[{index}]: delete takes no replacement_evidence or target_candidate"
+                    )));
                 }
                 ProtectedChangeDisposition::Replace
                     if change.replacement_evidence.is_none()
                         || change.prior_candidate_id.is_some()
                             != change.target_candidate.is_some() =>
                 {
-                    return Err(Error::InvalidArguments);
+                    return Err(invalid(format!(
+                        "protected_changes[{index}]: replace needs replacement_evidence, and target_candidate exactly when prior_candidate_id is set"
+                    )));
                 }
                 ProtectedChangeDisposition::Reassociate
                     if change.prior_candidate_id.is_none()
                         || change.replacement_evidence.is_some()
                         || change.target_candidate.is_none() =>
                 {
-                    return Err(Error::InvalidArguments);
+                    return Err(invalid(format!(
+                        "protected_changes[{index}]: reassociate needs prior_candidate_id and target_candidate and no replacement_evidence"
+                    )));
                 }
                 _ => {}
             }
@@ -68,50 +76,61 @@ impl ScopeCandidateDraft {
             if let Some(local) = &identity.local
                 && !handles.insert(local)
             {
-                return Err(Error::InvalidArguments);
+                return Err(invalid(format!(
+                    "local label `{local}` is used by more than one draft entity"
+                )));
             }
         }
-        for goal in &self.goals {
-            required(&goal.text)?;
+        for (index, goal) in self.goals.iter().enumerate() {
+            required(&goal.text, "goals.text")?;
             if goal.source_ref_id.is_nil() {
-                return Err(Error::InvalidArguments);
+                return Err(invalid(format!("goals[{index}].source_ref_id is nil")));
             }
             goal.resolution.reference.validate()?;
         }
-        for blocker in &self.blockers {
-            required(&blocker.summary)?;
+        for (index, blocker) in self.blockers.iter().enumerate() {
+            required(&blocker.summary, "blockers.summary")?;
             if blocker.source_ref_id.is_nil() {
-                return Err(Error::InvalidArguments);
+                return Err(invalid(format!("blockers[{index}].source_ref_id is nil")));
             }
         }
-        for evidence in &self.evidence {
-            required(&evidence.summary)?;
+        for (index, evidence) in self.evidence.iter().enumerate() {
+            required(&evidence.summary, "evidence.summary")?;
             if evidence.source_ref_id.is_nil()
                 || evidence.kind == EvidenceKind::AcceptedWork
                     && evidence.authority_input_sequence.is_none()
             {
-                return Err(Error::InvalidArguments);
+                return Err(invalid(format!(
+                    "evidence[{index}] needs a source_ref_id, and accepted_work needs authority_input_sequence"
+                )));
             }
         }
-        for candidate in &self.candidates {
-            for text in [
-                &candidate.title,
-                &candidate.outcome,
-                &candidate.trigger,
-                &candidate.delivered_behavior,
-                &candidate.proof,
+        for (index, candidate) in self.candidates.iter().enumerate() {
+            for (text, field) in [
+                (&candidate.title, "candidates.title"),
+                (&candidate.outcome, "candidates.outcome"),
+                (&candidate.trigger, "candidates.trigger"),
+                (
+                    &candidate.delivered_behavior,
+                    "candidates.delivered_behavior",
+                ),
+                (&candidate.proof, "candidates.proof"),
             ] {
-                required(text)?;
+                required(text, field)?;
             }
             if candidate.coverage_goals.is_empty() {
-                return Err(Error::InvalidArguments);
+                return Err(invalid(format!(
+                    "candidates[{index}].coverage_goals is empty"
+                )));
             }
             if candidate
                 .change_rationale
                 .as_ref()
-                .is_some_and(|value| required(value).is_err())
+                .is_some_and(|value| required(value, "candidates.change_rationale").is_err())
             {
-                return Err(Error::InvalidArguments);
+                return Err(invalid(format!(
+                    "candidates[{index}].change_rationale is blank; omit it or explain the change"
+                )));
             }
             for reference in candidate
                 .dependencies
@@ -123,27 +142,33 @@ impl ScopeCandidateDraft {
             }
         }
         let mut superseded = BTreeSet::new();
-        for value in &self.supersessions {
+        for (index, value) in self.supersessions.iter().enumerate() {
             if value.candidate_id.is_nil()
                 || value.revision < 1
                 || !superseded.insert(value.candidate_id)
             {
-                return Err(Error::InvalidArguments);
+                return Err(invalid(format!(
+                    "supersessions[{index}] has a nil or repeated candidate_id or a revision below 1"
+                )));
             }
-            required(&value.reason)?;
+            required(&value.reason, "supersessions.reason")?;
             for replacement in &value.replacements {
                 replacement.validate()?;
             }
         }
         if self.boundary == CandidateBoundary::Finite && self.goals.is_empty() {
-            return Err(Error::InvalidArguments);
+            return Err(invalid("a finite boundary needs at least one goal"));
         }
         match (&self.empty_disposition, self.candidates.is_empty()) {
-            (None, true) | (Some(_), false) => return Err(Error::InvalidArguments),
+            (None, true) | (Some(_), false) => {
+                return Err(invalid(
+                    "empty_disposition is required exactly when candidates is empty",
+                ));
+            }
             (Some(disposition), true) => {
-                required(&disposition.reason)?;
+                required(&disposition.reason, "empty_disposition.reason")?;
                 if disposition.source_ref_id.is_nil() {
-                    return Err(Error::InvalidArguments);
+                    return Err(invalid("empty_disposition.source_ref_id is nil"));
                 }
                 match disposition.kind {
                     EmptyCandidateDispositionKind::AllCovered
@@ -155,7 +180,9 @@ impl ScopeCandidateDraft {
                                 goal.resolution.kind != CoverageResolutionKind::Evidence
                             }) =>
                     {
-                        return Err(Error::InvalidArguments);
+                        return Err(invalid(
+                            "all_covered needs goals and evidence, no blockers or pending question, and every goal resolved by evidence",
+                        ));
                     }
                     EmptyCandidateDispositionKind::NeedsInput
                         if self
@@ -163,7 +190,7 @@ impl ScopeCandidateDraft {
                             .as_ref()
                             .is_none_or(|question| question.trim().is_empty()) =>
                     {
-                        return Err(Error::InvalidArguments);
+                        return Err(invalid("needs_input needs a pending_question"));
                     }
                     _ => {}
                 }
@@ -174,10 +201,14 @@ impl ScopeCandidateDraft {
     }
 }
 
-fn required(value: &str) -> Result<()> {
+fn required(value: &str, field: &str) -> Result<()> {
     if value.trim().is_empty() || value.contains('\0') {
-        Err(Error::InvalidArguments)
+        Err(invalid(format!("{field} is blank or contains NUL")))
     } else {
         Ok(())
     }
+}
+
+fn invalid(reason: impl std::fmt::Display) -> Error {
+    Error::invalid_arguments_from(reason)
 }
