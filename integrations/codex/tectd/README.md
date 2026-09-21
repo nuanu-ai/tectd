@@ -78,8 +78,9 @@ managed pipeline persistence. These are
 source contracts; final gates, native Codex acceptance, package publication and
 desktop installation remain separate evidence and are not claimed here.
 
-Tool results carry a short introduction and one JSON content block with data and
-exact next actions, without duplicate structured content. The enrolled host remains
+Tool results carry a short introduction, a JSON text block at `content[1]` with data
+and exact next actions, and a third text block with the package-owned response rules,
+without duplicate `structuredContent`. The enrolled host remains
 the credential trust boundary; this is not a per-session secret scheme.
 
 For direct Codex configuration use server key `tectd`, the packaged `sh ./run.sh`

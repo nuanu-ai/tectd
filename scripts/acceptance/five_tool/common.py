@@ -156,9 +156,9 @@ def raw_tool_result(app: Rpc, thread_id: str, tool: str, arguments: dict[str, An
 def tool_result(app: Rpc, thread_id: str, tool: str, arguments: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     result = raw_tool_result(app, thread_id, tool, arguments)
     content = result.get("content", [])
-    if len(content) < 2 or content[-1].get("type") != "text":
+    if len(content) < 2 or content[1].get("type") != "text":
         raise AssertionError("tool result lacks the canonical JSON text block")
-    return json.loads(content[-1]["text"]), bool(result.get("isError"))
+    return json.loads(content[1]["text"]), bool(result.get("isError"))
 
 
 def command_overrides(package: pathlib.Path, launcher: pathlib.Path, socket: pathlib.Path, host_config: pathlib.Path, workspace: str) -> list[str]:

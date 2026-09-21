@@ -15,7 +15,7 @@ import tempfile
 import uuid
 from typing import Any
 
-from common import Proof, Rpc, RpcError, command_overrides, initialize, raw_tool_result, sha256_file, sha256_json, start_thread, tool_result
+from common import Proof, Rpc, RpcError, command_overrides, initialize, sha256_file, sha256_json, start_thread, tool_result
 from fixture import Fixture
 import native_slices
 import scope_candidates as scope
@@ -215,19 +215,13 @@ def rejected_route(app: Rpc, thread_id: str, tool: str, arguments: dict[str, Any
 
 def rejected_legacy_tool(app: Rpc, thread_id: str, tool: str) -> tuple[bool, Any]:
     try:
-        result = raw_tool_result(app, thread_id, tool, {})
+        payload, failed = tool_result(app, thread_id, tool, {})
     except RpcError as error:
         code = error.error.get("code")
         message = str(error.error.get("message", "")).lower()
         return code == -32602 and ("unknown tool" in message or "not found" in message), {"rpc_code": code, "message": message[:240]}
-    if result.get("isError") is not True:
-        return False, {"is_error": result.get("isError")}
-    content = result.get("content", [])
-    texts = [item.get("text", "") for item in content if item.get("type") == "text"]
-    try:
-        payload = json.loads(texts[-1])
-    except (IndexError, json.JSONDecodeError):
-        return False, {"is_error": True, "canonical_payload": False}
+    if not failed:
+        return False, {"is_error": failed}
     code = payload.get("error", {}).get("code")
     return code == "invalid_arguments", {"is_error": True, "code": code}
 

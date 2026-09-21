@@ -17,11 +17,18 @@ pub fn tool_payload(response: &Value) -> Value {
     let result = &response["result"];
     assert!(result.get("structuredContent").is_none(), "{response}");
     let content = result["content"].as_array().expect("tool content array");
-    assert_eq!(content.len(), 2, "{response}");
+    assert_eq!(content.len(), 3, "{response}");
     assert_eq!(content[0]["type"], "text", "{response}");
     let intro = content[0]["text"].as_str().expect("fixed tool intro");
     assert!(!intro.is_empty() && intro.len() <= 2_000, "{response}");
     assert_eq!(content[1]["type"], "text", "{response}");
+    assert_eq!(content[2]["type"], "text", "{response}");
+    assert!(
+        content[2]["text"]
+            .as_str()
+            .unwrap()
+            .contains("TECTD RESPONSE RULES")
+    );
     let payload: Value =
         serde_json::from_str(content[1]["text"].as_str().expect("JSON tool payload"))
             .expect("content[1] must contain one JSON object");

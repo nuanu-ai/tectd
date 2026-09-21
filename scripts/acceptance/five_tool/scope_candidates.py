@@ -16,10 +16,10 @@ def _canonical_payload(result: Any) -> tuple[dict[str, Any], bool]:
     if not isinstance(result, dict):
         raise AssertionError("model MCP call has no typed result object")
     content = result.get("content")
-    if not isinstance(content, list) or len(content) < 2 or content[-1].get("type") != "text":
+    if not isinstance(content, list) or len(content) < 2 or content[1].get("type") != "text":
         raise AssertionError("model MCP call lacks the canonical JSON text block")
     try:
-        payload = json.loads(content[-1]["text"])
+        payload = json.loads(content[1]["text"])
     except (KeyError, TypeError, json.JSONDecodeError) as error:
         raise AssertionError("model MCP call has invalid canonical JSON") from error
     if not isinstance(payload, dict):

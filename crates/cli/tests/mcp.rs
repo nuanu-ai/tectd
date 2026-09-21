@@ -19,11 +19,18 @@ fn payload(response: &Value) -> Value {
         "{response}"
     );
     let content = response["result"]["content"].as_array().unwrap();
-    assert_eq!(content.len(), 2, "{response}");
+    assert_eq!(content.len(), 3, "{response}");
     assert_eq!(content[0]["type"], "text");
     let intro = content[0]["text"].as_str().unwrap();
     assert!(!intro.is_empty() && intro.len() <= 2_000);
     assert_eq!(content[1]["type"], "text");
+    assert_eq!(content[2]["type"], "text");
+    assert!(
+        content[2]["text"]
+            .as_str()
+            .unwrap()
+            .contains("TECTD RESPONSE RULES")
+    );
     serde_json::from_str(content[1]["text"].as_str().unwrap()).unwrap()
 }
 

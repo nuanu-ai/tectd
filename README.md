@@ -80,8 +80,9 @@ aliases to their canonical paths before configuring private files and sockets.
 
 The MCP bridge uses the [MCP lifecycle](https://modelcontextprotocol.io/specification/2025-03-26/basic/lifecycle)
 and [tool results](https://modelcontextprotocol.io/specification/2025-06-18/server/tools).
-Every tool result contains a fixed introductory text block and one JSON text block
-with data, exact `actions` and a `recommended_action` index (or null). It omits
+Every tool result contains an introductory text block, a JSON text block at
+`content[1]` with data, exact `actions` and a `recommended_action` index (or null),
+and a third text block with the package-owned response rules. It omits
 `structuredContent` to avoid repeating the JSON. Only the introductory prose has
 the 2000-token budget; data and a requested skill body are separate.
 Protocol discovery accepts standard MCP metadata, including Codex's

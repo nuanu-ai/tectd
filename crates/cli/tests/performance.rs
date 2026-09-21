@@ -356,8 +356,14 @@ fn decode_payload(response: &Value) -> Result<Value, String> {
         .get("content")
         .and_then(Value::as_array)
         .ok_or_else(|| "missing_tool_content".to_owned())?;
-    if content.len() != 2 || content.iter().any(|item| item["type"] != "text") {
+    if content.len() != 3 || content.iter().any(|item| item["type"] != "text") {
         return Err("invalid_tool_content_shape".to_owned());
+    }
+    if !content[2]["text"]
+        .as_str()
+        .is_some_and(|text| text.contains("TECTD RESPONSE RULES"))
+    {
+        return Err("missing_response_rules".to_owned());
     }
     let intro = content[0]["text"]
         .as_str()
