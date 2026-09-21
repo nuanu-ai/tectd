@@ -127,7 +127,7 @@ async fn operational_preparation_builds_safe_handoff_without_executing() {
             forbidden_effect
         )
         .await["error"]["code"],
-        "invalid_arguments"
+        "INVALID_OUTPUT"
     );
     assert_non_coding_definition(&context, "slice.operational-preparation");
     let mut first = completion(&context, verdict, outcome, transition, None, None);
