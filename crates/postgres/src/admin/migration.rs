@@ -7,6 +7,13 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
     validate_runtime_role(pool, runtime_role).await?;
 
     let mut transaction = pool.begin().await.map_err(storage_error)?;
+    sqlx::query(
+        "SELECT pg_catalog.pg_advisory_xact_lock(\
+             pg_catalog.hashtextextended('tect-admin-runtime-grants', 0))",
+    )
+    .execute(&mut *transaction)
+    .await
+    .map_err(storage_error)?;
     let statements = [
         format!("GRANT USAGE ON SCHEMA public TO {quoted_role}"),
         format!("REVOKE ALL PRIVILEGES ON TABLE tenants, principals, hosts FROM {quoted_role}"),
