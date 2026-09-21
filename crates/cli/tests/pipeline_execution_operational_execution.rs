@@ -156,7 +156,7 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
             missing_authority
         )
         .await["error"]["code"],
-        "invalid_arguments"
+        "INVALID_OUTPUT"
     );
     let mut authority = completion(
         &context,
