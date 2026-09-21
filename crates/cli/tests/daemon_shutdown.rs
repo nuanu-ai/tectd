@@ -15,7 +15,7 @@ async fn start(runtime_url: &str, socket: &Path) -> Child {
         .env("TECT_SOCKET", socket)
         .kill_on_drop(true);
     let mut child = command.spawn().unwrap();
-    for _ in 0..100 {
+    for _ in 0..400 {
         if socket.exists() {
             return child;
         }
