@@ -23,14 +23,14 @@ PIPELINE_MODES = {
     "slice.custom-procedure-capture": ("whole", ["whole", "phasewise"], 17),
 }
 PIPELINE_DEFINITIONS = {
-    "slice.lightweight-tdd-development": ("0.6.0-native.engineering.1", "7a74a02b059ad6a5e74174153407a0b7551a7a669bf64fb325645a8ed0044608"),
-    "slice.full-design-to-execution": ("0.6.0-native.engineering.1", "09f4c903a417537c6059cbccd73b9faafe8f91ee536e43034a883a81d818d7fd"),
-    "slice.debug-root-cause": ("0.4.0-native.skills.1", "ecd89aaae1265455b79b400f200a7f932a596dbd0c06700a90b0116f7aaeb2ac"),
-    "slice.operational-preparation": ("0.4.0-native.skills.1", "db83e347ee7970d2122dc999ec6cefd8e2e88ac9e6a944e3be3fc1554cbc414a"),
-    "slice.operational-execution": ("0.4.0-native.skills.1", "8a1be05166244cffae5456f476d9748051f4786f3c9c2f4744b1abace4facdb9"),
+    "slice.lightweight-tdd-development": ("0.6.0-native.engineering.2", "bef9f376f187b985684005b075275a072625f1c08125991062bb38c47ac884b1"),
+    "slice.full-design-to-execution": ("0.6.0-native.engineering.2", "1274c531dfd433bf01e6b2354adcd0082c906749e1c8e34a158604f77e77a9a5"),
+    "slice.debug-root-cause": ("0.4.0-native.skills.2", "afb0f21932a11eceb8e3aba01d3d07ec9f74160203085391f7de1758118a6574"),
+    "slice.operational-preparation": ("0.4.0-native.skills.2", "6dcf48ec7712fcc3a9dc1f40c83c2337313bfadb33cbfdbe5d76b71da455d2b4"),
+    "slice.operational-execution": ("0.4.0-native.skills.2", "47046a703413f6e3048c6923b87dae6ceb0bbecb3c9e0f9d60ca614562267e79"),
     "slice.research": ("0.5.1-native.inquiry.2", "7d9a817dbbd4560aca33f46522027cf2aefad483bf5837bb98b494d533f115af"),
     "slice.deep-brainstorming": ("0.5.0-native.inquiry.1", "2b7071f75bd5c9d61815c443b550ab452f7eeff3490e9fe7fe3dd71fc90d3227"),
-    "slice.custom-procedure-capture": ("0.4.0-native.skills.1", "b8bb5affd153f1642f120625f71fd6f0b0a1b5dd877f2e46cc0cb589f8153b8c"),
+    "slice.custom-procedure-capture": ("0.4.0-native.skills.2", "1e439fa7521bcd607949ae7856672f2e718320b383c7af2bfb61cc9a39481a2f"),
 }
 RULES = {
     "vertical-provable-slices", "no-unrequested-or-unauthorized-work",

@@ -1,6 +1,79 @@
 use super::*;
 
 #[test]
+fn embedded_definition_inventory_is_exact() {
+    let provider = StaticPipelineDefinitions;
+    for (kind, version, digest) in [
+        (
+            PipelineKind::LightweightTddDevelopment,
+            "0.6.0-native.engineering.2",
+            "bef9f376f187b985684005b075275a072625f1c08125991062bb38c47ac884b1",
+        ),
+        (
+            PipelineKind::FullDesignToExecution,
+            "0.6.0-native.engineering.2",
+            "1274c531dfd433bf01e6b2354adcd0082c906749e1c8e34a158604f77e77a9a5",
+        ),
+        (
+            PipelineKind::DebugRootCause,
+            "0.4.0-native.skills.2",
+            "afb0f21932a11eceb8e3aba01d3d07ec9f74160203085391f7de1758118a6574",
+        ),
+        (
+            PipelineKind::OperationalPreparation,
+            "0.4.0-native.skills.2",
+            "6dcf48ec7712fcc3a9dc1f40c83c2337313bfadb33cbfdbe5d76b71da455d2b4",
+        ),
+        (
+            PipelineKind::OperationalExecution,
+            "0.4.0-native.skills.2",
+            "47046a703413f6e3048c6923b87dae6ceb0bbecb3c9e0f9d60ca614562267e79",
+        ),
+        (
+            PipelineKind::ResearchToDurableKnowledge,
+            "0.4.0-native.skills.2",
+            "2bd0c1c0d9403066936d7c73f44dd139a3829a31efe16fe0e653cd1dcf6c4631",
+        ),
+        (
+            PipelineKind::Research,
+            "0.5.1-native.inquiry.2",
+            "7d9a817dbbd4560aca33f46522027cf2aefad483bf5837bb98b494d533f115af",
+        ),
+        (
+            PipelineKind::DeepBrainstorming,
+            "0.5.0-native.inquiry.1",
+            "2b7071f75bd5c9d61815c443b550ab452f7eeff3490e9fe7fe3dd71fc90d3227",
+        ),
+        (
+            PipelineKind::CustomProcedureCapture,
+            "0.4.0-native.skills.2",
+            "1e439fa7521bcd607949ae7856672f2e718320b383c7af2bfb61cc9a39481a2f",
+        ),
+    ] {
+        let definition = provider.definition(kind).unwrap();
+        assert_eq!(definition.version, version, "{}", kind.as_str());
+        assert_eq!(definition.digest, digest, "{}", kind.as_str());
+    }
+
+    for (version, digest) in [
+        (
+            "0.7.0-native.k1k5",
+            "7f5dd6a4503078538d45d0c90c83fdcd896ff1216167556ff9bd0424f826aab0",
+        ),
+        (
+            "0.7.1-native.k1k5",
+            "93df97f4cb4458a18411b76005b29025a56234dc47650e4147ac5fdab3d30d89",
+        ),
+    ] {
+        let definition = provider
+            .definition_for(PipelineKind::LightweightTddDevelopment, Some(version))
+            .unwrap();
+        assert_eq!(definition.version, version);
+        assert_eq!(definition.digest, digest);
+    }
+}
+
+#[test]
 fn lightweight_v07_is_immutable_compact_and_traceable() {
     let definition = lightweight_v07().expect("v0.7 definition loads");
     definition.validate().expect("v0.7 definition validates");
@@ -511,7 +584,7 @@ fn explicit_definition_selection_keeps_v06_default_and_exposes_v07_k1k5() {
     let explicit_legacy = provider
         .definition_for(
             PipelineKind::LightweightTddDevelopment,
-            Some("0.6.0-native.engineering.1"),
+            Some("0.6.0-native.engineering.2"),
         )
         .unwrap();
     assert_eq!(explicit_legacy.version, legacy.version);
@@ -663,7 +736,7 @@ fn research_definition_is_complete_and_defaults_to_phasewise() {
         .definition(PipelineKind::ResearchToDurableKnowledge)
         .unwrap();
     assert_eq!(definition.phases.len(), 22);
-    assert_eq!(definition.version, "0.4.0-native.skills.1");
+    assert_eq!(definition.version, "0.4.0-native.skills.2");
     assert_eq!(definition.allowed_modes.len(), 2);
     assert_eq!(
         definition.default_mode,
@@ -689,7 +762,7 @@ fn procedure_capture_definition_is_complete_and_defaults_to_whole() {
         .definition(PipelineKind::CustomProcedureCapture)
         .unwrap();
     assert_eq!(definition.phases.len(), 17);
-    assert_eq!(definition.version, "0.4.0-native.skills.1");
+    assert_eq!(definition.version, "0.4.0-native.skills.2");
     assert_eq!(definition.allowed_modes.len(), 2);
     assert_eq!(
         definition.default_mode,

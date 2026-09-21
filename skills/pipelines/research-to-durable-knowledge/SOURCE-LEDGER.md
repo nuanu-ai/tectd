@@ -70,7 +70,7 @@ Backend run/attempt/revision, exact artifact binding, skill-read receipts, typed
 
 - Update class: selected upstream bodies only; native phase order and output contracts are unchanged.
 - Previous active snapshot: `crates/host/pipeline-definitions/research-to-durable-knowledge-0.2.0-native.dk2.1.json`, version `0.2.0-native.dk2.1`, semantic digest `dcbfce20667d3c72157278df5948829fb212a7a8fca24dde8cdec4fca07467e3`, physical SHA-256 `8df9d96c5e973bfc234e0e3de8a87e9dc62804eb69161d35d69b674d5bbb3b06`.
-- Current snapshot: `crates/host/pipeline-definitions/research-to-durable-knowledge.json`, version `0.4.0-native.skills.1`, semantic digest `374987b7516fe57c4de4282ace1a0fd80712e0bcac664ee08057ab340fc0b8ce`, physical SHA-256 `c454f774641337cb790ef9fa8c52e0908909865b3ece7259e5c2b947f0190317`.
+- Current snapshot: `crates/host/pipeline-definitions/research-to-durable-knowledge.json`, version `0.4.0-native.skills.2`, semantic digest `2bd0c1c0d9403066936d7c73f44dd139a3829a31efe16fe0e653cd1dcf6c4631`, physical SHA-256 `83b9f690adb323cbec7b0c715ab2dcb6dbef14d9fc9e5e77b21ff83116a2f885`.
 - Exact selected source package: `skills/references/superpowers-v6.3.0-b36e0829`, upstream commit `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`, tag `v6.3.0`, package manifest SHA-256 `2973ac33ed683d9c50e15fab14a5045f768b6b765d29849237f95371d99b5dde`, MIT license SHA-256 `a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400`.
 
 ### Selected body replacements

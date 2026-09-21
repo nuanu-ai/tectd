@@ -158,7 +158,7 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     assert_eq!(context["run"]["delivery_mode"], "phasewise");
     assert_eq!(
         context["run"]["definition_digest"],
-        "09f4c903a417537c6059cbccd73b9faafe8f91ee536e43034a883a81d818d7fd"
+        "1274c531dfd433bf01e6b2354adcd0082c906749e1c8e34a158604f77e77a9a5"
     );
     assert_eq!(context["definition"]["phases"].as_array().unwrap().len(), 1);
     assert_eq!(context["delivered_phases"].as_array().unwrap().len(), 1);
@@ -1165,7 +1165,7 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     assert_eq!(completed["context"]["run"]["status"], "completed");
     assert_eq!(
         completed["result"]["pipeline_definition_digest"],
-        "09f4c903a417537c6059cbccd73b9faafe8f91ee536e43034a883a81d818d7fd"
+        "1274c531dfd433bf01e6b2354adcd0082c906749e1c8e34a158604f77e77a9a5"
     );
     assert_eq!(
         completed["context"]["attempts"].as_array().unwrap().len(),

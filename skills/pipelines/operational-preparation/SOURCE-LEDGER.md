@@ -50,7 +50,7 @@ Execution authority creates a separate Operational Execution Slice. Implementati
 
 - Update class: selected upstream bodies only; native phase order and output contracts are unchanged.
 - Previous active snapshot: `crates/host/pipeline-definitions/operational-preparation-0.1.0-native.1.json`, version `0.1.0-native.1`, semantic digest `dbe2313ec9b8ccb06768edc330c92d91520c0d5fb61aaa3717a2e0daa2202d30`, physical SHA-256 `bfb00041921d1e0bdc37fe588ebf1f7a056285ead17c390cc93d9f4dab49ce14`.
-- Current snapshot: `crates/host/pipeline-definitions/operational-preparation.json`, version `0.4.0-native.skills.1`, semantic digest `db83e347ee7970d2122dc999ec6cefd8e2e88ac9e6a944e3be3fc1554cbc414a`, physical SHA-256 `0542c1d07f594503fe8c152ce1c3098acb2c4b4424a018b41646e076b03eaa8d`.
+- Current snapshot: `crates/host/pipeline-definitions/operational-preparation.json`, version `0.4.0-native.skills.2`, semantic digest `6dcf48ec7712fcc3a9dc1f40c83c2337313bfadb33cbfdbe5d76b71da455d2b4`, physical SHA-256 `3d2de6b46733bbf7595fe4a0acf55e68e116a4e713dd134b75b8cdd1f53ddb87`.
 - Exact selected source package: `skills/references/superpowers-v6.3.0-b36e0829`, upstream commit `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`, tag `v6.3.0`, package manifest SHA-256 `2973ac33ed683d9c50e15fab14a5045f768b6b765d29849237f95371d99b5dde`, MIT license SHA-256 `a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400`.
 
 ### Selected body replacements

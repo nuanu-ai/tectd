@@ -65,7 +65,7 @@ The backend validates body/skill/resource hashes, complete reads, typed fields, 
 
 - Update class: selected upstream bodies only; native phase order and output contracts are unchanged.
 - Previous active snapshot: `crates/host/pipeline-definitions/debug-root-cause-0.1.0-native.1.json`, version `0.1.0-native.1`, semantic digest `4bdb3a67d910784007d0dd9c52f6112dddc24c7c317e512a6ec6bd441f347457`, physical SHA-256 `d258b543f16637eec9192e7600052bff7fdc062e17a234211a3b77ea868a8010`.
-- Current snapshot: `crates/host/pipeline-definitions/debug-root-cause.json`, version `0.4.0-native.skills.1`, semantic digest `ecd89aaae1265455b79b400f200a7f932a596dbd0c06700a90b0116f7aaeb2ac`, physical SHA-256 `3d9f5d513358c0b5069f27972a96180db15c2e9035c91ef3324cab8067ba99c2`.
+- Current snapshot: `crates/host/pipeline-definitions/debug-root-cause.json`, version `0.4.0-native.skills.2`, semantic digest `afb0f21932a11eceb8e3aba01d3d07ec9f74160203085391f7de1758118a6574`, physical SHA-256 `117974a003bd91aa1db41aeb3691ad0f31e6d9899f5563789195c5d74b82228b`.
 - Exact selected source package: `skills/references/superpowers-v6.3.0-b36e0829`, upstream commit `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`, tag `v6.3.0`, package manifest SHA-256 `2973ac33ed683d9c50e15fab14a5045f768b6b765d29849237f95371d99b5dde`, MIT license SHA-256 `a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400`.
 
 ### Selected body replacements

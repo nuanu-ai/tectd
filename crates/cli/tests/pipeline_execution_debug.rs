@@ -102,7 +102,7 @@ async fn debug_pipeline_preserves_diagnosis_and_composes_fix_as_future_slice() {
     assert_eq!(context["run"]["delivery_mode"], "whole");
     assert_eq!(
         context["run"]["definition_digest"],
-        "ecd89aaae1265455b79b400f200a7f932a596dbd0c06700a90b0116f7aaeb2ac"
+        "afb0f21932a11eceb8e3aba01d3d07ec9f74160203085391f7de1758118a6574"
     );
     assert_eq!(
         context["definition"]["phases"].as_array().unwrap().len(),

@@ -108,7 +108,7 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
     assert_eq!(context["run"]["delivery_mode"], "phasewise");
     assert_eq!(
         context["run"]["definition_digest"],
-        "8a1be05166244cffae5456f476d9748051f4786f3c9c2f4744b1abace4facdb9"
+        "47046a703413f6e3048c6923b87dae6ceb0bbecb3c9e0f9d60ca614562267e79"
     );
     assert_eq!(context["definition"]["phases"].as_array().unwrap().len(), 1);
 

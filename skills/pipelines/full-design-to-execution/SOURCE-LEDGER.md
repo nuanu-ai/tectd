@@ -77,7 +77,7 @@ Phase 19 preserves the union of the selected body and manifest maintenance contr
 
 - Update class: selected upstream bodies only; native phase order and output contracts are unchanged.
 - Previous active snapshot: `crates/host/pipeline-definitions/full-design-to-execution-0.1.0-native.1.json`, version `0.1.0-native.1`, semantic digest `5e4fd372ee9c07c720732f444056a32a512171c202c2d2c53af74f81568a98c7`, physical SHA-256 `5ad905f9153b780b2f6303fa3214b1a23f72471902bf0f1acc71397076891919`.
-- Current snapshot: `crates/host/pipeline-definitions/full-design-to-execution.json`, version `0.4.0-native.skills.1`, semantic digest `13fd152337abc76d7bbfa15c0875d7b6fbe4719ccfd6fadab5f31825cd39769b`, physical SHA-256 `eb36e20697b38204a5a10261f5454e854538b6c719213f9d9b6be0303663bab1`.
+- Current snapshot: `crates/host/pipeline-definitions/full-design-to-execution.json`, version `0.6.0-native.engineering.2`, semantic digest `1274c531dfd433bf01e6b2354adcd0082c906749e1c8e34a158604f77e77a9a5`, physical SHA-256 `f08130bdf758bce57c52c69c1af865dfe8c069c69beff6bee2373113195db9e2`.
 - Exact selected source package: `skills/references/superpowers-v6.3.0-b36e0829`, upstream commit `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`, tag `v6.3.0`, package manifest SHA-256 `2973ac33ed683d9c50e15fab14a5045f768b6b765d29849237f95371d99b5dde`, MIT license SHA-256 `a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400`.
 
 ### Selected body replacements

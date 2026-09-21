@@ -65,7 +65,7 @@ The top-level definition digest is lowercase SHA256 of the `serde_json` serializ
 
 - Update class: selected upstream bodies only; native phase order and output contracts are unchanged.
 - Previous active snapshot: `crates/host/pipeline-definitions/lightweight-tdd-0.1.0-native.1.json`, version `0.1.0-native.1`, semantic digest `5a5152233000b741f6364666a539917395a72cfa8e592271a96216ec2e69c40a`, physical SHA-256 `a844609332cfd35943cf77599b1140eba5a4102a8e15afc57136dd33c350bb1c`.
-- Current snapshot: `crates/host/pipeline-definitions/lightweight-tdd.json`, version `0.4.0-native.skills.1`, semantic digest `b80b3472ebf4acc38996fa1946a2fe76e1b17fbcc39c6594f87a00e63a437768`, physical SHA-256 `66983d90c2fc8f17f91cec02a29dcd3bc382c2967f683a7392dc1378561fb921`.
+- Current snapshot: `crates/host/pipeline-definitions/lightweight-tdd.json`, version `0.6.0-native.engineering.2`, semantic digest `bef9f376f187b985684005b075275a072625f1c08125991062bb38c47ac884b1`, physical SHA-256 `bc7968632aba4aefe6ec39b516dfc362d6db7c0025847a1070f2fc31300122e3`.
 - Exact selected source package: `skills/references/superpowers-v6.3.0-b36e0829`, upstream commit `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`, tag `v6.3.0`, package manifest SHA-256 `2973ac33ed683d9c50e15fab14a5045f768b6b765d29849237f95371d99b5dde`, MIT license SHA-256 `a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400`.
 
 ### Selected body replacements

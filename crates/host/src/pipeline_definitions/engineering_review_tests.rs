@@ -125,7 +125,7 @@ fn engineering_gate_instructions_and_active_ordinals_are_exact() {
         ),
     ] {
         let definition = StaticPipelineDefinitions.definition(kind).unwrap();
-        assert_eq!(definition.version, "0.6.0-native.engineering.1");
+        assert_eq!(definition.version, "0.6.0-native.engineering.2");
         let phase = definition
             .phases
             .iter()

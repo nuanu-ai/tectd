@@ -96,7 +96,7 @@ async fn operational_preparation_builds_safe_handoff_without_executing() {
     assert_eq!(context["run"]["delivery_mode"], "whole");
     assert_eq!(
         context["run"]["definition_digest"],
-        "db83e347ee7970d2122dc999ec6cefd8e2e88ac9e6a944e3be3fc1554cbc414a"
+        "6dcf48ec7712fcc3a9dc1f40c83c2337313bfadb33cbfdbe5d76b71da455d2b4"
     );
     assert_eq!(
         context["definition"]["phases"].as_array().unwrap().len(),

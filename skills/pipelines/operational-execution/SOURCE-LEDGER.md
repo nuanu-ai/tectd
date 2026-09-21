@@ -56,7 +56,7 @@ Backend run/attempt/revision, output binding, replay and stale-on-revisit state 
 
 - Update class: selected upstream bodies only; native phase order and output contracts are unchanged.
 - Previous active snapshot: `crates/host/pipeline-definitions/operational-execution-0.1.0-native.1.json`, version `0.1.0-native.1`, semantic digest `5c56887c41cfe9b6cae3309101059b4d643bb47e3db56ceb7d7ec80ae7214882`, physical SHA-256 `be7b7d7583b3288301ea0522cbd647a439e961ac825446ce5abdcbb15a96821d`.
-- Current snapshot: `crates/host/pipeline-definitions/operational-execution.json`, version `0.4.0-native.skills.1`, semantic digest `8a1be05166244cffae5456f476d9748051f4786f3c9c2f4744b1abace4facdb9`, physical SHA-256 `be3e6e5d2ae29e84b1bf3e1818b50e7587f5128b4c5686a153538898361facbb`.
+- Current snapshot: `crates/host/pipeline-definitions/operational-execution.json`, version `0.4.0-native.skills.2`, semantic digest `47046a703413f6e3048c6923b87dae6ceb0bbecb3c9c2f4744b1abace4facdb9`, physical SHA-256 `de5530d1e8b16b5b1710622b4a0d3f27c2c3962c2898db6b5dc91c690f7f7609`.
 - Exact selected source package: `skills/references/superpowers-v6.3.0-b36e0829`, upstream commit `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`, tag `v6.3.0`, package manifest SHA-256 `2973ac33ed683d9c50e15fab14a5045f768b6b765d29849237f95371d99b5dde`, MIT license SHA-256 `a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400`.
 
 ### Selected body replacements

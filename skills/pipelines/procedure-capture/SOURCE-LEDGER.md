@@ -65,7 +65,7 @@ The native definition passed direct `tect_domain::PipelineDefinitionSnapshot` de
 
 - Update class: selected upstream bodies only; native phase order and output contracts are unchanged.
 - Previous active snapshot: `crates/host/pipeline-definitions/procedure-capture-0.2.0-native.dk2.1.json`, version `0.2.0-native.dk2.1`, semantic digest `3c89a8ccc9f4f932946da4494b97aeadaaf1199c38371fa85fb0516ed5ff817f`, physical SHA-256 `a7efc016eed71d14aef218535fb77c537b8b7076b97ec4ba65676feda2ab302e`.
-- Current snapshot: `crates/host/pipeline-definitions/procedure-capture.json`, version `0.4.0-native.skills.1`, semantic digest `b8bb5affd153f1642f120625f71fd6f0b0a1b5dd877f2e46cc0cb589f8153b8c`, physical SHA-256 `1625e8951c19abd5b28032c5d8482bce8dfe745c5155d985b1ca0ad6b807b968`.
+- Current snapshot: `crates/host/pipeline-definitions/procedure-capture.json`, version `0.4.0-native.skills.2`, semantic digest `1e439fa7521bcd607949ae7856672f2e718320b383c7af2bfb61cc9a39481a2f`, physical SHA-256 `4aa607d76be9e7d5b25999583edc87f8b286925bfc3bfc7b46ee4d70c95b403d`.
 - Exact selected source package: `skills/references/superpowers-v6.3.0-b36e0829`, upstream commit `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`, tag `v6.3.0`, package manifest SHA-256 `2973ac33ed683d9c50e15fab14a5045f768b6b765d29849237f95371d99b5dde`, MIT license SHA-256 `a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400`.
 
 ### Selected body replacements
