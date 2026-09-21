@@ -9,6 +9,8 @@ import os
 from pathlib import Path
 import shutil
 
+from package_modes import normalize_package_tree
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -23,7 +25,7 @@ def main() -> None:
     if output.exists():
         parser.error("--output must not already exist")
     template = Path(__file__).resolve().parents[1] / "integrations/codex/tectd"
-    output.mkdir(parents=True, exist_ok=False)
+    output.mkdir(parents=True, exist_ok=False, mode=0o700)
     package = output / "tectd"
     shutil.copytree(template, package)
     (package / "bin").mkdir()
@@ -39,6 +41,7 @@ def main() -> None:
         "installation_performed": False,
     }
     (output / "package-proof.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    normalize_package_tree(output, root_mode=0o700)
     print(package)
 
 

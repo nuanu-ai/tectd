@@ -21,10 +21,15 @@ async fn main() {
 async fn run() -> tect_domain::Result<()> {
     let socket = required_absolute_socket()?;
     let database_url = required_env("TECT_DATABASE_URL")?;
+    let max_connections = database_max_connections(
+        std::env::var("TECT_DATABASE_MAX_CONNECTIONS")
+            .ok()
+            .as_deref(),
+    )?;
     validate_socket_parent(&socket)?;
     reject_existing_path(&socket)?;
 
-    let store = Arc::new(PgStore::connect(&database_url, 16).await?);
+    let store = Arc::new(PgStore::connect(&database_url, max_connections).await?);
     let mut service = WorkspaceService::new(
         store,
         Arc::new(tect_host::GitSourceInspector),
@@ -67,13 +72,35 @@ async fn run() -> tect_domain::Result<()> {
             if let Some(worker) = &knowledge_worker { worker.abort(); }
             result.map_err(|_| Error::TransportUnavailable)?
         }
-        signal = tokio::signal::ctrl_c() => {
-            signal.map_err(|_| Error::TransportUnavailable)?;
+        signal = shutdown_signal() => {
+            signal?;
             server.abort();
             if let Some(worker) = &knowledge_worker { worker.abort(); }
             let _ = server.await;
             Ok(())
         }
+    }
+}
+
+fn database_max_connections(value: Option<&str>) -> tect_domain::Result<u32> {
+    match value {
+        None => Ok(16),
+        Some(value) => value
+            .parse::<u32>()
+            .ok()
+            .filter(|value| (1..=64).contains(value))
+            .ok_or(Error::InvalidConfiguration),
+    }
+}
+
+async fn shutdown_signal() -> tect_domain::Result<()> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut interrupt = signal(SignalKind::interrupt()).map_err(|_| Error::TransportUnavailable)?;
+    let mut terminate = signal(SignalKind::terminate()).map_err(|_| Error::TransportUnavailable)?;
+    tokio::select! {
+        value = interrupt.recv() => value.ok_or(Error::TransportUnavailable),
+        value = terminate.recv() => value.ok_or(Error::TransportUnavailable),
     }
 }
 
@@ -171,5 +198,23 @@ impl SocketGuard {
 impl Drop for SocketGuard {
     fn drop(&mut self) {
         self.remove_if_owned();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn database_pool_default_and_bounds_are_stable() {
+        assert_eq!(database_max_connections(None), Ok(16));
+        assert_eq!(database_max_connections(Some("1")), Ok(1));
+        assert_eq!(database_max_connections(Some("64")), Ok(64));
+        for invalid in ["", "0", "65", "-1", "1.0", " 16", "16 "] {
+            assert_eq!(
+                database_max_connections(Some(invalid)),
+                Err(Error::InvalidConfiguration)
+            );
+        }
     }
 }

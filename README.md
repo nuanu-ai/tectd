@@ -58,10 +58,29 @@ For an existing host, `tect-admin grant-setup-root --host-id UUID --setup-root /
 adds one canonical root without changing its identity, credential or source roots.
 Concurrent additions preserve both roots; repeating an existing grant is harmless.
 The generated host credential file must remain private and must not be printed.
+For an externally assigned tenant and host identity, operators can instead run
+`tect-admin ensure-tenant --tenant UUID`, followed by
+`tect-admin register-host --tenant UUID --auth-file /absolute/private/host.json`
+with the repeated source/setup root arguments above. These commands are atomic and
+idempotent. Registration verifies an existing host exactly and rejects changed,
+duplicate, or revoked identity instead of rotating or restoring it.
+
+Operators create portable application and durable-knowledge backups with
+`tect-admin backup --out /absolute/new/private-directory --runtime-role ROLE`.
+The parent directory must be private (`0700`), and PostgreSQL 18 `pg_dump` and
+`pg_restore` must be on `PATH`. Restore always targets a new database:
+`tect-admin restore --from /absolute/private-backup --database NEW_DB --runtime-role ROLE`.
+The recorded role must already exist and match `ROLE`. Restore never replaces or
+drops a database; a failed new database remains disconnected for operator inspection.
+Keep the complete backup directory private and intact because its manifest, dump,
+and portable graph files are validated together before target creation.
 
 `tectd` requires `TECT_DATABASE_URL` and `TECT_SOCKET`. The socket must be a new
 absolute path inside a private directory. The daemon does not overwrite an existing
-socket or manage another process. `tectd-mcp` requires:
+socket or manage another process. `TECT_DATABASE_MAX_CONNECTIONS` optionally sets
+the daemon pool to an integer from 1 through 64 and defaults to 16. SIGINT and
+SIGTERM both stop the daemon gracefully and remove only the socket inode it created.
+`tectd-mcp` requires:
 
 | Host setting | Meaning |
 | --- | --- |

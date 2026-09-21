@@ -8,8 +8,16 @@ use uuid::Uuid;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
+mod backup;
 mod migration;
-pub use migration::migrate;
+mod runtime_prerequisites;
+pub use backup::{
+    BackupGraph, BackupIdentity, BackupSnapshot, RestoreGraph, begin_backup_snapshot,
+    create_restore_database, current_schema_version, grant_database_connect, restore_graphs,
+    validate_restore_preflight, validate_restored_runtime_access,
+};
+pub use migration::{migrate, validate_runtime_role};
+pub use runtime_prerequisites::{HostRegistration, TenantIdentity, ensure_tenant, register_host};
 
 #[derive(Debug)]
 pub struct Enrollment {

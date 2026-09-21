@@ -1,29 +1,17 @@
 use super::recovery_support::{Daemon, Mcp};
-use super::support::{route, route_error};
+use super::support::route;
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use std::{fs, path::Path};
+use std::io::Write;
+use std::os::unix::fs::{PermissionsExt, symlink};
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use uuid::Uuid;
 
-#[derive(serde::Serialize)]
-struct GraphBackup {
-    iri: String,
-    digest: String,
-    file: String,
-}
-
 fn database_url(url: &str, database: &str) -> String {
-    let (base, query) = url
-        .split_once('?')
-        .map_or((url, None), |(a, b)| (a, Some(b)));
-    let slash = base.rfind('/').expect("PostgreSQL URL has a database path");
-    let mut value = format!("{}/{database}", &base[..slash]);
-    if let Some(query) = query {
-        value.push('?');
-        value.push_str(query);
-    }
-    value
+    let mut value = url::Url::parse(url).unwrap();
+    value.set_path(&format!("/{database}"));
+    value.into()
 }
 
 fn quoted_database(name: &str) -> String {
@@ -32,6 +20,97 @@ fn quoted_database(name: &str) -> String {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
     );
     format!("\"{name}\"")
+}
+
+fn copy_bundle(source: &Path, destination: &Path) {
+    std::fs::create_dir(destination).unwrap();
+    std::fs::set_permissions(destination, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for entry in std::fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let target = destination.join(entry.file_name());
+        let metadata = entry.metadata().unwrap();
+        if metadata.is_dir() {
+            copy_bundle(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+}
+
+async fn database_exists(pool: &PgPool, database: &str) -> bool {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1)")
+        .bind(database)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+async fn assert_private_database_creation(
+    maintenance: &PgPool,
+    database: &str,
+    runtime_role: &str,
+) {
+    tect_postgres::admin::validate_restore_preflight(maintenance, runtime_role)
+        .await
+        .unwrap();
+    tect_postgres::admin::create_restore_database(maintenance, database, runtime_role)
+        .await
+        .unwrap();
+    let (allows_owner_connections, runtime_connect, public_connect): (bool, bool, bool) =
+        sqlx::query_as(
+            "SELECT d.datallowconn,
+             has_database_privilege($1, d.datname, 'CONNECT'),
+             EXISTS(SELECT 1 FROM aclexplode(COALESCE(d.datacl, acldefault('d', d.datdba))) a
+                    WHERE a.grantee = 0 AND a.privilege_type = 'CONNECT')
+             FROM pg_database d WHERE d.datname = $2",
+        )
+        .bind(runtime_role)
+        .bind(database)
+        .fetch_one(maintenance)
+        .await
+        .unwrap();
+    assert!(allows_owner_connections);
+    assert!(!runtime_connect);
+    assert!(!public_connect);
+    sqlx::query(&format!(
+        "DROP DATABASE {} WITH (FORCE)",
+        quoted_database(database)
+    ))
+    .execute(maintenance)
+    .await
+    .unwrap();
+}
+
+async fn restore_command(
+    admin_url: &str,
+    backup: &Path,
+    database: &str,
+    runtime_role: &str,
+) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_tect-admin"))
+        .env("TECT_ADMIN_DATABASE_URL", admin_url)
+        .args(["restore", "--from"])
+        .arg(backup)
+        .args(["--database", database, "--runtime-role", runtime_role])
+        .kill_on_drop(true)
+        .output()
+        .await
+        .unwrap()
+}
+
+fn assert_no_connection_secret(output: &std::process::Output, admin_url: &str) {
+    let streams = [output.stdout.as_slice(), output.stderr.as_slice()].concat();
+    let text = String::from_utf8_lossy(&streams);
+    assert!(!text.contains(admin_url));
+    let parsed = url::Url::parse(admin_url).unwrap();
+    if let Some(password) = parsed.password() {
+        assert!(!text.contains(password));
+        let decoded = percent_encoding::percent_decode_str(password)
+            .decode_utf8()
+            .unwrap();
+        assert!(!text.contains(decoded.as_ref()));
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -47,210 +126,162 @@ pub(super) async fn assert_application_roundtrip(
     unit_id: &Value,
     expected: &Value,
 ) {
-    let suppression = tect_postgres::prepare_knowledge_suppression_manifest(source_pool)
-        .await
-        .unwrap();
-    assert_eq!(suppression.high_water_erasure_sequence, 0);
-    let checkpoint = tect_postgres::record_knowledge_suppression_export(source_pool, &suppression)
-        .await
-        .unwrap();
-    let source_database: String = sqlx::query_scalar("SELECT pg_catalog.current_database()")
-        .fetch_one(source_pool)
-        .await
-        .unwrap();
     let database = format!("tect_dk_restore_{}", Uuid::new_v4().simple());
-    let maintenance_url = database_url(admin_url, "postgres");
-    let maintenance = PgPool::connect(&maintenance_url).await.unwrap();
-    sqlx::query(&format!("CREATE DATABASE {}", quoted_database(&database)))
-        .execute(&maintenance)
-        .await
-        .unwrap();
-    let dump = socket_dir.join("application-dk.dump");
-    let graph_dir = socket_dir.join("application-dk-graphs");
-    fs::create_dir(&graph_dir).unwrap();
-    let mut snapshot = source_pool.begin().await.unwrap();
-    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
-        .execute(&mut *snapshot)
-        .await
-        .unwrap();
-    let snapshot_id: String = sqlx::query_scalar("SELECT pg_catalog.pg_export_snapshot()")
-        .fetch_one(&mut *snapshot)
-        .await
-        .unwrap();
-    let inventory: Vec<(i64, String)> =
-        sqlx::query_as("SELECT graph_id,iri FROM pgrdf.graph_inventory() ORDER BY iri")
-            .fetch_all(&mut *snapshot)
-            .await
-            .unwrap();
-    assert!(
-        inventory
-            .iter()
-            .all(|(_, iri)| !iri.starts_with("urn:tect:dk:scratch:")),
-        "publisher scratch graphs must not become durable backup inputs"
-    );
-    let mut graphs = Vec::new();
-    for (index, (graph_id, iri)) in inventory.iter().enumerate() {
-        let lines: Vec<String> = sqlx::query_scalar("SELECT * FROM pgrdf.export_graph($1)")
-            .bind(graph_id)
-            .fetch_all(&mut *snapshot)
-            .await
-            .unwrap();
-        let payload = if lines.is_empty() {
-            String::new()
-        } else {
-            lines.join("\n") + "\n"
-        };
-        let digest: String = sqlx::query_scalar("SELECT pgrdf.graph_digest($1)")
-            .bind(graph_id)
-            .fetch_one(&mut *snapshot)
-            .await
-            .unwrap();
-        let file = format!("graph-{index}.nt");
-        fs::write(graph_dir.join(&file), payload).unwrap();
-        graphs.push(GraphBackup {
-            iri: iri.clone(),
-            digest,
-            file,
-        });
-    }
-    fs::write(
-        graph_dir.join("manifest.json"),
-        serde_json::to_vec_pretty(&graphs).unwrap(),
-    )
-    .unwrap();
-    let dump_status = Command::new("pg_dump")
-        .args([
-            "--no-password",
-            "--format=custom",
-            "--exclude-schema=pgrdf",
-            "--exclude-extension=pgrdf",
-            "--snapshot",
-        ])
-        .arg(&snapshot_id)
-        .arg("--file")
-        .arg(&dump)
-        .arg("--dbname")
-        .arg(database_url(admin_url, &source_database))
-        .status()
-        .await
-        .expect("pg_dump is required for the opt-in DK test");
-    assert!(dump_status.success(), "application pg_dump failed");
-    snapshot.commit().await.unwrap();
-    let toc = Command::new("pg_restore")
-        .args(["--list"])
-        .arg(&dump)
+    let backup = socket_dir.join("application-dk-backup");
+    let backup_output = Command::new(env!("CARGO_BIN_EXE_tect-admin"))
+        .env("TECT_ADMIN_DATABASE_URL", admin_url)
+        .args(["backup", "--out"])
+        .arg(&backup)
+        .args(["--runtime-role", runtime_role])
+        .kill_on_drop(true)
         .output()
         .await
         .unwrap();
     assert!(
-        toc.status.success(),
-        "application dump TOC inspection failed"
+        backup_output.status.success(),
+        "production backup command failed: {}",
+        String::from_utf8_lossy(&backup_output.stderr)
     );
-    let toc = String::from_utf8(toc.stdout).unwrap();
-    assert!(!toc.contains("_pgrdf_"));
-    assert!(!toc.contains("TABLE DATA pgrdf "));
-    assert!(!toc.contains("TABLE pgrdf "));
-    let restored_admin_url = database_url(admin_url, &database);
-    let restore_status = Command::new("pg_restore")
-        .args(["--no-password", "--exit-on-error", "--no-owner", "--dbname"])
-        .arg(&restored_admin_url)
-        .arg(&dump)
-        .status()
-        .await
-        .expect("pg_restore is required for the opt-in DK test");
-    assert!(restore_status.success(), "application pg_restore failed");
-    let restored_pool = PgPool::connect(&restored_admin_url).await.unwrap();
-    assert!(
-        tect_postgres::enable_durable_knowledge(&restored_pool, runtime_role)
-            .await
-            .is_err(),
-        "ordinary enable must refuse a restored qualified database identity"
-    );
-    let socket = socket_dir.join("restored-knowledge-blocked.sock");
-    let restored_runtime_url = database_url(runtime_url, &database);
-    let mut blocked_daemon = Daemon::start(&restored_runtime_url, socket.clone()).await;
-    let mut blocked_client = Mcp::start(&socket, config, native, workspace_key).await;
-    blocked_client.call("open_workspace", json!({})).await;
-    let blocked = route_error(
-        &mut blocked_client,
-        "query",
-        "knowledge.context",
-        json!({"unit_id":unit_id,"revision":1}),
+    assert_no_connection_secret(&backup_output, admin_url);
+
+    let maintenance_url = database_url(admin_url, "postgres");
+    let maintenance = PgPool::connect(&maintenance_url).await.unwrap();
+    let private_database = format!("tect_dk_private_{}", Uuid::new_v4().simple());
+    assert_private_database_creation(&maintenance, &private_database, runtime_role).await;
+
+    for (key, value) in [("dbname", "postgres"), ("sslpassword", "secret")] {
+        let mut overridden = url::Url::parse(admin_url).unwrap();
+        overridden.query_pairs_mut().append_pair(key, value);
+        let rejected_database = format!("tect_dk_override_{}", Uuid::new_v4().simple());
+        let rejected = restore_command(
+            overridden.as_str(),
+            &backup,
+            &rejected_database,
+            runtime_role,
+        )
+        .await;
+        assert!(!rejected.status.success(), "accepted query override {key}");
+        assert_no_connection_secret(&rejected, overridden.as_str());
+        assert!(!database_exists(&maintenance, &rejected_database).await);
+    }
+
+    let missing_role = format!("missing_role_{}", Uuid::new_v4().simple());
+    let missing_role_bundle = socket_dir.join("missing-role-backup");
+    copy_bundle(&backup, &missing_role_bundle);
+    let manifest_path = missing_role_bundle.join("manifest.json");
+    let mut manifest: Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["runtime_role"] = Value::String(missing_role.clone());
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    let missing_role_database = format!("tect_dk_missing_{}", Uuid::new_v4().simple());
+    let missing_role_output = restore_command(
+        admin_url,
+        &missing_role_bundle,
+        &missing_role_database,
+        &missing_role,
     )
     .await;
-    assert_eq!(blocked["error"]["code"], "knowledge_unavailable");
-    blocked_client.finish().await;
-    blocked_daemon.crash().await;
-    blocked_daemon.remove_owned_stale_socket();
+    assert!(!missing_role_output.status.success());
+    assert_no_connection_secret(&missing_role_output, admin_url);
+    assert!(!database_exists(&maintenance, &missing_role_database).await);
 
-    sqlx::query("CREATE EXTENSION pgrdf VERSION '0.6.34'")
-        .execute(&restored_pool)
-        .await
-        .unwrap();
-    for graph in &graphs {
-        let existing: Option<i64> = sqlx::query_scalar("SELECT pgrdf.graph_id($1)")
-            .bind(&graph.iri)
-            .fetch_one(&restored_pool)
-            .await
-            .unwrap();
-        let graph_id = match existing {
-            Some(graph_id) => graph_id,
-            None => sqlx::query_scalar("SELECT pgrdf.add_graph($1)")
-                .bind(&graph.iri)
-                .fetch_one(&restored_pool)
-                .await
-                .unwrap(),
-        };
-        let current: String = sqlx::query_scalar("SELECT pgrdf.graph_digest($1)")
-            .bind(graph_id)
-            .fetch_one(&restored_pool)
-            .await
-            .unwrap();
-        if current != graph.digest {
-            let current_lines: Vec<String> =
-                sqlx::query_scalar("SELECT * FROM pgrdf.export_graph($1)")
-                    .bind(graph_id)
-                    .fetch_all(&restored_pool)
-                    .await
-                    .unwrap();
-            assert!(
-                current_lines.is_empty(),
-                "activation produced a conflicting graph for {}",
-                graph.iri
-            );
-            let payload = fs::read_to_string(graph_dir.join(&graph.file)).unwrap();
-            if !payload.is_empty() {
-                sqlx::query("SELECT pgrdf.parse_turtle($1,$2)")
-                    .bind(payload)
-                    .bind(graph_id)
-                    .execute(&restored_pool)
-                    .await
-                    .unwrap();
-            }
-        }
-        let restored_digest: String = sqlx::query_scalar("SELECT pgrdf.graph_digest($1)")
-            .bind(graph_id)
-            .fetch_one(&restored_pool)
-            .await
-            .unwrap();
-        assert_eq!(
-            restored_digest, graph.digest,
-            "graph digest changed for {}",
-            graph.iri
-        );
-    }
-    let recovered = tect_postgres::apply_knowledge_suppression_manifest(
-        &restored_pool,
-        &suppression,
-        &checkpoint,
+    let restore_output = restore_command(admin_url, &backup, &database, runtime_role).await;
+    assert!(
+        restore_output.status.success(),
+        "production restore command failed: {}",
+        String::from_utf8_lossy(&restore_output.stderr)
+    );
+    assert_no_connection_secret(&restore_output, admin_url);
+
+    let restored_admin_url = database_url(admin_url, &database);
+    let restored_pool = PgPool::connect(&restored_admin_url).await.unwrap();
+    let (runtime_connect, public_connect): (bool, bool) = sqlx::query_as(
+        "SELECT has_database_privilege($1, current_database(), 'CONNECT'), EXISTS(
+         SELECT 1 FROM pg_database d CROSS JOIN LATERAL aclexplode(
+         COALESCE(d.datacl, acldefault('d', d.datdba))) a
+         WHERE d.datname = current_database() AND a.grantee = 0 AND a.privilege_type = 'CONNECT')",
     )
+    .bind(runtime_role)
+    .fetch_one(&restored_pool)
     .await
     .unwrap();
-    assert_eq!(recovered.entries_applied, 0);
-    assert_eq!(recovered.units_suppressed, 0);
-    assert_eq!(recovered.remaining, 0);
+    assert!(runtime_connect);
+    assert!(!public_connect);
+    restored_pool.close().await;
+
+    let existing = restore_command(admin_url, &backup, &database, runtime_role).await;
+    assert!(!existing.status.success());
+    assert_no_connection_secret(&existing, admin_url);
+    assert!(database_exists(&maintenance, &database).await);
+
+    let corrupt = socket_dir.join("corrupt-backup");
+    copy_bundle(&backup, &corrupt);
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(corrupt.join("manifest.json")).unwrap()).unwrap();
+    let graph_file = manifest["graphs"][0]["file"].as_str().unwrap();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(corrupt.join(graph_file))
+        .unwrap()
+        .write_all(b"corrupt")
+        .unwrap();
+    let corrupt_database = format!("tect_dk_corrupt_{}", Uuid::new_v4().simple());
+    let corrupt_output =
+        restore_command(admin_url, &corrupt, &corrupt_database, runtime_role).await;
+    assert!(!corrupt_output.status.success());
+    assert_no_connection_secret(&corrupt_output, admin_url);
+    assert!(!database_exists(&maintenance, &corrupt_database).await);
+
+    let malformed = socket_dir.join("malformed-backup");
+    copy_bundle(&backup, &malformed);
+    std::fs::write(malformed.join("manifest.json"), b"{").unwrap();
+    let malformed_database = format!("tect_dk_malformed_{}", Uuid::new_v4().simple());
+    let malformed_output =
+        restore_command(admin_url, &malformed, &malformed_database, runtime_role).await;
+    assert!(!malformed_output.status.success());
+    assert_no_connection_secret(&malformed_output, admin_url);
+    assert!(!database_exists(&maintenance, &malformed_database).await);
+
+    let malformed_digest = socket_dir.join("malformed-digest-backup");
+    copy_bundle(&backup, &malformed_digest);
+    let manifest_path = malformed_digest.join("manifest.json");
+    let mut manifest: Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+    manifest["graphs"][0]["native_digest"] = Value::String("ABC123".into());
+    std::fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    let malformed_digest_database = format!("tect_dk_digest_{}", Uuid::new_v4().simple());
+    let malformed_digest_output = restore_command(
+        admin_url,
+        &malformed_digest,
+        &malformed_digest_database,
+        runtime_role,
+    )
+    .await;
+    assert!(!malformed_digest_output.status.success());
+    assert_no_connection_secret(&malformed_digest_output, admin_url);
+    assert!(!database_exists(&maintenance, &malformed_digest_database).await);
+
+    let linked = socket_dir.join("linked-backup");
+    copy_bundle(&backup, &linked);
+    let moved_manifest: PathBuf = socket_dir.join("linked-manifest.json");
+    std::fs::rename(linked.join("manifest.json"), &moved_manifest).unwrap();
+    symlink(&moved_manifest, linked.join("manifest.json")).unwrap();
+    let linked_database = format!("tect_dk_linked_{}", Uuid::new_v4().simple());
+    let linked_output = restore_command(admin_url, &linked, &linked_database, runtime_role).await;
+    assert!(!linked_output.status.success());
+    assert_no_connection_secret(&linked_output, admin_url);
+    assert!(!database_exists(&maintenance, &linked_database).await);
 
     let socket = socket_dir.join("restored-knowledge.sock");
+    let restored_runtime_url = database_url(runtime_url, &database);
     let mut daemon = Daemon::start(&restored_runtime_url, socket.clone()).await;
     let mut client = Mcp::start(&socket, config, native, workspace_key).await;
     let restored = route(
@@ -264,7 +295,7 @@ pub(super) async fn assert_application_roundtrip(
     client.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();
-    restored_pool.close().await;
+
     sqlx::query(&format!(
         "DROP DATABASE {} WITH (FORCE)",
         quoted_database(&database)
@@ -288,4 +319,9 @@ pub(super) async fn assert_application_roundtrip(
     ] {
         assert_eq!(actual[field], expected[field], "restore changed {field}");
     }
+    let source_database: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(source_pool)
+        .await
+        .unwrap();
+    assert_ne!(source_database, database);
 }

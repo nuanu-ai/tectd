@@ -19,7 +19,8 @@ ALLOWED = {
     },
     "tect-cli": {
         "tect-domain", "tect-application", "tect-postgres", "tect-host",
-        "tokio", "serde", "serde_json", "clap", "uuid", "rustix",
+        "tokio", "serde", "serde_json", "clap", "uuid", "rustix", "sha2", "url",
+        "percent-encoding",
     },
 }
 errors = []
