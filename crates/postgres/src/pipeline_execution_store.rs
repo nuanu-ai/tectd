@@ -1,6 +1,6 @@
 use crate::{pipeline_execution, store::PgUnitOfWork};
 use async_trait::async_trait;
-use tect_application::PipelineExecutionStore;
+use tect_application::{PipelineExecutionStore, VerifiedPipelineSourceDigest};
 use tect_domain::*;
 use uuid::Uuid;
 
@@ -184,6 +184,7 @@ impl PipelineExecutionStore for PgUnitOfWork {
         workspace_id: Uuid,
         session_id: Uuid,
         request: &RecordPipelineInput,
+        verified_source_digest: Option<&VerifiedPipelineSourceDigest>,
     ) -> Result<PipelineMutationOutcome> {
         let tenant = self.tenant_id()?;
         pipeline_execution::record_input(
@@ -192,6 +193,7 @@ impl PipelineExecutionStore for PgUnitOfWork {
             workspace_id,
             session_id,
             request,
+            verified_source_digest,
         )
         .await
     }

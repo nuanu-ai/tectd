@@ -1,4 +1,5 @@
 use super::*;
+use tect_application::VerifiedPipelineSourceDigest;
 
 const FULL_SOURCE_TARGET: &str = "slice-component-decision-interrogator";
 const CANONICAL_SOURCE_LEDGER: &str = "requirements-ledger.json";
@@ -111,7 +112,15 @@ pub(crate) async fn record_input(
     workspace: Uuid,
     session: Uuid,
     request: &RecordPipelineInput,
+    verified_source_digest: Option<&VerifiedPipelineSourceDigest>,
 ) -> Result<PipelineMutationOutcome> {
+    match (&request.source_amendment, verified_source_digest) {
+        (Some(amendment), Some(value))
+            if value.request_id() == request.request_id
+                && value.digest() == amendment.successor.artifact.digest => {}
+        (None, None) => {}
+        _ => return Err(Error::InvalidArguments),
+    }
     let principal = session_principal(tx, session).await?;
     load_context(tx, tenant, workspace, principal, request.run_id)
         .await?
@@ -159,7 +168,16 @@ pub(crate) async fn record_input(
     }
     let input_phase_id = if let Some(amendment) = &request.source_amendment {
         apply_source_amendment(
-            tx, tenant, workspace, session, request, amendment, row.3, &row.4, &row.5,
+            tx,
+            tenant,
+            workspace,
+            session,
+            request,
+            amendment,
+            verified_source_digest.ok_or(Error::InvalidArguments)?,
+            row.3,
+            &row.4,
+            &row.5,
         )
         .await?;
         FULL_SOURCE_TARGET
@@ -208,6 +226,7 @@ async fn apply_source_amendment(
     session: Uuid,
     request: &RecordPipelineInput,
     amendment: &PipelineSourceAmendment,
+    verified_source_digest: &VerifiedPipelineSourceDigest,
     current_ordinal: Option<i32>,
     definition_kind: &str,
     definition_value: &serde_json::Value,
@@ -277,15 +296,11 @@ async fn apply_source_amendment(
             Some(amendment.successor.artifact.name.clone()),
         ));
     }
-    let successor_digest = Sha256::digest(amendment.successor.artifact.body.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    if successor_digest != amendment.successor.artifact.digest {
+    if verified_source_digest.digest() != amendment.successor.artifact.digest {
         violations.push(amendment_violation(
             "successor_digest_mismatch",
             "$.source_amendment.successor.artifact.digest",
-            Some(successor_digest),
+            Some(verified_source_digest.digest().to_owned()),
             Some(amendment.successor.artifact.digest.clone()),
         ));
     }

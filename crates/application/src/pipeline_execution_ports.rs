@@ -9,6 +9,8 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
+use crate::VerifiedPipelineSourceDigest;
+
 pub trait PipelineDefinitionProvider: Send + Sync {
     fn definition(&self, kind: PipelineKind) -> Result<PipelineDefinitionSnapshot>;
 
@@ -106,6 +108,7 @@ pub trait PipelineExecutionStore: Send {
         workspace_id: Uuid,
         session_id: Uuid,
         request: &RecordPipelineInput,
+        verified_source_digest: Option<&VerifiedPipelineSourceDigest>,
     ) -> Result<PipelineMutationOutcome>;
     async fn escalate_pipeline_delivery(
         &mut self,
