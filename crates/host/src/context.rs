@@ -38,7 +38,7 @@ impl HostContext {
 pub fn host_context_from_env() -> Result<HostContext> {
     let config_path = required_env("TECT_HOST_CONFIG")?;
     let workspace_key = required_env("TECT_WORKSPACE_KEY")?;
-    let auth = read_host_auth(Path::new(&config_path))?;
+    let auth = read_host_auth_file(Path::new(&config_path))?;
     HostContext::new(auth, workspace_key)
 }
 
@@ -49,7 +49,9 @@ fn required_env(name: &str) -> Result<String> {
     }
 }
 
-fn read_host_auth(path: &Path) -> Result<HostAuth> {
+/// Read an existing host credential without following symlinks or accepting a
+/// non-private, oversized, or replaced file.
+pub fn read_host_auth_file(path: &Path) -> Result<HostAuth> {
     if !path.is_absolute() {
         return Err(Error::InvalidConfiguration);
     }
@@ -105,4 +107,66 @@ fn validate_config_metadata(metadata: &fs::Metadata) -> Result<()> {
         return Err(Error::InvalidConfiguration);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    use uuid::Uuid;
+
+    fn write_auth(path: &Path, auth: &HostAuth) {
+        fs::write(path, serde_json::to_vec(auth).unwrap()).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    #[test]
+    fn existing_auth_file_is_bounded_private_and_not_symlinked() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let auth = HostAuth {
+            host_id: Uuid::new_v4(),
+            credential: "a".repeat(64),
+        };
+        let path = root.join("host.json");
+        write_auth(&path, &auth);
+        let loaded = read_host_auth_file(&path).unwrap();
+        assert_eq!(loaded.host_id, auth.host_id);
+        assert_eq!(loaded.credential, auth.credential);
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(matches!(
+            read_host_auth_file(&path),
+            Err(Error::InvalidConfiguration)
+        ));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let link = root.join("host-link.json");
+        symlink(&path, &link).unwrap();
+        assert!(matches!(
+            read_host_auth_file(&link),
+            Err(Error::InvalidConfiguration)
+        ));
+
+        let invalid = root.join("invalid.json");
+        write_auth(
+            &invalid,
+            &HostAuth {
+                host_id: Uuid::nil(),
+                credential: "not-a-credential".into(),
+            },
+        );
+        assert!(matches!(
+            read_host_auth_file(&invalid),
+            Err(Error::InvalidConfiguration)
+        ));
+
+        let oversized = root.join("oversized.json");
+        fs::write(&oversized, vec![b'x'; (MAX_CONFIG_BYTES + 1) as usize]).unwrap();
+        fs::set_permissions(&oversized, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            read_host_auth_file(&oversized),
+            Err(Error::InvalidConfiguration)
+        ));
+    }
 }

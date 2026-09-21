@@ -128,22 +128,45 @@ async fn durable_knowledge_lifecycle_is_bound_to_real_pipeline_and_access() {
     let commit_request = action_params(&publication["actions"][0]).clone();
     let mut publisher_peer = Mcp::start(&socket, &config, &Uuid::new_v4().to_string(), &key).await;
     publisher_peer.call("open_workspace", json!({})).await;
-    let (raw_a, raw_b) = tokio::join!(
-        client.exchange(
-            "tools/call",
-            public_call(
-                "command",
-                json!({"route":"knowledge.change_commit","params":commit_request.clone()}),
+    let abandoned_snapshot = admin::begin_backup_snapshot(&pool).await.unwrap();
+    drop(abandoned_snapshot);
+    let mut held_snapshot = admin::begin_backup_snapshot(&pool).await.unwrap();
+    let mut publishers = Box::pin(async {
+        tokio::join!(
+            client.exchange(
+                "tools/call",
+                public_call(
+                    "command",
+                    json!({"route":"knowledge.change_commit","params":commit_request.clone()}),
+                ),
             ),
-        ),
-        publisher_peer.exchange(
-            "tools/call",
-            public_call(
-                "command",
-                json!({"route":"knowledge.change_commit","params":commit_request.clone()}),
-            ),
+            publisher_peer.exchange(
+                "tools/call",
+                public_call(
+                    "command",
+                    json!({"route":"knowledge.change_commit","params":commit_request.clone()}),
+                ),
+            )
         )
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(250), &mut publishers)
+            .await
+            .is_err(),
+        "publisher must wait while the backup snapshot holds the shared native graph lock"
     );
+    assert!(
+        held_snapshot
+            .export_graphs()
+            .await
+            .unwrap()
+            .iter()
+            .all(|graph| !graph.iri.starts_with("urn:tect:dk:scratch:"))
+    );
+    held_snapshot.finish().await.unwrap();
+    let (raw_a, raw_b) = tokio::time::timeout(std::time::Duration::from_secs(10), publishers)
+        .await
+        .expect("publisher must proceed after successful and abandoned backup guards release");
     let payload_a = tool_payload(&raw_a);
     let payload_b = tool_payload(&raw_b);
     let (applied, replay) = if payload_a.get("applied").is_some() {

@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 #[path = "../knowledge_recovery_cli.rs"]
 mod knowledge_recovery_cli;
+mod tect_admin_backup;
 
 #[derive(Parser)]
 #[command(name = "tect-admin")]
@@ -20,6 +21,20 @@ struct Arguments {
 
 #[derive(Subcommand)]
 enum Command {
+    Backup {
+        #[arg(long)]
+        out: PathBuf,
+        #[arg(long)]
+        runtime_role: String,
+    },
+    Restore {
+        #[arg(long = "from")]
+        from: PathBuf,
+        #[arg(long)]
+        database: String,
+        #[arg(long)]
+        runtime_role: String,
+    },
     Migrate {
         #[arg(long)]
         runtime_role: String,
@@ -37,6 +52,20 @@ enum Command {
         setup_roots: Vec<PathBuf>,
         #[arg(long)]
         out: PathBuf,
+    },
+    EnsureTenant {
+        #[arg(long)]
+        tenant: Uuid,
+    },
+    RegisterHost {
+        #[arg(long)]
+        tenant: Uuid,
+        #[arg(long)]
+        auth_file: PathBuf,
+        #[arg(long = "source-root")]
+        source_roots: Vec<PathBuf>,
+        #[arg(long = "setup-root")]
+        setup_roots: Vec<PathBuf>,
     },
     GrantSetupRoot {
         #[arg(long)]
@@ -82,8 +111,29 @@ async fn main() -> ExitCode {
 async fn run(arguments: Arguments) -> Result<()> {
     let admin_url =
         std::env::var("TECT_ADMIN_DATABASE_URL").map_err(|_| Error::InvalidConfiguration)?;
-    let pool = tect_postgres::admin::connect_admin(&admin_url).await?;
     match arguments.command {
+        Command::Backup { out, runtime_role } => {
+            tect_admin_backup::backup(&admin_url, &out, &runtime_role).await?;
+            println!("backup complete at {}", out.display());
+            Ok(())
+        }
+        Command::Restore {
+            from,
+            database,
+            runtime_role,
+        } => {
+            tect_admin_backup::restore(&admin_url, &from, &database, &runtime_role).await?;
+            println!("restore complete for database {database}");
+            Ok(())
+        }
+        command => run_database_command(&admin_url, command).await,
+    }
+}
+
+async fn run_database_command(admin_url: &str, command: Command) -> Result<()> {
+    let pool = tect_postgres::admin::connect_admin(admin_url).await?;
+    match command {
+        Command::Backup { .. } | Command::Restore { .. } => return Err(Error::InternalInvariant),
         Command::Migrate {
             runtime_role,
             enable_durable_knowledge,
@@ -121,6 +171,35 @@ async fn run(arguments: Arguments) -> Result<()> {
                 enrollment.tenant_id,
                 enrollment.principal_id,
                 out.display()
+            );
+        }
+        Command::EnsureTenant { tenant } => {
+            let identity = tect_postgres::admin::ensure_tenant(&pool, tenant).await?;
+            println!(
+                "tenant {} principal {}",
+                identity.tenant_id, identity.principal_id
+            );
+        }
+        Command::RegisterHost {
+            tenant,
+            auth_file,
+            source_roots,
+            setup_roots,
+        } => {
+            let auth = tect_host::read_host_auth_file(&auth_file)?;
+            let source_roots = canonical_source_roots(source_roots)?;
+            let setup_roots = canonical_setup_roots(setup_roots)?;
+            let registration = tect_postgres::admin::register_host(
+                &pool,
+                tenant,
+                &auth,
+                source_roots,
+                setup_roots,
+            )
+            .await?;
+            println!(
+                "registered host {} tenant {} principal {}",
+                registration.host_id, registration.tenant_id, registration.principal_id
             );
         }
         Command::GrantSetupRoot {

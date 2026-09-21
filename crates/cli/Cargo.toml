@@ -29,9 +29,11 @@ serde_json.workspace = true
 clap.workspace = true
 uuid.workspace = true
 rustix = { workspace = true, features = ["process"] }
+sha2.workspace = true
+url.workspace = true
+percent-encoding.workspace = true
 
 [dev-dependencies]
-sha2.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 

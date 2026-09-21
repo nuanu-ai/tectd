@@ -45,7 +45,7 @@ mod tools;
 mod transport;
 mod workspace_output;
 
-pub use context::{HostContext, host_context_from_env};
+pub use context::{HostContext, host_context_from_env, read_host_auth_file};
 pub use git::GitSourceInspector;
 pub use knowledge_embedding::{LocalEmbeddingConfig, LocalKnowledgeEmbeddingWorker};
 pub use mcp::run_stdio;
