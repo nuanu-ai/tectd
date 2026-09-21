@@ -5,7 +5,6 @@ use crate::{
     pipeline_followups::{validate_followup_definitions, validate_followup_proposal},
     *,
 };
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 impl PipelineDefinitionSnapshot {
@@ -771,10 +770,6 @@ fn valid_media_type(value: &str) -> bool {
 fn validate_source_amendment(amendment: &PipelineSourceAmendment) -> Result<()> {
     let successor = &amendment.successor;
     let artifact = &successor.artifact;
-    let digest = Sha256::digest(artifact.body.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
     if amendment.target_phase_id.trim().is_empty()
         || amendment.predecessor.output_id.is_nil()
         || amendment.predecessor.output_revision < 1
@@ -798,7 +793,6 @@ fn validate_source_amendment(amendment: &PipelineSourceAmendment) -> Result<()> 
             .digest
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        || artifact.digest != digest
         || artifact.reference.as_ref().is_some_and(|reference| {
             reference.trim().is_empty() || reference.len() > MAX_SOURCE_PATH_BYTES
         })
@@ -923,10 +917,6 @@ mod source_amendment_tests {
     }
 
     fn request(body: String) -> RecordPipelineInput {
-        let digest = Sha256::digest(body.as_bytes())
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
         RecordPipelineInput {
             request_id: Uuid::new_v4(),
             run_id: Uuid::new_v4(),
@@ -950,7 +940,8 @@ mod source_amendment_tests {
                         name: "source.md".to_owned(),
                         media_type: "text/markdown".to_owned(),
                         body,
-                        digest,
+                        digest: "d67e2e944994496c8d8ec76eed0cf9f09679448d584b532bebf941852a37f5ed"
+                            .to_owned(),
                         reference: None,
                     },
                 },
@@ -993,7 +984,7 @@ mod source_amendment_tests {
     }
 
     #[test]
-    fn source_amendment_rejects_path_name_or_digest_mismatch() {
+    fn source_amendment_rejects_path_name_mismatch() {
         let mut path = request("changed".to_owned());
         path.source_amendment
             .as_mut()
@@ -1002,7 +993,10 @@ mod source_amendment_tests {
             .artifact
             .name = "other.md".to_owned();
         assert_eq!(path.validate(), Err(Error::InvalidArguments));
+    }
 
+    #[test]
+    fn source_amendment_leaves_digest_integrity_to_application() {
         let mut digest = request("changed".to_owned());
         digest
             .source_amendment
@@ -1011,7 +1005,7 @@ mod source_amendment_tests {
             .successor
             .artifact
             .digest = "0".repeat(64);
-        assert_eq!(digest.validate(), Err(Error::InvalidArguments));
+        assert_eq!(digest.validate(), Ok(()));
     }
 
     #[test]
