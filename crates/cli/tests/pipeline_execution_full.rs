@@ -190,7 +190,7 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
             wrong_digest
         )
         .await["error"]["code"],
-        "invalid_arguments"
+        "INVALID_OUTPUT"
     );
     context = advance(&mut client, context).await;
     context = advance(&mut client, context).await;
@@ -215,7 +215,7 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
             malformed_json
         )
         .await["error"]["code"],
-        "invalid_arguments"
+        "INVALID_OUTPUT"
     );
     context = advance(&mut client, context).await;
     assert_eq!(
@@ -247,37 +247,26 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     .await;
     assert_eq!(empty_ledger_error["error"]["code"], "invalid_arguments");
     assert_eq!(
-        empty_ledger_error["error"]["details"]["code"],
-        "requirement_ledger_invalid"
+        empty_ledger_error["error"]["refusal"]["code"],
+        "INVALID_OUTPUT"
     );
     assert_eq!(
-        empty_ledger_error["error"]["details"]["phase"],
-        "slice-component-decision-interrogator"
+        empty_ledger_error["error"]["refusal"]["rule"],
+        "WP6-COMPLETE-01"
     );
     assert_eq!(
-        empty_ledger_error["error"]["details"]["artifact"],
-        "requirements-ledger.json"
+        empty_ledger_error["error"]["refusal"]["path"],
+        "arguments.params"
     );
-    assert_eq!(empty_ledger_error["error"]["details"]["retryable"], true);
     assert_eq!(
-        empty_ledger_error["error"]["details"]["violations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|violation| violation["code"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        vec![
-            "source_path_required",
-            "source_digest_required",
-            "source_requirement_ids_required",
-            "requirements_required"
-        ]
+        empty_ledger_error["error"]["refusal"]["next_action"],
+        "correct_output"
     );
     let after_empty_ledger = route(
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":context["run"]["id"]}),
+        json!({"run_id":context["run"]["id"],"refresh":true}),
     )
     .await;
     assert_eq!(after_empty_ledger["run"], context["run"]);
@@ -412,22 +401,13 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     )
     .await;
     assert_eq!(dropped_error["error"]["code"], "invalid_arguments");
-    assert_eq!(
-        dropped_error["error"]["details"]["code"],
-        "requirement_ledger_lineage_invalid"
-    );
-    assert_eq!(
-        dropped_error["error"]["details"]["violations"]
-            .as_array()
-            .unwrap()
-            .len(),
-        15
-    );
+    assert_eq!(dropped_error["error"]["refusal"]["code"], "INVALID_OUTPUT");
+    assert_eq!(dropped_error["error"]["refusal"]["rule"], "WP6-COMPLETE-01");
     let after_rejection = route(
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":context["run"]["id"]}),
+        json!({"run_id":context["run"]["id"],"refresh":true}),
     )
     .await;
     assert_eq!(
@@ -516,26 +496,16 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     .await;
     assert_eq!(legacy_forward_error["error"]["code"], "invalid_arguments");
     assert_eq!(
-        legacy_forward_error["error"]["details"]["code"],
-        "requirement_ledger_lineage_invalid"
+        legacy_forward_error["error"]["refusal"]["code"],
+        "INVALID_OUTPUT"
     );
     assert_eq!(
-        legacy_forward_error["error"]["details"]["violations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|violation| violation["code"].as_str().unwrap())
-            .collect::<Vec<_>>(),
-        vec![
-            "source_path_required",
-            "source_digest_required",
-            "source_requirement_ids_required",
-            "requirements_required"
-        ]
+        legacy_forward_error["error"]["refusal"]["rule"],
+        "WP6-COMPLETE-01"
     );
     assert_eq!(
-        legacy_forward_error["error"]["details"]["recovery_action"],
-        "Submit a valid phase 7 output with completed/continue and revisit_phase_id slice-component-decision-interrogator; then rework phase 5 and rerun phases 6 and 7."
+        legacy_forward_error["error"]["refusal"]["next_action"],
+        "correct_output"
     );
     let after_legacy_forward_rejection = route(
         &mut client,
@@ -581,15 +551,12 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     .await;
     assert_eq!(invalid_recovery_error["error"]["code"], "invalid_arguments");
     assert_eq!(
-        invalid_recovery_error["error"]["details"]["phase"], "slice-reconciliation-runner",
+        invalid_recovery_error["error"]["refusal"]["code"], "INVALID_OUTPUT",
         "{invalid_recovery_error}"
     );
     assert_eq!(
-        invalid_recovery_error["error"]["details"]["violations"]
-            .as_array()
-            .unwrap()
-            .len(),
-        4
+        invalid_recovery_error["error"]["refusal"]["rule"],
+        "WP6-COMPLETE-01"
     );
 
     let mut recovery_request = completion(&context, verdict, outcome, transition, None, None);
@@ -709,9 +676,10 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
         )
         .await;
         assert_eq!(
-            error["error"]["details"]["code"], "source_amendment_predecessor_stale",
+            error["error"]["refusal"]["code"], "INVALID_OUTPUT",
             "{field}: {error}"
         );
+        assert_eq!(error["error"]["refusal"]["rule"], "WP6-INPUT-01");
     }
     let mut wrong_artifact = amendment.clone();
     wrong_artifact["request_id"] = json!(Uuid::new_v4());
@@ -724,12 +692,13 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
         wrong_artifact,
     )
     .await;
-    assert!(
-        wrong_artifact_error["error"]["details"]["violations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|value| value["code"] == "predecessor_artifact_invalid")
+    assert_eq!(
+        wrong_artifact_error["error"]["refusal"]["code"],
+        "INVALID_OUTPUT"
+    );
+    assert_eq!(
+        wrong_artifact_error["error"]["refusal"]["rule"],
+        "WP6-INPUT-01"
     );
 
     let mut out_of_scope = amendment.clone();
@@ -737,12 +706,13 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     out_of_scope["source_amendment"]["target_phase_id"] = json!("slice-design-spec-shaper");
     let out_of_scope_error =
         route_error(&mut client, "command", "slice.pipeline.input", out_of_scope).await;
-    assert!(
-        out_of_scope_error["error"]["details"]["violations"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|value| value["code"] == "target_phase_invalid")
+    assert_eq!(
+        out_of_scope_error["error"]["refusal"]["code"],
+        "INVALID_OUTPUT"
+    );
+    assert_eq!(
+        out_of_scope_error["error"]["refusal"]["rule"],
+        "WP6-INPUT-01"
     );
 
     let mut digest_mismatch = amendment.clone();
@@ -928,15 +898,20 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     stale_predecessor["request_id"] = json!(Uuid::new_v4());
     stale_predecessor["run_revision"] = context["run"]["revision"].clone();
     stale_predecessor["phase_id"] = context["run"]["current_phase_id"].clone();
+    let stale_predecessor_error = route_error(
+        &mut client,
+        "command",
+        "slice.pipeline.input",
+        stale_predecessor,
+    )
+    .await;
     assert_eq!(
-        route_error(
-            &mut client,
-            "command",
-            "slice.pipeline.input",
-            stale_predecessor
-        )
-        .await["error"]["details"]["code"],
-        "source_amendment_predecessor_stale"
+        stale_predecessor_error["error"]["refusal"]["code"],
+        "INVALID_OUTPUT"
+    );
+    assert_eq!(
+        stale_predecessor_error["error"]["refusal"]["rule"],
+        "WP6-INPUT-01"
     );
 
     let (verdict, outcome, transition) = successful_route(&context);
@@ -949,19 +924,26 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     )
     .await;
     assert_eq!(
-        wrong_lineage_error["error"]["details"]["code"],
-        "source_amendment_lineage_invalid"
+        wrong_lineage_error["error"]["refusal"]["code"],
+        "INVALID_OUTPUT"
+    );
+    assert_eq!(
+        wrong_lineage_error["error"]["refusal"]["rule"],
+        "WP6-COMPLETE-01"
     );
     let after_wrong_lineage = route(
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":context["run"]["id"]}),
+        json!({"run_id":context["run"]["id"],"refresh":true}),
     )
     .await;
     for collection in ["run", "attempts", "outputs", "bindings", "inputs"] {
         assert_eq!(after_wrong_lineage[collection], context[collection]);
     }
+    context = after_wrong_lineage;
+    context = refresh_knowledge(&mut client, &context).await;
+    let (verdict, outcome, transition) = successful_route(&context);
 
     let mut amended_phase_five = completion(&context, verdict, outcome, transition, None, None);
     replace_ledger_source(
@@ -1056,16 +1038,13 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     });
     let before_no_op = context.clone();
     let no_op_error = route_error(&mut client, "command", "slice.pipeline.input", no_op).await;
-    assert_eq!(
-        no_op_error["error"]["details"]["violations"],
-        json!([{"code":"source_unchanged","path":"$.source_amendment.successor.artifact.digest",
-            "expected":"digest different from predecessor source","actual":successor_digest}])
-    );
+    assert_eq!(no_op_error["error"]["refusal"]["code"], "INVALID_OUTPUT");
+    assert_eq!(no_op_error["error"]["refusal"]["rule"], "WP6-INPUT-01");
     let after_no_op = route(
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":context["run"]["id"]}),
+        json!({"run_id":context["run"]["id"],"refresh":true}),
     )
     .await;
     for collection in ["run", "inputs", "bindings"] {
@@ -1076,7 +1055,7 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
         definition_digest_before_amendment
     );
 
-    let synthesis = advance(&mut client, context).await;
+    let synthesis = advance(&mut client, after_no_op).await;
     let synthesis_output = synthesis["outputs"]
         .as_array()
         .unwrap()
