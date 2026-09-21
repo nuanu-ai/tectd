@@ -357,6 +357,7 @@ mod tests {
             skill_reads: Vec::new(),
             resource_reads: Vec::new(),
             artifacts: Vec::new(),
+            evidence_artifacts: Vec::new(),
             validator_receipts: Vec::new(),
             followup_proposal: None,
             reviewer_context: None,

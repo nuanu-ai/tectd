@@ -12,26 +12,26 @@ fn names(definitions: &Value) -> BTreeSet<&str> {
 }
 
 #[test]
-fn public_surface_is_exactly_five_tools_and_fifty_four_registry_routes() {
+fn public_surface_is_exactly_five_tools_and_sixty_registry_routes() {
     let definitions = definitions();
     assert_eq!(
         names(&definitions),
         BTreeSet::from(["command", "execute", "get_state", "help", "query"])
     );
-    assert_eq!(routes().len(), 54);
+    assert_eq!(routes().len(), 61);
     assert_eq!(
         routes()
             .iter()
             .filter(|route| route.tool == "query")
             .count(),
-        16
+        19
     );
     assert_eq!(
         routes()
             .iter()
             .filter(|route| route.tool == "command")
             .count(),
-        37
+        41
     );
     assert_eq!(
         routes()
@@ -43,6 +43,22 @@ fn public_surface_is_exactly_five_tools_and_fifty_four_registry_routes() {
     assert!(routes().iter().any(|route| {
         route.tool == "command" && route.route == "slice.pipeline.checkpoint.resolve"
     }));
+    for (tool, route) in [
+        ("command", "scope.candidates.delta"),
+        ("query", "scope.candidates.delta.status"),
+        ("command", "slice.pipeline.evidence_artifact.register"),
+        ("command", "slice.pipeline.evidence_artifact.finalize"),
+        ("query", "slice.pipeline.evidence_artifact.read"),
+        ("query", "slice.pipeline.instruction"),
+        ("command", "slice.pipeline.run.migrate"),
+    ] {
+        assert!(
+            routes()
+                .iter()
+                .any(|spec| spec.tool == tool && spec.route == route),
+            "missing intentional route {tool}:{route}"
+        );
+    }
     assert!(
         definitions["tools"]
             .as_array()
@@ -184,7 +200,7 @@ fn help_branches_are_strict_and_descriptions_come_from_registry() {
     let slices =
         help(parse_help(json!({"mode":"describe","method":"tectd-slice-candidates"})).unwrap())
             .unwrap();
-    assert_eq!(slices["method_revision"], "2");
+    assert_eq!(slices["method_revision"], "3");
     assert_eq!(
         slices["pipeline_catalog"]["pipelines"]
             .as_array()
@@ -196,9 +212,106 @@ fn help_branches_are_strict_and_descriptions_come_from_registry() {
 }
 
 #[test]
+fn phase_completion_help_allows_backend_derived_v07_proof() {
+    let described = help(
+        parse_help(json!({
+            "mode":"describe",
+            "tool":"command",
+            "route":"slice.pipeline.phase.complete"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let required = required_fields(&described["params_schema"]);
+    assert!(!required.contains(&"consumed_outputs"));
+    assert!(!required.contains(&"consumed_inputs"));
+    assert!(
+        described["params_schema"]["properties"]
+            .get("consumed_outputs")
+            .is_none()
+    );
+    assert!(
+        described["params_schema"]["properties"]
+            .get("consumed_inputs")
+            .is_none()
+    );
+    let output_required = required_fields(&described["params_schema"]["properties"]["output"]);
+    assert_eq!(output_required, vec!["producer_context_id"]);
+
+    let arguments = described["example"]["arguments"].clone();
+    assert!(arguments["params"].get("consumed_outputs").is_none());
+    assert!(arguments["params"].get("consumed_inputs").is_none());
+    assert!(arguments["params"]["output"].get("body").is_none());
+    assert!(decode_public_call("command", arguments).is_ok());
+}
+
+#[test]
+fn public_phase_completion_preserves_legacy_proof_and_classifies_other_unknowns() {
+    let spec = routes()
+        .iter()
+        .find(|spec| spec.route == "slice.pipeline.phase.complete")
+        .unwrap();
+
+    for field in ["consumed_outputs", "consumed_inputs"] {
+        let mut params = spec.example.clone();
+        params[field] = json!([]);
+        let call = decode_public_call("command", json!({"route":spec.route,"params":params}))
+            .expect("known legacy receipt must pass routed deserialization");
+        assert_eq!(call.arguments[field], json!([]));
+    }
+
+    let mut unknown_params = spec.example.clone();
+    unknown_params["forged_authority"] = json!("denied");
+    let error = decode_public_call(
+        "command",
+        json!({"route":spec.route,"params":unknown_params}),
+    )
+    .unwrap_err();
+    let refusal = error.refusal().expect("typed input schema refusal");
+    assert_eq!(error.code(), "invalid_arguments");
+    assert_eq!(refusal.code, tect_domain::RefusalCode::InputSchemaInvalid);
+    assert_eq!(refusal.rule.as_deref(), Some("WP6-SCHEMA-COMPLETE-01"));
+    assert_eq!(refusal.path.as_deref(), Some("arguments.params"));
+}
+
+#[test]
+fn internal_legacy_phase_actions_can_retain_backend_receipts() {
+    let spec = routes()
+        .iter()
+        .find(|spec| spec.route == "slice.pipeline.phase.complete")
+        .unwrap();
+    let mut params = spec.example.clone();
+    params["consumed_outputs"] = json!([]);
+    params["consumed_inputs"] = json!([]);
+
+    let mut action = needs_action(
+        "needs_context",
+        spec.internal,
+        params,
+        "context_input",
+        json!({"fields":[]}),
+    )
+    .unwrap();
+    attach_route_contract(&mut action).unwrap();
+
+    assert!(action["arguments"]["params"]["consumed_outputs"].is_array());
+    assert!(action["arguments"]["params"]["consumed_inputs"].is_array());
+    assert!(
+        action["route_contract"]["params_schema"]["properties"]
+            .get("consumed_outputs")
+            .is_none()
+    );
+    assert!(
+        action["route_contract"]["params_schema"]["properties"]
+            .get("consumed_inputs")
+            .is_none()
+    );
+}
+
+#[test]
 fn help_search_is_bounded_stable_filtered_and_bilingual() {
     let all = help(parse_help(json!({"mode":"search"})).unwrap()).unwrap();
-    assert_eq!(all["total_matches"], 63);
+    assert_eq!(all["total_matches"], 70);
     assert_eq!(all["returned"], 25);
     assert_eq!(all["truncated"], true);
     assert_eq!(all["hits"][0]["tool"], "get_state");
@@ -256,4 +369,34 @@ fn action_kinds_distinguish_complete_calls_from_missing_values() {
         input["input"]["fields"][0]["path"],
         "arguments.params.input"
     );
+}
+
+#[test]
+fn route_contract_enrichment_validates_help_as_a_meta_call() {
+    let mut action = schema_help_action(
+        "command",
+        &json!({"route":"scope.candidates.begin","params":{}}),
+    )
+    .unwrap()
+    .unwrap();
+    attach_route_contract(&mut action).unwrap();
+    assert_eq!(action["kind"], "ready_call");
+    assert_eq!(action["tool"], "help");
+    assert_eq!(action["route_contract"]["route"], "scope.candidates.begin");
+    assert!(action["route_contract"]["params_schema"].is_object());
+
+    action["arguments"]["route"] = json!("unknown");
+    assert_eq!(
+        attach_route_contract(&mut action),
+        Err(Error::InternalInvariant)
+    );
+
+    let mut routed = ready_action(
+        "get_program",
+        json!({"program_id":"00000000-0000-4000-8000-000000000001"}),
+    )
+    .unwrap();
+    attach_route_contract(&mut routed).unwrap();
+    assert_eq!(routed["route_contract"]["tool"], "query");
+    assert_eq!(routed["route_contract"]["route"], "program.get");
 }

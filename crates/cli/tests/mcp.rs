@@ -27,6 +27,29 @@ fn payload(response: &Value) -> Value {
     serde_json::from_str(content[1]["text"].as_str().unwrap()).unwrap()
 }
 
+fn assert_pipeline_refusal(value: &Value, rule: &str) {
+    assert_eq!(value["error"]["code"], "invalid_arguments", "{value}");
+    let refusal = &value["error"]["refusal"];
+    for field in [
+        "code",
+        "message",
+        "next_action",
+        "required",
+        "rule",
+        "path",
+        "expected",
+        "actual",
+    ] {
+        assert!(
+            refusal[field]
+                .as_str()
+                .is_some_and(|value| !value.is_empty()),
+            "missing refusal.{field}: {value}"
+        );
+    }
+    assert_eq!(refusal["rule"], rule, "{value}");
+}
+
 async fn exchange(
     input: &mut tokio::process::ChildStdin,
     output: &mut BufReader<tokio::process::ChildStdout>,
@@ -178,6 +201,151 @@ async fn real_mcp_schema_rejects_identity_override_and_recovers_session() {
         }
         first_session = Some(content["session"]["id"].clone());
         assert!(!state.to_string().contains(&enrollment.auth.credential));
+
+        let invalid = exchange(
+            &mut input,
+            &mut output,
+            json!({
+                "jsonrpc":"2.0","id":6,"method":"tools/call",
+                "params":{"name":"command","arguments":{
+                    "route":"scope.candidates.begin","params":{}
+                },"_meta":{"threadId":native_id}}
+            }),
+        )
+        .await;
+        let refusal = payload(&invalid);
+        assert_eq!(refusal["error"]["code"], "invalid_arguments");
+        assert_eq!(refusal["error"]["refusal"]["code"], "INPUT_SCHEMA_INVALID");
+        assert_eq!(
+            refusal["error"]["refusal"]["next_action"],
+            "correct_input_and_retry"
+        );
+        let action = &refusal["actions"][refusal["recommended_action"].as_u64().unwrap() as usize];
+        assert_eq!(action["kind"], "ready_call");
+        assert_eq!(action["tool"], "help");
+        assert_eq!(
+            action["arguments"],
+            json!({
+                "mode":"describe","tool":"command","route":"scope.candidates.begin"
+            })
+        );
+        let route_contract = &action["route_contract"];
+        assert_eq!(route_contract["kind"], "route");
+        assert_eq!(route_contract["tool"], "command");
+        assert_eq!(route_contract["route"], "scope.candidates.begin");
+        let required = route_contract["params_schema"]["required"]
+            .as_array()
+            .expect("described route has a required-parameter schema");
+        for field in [
+            "request_id",
+            "program_id",
+            "program_revision",
+            "boundary",
+            "input",
+        ] {
+            assert!(required.iter().any(|required| required == field), "{field}");
+        }
+        let described = exchange(
+            &mut input,
+            &mut output,
+            json!({
+                "jsonrpc":"2.0","id":7,"method":"tools/call",
+                "params":{"name":action["tool"],"arguments":action["arguments"],
+                    "_meta":{"threadId":native_id}}
+            }),
+        )
+        .await;
+        let schema = payload(&described);
+        assert_eq!(schema["kind"], "route");
+        assert_eq!(schema["tool"], "command");
+        assert_eq!(schema["route"], "scope.candidates.begin");
+        assert!(
+            schema["params_schema"]["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|field| field == "request_id")
+        );
+        if reconnect == 0 {
+            println!(
+                "schema_refusal_smoke={}",
+                json!({
+                    "error_code":refusal["error"]["code"],
+                    "refusal":refusal["error"]["refusal"],
+                    "ready_call":action,
+                    "described_route":schema["route"],
+                    "schema_required":schema["params_schema"]["required"]
+                })
+            );
+
+            let pipeline_schema_matrix = [
+                ("query", "slice.pipeline.context", "WP6-SCHEMA-CONTEXT-01"),
+                (
+                    "query",
+                    "slice.pipeline.instruction",
+                    "WP6-SCHEMA-INSTRUCTION-01",
+                ),
+                ("command", "slice.pipeline.begin", "WP6-SCHEMA-BEGIN-01"),
+                (
+                    "command",
+                    "slice.pipeline.run.migrate",
+                    "WP6-SCHEMA-MIGRATION-01",
+                ),
+                (
+                    "command",
+                    "slice.pipeline.phase.complete",
+                    "WP6-SCHEMA-COMPLETE-01",
+                ),
+                ("command", "slice.pipeline.input", "WP6-SCHEMA-INPUT-01"),
+                (
+                    "command",
+                    "slice.pipeline.delivery.escalate",
+                    "WP6-SCHEMA-DELIVERY-01",
+                ),
+                (
+                    "command",
+                    "slice.pipeline.checkpoint.resolve",
+                    "WP6-SCHEMA-CHECKPOINT-01",
+                ),
+                (
+                    "command",
+                    "slice.pipeline.evidence_artifact.register",
+                    "WP6-SCHEMA-EVIDENCE-REGISTER-01",
+                ),
+                (
+                    "command",
+                    "slice.pipeline.evidence_artifact.finalize",
+                    "WP6-SCHEMA-EVIDENCE-FINALIZE-01",
+                ),
+                (
+                    "query",
+                    "slice.pipeline.evidence_artifact.read",
+                    "WP6-SCHEMA-EVIDENCE-READ-01",
+                ),
+            ];
+            let mut observed = Vec::new();
+            for (index, (tool, route, rule)) in pipeline_schema_matrix.iter().enumerate() {
+                let rejected = exchange(
+                    &mut input,
+                    &mut output,
+                    json!({
+                        "jsonrpc":"2.0","id":100 + index,"method":"tools/call",
+                        "params":{"name":tool,"arguments":{"route":route,"params":{}},
+                            "_meta":{"threadId":native_id}}
+                    }),
+                )
+                .await;
+                let rejected = payload(&rejected);
+                assert_pipeline_refusal(&rejected, rule);
+                observed.push(json!({
+                    "route":route,
+                    "rule":rejected["error"]["refusal"]["rule"],
+                    "code":rejected["error"]["refusal"]["code"]
+                }));
+            }
+            println!("pipeline_schema_refusal_matrix={}", Value::Array(observed));
+        }
+
         drop(input);
         let exit = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
             .await

@@ -16,6 +16,7 @@ fn begin(delivery_mode: Option<PipelineDeliveryMode>) -> BeginPipelineRun {
         slice_id: Uuid::new_v4(),
         slice_revision: 1,
         delivery_mode,
+        definition_version: None,
         inquiry: None,
         source_checkpoint: None,
         qualification_reason: "Agent reports that this mode fits the bounded task.".into(),
@@ -52,6 +53,19 @@ fn begin_resolves_definition_default_and_rejects_modes_outside_allowlist() {
             .validate(&full)
             .is_err()
     );
+}
+
+#[test]
+fn begin_definition_selector_must_match_the_pinned_snapshot() {
+    let definition = definition();
+    let mut request = begin(None);
+    request.definition_version = Some(definition.version.clone());
+    assert!(request.validate(&definition).is_ok());
+
+    request.definition_version = Some(String::new());
+    assert!(request.validate(&definition).is_err());
+    request.definition_version = Some("0.7.0-native.k1k5".into());
+    assert!(request.validate(&definition).is_err());
 }
 
 #[test]

@@ -34,7 +34,7 @@ pub(crate) async fn verify_runtime_role(pool: &PgPool) -> Result<()> {
                          'native_planning_receipts', 'slice_pipeline_runs',
                          'slice_pipeline_phase_attempts', 'slice_pipeline_phase_outputs',
                          'slice_pipeline_output_bindings', 'slice_pipeline_inputs',
-                         'slice_pipeline_receipts'
+                         'slice_pipeline_receipts','pipeline_delivery_receipts','pipeline_evidence_artifacts'
                          ,'durable_knowledge_capability','workspace_knowledge_state','knowledge_changes','knowledge_unit_heads',
                          'knowledge_publication_events','knowledge_revisions','knowledge_bindings',
                          'knowledge_command_receipts','pipeline_knowledge_manifests','knowledge_effect_outbox',

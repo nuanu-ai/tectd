@@ -34,9 +34,7 @@ pub(crate) async fn save_review(
         request.snapshot_id,
         request.input_cursor,
     )?;
-    if locked.1 != "review_required" {
-        return Err(Error::InvalidArguments);
-    }
+    require_review_status(&locked.1)?;
     if request.review.verdict == SlicePlanReviewVerdict::Ready
         && request.review.findings.iter().any(|f| f.material)
     {
@@ -92,6 +90,32 @@ pub(crate) async fn save_review(
     )
     .await?;
     Ok(result)
+}
+
+fn require_review_status(status: &str) -> Result<()> {
+    if status == "review_required" {
+        Ok(())
+    } else {
+        Err(Error::refused(
+            tect_domain::RefusalCode::ReviewRequired,
+            "request_review",
+            "review_required_candidate_set",
+        ))
+    }
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    #[test]
+    fn non_review_candidate_set_has_typed_review_refusal() {
+        let error = require_review_status("draft").unwrap_err();
+        assert_eq!(
+            error.refusal().unwrap().code,
+            tect_domain::RefusalCode::ReviewRequired
+        );
+    }
 }
 
 pub(crate) async fn record_input(

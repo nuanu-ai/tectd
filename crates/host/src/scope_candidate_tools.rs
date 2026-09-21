@@ -25,6 +25,11 @@ pub(crate) enum ScopeCandidateInvocation {
     Review(ReviewCandidateSet),
     RecordInput(RecordCandidateInput),
     Refresh(RefreshCandidateSet),
+    DeltaApply(tect_domain::CandidateDeltaBatch),
+    DeltaStatus {
+        candidate_set_id: Uuid,
+        idempotency_key: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -142,6 +147,20 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<ScopeCandidateInvoca
         },
         "record_candidate_input" => decode(arguments).map(ScopeCandidateInvocation::RecordInput),
         "refresh_candidate_set" => decode(arguments).map(ScopeCandidateInvocation::Refresh),
+        "scope_candidate_delta" => decode(arguments).map(ScopeCandidateInvocation::DeltaApply),
+        "scope_candidate_delta_status" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Status {
+                candidate_set_id: Uuid,
+                idempotency_key: String,
+            }
+            let value: Status = decode(arguments)?;
+            Ok(ScopeCandidateInvocation::DeltaStatus {
+                candidate_set_id: value.candidate_set_id,
+                idempotency_key: value.idempotency_key,
+            })
+        }
         _ => Err(Error::InvalidArguments),
     }
 }
@@ -157,7 +176,65 @@ fn page(args: PageArguments, view: CandidateContextView) -> Result<ScopeCandidat
 }
 
 fn decode<T: for<'de> Deserialize<'de>>(arguments: Value) -> Result<T> {
-    serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)
+    serde_json::from_value(arguments.clone()).map_err(|reason| {
+        let message = reason.to_string();
+        let pointer = message
+            .strip_prefix("missing field `")
+            .and_then(|value| value.split('`').next())
+            .and_then(|field| candidate_missing_pointer(&arguments, field));
+        if let Some(pointer) = pointer {
+            Error::invalid_arguments_at(message, pointer)
+        } else {
+            Error::invalid_arguments_from(message)
+        }
+    })
+}
+
+fn candidate_missing_pointer(value: &Value, field: &str) -> Option<String> {
+    let draft = value.get("draft")?;
+    let collections: &[(&str, &[&str])] = &[
+        (
+            "goals",
+            &["identity", "text", "source_ref_id", "resolution"],
+        ),
+        (
+            "evidence",
+            &["identity", "kind", "summary", "source_ref_id"],
+        ),
+        (
+            "candidates",
+            &[
+                "identity",
+                "title",
+                "outcome",
+                "trigger",
+                "delivered_behavior",
+                "proof",
+                "coverage_goals",
+            ],
+        ),
+        ("blockers", &["identity", "summary", "source_ref_id"]),
+    ];
+    for (collection, required) in collections {
+        if required.contains(&field)
+            && let Some((index, _)) =
+                draft
+                    .get(collection)
+                    .and_then(Value::as_array)
+                    .and_then(|items| {
+                        items
+                            .iter()
+                            .enumerate()
+                            .find(|(_, item)| item.get(field).is_none())
+                    })
+        {
+            return Some(format!("/params/draft/{collection}/{index}/{field}"));
+        }
+    }
+    if ["boundary", "goals", "candidates"].contains(&field) && draft.get(field).is_none() {
+        return Some(format!("/params/draft/{field}"));
+    }
+    None
 }
 
 fn reject_optional_nulls(value: &Value) -> Result<()> {
@@ -254,6 +331,34 @@ mod tests {
     }
 
     #[test]
+    fn nested_candidate_decode_failure_reports_exact_json_pointer() {
+        let id = "00000000-0000-4000-8000-000000000001";
+        let error = parse(
+            "save_candidate_set",
+            json!({
+                "kind":"draft","candidate_set_id":id,"revision":1,
+                "snapshot_id":id,"input_cursor":1,"request_id":id,
+                "draft":{
+                    "boundary":"finite","goals":[],
+                    "candidates":[{
+                        "identity":{"local":"candidate_one"},
+                        "title":"One","outcome":"Outcome","trigger":"Trigger",
+                        "proof":"Proof","coverage_goals":[]
+                    }]
+                }
+            }),
+        )
+        .err()
+        .unwrap();
+        let diagnostic = error.argument_diagnostic().unwrap();
+        assert_eq!(diagnostic.violation_code, "required_field_missing");
+        assert_eq!(
+            diagnostic.pointer,
+            "/params/draft/candidates/0/delivered_behavior"
+        );
+    }
+
+    #[test]
     fn save_draft_accepts_a_planning_manifest_guard() {
         let id = Uuid::new_v4();
         let value = json!({
@@ -272,5 +377,19 @@ mod tests {
                 if request.candidate_set_id == id && request.consumed_knowledge.is_some()
                     && request.draft.validate().is_ok()
         ));
+    }
+
+    #[test]
+    fn delta_routes_decode_apply_and_status() {
+        let id = Uuid::new_v4();
+        let apply = json!({"candidate_set_id":id,"expected_revision":2,"idempotency_key":"k",
+            "operations":[{"operation":"coverage.link","candidate_id":id,"goal_id":Uuid::new_v4()}]});
+        assert!(
+            matches!(parse("scope_candidate_delta", apply), Ok(ScopeCandidateInvocation::DeltaApply(request)) if request.expected_revision == 2)
+        );
+        let status = json!({"candidate_set_id":id,"idempotency_key":"k"});
+        assert!(
+            matches!(parse("scope_candidate_delta_status", status), Ok(ScopeCandidateInvocation::DeltaStatus { candidate_set_id, .. }) if candidate_set_id == id)
+        );
     }
 }

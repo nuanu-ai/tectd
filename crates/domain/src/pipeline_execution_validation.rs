@@ -39,6 +39,7 @@ impl PipelineDefinitionSnapshot {
                 || allowed_dispositions.len() != phase.allowed_dispositions.len()
                 || verdict_routes.len() != phase.verdict_routes.len()
                 || phase.disposition_required && phase.allowed_dispositions.is_empty()
+                || self.version.starts_with("0.7") && phase.required_fields.len() > 8
                 || phase
                     .required_fields
                     .iter()
@@ -78,6 +79,12 @@ impl PipelineDefinitionSnapshot {
                                 || !phase.allowed_dispositions.is_empty()
                                     && !phase.allowed_dispositions.contains(value)
                         })
+                        || self.version.starts_with("0.7")
+                            && route.outcome == PipelinePhaseOutcome::Completed
+                            && phase
+                                .required_dispositions
+                                .iter()
+                                .any(|required| !route.dispositions.contains(required))
                         || match route.transition {
                             PipelineTransition::Complete => {
                                 route.outcome != PipelinePhaseOutcome::Completed
@@ -101,6 +108,17 @@ impl PipelineDefinitionSnapshot {
                 .chain(&phase.skills)
                 .chain(&phase.resources)
             {
+                if self.version.starts_with("0.7") && instruction.body.len() > 4 * 1024 {
+                    return Err(Error::refused_at(
+                        RefusalCode::PayloadTooLarge,
+                        "WP6-INSTRUCTION-SIZE-01",
+                        "pipeline_definition.phases[].instructions[].body",
+                        "at most 4096 UTF-8 bytes",
+                        instruction.body.len().to_string(),
+                        "reduce_instruction_body",
+                        "instruction_body",
+                    ));
+                }
                 validate_instruction(instruction)?;
             }
             validate_artifact_definition(phase)?;
@@ -166,6 +184,9 @@ impl BeginPipelineRun {
             || self.slice_id.is_nil()
             || self.slice_revision < 1
             || self.qualification_reason.trim().is_empty()
+            || self.definition_version.as_deref().is_some_and(|version| {
+                version.trim().is_empty() || version.len() > 128 || version != definition.version
+            })
             || !definition
                 .allowed_modes
                 .contains(&self.delivery_mode.unwrap_or(definition.default_mode))
@@ -190,6 +211,9 @@ impl PipelineRunContextQuery {
                         .as_ref()
                         .is_some_and(|value| !value.trim().is_empty())
             }
+            PipelineRunContextView::DeliveryReceipt => {
+                self.output_id.is_none() && self.digest.is_none()
+            }
         };
         if self.run_id.is_nil() || !valid_selector {
             Err(Error::InvalidArguments)
@@ -201,10 +225,13 @@ impl PipelineRunContextQuery {
 
 impl CompletePipelinePhase {
     pub fn validate(&self, definition: &PipelineDefinitionSnapshot) -> Result<()> {
+        if definition.version.starts_with("0.7") {
+            reject_agent_supplied_proof(self)?;
+        }
         if self.request_id.is_nil()
             || self.run_id.is_nil()
             || self.run_revision < 1
-            || self.output.body.trim().is_empty()
+            || !definition.version.starts_with("0.7") && self.output.body.trim().is_empty()
             || self.output.producer_context_id.trim().is_empty()
             || self.output.producer_context_id.len() > MAX_PIPELINE_CONTEXT_ID_BYTES
             || self
@@ -245,21 +272,36 @@ impl CompletePipelinePhase {
                 return Err(Error::InvalidArguments);
             }
         }
-        if phase.required_fields.iter().any(|key| {
+        if let Some(field) = phase.required_fields.iter().find(|key| {
             self.output
                 .fields
-                .get(key)
+                .get(*key)
                 .is_none_or(|v| v.trim().is_empty())
-        }) || (!phase.allowed_verdicts.is_empty()
+        }) {
+            return Err(Error::Refused(Box::new(
+                Refusal::new(RefusalCode::InvalidOutput)
+                    .with_message(RefusalCode::InvalidOutput.message())
+                    .with_rule("WP6-OUTPUT-FIELD-01")
+                    .with_path(format!("arguments.params.output.fields.{field}"))
+                    .with_expected("non-empty string required by the current phase contract")
+                    .with_actual("missing or empty")
+                    .with_next_action("supply_required_phase_field")
+                    .with_required(field.clone()),
+            )));
+        }
+        if (!phase.allowed_verdicts.is_empty()
             && self
                 .output
                 .verdict
                 .as_ref()
                 .is_none_or(|v| !phase.allowed_verdicts.contains(v)))
-            || phase
-                .required_dispositions
-                .iter()
-                .any(|required| !self.output.dispositions.contains(required))
+            || (!definition.version.starts_with("0.7")
+                || phase.verdict_routes.is_empty()
+                || self.outcome == PipelinePhaseOutcome::Completed)
+                && phase
+                    .required_dispositions
+                    .iter()
+                    .any(|required| !self.output.dispositions.contains(required))
             || phase.disposition_required && self.output.dispositions.is_empty()
             || !phase.allowed_dispositions.is_empty()
                 && self
@@ -297,11 +339,22 @@ impl CompletePipelinePhase {
             })
             || phase.fresh_reviewer_input && self.output.reviewer_context.is_none()
         {
+            if definition.version.starts_with("0.7") && missing_test_target(phase, &self.output) {
+                return Err(Error::refused_at(
+                    RefusalCode::NoTestTarget,
+                    "WP6-TEST-TARGET-01",
+                    "arguments.params.output.fields.selected_test_target",
+                    "a non-empty executable test target",
+                    "missing or empty",
+                    "select_test_target",
+                    "selected_test_target",
+                ));
+            }
             return Err(Error::InvalidArguments);
         }
         for constraint in &phase.output_constraints {
             if !output_constraint_satisfied(&self.output, constraint) {
-                return Err(Error::InvalidArguments);
+                return Err(output_constraint_refusal(constraint, &self.output));
             }
         }
         validate_completion_constraints(self, definition, phase)?;
@@ -346,7 +399,24 @@ impl CompletePipelinePhase {
             .map(|skill| (&skill.id, &skill.version, &skill.digest))
             .collect::<BTreeSet<_>>();
         if reads != expected_reads || reads.len() != self.output.skill_reads.len() {
-            return Err(Error::InvalidArguments);
+            let expected_values = expected_reads
+                .iter()
+                .map(|(id, version, digest)| (id.as_str(), version.as_str(), digest.as_str()))
+                .collect::<Vec<_>>();
+            let actual_values = reads
+                .iter()
+                .map(|(id, version, digest)| (id.as_str(), version.as_str(), digest.as_str()))
+                .collect::<Vec<_>>();
+            let (expected, actual) = phase_read_receipt_details(&expected_values, &actual_values);
+            return Err(phase_read_receipt_refusal(
+                "skill",
+                "WP6-SKILL-READ-01",
+                "arguments.params.output.skill_reads",
+                &expected,
+                &actual,
+                self.output.skill_reads.len(),
+                reads.len(),
+            ));
         }
         let resource_reads = self
             .output
@@ -362,7 +432,24 @@ impl CompletePipelinePhase {
         if resource_reads != expected_resource_reads
             || resource_reads.len() != self.output.resource_reads.len()
         {
-            return Err(Error::InvalidArguments);
+            let expected_values = expected_resource_reads
+                .iter()
+                .map(|(id, version, digest)| (id.as_str(), version.as_str(), digest.as_str()))
+                .collect::<Vec<_>>();
+            let actual_values = resource_reads
+                .iter()
+                .map(|(id, version, digest)| (id.as_str(), version.as_str(), digest.as_str()))
+                .collect::<Vec<_>>();
+            let (expected, actual) = phase_read_receipt_details(&expected_values, &actual_values);
+            return Err(phase_read_receipt_refusal(
+                "resource",
+                "WP6-RESOURCE-READ-01",
+                "arguments.params.output.resource_reads",
+                &expected,
+                &actual,
+                self.output.resource_reads.len(),
+                resource_reads.len(),
+            ));
         }
         match self.transition {
             PipelineTransition::Continue => {
@@ -399,6 +486,224 @@ impl CompletePipelinePhase {
         }
         Ok(())
     }
+}
+
+fn phase_read_receipt_details(
+    expected: &[(&str, &str, &str)],
+    actual: &[(&str, &str, &str)],
+) -> (String, String) {
+    for &(id, version, digest) in expected {
+        if let Some((_, _, actual_digest)) = actual
+            .iter()
+            .copied()
+            .find(|(actual_id, actual_version, _)| *actual_id == id && *actual_version == version)
+            && actual_digest != digest
+        {
+            return (
+                format!("{id}@{version} digest={digest}"),
+                format!("{id}@{version} digest={actual_digest}"),
+            );
+        }
+    }
+
+    let missing = expected
+        .iter()
+        .copied()
+        .filter(|receipt| !actual.contains(receipt))
+        .take(3)
+        .map(|(id, version, digest)| format!("digest={digest} for {id}@{version}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let unexpected = actual
+        .iter()
+        .copied()
+        .filter(|receipt| !expected.contains(receipt))
+        .take(3)
+        .map(|(id, version, digest)| format!("digest={digest} for {id}@{version}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    (missing, unexpected)
+}
+
+fn phase_read_receipt_refusal(
+    kind: &str,
+    rule: &'static str,
+    path: &'static str,
+    expected_reads: &str,
+    actual_reads: &str,
+    submitted_count: usize,
+    unique_count: usize,
+) -> Error {
+    let (next_action, required) = match kind {
+        "skill" => ("supply_exact_phase_skill_reads", "exact_phase_skill_reads"),
+        _ => (
+            "supply_exact_phase_resource_reads",
+            "exact_phase_resource_reads",
+        ),
+    };
+    let expected = bounded_refusal_detail(format!(
+        "exact pinned phase {kind} read receipts: [{expected_reads}]"
+    ));
+    let actual = bounded_refusal_detail(format!(
+        "submitted {submitted_count} receipt(s) ({} unique, {} duplicate): [{actual_reads}]",
+        unique_count,
+        submitted_count.saturating_sub(unique_count)
+    ));
+    Error::refused_at(
+        RefusalCode::InvalidOutput,
+        rule,
+        path,
+        expected,
+        actual,
+        next_action,
+        required,
+    )
+}
+
+fn bounded_refusal_detail(value: String) -> String {
+    const LIMIT: usize = 240;
+    const SUFFIX: &str = "...[truncated]";
+    if value.len() <= LIMIT {
+        return value;
+    }
+    let mut bounded = String::new();
+    for character in value.chars() {
+        if bounded.len() + character.len_utf8() + SUFFIX.len() > LIMIT {
+            break;
+        }
+        bounded.push(character);
+    }
+    bounded.push_str(SUFFIX);
+    bounded
+}
+
+fn output_constraint_refusal(
+    constraint: &PipelineOutputConstraint,
+    output: &PipelinePhaseOutputDraft,
+) -> Error {
+    let (field, expected, next_action) = match constraint {
+        PipelineOutputConstraint::CommandReceipt {
+            field,
+            required_status,
+            required_scope,
+            require_nonzero_exit,
+            target_field,
+            ..
+        } => (
+            field,
+            format!(
+                "JSON string {{command,target,status:{required_status},exit_code:{},fresh:true,skipped:false,scopes:[...{required_scope}...]}}{}",
+                if *require_nonzero_exit {
+                    "nonzero"
+                } else {
+                    "0"
+                },
+                target_field
+                    .as_ref()
+                    .map(|target| format!(" with target equal to output.fields.{target}"))
+                    .unwrap_or_default()
+            ),
+            "replace_command_receipt",
+        ),
+        PipelineOutputConstraint::ReviewerContextMode {
+            field,
+            independent_value,
+            self_value,
+        } => (
+            field,
+            format!(
+                "{independent_value} with fresh independent reviewer_context, or {self_value} without reviewer_context"
+            ),
+            "correct_current_plan_review",
+        ),
+        PipelineOutputConstraint::FieldEquals { field, value, .. } => {
+            (field, format!("exact string `{value}`"), "correct_field")
+        }
+        PipelineOutputConstraint::FieldOneOf { field, values, .. } => (
+            field,
+            format!("one of [{}]", values.join(", ")),
+            "correct_field",
+        ),
+        PipelineOutputConstraint::FieldsEqual {
+            field, other_field, ..
+        } => (
+            field,
+            format!("same value as output.fields.{other_field}"),
+            "correct_field",
+        ),
+        other => {
+            return Error::Refused(Box::new(
+                Refusal::new(RefusalCode::InvalidOutput)
+                    .with_message(RefusalCode::InvalidOutput.message())
+                    .with_rule("WP6-OUTPUT-CONSTRAINT-01")
+                    .with_path("arguments.params.output.fields")
+                    .with_expected(format!("current phase constraint {other:?}"))
+                    .with_actual("constraint not satisfied")
+                    .with_next_action("correct_phase_output")
+                    .with_required("valid_output"),
+            ));
+        }
+    };
+    let actual = output
+        .fields
+        .get(field)
+        .map(|value| {
+            if value.len() > 240 {
+                format!("{}...[truncated]", &value[..240])
+            } else {
+                value.clone()
+            }
+        })
+        .unwrap_or_else(|| "missing".to_owned());
+    Error::Refused(Box::new(
+        Refusal::new(RefusalCode::InvalidOutput)
+            .with_message(RefusalCode::InvalidOutput.message())
+            .with_rule("WP6-OUTPUT-CONSTRAINT-01")
+            .with_path(format!("arguments.params.output.fields.{field}"))
+            .with_expected(expected)
+            .with_actual(actual)
+            .with_next_action(next_action)
+            .with_required(field.clone()),
+    ))
+}
+
+fn missing_test_target(phase: &PipelinePhaseDefinition, output: &PipelinePhaseOutputDraft) -> bool {
+    phase.required_fields.iter().any(|key| {
+        key.contains("test_target")
+            && output
+                .fields
+                .get(key)
+                .is_none_or(|value| value.trim().is_empty())
+    })
+}
+
+fn reject_agent_supplied_proof(request: &CompletePipelinePhase) -> Result<()> {
+    if !request.consumed_outputs.is_empty() {
+        return Err(Error::refused_backend_proof(
+            "arguments.params.consumed_outputs",
+        ));
+    }
+    if !request.consumed_inputs.is_empty() {
+        return Err(Error::refused_backend_proof(
+            "arguments.params.consumed_inputs",
+        ));
+    }
+    if request.consumed_knowledge.is_some() {
+        return Err(Error::refused_backend_proof(
+            "arguments.params.consumed_knowledge",
+        ));
+    }
+    if !request.output.skill_reads.is_empty() {
+        return Err(Error::refused_backend_proof(
+            "arguments.params.output.skill_reads",
+        ));
+    }
+    if !request.output.resource_reads.is_empty() {
+        return Err(Error::refused_backend_proof(
+            "arguments.params.output.resource_reads",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_terminal(value: &PipelineTerminalResultDraft) -> Result<()> {
@@ -526,7 +831,96 @@ impl EscalatePipelineDelivery {
 #[cfg(test)]
 mod source_amendment_tests {
     use super::*;
+    use std::collections::BTreeMap;
     use uuid::Uuid;
+
+    fn proof_test_definition(version: &str) -> PipelineDefinitionSnapshot {
+        let instruction = PipelineInstructionSnapshot {
+            id: "instruction".into(),
+            version: "1".into(),
+            digest: "instruction-digest".into(),
+            body: "instruction".into(),
+            origin_refs: Vec::new(),
+        };
+        let phase = PipelinePhaseDefinition {
+            id: "phase-1".into(),
+            ordinal: 1,
+            title: "Phase".into(),
+            required: true,
+            disposition_required: false,
+            instructions: vec![instruction.clone()],
+            skills: Vec::new(),
+            resources: Vec::new(),
+            required_artifacts: Vec::new(),
+            validator_contracts: Vec::new(),
+            followup_contracts: Vec::new(),
+            required_fields: Vec::new(),
+            allowed_verdicts: Vec::new(),
+            required_dispositions: Vec::new(),
+            allowed_dispositions: Vec::new(),
+            output_constraints: Vec::new(),
+            verdict_routes: Vec::new(),
+            allowed_backward_to: Vec::new(),
+            fresh_reviewer_input: false,
+            retry_policy: PipelinePhaseRetryPolicy::Repeatable,
+            output_contract: "contract".into(),
+        };
+        PipelineDefinitionSnapshot {
+            kind: PipelineKind::LightweightTddDevelopment,
+            version: version.into(),
+            digest: "definition-digest".into(),
+            overview: instruction,
+            default_mode: PipelineDeliveryMode::Phasewise,
+            allowed_modes: vec![PipelineDeliveryMode::Phasewise],
+            phases: vec![phase],
+            completion_contract: "completion".into(),
+            escalation_contract: "escalation".into(),
+            forbidden_claims: Vec::new(),
+        }
+    }
+
+    fn proof_test_completion() -> CompletePipelinePhase {
+        CompletePipelinePhase {
+            request_id: Uuid::new_v4(),
+            run_id: Uuid::new_v4(),
+            run_revision: 1,
+            phase_id: "phase-1".into(),
+            outcome: PipelinePhaseOutcome::Completed,
+            transition: PipelineTransition::Continue,
+            output: PipelinePhaseOutputDraft {
+                body: "body".into(),
+                producer_context_id: "ctx".into(),
+                fields: BTreeMap::new(),
+                verdict: None,
+                dispositions: Vec::new(),
+                skill_reads: Vec::new(),
+                resource_reads: Vec::new(),
+                artifacts: Vec::new(),
+                evidence_artifacts: Vec::new(),
+                validator_receipts: Vec::new(),
+                followup_proposal: None,
+                knowledge_publication: None,
+                reviewer_context: None,
+                reference: None,
+            },
+            consumed_outputs: vec![PipelineConsumedOutput {
+                phase_id: "previous".into(),
+                output_revision: 1,
+                digest: "output-digest".into(),
+            }],
+            consumed_inputs: vec![PipelineConsumedInput {
+                input_id: Uuid::new_v4(),
+                sequence: 1,
+                digest: "input-digest".into(),
+            }],
+            revisit_phase_id: None,
+            escalation_target: None,
+            terminal_result: None,
+            publish_blocked_result: false,
+            consumed_knowledge: None,
+            research_checkpoint: None,
+        }
+    }
 
     fn request(body: String) -> RecordPipelineInput {
         let digest = Sha256::digest(body.as_bytes())
@@ -618,5 +1012,137 @@ mod source_amendment_tests {
             .artifact
             .digest = "0".repeat(64);
         assert_eq!(digest.validate(), Err(Error::InvalidArguments));
+    }
+
+    #[test]
+    fn missing_test_target_has_typed_refusal_predicate() {
+        let phase = PipelinePhaseDefinition {
+            id: "tdd".into(),
+            ordinal: 1,
+            title: "TDD".into(),
+            required: true,
+            disposition_required: false,
+            instructions: vec![],
+            skills: vec![],
+            resources: vec![],
+            required_artifacts: vec![],
+            validator_contracts: vec![],
+            followup_contracts: vec![],
+            required_fields: vec!["selected_test_target".into()],
+            allowed_verdicts: vec![],
+            required_dispositions: vec![],
+            allowed_dispositions: vec![],
+            output_constraints: vec![],
+            verdict_routes: vec![],
+            allowed_backward_to: vec![],
+            fresh_reviewer_input: false,
+            retry_policy: PipelinePhaseRetryPolicy::Repeatable,
+            output_contract: "target".into(),
+        };
+        let output = PipelinePhaseOutputDraft {
+            body: "body".into(),
+            producer_context_id: "ctx".into(),
+            fields: BTreeMap::new(),
+            verdict: None,
+            dispositions: vec![],
+            skill_reads: vec![],
+            resource_reads: vec![],
+            artifacts: vec![],
+            evidence_artifacts: vec![],
+            validator_receipts: vec![],
+            followup_proposal: None,
+            knowledge_publication: None,
+            reviewer_context: None,
+            reference: None,
+        };
+        assert!(missing_test_target(&phase, &output));
+    }
+
+    #[test]
+    fn backend_proof_is_rejected_only_for_current_definitions_with_exact_field_paths() {
+        let legacy = proof_test_completion();
+        assert_eq!(legacy.validate(&proof_test_definition("0.6.0")), Ok(()));
+
+        let definition = proof_test_definition("0.7.0-native.k1k5");
+        for (field, path) in [
+            ("consumed_outputs", "arguments.params.consumed_outputs"),
+            ("consumed_inputs", "arguments.params.consumed_inputs"),
+        ] {
+            let mut request = proof_test_completion();
+            if field == "consumed_outputs" {
+                request.consumed_inputs.clear();
+            } else {
+                request.consumed_outputs.clear();
+            }
+            let error = request.validate(&definition).unwrap_err();
+            let refusal = error.refusal().expect("typed backend proof refusal");
+            assert_eq!(error.code(), "BACKEND_DERIVED_PROOF_REQUIRED");
+            assert_eq!(refusal.code, RefusalCode::BackendDerivedProofRequired);
+            assert_eq!(refusal.rule.as_deref(), Some("WP3-PROOF-01"));
+            assert_eq!(refusal.path.as_deref(), Some(path));
+            assert_eq!(
+                refusal.next_action.as_deref(),
+                Some("omit_agent_supplied_proof")
+            );
+            assert_eq!(
+                refusal.expected.as_deref(),
+                Some("omitted; backend derives the proof")
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_resource_read_digest_mismatch_is_a_precise_invalid_output_refusal() {
+        let mut definition = proof_test_definition("0.6.0");
+        definition.phases[0]
+            .resources
+            .push(PipelineInstructionSnapshot {
+                id: "test-resource".into(),
+                version: "1".into(),
+                digest: "expected-digest".into(),
+                body: "resource".into(),
+                origin_refs: Vec::new(),
+            });
+        let mut request = proof_test_completion();
+        request
+            .output
+            .resource_reads
+            .push(PipelineSkillReadReceipt {
+                instruction_id: "test-resource".into(),
+                version: "1".into(),
+                digest: "expected-digest".into(),
+            });
+        assert_eq!(request.validate(&definition), Ok(()));
+
+        request.output.resource_reads[0].digest = "substituted-digest".into();
+        let error = request.validate(&definition).unwrap_err();
+        let refusal = error.refusal().expect("typed resource-read refusal");
+        assert_eq!(error.code(), "INVALID_OUTPUT");
+        assert_eq!(refusal.code, RefusalCode::InvalidOutput);
+        assert_eq!(refusal.rule.as_deref(), Some("WP6-RESOURCE-READ-01"));
+        assert_eq!(
+            refusal.path.as_deref(),
+            Some("arguments.params.output.resource_reads")
+        );
+        assert_eq!(
+            refusal.expected.as_deref(),
+            Some(
+                "exact pinned phase resource read receipts: [test-resource@1 digest=expected-digest]"
+            )
+        );
+        assert_eq!(
+            refusal.actual.as_deref(),
+            Some(
+                "submitted 1 receipt(s) (1 unique, 0 duplicate): [test-resource@1 digest=substituted-digest]"
+            )
+        );
+        assert_eq!(
+            refusal.next_action.as_deref(),
+            Some("supply_exact_phase_resource_reads")
+        );
+        assert_eq!(
+            refusal.required.as_deref(),
+            Some("exact_phase_resource_reads")
+        );
     }
 }

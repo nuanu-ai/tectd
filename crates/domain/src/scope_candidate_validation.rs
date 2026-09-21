@@ -118,11 +118,7 @@ impl ScopeCandidateDraft {
             ] {
                 required(text, field)?;
             }
-            if candidate.coverage_goals.is_empty() {
-                return Err(invalid(format!(
-                    "candidates[{index}].coverage_goals is empty"
-                )));
-            }
+            require_candidate_coverage(!candidate.coverage_goals.is_empty())?;
             if candidate
                 .change_rationale
                 .as_ref()
@@ -198,6 +194,32 @@ impl ScopeCandidateDraft {
             _ => {}
         }
         Ok(())
+    }
+}
+
+fn require_candidate_coverage(has_coverage: bool) -> Result<()> {
+    if has_coverage {
+        Ok(())
+    } else {
+        Err(Error::refused(
+            crate::RefusalCode::CoverageIncomplete,
+            "add_coverage",
+            "coverage_goals",
+        ))
+    }
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    #[test]
+    fn missing_candidate_coverage_has_typed_refusal() {
+        let error = require_candidate_coverage(false).unwrap_err();
+        assert_eq!(
+            error.refusal().unwrap().code,
+            crate::RefusalCode::CoverageIncomplete
+        );
     }
 }
 

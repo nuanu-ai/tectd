@@ -146,7 +146,8 @@ fn build_snapshot(revision: &str, kinds: &[PipelineKind]) -> PipelineCatalogueSn
                     ],
                 ))
             } else {
-                crate::pipeline_definitions::delivery_modes(pipeline.kind)
+                crate::pipeline_definitions::delivery_modes_v07(pipeline.kind)
+                    .or_else(|| crate::pipeline_definitions::delivery_modes(pipeline.kind))
             };
             let executable = true;
             PipelineCatalogueEntry {

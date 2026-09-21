@@ -71,28 +71,42 @@ pub use setup_page::{
     AppliedSetup, SetupContext, SetupDiscovery, SetupInput, SetupPage, SetupSummary,
 };
 
+mod candidate_delta;
 mod native_planning;
 mod native_planning_receipt;
 mod native_planning_validation;
 mod pipeline_artifacts;
 mod pipeline_checkpoint;
 mod pipeline_constraints;
+mod pipeline_evidence;
 mod pipeline_execution;
 mod pipeline_execution_validation;
 mod pipeline_followups;
 mod pipeline_inquiry;
+mod pipeline_migration;
 mod pipelines;
+mod refusal;
 mod scope_candidate_draft;
 mod scope_candidate_validation;
 mod scope_candidates;
+pub use candidate_delta::{
+    BlockerDeltaValue, CandidateDeltaBatch, CandidateDeltaOperation, CandidateDeltaReceipt,
+    CandidateDeltaTargetKind, CandidateDeltaValue, EvidenceDeltaValue, GoalDeltaValue,
+    MAX_DELTA_OPERATIONS, MAX_IDEMPOTENCY_KEY_BYTES,
+    stale_reasons as candidate_delta_stale_reasons,
+    validate_replay as validate_candidate_delta_replay,
+};
 pub use native_planning::*;
 pub use native_planning_receipt::NativePlanningReceiptRequest;
 pub use native_planning_validation::validate_slice_graph;
 pub use pipeline_checkpoint::*;
+pub use pipeline_evidence::*;
 pub use pipeline_execution::*;
 pub use pipeline_followups::*;
 pub use pipeline_inquiry::*;
+pub use pipeline_migration::*;
 pub use pipelines::*;
+pub use refusal::{Refusal, RefusalCode};
 pub use scope_candidate_draft::{
     BlockerDraft, BlockerEntity, CandidateAdded, CandidateChanged, CandidateDecision,
     CandidateDecisionKind, CandidateDelta, CandidateDraft, CandidateEntity, CandidateFinding,

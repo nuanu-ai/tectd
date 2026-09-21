@@ -23,6 +23,7 @@ pub trait UnitOfWork:
     Send
     + crate::SetupStore
     + crate::ScopeCandidateStore
+    + crate::CandidateDeltaStore
     + crate::NativePlanningStore
     + crate::PipelineExecutionStore
     + crate::DurableKnowledgeStore

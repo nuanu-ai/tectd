@@ -7,7 +7,7 @@ use tect_domain::{
 };
 
 pub(crate) const METHOD_ID: &str = "tectd-slice-candidates";
-pub(crate) const METHOD_REVISION: &str = "2";
+pub(crate) const METHOD_REVISION: &str = "3";
 pub(crate) const METHOD_BODY: &str =
     include_str!("../../../skills/tectd-slice-candidates/SKILL.md");
 
@@ -72,6 +72,19 @@ mod tests {
                 .iter()
                 .all(|rule| rule.revision == "2" && !rule.text.trim().is_empty())
         );
-        assert_eq!(method_snapshot().revision, "2");
+        assert_eq!(method_snapshot().revision, "3");
+        assert!(method_snapshot().body.contains(
+            "supported consumer path from an entry or delivery boundary to the promised result"
+        ));
+        assert!(method_snapshot().body.contains(
+            "Direct tests of a new internal implementation alone do not establish the path"
+        ));
+        assert_eq!(crate::scope_guidance::REGISTRY_REVISION, "3");
+        let vertical_rule = rules
+            .iter()
+            .find(|rule| rule.id == "vertical-provable-slices")
+            .unwrap();
+        assert_eq!(vertical_rule.revision, "2");
+        assert!(!vertical_rule.text.contains("consumer path"));
     }
 }

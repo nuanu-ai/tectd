@@ -27,14 +27,16 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
                          'scope_candidate_sets', 'scope_candidate_inputs',
                          'scope_candidate_contents', 'scope_candidate_snapshots',
                          'scope_candidate_source_refs', 'scope_candidate_drafts',
-                         'scope_candidate_reviews', 'scope_candidate_receipts',
+                         'scope_candidate_reviews', 'scope_candidate_receipts', 'scope_candidate_delta_receipts', 'scope_candidate_delta_operations',
+                         'scope_candidate_delta_candidates', 'scope_candidate_delta_goals', 'scope_candidate_delta_coverage',
+                         'scope_candidate_delta_evidence', 'scope_candidate_delta_blockers', 'scope_candidate_delta_supersessions',
                          'native_scopes', 'slice_candidate_sets', 'slice_planning_inputs',
                          'slice_planning_snapshots', 'slice_candidate_drafts',
                          'slice_candidate_reviews', 'native_slices', 'slice_results',
                          'native_planning_receipts', 'slice_pipeline_runs',
                          'slice_pipeline_phase_attempts', 'slice_pipeline_phase_outputs',
                          'slice_pipeline_output_bindings', 'slice_pipeline_inputs',
-                         'slice_pipeline_receipts'
+                         'slice_pipeline_receipts','slice_pipeline_run_migrations','pipeline_delivery_receipts','pipeline_evidence_artifacts'
                          ,'durable_knowledge_capability','workspace_knowledge_state','knowledge_changes','knowledge_unit_heads',
                          'knowledge_publication_events','knowledge_revisions','knowledge_bindings',
                          'knowledge_command_receipts','pipeline_knowledge_manifests','knowledge_effect_outbox'
@@ -100,22 +102,30 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
         format!(
             "REVOKE ALL PRIVILEGES ON TABLE scope_candidate_sets, scope_candidate_inputs, \
              scope_candidate_contents, scope_candidate_snapshots, scope_candidate_source_refs, \
-             scope_candidate_drafts, scope_candidate_reviews, scope_candidate_receipts \
+             scope_candidate_drafts, scope_candidate_reviews, scope_candidate_receipts, scope_candidate_delta_operations, \
+             scope_candidate_delta_candidates, scope_candidate_delta_goals, scope_candidate_delta_coverage, \
+             scope_candidate_delta_evidence, scope_candidate_delta_blockers, scope_candidate_delta_supersessions \
              FROM {quoted_role}"
         ),
         format!("GRANT SELECT, INSERT, UPDATE ON TABLE scope_candidate_sets TO {quoted_role}"),
         format!(
             "GRANT SELECT, INSERT ON TABLE scope_candidate_inputs, scope_candidate_contents, \
              scope_candidate_snapshots, scope_candidate_source_refs, scope_candidate_drafts, \
-             scope_candidate_reviews, scope_candidate_receipts TO {quoted_role}"
+             scope_candidate_reviews, scope_candidate_receipts, scope_candidate_delta_receipts, scope_candidate_delta_operations, \
+             scope_candidate_delta_coverage, scope_candidate_delta_supersessions TO {quoted_role}"
         ),
+        format!(
+            "GRANT SELECT, INSERT, UPDATE ON TABLE scope_candidate_delta_candidates, \
+             scope_candidate_delta_goals, scope_candidate_delta_evidence, scope_candidate_delta_blockers TO {quoted_role}"
+        ),
+        format!("GRANT DELETE ON TABLE scope_candidate_delta_coverage TO {quoted_role}"),
         format!(
             "REVOKE ALL PRIVILEGES ON TABLE native_scopes, slice_candidate_sets, \
              slice_planning_inputs, slice_planning_snapshots, slice_candidate_drafts, \
              slice_candidate_reviews, native_slices, slice_results, native_planning_receipts, \
              slice_pipeline_runs, slice_pipeline_phase_attempts, slice_pipeline_phase_outputs, \
-             slice_pipeline_output_bindings, slice_pipeline_inputs, slice_pipeline_receipts, \
-             pipeline_research_checkpoints, pipeline_checkpoint_receipts \
+             slice_pipeline_output_bindings, slice_pipeline_inputs, slice_pipeline_receipts, slice_pipeline_run_migrations, \
+             pipeline_research_checkpoints, pipeline_checkpoint_receipts, pipeline_delivery_receipts, pipeline_evidence_artifacts \
              FROM {quoted_role}"
         ),
         format!(
@@ -132,9 +142,15 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
              slice_pipeline_output_bindings TO {quoted_role}"
         ),
         format!(
+            "GRANT SELECT, INSERT, UPDATE ON TABLE slice_pipeline_run_migrations TO {quoted_role}"
+        ),
+        format!(
             "GRANT SELECT, INSERT ON TABLE slice_pipeline_phase_attempts, \
              slice_pipeline_phase_outputs, slice_pipeline_inputs, \
-             slice_pipeline_receipts, pipeline_checkpoint_receipts TO {quoted_role}"
+             slice_pipeline_receipts, pipeline_checkpoint_receipts, pipeline_delivery_receipts TO {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT, UPDATE ON TABLE pipeline_evidence_artifacts TO {quoted_role}"
         ),
         format!(
             "GRANT SELECT, INSERT, UPDATE ON TABLE pipeline_research_checkpoints TO {quoted_role}"
@@ -249,7 +265,7 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
             "GRANT UPDATE(reviewer_context,request_payload,result_payload,payload_erased) ON TABLE slice_pipeline_phase_attempts TO {quoted_role}"
         ),
         format!(
-            "GRANT UPDATE(body,producer_context_id,body_digest,reference,fields,verdict,dispositions,skill_reads,resource_reads,artifacts,validator_receipts,followup_proposal,knowledge_publication,payload_erased) ON TABLE slice_pipeline_phase_outputs TO {quoted_role}"
+            "GRANT UPDATE(body,producer_context_id,body_digest,reference,fields,verdict,dispositions,skill_reads,resource_reads,artifacts,evidence_artifacts,validator_receipts,followup_proposal,knowledge_publication,payload_erased) ON TABLE slice_pipeline_phase_outputs TO {quoted_role}"
         ),
         format!(
             "GRANT UPDATE(input,input_digest,request_payload,result_payload,checkpoint_digest,payload_erased,owner_unit_ids) ON TABLE slice_pipeline_inputs TO {quoted_role}"

@@ -42,6 +42,7 @@ def begin_params(
     *,
     request_id: str | None = None,
     delivery_mode: str | None = None,
+    definition_version: str | None = None,
     qualification_reason: str = "Bounded Lightweight fixture with finite local proof.",
 ) -> dict[str, Any]:
     params = {
@@ -53,6 +54,8 @@ def begin_params(
     }
     if delivery_mode is not None:
         params["delivery_mode"] = delivery_mode
+    if definition_version is not None:
+        params["definition_version"] = definition_version
     return params
 
 
@@ -152,18 +155,48 @@ def consumed_outputs(context: dict[str, Any]) -> list[dict[str, Any]]:
         for item in context.get("outputs", [])
         if item.get("stale") is False
     }
+    # Compact phasewise v0.7 contexts intentionally omit output bodies.  The
+    # returned attempt/checkpoint ledger still pins each output by output_id,
+    # revision, and digest, so use that durable identity as the fallback for
+    # the consumed binding instead of requiring the legacy body tuple.
+    checkpoints_by_id = {
+        item["output_id"]: item
+        for item in context.get("attempts", [])
+        if item.get("stale_dependency") is not True and item.get("output_id")
+    }
+    checkpoints_by_key = {
+        (item["phase_id"], item["output_revision"]): item
+        for item in context.get("attempts", [])
+        if item.get("stale_dependency") is not True
+        and item.get("output_revision") is not None
+    }
     consumed = []
     for binding in context.get("bindings", []):
         if binding.get("stale") is not False or binding["phase_ordinal"] >= current_ordinal:
             continue
-        output = current[(binding["phase_id"], binding["output_revision"])]
-        if output["digest"] != binding["output_digest"]:
-            raise AssertionError("current output body does not match its pinned binding")
+        output = current.get((binding["phase_id"], binding["output_revision"]))
+        if output is not None:
+            if output["digest"] != binding["output_digest"]:
+                raise AssertionError("current output body does not match its pinned binding")
+            digest = output["digest"]
+        else:
+            checkpoint = checkpoints_by_id.get(binding.get("output_id"))
+            if checkpoint is None:
+                checkpoint = checkpoints_by_key.get(
+                    (binding["phase_id"], binding["output_revision"])
+                )
+            if checkpoint is None:
+                raise AssertionError(
+                    "compact context is missing the pinned output checkpoint"
+                )
+            if checkpoint.get("output_digest") != binding["output_digest"]:
+                raise AssertionError("returned checkpoint does not match its pinned binding")
+            digest = checkpoint["output_digest"]
         consumed.append(
             {
                 "phase_id": binding["phase_id"],
                 "output_revision": binding["output_revision"],
-                "digest": output["digest"],
+                "digest": digest,
             }
         )
     return consumed
@@ -306,6 +339,12 @@ def completion_params(
     phase_id = context["run"]["current_phase_id"]
     phase = next(item for item in context["definition"]["phases"] if item["id"] == phase_id)
     consumed = consumed_outputs(context)
+    # v0.7 checkpoint context is compact and backend-derived.  Keep the
+    # binding/checkpoint validation above for the acceptance fixture, while
+    # sending an empty proof list so the caller cannot masquerade as the
+    # backend's consumed-output ledger.  Legacy v0.6 continues to send the
+    # durable consumed-output proof expected by its contract.
+    compact_v07 = context["run"].get("definition_version") == "0.7.0-native.k1k5"
     output = phase_output(phase, consumed, outcome_name, transition)
     if phase.get("fresh_reviewer_input") is True:
         producer_context_ids = sorted(
@@ -329,7 +368,7 @@ def completion_params(
         "outcome": outcome_name,
         "transition": transition,
         "output": output,
-        "consumed_outputs": consumed,
+        "consumed_outputs": [] if compact_v07 else consumed,
         "consumed_inputs": consumed_inputs(context),
         "publish_blocked_result": publish_blocked_result,
     }

@@ -22,7 +22,7 @@ pub(super) async fn load_report(
             .find(|row| row.0 == opaque.effect_id)
             .ok_or(Error::InternalInvariant)?;
         let kind: KnowledgeEffectKind = decode(serde_json::Value::String(row.1.clone()))?;
-        let status: KnowledgeEffectStatus = decode(serde_json::Value::String(row.2.clone()))?;
+        let status = decode_effect_status(&row.2)?;
         if kind != opaque.kind || status != opaque.status || row.3 != opaque.generation {
             return Err(Error::InternalInvariant);
         }
@@ -51,6 +51,30 @@ pub(super) async fn load_report(
         required_complete: projection.required_complete,
         remaining_work,
     })
+}
+
+fn decode_effect_status(raw: &str) -> Result<KnowledgeEffectStatus> {
+    decode(serde_json::Value::String(raw.to_owned())).map_err(|_| {
+        Error::refused(
+            RefusalCode::EffectStatusUnknown,
+            "inspect_effect_status",
+            "known_effect_status",
+        )
+    })
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_effect_status_has_typed_refusal() {
+        let error = decode_effect_status("not-a-status").unwrap_err();
+        assert_eq!(
+            error.refusal().unwrap().code,
+            RefusalCode::EffectStatusUnknown
+        );
+    }
 }
 
 pub(super) fn exact_effect_set(

@@ -667,6 +667,28 @@ pub(super) struct PlannedNextState {
     pub(super) revisit_ordinal: Option<u32>,
 }
 
+fn resolve_revisit<'a>(
+    request: &CompletePipelinePhase,
+    definition: &'a PipelineDefinitionSnapshot,
+    phase: &PipelinePhaseDefinition,
+) -> Result<Option<&'a PipelinePhaseDefinition>> {
+    let Some(revisit) = &request.revisit_phase_id else {
+        return Ok(None);
+    };
+    if !phase.allowed_backward_to.contains(revisit) {
+        return Err(Error::Forbidden);
+    }
+    let target = definition
+        .phases
+        .iter()
+        .find(|candidate| &candidate.id == revisit)
+        .ok_or(Error::InvalidArguments)?;
+    if target.ordinal >= phase.ordinal {
+        return Err(Error::Forbidden);
+    }
+    Ok(Some(target))
+}
+
 pub(super) fn plan_next_state(
     request: &CompletePipelinePhase,
     definition: &PipelineDefinitionSnapshot,
@@ -675,6 +697,14 @@ pub(super) fn plan_next_state(
     if request.outcome == PipelinePhaseOutcome::WaitingInput {
         if request.transition != PipelineTransition::Continue {
             return Err(Error::InvalidArguments);
+        }
+        if let Some(target) = resolve_revisit(request, definition, phase)? {
+            return Ok(PlannedNextState {
+                status: "active",
+                next_id: Some(target.id.clone()),
+                next_ordinal: Some(target.ordinal),
+                revisit_ordinal: Some(target.ordinal),
+            });
         }
         return Ok(PlannedNextState {
             status: "waiting_input",
@@ -698,15 +728,9 @@ pub(super) fn plan_next_state(
             if request.outcome != PipelinePhaseOutcome::Completed {
                 return Err(Error::InvalidArguments);
             }
-            let next = if let Some(revisit) = &request.revisit_phase_id {
-                if !phase.allowed_backward_to.contains(revisit) {
-                    return Err(Error::Forbidden);
-                }
-                definition
-                    .phases
-                    .iter()
-                    .find(|value| &value.id == revisit)
-                    .ok_or(Error::InvalidArguments)?
+            let revisit = resolve_revisit(request, definition, phase)?;
+            let next = if let Some(revisit) = revisit {
+                revisit
             } else {
                 definition
                     .phases
@@ -718,7 +742,7 @@ pub(super) fn plan_next_state(
                 status: "active",
                 next_id: Some(next.id.clone()),
                 next_ordinal: Some(next.ordinal),
-                revisit_ordinal: request.revisit_phase_id.as_ref().map(|_| next.ordinal),
+                revisit_ordinal: revisit.map(|_| next.ordinal),
             })
         }
         PipelineTransition::Complete => {
@@ -872,6 +896,160 @@ pub(super) async fn publish_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn navigation_phase(
+        id: &str,
+        ordinal: u32,
+        allowed_backward_to: &[&str],
+    ) -> PipelinePhaseDefinition {
+        PipelinePhaseDefinition {
+            id: id.into(),
+            ordinal,
+            title: id.into(),
+            required: true,
+            disposition_required: false,
+            instructions: vec![],
+            skills: vec![],
+            resources: vec![],
+            required_artifacts: vec![],
+            validator_contracts: vec![],
+            required_fields: vec![],
+            allowed_verdicts: vec![],
+            required_dispositions: vec![],
+            allowed_dispositions: vec![],
+            output_constraints: vec![],
+            verdict_routes: vec![],
+            followup_contracts: vec![],
+            allowed_backward_to: allowed_backward_to
+                .iter()
+                .map(|value| (*value).into())
+                .collect(),
+            fresh_reviewer_input: false,
+            retry_policy: PipelinePhaseRetryPolicy::Repeatable,
+            output_contract: String::new(),
+        }
+    }
+
+    fn navigation_definition(k3_allowed_backward_to: &[&str]) -> PipelineDefinitionSnapshot {
+        PipelineDefinitionSnapshot {
+            kind: PipelineKind::LightweightTddDevelopment,
+            version: "test".into(),
+            digest: "test".into(),
+            overview: PipelineInstructionSnapshot {
+                id: "test".into(),
+                version: "test".into(),
+                digest: "test".into(),
+                body: String::new(),
+                origin_refs: vec![],
+            },
+            default_mode: PipelineDeliveryMode::Phasewise,
+            allowed_modes: vec![PipelineDeliveryMode::Phasewise],
+            phases: vec![
+                navigation_phase("K1", 1, &[]),
+                navigation_phase("K2", 2, &["K1"]),
+                navigation_phase("K3", 3, k3_allowed_backward_to),
+            ],
+            completion_contract: String::new(),
+            escalation_contract: String::new(),
+            forbidden_claims: vec![],
+        }
+    }
+
+    fn waiting_request(revisit_phase_id: Option<&str>) -> CompletePipelinePhase {
+        CompletePipelinePhase {
+            request_id: Uuid::new_v4(),
+            run_id: Uuid::new_v4(),
+            run_revision: 3,
+            phase_id: "K3".into(),
+            outcome: PipelinePhaseOutcome::WaitingInput,
+            transition: PipelineTransition::Continue,
+            output: PipelinePhaseOutputDraft {
+                body: String::new(),
+                producer_context_id: "test".into(),
+                fields: BTreeMap::new(),
+                verdict: None,
+                dispositions: vec![],
+                skill_reads: vec![],
+                resource_reads: vec![],
+                artifacts: vec![],
+                evidence_artifacts: vec![],
+                validator_receipts: vec![],
+                followup_proposal: None,
+                reviewer_context: None,
+                reference: None,
+                knowledge_publication: None,
+            },
+            consumed_outputs: vec![],
+            consumed_inputs: vec![],
+            revisit_phase_id: revisit_phase_id.map(Into::into),
+            escalation_target: None,
+            terminal_result: None,
+            publish_blocked_result: false,
+            consumed_knowledge: None,
+            research_checkpoint: None,
+        }
+    }
+
+    #[test]
+    fn waiting_rework_moves_to_the_exact_backward_phase() {
+        let definition = navigation_definition(&["K2"]);
+        let phase = &definition.phases[2];
+        let plan = plan_next_state(&waiting_request(Some("K2")), &definition, phase).unwrap();
+
+        assert_eq!(plan.status, "active");
+        assert_eq!(plan.next_id.as_deref(), Some("K2"));
+        assert_eq!(plan.next_ordinal, Some(2));
+        assert_eq!(plan.revisit_ordinal, Some(2));
+    }
+
+    #[test]
+    fn waiting_without_rework_stays_on_the_current_phase() {
+        let definition = navigation_definition(&["K2"]);
+        let phase = &definition.phases[2];
+        let plan = plan_next_state(&waiting_request(None), &definition, phase).unwrap();
+
+        assert_eq!(plan.status, "waiting_input");
+        assert_eq!(plan.next_id.as_deref(), Some("K3"));
+        assert_eq!(plan.next_ordinal, Some(3));
+        assert_eq!(plan.revisit_ordinal, None);
+    }
+
+    #[test]
+    fn waiting_rework_rejects_missing_disallowed_and_forward_targets() {
+        let missing_definition = navigation_definition(&["missing"]);
+        assert!(matches!(
+            plan_next_state(
+                &waiting_request(Some("missing")),
+                &missing_definition,
+                &missing_definition.phases[2],
+            ),
+            Err(Error::InvalidArguments)
+        ));
+
+        let disallowed_definition = navigation_definition(&["K2"]);
+        assert!(matches!(
+            plan_next_state(
+                &waiting_request(Some("K1")),
+                &disallowed_definition,
+                &disallowed_definition.phases[2],
+            ),
+            Err(Error::Forbidden)
+        ));
+
+        let mut forward_definition = navigation_definition(&["K3"]);
+        forward_definition
+            .phases
+            .push(navigation_phase("K4", 4, &[]));
+        forward_definition.phases[2].allowed_backward_to = vec!["K4".into()];
+        assert!(matches!(
+            plan_next_state(
+                &waiting_request(Some("K4")),
+                &forward_definition,
+                &forward_definition.phases[2],
+            ),
+            Err(Error::Forbidden)
+        ));
+    }
 
     #[test]
     fn requirement_ledger_reports_duplicate_identity_inventory_and_modality_violations_together() {

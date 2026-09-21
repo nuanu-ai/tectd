@@ -6,6 +6,54 @@ use uuid::Uuid;
 
 #[async_trait]
 impl PipelineExecutionStore for PgUnitOfWork {
+    async fn register_pipeline_evidence_artifact(
+        &mut self,
+        workspace_id: Uuid,
+        session_id: Uuid,
+        request: &RegisterPipelineEvidenceArtifact,
+    ) -> Result<PipelineEvidenceArtifactOutcome> {
+        let tenant = self.tenant_id()?;
+        pipeline_execution::evidence_artifact::register(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            session_id,
+            request,
+        )
+        .await
+    }
+    async fn finalize_pipeline_evidence_artifact(
+        &mut self,
+        workspace_id: Uuid,
+        session_id: Uuid,
+        request: &FinalizePipelineEvidenceArtifact,
+    ) -> Result<PipelineEvidenceArtifactOutcome> {
+        let tenant = self.tenant_id()?;
+        pipeline_execution::evidence_artifact::finalize(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            session_id,
+            request,
+        )
+        .await
+    }
+    async fn read_pipeline_evidence_artifact(
+        &mut self,
+        workspace_id: Uuid,
+        principal_id: Uuid,
+        request: &ReadPipelineEvidenceArtifact,
+    ) -> Result<PipelineEvidenceArtifactPage> {
+        let tenant = self.tenant_id()?;
+        pipeline_execution::evidence_artifact::read(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            principal_id,
+            request,
+        )
+        .await
+    }
     async fn pipeline_begin_replay(
         &mut self,
         workspace_id: Uuid,
@@ -31,6 +79,23 @@ impl PipelineExecutionStore for PgUnitOfWork {
     ) -> Result<Option<PipelineRunContext>> {
         let tenant = self.tenant_id()?;
         pipeline_execution::load_context(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            principal_id,
+            run_id,
+        )
+        .await
+    }
+
+    async fn pipeline_run_context_without_delivery_receipt(
+        &mut self,
+        workspace_id: Uuid,
+        principal_id: Uuid,
+        run_id: Uuid,
+    ) -> Result<Option<PipelineRunContext>> {
+        let tenant = self.tenant_id()?;
+        pipeline_execution::load_context_without_delivery_receipt(
             self.transaction()?,
             tenant,
             workspace_id,
@@ -68,6 +133,25 @@ impl PipelineExecutionStore for PgUnitOfWork {
     ) -> Result<BeginPipelineRunOutcome> {
         let tenant = self.tenant_id()?;
         pipeline_execution::begin(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            session_id,
+            request,
+            definition,
+        )
+        .await
+    }
+
+    async fn migrate_pipeline_run(
+        &mut self,
+        workspace_id: Uuid,
+        session_id: Uuid,
+        request: &PipelineRunMigrationCommand,
+        definition: &PipelineDefinitionSnapshot,
+    ) -> Result<PipelineRunMigrationOutcome> {
+        let tenant = self.tenant_id()?;
+        pipeline_execution::migrate_run(
             self.transaction()?,
             tenant,
             workspace_id,

@@ -78,6 +78,9 @@ pub fn public_call(name: &str, arguments: Value) -> Value {
         "save_candidate_set" => ("command", "scope.candidates.save"),
         "record_candidate_input" => ("command", "scope.candidates.record_input"),
         "refresh_candidate_set" => ("command", "scope.candidates.refresh"),
+        "scope_candidate_delta" => ("command", "scope.candidates.delta"),
+        "scope_candidate_delta_status" => ("query", "scope.candidates.delta.status"),
+        "pipeline_run_migrate" => ("command", "slice.pipeline.run.migrate"),
         "apply_setup" => ("execute", "setup.apply"),
         "read_skill" => {
             return json!({"name":"help","arguments":{

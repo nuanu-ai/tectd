@@ -298,6 +298,28 @@ fn build_routes() -> Vec<RouteSpec> {
             json!({"candidate_set_id":example_id,"revision":3,"request_id":"00000000-0000-4000-8000-000000000004","program_revision":2}),
         ),
         route!(
+            "command",
+            "scope.candidates.delta",
+            "scope_candidate_delta",
+            "Apply one CAS-protected additive candidate mutation batch.",
+            "Requires an authenticated open native session and an accessible candidate set.",
+            "Validates and records the complete operation batch atomically with idempotency replay and stale-revision refusal.",
+            "Repeat with the exact idempotency key and payload for replay; changed payload conflicts.",
+            candidate_schema::delta_apply(),
+            json!({"candidate_set_id":example_id,"expected_revision":3,"idempotency_key":"delta-1","operations":[{"operation":"coverage.link","candidate_id":example_id,"goal_id":example_id}]}),
+        ),
+        route!(
+            "query",
+            "scope.candidates.delta.status",
+            "scope_candidate_delta_status",
+            "Read one additive candidate mutation receipt.",
+            "Requires an authenticated open native session and an accessible candidate set.",
+            "Reads the persisted mutation receipt only.",
+            "Safe to repeat.",
+            candidate_schema::delta_status(),
+            json!({"candidate_set_id":example_id,"idempotency_key":"delta-1"}),
+        ),
+        route!(
             "query",
             "scope.context",
             "scope_context",
@@ -419,11 +441,22 @@ fn build_routes() -> Vec<RouteSpec> {
             json!({"run_id":example_id}),
         ),
         route!(
+            "query",
+            "slice.pipeline.instruction",
+            "slice_pipeline_instruction",
+            "Read one explicitly refreshed pinned pipeline method, instruction, skill, or resource body.",
+            "Requires an authenticated open session, an accessible run, and the exact pinned instruction id, version, and digest. Set refresh=true to request the body explicitly.",
+            "Reads one immutable instruction snapshot from the run's pinned definition without redelivering the full manifest or mutating the run.",
+            "Safe to repeat with the same pinned id, version, digest, and refresh flag.",
+            slice_schema::pipeline_instruction(),
+            json!({"run_id":example_id,"instruction_id":"slice.lightweight.k1","version":"0.7.0","digest":"794ffddb9a9d7f8d4056fb6bf25f5a5365109be4158f2bb550e081bcf4fcc0a6","refresh":true}),
+        ),
+        route!(
             "command",
             "slice.pipeline.begin",
             "slice_pipeline_begin",
             "Create or recover the single version-pinned pipeline run for an opened Slice.",
-            "Requires exact Slice revision and a task-fit qualification reason. delivery_mode may be omitted to use the returned definition default, or must be one of its allowed modes. Research and Deep Brainstorming additionally require an immutable topic level, selector context, and matching completion inquiry; checkpoint-backed Research uses the exact planned checkpoint inquiry.",
+            "Requires exact Slice revision and a task-fit qualification reason. delivery_mode may be omitted to use the returned definition default, or must be one of its allowed modes. definition_version may be supplied to select an immutable provider snapshot, including Lightweight TDD v0.7 K1-K5; omitted or explicit v0.6 keeps the legacy fifteen-phase provider. Research and Deep Brainstorming additionally require an immutable topic level, selector context, and matching completion inquiry; checkpoint-backed Research uses the exact planned checkpoint inquiry.",
             "Persists the resolved mode, rationale, complete immutable definition, and first current phase. It performs no pipeline work.",
             "The same request and byte-identical payload replays the same run; a different request cannot create a second run.",
             slice_schema::pipeline_begin(),
@@ -431,14 +464,25 @@ fn build_routes() -> Vec<RouteSpec> {
         ),
         route!(
             "command",
+            "slice.pipeline.run.migrate",
+            "slice_pipeline_run_migrate",
+            "Create an immutable v0.7 successor for an explicitly mapped legacy pipeline run.",
+            "Requires an accessible legacy run, its exact current revision, an idempotency key, an immutable successor definition version, and one-to-one obligation/evidence mappings.",
+            "Atomically inserts a distinct successor run, marks the predecessor superseded, and records mapping digests; the predecessor definition and history remain preserved.",
+            "The same idempotency key and payload replay the same migration; a changed payload conflicts.",
+            slice_schema::pipeline_run_migrate(),
+            json!({"request_id":example_id,"predecessor_run_id":example_id,"expected_revision":1,"idempotency_key":"legacy-migration-1","successor_definition_version":"0.7.0-native.k1k5","mappings":[{"legacy_obligation_id":"phase-01","successor_obligation_id":"k1","evidence_refs":[{"reference":"artifact://evidence/1","digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}]}),
+        ),
+        route!(
+            "command",
             "slice.pipeline.phase.complete",
             "slice_pipeline_phase_complete",
             "Record one caller-reported phase attempt and atomically return the next ready action.",
-            "Requires exact run revision/current phase, the pinned skill-read receipts, and all typed phase fields, verdicts, dispositions, and terminal contract required by the pinned definition. B05 waiting_research additionally requires question, answer criteria, Research inquiry, and reason for a separate Research Slice.",
+            "Requires exact run revision/current phase and all typed phase fields, verdicts, dispositions, and terminal contract required by the pinned definition. The bounded output body is optional for v0.7 and required by legacy definitions. v0.7 derives proof receipts from backend state; legacy definitions require the exact supplied proof receipts returned by their ready action. B05 waiting_research additionally requires question, answer criteria, Research inquiry, and reason for a separate Research Slice.",
             "Appends an immutable attempt/output, updates only current bindings, and advances or pauses structurally. Only terminal completion, explicit published block, or pipeline escalation writes a Slice Result and stales future planning.",
             "The same request and payload replays. New retries obey the phase retry policy; exact command replay never repeats external work.",
             slice_schema::pipeline_phase_complete(),
-            json!({"request_id":example_id,"run_id":example_id,"run_revision":1,"phase_id":"slice-lightweight-entry-gate","outcome":"completed","transition":"continue","output":{"body":"Caller-reported phase output","producer_context_id":"agent-task-context-1","fields":{},"dispositions":[],"skill_reads":[]},"consumed_outputs":[],"consumed_inputs":[]}),
+            json!({"request_id":example_id,"run_id":example_id,"run_revision":1,"phase_id":"K1","outcome":"completed","transition":"continue","output":{"producer_context_id":"agent-task-context-1","fields":{},"dispositions":[]}}),
         ),
         route!(
             "command",
@@ -494,5 +538,10 @@ fn build_routes() -> Vec<RouteSpec> {
     routes.extend(knowledge_lifecycle_schema::routes(example_id));
     routes.extend(knowledge_maintenance_schema::routes(example_id));
     routes.push(knowledge_search_schema::route());
+    routes.extend([
+        route!("command", "slice.pipeline.evidence_artifact.register", "slice_pipeline_evidence_artifact_register", "Register immutable evidence metadata and receive a backend-issued artifact identity.", "Requires an authenticated open native session; the supplied digest, size and provenance describe the exact future bytes.", "Creates an uploading artifact revision; no evidence is ready until finalize succeeds.", "The same request replays the same artifact; changed payload conflicts.", object_schema(json!({"request_id":uuid(),"digest":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"},"size":{"type":"integer","minimum":0},"format":text(),"provenance":text(),"target":text()}), json!(["request_id","digest","size","format","provenance","target"])), json!({"request_id":example_id,"digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":12,"format":"text/plain","provenance":"operator-observed","target":"slice"})),
+        route!("command", "slice.pipeline.evidence_artifact.finalize", "slice_pipeline_evidence_artifact_finalize", "Finalize one registered evidence artifact by hashing and sizing the submitted bytes.", "Requires an uploading artifact revision.", "Marks the immutable revision ready only when digest and byte size match; mismatches are durably rejected.", "The same request replays the same final state.", object_schema(json!({"request_id":uuid(),"artifact_id":uuid(),"revision":{"type":"integer","minimum":1},"body":{"type":"string"}}), json!(["request_id","artifact_id","revision","body"])), json!({"request_id":example_id,"artifact_id":example_id,"revision":1,"body":"exact evidence bytes"})),
+        route!("query", "slice.pipeline.evidence_artifact.read", "slice_pipeline_evidence_artifact_read", "Read one bounded artifact fragment with explicit completeness and continuation cursor.", "Requires an accessible artifact revision and a positive limit no larger than 65536.", "Reads a bounded fragment and always returns complete plus next_offset when more bytes remain.", "Safe to repeat with the same offset and limit.", object_schema(json!({"artifact_id":uuid(),"revision":{"type":"integer","minimum":1},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":65536}}), json!(["artifact_id","revision"])), json!({"artifact_id":example_id,"revision":1,"offset":0,"limit":65536})),
+    ]);
     routes
 }

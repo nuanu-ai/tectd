@@ -179,6 +179,27 @@ pub(crate) fn decode_public_call(name: &str, arguments: Value) -> Result<Interna
 }
 
 fn validate_internal(name: &'static str, arguments: Value) -> Result<InternalCall> {
+    // Phase completion has two backend-issued receipt fields that legacy
+    // pinned definitions still put on the wire, while the current public
+    // schema intentionally omits them. Canonicalize this one route at the
+    // public bridge boundary so only those two known compatibility fields can
+    // cross the second (daemon-side) strict decode. The definition-aware
+    // validator remains responsible for accepting legacy receipts or refusing
+    // caller-supplied v0.7 proof.
+    if name == "slice_pipeline_phase_complete" {
+        let arguments =
+            crate::pipeline_tools::normalize_complete_arguments(arguments).map_err(|error| {
+                error.normalize_pipeline_refusal(
+                    "WP6-SCHEMA-COMPLETE-01",
+                    "arguments.params",
+                    "arguments matching the selected pipeline route schema",
+                    "read_schema_and_retry",
+                    "valid_pipeline_arguments",
+                )
+            })?;
+        crate::tools::parse_invocation(name, arguments.clone())?;
+        return Ok(InternalCall { name, arguments });
+    }
     crate::tools::parse_invocation(name, arguments.clone())?;
     Ok(InternalCall { name, arguments })
 }
@@ -354,10 +375,23 @@ fn describe_route(spec: &RouteSpec) -> Value {
         "example":{"tool":spec.tool,"arguments":{"route":spec.route,"params":spec.example}}})
 }
 
+pub(crate) fn route_contract(tool: &str, route: &str) -> Option<Value> {
+    route_for(tool, route).map(|spec| describe_route(&spec))
+}
+
 pub(crate) fn attach_route_contract(action: &mut Value) -> Result<()> {
     let Some(tool) = action["tool"].as_str() else {
         return Ok(());
     };
+    if tool == "help" {
+        // A help.describe action carries the route it describes, not a route
+        // owned by the help meta-tool. Validate the complete help invocation,
+        // but keep the action compact instead of attaching the described
+        // schema a second time.
+        decode_public_call(tool, action["arguments"].clone())
+            .map_err(|_| Error::InternalInvariant)?;
+        return Ok(());
+    }
     let Some(route) = action["arguments"]["route"].as_str() else {
         return Ok(());
     };
@@ -403,6 +437,34 @@ pub(crate) fn method_action(method: &str) -> Result<Value> {
     Ok(json!({"kind":"ready_call","tool":"help","arguments":arguments}))
 }
 
+/// Build the compact schema recovery call for a known routed invocation.
+///
+/// Public routed calls retain their requested route even when their params fail
+/// decoding. Internal calls are resolved through the same route registry. An
+/// unknown tool or route deliberately returns no action so callers can retain
+/// the legacy state-reload fallback.
+pub(crate) fn schema_help_action(name: &str, arguments: &Value) -> Result<Option<Value>> {
+    let spec = if matches!(name, "query" | "command" | "execute") {
+        arguments
+            .get("route")
+            .and_then(Value::as_str)
+            .and_then(|route| route_for(name, route))
+    } else {
+        route_for_internal(name)
+    };
+    let Some(spec) = spec else {
+        return Ok(None);
+    };
+    let arguments = json!({"mode":"describe","tool":spec.tool,"route":spec.route});
+    let mut action = json!({
+        "kind":"ready_call",
+        "tool":"help",
+        "arguments":arguments
+    });
+    action["route_contract"] = describe_route(&spec);
+    Ok(Some(action))
+}
+
 pub(crate) fn needs_action(
     kind: &str,
     internal: &str,
@@ -414,11 +476,19 @@ pub(crate) fn needs_action(
         return Err(Error::InternalInvariant);
     }
     let (tool, arguments) = public_call(internal, params)?;
-    let properties = if tool == "get_state" {
+    let mut properties = if tool == "get_state" {
         Some(std::collections::BTreeSet::new())
     } else {
         route_for_internal(internal).and_then(|spec| allowed_properties(&spec.schema))
     };
+    // Legacy phase completion actions may carry backend-issued dependency
+    // receipts even though the current v0.7 public schema deliberately omits
+    // these caller-forbidden fields.
+    if internal == "slice_pipeline_phase_complete"
+        && let Some(properties) = properties.as_mut()
+    {
+        properties.extend(["consumed_outputs".to_owned(), "consumed_inputs".to_owned()]);
+    }
     let known = arguments
         .get("params")
         .and_then(Value::as_object)

@@ -41,7 +41,7 @@ fn mutation_reply_keeps_one_phase_and_drops_repeated_static_bodies() {
 }
 
 #[test]
-fn reread_keeps_native_overview_and_outputs_but_not_a_legacy_manifest() {
+fn reread_keeps_native_overview_and_compact_output_index_but_not_a_legacy_manifest() {
     let map = json!([{"ordinal":1,"id":"p1","title":"Intent"}]);
     let mut native = json!({"created":run_context("# Research overview")});
     pipeline_context(
@@ -56,7 +56,10 @@ fn reread_keeps_native_overview_and_outputs_but_not_a_legacy_manifest() {
     );
     assert_eq!(created["definition"]["phase_map"], map);
     assert_eq!(created["definition"]["completion_contract"], "complete");
-    assert_eq!(created["outputs"][0]["body"], "previous output");
+    assert!(created["outputs"][0].get("body").is_none());
+    assert_eq!(created["outputs"][0]["id"], "o0");
+    assert_eq!(created["outputs"][0]["fresh"], true);
+    assert_eq!(created["outputs"][0]["usable"], true);
     assert!(created.get("delivered_phases").is_none());
 
     let mut legacy = run_context("{\n  \"v1_identity\": {}\n}");
@@ -71,6 +74,21 @@ fn distinct_delivered_phases_are_not_treated_as_a_duplicate() {
     context["definition"]["phases"] = json!([]);
     pipeline_context(&mut context, true, None);
     assert_eq!(context["delivered_phases"], json!([phase()]));
+}
+
+#[test]
+fn legacy_whole_begin_keeps_delivered_phases() {
+    let mut context = run_context("# Overview");
+    pipeline_context_with_delivery(&mut context, true, None, true, false);
+    assert_eq!(context["delivered_phases"], json!([phase()]));
+}
+
+#[test]
+fn legacy_mutation_keeps_outputs_when_the_reply_fits() {
+    let mut context = run_context("# Overview");
+    pipeline_context_with_delivery(&mut context, false, None, true, true);
+    assert_eq!(context["outputs"][0]["body"], "previous output");
+    assert_eq!(context["outputs_complete"], true);
 }
 
 #[test]

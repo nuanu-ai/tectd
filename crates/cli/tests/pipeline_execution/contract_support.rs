@@ -143,6 +143,7 @@ pub(super) fn valid_completion() -> CompletePipelinePhase {
             }],
             resource_reads: vec![],
             artifacts: vec![],
+            evidence_artifacts: vec![],
             validator_receipts: vec![],
             followup_proposal: None,
             knowledge_publication: None,

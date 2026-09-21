@@ -1,0 +1,660 @@
+{
+  "kind": "slice.lightweight-tdd-development",
+  "version": "0.7.1-native.k1k5",
+  "digest": "93df97f4cb4458a18411b76005b29025a56234dc47650e4147ac5fdab3d30d89",
+  "overview": {
+    "id": "slice.lightweight-tdd-development.v07.overview",
+    "version": "0.7.1",
+    "digest": "031a4c704e1f2b1bc80c38b49fca79ec911dd6f9daa621c57603256f61597a06",
+    "body": "Lightweight TDD v0.7.1 uses five compact checkpoints. V1 obligations are mapped in SOURCE-LEDGER.md. v0.7 intentionally defaults to phasewise delivery so backend gates, revision invalidation, resumability, and receipt/state bindings are visible at each compact checkpoint; whole remains allowed for bounded delivery and obeys identical K1-K5 semantics. The compact run uses backend outputs instead of recreating the fourteen V1 runtime steps or eight lifecycle Markdown carriers.",
+    "origin_refs": [
+      "skills/pipelines/lightweight-tdd/SOURCE-LEDGER.md",
+      "entry-gate",
+      "intent-capture",
+      "escalation-checker",
+      "context-loader",
+      "workspace-preflight-lite",
+      "contract-writer",
+      "test-target-selector",
+      "pre-implementation-review",
+      "tdd-cycle-runner",
+      "implementation-note-writer",
+      "verification-runner",
+      "deploy-impact-checker",
+      "result-writer",
+      "promotion-router",
+      "maintenance-and-handoff"
+    ]
+  },
+  "default_mode": "phasewise",
+  "allowed_modes": [
+    "whole",
+    "phasewise"
+  ],
+  "phases": [
+    {
+      "id": "K1",
+      "ordinal": 1,
+      "title": "Entry and intent",
+      "required": true,
+      "disposition_required": true,
+      "instructions": [
+        {
+          "id": "slice.lightweight.k1",
+          "version": "0.7.0",
+          "digest": "889f886a8c607316d6c94124385dd02128e0f20f32982e87395e1834f6da8e90",
+          "body": "K1 is a read-only entry gate. Confirm the request and observable acceptance checks, a current explicit parent, current workspace/repository preflight, bounded Lightweight fit, and the exact authority needed for later work. A pass requires fit=bounded_understood, parent=current_confirmed, preflight=current_clear, authority=authorized, and route=none. Any missing, stale, contradictory, over-broad, or materially unknown parent/preflight/authority/acceptance fact must use rework, blocked, or escalate with the exact gap and next owner. Route architecture ambiguity or missing test target to Full Design, and unknown cause or repeated failure to Debug. Do not mutate source, run implementation actions, install anything, create worktrees, deploy, operate live systems, promote knowledge, or claim completion in K1.",
+          "origin_refs": [
+            "skills/pipelines/lightweight-tdd/SOURCE-LEDGER.md#K1"
+          ]
+        }
+      ],
+      "skills": [],
+      "resources": [],
+      "required_fields": [
+        "fit",
+        "request",
+        "parent",
+        "preflight",
+        "authority",
+        "acceptance_checks",
+        "route"
+      ],
+      "allowed_verdicts": [
+        "pass",
+        "rework",
+        "blocked",
+        "escalate"
+      ],
+      "required_dispositions": [
+        "satisfied"
+      ],
+      "allowed_dispositions": [
+        "satisfied",
+        "rework",
+        "blocked",
+        "escalate"
+      ],
+      "output_constraints": [
+        {
+          "kind": "field_one_of",
+          "field": "route",
+          "values": [
+            "none",
+            "rework",
+            "blocked",
+            "escalate"
+          ],
+          "when_verdict": null
+        },
+        {
+          "kind": "field_equals",
+          "field": "fit",
+          "value": "bounded_understood",
+          "when_verdict": "pass"
+        },
+        {
+          "kind": "field_equals",
+          "field": "parent",
+          "value": "current_confirmed",
+          "when_verdict": "pass"
+        },
+        {
+          "kind": "field_equals",
+          "field": "preflight",
+          "value": "current_clear",
+          "when_verdict": "pass"
+        },
+        {
+          "kind": "field_equals",
+          "field": "authority",
+          "value": "authorized",
+          "when_verdict": "pass"
+        },
+        {
+          "kind": "field_equals",
+          "field": "route",
+          "value": "none",
+          "when_verdict": "pass"
+        }
+      ],
+      "verdict_routes": [
+        {
+          "verdict": "pass",
+          "outcome": "completed",
+          "transition": "continue",
+          "dispositions": [
+            "satisfied"
+          ]
+        },
+        {
+          "verdict": "rework",
+          "outcome": "waiting_input",
+          "transition": "continue",
+          "dispositions": [
+            "rework"
+          ]
+        },
+        {
+          "verdict": "blocked",
+          "outcome": "blocked",
+          "transition": "block",
+          "dispositions": [
+            "blocked"
+          ]
+        },
+        {
+          "verdict": "escalate",
+          "outcome": "blocked",
+          "transition": "escalate",
+          "dispositions": [
+            "escalate"
+          ]
+        }
+      ],
+      "followup_contracts": [],
+      "allowed_backward_to": [],
+      "fresh_reviewer_input": false,
+      "retry_policy": "repeatable",
+      "output_contract": "K1 admits only a bounded understood request with current parent, preflight, acceptance, and authority evidence. Pass is read-only and requires no unresolved route."
+    },
+    {
+      "id": "K2",
+      "ordinal": 2,
+      "title": "Context and contract",
+      "required": true,
+      "disposition_required": true,
+      "instructions": [
+        {
+          "id": "slice.lightweight.k2",
+          "version": "0.7.0",
+          "digest": "cad2779f4def383a801b0b33f3e41f25c1f574502f14e8d5b1edcc1d85cbf0fa",
+          "body": "K2 prepares the bounded plan without taking action. Record current source and worktree provenance, repository/root/branch/dirty-state and isolation facts, target ownership, overlap with existing or foreign changes, exact allowed target plus focused and affected proof plan, and one executable test target. Adapt using-git-worktrees here as read-only identity/isolation review; do not create or clean a worktree. Adapt writing-plans here into the compact target/proof plan. A pass requires isolation=confirmed, ownership=confirmed, overlap=clear, and route=none. Use route=defer or route=escalate with a non-pass verdict for missing, conflicting, unknown, other-owned, or unsafe facts. Do not install, mutate source/tests/worktrees, implement, deploy, call live systems, or execute the plan in K2.",
+          "origin_refs": [
+            "skills/pipelines/lightweight-tdd/SOURCE-LEDGER.md#K2"
+          ]
+        }
+      ],
+      "skills": [],
+      "resources": [],
+      "required_fields": [
+        "source_provenance",
+        "worktree_provenance",
+        "isolation",
+        "ownership",
+        "overlap",
+        "target_proof_plan",
+        "test_target",
+        "route"
+      ],
+      "allowed_verdicts": [
+        "pass",
+        "rework",
+        "blocked",
+        "escalate"
+      ],
+      "required_dispositions": [
+        "satisfied"
+      ],
+      "allowed_dispositions": [
+        "satisfied",
+        "rework",
+        "blocked",
+        "escalate"
+      ],
+      "output_constraints": [
+        {
+          "kind": "field_one_of",
+          "field": "route",
+          "values": [
+            "none",
+            "defer",
+            "escalate"
+          ],
+          "when_verdict": null
+        },
+        {
+          "kind": "field_equals",
+          "field": "isolation",
+          "value": "confirmed",
+          "when_verdict": "pass"
+        },
+        {
+          "kind": "field_equals",
+          "field": "ownership",
+          "value": "confirmed",
+          "when_verdict": "pass"
+        },
+        {
+          "kind": "field_equals",
+          "field": "overlap",
+          "value": "clear",
+          "when_verdict": "pass"
+        },
+        {
+          "kind": "field_equals",
+          "field": "route",
+          "value": "none",
+          "when_verdict": "pass"
+        }
+      ],
+      "verdict_routes": [
+        {
+          "verdict": "pass",
+          "outcome": "completed",
+          "transition": "continue",
+          "dispositions": [
+            "satisfied"
+          ]
+        },
+        {
+          "verdict": "rework",
+          "outcome": "waiting_input",
+          "transition": "continue",
+          "dispositions": [
+            "rework"
+          ]
+        },
+        {
+          "verdict": "blocked",
+          "outcome": "blocked",
+          "transition": "block",
+          "dispositions": [
+            "blocked"
+          ]
+        },
+        {
+          "verdict": "escalate",
+          "outcome": "blocked",
+          "transition": "escalate",
+          "dispositions": [
+            "escalate"
+          ]
+        }
+      ],
+      "followup_contracts": [],
+      "allowed_backward_to": [
+        "K1"
+      ],
+      "fresh_reviewer_input": false,
+      "retry_policy": "repeatable",
+      "output_contract": "K2 binds current source/worktree provenance, isolation, ownership, overlap, one bounded target/test contract, and an explicit none/defer/escalate route without mutation."
+    },
+    {
+      "id": "K3",
+      "ordinal": 3,
+      "title": "Plan review",
+      "required": true,
+      "disposition_required": true,
+      "instructions": [
+        {
+          "id": "slice.lightweight.k3",
+          "version": "0.7.1",
+          "digest": "eead4244de7c5c5e0f09a4687b7b9283728e786b50dff5612e80ea97feb1b393",
+          "body": "K3 is NEW/STRENGTHENED from the v0.6 pre-implementation engineering review; it is not a V1 phase. Review the current K1/K2 plan and exact identity, authority, target, proof, isolation, ownership, and overlap boundary. Bind independent mode to a fresh independent reviewer context and self mode to no reviewer attestation. Before any positive verdict, apply a mandatory counterfactual: verify that the implementation participates in the accepted consumer path and that the evidence exercises that path or directly assesses an explicitly requested artifact. If the evidence could still pass with the contribution disconnected but directly unit-tested, the outcome is not proven and Result must not complete. A direct test of a supported API or public library contract is valid only when that contract is the requested deliverable. Pass only the current plan revision with no open blocking finding or missing proof. Rework returns to K2 and invalidates downstream proof through backend revision/binding state. Preserve typed findings, reviewer identity, rules digest, missing proof, and next owner; never describe K3 as V1 provenance.",
+          "origin_refs": [
+            "skills/pipelines/lightweight-tdd/SOURCE-LEDGER.md#K3"
+          ]
+        }
+      ],
+      "skills": [],
+      "resources": [],
+      "required_fields": [
+        "review_mode",
+        "findings",
+        "verdict",
+        "reviewer",
+        "rules_digest",
+        "missing_proof",
+        "next_owner"
+      ],
+      "allowed_verdicts": [
+        "pass",
+        "rework",
+        "blocked",
+        "escalate"
+      ],
+      "required_dispositions": [
+        "satisfied"
+      ],
+      "allowed_dispositions": [
+        "satisfied",
+        "rework",
+        "blocked",
+        "escalate"
+      ],
+      "output_constraints": [
+        {
+          "kind": "reviewer_context_mode",
+          "field": "review_mode",
+          "independent_value": "independent",
+          "self_value": "self"
+        }
+      ],
+      "verdict_routes": [
+        {
+          "verdict": "pass",
+          "outcome": "completed",
+          "transition": "continue",
+          "dispositions": [
+            "satisfied"
+          ]
+        },
+        {
+          "verdict": "rework",
+          "outcome": "waiting_input",
+          "transition": "continue",
+          "dispositions": [
+            "rework"
+          ],
+          "revisit_to": [
+            "K2"
+          ]
+        },
+        {
+          "verdict": "blocked",
+          "outcome": "blocked",
+          "transition": "block",
+          "dispositions": [
+            "blocked"
+          ]
+        },
+        {
+          "verdict": "escalate",
+          "outcome": "blocked",
+          "transition": "escalate",
+          "dispositions": [
+            "escalate"
+          ]
+        }
+      ],
+      "followup_contracts": [],
+      "allowed_backward_to": [
+        "K2"
+      ],
+      "fresh_reviewer_input": false,
+      "retry_policy": "repeatable",
+      "output_contract": "K3 reviews the current compact plan as a new/strengthened v0.6-derived gate; reviewer mode and current backend revision bindings preserve identity and rework."
+    },
+    {
+      "id": "K4",
+      "ordinal": 4,
+      "title": "RED and GREEN",
+      "required": true,
+      "disposition_required": true,
+      "instructions": [
+        {
+          "id": "slice.lightweight.k4",
+          "version": "0.7.0",
+          "digest": "6b55991289145faf6ef1c773198774d8d8da9f853892eead9e50fdb3b95c9b23",
+          "body": "K4 is the only source/test mutation phase. Execute only the authorized bounded target from the current reviewed plan. Follow test-driven-development: first capture a fresh meaningful RED command receipt with nonzero exit on the bound target, then make the minimum GREEN change and capture a fresh successful receipt on the same target. Review the mandatory nested testing anti-patterns: reject mock-only behavior, unexplained over-mocking, incomplete mocks, and tests written after implementation. Record changed files, deviations, unresolved proof, and residual boundary truth in the existing fields. A pass requires authority_boundary=authorized, anti_pattern_review=reviewed_clear, missing_proof=none, same-target receipt binding, RED failed_as_expected, and GREEN passed. Stop before final verification, Result, deployment, live work, promotion, or maintenance/branch cleanup. Adapt executing-plans here to this single reviewed bounded mutation; debugging routes out on unknown cause or repeated failure.",
+          "origin_refs": [
+            "skills/pipelines/lightweight-tdd/SOURCE-LEDGER.md#K4"
+          ]
+        }
+      ],
+      "skills": [],
+      "resources": [],
+      "required_fields": [
+        "red_receipt",
+        "changes",
+        "green_receipt",
+        "anti_pattern_review",
+        "deviations",
+        "missing_proof",
+        "authority_boundary",
+        "target_binding"
+      ],
+      "allowed_verdicts": [
+        "pass",
+        "rework",
+        "blocked",
+        "escalate"
+      ],
+      "required_dispositions": [
+        "satisfied"
+      ],
+      "allowed_dispositions": [
+        "satisfied",
+        "rework",
+        "blocked",
+        "escalate"
+      ],
+      "output_constraints": [
+        {
+          "kind": "field_equals",
+          "field": "authority_boundary",
+          "value": "authorized",
+          "when_verdict": "pass"
+        },
+        {
+          "kind": "field_equals",
+          "field": "anti_pattern_review",
+          "value": "reviewed_clear",
+          "when_verdict": "pass"
+        },
+        {
+          "kind": "field_equals",
+          "field": "missing_proof",
+          "value": "none",
+          "when_verdict": "pass"
+        },
+        {
+          "kind": "command_receipt",
+          "field": "red_receipt",
+          "required_status": "failed_as_expected",
+          "required_scope": "focused",
+          "require_nonzero_exit": true,
+          "target_field": "target_binding",
+          "when_verdict": "pass"
+        },
+        {
+          "kind": "command_receipt",
+          "field": "green_receipt",
+          "required_status": "passed",
+          "required_scope": "focused",
+          "require_nonzero_exit": false,
+          "target_field": "target_binding",
+          "when_verdict": "pass"
+        }
+      ],
+      "verdict_routes": [
+        {
+          "verdict": "pass",
+          "outcome": "completed",
+          "transition": "continue",
+          "dispositions": [
+            "satisfied"
+          ]
+        },
+        {
+          "verdict": "rework",
+          "outcome": "waiting_input",
+          "transition": "continue",
+          "dispositions": [
+            "rework"
+          ]
+        },
+        {
+          "verdict": "blocked",
+          "outcome": "blocked",
+          "transition": "block",
+          "dispositions": [
+            "blocked"
+          ]
+        },
+        {
+          "verdict": "escalate",
+          "outcome": "blocked",
+          "transition": "escalate",
+          "dispositions": [
+            "escalate"
+          ]
+        }
+      ],
+      "followup_contracts": [],
+      "allowed_backward_to": [
+        "K3"
+      ],
+      "fresh_reviewer_input": false,
+      "retry_policy": "repeatable",
+      "output_contract": "K4 alone authorizes bounded TDD mutation. Pass requires validated fresh RED/GREEN command receipts on the same target, clear anti-pattern review, authorized scope, and no missing proof."
+    },
+    {
+      "id": "K5",
+      "ordinal": 5,
+      "title": "Verification and result",
+      "required": true,
+      "disposition_required": true,
+      "instructions": [
+        {
+          "id": "slice.lightweight.k5",
+          "version": "0.7.0",
+          "digest": "f497d755460d632165cbf32a2944f7490c5a8b81d5f6a26fcc1909cc6f04fedc",
+          "body": "K5 performs authorized local verification and records the exact local Result. Run fresh focused proof and fresh affected-surface proof after K4; one command receipt may populate both fields only when its scopes explicitly contain both focused and affected. Stale, failed, skipped, unavailable, or wrong-scope proof blocks pass. Pass requires both receipts passed with exit 0 and fresh=true, truth_level=local_verified, missing_proof=none, promotion=no_promotion, and handoff=none. Classify deploy/live needs without performing them. Record no-promotion or use a non-pass defer/escalation route to an external owner. Do not edit source/tests, deploy, inspect live systems, write canonical knowledge, promote, execute maintenance, or clean/finish a branch. Adapt verification-before-completion here; writing-skills belongs to the external skill-authoring owner and finishing-a-development-branch to external cleanup/maintenance. An active handoff or deferred owner action cannot close this run.",
+          "origin_refs": [
+            "skills/pipelines/lightweight-tdd/SOURCE-LEDGER.md#K5"
+          ]
+        }
+      ],
+      "skills": [],
+      "resources": [],
+      "required_fields": [
+        "focused_proof",
+        "affected_proof",
+        "deploy_impact",
+        "truth_level",
+        "missing_proof",
+        "promotion",
+        "handoff",
+        "result"
+      ],
+      "allowed_verdicts": [
+        "pass",
+        "rework",
+        "blocked",
+        "escalate"
+      ],
+      "required_dispositions": [
+        "satisfied"
+      ],
+      "allowed_dispositions": [
+        "satisfied",
+        "rework",
+        "blocked",
+        "escalate"
+      ],
+      "output_constraints": [
+        {
+          "kind": "field_one_of",
+          "field": "promotion",
+          "values": [
+            "no_promotion",
+            "defer_external"
+          ],
+          "when_verdict": null
+        },
+        {
+          "kind": "field_one_of",
+          "field": "handoff",
+          "values": [
+            "none",
+            "active_external"
+          ],
+          "when_verdict": null
+        },
+        {
+          "kind": "command_receipt",
+          "field": "focused_proof",
+          "required_status": "passed",
+          "required_scope": "focused",
+          "require_nonzero_exit": false,
+          "when_verdict": "pass"
+        },
+        {
+          "kind": "command_receipt",
+          "field": "affected_proof",
+          "required_status": "passed",
+          "required_scope": "affected",
+          "require_nonzero_exit": false,
+          "when_verdict": "pass"
+        },
+        {
+          "kind": "field_equals",
+          "field": "truth_level",
+          "value": "local_verified",
+          "when_verdict": "pass"
+        },
+        {
+          "kind": "field_equals",
+          "field": "missing_proof",
+          "value": "none",
+          "when_verdict": "pass"
+        },
+        {
+          "kind": "field_equals",
+          "field": "promotion",
+          "value": "no_promotion",
+          "when_verdict": "pass"
+        },
+        {
+          "kind": "field_equals",
+          "field": "handoff",
+          "value": "none",
+          "when_verdict": "pass"
+        }
+      ],
+      "verdict_routes": [
+        {
+          "verdict": "pass",
+          "outcome": "completed",
+          "transition": "complete",
+          "dispositions": [
+            "satisfied"
+          ]
+        },
+        {
+          "verdict": "rework",
+          "outcome": "waiting_input",
+          "transition": "continue",
+          "dispositions": [
+            "rework"
+          ],
+          "revisit_to": [
+            "K4"
+          ]
+        },
+        {
+          "verdict": "blocked",
+          "outcome": "blocked",
+          "transition": "block",
+          "dispositions": [
+            "blocked"
+          ]
+        },
+        {
+          "verdict": "escalate",
+          "outcome": "blocked",
+          "transition": "escalate",
+          "dispositions": [
+            "escalate"
+          ]
+        }
+      ],
+      "followup_contracts": [],
+      "allowed_backward_to": [
+        "K4"
+      ],
+      "fresh_reviewer_input": false,
+      "retry_policy": "repeatable",
+      "output_contract": "K5 closes only on validated fresh focused and affected local proof, exact local truth, no missing proof, explicit no-promotion, and no active handoff; external work stays routed."
+    }
+  ],
+  "completion_contract": "K5 pass is the only completed local result; deploy-required and missing-proof remain explicit.",
+  "escalation_contract": "Any failed fit, authority, review, proof, or deploy boundary escalates or blocks with a typed disposition.",
+  "forbidden_claims": [
+    "deployed",
+    "live_verified",
+    "paid_accepted"
+  ]
+}

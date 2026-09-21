@@ -214,6 +214,14 @@ pages and server-scoped fragments expose one coherent old draft, snapshot, input
 window, method and rule set without mutation actions. Historical reads return to
 the current head explicitly and never rebind it.
 
+The additive `scope.candidates.delta` route projects typed `goal.*`,
+`candidate.*`, `coverage.*`, `evidence.*` and `blocker.*` operations into a
+normalized graph while preserving the snapshot route. One CAS and idempotency
+receipt covers the whole batch. Candidate supersession is an acyclic directed
+replacement edge, source references are candidate-set-scoped foreign keys, and a
+finite live goal must finish every batch with a live candidate coverage edge or a
+live blocker. Incomplete coverage is refused as `COVERAGE_INCOMPLETE`.
+
 Finite planning maps captured Program success to reviewed candidates, evidence or
 blockers. Ongoing planning is limited to the originating request and its captured
 amendments. Accepted-work evidence and candidate associations remain protected;
@@ -497,3 +505,13 @@ calls with ten draft Programs and ten saved setup drafts/directory bindings in t
 measured workspace. Fixture setup and bridge
 initialization are excluded from timings. The report records hardware, versions,
 concurrency, population and percentiles for reads and workspace bootstrap.
+# Legacy pipeline compatibility
+
+Runs created with the 15-phase Lightweight TDD v0.6 definition keep their
+persisted definition snapshot and remain readable and immutable under that
+contract. Selecting v0.7 never silently reinterprets such a run. A migration
+must create a distinct successor and carry explicit predecessor/successor
+definition versions and digests, a one-to-one obligation mapping, and at least
+one digest-bearing evidence reference for every mapped obligation. Missing or
+ambiguous metadata is refused with `LEGACY_MIGRATION_REQUIRED`; the existing
+legacy decode path remains available for v0.6 runs.

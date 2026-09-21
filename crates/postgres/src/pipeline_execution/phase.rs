@@ -63,6 +63,13 @@ pub(crate) async fn complete_phase(
         .iter()
         .find(|phase| phase.id == request.phase_id)
         .ok_or(Error::InternalInvariant)?;
+    phase_validation::validate_ready_evidence_artifacts(
+        tx,
+        tenant,
+        workspace,
+        &request.output.evidence_artifacts,
+    )
+    .await?;
     // Resolve and validate navigation before result-lineage checks. A permitted
     // backward transition is the recovery path for legacy malformed outputs.
     let planned_next = helpers::plan_next_state(request, &definition, phase)?;
@@ -101,7 +108,7 @@ pub(crate) async fn complete_phase(
             .await?;
         }
     }
-    phase_validation::validate_output_integrity(&request.output)?;
+    phase_validation::validate_output_integrity(&request.output, &run_row.5)?;
     let open_checkpoint = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM pipeline_research_checkpoints WHERE tenant_id=$1 AND workspace_id=$2 AND producer_run_id=$3 AND status='open')",
     )
@@ -159,15 +166,17 @@ pub(crate) async fn complete_phase(
         request.consumed_knowledge.as_ref(),
     )
     .await?;
-    validate_consumed_outputs(
-        tx,
-        tenant,
-        workspace,
-        request.run_id,
-        phase.ordinal,
-        &request.consumed_outputs,
-    )
-    .await?;
+    if !run_row.5.starts_with("0.7") {
+        validate_consumed_outputs(
+            tx,
+            tenant,
+            workspace,
+            request.run_id,
+            phase.ordinal,
+            &request.consumed_outputs,
+        )
+        .await?;
+    }
     validate_review_authorization(
         tx,
         tenant,
@@ -178,13 +187,28 @@ pub(crate) async fn complete_phase(
         &request.output,
     )
     .await?;
-    validate_consumed_inputs(
+    if !run_row.5.starts_with("0.7") {
+        validate_consumed_inputs(
+            tx,
+            tenant,
+            workspace,
+            request.run_id,
+            &phase.id,
+            &request.consumed_inputs,
+        )
+        .await?;
+    }
+    // Resolve proof pointers from backend-owned rows only after all caller
+    // declarations have matched the current bindings.  The submitted digest
+    // and read receipts are validation inputs, never persisted as proof.
+    let (evidence_refs, knowledge_binding) = backend_evidence_refs(
         tx,
         tenant,
         workspace,
         request.run_id,
-        &phase.id,
-        &request.consumed_inputs,
+        &request.phase_id,
+        phase.ordinal,
+        &request.consumed_knowledge,
     )
     .await?;
     validate_reviewer_boundary(tx, tenant, workspace, request.run_id, phase, request).await?;
@@ -208,16 +232,21 @@ pub(crate) async fn complete_phase(
         .as_ref()
         .map(json)
         .transpose()?;
-    sqlx::query("INSERT INTO slice_pipeline_phase_attempts(id,tenant_id,workspace_id,run_id,phase_id,phase_ordinal,attempt,outcome,transition,revisit_phase_id,escalation_target,actor_session_id,reviewer_context,request_id,request_payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
+    sqlx::query("INSERT INTO slice_pipeline_phase_attempts(id,tenant_id,workspace_id,run_id,phase_id,phase_ordinal,attempt,outcome,transition,revisit_phase_id,escalation_target,actor_session_id,reviewer_context,request_id,request_payload,evidence_refs,knowledge_manifest_id,knowledge_manifest_digest,knowledge_workspace_generation,stale_dependency,stale_reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,false,NULL)")
         .bind(attempt_id).bind(tenant).bind(workspace).bind(request.run_id).bind(&request.phase_id).bind(phase.ordinal as i32).bind(attempt)
         .bind(enum_text(&request.outcome)?).bind(enum_text(&request.transition)?).bind(&request.revisit_phase_id)
         .bind(request.escalation_target.map(PipelineKind::as_str)).bind(session).bind(reviewer_context)
-        .bind(request.request_id).bind(&payload).execute(&mut **tx).await.map_err(storage_error)?;
-    sqlx::query("INSERT INTO slice_pipeline_phase_outputs(id,tenant_id,workspace_id,run_id,attempt_id,phase_id,phase_ordinal,revision,body,producer_context_id,body_digest,reference,fields,verdict,dispositions,skill_reads,resource_reads,artifacts,validator_receipts,followup_proposal,knowledge_publication) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)")
+        .bind(request.request_id).bind(&payload).bind(&evidence_refs)
+        .bind(knowledge_binding.as_ref().map(|value| value.manifest_id))
+        .bind(knowledge_binding.as_ref().map(|value| value.digest.as_str()))
+        .bind(knowledge_binding.as_ref().map(|value| value.workspace_generation))
+        .execute(&mut **tx).await.map_err(storage_error)?;
+    sqlx::query("INSERT INTO slice_pipeline_phase_outputs(id,tenant_id,workspace_id,run_id,attempt_id,phase_id,phase_ordinal,revision,body,producer_context_id,body_digest,reference,fields,verdict,dispositions,skill_reads,resource_reads,artifacts,evidence_artifacts,validator_receipts,followup_proposal,knowledge_publication) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)")
         .bind(output_id).bind(tenant).bind(workspace).bind(request.run_id).bind(attempt_id).bind(&request.phase_id).bind(phase.ordinal as i32)
         .bind(output_revision).bind(&request.output.body).bind(&request.output.producer_context_id).bind(&output_digest).bind(&request.output.reference).bind(json(&request.output.fields)?)
         .bind(&request.output.verdict).bind(json(&request.output.dispositions)?).bind(json(&request.output.skill_reads)?)
         .bind(json(&request.output.resource_reads)?).bind(json(&request.output.artifacts)?)
+        .bind(json(&request.output.evidence_artifacts)?)
         .bind(json(&request.output.validator_receipts)?)
         .bind(followup_proposal)
         .bind(request.output.knowledge_publication.as_ref().map(json).transpose()?)
@@ -353,12 +382,62 @@ pub(crate) async fn complete_phase(
             .ok_or(Error::InternalInvariant)?,
         result,
     };
+    let outcome_payload = json(&outcome)?;
     sqlx::query("UPDATE slice_pipeline_phase_attempts SET result_payload=$4 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
-        .bind(tenant).bind(workspace).bind(attempt_id).bind(json(&outcome)?).execute(&mut **tx).await.map_err(storage_error)?;
+        .bind(tenant).bind(workspace).bind(attempt_id).bind(outcome_payload).execute(&mut **tx).await.map_err(storage_error)?;
     Ok(outcome)
 }
 
 pub(super) mod helpers;
+
+async fn backend_evidence_refs(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    run: Uuid,
+    phase_id: &str,
+    phase_ordinal: u32,
+    consumed_knowledge: &Option<ConsumedKnowledgeManifestRef>,
+) -> Result<(serde_json::Value, Option<PipelineKnowledgeBindingReceipt>)> {
+    let outputs: Vec<(String, i64, Uuid, String)> = sqlx::query_as(
+        "SELECT b.phase_id,b.output_revision,o.id,o.body_digest FROM slice_pipeline_output_bindings b JOIN slice_pipeline_phase_outputs o ON o.tenant_id=b.tenant_id AND o.workspace_id=b.workspace_id AND o.id=b.output_id WHERE b.tenant_id=$1 AND b.workspace_id=$2 AND b.run_id=$3 AND b.phase_ordinal < $4 AND b.stale=false AND NOT o.payload_erased ORDER BY b.phase_ordinal",
+    )
+    .bind(tenant).bind(workspace).bind(run).bind(phase_ordinal as i32)
+    .fetch_all(&mut **tx).await.map_err(storage_error)?;
+    let inputs: Vec<(Uuid, i64, String)> = sqlx::query_as(
+        "SELECT id,sequence,input_digest FROM slice_pipeline_inputs WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND phase_id=$4 AND NOT payload_erased ORDER BY sequence",
+    )
+    .bind(tenant).bind(workspace).bind(run).bind(phase_id)
+    .fetch_all(&mut **tx).await.map_err(storage_error)?;
+    let mut refs = Vec::with_capacity(outputs.len() + inputs.len() + 1);
+    refs.extend(outputs.into_iter().map(|(phase, revision, id, digest)| {
+        serde_json::json!({
+            "kind":"output", "reference":id, "phase_id":phase, "revision":revision, "digest":digest
+        })
+    }));
+    refs.extend(inputs.into_iter().map(|(id, sequence, digest)| {
+        serde_json::json!({
+            "kind":"input", "reference":id, "sequence":sequence, "digest":digest
+        })
+    }));
+    let binding = if let Some(consumed) = consumed_knowledge {
+        let row: Option<(Uuid, String, i64)> = sqlx::query_as(
+            "SELECT id,digest,workspace_generation FROM pipeline_knowledge_manifests WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND digest=$4 AND run_id=$5 AND NOT payload_erased",
+        )
+        .bind(tenant).bind(workspace).bind(consumed.manifest_id).bind(&consumed.digest).bind(run)
+        .fetch_optional(&mut **tx).await.map_err(storage_error)?;
+        let (manifest_id, digest, generation) = row.ok_or(Error::StaleContext)?;
+        refs.push(serde_json::json!({"kind":"knowledge_manifest","reference":manifest_id,"revision":generation,"digest":digest}));
+        Some(PipelineKnowledgeBindingReceipt {
+            manifest_id,
+            digest,
+            workspace_generation: generation,
+        })
+    } else {
+        None
+    };
+    Ok((serde_json::Value::Array(refs), binding))
+}
 
 use helpers::{
     enforce_retry_policy, publish_result, validate_consumed_inputs, validate_consumed_outputs,

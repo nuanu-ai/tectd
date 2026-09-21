@@ -207,24 +207,34 @@ impl McpSession {
             - 4;
         let capacity = MAX_FRAME_BYTES.saturating_sub(envelope_bytes);
         let routed = crate::api::decode_public_call(&params.name, params.arguments.clone());
+        let public_decode_failed = routed.is_err();
+        let public_decode_error = routed.as_ref().err().cloned();
         let (name, arguments) = match routed {
             Ok(call) => (call.name, call.arguments),
             Err(_) => (crate::api::INVALID_PUBLIC_CALL, Value::Object(Map::new())),
         };
         match call_tool_bounded(&self.socket, &context, name, arguments.clone(), capacity).await {
             Ok(result) => success_response(id, successful_tool_result(result)),
-            Err(error) => success_response(
-                id,
-                crate::setup_recovery::response(
-                    error,
-                    name,
-                    &arguments,
-                    &self.socket,
-                    &context,
-                    capacity,
+            Err(error) => {
+                let error = public_decode_error.unwrap_or(error);
+                let (failure_name, failure_arguments) = if public_decode_failed {
+                    (params.name.as_str(), &params.arguments)
+                } else {
+                    (name, &arguments)
+                };
+                success_response(
+                    id,
+                    crate::setup_recovery::response(
+                        error,
+                        failure_name,
+                        failure_arguments,
+                        &self.socket,
+                        &context,
+                        capacity,
+                    )
+                    .await,
                 )
-                .await,
-            ),
+            }
         }
     }
 }

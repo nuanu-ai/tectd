@@ -45,7 +45,20 @@ pub(crate) fn pipeline_context_mut(data: &mut Value) -> Option<&mut Value> {
 /// A reread keeps the static definition and prior outputs and gains a compact phase
 /// map; a mutation reply keeps only the delivered phase, bindings and state.
 pub(crate) fn pipeline_context(context: &mut Value, reread: bool, phase_map: Option<Value>) {
+    pipeline_context_with_delivery(context, reread, phase_map, false, false);
+}
+
+/// Applies the normal response diet while retaining the legacy whole-delivery
+/// phase list when it is the begin reply that established that delivery.
+pub(crate) fn pipeline_context_with_delivery(
+    context: &mut Value,
+    reread: bool,
+    phase_map: Option<Value>,
+    preserve_delivered_phases: bool,
+    preserve_outputs: bool,
+) {
     let duplicate = context.get("delivered_phases").is_some()
+        && !preserve_delivered_phases
         && context.get("delivered_phases") == context.pointer("/definition/phases");
     let Some(object) = context.as_object_mut() else {
         return;
@@ -71,14 +84,44 @@ pub(crate) fn pipeline_context(context: &mut Value, reread: bool, phase_map: Opt
             }
         }
     }
-    if !reread
+    if !preserve_outputs
         && object
             .get("outputs")
             .and_then(Value::as_array)
             .is_some_and(|outputs| !outputs.is_empty())
     {
-        object.insert("outputs".into(), json!([]));
-        object.insert("outputs_complete".into(), json!(false));
+        if reread {
+            if let Some(outputs) = object.get_mut("outputs").and_then(Value::as_array_mut) {
+                for output in outputs {
+                    let Some(source) = output.as_object() else {
+                        continue;
+                    };
+                    let stale = source.get("stale").cloned().unwrap_or(json!(false));
+                    let reason = source.get("stale_reason").cloned().unwrap_or(Value::Null);
+                    *output = json!({
+                        "id":source.get("id"),
+                        "run_id":source.get("run_id"),
+                        "phase_id":source.get("phase_id"),
+                        "phase_ordinal":source.get("phase_ordinal"),
+                        "revision":source.get("revision"),
+                        "digest":source.get("digest"),
+                        "reference":source.get("reference"),
+                        "target_binding":source.get("phase_id"),
+                        "fresh":!stale.as_bool().unwrap_or(false),
+                        "usable":!stale.as_bool().unwrap_or(false),
+                        "usability_reason":if stale.as_bool() == Some(true) { reason } else { json!("current") }
+                    });
+                }
+            }
+        } else {
+            object.insert("outputs".into(), json!([]));
+            object.insert("outputs_complete".into(), json!(false));
+        }
+    }
+    if !reread {
+        // The receipt is backend-owned and is returned by begin/explicit
+        // context refresh. Mutation replies carry only checkpoint/delta state.
+        object.remove("delivery_receipt");
     }
 }
 

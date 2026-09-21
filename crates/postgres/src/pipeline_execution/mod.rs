@@ -60,9 +60,11 @@ async fn session_principal(tx: &mut Transaction<'_, Postgres>, session: Uuid) ->
 mod checkpoint;
 mod checkpoint_resolution;
 mod context;
+pub(crate) mod evidence_artifact;
 mod input;
 mod inquiry_contract;
 mod knowledge_publication;
+mod migration;
 mod phase;
 mod phase_validation;
 mod run;
@@ -72,7 +74,8 @@ pub(crate) use checkpoint::{
     validate_candidate_lineage, validate_candidate_source,
 };
 pub(crate) use checkpoint_resolution::resolve as resolve_checkpoint;
-pub(crate) use context::{load_context, load_output};
+pub(crate) use context::{load_context, load_context_without_delivery_receipt, load_output};
 pub(crate) use input::{escalate_delivery, record_input};
+pub(crate) use migration::migrate_run;
 pub(crate) use phase::complete_phase;
 pub(crate) use run::{begin, begin_replay};

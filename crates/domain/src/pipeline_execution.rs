@@ -1,6 +1,6 @@
 use crate::{
     ConsumedKnowledgeManifestRef, KnowledgePublicationReference, PipelineCheckpointRef,
-    PipelineInquiryContract, PipelineKind, PipelineKnowledgeManifest,
+    PipelineEvidenceArtifactRef, PipelineInquiryContract, PipelineKind, PipelineKnowledgeManifest,
     PipelineKnowledgeResourceManifest, PipelineKnowledgeResourceStatus, PipelineKnowledgeStatus,
     PipelineResearchCheckpoint, SliceResult, SliceResultEvidence,
     pipeline_followups::{PipelineFollowupContract, PipelineFollowupProposal},
@@ -28,6 +28,7 @@ pub enum PipelineRunStatus {
     Blocked,
     Completed,
     Escalated,
+    Superseded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -74,6 +75,11 @@ pub enum PipelineOutputConstraint {
     },
     ResolvedKnowledgePublication {
         when_verdicts: Vec<String>,
+    },
+    ReviewerContextMode {
+        field: String,
+        independent_value: String,
+        self_value: String,
     },
     FieldRequired {
         field: String,
@@ -125,6 +131,16 @@ pub enum PipelineOutputConstraint {
     FieldsEqual {
         field: String,
         other_field: String,
+        #[serde(default)]
+        when_verdict: Option<String>,
+    },
+    CommandReceipt {
+        field: String,
+        required_status: String,
+        required_scope: String,
+        require_nonzero_exit: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target_field: Option<String>,
         #[serde(default)]
         when_verdict: Option<String>,
     },
@@ -310,6 +326,7 @@ pub struct PipelineConsumedInput {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PipelinePhaseOutputDraft {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub body: String,
     pub producer_context_id: String,
     #[serde(default)]
@@ -324,6 +341,8 @@ pub struct PipelinePhaseOutputDraft {
     pub resource_reads: Vec<PipelineSkillReadReceipt>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<PipelinePhaseArtifactDraft>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_artifacts: Vec<PipelineEvidenceArtifactRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub validator_receipts: Vec<PipelineValidatorReceipt>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -351,6 +370,35 @@ pub struct PipelinePhaseAttempt {
     pub output_reference: Option<String>,
     pub actor_session_id: Uuid,
     pub reviewer_context: Option<PipelineReviewerAttestation>,
+    /// Backend-derived evidence pointers. These are populated from the
+    /// persisted bindings/inputs/manifests after validation; caller supplied
+    /// digest/read receipts are never copied into this list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_refs: Vec<PipelineEvidenceRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_binding: Option<PipelineKnowledgeBindingReceipt>,
+    #[serde(default)]
+    pub stale_dependency: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineEvidenceRef {
+    pub kind: String,
+    pub reference: String,
+    pub digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineKnowledgeBindingReceipt {
+    pub manifest_id: Uuid,
+    pub digest: String,
+    pub workspace_generation: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -372,6 +420,7 @@ pub struct PipelinePhaseOutput {
     pub phase_id: String,
     pub phase_ordinal: u32,
     pub revision: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub body: String,
     pub producer_context_id: String,
     pub digest: String,
@@ -384,6 +433,8 @@ pub struct PipelinePhaseOutput {
     pub skill_reads: Vec<PipelineSkillReadReceipt>,
     pub resource_reads: Vec<PipelineSkillReadReceipt>,
     pub artifacts: Vec<PipelinePhaseArtifactDraft>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_artifacts: Vec<PipelineEvidenceArtifactRef>,
     pub validator_receipts: Vec<PipelineValidatorReceipt>,
     pub followup_proposal: Option<PipelineFollowupProposal>,
     pub stale: bool,
@@ -427,6 +478,22 @@ pub struct PipelineRunContext {
     pub knowledge_resources: Option<PipelineKnowledgeResourceManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge_resource_status: Option<PipelineKnowledgeResourceStatus>,
+    /// Backend-issued proof that the immutable run manifest was delivered for
+    /// this context epoch. Agents cannot author or replay this receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_receipt: Option<PipelineDeliveryReceipt>,
+    #[serde(skip)]
+    pub delivery_fresh: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineDeliveryReceipt {
+    pub delivery_id: Uuid,
+    pub run_id: Uuid,
+    pub context_epoch: i64,
+    pub manifest_digest: String,
+    pub delivered_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -88,6 +88,7 @@ fn completion() -> (
                 body,
                 reference: None,
             }],
+            evidence_artifacts: vec![],
             validator_receipts: vec![],
             followup_proposal: None,
             reviewer_context: Some(PipelineReviewerAttestation {

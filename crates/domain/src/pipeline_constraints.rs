@@ -1,4 +1,17 @@
 use crate::*;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CommandReceipt<'a> {
+    command: &'a str,
+    target: &'a str,
+    status: &'a str,
+    exit_code: i64,
+    fresh: bool,
+    skipped: bool,
+    scopes: Vec<&'a str>,
+}
 
 pub(crate) fn validate_output_constraint(
     phase: &PipelinePhaseDefinition,
@@ -67,6 +80,16 @@ pub(crate) fn validate_output_constraint(
                         .any(|allowed| allowed == value)
                 })
         }
+        PipelineOutputConstraint::ReviewerContextMode {
+            field,
+            independent_value,
+            self_value,
+        } => {
+            valid_field(field)
+                && !independent_value.is_empty()
+                && !self_value.is_empty()
+                && independent_value != self_value
+        }
         PipelineOutputConstraint::FieldRequired {
             field,
             when_verdict,
@@ -116,6 +139,20 @@ pub(crate) fn validate_output_constraint(
             other_field,
             when_verdict,
         } => valid_field(field) && valid_field(other_field) && valid_verdict(when_verdict),
+        PipelineOutputConstraint::CommandReceipt {
+            field,
+            required_status,
+            required_scope,
+            target_field,
+            when_verdict,
+            ..
+        } => {
+            valid_field(field)
+                && !required_status.trim().is_empty()
+                && !required_scope.trim().is_empty()
+                && target_field.as_ref().is_none_or(|field| valid_field(field))
+                && valid_verdict(when_verdict)
+        }
     };
     if valid {
         Ok(())
@@ -143,6 +180,15 @@ pub(crate) fn output_constraint_satisfied(
                 .is_some_and(|verdict| when_verdicts.contains(verdict));
             required == output.knowledge_publication.is_some()
         }
+        PipelineOutputConstraint::ReviewerContextMode {
+            field,
+            independent_value,
+            self_value,
+        } => match output.fields.get(field) {
+            Some(value) if value == independent_value => output.reviewer_context.is_some(),
+            Some(value) if value == self_value => output.reviewer_context.is_none(),
+            _ => false,
+        },
         PipelineOutputConstraint::FieldRequired {
             field,
             when_verdict,
@@ -241,6 +287,49 @@ pub(crate) fn output_constraint_satisfied(
                 || output.fields.contains_key(field)
                     && output.fields.get(field) == output.fields.get(other_field)
         }
+        PipelineOutputConstraint::CommandReceipt {
+            field,
+            required_status,
+            required_scope,
+            require_nonzero_exit,
+            target_field,
+            when_verdict,
+        } => {
+            if !applies(when_verdict) {
+                return true;
+            }
+            let Some(receipt) = output
+                .fields
+                .get(field)
+                .and_then(|value| serde_json::from_str::<CommandReceipt<'_>>(value).ok())
+            else {
+                return false;
+            };
+            !receipt.command.trim().is_empty()
+                && !receipt.target.trim().is_empty()
+                && receipt.status == required_status
+                && receipt.fresh
+                && !receipt.skipped
+                && if *require_nonzero_exit {
+                    receipt.exit_code != 0
+                } else {
+                    receipt.exit_code == 0
+                }
+                && receipt.scopes.iter().all(|scope| !scope.trim().is_empty())
+                && receipt
+                    .scopes
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+                    == receipt.scopes.len()
+                && receipt.scopes.iter().any(|scope| *scope == required_scope)
+                && target_field.as_ref().is_none_or(|field| {
+                    output
+                        .fields
+                        .get(field)
+                        .is_some_and(|target| target == receipt.target)
+                })
+        }
     }
 }
 
@@ -287,6 +376,7 @@ mod tests {
             skill_reads: vec![],
             resource_reads: vec![],
             artifacts: vec![],
+            evidence_artifacts: vec![],
             validator_receipts: vec![],
             followup_proposal: None,
             reviewer_context: None,
@@ -324,5 +414,34 @@ mod tests {
             validate_output_constraint(&phase, &undeclared),
             Err(Error::InvalidArguments)
         );
+    }
+
+    #[test]
+    fn reviewer_context_mode_binds_attestation_presence() {
+        let constraint = PipelineOutputConstraint::ReviewerContextMode {
+            field: "review_mode".into(),
+            independent_value: "independent".into(),
+            self_value: "self".into(),
+        };
+        let mut phase = phase(constraint.clone());
+        phase.required_fields.push("review_mode".into());
+        assert!(validate_output_constraint(&phase, &constraint).is_ok());
+
+        let mut value = output("ready", None);
+        value.fields.insert("review_mode".into(), "self".into());
+        assert!(output_constraint_satisfied(&value, &constraint));
+        value.reviewer_context = Some(PipelineReviewerAttestation {
+            reviewer_identity: "reviewer".into(),
+            reviewer_context_id: "reviewer-context".into(),
+            producer_context_ids: vec!["producer-context".into()],
+            fresh_input: true,
+        });
+        assert!(!output_constraint_satisfied(&value, &constraint));
+        value
+            .fields
+            .insert("review_mode".into(), "independent".into());
+        assert!(output_constraint_satisfied(&value, &constraint));
+        value.reviewer_context = None;
+        assert!(!output_constraint_satisfied(&value, &constraint));
     }
 }

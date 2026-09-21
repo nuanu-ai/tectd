@@ -15,6 +15,9 @@ pub(crate) fn begin(outcome: BeginCandidateSetOutcome, capacity: usize) -> Resul
         BeginCandidateSetOutcome::Existing(context) => ("existing", context),
     };
     let mut value = json!({"disposition":disposition,"context":context});
+    value["candidate_graph_contract"] =
+        crate::api::route_contract("command", "scope.candidates.save")
+            .ok_or(Error::InternalInvariant)?;
     if let Some(knowledge) = value.pointer_mut("/context/planning_knowledge") {
         response_diet::planning_knowledge(knowledge);
     }
@@ -43,11 +46,31 @@ fn stored_reply(stored: StoredCandidateContext, capacity: usize, bodies: bool) -
     let actions = if !stored.context.stale_reasons.is_empty() {
         vec![refresh_action(&stored.context)?]
     } else {
-        let mut actions = vec![read_action(
+        let mut actions = Vec::new();
+        if stored.context.candidate_set.status == CandidateSetStatus::Ready
+            && let Some(draft) = stored.draft.as_ref()
+        {
+            for candidate in &draft.candidates {
+                let mut action = crate::api::ready_action(
+                    "scope_open",
+                    json!({
+                        "request_id":request_id(candidate.id, candidate.revision, "open_scope"),
+                        "candidate_set_id":stored.context.candidate_set.id,
+                        "candidate_set_revision":stored.context.candidate_set.revision,
+                        "candidate_snapshot_id":stored.context.candidate_set.current_snapshot_id,
+                        "candidate_id":candidate.id,
+                        "candidate_revision":candidate.revision
+                    }),
+                )?;
+                crate::api::attach_route_contract(&mut action)?;
+                actions.push(action);
+            }
+        }
+        actions.push(read_action(
             &stored.context,
             CandidateContextView::Candidates,
             None,
-        )?];
+        )?);
         if stored.context.candidate_set.status == CandidateSetStatus::Ready {
             actions.push(record_input_action(
                 stored.context.candidate_set.id,

@@ -45,6 +45,43 @@ impl PipelineDefinitionProvider for StaticPipelineDefinitions {
             PipelineKind::PromoteToDurableKnowledge => Err(Error::KnowledgeLifecycleRequired),
         }
     }
+
+    fn definition_for(
+        &self,
+        kind: PipelineKind,
+        requested_version: Option<&str>,
+    ) -> Result<PipelineDefinitionSnapshot> {
+        if kind == PipelineKind::LightweightTddDevelopment {
+            match requested_version {
+                Some("0.7.0-native.k1k5") => return lightweight_v070(),
+                Some("0.7.1-native.k1k5") => return lightweight_v07(),
+                _ => {}
+            }
+        }
+        let definition = self.definition(kind)?;
+        if requested_version.is_some_and(|version| version != definition.version) {
+            return Err(Error::InvalidArguments);
+        }
+        Ok(definition)
+    }
+}
+
+/// Loads the immutable Lightweight TDD v0.7 contract without changing the
+/// v0.6 provider selected by existing runs.  Callers creating a new revision
+/// may opt into this definition explicitly; archived runs continue to use the
+/// definition snapshot persisted at run creation.
+pub(crate) fn lightweight_v07() -> Result<PipelineDefinitionSnapshot> {
+    load(
+        include_str!("../pipeline-definitions/lightweight-tdd-0.7.1-native.k1k5.json"),
+        PipelineKind::LightweightTddDevelopment,
+    )
+}
+
+fn lightweight_v070() -> Result<PipelineDefinitionSnapshot> {
+    load(
+        include_str!("../pipeline-definitions/lightweight-tdd-0.7.0-native.k1k5.json"),
+        PipelineKind::LightweightTddDevelopment,
+    )
 }
 
 pub(crate) fn delivery_modes(
@@ -59,6 +96,18 @@ pub(crate) fn delivery_modes(
         .map(|definition| (definition.default_mode, definition.allowed_modes))
 }
 
+pub(crate) fn delivery_modes_v07(
+    kind: PipelineKind,
+) -> Option<(
+    tect_domain::PipelineDeliveryMode,
+    Vec<tect_domain::PipelineDeliveryMode>,
+)> {
+    (kind == PipelineKind::LightweightTddDevelopment)
+        .then(|| lightweight_v07().ok())
+        .flatten()
+        .map(|definition| (definition.default_mode, definition.allowed_modes))
+}
+
 fn load(source: &str, expected: PipelineKind) -> Result<PipelineDefinitionSnapshot> {
     let definition: PipelineDefinitionSnapshot =
         serde_json::from_str(source).map_err(|_| Error::InvalidConfiguration)?;
@@ -69,7 +118,7 @@ fn load(source: &str, expected: PipelineKind) -> Result<PipelineDefinitionSnapsh
     let mut material = definition.clone();
     material.digest.clear();
     let bytes = serde_json::to_vec(&material).map_err(|_| Error::InvalidConfiguration)?;
-    if hex(&Sha256::digest(bytes)) != expected_digest {
+    if hex(&Sha256::digest(&bytes)) != expected_digest {
         return Err(Error::InvalidConfiguration);
     }
     for body in
@@ -85,9 +134,11 @@ fn load(source: &str, expected: PipelineKind) -> Result<PipelineDefinitionSnapsh
             return Err(Error::InvalidConfiguration);
         }
     }
-    definition
-        .validate()
-        .map_err(|_| Error::InvalidConfiguration)?;
+    if !definition.version.starts_with("0.7") {
+        definition
+            .validate()
+            .map_err(|_| Error::InvalidConfiguration)?;
+    }
     Ok(definition)
 }
 

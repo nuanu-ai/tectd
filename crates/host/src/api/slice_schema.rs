@@ -11,9 +11,22 @@ pub(super) fn slice_context() -> Value {
 
 pub(super) fn pipeline_context() -> Value {
     object_schema(
-        json!({"run_id":uuid(),"view":{"type":"string","enum":["current","output"]},
-            "output_id":uuid(),"digest":text()}),
+        json!({"run_id":uuid(),"view":{"type":"string","enum":["current","output","delivery_receipt"]},
+            "output_id":uuid(),"digest":text(),"refresh":{"type":"boolean"}}),
         json!(["run_id"]),
+    )
+}
+
+pub(super) fn pipeline_instruction() -> Value {
+    object_schema(
+        json!({
+            "run_id":uuid(),
+            "instruction_id":text(),
+            "version":text(),
+            "digest":text(),
+            "refresh":{"type":"boolean"}
+        }),
+        json!(["run_id", "instruction_id", "version", "digest"]),
     )
 }
 
@@ -23,6 +36,7 @@ pub(super) fn pipeline_begin() -> Value {
             "request_id":uuid(),"scope_id":uuid(),"slice_id":uuid(),
             "slice_revision":{"type":"integer","minimum":1},
             "delivery_mode":{"type":"string","enum":["whole","phasewise"]},
+            "definition_version":text(),
             "inquiry":inquiry(),"source_checkpoint":checkpoint_ref(),
             "qualification_reason":text()
         }),
@@ -32,6 +46,37 @@ pub(super) fn pipeline_begin() -> Value {
             "slice_id",
             "slice_revision",
             "qualification_reason"
+        ]),
+    )
+}
+
+pub(super) fn pipeline_run_migrate() -> Value {
+    let evidence = object_schema(
+        json!({"reference":text(),"digest":text()}),
+        json!(["reference", "digest"]),
+    );
+    let mapping = object_schema(
+        json!({"legacy_obligation_id":text(),"successor_obligation_id":text(),
+            "evidence_refs":{"type":"array","items":evidence,"minItems":1,"uniqueItems":true}}),
+        json!([
+            "legacy_obligation_id",
+            "successor_obligation_id",
+            "evidence_refs"
+        ]),
+    );
+    object_schema(
+        json!({"request_id":uuid(),"predecessor_run_id":uuid(),
+            "expected_revision":{"type":"integer","minimum":1},
+            "idempotency_key":{"type":"string","minLength":1,"maxLength":128},
+            "successor_definition_version":text(),
+            "mappings":{"type":"array","items":mapping,"minItems":1,"uniqueItems":true}}),
+        json!([
+            "request_id",
+            "predecessor_run_id",
+            "expected_revision",
+            "idempotency_key",
+            "successor_definition_version",
+            "mappings"
         ]),
     )
 }
@@ -88,10 +133,6 @@ pub(super) fn pipeline_phase_complete() -> Value {
     let consumed = object_schema(
         json!({"phase_id":text(),"output_revision":{"type":"integer","minimum":1},"digest":text()}),
         json!(["phase_id", "output_revision", "digest"]),
-    );
-    let consumed_input = object_schema(
-        json!({"input_id":uuid(),"sequence":{"type":"integer","minimum":1},"digest":text()}),
-        json!(["input_id", "sequence", "digest"]),
     );
     let consumed_knowledge = object_schema(
         json!({"manifest_id":uuid(),"digest":text()}),
@@ -182,7 +223,7 @@ pub(super) fn pipeline_phase_complete() -> Value {
             "followup_proposal":followup_proposal,
             "reviewer_context":reviewer,"reference":text(),"knowledge_publication":knowledge_publication
         }),
-        json!(["body", "producer_context_id"]),
+        json!(["producer_context_id"]),
     );
     let evidence = object_schema(
         json!({"kind":text(),"reference":text(),"observation":text()}),
@@ -201,8 +242,7 @@ pub(super) fn pipeline_phase_complete() -> Value {
             "request_id":uuid(),"run_id":uuid(),"run_revision":{"type":"integer","minimum":1},
             "phase_id":text(),"outcome":{"type":"string","enum":["completed","waiting_input","blocked"]},
             "transition":{"type":"string","enum":["continue","complete","block","escalate"]},
-            "output":output,"consumed_outputs":{"type":"array","items":consumed,"uniqueItems":true},
-            "consumed_inputs":{"type":"array","items":consumed_input,"uniqueItems":true},
+            "output":output,
             "consumed_knowledge":consumed_knowledge,"revisit_phase_id":text(),"escalation_target":{"type":"string","enum":pipelines()},
             "terminal_result":terminal,"publish_blocked_result":{"type":"boolean","default":false}
             ,"research_checkpoint":research_checkpoint
@@ -214,9 +254,7 @@ pub(super) fn pipeline_phase_complete() -> Value {
             "phase_id",
             "outcome",
             "transition",
-            "output",
-            "consumed_outputs",
-            "consumed_inputs"
+            "output"
         ]),
     )
 }

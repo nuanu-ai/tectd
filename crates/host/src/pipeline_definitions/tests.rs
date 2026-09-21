@@ -1,6 +1,492 @@
 use super::*;
 
 #[test]
+fn lightweight_v07_is_immutable_compact_and_traceable() {
+    let definition = lightweight_v07().expect("v0.7 definition loads");
+    definition.validate().expect("v0.7 definition validates");
+    assert_eq!(definition.version, "0.7.1-native.k1k5");
+    assert_eq!(
+        definition.digest,
+        "93df97f4cb4458a18411b76005b29025a56234dc47650e4147ac5fdab3d30d89"
+    );
+    assert_eq!(definition.phases.len(), 5);
+    assert_eq!(
+        definition
+            .phases
+            .iter()
+            .map(|p| p.required_fields.len())
+            .max(),
+        Some(8)
+    );
+    assert!(definition.phases.iter().all(|phase| {
+        phase
+            .instructions
+            .iter()
+            .all(|body| body.body.len() <= 4096)
+    }));
+    assert!(definition.overview.origin_refs.len() >= 15);
+}
+
+#[test]
+fn lightweight_v07_routes_cover_pass_rework_block_and_escalation() {
+    let definition = lightweight_v07().unwrap();
+    for phase in &definition.phases {
+        assert_eq!(phase.verdict_routes.len(), 4);
+        assert!(
+            phase
+                .verdict_routes
+                .iter()
+                .any(|route| route.verdict == "pass")
+        );
+        assert!(
+            phase
+                .verdict_routes
+                .iter()
+                .any(|route| route.verdict == "rework")
+        );
+        assert!(
+            phase
+                .verdict_routes
+                .iter()
+                .any(|route| route.verdict == "blocked")
+        );
+        assert!(
+            phase
+                .verdict_routes
+                .iter()
+                .any(|route| route.verdict == "escalate")
+        );
+    }
+}
+
+fn v07_completion(
+    phase_id: &str,
+) -> (
+    PipelineDefinitionSnapshot,
+    tect_domain::CompletePipelinePhase,
+) {
+    use std::collections::BTreeMap;
+    use tect_domain::{
+        CompletePipelinePhase, PipelinePhaseOutcome, PipelinePhaseOutputDraft,
+        PipelineTerminalResultDraft, PipelineTransition, SliceResultEvidence,
+    };
+    use uuid::Uuid;
+
+    let definition = lightweight_v07().unwrap();
+    let phase = definition
+        .phases
+        .iter()
+        .find(|phase| phase.id == phase_id)
+        .unwrap();
+    let fields = phase
+        .required_fields
+        .iter()
+        .map(|field| {
+            let receipt = |status: &str, exit_code: i64, scopes: &[&str], target: &str| {
+                serde_json::json!({
+                    "command":"cargo test focused",
+                    "target":target,
+                    "status":status,
+                    "exit_code":exit_code,
+                    "fresh":true,
+                    "skipped":false,
+                    "scopes":scopes
+                })
+                .to_string()
+            };
+            (
+                field.clone(),
+                match field.as_str() {
+                    "fit" => "bounded_understood".into(),
+                    "parent" => "current_confirmed".into(),
+                    "preflight" => "current_clear".into(),
+                    "authority" | "authority_boundary" => "authorized".into(),
+                    "route" => "none".into(),
+                    "isolation" | "ownership" => "confirmed".into(),
+                    "overlap" => "clear".into(),
+                    "review_mode" => "self".into(),
+                    "anti_pattern_review" => "reviewed_clear".into(),
+                    "missing_proof" => "none".into(),
+                    "target_binding" => "focused-target".into(),
+                    "red_receipt" => {
+                        receipt("failed_as_expected", 1, &["focused"], "focused-target")
+                    }
+                    "green_receipt" => receipt("passed", 0, &["focused"], "focused-target"),
+                    "focused_proof" | "affected_proof" => {
+                        receipt("passed", 0, &["focused", "affected"], "final-target")
+                    }
+                    "truth_level" => "local_verified".into(),
+                    "promotion" => "no_promotion".into(),
+                    "handoff" => "none".into(),
+                    _ => "recorded".into(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let request = CompletePipelinePhase {
+        request_id: Uuid::new_v4(),
+        run_id: Uuid::new_v4(),
+        run_revision: 1,
+        phase_id: phase.id.clone(),
+        outcome: PipelinePhaseOutcome::Completed,
+        transition: if phase_id == "K5" {
+            PipelineTransition::Complete
+        } else {
+            PipelineTransition::Continue
+        },
+        output: PipelinePhaseOutputDraft {
+            body: "bounded v0.7 phase evidence".into(),
+            producer_context_id: "current-context".into(),
+            fields,
+            verdict: Some("pass".into()),
+            dispositions: vec!["satisfied".into()],
+            skill_reads: vec![],
+            resource_reads: vec![],
+            artifacts: vec![],
+            evidence_artifacts: vec![],
+            validator_receipts: vec![],
+            followup_proposal: None,
+            reviewer_context: None,
+            reference: None,
+            knowledge_publication: None,
+        },
+        consumed_outputs: vec![],
+        consumed_inputs: vec![],
+        revisit_phase_id: None,
+        escalation_target: None,
+        terminal_result: (phase_id == "K5").then(|| PipelineTerminalResultDraft {
+            summary: "bounded implementation locally verified".into(),
+            evidence: vec![SliceResultEvidence {
+                kind: "test".into(),
+                reference: "final-target".into(),
+                observation: "focused and affected proof passed".into(),
+            }],
+            scope_impact: "bounded target only".into(),
+            remaining_work: "none".into(),
+        }),
+        publish_blocked_result: false,
+        consumed_knowledge: None,
+        research_checkpoint: None,
+    };
+    (definition, request)
+}
+
+#[test]
+fn lightweight_v07_accepts_rework_route_and_rejects_disposition_mismatch() {
+    use tect_domain::{PipelinePhaseOutcome, PipelineTransition};
+
+    let (definition, mut request) = v07_completion("K3");
+    request.output.verdict = Some("rework".into());
+    request.output.dispositions = vec!["rework".into()];
+    request.outcome = PipelinePhaseOutcome::WaitingInput;
+    request.transition = PipelineTransition::Continue;
+    request.revisit_phase_id = Some("K2".into());
+    assert!(request.validate(&definition).is_ok());
+
+    request.output.dispositions = vec!["satisfied".into()];
+    assert_eq!(
+        request.validate(&definition),
+        Err(tect_domain::Error::InvalidArguments)
+    );
+
+    let (_, mut pass_with_rework) = v07_completion("K3");
+    pass_with_rework.output.dispositions = vec!["rework".into()];
+    assert_eq!(
+        pass_with_rework.validate(&definition),
+        Err(tect_domain::Error::InvalidArguments)
+    );
+}
+
+#[test]
+fn lightweight_v07_binds_independent_and_self_review_context() {
+    use tect_domain::PipelineReviewerAttestation;
+
+    let (definition, mut request) = v07_completion("K3");
+    request
+        .output
+        .fields
+        .insert("review_mode".into(), "independent".into());
+    assert!(matches!(
+        request.validate(&definition),
+        Err(tect_domain::Error::Refused(refusal))
+            if refusal.code == tect_domain::RefusalCode::InvalidOutput
+                && refusal.path.as_deref() == Some("arguments.params.output.fields.review_mode")
+    ));
+
+    request.output.reviewer_context = Some(PipelineReviewerAttestation {
+        reviewer_identity: "independent-reviewer".into(),
+        reviewer_context_id: "current-context".into(),
+        producer_context_ids: vec!["producer-context".into()],
+        fresh_input: true,
+    });
+    assert!(request.validate(&definition).is_ok());
+
+    request.output.reviewer_context = Some(PipelineReviewerAttestation {
+        reviewer_identity: "fake-reviewer".into(),
+        reviewer_context_id: "current-context".into(),
+        producer_context_ids: vec!["current-context".into()],
+        fresh_input: true,
+    });
+    assert_eq!(
+        request.validate(&definition),
+        Err(tect_domain::Error::InvalidArguments)
+    );
+
+    request
+        .output
+        .fields
+        .insert("review_mode".into(), "self".into());
+    assert_eq!(
+        request.validate(&definition),
+        Err(tect_domain::Error::InvalidArguments)
+    );
+    request.output.reviewer_context = None;
+    assert!(request.validate(&definition).is_ok());
+}
+
+#[test]
+fn legacy_required_disposition_behavior_is_unchanged() {
+    use tect_domain::{PipelinePhaseOutcome, PipelineTransition};
+
+    let (mut definition, mut request) = v07_completion("K3");
+    definition.version = "0.6.0-compatibility-fixture".into();
+    request.output.verdict = Some("rework".into());
+    request.output.dispositions = vec!["rework".into()];
+    request.outcome = PipelinePhaseOutcome::WaitingInput;
+    request.transition = PipelineTransition::Continue;
+    request.revisit_phase_id = Some("K2".into());
+    assert_eq!(
+        request.validate(&definition),
+        Err(tect_domain::Error::InvalidArguments)
+    );
+}
+
+#[test]
+fn lightweight_v07_body_is_optional_but_legacy_body_remains_required() {
+    let (definition, request) = v07_completion("K1");
+    let mut omitted = serde_json::to_value(&request).unwrap();
+    omitted["output"].as_object_mut().unwrap().remove("body");
+    let omitted: tect_domain::CompletePipelinePhase = serde_json::from_value(omitted).unwrap();
+    assert!(omitted.output.body.is_empty());
+    assert!(omitted.validate(&definition).is_ok());
+    assert!(
+        serde_json::to_value(&omitted).unwrap()["output"]
+            .get("body")
+            .is_none()
+    );
+
+    let (_, explicit) = v07_completion("K1");
+    assert_eq!(explicit.output.body, "bounded v0.7 phase evidence");
+    assert!(explicit.validate(&definition).is_ok());
+    assert_eq!(
+        serde_json::to_value(&explicit).unwrap()["output"]["body"],
+        "bounded v0.7 phase evidence"
+    );
+
+    let mut legacy = definition;
+    legacy.version = "0.6.0-compatibility-fixture".into();
+    assert_eq!(
+        omitted.validate(&legacy),
+        Err(tect_domain::Error::InvalidArguments)
+    );
+}
+
+#[test]
+fn lightweight_v07_compact_phase_requests_are_below_two_kibibytes() {
+    use tect_domain::CompletePipelinePhase;
+
+    let definition = lightweight_v07().unwrap();
+    let mut sizes = Vec::new();
+    for (index, phase) in definition.phases.iter().enumerate() {
+        let (_, valid) = v07_completion(&phase.id);
+        let fields = valid
+            .output
+            .fields
+            .into_iter()
+            .map(|(field, value)| (field, serde_json::json!(value)))
+            .collect::<serde_json::Map<_, _>>();
+        let mut params = serde_json::json!({
+            "request_id":"00000000-0000-4000-8000-000000000001",
+            "run_id":"00000000-0000-4000-8000-000000000002",
+            "run_revision":index + 1,
+            "phase_id":phase.id,
+            "outcome":"completed",
+            "transition":if phase.id == "K5" { "complete" } else { "continue" },
+            "output":{
+                "producer_context_id":"ctx",
+                "fields":fields,
+                "verdict":"pass",
+                "dispositions":["satisfied"]
+            }
+        });
+        if phase.id == "K5" {
+            params["terminal_result"] = serde_json::json!({
+                "summary":"x",
+                "evidence":[{"kind":"test","reference":"x","observation":"x"}],
+                "scope_impact":"x",
+                "remaining_work":"none"
+            });
+        }
+        let request: CompletePipelinePhase = serde_json::from_value(params.clone()).unwrap();
+        assert!(request.validate(&definition).is_ok(), "{}", phase.id);
+        let routed = serde_json::json!({
+            "route":"slice.pipeline.phase.complete",
+            "params":params
+        });
+        assert!(crate::api::decode_public_call("command", routed.clone()).is_ok());
+        let params_bytes = serde_json::to_vec(&routed["params"]).unwrap().len();
+        let routed_bytes = serde_json::to_vec(&routed).unwrap().len();
+        assert!(routed_bytes <= 2 * 1024, "{}: {routed_bytes}", phase.id);
+        sizes.push((phase.id.clone(), params_bytes, routed_bytes));
+    }
+    eprintln!("v07_phase_complete_request_bytes={sizes:?}");
+}
+
+#[test]
+fn lightweight_v07_rejects_tampered_digest() {
+    let source = include_str!("../../pipeline-definitions/lightweight-tdd-0.7.1-native.k1k5.json");
+    let mut value: serde_json::Value = serde_json::from_str(source).unwrap();
+    value["phases"][3]["required_fields"] = serde_json::json!(["red"]);
+    let tampered = serde_json::to_string(&value).unwrap();
+    assert!(load(&tampered, PipelineKind::LightweightTddDevelopment).is_err());
+}
+
+#[test]
+fn lightweight_v07_has_resolvable_k_anchors_reference_adapters_and_exact_fields() {
+    let definition = lightweight_v07().unwrap();
+    let ledger = include_str!("../../../../skills/pipelines/lightweight-tdd/SOURCE-LEDGER.md");
+    for phase in &definition.phases {
+        assert!(phase.required_fields.len() <= 8, "{}", phase.id);
+        let anchor = format!("## {}", phase.id);
+        assert!(ledger.contains(&anchor), "missing {anchor}");
+        assert!(
+            phase.instructions[0]
+                .origin_refs
+                .iter()
+                .any(|reference| reference.ends_with(&format!("#{}", phase.id)))
+        );
+    }
+    for reference in [
+        "using-git-worktrees",
+        "test-driven-development",
+        "testing-anti-patterns",
+        "verification-before-completion",
+        "writing-plans",
+        "executing-plans",
+        "systematic-debugging",
+        "writing-skills",
+        "finishing-a-development-branch",
+    ] {
+        assert!(
+            ledger.contains(reference),
+            "missing reference map for {reference}"
+        );
+    }
+    assert_eq!(
+        definition
+            .phases
+            .iter()
+            .map(|phase| phase.required_fields.len())
+            .collect::<Vec<_>>(),
+        vec![7, 8, 7, 8, 8]
+    );
+}
+
+#[test]
+fn lightweight_v07_blocks_invalid_entry_preflight_and_tdd_receipts() {
+    for (field, invalid) in [
+        ("parent", "missing"),
+        ("preflight", "conflicting"),
+        ("authority", "unknown"),
+    ] {
+        let (definition, mut request) = v07_completion("K1");
+        request.output.fields.insert(field.into(), invalid.into());
+        assert!(matches!(
+            request.validate(&definition),
+            Err(tect_domain::Error::Refused(refusal))
+                if refusal.code == tect_domain::RefusalCode::InvalidOutput
+                    && refusal.path.as_deref() == Some(&format!("arguments.params.output.fields.{field}"))
+        ));
+    }
+    for (field, invalid) in [
+        ("isolation", "unknown"),
+        ("ownership", "other_owned"),
+        ("overlap", "conflicting"),
+        ("route", "defer"),
+        ("route", "unknown"),
+    ] {
+        let (definition, mut request) = v07_completion("K2");
+        request.output.fields.insert(field.into(), invalid.into());
+        assert!(matches!(
+            request.validate(&definition),
+            Err(tect_domain::Error::Refused(refusal))
+                if refusal.code == tect_domain::RefusalCode::InvalidOutput
+                    && refusal.path.as_deref() == Some(&format!("arguments.params.output.fields.{field}"))
+        ));
+    }
+    let (definition, mut request) = v07_completion("K4");
+    request.output.fields.insert(
+        "red_receipt".into(),
+        serde_json::json!({"command":"cargo test focused","target":"focused-target","status":"failed_as_expected","exit_code":0,"fresh":true,"skipped":false,"scopes":["focused"]}).to_string(),
+    );
+    assert!(matches!(
+        request.validate(&definition),
+        Err(tect_domain::Error::Refused(refusal))
+            if refusal.path.as_deref() == Some("arguments.params.output.fields.red_receipt")
+    ));
+    let (_, mut request) = v07_completion("K4");
+    request.output.fields.insert(
+        "green_receipt".into(),
+        serde_json::json!({"command":"cargo test focused","target":"other-target","status":"passed","exit_code":0,"fresh":true,"skipped":false,"scopes":["focused"]}).to_string(),
+    );
+    assert!(matches!(
+        request.validate(&definition),
+        Err(tect_domain::Error::Refused(refusal))
+            if refusal.path.as_deref() == Some("arguments.params.output.fields.green_receipt")
+    ));
+}
+
+#[test]
+fn lightweight_v07_blocks_invalid_local_proof_and_open_handoff() {
+    for (field, mutation) in [
+        ("focused_proof", (false, false, 0, vec!["focused"])),
+        ("affected_proof", (true, false, 1, vec!["affected"])),
+        ("affected_proof", (true, true, 0, vec!["affected"])),
+        ("affected_proof", (true, false, 0, vec!["focused"])),
+    ] {
+        let (definition, mut request) = v07_completion("K5");
+        let (fresh, skipped, exit_code, scopes) = mutation;
+        request.output.fields.insert(
+            field.into(),
+            serde_json::json!({"command":"cargo test final","target":"final-target","status":"passed","exit_code":exit_code,"fresh":fresh,"skipped":skipped,"scopes":scopes}).to_string(),
+        );
+        assert!(matches!(
+            request.validate(&definition),
+            Err(tect_domain::Error::Refused(refusal))
+                if refusal.code == tect_domain::RefusalCode::InvalidOutput
+                    && refusal.path.as_deref() == Some(&format!("arguments.params.output.fields.{field}"))
+        ));
+    }
+    for (field, value) in [("missing_proof", "deferred"), ("handoff", "active")] {
+        let (definition, mut request) = v07_completion("K5");
+        request.output.fields.insert(field.into(), value.into());
+        assert!(matches!(
+            request.validate(&definition),
+            Err(tect_domain::Error::Refused(refusal))
+                if refusal.path.as_deref() == Some(&format!("arguments.params.output.fields.{field}"))
+        ));
+    }
+}
+
+#[test]
+fn lightweight_v07_accepts_one_bounded_k1_through_k5_contract_path() {
+    for phase_id in ["K1", "K2", "K3", "K4", "K5"] {
+        let (definition, request) = v07_completion(phase_id);
+        assert!(request.validate(&definition).is_ok(), "{phase_id}");
+    }
+}
+
+#[test]
 fn lightweight_definition_has_exact_complete_bodies() {
     let definition = StaticPipelineDefinitions
         .definition(PipelineKind::LightweightTddDevelopment)
@@ -14,6 +500,67 @@ fn lightweight_definition_has_exact_complete_bodies() {
     assert_eq!(definition.phases[3].skills.len(), 1);
     assert!(!definition.phases[8].skills.is_empty());
     assert_eq!(definition.phases[10].skills.len(), 1);
+}
+
+#[test]
+fn explicit_definition_selection_keeps_v06_default_and_exposes_v07_k1k5() {
+    let provider = StaticPipelineDefinitions;
+    let legacy = provider
+        .definition(PipelineKind::LightweightTddDevelopment)
+        .unwrap();
+    let explicit_legacy = provider
+        .definition_for(
+            PipelineKind::LightweightTddDevelopment,
+            Some("0.6.0-native.engineering.1"),
+        )
+        .unwrap();
+    assert_eq!(explicit_legacy.version, legacy.version);
+    assert_eq!(explicit_legacy.digest, legacy.digest);
+
+    let compact = provider
+        .definition_for(
+            PipelineKind::LightweightTddDevelopment,
+            Some("0.7.1-native.k1k5"),
+        )
+        .unwrap();
+    assert_eq!(compact.phases.len(), 5);
+    assert_eq!(compact.version, "0.7.1-native.k1k5");
+    assert!(
+        compact.phases[2].instructions[0]
+            .body
+            .contains("apply a mandatory counterfactual")
+    );
+    assert!(
+        compact.phases[2].instructions[0]
+            .body
+            .contains("Result must not complete")
+    );
+
+    let previous = provider
+        .definition_for(
+            PipelineKind::LightweightTddDevelopment,
+            Some("0.7.0-native.k1k5"),
+        )
+        .unwrap();
+    assert_eq!(previous.version, "0.7.0-native.k1k5");
+    assert_eq!(
+        previous.digest,
+        "7f5dd6a4503078538d45d0c90c83fdcd896ff1216167556ff9bd0424f826aab0"
+    );
+
+    assert!(
+        provider
+            .definition_for(PipelineKind::LightweightTddDevelopment, Some("0.7.0"))
+            .is_err()
+    );
+    assert!(
+        provider
+            .definition_for(
+                PipelineKind::FullDesignToExecution,
+                Some("0.7.0-native.k1k5")
+            )
+            .is_err()
+    );
 }
 
 #[test]
@@ -368,6 +915,7 @@ fn archived_snapshot_reads_validate_but_do_not_cover_updated_definition() {
                 skill_reads: reads(&phase.skills),
                 resource_reads: reads(&phase.resources),
                 artifacts: vec![],
+                evidence_artifacts: vec![],
                 validator_receipts: vec![],
                 followup_proposal: None,
                 reviewer_context: None,
@@ -406,6 +954,232 @@ fn archived_snapshot_reads_validate_but_do_not_cover_updated_definition() {
     let (_, mut omitted_resource) = completion_for(current.clone());
     omitted_resource.output.resource_reads.pop();
     assert!(omitted_resource.validate(&current).is_err());
+}
+
+#[test]
+fn v07_rejects_agent_supplied_proof_and_legacy_payloads_still_decode() {
+    use std::collections::BTreeMap;
+    use tect_domain::{
+        CompletePipelinePhase, ConsumedKnowledgeManifestRef, PipelineConsumedInput,
+        PipelineConsumedOutput, PipelinePhaseOutcome, PipelinePhaseOutputDraft,
+        PipelineSkillReadReceipt, PipelineTransition,
+    };
+    use uuid::Uuid;
+
+    let mut v07 = lightweight_v07().unwrap();
+    v07.phases.truncate(1);
+    let phase = &mut v07.phases[0];
+    phase.ordinal = 1;
+    phase.required_fields.clear();
+    phase.allowed_verdicts.clear();
+    phase.required_dispositions.clear();
+    phase.allowed_dispositions.clear();
+    phase.disposition_required = false;
+    phase.output_constraints.clear();
+    phase.required_artifacts.clear();
+    phase.validator_contracts.clear();
+    phase.verdict_routes.clear();
+    phase.followup_contracts.clear();
+    phase.skills.clear();
+    phase.resources.clear();
+    phase.fresh_reviewer_input = false;
+
+    let mut request = CompletePipelinePhase {
+        request_id: Uuid::new_v4(),
+        run_id: Uuid::new_v4(),
+        run_revision: 1,
+        phase_id: phase.id.clone(),
+        outcome: PipelinePhaseOutcome::Completed,
+        transition: PipelineTransition::Continue,
+        output: PipelinePhaseOutputDraft {
+            body: "semantic v0.7 output".into(),
+            producer_context_id: "agent-context".into(),
+            fields: BTreeMap::new(),
+            verdict: None,
+            dispositions: Vec::new(),
+            skill_reads: Vec::new(),
+            resource_reads: Vec::new(),
+            artifacts: Vec::new(),
+            evidence_artifacts: Vec::new(),
+            validator_receipts: Vec::new(),
+            followup_proposal: None,
+            reviewer_context: None,
+            reference: None,
+            knowledge_publication: None,
+        },
+        consumed_outputs: Vec::new(),
+        consumed_inputs: Vec::new(),
+        revisit_phase_id: None,
+        escalation_target: None,
+        terminal_result: None,
+        publish_blocked_result: false,
+        consumed_knowledge: None,
+        research_checkpoint: None,
+    };
+    assert!(request.validate(&v07).is_ok());
+
+    let mut omitted = serde_json::to_value(&request).unwrap();
+    omitted.as_object_mut().unwrap().remove("consumed_outputs");
+    omitted.as_object_mut().unwrap().remove("consumed_inputs");
+    let omitted: CompletePipelinePhase = serde_json::from_value(omitted).unwrap();
+    assert!(omitted.consumed_outputs.is_empty());
+    assert!(omitted.consumed_inputs.is_empty());
+    assert!(omitted.validate(&v07).is_ok());
+
+    let proof_paths = [
+        "arguments.params.consumed_outputs",
+        "arguments.params.consumed_inputs",
+        "arguments.params.consumed_knowledge",
+        "arguments.params.output.skill_reads",
+        "arguments.params.output.resource_reads",
+    ];
+    for path in proof_paths {
+        match path {
+            "arguments.params.consumed_outputs" => {
+                request.consumed_outputs = vec![PipelineConsumedOutput {
+                    phase_id: "prior".into(),
+                    output_revision: 1,
+                    digest: "digest".into(),
+                }];
+            }
+            "arguments.params.consumed_inputs" => {
+                request.consumed_outputs.clear();
+                request.consumed_inputs = vec![PipelineConsumedInput {
+                    input_id: Uuid::new_v4(),
+                    sequence: 1,
+                    digest: "digest".into(),
+                }];
+            }
+            "arguments.params.consumed_knowledge" => {
+                request.consumed_outputs.clear();
+                request.consumed_inputs.clear();
+                request.consumed_knowledge = Some(ConsumedKnowledgeManifestRef {
+                    manifest_id: Uuid::new_v4(),
+                    digest: "manifest-digest".into(),
+                });
+            }
+            "arguments.params.output.skill_reads" => {
+                request.consumed_outputs.clear();
+                request.consumed_inputs.clear();
+                request.consumed_knowledge = None;
+                request.output.skill_reads = vec![PipelineSkillReadReceipt {
+                    instruction_id: "skill".into(),
+                    version: "1".into(),
+                    digest: "digest".into(),
+                }];
+            }
+            "arguments.params.output.resource_reads" => {
+                request.consumed_outputs.clear();
+                request.consumed_inputs.clear();
+                request.consumed_knowledge = None;
+                request.output.skill_reads.clear();
+                request.output.resource_reads = vec![PipelineSkillReadReceipt {
+                    instruction_id: "resource".into(),
+                    version: "1".into(),
+                    digest: "digest".into(),
+                }];
+            }
+            _ => unreachable!(),
+        }
+        let error = request.validate(&v07).unwrap_err();
+        assert_eq!(error.code(), "BACKEND_DERIVED_PROOF_REQUIRED");
+        let refusal = error.refusal().unwrap();
+        assert_eq!(refusal.rule.as_deref(), Some("WP3-PROOF-01"));
+        assert_eq!(refusal.path.as_deref(), Some(path));
+        assert_eq!(
+            refusal.expected.as_deref(),
+            Some("omitted; backend derives the proof")
+        );
+        assert_eq!(refusal.actual.as_deref(), Some("agent-supplied value"));
+        request.consumed_outputs.clear();
+        request.consumed_inputs.clear();
+        request.consumed_knowledge = None;
+        request.output.skill_reads.clear();
+        request.output.resource_reads.clear();
+    }
+
+    let legacy = load(
+        include_str!("../../pipeline-definitions/lightweight-tdd-0.1.0-native.1.json"),
+        PipelineKind::LightweightTddDevelopment,
+    )
+    .unwrap();
+    let phase = legacy.phases[0].clone();
+    let legacy_request = CompletePipelinePhase {
+        request_id: Uuid::new_v4(),
+        run_id: Uuid::new_v4(),
+        run_revision: 1,
+        phase_id: phase.id.clone(),
+        outcome: PipelinePhaseOutcome::Completed,
+        transition: PipelineTransition::Continue,
+        output: PipelinePhaseOutputDraft {
+            body: "legacy output".into(),
+            producer_context_id: "legacy-context".into(),
+            fields: BTreeMap::new(),
+            verdict: None,
+            dispositions: Vec::new(),
+            skill_reads: phase
+                .skills
+                .iter()
+                .map(|value| PipelineSkillReadReceipt {
+                    instruction_id: value.id.clone(),
+                    version: value.version.clone(),
+                    digest: value.digest.clone(),
+                })
+                .collect(),
+            resource_reads: phase
+                .resources
+                .iter()
+                .map(|value| PipelineSkillReadReceipt {
+                    instruction_id: value.id.clone(),
+                    version: value.version.clone(),
+                    digest: value.digest.clone(),
+                })
+                .collect(),
+            artifacts: Vec::new(),
+            evidence_artifacts: Vec::new(),
+            validator_receipts: Vec::new(),
+            followup_proposal: None,
+            reviewer_context: None,
+            reference: None,
+            knowledge_publication: None,
+        },
+        consumed_outputs: Vec::new(),
+        consumed_inputs: Vec::new(),
+        revisit_phase_id: None,
+        escalation_target: None,
+        terminal_result: None,
+        publish_blocked_result: false,
+        consumed_knowledge: None,
+        research_checkpoint: None,
+    };
+    let mut legacy_request = legacy_request;
+    legacy_request.consumed_outputs = vec![PipelineConsumedOutput {
+        phase_id: "legacy-prior".into(),
+        output_revision: 2,
+        digest: "legacy-output-digest".into(),
+    }];
+    legacy_request.consumed_inputs = vec![PipelineConsumedInput {
+        input_id: Uuid::new_v4(),
+        sequence: 3,
+        digest: "legacy-input-digest".into(),
+    }];
+    legacy_request.consumed_knowledge = Some(ConsumedKnowledgeManifestRef {
+        manifest_id: Uuid::new_v4(),
+        digest: "legacy-manifest-digest".into(),
+    });
+    let decoded: CompletePipelinePhase =
+        serde_json::from_value(serde_json::to_value(&legacy_request).unwrap()).unwrap();
+    assert_eq!(
+        decoded.output.skill_reads,
+        legacy_request.output.skill_reads
+    );
+    assert_eq!(
+        decoded.output.resource_reads,
+        legacy_request.output.resource_reads
+    );
+    assert_eq!(decoded.consumed_outputs, legacy_request.consumed_outputs);
+    assert_eq!(decoded.consumed_inputs, legacy_request.consumed_inputs);
+    assert!(legacy.version.starts_with("0.1"));
 }
 
 #[test]

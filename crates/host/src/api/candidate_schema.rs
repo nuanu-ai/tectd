@@ -54,6 +54,60 @@ pub(super) fn begin() -> Value {
     )
 }
 
+pub(super) fn delta_apply() -> Value {
+    let op = |name: &str, properties: Value, required: Value| {
+        let mut properties = properties.as_object().cloned().unwrap();
+        properties.insert("operation".into(), json!({"const":name}));
+        let mut required = required.as_array().cloned().unwrap();
+        required.insert(0, json!("operation"));
+        object_schema(Value::Object(properties), Value::Array(required))
+    };
+    let source_value = || json!({"summary":text(),"source_ref_id":uuid()});
+    let mut evidence_update = source_value();
+    evidence_update["evidence_id"] = uuid();
+    evidence_update["expected_revision"] = json!({"type":"integer","minimum":1});
+    let mut blocker_update = source_value();
+    blocker_update["blocker_id"] = uuid();
+    blocker_update["expected_revision"] = json!({"type":"integer","minimum":1});
+    let operations = json!({"oneOf":[
+        op("goal.add",json!({"goal_id":uuid(),"text":text(),"finite":{"type":"boolean"},"source_ref_id":uuid()}),json!(["goal_id","text","finite","source_ref_id"])),
+        op("goal.resolve",json!({"goal_id":uuid(),"expected_revision":{"type":"integer","minimum":1}}),json!(["goal_id","expected_revision"])),
+        op("candidate.add",json!({"candidate_id":uuid(),"title":text(),"outcome":{"type":"string"}}),json!(["candidate_id","title"])),
+        op("candidate.update",json!({"candidate_id":uuid(),"expected_revision":{"type":"integer","minimum":1},"title":text(),"outcome":{"type":"string"}}),json!(["candidate_id","expected_revision","title"])),
+        op("candidate.remove",json!({"candidate_id":uuid(),"expected_revision":{"type":"integer","minimum":1}}),json!(["candidate_id","expected_revision"])),
+        op("candidate.supersede",json!({"candidate_id":uuid(),"replacement_candidate_id":uuid(),"expected_revision":{"type":"integer","minimum":1}}),json!(["candidate_id","replacement_candidate_id","expected_revision"])),
+        op("coverage.link",json!({"candidate_id":uuid(),"goal_id":uuid()}),json!(["candidate_id","goal_id"])),
+        op("coverage.unlink",json!({"candidate_id":uuid(),"goal_id":uuid()}),json!(["candidate_id","goal_id"])),
+        op("evidence.add",json!({"evidence_id":uuid(),"target_kind":{"type":"string","enum":["goal","candidate"]},"target_id":uuid(),"summary":text(),"source_ref_id":uuid()}),json!(["evidence_id","target_kind","target_id","summary","source_ref_id"])),
+        op("evidence.update",evidence_update,json!(["evidence_id","expected_revision","summary","source_ref_id"])),
+        op("evidence.remove",json!({"evidence_id":uuid(),"expected_revision":{"type":"integer","minimum":1}}),json!(["evidence_id","expected_revision"])),
+        op("blocker.add",json!({"blocker_id":uuid(),"goal_id":uuid(),"summary":text(),"source_ref_id":uuid()}),json!(["blocker_id","goal_id","summary","source_ref_id"])),
+        op("blocker.update",blocker_update,json!(["blocker_id","expected_revision","summary","source_ref_id"])),
+        op("blocker.remove",json!({"blocker_id":uuid(),"expected_revision":{"type":"integer","minimum":1}}),json!(["blocker_id","expected_revision"]))
+    ]});
+    object_schema(
+        json!({
+            "candidate_set_id":uuid(),
+            "expected_revision":{"type":"integer","minimum":1},
+            "idempotency_key":{"type":"string","minLength":1,"maxLength":128},
+            "operations":{"type":"array","minItems":1,"maxItems":100,"items":operations}
+        }),
+        json!([
+            "candidate_set_id",
+            "expected_revision",
+            "idempotency_key",
+            "operations"
+        ]),
+    )
+}
+
+pub(super) fn delta_status() -> Value {
+    object_schema(
+        json!({"candidate_set_id":uuid(),"idempotency_key":{"type":"string","minLength":1,"maxLength":128}}),
+        json!(["candidate_set_id", "idempotency_key"]),
+    )
+}
+
 pub(super) fn save() -> Value {
     let identity = json!({
         "oneOf":[

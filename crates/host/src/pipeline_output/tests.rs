@@ -5,9 +5,10 @@ use tect_domain::{
     KnowledgeProfileSections, PipelineCheckpointBasis, PipelineCheckpointRef,
     PipelineCheckpointStatus, PipelineDefinitionSnapshot, PipelineDeliveryMode,
     PipelineInquiryCompletion, PipelineInquiryContract, PipelineInquiryTopicLevel,
-    PipelineInstructionSnapshot, PipelineKnowledgeBindingPin, PipelineKnowledgeResource,
-    PipelineKnowledgeResourceManifest, PipelineKnowledgeResourceStatus, PipelinePhaseDefinition,
-    PipelinePhaseRetryPolicy, PipelineResearchCheckpoint, PipelineRun, PlanningTaskContext,
+    PipelineInstructionResponse, PipelineInstructionSection, PipelineInstructionSnapshot,
+    PipelineKnowledgeBindingPin, PipelineKnowledgeResource, PipelineKnowledgeResourceManifest,
+    PipelineKnowledgeResourceStatus, PipelinePhaseDefinition, PipelinePhaseRetryPolicy,
+    PipelineResearchCheckpoint, PipelineRun, PlanningTaskContext,
 };
 
 fn instruction() -> PipelineInstructionSnapshot {
@@ -18,6 +19,25 @@ fn instruction() -> PipelineInstructionSnapshot {
         body: "fixture instruction".into(),
         origin_refs: vec!["fixture".into()],
     }
+}
+
+#[test]
+fn instruction_query_output_is_one_snapshot_without_the_full_manifest() {
+    let value = super::instruction(
+        PipelineInstructionResponse {
+            run_id: uuid::Uuid::new_v4(),
+            phase_id: Some("fixture-phase".into()),
+            section: PipelineInstructionSection::Skill,
+            instruction: instruction(),
+        },
+        64 * 1024,
+    )
+    .unwrap();
+
+    assert_eq!(value["instruction"]["id"], "fixture:instruction");
+    assert_eq!(value["section"], "skill");
+    assert!(value.get("definition").is_none());
+    assert!(value["actions"].as_array().is_some_and(Vec::is_empty));
 }
 
 fn phase() -> PipelinePhaseDefinition {
@@ -155,6 +175,8 @@ fn context(state: PipelineKnowledgeResourceState, selected: bool) -> PipelineRun
             freshness_warnings: Vec::new(),
             access_changed: false,
         }),
+        delivery_receipt: None,
+        delivery_fresh: false,
     }
 }
 
@@ -271,6 +293,125 @@ fn generic_current_selection_supplies_exact_consumed_manifest_guard() {
             .get("consumed_knowledge")
             .is_none()
     );
+}
+
+#[test]
+fn v07_completion_action_omits_backend_owned_proof_echoes() {
+    let mut current = context(PipelineKnowledgeResourceState::Current, true);
+    current.run.definition_version = "0.7.0-native.k1k5".into();
+    current.definition.version = current.run.definition_version.clone();
+    for phase in current
+        .definition
+        .phases
+        .iter_mut()
+        .chain(current.delivered_phases.iter_mut())
+    {
+        phase.id = "K4".into();
+        phase.required_fields = [
+            "red_receipt",
+            "changes",
+            "green_receipt",
+            "anti_pattern_review",
+            "deviations",
+            "missing_proof",
+            "authority_boundary",
+            "target_binding",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        phase.output_constraints = vec![
+            PipelineOutputConstraint::CommandReceipt {
+                field: "red_receipt".into(),
+                required_status: "failed_as_expected".into(),
+                required_scope: "focused".into(),
+                require_nonzero_exit: true,
+                target_field: Some("target_binding".into()),
+                when_verdict: Some("pass".into()),
+            },
+            PipelineOutputConstraint::CommandReceipt {
+                field: "green_receipt".into(),
+                required_status: "passed".into(),
+                required_scope: "focused".into(),
+                require_nonzero_exit: false,
+                target_field: Some("target_binding".into()),
+                when_verdict: Some("pass".into()),
+            },
+        ];
+        phase.allowed_verdicts = vec!["pass".into()];
+    }
+    current.run.current_phase_id = Some("K4".into());
+    let values = actions(&current).unwrap();
+    let complete = action(&values, "slice.pipeline.phase.complete");
+    let params = &complete["arguments"]["params"];
+    for field in ["consumed_outputs", "consumed_inputs", "consumed_knowledge"] {
+        assert!(params.get(field).is_none(), "unexpected v0.7 {field}");
+    }
+    let fields = complete["context_input"]["fields"].as_array().unwrap();
+    assert!(fields.iter().all(
+        |field| !field["path"].as_str().unwrap().ends_with("skill_reads")
+            && !field["path"].as_str().unwrap().ends_with("resource_reads")
+    ));
+    let exact = &complete["next_action_contract"];
+    assert_eq!(exact["command"], "slice.pipeline.phase.complete");
+    assert_eq!(
+        exact["fields_schema"]["required"].as_array().unwrap().len(),
+        8
+    );
+    assert_eq!(
+        exact["fields_schema"]["properties"]["red_receipt"]["required_status"],
+        "failed_as_expected"
+    );
+    assert_eq!(
+        exact["fields_schema"]["properties"]["red_receipt"]["same_target_as"],
+        "target_binding"
+    );
+    assert_eq!(
+        exact["fields_schema"]["properties"]["green_receipt"]["exit_code"],
+        "zero"
+    );
+    assert_eq!(
+        exact["call_template"]["arguments"]["params"]["run_revision"],
+        7
+    );
+    assert!(
+        exact["backend_owned_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "consumed_outputs")
+    );
+}
+
+#[test]
+fn delivery_is_reused_within_epoch_and_only_explicit_refresh_rereads() {
+    let mut current = context(PipelineKnowledgeResourceState::Current, true);
+    current.delivery_fresh = false;
+    let reused = Delivery::reread(&current, false);
+    assert!(!reused.reread);
+    assert!(Delivery::reread(&current, true).reread);
+    current.delivery_fresh = true;
+    assert!(Delivery::reread(&current, false).reread);
+
+    current.run.delivery_mode = PipelineDeliveryMode::Whole;
+    current.delivered_phases = vec![phase()];
+    restrict_definition_delivery(&mut current, false);
+    assert!(current.definition.phases.is_empty());
+    assert!(current.delivered_phases.is_empty());
+}
+
+#[test]
+fn agent_supplied_consumed_digest_does_not_create_backend_delivery_receipt() {
+    let current = context(PipelineKnowledgeResourceState::Current, true);
+    assert!(current.delivery_receipt.is_none());
+    let values = actions(&current).unwrap();
+    let complete = action(&values, "slice.pipeline.phase.complete");
+    assert!(
+        complete["arguments"]["params"]
+            .get("consumed_knowledge")
+            .is_some()
+    );
+    assert!(current.delivery_receipt.is_none());
 }
 
 #[test]
