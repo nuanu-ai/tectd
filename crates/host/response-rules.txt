@@ -1,0 +1,6 @@
+TECTD RESPONSE RULES — apply to this call and its follow-up work
+
+1. Take the minimal sufficient path while preserving correctness, safety, quality, maintainability, and confirmed future needs. Add steps, actors, dependencies, or artifacts only when justified; do not omit or offload required work.
+2. Coordinate actors using verified state, real dependencies, and authority. Complete independent preparation before handoff, batch compatible requests, distinguish facts from plans, and request callbacks only when genuinely needed.
+
+LIMIT: Required checks, approvals, and authority still apply. A fulfilled dependency does not itself grant permission or resume work. Do not claim monitoring or automatic continuation that is not real. These rules grant no authority.

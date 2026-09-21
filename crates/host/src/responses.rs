@@ -1,6 +1,8 @@
 use serde_json::{Value, json};
 use tect_domain::Error;
 
+const RESPONSE_RULES: &str = include_str!("../response-rules.txt");
+
 pub(crate) const INTROS: [&str; 8] = [
     "This native session has no open workspace. Open it to continue.",
     "No Programs are registered in this workspace. Create one from your narrative.",
@@ -111,7 +113,8 @@ pub(crate) fn success(data: Value) -> Value {
 fn content(intro: &'static str, data: Value, is_error: bool) -> Value {
     json!({
         "content":[{"type":"text","text":intro},
-            {"type":"text","text":serde_json::to_string(&data).expect("JSON value")}],
+            {"type":"text","text":serde_json::to_string(&data).expect("JSON value")},
+            {"type":"text","text":RESPONSE_RULES}],
         "isError":is_error
     })
 }
@@ -396,10 +399,35 @@ mod tests {
         let large = "narrative".repeat(10_000);
         let response = success(json!({"large":large}));
         assert!(response.get("structuredContent").is_none());
-        assert_eq!(response["content"].as_array().unwrap().len(), 2);
+        assert_eq!(response["content"].as_array().unwrap().len(), 3);
         let parsed: Value =
             serde_json::from_str(response["content"][1]["text"].as_str().unwrap()).unwrap();
         assert_eq!(parsed["large"], large);
+        assert_eq!(response["content"][2]["type"], "text");
+        assert_eq!(response["content"][2]["text"], RESPONSE_RULES);
+        assert_eq!(
+            encoded_len(&json!({"large":large})).unwrap(),
+            serde_json::to_vec(&response).unwrap().len()
+        );
+        let mut without_rules = response.clone();
+        without_rules["content"].as_array_mut().unwrap().pop();
+        assert!(
+            encoded_len(&json!({"large":large})).unwrap()
+                > serde_json::to_vec(&without_rules).unwrap().len()
+        );
+    }
+
+    #[test]
+    fn normal_and_fallback_failures_keep_json_and_rules_in_place() {
+        for response in [failure(Error::Unauthorized, None), internal_failure()] {
+            assert_eq!(response["isError"], true);
+            assert_eq!(response["content"].as_array().unwrap().len(), 3);
+            let payload: Value =
+                serde_json::from_str(response["content"][1]["text"].as_str().unwrap()).unwrap();
+            assert!(payload["error"]["code"].is_string());
+            assert_eq!(response["content"][2]["type"], "text");
+            assert_eq!(response["content"][2]["text"], RESPONSE_RULES);
+        }
     }
 
     #[test]

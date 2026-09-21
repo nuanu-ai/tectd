@@ -146,7 +146,13 @@ impl LegacyMcp {
         let result = &response["result"];
         let is_error = result["isError"].as_bool().unwrap_or(false);
         let content = result["content"].as_array().expect("legacy content");
-        assert_eq!(content.len(), 2, "legacy content shape");
+        assert_eq!(content.len(), 3, "legacy content shape");
+        assert!(
+            content[2]["text"]
+                .as_str()
+                .unwrap()
+                .contains("TECTD RESPONSE RULES")
+        );
         let payload: Value =
             serde_json::from_str(content[1]["text"].as_str().expect("legacy JSON payload"))
                 .unwrap();
