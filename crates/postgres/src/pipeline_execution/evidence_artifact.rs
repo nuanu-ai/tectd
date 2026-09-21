@@ -1,9 +1,9 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
-fn artifact(
-    value: (Uuid, String, i64, String, String, String, i64, String),
-) -> Result<PipelineEvidenceArtifact> {
+type EvidenceArtifactRow = (Uuid, String, i64, String, String, String, i64, String);
+
+fn artifact(value: EvidenceArtifactRow) -> Result<PipelineEvidenceArtifact> {
     Ok(PipelineEvidenceArtifact {
         artifact_id: value.0,
         digest: value.1,
@@ -24,7 +24,7 @@ pub(crate) async fn register(
     session: Uuid,
     request: &RegisterPipelineEvidenceArtifact,
 ) -> Result<PipelineEvidenceArtifactOutcome> {
-    let existing: Option<(Uuid,String,i64,String,String,String,i64,String)> = sqlx::query_as("SELECT artifact_id,digest,size,format,provenance,target,revision,readiness FROM pipeline_evidence_artifacts WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3")
+    let existing: Option<EvidenceArtifactRow> = sqlx::query_as("SELECT artifact_id,digest,size,format,provenance,target,revision,readiness FROM pipeline_evidence_artifacts WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3")
         .bind(tenant).bind(workspace).bind(request.request_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     if let Some(row) = existing {
         if row.1 != request.digest

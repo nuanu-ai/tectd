@@ -131,7 +131,7 @@ pub struct PipelineRunMigrationOutcome {
     pub status: String,
 }
 
-const fn nonempty(value: &String) -> bool {
+const fn nonempty(value: &str) -> bool {
     !value.is_empty()
 }
 

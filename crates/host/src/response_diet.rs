@@ -44,6 +44,7 @@ pub(crate) fn pipeline_context_mut(data: &mut Value) -> Option<&mut Value> {
 ///
 /// A reread keeps the static definition and prior outputs and gains a compact phase
 /// map; a mutation reply keeps only the delivered phase, bindings and state.
+#[cfg(test)]
 pub(crate) fn pipeline_context(context: &mut Value, reread: bool, phase_map: Option<Value>) {
     pipeline_context_with_delivery(context, reread, phase_map, false, false);
 }

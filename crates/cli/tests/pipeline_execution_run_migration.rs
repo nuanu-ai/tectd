@@ -1,7 +1,10 @@
 #[path = "pipeline_execution/lifecycle_support.rs"]
+#[allow(dead_code)]
 mod lifecycle_support;
+#[allow(dead_code)]
 mod recovery_support;
 #[path = "native_planning/support.rs"]
+#[allow(dead_code)]
 mod support;
 
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};

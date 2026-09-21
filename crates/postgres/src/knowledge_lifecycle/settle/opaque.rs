@@ -63,20 +63,6 @@ fn decode_effect_status(raw: &str) -> Result<KnowledgeEffectStatus> {
     })
 }
 
-#[cfg(test)]
-mod refusal_tests {
-    use super::*;
-
-    #[test]
-    fn unknown_effect_status_has_typed_refusal() {
-        let error = decode_effect_status("not-a-status").unwrap_err();
-        assert_eq!(
-            error.refusal().unwrap().code,
-            RefusalCode::EffectStatusUnknown
-        );
-    }
-}
-
 pub(super) fn exact_effect_set(
     receipt: &KnowledgeErasedPublisherReceipt,
     rows: &[(Uuid, String, String, i64, String, String)],
@@ -382,5 +368,19 @@ fn ready(value: bool) -> KnowledgeEffectStatus {
         KnowledgeEffectStatus::Ready
     } else {
         KnowledgeEffectStatus::Pending
+    }
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    #[test]
+    fn unknown_effect_status_has_typed_refusal() {
+        let error = decode_effect_status("not-a-status").unwrap_err();
+        assert_eq!(
+            error.refusal().unwrap().code,
+            RefusalCode::EffectStatusUnknown
+        );
     }
 }

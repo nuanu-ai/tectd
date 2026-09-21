@@ -270,7 +270,7 @@ impl CandidateDeltaStore for PgUnitOfWork {
             match operation {
                 Op::GoalAdd { goal_id, value } => {
                     ensure_source_ref(
-                        &mut **tx,
+                        tx,
                         tenant_id,
                         workspace_id,
                         request.candidate_set_id,
@@ -358,7 +358,7 @@ impl CandidateDeltaStore for PgUnitOfWork {
                         return Err(tect_domain::Error::InvalidArguments);
                     }
                     ensure_live_candidate(
-                        &mut **tx,
+                        tx,
                         tenant_id,
                         workspace_id,
                         request.candidate_set_id,
@@ -366,7 +366,7 @@ impl CandidateDeltaStore for PgUnitOfWork {
                     )
                     .await?;
                     ensure_live_candidate(
-                        &mut **tx,
+                        tx,
                         tenant_id,
                         workspace_id,
                         request.candidate_set_id,
@@ -388,7 +388,7 @@ impl CandidateDeltaStore for PgUnitOfWork {
                     goal_id,
                 } => {
                     ensure_live_candidate(
-                        &mut **tx,
+                        tx,
                         tenant_id,
                         workspace_id,
                         request.candidate_set_id,
@@ -396,7 +396,7 @@ impl CandidateDeltaStore for PgUnitOfWork {
                     )
                     .await?;
                     ensure_live_goal(
-                        &mut **tx,
+                        tx,
                         tenant_id,
                         workspace_id,
                         request.candidate_set_id,
@@ -425,7 +425,7 @@ impl CandidateDeltaStore for PgUnitOfWork {
                     value,
                 } => {
                     ensure_source_ref(
-                        &mut **tx,
+                        tx,
                         tenant_id,
                         workspace_id,
                         request.candidate_set_id,
@@ -435,7 +435,7 @@ impl CandidateDeltaStore for PgUnitOfWork {
                     let (candidate_id, goal_id) = match target_kind {
                         tect_domain::CandidateDeltaTargetKind::Candidate => {
                             ensure_live_candidate(
-                                &mut **tx,
+                                tx,
                                 tenant_id,
                                 workspace_id,
                                 request.candidate_set_id,
@@ -446,7 +446,7 @@ impl CandidateDeltaStore for PgUnitOfWork {
                         }
                         tect_domain::CandidateDeltaTargetKind::Goal => {
                             ensure_live_goal(
-                                &mut **tx,
+                                tx,
                                 tenant_id,
                                 workspace_id,
                                 request.candidate_set_id,
@@ -467,7 +467,7 @@ impl CandidateDeltaStore for PgUnitOfWork {
                     value,
                 } => {
                     ensure_source_ref(
-                        &mut **tx,
+                        tx,
                         tenant_id,
                         workspace_id,
                         request.candidate_set_id,
@@ -499,7 +499,7 @@ impl CandidateDeltaStore for PgUnitOfWork {
                     value,
                 } => {
                     ensure_live_goal(
-                        &mut **tx,
+                        tx,
                         tenant_id,
                         workspace_id,
                         request.candidate_set_id,
@@ -507,7 +507,7 @@ impl CandidateDeltaStore for PgUnitOfWork {
                     )
                     .await?;
                     ensure_source_ref(
-                        &mut **tx,
+                        tx,
                         tenant_id,
                         workspace_id,
                         request.candidate_set_id,
@@ -525,7 +525,7 @@ impl CandidateDeltaStore for PgUnitOfWork {
                     value,
                 } => {
                     ensure_source_ref(
-                        &mut **tx,
+                        tx,
                         tenant_id,
                         workspace_id,
                         request.candidate_set_id,

@@ -104,20 +104,6 @@ fn require_review_status(status: &str) -> Result<()> {
     }
 }
 
-#[cfg(test)]
-mod refusal_tests {
-    use super::*;
-
-    #[test]
-    fn non_review_candidate_set_has_typed_review_refusal() {
-        let error = require_review_status("draft").unwrap_err();
-        assert_eq!(
-            error.refusal().unwrap().code,
-            tect_domain::RefusalCode::ReviewRequired
-        );
-    }
-}
-
 pub(crate) async fn record_input(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -248,4 +234,18 @@ pub(crate) async fn refresh(
     )
     .await?;
     Ok(result)
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    #[test]
+    fn non_review_candidate_set_has_typed_review_refusal() {
+        let error = require_review_status("draft").unwrap_err();
+        assert_eq!(
+            error.refusal().unwrap().code,
+            tect_domain::RefusalCode::ReviewRequired
+        );
+    }
 }

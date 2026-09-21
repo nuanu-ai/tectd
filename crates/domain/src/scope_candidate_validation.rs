@@ -209,6 +209,18 @@ fn require_candidate_coverage(has_coverage: bool) -> Result<()> {
     }
 }
 
+fn required(value: &str, field: &str) -> Result<()> {
+    if value.trim().is_empty() || value.contains('\0') {
+        Err(invalid(format!("{field} is blank or contains NUL")))
+    } else {
+        Ok(())
+    }
+}
+
+fn invalid(reason: impl std::fmt::Display) -> Error {
+    Error::invalid_arguments_from(reason)
+}
+
 #[cfg(test)]
 mod refusal_tests {
     use super::*;
@@ -221,16 +233,4 @@ mod refusal_tests {
             crate::RefusalCode::CoverageIncomplete
         );
     }
-}
-
-fn required(value: &str, field: &str) -> Result<()> {
-    if value.trim().is_empty() || value.contains('\0') {
-        Err(invalid(format!("{field} is blank or contains NUL")))
-    } else {
-        Ok(())
-    }
-}
-
-fn invalid(reason: impl std::fmt::Display) -> Error {
-    Error::invalid_arguments_from(reason)
 }
