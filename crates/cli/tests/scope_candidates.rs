@@ -244,11 +244,8 @@ async fn candidate_set_replans_with_exact_receipts_protected_work_and_fragments(
     })).await;
     assert_eq!(reviewed["context"]["candidate_set"]["status"], "ready");
     assert_eq!(reviewed["recommended_action"], 0);
-    assert_eq!(
-        action_name(&reviewed["actions"][0]),
-        Some("scope.candidates.context")
-    );
-    let record_action = &reviewed["actions"][1];
+    assert_eq!(action_name(&reviewed["actions"][0]), Some("scope.open"));
+    let record_action = &reviewed["actions"][2];
     let mut record_params =
         candidate_action(record_action, "scope.candidates.record_input", None, set, 3);
     let record_request_id = id(&record_params["request_id"]);
@@ -439,13 +436,14 @@ async fn candidate_set_replans_with_exact_receipts_protected_work_and_fragments(
     let finished = first.call("save_candidate_set", finished_params).await;
     assert_eq!(finished["context"]["candidate_set"]["status"], "ready");
     assert_eq!(finished["recommended_action"], 0);
-    assert_eq!(finished["actions"].as_array().unwrap().len(), 2);
+    assert_eq!(finished["actions"].as_array().unwrap().len(), 3);
+    assert_eq!(action_name(&finished["actions"][0]), Some("scope.open"));
     assert_eq!(
-        action_name(&finished["actions"][0]),
+        action_name(&finished["actions"][1]),
         Some("scope.candidates.context")
     );
     assert_eq!(
-        action_name(&finished["actions"][1]),
+        action_name(&finished["actions"][2]),
         Some("scope.candidates.record_input")
     );
     let terminal = first

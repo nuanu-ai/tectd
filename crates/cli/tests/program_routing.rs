@@ -95,17 +95,20 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "source.list",
             "setup.get",
             "scope.candidates.context",
+            "scope.candidates.delta.status",
             "scope.context",
             "slice.pipelines",
             "slice.candidates.context",
             "slice.context",
             "slice.pipeline.context",
+            "slice.pipeline.instruction",
             "knowledge.context",
             "knowledge.change",
             "knowledge.lifecycle",
             "knowledge.unit",
             "knowledge.maintenance",
-            "knowledge.search"
+            "knowledge.search",
+            "slice.pipeline.evidence_artifact.read"
         ])
     );
     let command = tools.iter().find(|tool| tool["name"] == "command").unwrap();
@@ -127,6 +130,7 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "scope.candidates.save",
             "scope.candidates.record_input",
             "scope.candidates.refresh",
+            "scope.candidates.delta",
             "scope.open",
             "slice.candidates.save",
             "slice.candidates.input",
@@ -134,6 +138,7 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "slice.open",
             "slice.result.record",
             "slice.pipeline.begin",
+            "slice.pipeline.run.migrate",
             "slice.pipeline.phase.complete",
             "slice.pipeline.input",
             "slice.pipeline.delivery.escalate",
@@ -148,7 +153,9 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "knowledge.change_commit",
             "knowledge.change_settle_effects",
             "knowledge.maintenance_observe",
-            "knowledge.maintenance_begin"
+            "knowledge.maintenance_begin",
+            "slice.pipeline.evidence_artifact.register",
+            "slice.pipeline.evidence_artifact.finalize"
         ])
     );
     let help = tools.iter().find(|tool| tool["name"] == "help").unwrap();

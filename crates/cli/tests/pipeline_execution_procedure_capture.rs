@@ -251,7 +251,7 @@ async fn procedure_capture_completes_no_match_and_stops_at_reuse_gates() {
             leaking
         )
         .await["error"]["code"],
-        "invalid_arguments"
+        "INVALID_OUTPUT"
     );
     while discovery["run"]["current_phase_ordinal"].as_u64().unwrap() < 15 {
         discovery = advance(&mut client, discovery).await;

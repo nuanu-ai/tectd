@@ -181,7 +181,7 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
             incomplete_custody
         )
         .await["error"]["code"],
-        "invalid_arguments"
+        "INVALID_OUTPUT"
     );
     let mut unequal_custody = completion(&context, "ready", "completed", "continue", None, None);
     unequal_custody["output"]["fields"]["collected_count"] = json!("1");
@@ -194,7 +194,7 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
             unequal_custody
         )
         .await["error"]["code"],
-        "invalid_arguments"
+        "INVALID_OUTPUT"
     );
     context = advance(&mut client, context).await;
 
@@ -208,7 +208,7 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
             incomplete_trace
         )
         .await["error"]["code"],
-        "invalid_arguments"
+        "INVALID_OUTPUT"
     );
     context = advance(&mut client, context).await;
 
@@ -310,7 +310,7 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
             performed
         )
         .await["error"]["code"],
-        "invalid_arguments"
+        "INVALID_OUTPUT"
     );
     let mut failed_publication = completion(
         &context,
@@ -329,7 +329,7 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
             failed_publication,
         )
         .await["error"]["code"],
-        "invalid_arguments"
+        "INVALID_OUTPUT"
     );
     let mut direct_publish = completion(
         &context,

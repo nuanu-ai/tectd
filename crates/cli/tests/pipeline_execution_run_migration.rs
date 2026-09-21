@@ -7,7 +7,9 @@ mod recovery_support;
 #[allow(dead_code)]
 mod support;
 
-use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
+use recovery_support::{
+    Daemon, Mcp, action_name, action_params, host_file, private_temp, tagged_url,
+};
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::path::Path;
@@ -173,13 +175,34 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
         old["run"]["revision"],
         predecessor["revision"].as_i64().unwrap() + 1
     );
-    let successor = route(
+    let mut successor = route(
         &mut client,
         "query",
         "slice.pipeline.context",
         json!({"run_id":migrated["successor_run_id"]}),
     )
     .await;
+    if let Some(action) = successor["actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|action| action_name(action) == Some("pipeline.knowledge_refresh"))
+    {
+        route(
+            &mut client,
+            "command",
+            "pipeline.knowledge_refresh",
+            action_params(action).clone(),
+        )
+        .await;
+        successor = route(
+            &mut client,
+            "query",
+            "slice.pipeline.context",
+            json!({"run_id":migrated["successor_run_id"]}),
+        )
+        .await;
+    }
     assert_eq!(successor["run"]["definition_version"], "0.7.0-native.k1k5");
     assert_eq!(successor["run"]["current_phase_id"], "K1");
 
