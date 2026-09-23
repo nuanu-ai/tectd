@@ -12,7 +12,10 @@ async fn audit_links(
         "SELECT o.id AS opportunity_id,a.advice_id AS guarded_advice_digest,d.disposition_id,\
                 p.receipt_id AS preservation_receipt_id,p.status AS preservation_status,\
                 c.caller_request_id AS caller_receipt_id,c.link_id AS caller_link_id,\
-                v.receipt_id AS verifier_receipt_id \
+                v.receipt_id AS verifier_receipt_id,\
+                obs.observation_id,obs.target_revision AS observation_target_revision,\
+                obs.status AS observation_status,obs.reason_codes AS observation_reason_codes,\
+                obs.evidence_digest AS observation_evidence_digest,obs.qualification AS observation_qualification \
          FROM advisory_opportunity o \
          LEFT JOIN advisory_scope_advice a ON a.tenant_id=o.tenant_id AND a.workspace_id=o.workspace_id AND a.opportunity_id=o.id \
          LEFT JOIN LATERAL (SELECT disposition_id FROM advisory_scope_disposition \
@@ -30,6 +33,11 @@ async fn audit_links(
              WHERE tenant_id=o.tenant_id AND workspace_id=o.workspace_id AND opportunity_id=o.id \
                AND caller_link_id=c.link_id \
              ORDER BY created_at DESC,receipt_id DESC LIMIT 1) v ON true \
+         LEFT JOIN LATERAL (SELECT observation_id,target_revision,status,reason_codes,evidence_digest,qualification \
+             FROM advisory_scope_selected_save_observation \
+             WHERE tenant_id=o.tenant_id AND workspace_id=o.workspace_id AND opportunity_id=o.id \
+               AND candidate_set_id=o.work_item_id AND o.work_item_kind='scope_candidate_set' \
+             ORDER BY created_at DESC,observation_id DESC LIMIT 1) obs ON true \
          WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.id=ANY($3)",
     )
     .bind(tenant)

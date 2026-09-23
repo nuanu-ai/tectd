@@ -143,6 +143,7 @@ mod audit_projection_tests {
             "caller_receipt_id",
             "caller_link_id",
             "verifier_receipt_id",
+            "selected_save_observation",
         ] {
             assert_eq!(projected[field], serde_json::Value::Null);
         }

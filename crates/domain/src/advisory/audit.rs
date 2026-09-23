@@ -5,6 +5,7 @@ use super::lifecycle::{
     AdvisoryDispatchOutcome, AdvisoryDispatchState, AdvisoryOpportunityState, AdvisoryReason,
     AdvisoryRetryBasis, AdvisorySendCertainty,
 };
+use super::selected_save_observation::SelectedSaveObservationStatus;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -78,6 +79,22 @@ pub struct AdvisoryAuditOpportunity {
     pub caller_receipt_id: Option<Uuid>,
     pub caller_link_id: Option<Uuid>,
     pub verifier_receipt_id: Option<Uuid>,
+    /// Latest server-computed observation at a recorded revision. A pass is
+    /// neither independent approval nor acceptance of the current revision.
+    pub selected_save_observation: Option<AdvisorySelectedSaveObservation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdvisorySelectedSaveObservation {
+    pub id: Uuid,
+    pub target_revision: i64,
+    pub status: SelectedSaveObservationStatus,
+    pub reason_codes: Vec<String>,
+    pub evidence_digest: String,
+    /// Independent qualification has not been resolved.
+    pub qualification: String,
+    pub establishes_independent_approval: bool,
+    pub establishes_current_acceptance: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

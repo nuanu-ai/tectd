@@ -1426,6 +1426,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     assert_eq!(first.opportunities[0].caller_receipt_id, None);
     assert_eq!(first.opportunities[0].caller_link_id, None);
     assert_eq!(first.opportunities[0].verifier_receipt_id, None);
+    assert_eq!(first.opportunities[0].selected_save_observation, None);
     let mut after = first.next_after;
     let mut found = false;
     while let Some(cursor) = after {
@@ -2025,6 +2026,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     assert_eq!(selected_audit.caller_receipt_id, Some(save.request_id));
     assert!(selected_audit.caller_link_id.is_some());
     assert_eq!(selected_audit.verifier_receipt_id, None);
+    assert_eq!(selected_audit.selected_save_observation, None);
     drop(audit_unit);
     let observe_request = SelectedSaveObservationRequest {
         request_id: Uuid::new_v4(),
@@ -2044,6 +2046,40 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     assert!(observed.reason_codes.is_empty());
     assert_eq!(observed.qualification, "unresolved");
     observation_unit.commit().await.unwrap();
+    let mut audit_unit = rw(&store, &enrollment.auth, tenant).await;
+    let passed_audit = audit_unit
+        .candidate_advisory_opportunity_detail(workspace, candidate, selected_opportunity)
+        .await
+        .unwrap()
+        .opportunity;
+    let public_pass = passed_audit.selected_save_observation.unwrap();
+    assert_eq!(public_pass.id, observed.id);
+    assert_eq!(public_pass.status, SelectedSaveObservationStatus::Passed);
+    assert_eq!(public_pass.target_revision, 6);
+    assert!(public_pass.reason_codes.is_empty());
+    assert_eq!(public_pass.evidence_digest, observed.evidence_digest);
+    assert_eq!(public_pass.qualification, "unresolved");
+    assert!(!public_pass.establishes_independent_approval);
+    assert!(!public_pass.establishes_current_acceptance);
+    assert_eq!(passed_audit.verifier_receipt_id, None);
+    drop(audit_unit);
+    let foreign = admin::enroll_host(&pool, None, vec![]).await.unwrap();
+    let mut foreign_unit = rw(&store, &foreign.auth, foreign.tenant_id).await;
+    assert!(
+        foreign_unit
+            .candidate_advisory_audit(workspace, candidate, &audit_query)
+            .await
+            .unwrap()
+            .opportunities
+            .is_empty()
+    );
+    assert!(matches!(
+        foreign_unit
+            .candidate_advisory_opportunity_detail(workspace, candidate, selected_opportunity)
+            .await,
+        Err(Error::NotFound)
+    ));
+    drop(foreign_unit);
     let mut replay_unit = rw(&store, &enrollment.auth, tenant).await;
     assert_eq!(
         replay_unit
@@ -2123,6 +2159,54 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
             .contains(&"saved_material_missing_or_mismatched".into())
     );
     observation_unit.commit().await.unwrap();
+    let mut audit_unit = rw(&store, &enrollment.auth, tenant).await;
+    let latest = audit_unit
+        .candidate_advisory_opportunity_detail(workspace, candidate, selected_opportunity)
+        .await
+        .unwrap()
+        .opportunity
+        .selected_save_observation
+        .unwrap();
+    assert_eq!(latest.id, tamper_result.id);
+    assert_eq!(latest.status, SelectedSaveObservationStatus::Failed);
+    assert_eq!(latest.target_revision, 6);
+    assert!(
+        latest
+            .reason_codes
+            .contains(&"saved_material_missing_or_mismatched".into())
+    );
+    assert_eq!(latest.qualification, "unresolved");
+    let mut cursor = None;
+    let mut selected_rows = 0;
+    loop {
+        let page = audit_unit
+            .candidate_advisory_audit(
+                workspace,
+                candidate,
+                &AdvisoryAuditQuery {
+                    after: cursor,
+                    ..audit_query.clone()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(page.opportunities.len() <= 1);
+        for opportunity in page.opportunities {
+            if opportunity.id == selected_opportunity {
+                selected_rows += 1;
+                assert_eq!(
+                    opportunity.selected_save_observation.as_ref(),
+                    Some(&latest)
+                );
+            }
+        }
+        cursor = page.next_after;
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(selected_rows, 1);
+    drop(audit_unit);
     let mut stale = observe_request.clone();
     stale.request_id = Uuid::new_v4();
     stale.target_revision = 5;

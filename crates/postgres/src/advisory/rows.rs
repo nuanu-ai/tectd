@@ -88,6 +88,12 @@ struct AuditLinksRow {
     caller_receipt_id: Option<Uuid>,
     caller_link_id: Option<Uuid>,
     verifier_receipt_id: Option<Uuid>,
+    observation_id: Option<Uuid>,
+    observation_target_revision: Option<i64>,
+    observation_status: Option<String>,
+    observation_reason_codes: Option<Vec<String>>,
+    observation_evidence_digest: Option<String>,
+    observation_qualification: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -300,6 +306,7 @@ fn opportunity_audit_from_row(row: OpportunityAuditRow) -> Result<AdvisoryAuditO
         caller_receipt_id: None,
         caller_link_id: None,
         verifier_receipt_id: None,
+        selected_save_observation: None,
     })
 }
 
@@ -311,6 +318,22 @@ fn apply_audit_links(opportunity: &mut AdvisoryAuditOpportunity, links: &AuditLi
     opportunity.caller_receipt_id = links.caller_receipt_id;
     opportunity.caller_link_id = links.caller_link_id;
     opportunity.verifier_receipt_id = links.verifier_receipt_id;
+    opportunity.selected_save_observation = links.observation_id.map(|id| {
+        AdvisorySelectedSaveObservation {
+            id,
+            target_revision: links.observation_target_revision.expect("observation revision"),
+            status: match links.observation_status.as_deref() {
+                Some("passed") => SelectedSaveObservationStatus::Passed,
+                Some("failed") => SelectedSaveObservationStatus::Failed,
+                _ => unreachable!("database observation status constraint"),
+            },
+            reason_codes: links.observation_reason_codes.clone().expect("observation reasons"),
+            evidence_digest: links.observation_evidence_digest.clone().expect("observation digest"),
+            qualification: links.observation_qualification.clone().expect("observation qualification"),
+            establishes_independent_approval: false,
+            establishes_current_acceptance: false,
+        }
+    });
 }
 
 fn dispatch_audit_from_row(row: DispatchAuditRow) -> Result<AdvisoryAuditDispatch> {
