@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use tect_domain::{
     AdvisoryReason, FreshScopeObservation, GuardedScopeAdvice, Result, ScopeConstructorManifest,
     ScopeDispositionRequest, ScopeDispositionRevision, ScopePreservationResult,
+    SelectedSaveObservation, SelectedSaveObservationRequest,
 };
 use uuid::Uuid;
 
@@ -167,4 +168,11 @@ pub trait ScopeAdvisoryStore: Send {
         workspace_id: Uuid,
         input: &ScopeVerifierReceiptInput,
     ) -> Result<Uuid>;
+
+    /// Internal server-computed postcondition observation; no public verifier route.
+    async fn observe_selected_scope_save(
+        &mut self,
+        workspace_id: Uuid,
+        request: &SelectedSaveObservationRequest,
+    ) -> Result<SelectedSaveObservation>;
 }

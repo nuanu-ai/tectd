@@ -1683,6 +1683,145 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     assert!(selected_audit.caller_link_id.is_some());
     assert_eq!(selected_audit.verifier_receipt_id, None);
     drop(audit_unit);
+    let observe_request = SelectedSaveObservationRequest {
+        request_id: Uuid::new_v4(),
+        opportunity_id: selected_opportunity,
+        candidate_set_id: candidate,
+        caller_link_id: selected_audit.caller_link_id.unwrap(),
+        caller_receipt_request_id: save.request_id,
+        target_revision: 6,
+        session_id: session,
+    };
+    let mut observation_unit = rw(&store, &enrollment.auth, tenant).await;
+    let observed = observation_unit
+        .observe_selected_scope_save(workspace, &observe_request)
+        .await
+        .unwrap();
+    assert_eq!(observed.status, SelectedSaveObservationStatus::Passed);
+    assert!(observed.reason_codes.is_empty());
+    assert_eq!(observed.qualification, "unresolved");
+    observation_unit.commit().await.unwrap();
+    let mut replay_unit = rw(&store, &enrollment.auth, tenant).await;
+    assert_eq!(
+        replay_unit
+            .observe_selected_scope_save(workspace, &observe_request)
+            .await
+            .unwrap(),
+        observed
+    );
+    let mut changed_target = observe_request.clone();
+    changed_target.caller_link_id = Uuid::new_v4();
+    assert_eq!(
+        replay_unit
+            .observe_selected_scope_save(workspace, &changed_target)
+            .await,
+        Err(Error::InputConflict)
+    );
+    let mut changed_identity = observe_request.clone();
+    changed_identity.session_id = verifier_session;
+    assert_eq!(
+        replay_unit
+            .observe_selected_scope_save(workspace, &changed_identity)
+            .await,
+        Err(Error::InputConflict)
+    );
+    drop(replay_unit);
+    let mut concurrent_request = observe_request.clone();
+    concurrent_request.request_id = Uuid::new_v4();
+    let mut first_observer = rw(&store, &enrollment.auth, tenant).await;
+    let first_observation = first_observer
+        .observe_selected_scope_save(workspace, &concurrent_request)
+        .await
+        .unwrap();
+    let second_store = store.clone();
+    let second_auth = enrollment.auth.clone();
+    let second_request = concurrent_request.clone();
+    let mut second_observer = tokio::spawn(async move {
+        let mut unit = rw(&second_store, &second_auth, tenant).await;
+        let observation = unit
+            .observe_selected_scope_save(workspace, &second_request)
+            .await?;
+        unit.commit().await?;
+        Ok::<_, Error>(observation)
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut second_observer)
+            .await
+            .is_err()
+    );
+    first_observer.commit().await.unwrap();
+    let second_observation = second_observer.await.unwrap().unwrap();
+    assert_eq!(second_observation, first_observation);
+    let effects_before: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM scope_candidate_drafts WHERE candidate_set_id=$1), \
+                (SELECT count(*) FROM scope_candidate_receipts WHERE candidate_set_id=$1), \
+                (SELECT count(*) FROM advisory_scope_caller_link WHERE candidate_set_id=$1)",
+    )
+    .bind(candidate)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let original_draft: serde_json::Value = sqlx::query_scalar(
+        "SELECT payload FROM scope_candidate_drafts WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 AND set_revision=6",
+    ).bind(tenant).bind(workspace).bind(candidate).fetch_one(&pool).await.unwrap();
+    sqlx::query("UPDATE scope_candidate_drafts SET payload='{}'::jsonb WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 AND set_revision=6")
+        .bind(tenant).bind(workspace).bind(candidate).execute(&pool).await.unwrap();
+    let mut tampered = observe_request.clone();
+    tampered.request_id = Uuid::new_v4();
+    let mut observation_unit = rw(&store, &enrollment.auth, tenant).await;
+    let tamper_result = observation_unit
+        .observe_selected_scope_save(workspace, &tampered)
+        .await
+        .unwrap();
+    assert_eq!(tamper_result.status, SelectedSaveObservationStatus::Failed);
+    assert!(
+        tamper_result
+            .reason_codes
+            .contains(&"saved_material_missing_or_mismatched".into())
+    );
+    observation_unit.commit().await.unwrap();
+    let mut stale = observe_request.clone();
+    stale.request_id = Uuid::new_v4();
+    stale.target_revision = 5;
+    let mut observation_unit = rw(&store, &enrollment.auth, tenant).await;
+    let stale_result = observation_unit
+        .observe_selected_scope_save(workspace, &stale)
+        .await
+        .unwrap();
+    assert_eq!(stale_result.status, SelectedSaveObservationStatus::Failed);
+    assert!(
+        stale_result
+            .reason_codes
+            .contains(&"candidate_revision_stale".into())
+    );
+    observation_unit.commit().await.unwrap();
+    sqlx::query("UPDATE scope_candidate_drafts SET payload=$1 WHERE tenant_id=$2 AND workspace_id=$3 AND candidate_set_id=$4 AND set_revision=6")
+        .bind(original_draft).bind(tenant).bind(workspace).bind(candidate).execute(&pool).await.unwrap();
+    let mut missing = observe_request.clone();
+    missing.request_id = Uuid::new_v4();
+    missing.caller_link_id = Uuid::new_v4();
+    let mut observation_unit = rw(&store, &enrollment.auth, tenant).await;
+    let missing_result = observation_unit
+        .observe_selected_scope_save(workspace, &missing)
+        .await
+        .unwrap();
+    assert_eq!(missing_result.status, SelectedSaveObservationStatus::Failed);
+    assert!(
+        missing_result
+            .reason_codes
+            .contains(&"caller_link_missing_or_mismatched".into())
+    );
+    observation_unit.commit().await.unwrap();
+    let effects_after: (i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM scope_candidate_drafts WHERE candidate_set_id=$1), \
+                (SELECT count(*) FROM scope_candidate_receipts WHERE candidate_set_id=$1), \
+                (SELECT count(*) FROM advisory_scope_caller_link WHERE candidate_set_id=$1)",
+    )
+    .bind(candidate)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(effects_after, effects_before);
     let mut changed_payload = save.clone();
     changed_payload.draft.candidates[0].title = "Conflicting replay".into();
     let mut conflict = rw(&store, &enrollment.auth, tenant).await;

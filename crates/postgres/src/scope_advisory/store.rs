@@ -146,4 +146,14 @@ impl ScopeAdvisoryStore for PgUnitOfWork {
         let tenant = self.tenant_id()?;
         persist_verifier(self.transaction()?, tenant, workspace_id, input).await
     }
+
+    async fn observe_selected_scope_save(
+        &mut self,
+        workspace_id: Uuid,
+        request: &SelectedSaveObservationRequest,
+    ) -> Result<SelectedSaveObservation> {
+        let tenant = self.tenant_id()?;
+        let actor = self.principal_id()?;
+        observe_selected_save(self.transaction()?, tenant, workspace_id, actor, request).await
+    }
 }

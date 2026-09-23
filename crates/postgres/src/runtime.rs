@@ -29,6 +29,7 @@ pub(crate) async fn verify_runtime_role(pool: &PgPool) -> Result<()> {
                          'advisory_scope_advice', 'advisory_scope_disposition',
                          'advisory_scope_preservation_receipt',
                          'advisory_scope_caller_link', 'advisory_scope_verifier_receipt',
+                         'advisory_scope_selected_save_observation',
                          'setup_session_directories', 'workspace_setups', 'workspace_setup_inputs',
                          'scope_candidate_sets', 'scope_candidate_inputs',
                          'scope_candidate_contents', 'scope_candidate_snapshots',

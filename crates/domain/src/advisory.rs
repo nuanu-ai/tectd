@@ -10,6 +10,7 @@ mod disposition;
 mod lifecycle;
 mod scope_manifest;
 mod scope_source;
+mod selected_save_observation;
 mod system_one;
 
 pub use audit::*;
@@ -18,6 +19,7 @@ pub use disposition::*;
 pub use lifecycle::*;
 pub use scope_manifest::*;
 pub use scope_source::*;
+pub use selected_save_observation::*;
 pub use system_one::*;
 
 #[cfg(test)]

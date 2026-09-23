@@ -27,6 +27,12 @@ pub(super) async fn grant_scope_advisory_runtime(
             "GRANT INSERT ON TABLE {} TO {quoted_role}",
             SCOPE_TABLES.join(",")
         ),
+        format!(
+            "REVOKE ALL PRIVILEGES ON TABLE advisory_scope_selected_save_observation FROM {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT ON TABLE advisory_scope_selected_save_observation TO {quoted_role}"
+        ),
     ];
     for statement in statements {
         sqlx::query(&statement)
@@ -312,6 +318,14 @@ pub(super) async fn validate_advisory_schema(
     .fetch_one(&mut **transaction)
     .await
     .map_err(storage_error)?;
+    let selected_observation_ready: bool = sqlx::query_scalar(
+        "SELECT c.relrowsecurity AND c.relforcerowsecurity \
+           AND pg_catalog.has_table_privilege($1,'public.advisory_scope_selected_save_observation','SELECT') \
+           AND pg_catalog.has_table_privilege($1,'public.advisory_scope_selected_save_observation','INSERT') \
+           AND NOT pg_catalog.has_table_privilege($1,'public.advisory_scope_selected_save_observation','UPDATE') \
+           AND NOT pg_catalog.has_table_privilege($1,'public.advisory_scope_selected_save_observation','DELETE') \
+         FROM pg_catalog.pg_class c WHERE c.oid='public.advisory_scope_selected_save_observation'::regclass",
+    ).bind(runtime_role).fetch_one(&mut **transaction).await.map_err(storage_error)?;
     if !schema_ready
         || !indexes_ready
         || !policies_ready
@@ -328,6 +342,7 @@ pub(super) async fn validate_advisory_schema(
         || !slice_runtime_ready
         || !snapshot_freeze_ready
         || !snapshot_read_ready
+        || !selected_observation_ready
     {
         return Err(Error::InvalidConfiguration);
     }
