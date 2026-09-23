@@ -82,6 +82,28 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         &[(source_refs[0], D), (source_refs[1], D)],
     );
     let store = PgStore::connect(&runtime_url, 4).await.unwrap();
+    let authority_request = ScopeAuthorityRequest {
+        tenant_id: tenant,
+        workspace_id: workspace,
+        actor_id: actor,
+        session_id: session,
+        candidate_set_id: candidate,
+    };
+    let observed = store.observe(&authority_request).await.unwrap();
+    let ScopeAuthorityOutcome::Authorized(observed) = observed else {
+        panic!("persisted source must be authorized");
+    };
+    assert_eq!(observed.source, manifest.source);
+    assert_eq!(observed.obligations, manifest.obligations);
+    assert_eq!(
+        store
+            .observe(&ScopeAuthorityRequest {
+                actor_id: Uuid::new_v4(),
+                ..authority_request
+            })
+            .await,
+        Err(Error::Forbidden)
+    );
     let prepared = ScopeManifestRecord {
         opportunity_id: opportunity,
         candidate_set_id: candidate,

@@ -26,7 +26,9 @@ pub(crate) use scope_advisory_runtime::*;
 #[doc(hidden)]
 pub use scope_advisory_runtime::{
     ScopeAdviceProvider, ScopeAdviceProviderError, ScopeAdviceProviderFailureReason,
-    ScopeAdviceProviderObservation, ScopeAdviceProviderRequest,
+    ScopeAdviceProviderObservation, ScopeAdviceProviderRequest, ScopeAuthorityObservation,
+    ScopeAuthorityObserver, ScopeAuthorityOutcome, ScopeAuthorityRequest,
+    ScopeAuthorizedInvalidObservation,
 };
 pub use service::WorkspaceService;
 

@@ -178,6 +178,7 @@ impl WorkspaceService {
         }
 
         let authority_request = ScopeAuthorityRequest {
+            tenant_id: identity.tenant_id,
             workspace_id: workspace.id,
             actor_id: identity.principal_id,
             session_id: session.id,

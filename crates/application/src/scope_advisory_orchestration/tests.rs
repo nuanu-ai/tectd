@@ -448,6 +448,7 @@ fn source(candidate_set_id: Uuid) -> FrozenScopeSource {
 #[test]
 fn authority_binding_requires_candidate_set_identity() {
     let request = crate::ScopeAuthorityRequest {
+        tenant_id: Uuid::from_u128(9),
         workspace_id: Uuid::from_u128(1),
         actor_id: Uuid::from_u128(2),
         session_id: Uuid::from_u128(3),
@@ -491,6 +492,7 @@ impl ScopeAuthorityObserver for UnauthorizedObserver {
 #[tokio::test]
 async fn unauthorized_observer_error_has_no_registered_decision_point() {
     let request = crate::ScopeAuthorityRequest {
+        tenant_id: Uuid::from_u128(9),
         workspace_id: Uuid::from_u128(1),
         actor_id: Uuid::from_u128(2),
         session_id: Uuid::from_u128(3),
@@ -507,6 +509,7 @@ async fn unauthorized_observer_error_has_no_registered_decision_point() {
 #[test]
 fn authorized_invalid_observation_routes_to_durable_invalid_capture_before_policy() {
     let request = crate::ScopeAuthorityRequest {
+        tenant_id: Uuid::from_u128(9),
         workspace_id: Uuid::from_u128(1),
         actor_id: Uuid::from_u128(2),
         session_id: Uuid::from_u128(3),

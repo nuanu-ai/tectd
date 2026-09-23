@@ -40,12 +40,12 @@ impl WorkspaceService {
         context: &RequestContext,
         input: PreserveScopeAdvisory,
     ) -> Result<(Uuid, ScopePreservationResult)> {
-        let (mut read, workspace, session) = self
-            .scope_transaction(context, TransactionMode::ReadOnly)
-            .await?;
+        let (mut read, identity) = self.authorized(context, TransactionMode::ReadOnly).await?;
+        let (workspace, session) = Self::bound_session(&mut *read, context, &identity).await?;
         let actor = read.session_principal(session.id).await?;
         read.commit().await?;
         let authority_request = ScopeAuthorityRequest {
+            tenant_id: identity.tenant_id,
             workspace_id: workspace.id,
             actor_id: actor,
             session_id: session.id,

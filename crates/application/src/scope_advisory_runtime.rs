@@ -7,7 +7,8 @@ use tect_domain::{
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ScopeAuthorityRequest {
+pub struct ScopeAuthorityRequest {
+    pub tenant_id: Uuid,
     pub workspace_id: Uuid,
     pub actor_id: Uuid,
     pub session_id: Uuid,
@@ -15,7 +16,7 @@ pub(crate) struct ScopeAuthorityRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ScopeAuthorityObservation {
+pub struct ScopeAuthorityObservation {
     pub workspace_id: Uuid,
     pub actor_id: Uuid,
     pub session_id: Uuid,
@@ -25,7 +26,7 @@ pub(crate) struct ScopeAuthorityObservation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ScopeAuthorizedInvalidObservation {
+pub struct ScopeAuthorizedInvalidObservation {
     pub workspace_id: Uuid,
     pub actor_id: Uuid,
     pub session_id: Uuid,
@@ -33,13 +34,13 @@ pub(crate) struct ScopeAuthorizedInvalidObservation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ScopeAuthorityOutcome {
+pub enum ScopeAuthorityOutcome {
     Authorized(ScopeAuthorityObservation),
     AuthorizedInvalid(ScopeAuthorizedInvalidObservation),
 }
 
 #[async_trait]
-pub(crate) trait ScopeAuthorityObserver: Send + Sync {
+pub trait ScopeAuthorityObserver: Send + Sync {
     /// Authorization/inaccessibility remains an `Err` and creates no decision
     /// point. `AuthorizedInvalid` proves access while withholding unsafe source.
     async fn observe(&self, request: &ScopeAuthorityRequest) -> Result<ScopeAuthorityOutcome>;

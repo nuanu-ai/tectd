@@ -26,6 +26,7 @@ struct FrozenAuthorityRow {
     candidate_set_revision: i64,
     current_snapshot_id: Option<Uuid>,
     input_cursor: i64,
+    candidate_latest_input: i64,
     program_id: Uuid,
     program_revision: i64,
     program_current_latest: i64,
@@ -45,15 +46,13 @@ struct PersistedSourceFragment {
     body: String,
 }
 
-async fn require_persisted_fragments(
+async fn load_persisted_fragments(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     workspace: Uuid,
-    source: &FrozenScopeSource,
-    obligations: &[SourceObligation],
-) -> Result<()> {
-    // The candidate-set revision and current snapshot were checked and locked
-    // in this transaction by require_frozen_authority.
+    candidate_set_id: Uuid,
+    snapshot_id: Uuid,
+) -> Result<Vec<PersistedSourceFragment>> {
     let fragments: Vec<PersistedSourceFragment> = sqlx::query_as(
         "SELECT r.id,r.body_digest,c.body FROM scope_candidate_source_refs r \
          JOIN scope_candidate_contents c ON (c.tenant_id,c.workspace_id,c.digest)=\
@@ -63,11 +62,18 @@ async fn require_persisted_fragments(
     )
     .bind(tenant)
     .bind(workspace)
-    .bind(source.candidate_set_id)
-    .bind(source.snapshot_id)
+    .bind(candidate_set_id)
+    .bind(snapshot_id)
     .fetch_all(&mut **tx)
     .await
     .map_err(storage_error)?;
+    Ok(fragments)
+}
+
+fn source_inputs_and_obligations(
+    fragments: Vec<PersistedSourceFragment>,
+    snapshot_id: Uuid,
+) -> Result<(Vec<FrozenSourceInput>, Vec<SourceObligation>)> {
     let mut expected_inputs = Vec::new();
     let mut expected_obligations = Vec::new();
     for fragment in fragments {
@@ -77,7 +83,7 @@ async fn require_persisted_fragments(
         let id = fragment.id.to_string();
         expected_inputs.push(FrozenSourceInput {
             id: id.clone(),
-            version: source.snapshot_id.to_string(),
+            version: snapshot_id.to_string(),
             digest: fragment.body_digest.clone(),
             provenance: format!("scope_candidate_source_ref:{id}"),
             applicability: SourceApplicability::Applicable,
@@ -95,6 +101,23 @@ async fn require_persisted_fragments(
     }
     expected_inputs.sort_by(|a, b| a.id.cmp(&b.id));
     expected_obligations.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok((expected_inputs, expected_obligations))
+}
+
+async fn require_persisted_fragments(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    source: &FrozenScopeSource,
+    obligations: &[SourceObligation],
+) -> Result<()> {
+    // The candidate-set revision and current snapshot were checked and locked
+    // in this transaction by require_frozen_authority.
+    let fragments = load_persisted_fragments(
+        tx, tenant, workspace, source.candidate_set_id, source.snapshot_id,
+    ).await?;
+    let (expected_inputs, expected_obligations) =
+        source_inputs_and_obligations(fragments, source.snapshot_id)?;
     if source.inputs != expected_inputs || obligations != expected_obligations {
         return Err(Error::InvalidSource);
     }
@@ -108,7 +131,8 @@ async fn require_frozen_authority(
     source: &FrozenScopeSource,
 ) -> Result<()> {
     let authority: Option<FrozenAuthorityRow> = sqlx::query_as(
-        "SELECT c.revision AS candidate_set_revision,c.current_snapshot_id,c.input_cursor,c.program_id,\
+        "SELECT c.revision AS candidate_set_revision,c.current_snapshot_id,c.input_cursor,\
+                c.latest_input AS candidate_latest_input,c.program_id,\
                 p.revision AS program_revision,p.latest_input AS program_current_latest,\
                 s.program_latest_input,s.planning_latest_input,\
                 s.selected_sources_digest,s.method_revision,s.method_digest,s.registry_revision,s.registry_digest \
@@ -131,6 +155,7 @@ async fn require_frozen_authority(
     if authority.candidate_set_revision != source.candidate_set_revision
         || authority.current_snapshot_id != Some(source.snapshot_id)
         || authority.input_cursor != source.input_cursor
+        || authority.candidate_latest_input != source.planning_latest_input
         || authority.program_id != source.program_id
         || authority.program_revision != source.program_revision
         || authority.program_current_latest != source.program_latest_input
