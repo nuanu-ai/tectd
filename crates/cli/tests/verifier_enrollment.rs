@@ -114,8 +114,28 @@ async fn verifier_enrollment_is_distinct_pregranted_and_cannot_open_owner_routes
     .unwrap();
     assert!(!other_membership);
     let verifier_context = context(&verifier.auth, "verifier-existing");
+    let verifier_open = service.open_workspace(&verifier_context).await.unwrap();
+    assert_eq!(verifier_open.workspace.as_ref().unwrap().id, workspace_id);
     assert_eq!(
-        service.open_workspace(&verifier_context).await,
+        verifier_open.session.as_ref().unwrap().host_id,
+        verifier.auth.host_id
+    );
+    assert!(verifier_open.programs.is_empty());
+    assert!(verifier_open.candidate_sets.is_empty());
+    assert!(verifier_open.native_planning.is_empty());
+    assert!(verifier_open.next_action.is_none());
+    assert_eq!(
+        service.open_workspace(&verifier_context).await.unwrap(),
+        verifier_open
+    );
+    assert_eq!(
+        service.get_state(&verifier_context).await,
+        Err(Error::Forbidden)
+    );
+    assert_eq!(
+        service
+            .open_workspace(&context(&verifier.auth, "verifier-not-granted"))
+            .await,
         Err(Error::Forbidden)
     );
     assert_eq!(
@@ -129,7 +149,7 @@ async fn verifier_enrollment_is_distinct_pregranted_and_cannot_open_owner_routes
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(sessions, 0);
+    assert_eq!(sessions, 1);
 
     let private = tempfile::tempdir().unwrap();
     fs::set_permissions(private.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -164,9 +184,140 @@ async fn verifier_enrollment_is_distinct_pregranted_and_cannot_open_owner_routes
     assert_eq!(
         service
             .open_workspace(&context(&cli_auth, "verifier-existing"))
-            .await,
-        Err(Error::Forbidden)
+            .await
+            .unwrap()
+            .workspace
+            .unwrap()
+            .id,
+        workspace_id
     );
+
+    // Exercise the same public MCP route parser and daemon authorization as a
+    // real verifier host. The snapshot covers all current advisory effects.
+    let socket = private.path().canonicalize().unwrap().join("verifier.sock");
+    let daemon = Daemon::start(
+        &tagged_url(&runtime_url, &format!("verifier-{}", Uuid::new_v4())),
+        socket.clone(),
+    )
+    .await;
+    let mut mcp = Mcp::start(
+        &socket,
+        &auth_path,
+        &Uuid::new_v4().to_string(),
+        "verifier-existing",
+    )
+    .await;
+    let public_open = mcp.call("open_workspace", json!({})).await;
+    assert_eq!(public_open["workspace"]["id"], json!(workspace_id));
+    assert_eq!(public_open["next_action"], json!(null));
+    assert_eq!(public_open["actions"], json!([]));
+    for key in ["verifier-not-granted", "verifier-never-created"] {
+        let mut wrong = Mcp::start(&socket, &auth_path, &Uuid::new_v4().to_string(), key).await;
+        assert_eq!(
+            wrong.call_error("open_workspace", json!({})).await["error"]["code"],
+            "forbidden"
+        );
+        wrong.finish().await;
+    }
+    let protected = [
+        "workspaces",
+        "memberships",
+        "agent_sessions",
+        "programs",
+        "advisory_workspace_config",
+        "advisory_workspace_config_history",
+        "advisory_opportunity",
+        "advisory_dispatch",
+        "advisory_scope_source_snapshot",
+        "advisory_scope_manifest",
+        "advisory_scope_advice",
+        "advisory_scope_disposition",
+        "advisory_scope_preservation_receipt",
+        "advisory_scope_caller_link",
+        "advisory_scope_verifier_receipt",
+        "advisory_scope_selected_save_observation",
+    ];
+    let mut baseline = Vec::new();
+    for table in protected {
+        let count: i64 =
+            sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE tenant_id=$1"))
+                .bind(owner.tenant_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        baseline.push(count);
+    }
+    let example_id = Uuid::new_v4();
+    for (tool, route, params) in [
+        (
+            "command",
+            "scope.advisory.request",
+            json!({
+                "request_id":example_id,"candidate_set_id":example_id,"request_preference":"skip"
+            }),
+        ),
+        (
+            "command",
+            "scope.advisory.disposition",
+            json!({
+                "opportunity_id":example_id,"candidate_set_id":example_id,
+                "request_id":example_id,"advice_id":"a".repeat(64),
+                "expected_revision":0,"action":"reject_all",
+                "items":[{"alternative_id":"b".repeat(64),"state":"not_selected"}],
+                "rationale":"Verifier cannot decide"
+            }),
+        ),
+        (
+            "command",
+            "program.save",
+            json!({
+                "program_id":example_id,"revision":1,"input_cursor":1,"complete":false
+            }),
+        ),
+        (
+            "command",
+            "workspace.advisory.configure",
+            json!({
+                "expected_revision":0,"mode":"optional",
+                "provider_profile_ref":{"id":"test"},
+                "model_configuration":{"model":"test"}
+            }),
+        ),
+        ("query", "workspace.advisory.config", json!({})),
+        ("command", "future.unknown.route", json!({})),
+    ] {
+        let denied = mcp
+            .call_error(tool, json!({"route":route,"params":params}))
+            .await;
+        if route == "future.unknown.route" {
+            assert!(denied["error"].is_object(), "{route}: {denied}");
+        } else {
+            assert_eq!(denied["error"]["code"], "forbidden", "{route}: {denied}");
+        }
+    }
+    assert_eq!(
+        mcp.call_error("get_state", json!({})).await["error"]["code"],
+        "forbidden"
+    );
+    assert!(
+        mcp.call_error(
+            "command",
+            json!({"route":"workspace.open","params":{"role":"owner"}})
+        )
+        .await["error"]
+            .is_object()
+    );
+    for (table, before) in protected.into_iter().zip(baseline) {
+        let after: i64 =
+            sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE tenant_id=$1"))
+                .bind(owner.tenant_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(after, before, "{table} changed under verifier request");
+    }
+    mcp.finish().await;
+    drop(daemon);
 
     let counts_before = verifier_counts(&pool, owner.tenant_id).await;
     let original = fs::read(&auth_path).unwrap();
@@ -248,3 +399,7 @@ async fn verifier_enrollment_is_distinct_pregranted_and_cannot_open_owner_routes
     let identity = transaction.authenticate(&verifier.auth).await.unwrap();
     assert_eq!(identity.role, PrincipalRole::Verifier);
 }
+mod recovery_support;
+
+use recovery_support::{Daemon, Mcp, tagged_url};
+use serde_json::json;

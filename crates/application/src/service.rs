@@ -1,7 +1,8 @@
 use crate::{SetupFiles, SourceInspector, Store, TransactionMode, UnitOfWork};
 use std::sync::Arc;
 use tect_domain::{
-    Error, EventKind, HostIdentity, RequestContext, Result, Session, Workspace, WorkspaceState,
+    Error, EventKind, HostIdentity, PrincipalRole, RequestContext, Result, Session, Workspace,
+    WorkspaceState,
 };
 
 pub struct WorkspaceService {
@@ -151,6 +152,18 @@ impl WorkspaceService {
         context: &RequestContext,
         mode: TransactionMode,
     ) -> Result<(Box<dyn UnitOfWork>, HostIdentity)> {
+        let (tx, identity) = self.authenticated(context, mode).await?;
+        if identity.role != PrincipalRole::Owner {
+            return Err(Error::Forbidden);
+        }
+        Ok((tx, identity))
+    }
+
+    async fn authenticated(
+        &self,
+        context: &RequestContext,
+        mode: TransactionMode,
+    ) -> Result<(Box<dyn UnitOfWork>, HostIdentity)> {
         context.validate()?;
         let mut tx = self.store.begin(mode).await?;
         let identity = tx.authenticate(&context.auth).await?;
@@ -245,6 +258,9 @@ impl WorkspaceService {
         context: &RequestContext,
         identity: &HostIdentity,
     ) -> Result<(Workspace, Session)> {
+        if identity.role != PrincipalRole::Owner {
+            return Err(Error::Forbidden);
+        }
         let session = tx
             .session(identity.host_id, &context.native_session_id)
             .await?
@@ -277,10 +293,9 @@ impl WorkspaceService {
     }
 
     pub async fn open_workspace(&self, context: &RequestContext) -> Result<WorkspaceState> {
-        let (mut tx, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
-        if identity.role != tect_domain::PrincipalRole::Owner {
-            return Err(Error::Forbidden);
-        }
+        let (mut tx, identity) = self
+            .authenticated(context, TransactionMode::ReadWrite)
+            .await?;
         tx.lock_native_session(identity.host_id, &context.native_session_id)
             .await?;
         if let Some(session) = tx
@@ -288,7 +303,29 @@ impl WorkspaceService {
             .await?
         {
             let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
-            let state = Self::state(&mut *tx, workspace, session).await?;
+            let state = if identity.role == PrincipalRole::Verifier {
+                verifier_opened_state(workspace, session)
+            } else {
+                Self::state(&mut *tx, workspace, session).await?
+            };
+            tx.commit().await?;
+            return Ok(state);
+        }
+        if identity.role == PrincipalRole::Verifier {
+            let workspace = tx
+                .workspace_by_key(&context.workspace_key)
+                .await?
+                .ok_or(Error::Forbidden)?;
+            if !tx.is_member(workspace.id, identity.principal_id).await? {
+                return Err(Error::Forbidden);
+            }
+            let session = tx
+                .ensure_session(identity.host_id, workspace.id, &context.native_session_id)
+                .await?;
+            if session.value.revoked || session.value.workspace_id != workspace.id {
+                return Err(Error::Forbidden);
+            }
+            let state = verifier_opened_state(workspace, session.value);
             tx.commit().await?;
             return Ok(state);
         }
@@ -322,4 +359,10 @@ impl WorkspaceService {
         tx.commit().await?;
         Ok(state)
     }
+}
+
+fn verifier_opened_state(workspace: Workspace, session: Session) -> WorkspaceState {
+    let mut state = WorkspaceState::opened(workspace, session);
+    state.next_action = None;
+    state
 }

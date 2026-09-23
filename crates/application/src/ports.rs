@@ -39,6 +39,7 @@ pub trait UnitOfWork:
     async fn lock_native_session(&mut self, host_id: Uuid, native_id: &str) -> Result<()>;
     async fn session(&mut self, host_id: Uuid, native_id: &str) -> Result<Option<Session>>;
     async fn workspace(&mut self, id: Uuid) -> Result<Option<Workspace>>;
+    async fn workspace_by_key(&mut self, key: &str) -> Result<Option<Workspace>>;
     async fn is_member(&mut self, workspace_id: Uuid, principal_id: Uuid) -> Result<bool>;
     async fn session_principal(&mut self, session_id: Uuid) -> Result<Uuid>;
     async fn ensure_workspace(&mut self, key: &str) -> Result<Created<Workspace>>;

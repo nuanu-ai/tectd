@@ -164,6 +164,18 @@ impl UnitOfWork for PgUnitOfWork {
         Ok(row.map(|(id, key)| Workspace { id, key }))
     }
 
+    async fn workspace_by_key(&mut self, key: &str) -> Result<Option<Workspace>> {
+        let tenant_id = self.tenant_id()?;
+        let row: Option<(Uuid, String)> =
+            sqlx::query_as("SELECT id, key FROM workspaces WHERE tenant_id=$1 AND key=$2")
+                .bind(tenant_id)
+                .bind(key)
+                .fetch_optional(&mut **self.transaction()?)
+                .await
+                .map_err(storage_error)?;
+        Ok(row.map(|(id, key)| Workspace { id, key }))
+    }
+
     async fn is_member(&mut self, workspace_id: Uuid, principal_id: Uuid) -> Result<bool> {
         let tenant_id = self.tenant_id()?;
         sqlx::query_scalar(

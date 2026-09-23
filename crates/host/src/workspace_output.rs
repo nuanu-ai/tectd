@@ -33,6 +33,10 @@ fn actions(
     file: Option<&FileObservation>,
     fallback: bool,
 ) -> Result<Vec<Value>> {
+    // A verifier's open response carries no owner workflow suggestions.
+    if state.next_action.is_none() {
+        return Ok(Vec::new());
+    }
     if state.workspace.is_none() {
         return Ok(vec![action("open_workspace", json!({}))?]);
     }
