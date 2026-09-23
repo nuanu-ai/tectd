@@ -45,7 +45,7 @@ pub struct SelectedSaveObservation {
     pub status: SelectedSaveObservationStatus,
     pub reason_codes: Vec<String>,
     pub evidence_digest: String,
-    /// Qualification and independent verifier identity remain unresolved.
+    /// Verifier qualification is independent of pass/fail and grants no approval.
     pub qualification: String,
 }
 

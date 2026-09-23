@@ -154,6 +154,19 @@ impl ScopeAdvisoryStore for PgUnitOfWork {
     ) -> Result<SelectedSaveObservation> {
         let tenant = self.tenant_id()?;
         let actor = self.principal_id()?;
-        observe_selected_save(self.transaction()?, tenant, workspace_id, actor, request).await
+        observe_selected_save(self.transaction()?, tenant, workspace_id, actor, request, false).await
+    }
+
+    async fn independently_observe_selected_scope_save(
+        &mut self,
+        workspace_id: Uuid,
+        request: &SelectedSaveObservationRequest,
+    ) -> Result<SelectedSaveObservation> {
+        let tenant = self.tenant_id()?;
+        if self.principal_role()? != PrincipalRole::Verifier {
+            return Err(Error::Forbidden);
+        }
+        let actor = self.principal_id()?;
+        observe_selected_save(self.transaction()?, tenant, workspace_id, actor, request, true).await
     }
 }

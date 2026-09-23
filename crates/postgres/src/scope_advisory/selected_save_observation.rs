@@ -13,12 +13,33 @@ async fn observe_selected_save(
     workspace: Uuid,
     actor: Uuid,
     request: &SelectedSaveObservationRequest,
+    independently_observed: bool,
 ) -> Result<SelectedSaveObservation> {
     if !request.valid()
         || !actor_session_exists(tx, tenant, workspace, actor, request.session_id).await?
     {
         return Err(Error::InvalidArguments);
     }
+    if independently_observed {
+        let authorized: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM memberships m \
+             JOIN advisory_scope_caller_link c ON c.tenant_id=m.tenant_id AND c.workspace_id=m.workspace_id \
+                 AND c.opportunity_id=$4 AND c.candidate_set_id=$5 AND c.link_id=$6 \
+             JOIN advisory_scope_disposition d ON d.tenant_id=c.tenant_id AND d.workspace_id=c.workspace_id \
+                 AND d.opportunity_id=c.opportunity_id AND d.candidate_set_id=c.candidate_set_id AND d.disposition_id=c.disposition_id \
+             WHERE m.tenant_id=$1 AND m.workspace_id=$2 AND m.principal_id=$7 \
+               AND public.tect_dk_session_principal($3)=$7 AND m.principal_id<>c.actor_id AND m.principal_id<>d.actor_id \
+               AND c.caller_operation='save_draft' AND c.caller_request_id=$8 AND c.caller_result_revision=$9)",
+        )
+        .bind(tenant).bind(workspace).bind(request.session_id).bind(request.opportunity_id)
+        .bind(request.candidate_set_id).bind(request.caller_link_id).bind(actor)
+        .bind(request.caller_receipt_request_id).bind(request.target_revision)
+        .fetch_one(&mut **tx).await.map_err(storage_error)?;
+        if !authorized {
+            return Err(Error::Forbidden);
+        }
+    }
+    let qualification = if independently_observed { "independently_observed" } else { "unresolved" };
     let fingerprint = observation_digest(
         "tect.selected-save-observation-request/1",
         &serde_json::json!({
@@ -71,6 +92,7 @@ async fn observe_selected_save(
             || row.6 != actor
             || row.7 != request.session_id
             || row.8 != fingerprint
+            || row.12 != qualification
         {
             return Err(Error::InputConflict);
         }
@@ -305,13 +327,13 @@ async fn observe_selected_save(
         SelectedSaveObservationStatus::Failed => "failed",
     };
     sqlx::query("INSERT INTO advisory_scope_selected_save_observation \
-        (tenant_id,workspace_id,observation_id,request_id,opportunity_id,candidate_set_id,caller_link_id,caller_receipt_request_id,target_revision,actor_id,session_id,request_fingerprint,status,reason_codes,evidence_digest,evidence_payload) \
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)")
+        (tenant_id,workspace_id,observation_id,request_id,opportunity_id,candidate_set_id,caller_link_id,caller_receipt_request_id,target_revision,actor_id,session_id,request_fingerprint,status,reason_codes,evidence_digest,evidence_payload,qualification) \
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)")
         .bind(tenant).bind(workspace).bind(id).bind(request.request_id)
         .bind(request.opportunity_id).bind(request.candidate_set_id).bind(request.caller_link_id)
         .bind(request.caller_receipt_request_id).bind(request.target_revision).bind(actor)
         .bind(request.session_id).bind(fingerprint).bind(status_name).bind(&reason_codes)
-        .bind(&evidence_digest).bind(evidence).execute(&mut **tx).await.map_err(storage_error)?;
+        .bind(&evidence_digest).bind(evidence).bind(qualification).execute(&mut **tx).await.map_err(storage_error)?;
     Ok(SelectedSaveObservation {
         id,
         request_id: request.request_id,
@@ -325,6 +347,6 @@ async fn observe_selected_save(
         status,
         reason_codes,
         evidence_digest,
-        qualification: "unresolved".into(),
+        qualification: qualification.into(),
     })
 }

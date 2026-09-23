@@ -175,4 +175,11 @@ pub trait ScopeAdvisoryStore: Send {
         workspace_id: Uuid,
         request: &SelectedSaveObservationRequest,
     ) -> Result<SelectedSaveObservation>;
+
+    /// Internal authenticated verifier pass; it does not grant approval or acceptance.
+    async fn independently_observe_selected_scope_save(
+        &mut self,
+        workspace_id: Uuid,
+        request: &SelectedSaveObservationRequest,
+    ) -> Result<SelectedSaveObservation>;
 }

@@ -91,7 +91,7 @@ pub struct AdvisorySelectedSaveObservation {
     pub status: SelectedSaveObservationStatus,
     pub reason_codes: Vec<String>,
     pub evidence_digest: String,
-    /// Independent qualification has not been resolved.
+    /// Qualification describes the observer, not approval or current acceptance.
     pub qualification: String,
     pub establishes_independent_approval: bool,
     pub establishes_current_acceptance: bool,

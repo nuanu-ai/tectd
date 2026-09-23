@@ -26,3 +26,12 @@ impl PgStore {
         &self.pool
     }
 }
+
+impl PgUnitOfWork {
+    pub(crate) fn principal_role(&self) -> Result<PrincipalRole> {
+        self.identity
+            .as_ref()
+            .map(|identity| identity.role)
+            .ok_or(Error::Forbidden)
+    }
+}
