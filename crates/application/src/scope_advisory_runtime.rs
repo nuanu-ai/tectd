@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use tect_domain::{
     AdvisoryDispatchOutcome, AdvisorySendCertainty, FrozenScopeSource,
@@ -158,6 +159,110 @@ pub struct ScopeAdviceProviderRequest {
     pub(crate) budget_policy: ScopeBudgetPolicyEvaluation,
 }
 
+/// Immutable, application-owned representation of the exact request body and
+/// provider target prepared before dispatch authorization. It contains no
+/// credentials and can only be consumed, not mutated.
+#[derive(Debug, PartialEq, Eq)]
+pub struct PreparedScopeAdviceAttempt {
+    request: ScopeAdviceRequest,
+    body: Vec<u8>,
+    profile: String,
+    model: String,
+    destination: String,
+    wire_version: String,
+    body_length: usize,
+    body_sha256: String,
+}
+
+impl PreparedScopeAdviceAttempt {
+    pub fn new(
+        request: ScopeAdviceRequest,
+        body: Vec<u8>,
+        profile: String,
+        model: String,
+        destination: String,
+        wire_version: String,
+    ) -> std::result::Result<Self, ScopeAdviceProviderError> {
+        if profile.is_empty()
+            || model.is_empty()
+            || destination.is_empty()
+            || wire_version.is_empty()
+        {
+            return Err(ScopeAdviceProviderError::ProvenNotSent);
+        }
+        let body_length = body.len();
+        let body_sha256 = format!("{:x}", Sha256::digest(&body));
+        Ok(Self {
+            request,
+            body,
+            profile,
+            model,
+            destination,
+            wire_version,
+            body_length,
+            body_sha256,
+        })
+    }
+
+    pub fn request(&self) -> &ScopeAdviceRequest {
+        &self.request
+    }
+
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
+
+    pub fn profile(&self) -> &str {
+        &self.profile
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub fn destination(&self) -> &str {
+        &self.destination
+    }
+
+    pub fn wire_version(&self) -> &str {
+        &self.wire_version
+    }
+
+    pub fn body_length(&self) -> usize {
+        self.body_length
+    }
+
+    pub fn body_sha256(&self) -> &str {
+        &self.body_sha256
+    }
+
+    /// Consume the prepared value at the transport boundary while preserving
+    /// ownership of the exact body allocation created during preparation.
+    pub fn into_parts(
+        self,
+    ) -> (
+        ScopeAdviceRequest,
+        Vec<u8>,
+        String,
+        String,
+        String,
+        String,
+        usize,
+        String,
+    ) {
+        (
+            self.request,
+            self.body,
+            self.profile,
+            self.model,
+            self.destination,
+            self.wire_version,
+            self.body_length,
+            self.body_sha256,
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeAdviceProviderObservation {
     pub send_certainty: AdvisorySendCertainty,
@@ -194,11 +299,18 @@ pub enum ScopeAdviceProviderError {
 #[async_trait]
 pub trait ScopeAdviceProvider: Send + Sync {
     fn identity(&self) -> Option<(&'static str, &'static str)>;
+    /// Pure, no-I/O serialization and provider-target binding. Rejections are
+    /// proven not sent and must be recorded as a no-call before authorization.
+    fn prepare(
+        &self,
+        request: &ScopeAdviceRequest,
+    ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError>;
     /// `Ok` is reserved for a transport result proven sent, including typed
     /// provider/body failures. Pre-response uncertainty uses the error variant.
-    async fn attempt(
+    async fn attempt_prepared(
         &self,
         request: &ScopeAdviceProviderRequest,
+        prepared: PreparedScopeAdviceAttempt,
     ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError>;
 }
 
@@ -251,9 +363,16 @@ impl ScopeAdviceProvider for DisabledScopeAdviceProvider {
     fn identity(&self) -> Option<(&'static str, &'static str)> {
         None
     }
-    async fn attempt(
+    fn prepare(
+        &self,
+        _: &ScopeAdviceRequest,
+    ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError> {
+        Err(ScopeAdviceProviderError::ProvenNotSent)
+    }
+    async fn attempt_prepared(
         &self,
         _: &ScopeAdviceProviderRequest,
+        _: PreparedScopeAdviceAttempt,
     ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
         Err(ScopeAdviceProviderError::ProvenNotSent)
     }

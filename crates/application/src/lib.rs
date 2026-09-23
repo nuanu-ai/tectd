@@ -27,11 +27,11 @@ pub use scope_advisory_ports::{
 pub(crate) use scope_advisory_runtime::*;
 #[doc(hidden)]
 pub use scope_advisory_runtime::{
-    AuthoredScopeAlternative, AuthoredScopeSet, ScopeAdviceProvider, ScopeAdviceProviderError,
-    ScopeAdviceProviderFailureReason, ScopeAdviceProviderObservation, ScopeAdviceProviderRequest,
-    ScopeAuthoredManifestRequest, ScopeAuthorityObservation, ScopeAuthorityObserver,
-    ScopeAuthorityOutcome, ScopeAuthorityRequest, ScopeAuthorizedInvalidObservation,
-    ScopeManifestSupplier,
+    AuthoredScopeAlternative, AuthoredScopeSet, PreparedScopeAdviceAttempt, ScopeAdviceProvider,
+    ScopeAdviceProviderError, ScopeAdviceProviderFailureReason, ScopeAdviceProviderObservation,
+    ScopeAdviceProviderRequest, ScopeAuthoredManifestRequest, ScopeAuthorityObservation,
+    ScopeAuthorityObserver, ScopeAuthorityOutcome, ScopeAuthorityRequest,
+    ScopeAuthorizedInvalidObservation, ScopeManifestSupplier,
 };
 pub use service::WorkspaceService;
 

@@ -1,14 +1,16 @@
 use super::RunScopeAdvisory;
 use crate::{
-    ScopeAdviceProviderError, ScopeAdviceProviderObservation, ScopeAuthoredManifestRequest,
-    ScopeAuthorityObservation, ScopeAuthorityRequest, ScopeAuthorizedInvalidObservation,
-    ScopeManifestSupplier, StoredScopeManifestRecord,
+    PreparedScopeAdviceAttempt, ScopeAdviceProvider, ScopeAdviceProviderError,
+    ScopeAdviceProviderObservation, ScopeAuthoredManifestRequest, ScopeAuthorityObservation,
+    ScopeAuthorityRequest, ScopeAuthorizedInvalidObservation, ScopeManifestSupplier,
+    StoredScopeManifestRecord,
 };
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tect_domain::{
-    AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryDispatchOutcome, AdvisoryOpportunity,
-    AdvisoryOpportunityInput, AdvisoryOpportunityState, AdvisoryReason, AdvisoryRequestPreference,
+    AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryDispatchAuthorization,
+    AdvisoryDispatchOutcome, AdvisoryOpportunity, AdvisoryOpportunityInput,
+    AdvisoryOpportunityState, AdvisoryReason, AdvisoryRequestPreference, AdvisoryRetryBasis,
     AdvisorySendCertainty, Error, Result, ScopeConstructorManifest, WorkspaceAdvisoryConfig,
     WorkspaceAdvisoryMode,
 };
@@ -132,6 +134,82 @@ pub(super) fn validate_observation(
         return Err(Error::InputConflict);
     }
     Ok(())
+}
+
+pub(super) fn prepare_scope_advice_attempt(
+    provider: &dyn ScopeAdviceProvider,
+    request: &tect_domain::ScopeAdviceRequest,
+    config: &WorkspaceAdvisoryConfig,
+) -> std::result::Result<PreparedScopeAdviceAttempt, AdvisoryReason> {
+    let prepared = provider
+        .prepare(request)
+        .map_err(|_| AdvisoryReason::DeterministicInputInvalid)?;
+    if prepared.request() != request
+        || prepared.body_length() != prepared.body().len()
+        || prepared.body_sha256() != sha256(prepared.body())
+    {
+        return Err(AdvisoryReason::DeterministicInputInvalid);
+    }
+    let expected_profile = config
+        .provider_profile_ref
+        .as_ref()
+        .map(|value| value.id.as_str());
+    let expected_model = config
+        .model_configuration
+        .as_ref()
+        .map(|value| value.model.as_str());
+    if expected_profile != Some(prepared.profile()) || expected_model != Some(prepared.model()) {
+        return Err(AdvisoryReason::ProviderUnconfigured);
+    }
+    Ok(prepared)
+}
+
+pub(super) fn scope_dispatch_authorization(
+    prepared: &PreparedScopeAdviceAttempt,
+    dispatch_id: Uuid,
+    opportunity_id: Uuid,
+    provider: &str,
+    adapter_version: &str,
+    config: &WorkspaceAdvisoryConfig,
+    material_digest: String,
+    budget_policy_id: &str,
+) -> Result<AdvisoryDispatchAuthorization> {
+    let profile = config
+        .provider_profile_ref
+        .clone()
+        .ok_or(Error::InvalidConfiguration)?;
+    let model = config
+        .model_configuration
+        .clone()
+        .ok_or(Error::InvalidConfiguration)?;
+    let configuration_snapshot = serde_json::json!({
+        "provider_profile_ref": profile,
+        "model_configuration": model,
+        "adapter_version": adapter_version,
+        "budget_policy_id": budget_policy_id,
+        "destination": prepared.destination(),
+        "wire_version": prepared.wire_version(),
+        "request_body_length": prepared.body_length(),
+        "request_body_sha256": prepared.body_sha256(),
+    });
+    let configuration_bytes =
+        serde_json::to_vec(&configuration_snapshot).map_err(Error::invalid_arguments_from)?;
+    let authorization = AdvisoryDispatchAuthorization {
+        dispatch_id,
+        opportunity_id,
+        predecessor_dispatch_id: None,
+        attempt_number: 1,
+        retry_basis: AdvisoryRetryBasis::Initial,
+        provider: provider.into(),
+        model: model.model,
+        configuration_snapshot,
+        configuration_digest: sha256(&configuration_bytes),
+        material_digest,
+        payload_digest: prepared.body_sha256().to_owned(),
+        request_payload: prepared.body().to_vec(),
+    };
+    authorization.validate()?;
+    Ok(authorization)
 }
 
 pub(super) async fn supply_scope_manifest(

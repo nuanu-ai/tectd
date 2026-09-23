@@ -1,25 +1,25 @@
 use super::*;
 use crate::{
-    AuthoredScopeAlternative, DenyScopeBudget, DisabledScopeAdviceProvider, ScopeAdviceProvider,
-    ScopeAdviceProviderError, ScopeAdviceProviderObservation, ScopeAdviceProviderRequest,
-    ScopeAuthoredManifestRequest, ScopeAuthorityObserver, ScopeAuthorityOutcome,
-    ScopeAuthorizedInvalidObservation, ScopeBudgetPolicy, ScopeBudgetRequest,
-    ScopeManifestSupplier, UnavailableScopeManifestSupplier,
+    AuthoredScopeAlternative, DenyScopeBudget, DisabledScopeAdviceProvider,
+    PreparedScopeAdviceAttempt, ScopeAdviceProvider, ScopeAdviceProviderError,
+    ScopeAdviceProviderObservation, ScopeAdviceProviderRequest, ScopeAuthoredManifestRequest,
+    ScopeAuthorityObserver, ScopeAuthorityOutcome, ScopeAuthorizedInvalidObservation,
+    ScopeBudgetPolicy, ScopeBudgetRequest, ScopeManifestSupplier, UnavailableScopeManifestSupplier,
 };
 use async_trait::async_trait;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicUsize, Ordering},
 };
 use tect_domain::{
-    AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryDispatchOutcome, AdvisoryOpportunity,
-    AdvisoryOpportunityState, AdvisoryReason, AdvisoryRequestPreference, AdvisorySendCertainty,
-    BuildSourceAuthoredScopeManifest, ConfidenceBasisPoints, EmptyCandidateDisposition,
-    EmptyCandidateDispositionKind, FrozenScopeSource, FrozenSourceInput,
-    NormalizedScopeAdviceAnswers, ObligationCoverage, ResolvedCandidateDraft, ScopeAdviceChoice,
-    ScopeAdviceScoreBand, ScopeConstructorIdentity, ScopeDecompositionKind, SourceApplicability,
-    SourceAuthoredScopeAlternative, SourceObligation, WorkspaceAdvisoryConfig,
-    WorkspaceAdvisoryMode,
+    AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryDispatchOutcome, AdvisoryModelConfiguration,
+    AdvisoryOpportunity, AdvisoryOpportunityState, AdvisoryProviderProfileRef, AdvisoryReason,
+    AdvisoryRequestPreference, AdvisorySendCertainty, BuildSourceAuthoredScopeManifest,
+    ConfidenceBasisPoints, EmptyCandidateDisposition, EmptyCandidateDispositionKind,
+    FrozenScopeSource, FrozenSourceInput, NormalizedScopeAdviceAnswers, ObligationCoverage,
+    ResolvedCandidateDraft, ScopeAdviceChoice, ScopeAdviceScoreBand, ScopeConstructorIdentity,
+    ScopeDecompositionKind, SourceApplicability, SourceAuthoredScopeAlternative, SourceObligation,
+    WorkspaceAdvisoryConfig, WorkspaceAdvisoryMode,
 };
 
 fn no_call_config(mode: WorkspaceAdvisoryMode) -> WorkspaceAdvisoryConfig {
@@ -140,7 +140,7 @@ fn early_no_call_branch_precedes_all_external_advisory_ports() {
         "scope_authority.observe(&authority_request)",
         "supply_scope_manifest(",
         ".scope_budget",
-        ".attempt(&ScopeAdviceProviderRequest",
+        ".attempt_prepared(\n                &ScopeAdviceProviderRequest",
     ] {
         assert!(return_from_branch < source.find(port).unwrap(), "{port}");
     }
@@ -729,6 +729,7 @@ async fn production_defaults_fail_closed_without_supplier_budget_or_provider() {
 
 struct FixtureProvider {
     calls: Arc<AtomicUsize>,
+    received_body: Arc<Mutex<Option<Vec<u8>>>>,
     observation: ScopeAdviceProviderObservation,
 }
 
@@ -737,10 +738,26 @@ impl ScopeAdviceProvider for FixtureProvider {
     fn identity(&self) -> Option<(&'static str, &'static str)> {
         Some(("fixture", "v1"))
     }
-    async fn attempt(
+    fn prepare(
         &self,
-        _: &ScopeAdviceProviderRequest,
+        request: &tect_domain::ScopeAdviceRequest,
+    ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError> {
+        PreparedScopeAdviceAttempt::new(
+            request.clone(),
+            serde_json::to_vec(request).unwrap(),
+            "fixture-profile".into(),
+            "fixture-model".into(),
+            "https://fixture.invalid/advice".into(),
+            "fixture-wire/1".into(),
+        )
+    }
+    async fn attempt_prepared(
+        &self,
+        request: &ScopeAdviceProviderRequest,
+        prepared: PreparedScopeAdviceAttempt,
     ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
+        assert_eq!(prepared.request(), &request.request);
+        *self.received_body.lock().unwrap() = Some(prepared.body().to_vec());
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(self.observation.clone())
     }
@@ -749,6 +766,7 @@ impl ScopeAdviceProvider for FixtureProvider {
 #[tokio::test]
 async fn fixture_provider_returns_normalized_answers_once() {
     let calls = Arc::new(AtomicUsize::new(0));
+    let received_body = Arc::new(Mutex::new(None));
     let observation = ScopeAdviceProviderObservation {
         send_certainty: AdvisorySendCertainty::Sent,
         outcome: AdvisoryDispatchOutcome::ProviderResponse,
@@ -764,6 +782,7 @@ async fn fixture_provider_returns_normalized_answers_once() {
     };
     let provider = FixtureProvider {
         calls: calls.clone(),
+        received_body: received_body.clone(),
         observation: observation.clone(),
     };
     let request = ScopeAdviceProviderRequest {
@@ -782,8 +801,187 @@ async fn fixture_provider_returns_normalized_answers_once() {
             policy_id: "owner:fixture".into(),
         },
     };
-    assert_eq!(provider.attempt(&request).await.unwrap(), observation);
+    let prepared = provider.prepare(&request.request).unwrap();
+    let expected_body = prepared.body().to_vec();
+    let mut config = no_call_config(WorkspaceAdvisoryMode::Optional);
+    config.provider_profile_ref = Some(AdvisoryProviderProfileRef {
+        id: "fixture-profile".into(),
+    });
+    config.model_configuration = Some(AdvisoryModelConfiguration {
+        model: "fixture-model".into(),
+    });
+    let authorization = scope_dispatch_authorization(
+        &prepared,
+        request.dispatch_id,
+        Uuid::from_u128(10),
+        "fixture",
+        "v1",
+        &config,
+        "a".repeat(64),
+        "owner:fixture",
+    )
+    .unwrap();
+    assert_eq!(authorization.request_payload, expected_body);
+    assert_eq!(authorization.payload_digest, sha256(&expected_body));
+    assert_eq!(
+        provider.attempt_prepared(&request, prepared).await.unwrap(),
+        observation
+    );
+    assert_eq!(
+        *received_body.lock().unwrap(),
+        Some(authorization.request_payload)
+    );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+struct PreflightFixtureProvider {
+    profile: String,
+    model: String,
+    maximum_body_bytes: usize,
+    prepare_calls: Arc<AtomicUsize>,
+    attempt_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl ScopeAdviceProvider for PreflightFixtureProvider {
+    fn identity(&self) -> Option<(&'static str, &'static str)> {
+        Some(("fixture", "v1"))
+    }
+
+    fn prepare(
+        &self,
+        request: &tect_domain::ScopeAdviceRequest,
+    ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError> {
+        self.prepare_calls.fetch_add(1, Ordering::SeqCst);
+        let body = serde_json::to_vec(request).unwrap();
+        if body.len() > self.maximum_body_bytes {
+            return Err(ScopeAdviceProviderError::ProvenNotSent);
+        }
+        PreparedScopeAdviceAttempt::new(
+            request.clone(),
+            body,
+            self.profile.clone(),
+            self.model.clone(),
+            "https://fixture.invalid/advice".into(),
+            "fixture-wire/1".into(),
+        )
+    }
+
+    async fn attempt_prepared(
+        &self,
+        _: &ScopeAdviceProviderRequest,
+        _: PreparedScopeAdviceAttempt,
+    ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
+        self.attempt_calls.fetch_add(1, Ordering::SeqCst);
+        Err(ScopeAdviceProviderError::ProvenNotSent)
+    }
+}
+
+fn fixture_scope_request() -> tect_domain::ScopeAdviceRequest {
+    tect_domain::ScopeAdviceRequest {
+        contract: "fixture".into(),
+        source_digest: "a".repeat(64),
+        manifest_digest: "a".repeat(64),
+        eligible_set_digest: "a".repeat(64),
+        baseline_id: tect_domain::ScopeAlternativeId("a".repeat(64)),
+        alternatives: Vec::new(),
+        questions: Vec::new(),
+        digest: "a".repeat(64),
+    }
+}
+
+#[test]
+fn preflight_mismatch_and_oversize_are_auditable_no_call_reasons() {
+    let request = fixture_scope_request();
+    let mut config = no_call_config(WorkspaceAdvisoryMode::Optional);
+    config.provider_profile_ref = Some(AdvisoryProviderProfileRef {
+        id: "selected-profile".into(),
+    });
+    config.model_configuration = Some(AdvisoryModelConfiguration {
+        model: "selected-model".into(),
+    });
+
+    let mismatched = PreflightFixtureProvider {
+        profile: "other-profile".into(),
+        model: "selected-model".into(),
+        maximum_body_bytes: usize::MAX,
+        prepare_calls: Arc::new(AtomicUsize::new(0)),
+        attempt_calls: Arc::new(AtomicUsize::new(0)),
+    };
+    assert_eq!(
+        prepare_scope_advice_attempt(&mismatched, &request, &config),
+        Err(AdvisoryReason::ProviderUnconfigured)
+    );
+    assert_eq!(mismatched.prepare_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(mismatched.attempt_calls.load(Ordering::SeqCst), 0);
+
+    let mismatched_model = PreflightFixtureProvider {
+        profile: "selected-profile".into(),
+        model: "other-model".into(),
+        maximum_body_bytes: usize::MAX,
+        prepare_calls: Arc::new(AtomicUsize::new(0)),
+        attempt_calls: Arc::new(AtomicUsize::new(0)),
+    };
+    assert_eq!(
+        prepare_scope_advice_attempt(&mismatched_model, &request, &config),
+        Err(AdvisoryReason::ProviderUnconfigured)
+    );
+    assert_eq!(mismatched_model.attempt_calls.load(Ordering::SeqCst), 0);
+
+    let oversized = PreflightFixtureProvider {
+        profile: "selected-profile".into(),
+        model: "selected-model".into(),
+        maximum_body_bytes: 1,
+        prepare_calls: Arc::new(AtomicUsize::new(0)),
+        attempt_calls: Arc::new(AtomicUsize::new(0)),
+    };
+    assert_eq!(
+        prepare_scope_advice_attempt(&oversized, &request, &config),
+        Err(AdvisoryReason::DeterministicInputInvalid)
+    );
+    assert_eq!(oversized.attempt_calls.load(Ordering::SeqCst), 0);
+    assert!(tect_domain::advisory_reason_matches_state(
+        AdvisoryOpportunityState::NoCall,
+        AdvisoryReason::ProviderUnconfigured
+    ));
+    assert!(tect_domain::advisory_reason_matches_state(
+        AdvisoryOpportunityState::NoCall,
+        AdvisoryReason::DeterministicInputInvalid
+    ));
+
+    let source = include_str!("../scope_advisory_orchestration.rs");
+    let preflight = source
+        .find("let prepared_attempt = match prepare_scope_advice_attempt")
+        .unwrap();
+    let no_call_capture = source[preflight..]
+        .find("capture_advisory_opportunity(")
+        .unwrap()
+        + preflight;
+    let authorize = source
+        .find(".authorize_advisory_dispatch(&lifecycle")
+        .unwrap();
+    assert!(preflight < no_call_capture && no_call_capture < authorize);
+    assert!(source[no_call_capture..authorize].contains("AdvisoryOpportunityState::NoCall"));
+}
+
+#[test]
+fn request_key_replay_gate_precedes_wire_preparation() {
+    let source = include_str!("../scope_advisory_orchestration.rs");
+    let locked_gate = source.find("Recheck under the session lock").unwrap();
+    let request_lookup = source[locked_gate..]
+        .find("scope_advisory_manifest_by_request_key")
+        .unwrap()
+        + locked_gate;
+    let replay = source[request_lookup..]
+        .find("replay_authored_scope_advisory(")
+        .unwrap()
+        + request_lookup;
+    let prepare = source
+        .find("let prepared_attempt = match prepare_scope_advice_attempt")
+        .unwrap();
+    let send = source.find(".attempt_prepared(").unwrap();
+    assert!(locked_gate < request_lookup && request_lookup < replay);
+    assert!(replay < prepare && prepare < send);
 }
 
 #[test]
@@ -859,12 +1057,7 @@ fn score_contract_is_discrete_and_has_no_product_effect_authority() {
     let source = include_str!("../scope_advisory_orchestration.rs");
     assert!(!source.contains("scope_caller.call"));
     assert!(!source.contains("scope_verifier.verify"));
-    assert_eq!(
-        source
-            .matches(".attempt(&ScopeAdviceProviderRequest")
-            .count(),
-        1
-    );
+    assert_eq!(source.matches(".attempt_prepared(").count(), 1);
     assert!(source.contains("latency_ms: provider_observation.latency_ms"));
 }
 
@@ -1003,7 +1196,7 @@ fn replay_precedes_policy_and_provider_and_success_is_rechecked_atomically() {
     let source = include_str!("../scope_advisory_orchestration.rs");
     let replay = source.find("advisory_opportunity_by_request").unwrap();
     let policy = source.find(".scope_budget").unwrap();
-    let provider = source.find(".attempt(&ScopeAdviceProviderRequest").unwrap();
+    let provider = source.find(".attempt_prepared(").unwrap();
     let sealed = source.find(".seal_advisory_dispatch").unwrap();
     let reobserved = source[sealed..].find("scope_authority.observe").unwrap() + sealed;
     let finalized = source.find(".finalize_guarded_scope_advice").unwrap();
@@ -1026,7 +1219,7 @@ fn authored_lookup_replay_and_failure_paths_precede_external_attempts() {
         .unwrap();
     let supplier = source.find("supply_scope_manifest(").unwrap();
     assert!(digest < request_lookup && request_lookup < replay);
-    let provider = source.find(".attempt(&ScopeAdviceProviderRequest").unwrap();
+    let provider = source.find(".attempt_prepared(").unwrap();
     assert!(replay < observer && observer < supplier && replay < provider);
     let early_no_call = source.find("if let Some((reason, revision))").unwrap();
     let active_input_gate = source
@@ -1050,7 +1243,7 @@ fn authored_lookup_replay_and_failure_paths_precede_external_attempts() {
         .find("finalize_prepared_scope_advisory_without_dispatch")
         .unwrap()
         + reobserved;
-    let provider = source.find(".attempt(&ScopeAdviceProviderRequest").unwrap();
+    let provider = source.find(".attempt_prepared(").unwrap();
     assert!(authored_persist < persisted_commit);
     assert!(persisted_commit < reobserved);
     assert!(reobserved < no_call_transition && no_call_transition < provider);
@@ -1080,7 +1273,7 @@ fn authorize_staleness_and_cancelled_start_terminalize_before_provider_attempt()
         .find("advisory_opportunity_for_dispatch(workspace.id, opportunity.id)")
         .unwrap()
         + cancelled;
-    let provider = source.find(".attempt(&ScopeAdviceProviderRequest").unwrap();
+    let provider = source.find(".attempt_prepared(").unwrap();
     assert!(authorize < stale_mapping && stale_mapping < rollback && rollback < close);
     assert!(close < start && start < cancelled && cancelled < terminal_load);
     assert!(terminal_load < provider);
@@ -1108,7 +1301,7 @@ fn authored_supplier_failure_is_captured_as_no_call_before_budget_or_provider() 
         .unwrap()
         + failure;
     let budget = source.find(".scope_budget").unwrap();
-    let provider = source.find(".attempt(&ScopeAdviceProviderRequest").unwrap();
+    let provider = source.find(".attempt_prepared(").unwrap();
     assert!(supplied < failure && failure < capture);
     assert!(capture < budget && budget < provider);
 }

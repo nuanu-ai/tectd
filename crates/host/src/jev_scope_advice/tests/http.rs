@@ -149,16 +149,16 @@ async fn prepared_entity_is_the_received_entity_with_exact_digest_and_binding() 
     let request = request();
     let prepared = provider.prepare(&request).unwrap();
     let expected_body = prepared.body().to_vec();
-    let expected_digest = prepared.sha256().to_owned();
-    assert_eq!(prepared.byte_length(), expected_body.len());
+    let expected_digest = prepared.body_sha256().to_owned();
+    assert_eq!(prepared.body_length(), expected_body.len());
     assert_eq!(
         expected_digest,
         format!("{:x}", Sha256::digest(&expected_body))
     );
     assert_eq!(prepared.profile(), "fixture");
     assert_eq!(prepared.model(), "jev-1.13.0");
-    assert_eq!(prepared.wire_format(), WIRE_FORMAT);
-    assert_eq!(prepared.endpoint(), &endpoint);
+    assert_eq!(prepared.wire_version(), WIRE_FORMAT);
+    assert_eq!(prepared.destination(), endpoint.as_str());
 
     let observation = provider
         .attempt_prepared(DISPATCH_ID, prepared)
@@ -191,7 +191,7 @@ async fn prepared_digest_changes_with_model_or_content_and_mismatch_is_not_sent(
         .covered_obligation_ids
         .push("second-obligation".into());
     let changed_content = provider.prepare(&modified).unwrap();
-    assert_ne!(original.sha256(), changed_content.sha256());
+    assert_ne!(original.body_sha256(), changed_content.body_sha256());
 
     let other_model = JevScopeAdviceProvider::new(
         JevScopeAdviceConfig {
@@ -206,7 +206,7 @@ async fn prepared_digest_changes_with_model_or_content_and_mismatch_is_not_sent(
     )
     .unwrap();
     let changed_model = other_model.prepare(&request()).unwrap();
-    assert_ne!(original.sha256(), changed_model.sha256());
+    assert_ne!(original.body_sha256(), changed_model.body_sha256());
     assert_eq!(
         provider.attempt_prepared(DISPATCH_ID, changed_model).await,
         Err(ScopeAdviceProviderError::ProvenNotSent)
@@ -482,6 +482,20 @@ fn config_and_source_have_no_hidden_defaults_retries_or_credential_rendering() {
             JevScopeAdviceConfig {
                 profile: "".into(),
                 endpoint: Url::parse("https://api.typesafe.ai/v1/systemone").unwrap(),
+                model: "jev-1.13.0".into(),
+                timeout: Duration::from_secs(1),
+                maximum_request_bytes: 1,
+                maximum_response_bytes: 1,
+            },
+            "credential".into(),
+        )
+        .is_err()
+    );
+    assert!(
+        JevScopeAdviceProvider::new(
+            JevScopeAdviceConfig {
+                profile: "fixture".into(),
+                endpoint: Url::parse("https://api.typesafe.ai/v1/systemone?token=hidden").unwrap(),
                 model: "jev-1.13.0".into(),
                 timeout: Duration::from_secs(1),
                 maximum_request_bytes: 1,

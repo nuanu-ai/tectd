@@ -6,8 +6,8 @@ use reqwest::{
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tect_application::{
-    ScopeAdviceProvider, ScopeAdviceProviderError, ScopeAdviceProviderFailureReason,
-    ScopeAdviceProviderObservation, ScopeAdviceProviderRequest,
+    PreparedScopeAdviceAttempt, ScopeAdviceProvider, ScopeAdviceProviderError,
+    ScopeAdviceProviderFailureReason, ScopeAdviceProviderObservation, ScopeAdviceProviderRequest,
 };
 use tect_domain::{
     AdvisoryDispatchOutcome, AdvisorySendCertainty, Error, Result, ScopeAdviceRequest,
@@ -41,6 +41,8 @@ impl JevScopeAdviceConfig {
             || self.endpoint.cannot_be_a_base()
             || !self.endpoint.username().is_empty()
             || self.endpoint.password().is_some()
+            || self.endpoint.query().is_some()
+            || self.endpoint.fragment().is_some()
             || self.timeout.is_zero()
             || self.maximum_request_bytes == 0
             || self.maximum_response_bytes == 0
@@ -57,49 +59,6 @@ pub struct JevScopeAdviceProvider {
     config: JevScopeAdviceConfig,
     client: reqwest::Client,
     authorization: HeaderValue,
-}
-
-/// Owns the exact, immutable UTF-8 HTTP entity body and the identity against
-/// which it was prepared. No credential is retained in this value.
-pub struct PreparedJevScopeRequest {
-    body: Vec<u8>,
-    request: ScopeAdviceRequest,
-    profile: String,
-    model: String,
-    wire_format: &'static str,
-    endpoint: Url,
-    byte_length: usize,
-    sha256: String,
-}
-
-impl PreparedJevScopeRequest {
-    pub fn body(&self) -> &[u8] {
-        &self.body
-    }
-
-    pub fn byte_length(&self) -> usize {
-        self.byte_length
-    }
-
-    pub fn sha256(&self) -> &str {
-        &self.sha256
-    }
-
-    pub fn profile(&self) -> &str {
-        &self.profile
-    }
-
-    pub fn model(&self) -> &str {
-        &self.model
-    }
-
-    pub fn wire_format(&self) -> &'static str {
-        self.wire_format
-    }
-
-    pub fn endpoint(&self) -> &Url {
-        &self.endpoint
-    }
 }
 
 impl JevScopeAdviceProvider {
@@ -127,24 +86,20 @@ impl JevScopeAdviceProvider {
     pub fn prepare(
         &self,
         request: &ScopeAdviceRequest,
-    ) -> std::result::Result<PreparedJevScopeRequest, ScopeAdviceProviderError> {
+    ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError> {
         let body = wire::serialize_request(&self.config.model, request)
             .map_err(|_| ScopeAdviceProviderError::ProvenNotSent)?;
         if body.len() > self.config.maximum_request_bytes {
             return Err(ScopeAdviceProviderError::ProvenNotSent);
         }
-        let byte_length = body.len();
-        let sha256 = format!("{:x}", Sha256::digest(&body));
-        Ok(PreparedJevScopeRequest {
+        PreparedScopeAdviceAttempt::new(
+            request.clone(),
             body,
-            request: request.clone(),
-            profile: self.config.profile.clone(),
-            model: self.config.model.clone(),
-            wire_format: WIRE_FORMAT,
-            endpoint: self.config.endpoint.clone(),
-            byte_length,
-            sha256,
-        })
+            self.config.profile.clone(),
+            self.config.model.clone(),
+            self.config.endpoint.as_str().to_owned(),
+            WIRE_FORMAT.to_owned(),
+        )
     }
 
     async fn response_bytes(&self, mut response: reqwest::Response) -> BodyRead {
@@ -216,19 +171,19 @@ impl JevScopeAdviceProvider {
     pub async fn attempt_prepared(
         &self,
         dispatch_id: uuid::Uuid,
-        prepared: PreparedJevScopeRequest,
+        prepared: PreparedScopeAdviceAttempt,
     ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
-        if prepared.profile != self.config.profile
-            || prepared.model != self.config.model
-            || prepared.wire_format != WIRE_FORMAT
-            || prepared.endpoint != self.config.endpoint
-            || prepared.byte_length != prepared.body.len()
-            || prepared.byte_length > self.config.maximum_request_bytes
-            || prepared.sha256 != format!("{:x}", Sha256::digest(&prepared.body))
+        if prepared.profile() != self.config.profile
+            || prepared.model() != self.config.model
+            || prepared.wire_version() != WIRE_FORMAT
+            || prepared.destination() != self.config.endpoint.as_str()
+            || prepared.body_length() != prepared.body().len()
+            || prepared.body_length() > self.config.maximum_request_bytes
+            || prepared.body_sha256() != format!("{:x}", Sha256::digest(prepared.body()))
         {
             return Err(ScopeAdviceProviderError::ProvenNotSent);
         }
-        let PreparedJevScopeRequest { body, request, .. } = prepared;
+        let (request, body, _, _, _, _, _, _) = prepared.into_parts();
         let started = std::time::Instant::now();
         let response = self
             .client
@@ -326,6 +281,7 @@ impl JevScopeAdviceProvider {
         })
     }
 
+    #[cfg(test)]
     async fn attempt_request(
         &self,
         dispatch_id: uuid::Uuid,
@@ -355,11 +311,21 @@ impl ScopeAdviceProvider for JevScopeAdviceProvider {
         Some(("jev-system-one", "1"))
     }
 
-    async fn attempt(
+    fn prepare(
+        &self,
+        request: &ScopeAdviceRequest,
+    ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError> {
+        JevScopeAdviceProvider::prepare(self, request)
+    }
+
+    async fn attempt_prepared(
         &self,
         request: &ScopeAdviceProviderRequest,
+        prepared: PreparedScopeAdviceAttempt,
     ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
-        self.attempt_request(request.dispatch_id, &request.request)
-            .await
+        if prepared.request() != &request.request {
+            return Err(ScopeAdviceProviderError::ProvenNotSent);
+        }
+        JevScopeAdviceProvider::attempt_prepared(self, request.dispatch_id, prepared).await
     }
 }

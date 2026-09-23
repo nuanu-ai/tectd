@@ -9,11 +9,10 @@ mod helpers;
 use helpers::*;
 use serde::{Deserialize, Serialize};
 use tect_domain::{
-    AdvisoryDispatchAuthorization, AdvisoryDispatchOutcome, AdvisoryDispatchSeal,
-    AdvisoryDispatchState, AdvisoryOpportunity, AdvisoryOpportunityState, AdvisoryPolicyInput,
-    AdvisoryReason, AdvisoryRequestPreference, AdvisoryRetryBasis, AdvisorySendCertainty, Error,
-    GuardedScopeAdvice, RequestContext, Result, ScopeAdviceRequest, ScopeDispositionRequest,
-    ScopeDispositionRevision, assess_advisory_policy, guard_scope_advice,
+    AdvisoryDispatchOutcome, AdvisoryDispatchSeal, AdvisoryDispatchState, AdvisoryOpportunity,
+    AdvisoryOpportunityState, AdvisoryPolicyInput, AdvisoryReason, AdvisoryRequestPreference,
+    AdvisorySendCertainty, Error, GuardedScopeAdvice, RequestContext, Result, ScopeAdviceRequest,
+    ScopeDispositionRequest, ScopeDispositionRevision, assess_advisory_policy, guard_scope_advice,
 };
 use uuid::Uuid;
 
@@ -353,6 +352,7 @@ impl WorkspaceService {
             });
         };
 
+        let typed_request = ScopeAdviceRequest::from_manifest(&Sha256ScopeDigest, &manifest)?;
         let (mut prepare, fresh_identity) =
             self.authorized(context, TransactionMode::ReadWrite).await?;
         prepare
@@ -370,23 +370,10 @@ impl WorkspaceService {
         {
             return Err(Error::StaleRevision);
         }
-        let input = scope_opportunity_input(
-            request,
-            &config,
-            identity.principal_id,
-            session.id,
-            manifest.whole_set_digest.clone(),
-            AdvisoryOpportunityState::Prepared,
-            AdvisoryReason::DispatchAuthorized,
-            Some(manifest.source.candidate_set_revision),
-        );
-        let opportunity = prepare
-            .capture_advisory_opportunity(workspace.id, &input)
-            .await?;
+
+        // Recheck under the session lock before doing even pure wire
+        // preparation. A completed replay must never serialize or send again.
         if let Some(authored_request_digest) = authored_request_digest.as_deref() {
-            // Close the read/resolve/write race: a concurrent identical call
-            // may have committed the same request key while this request was
-            // resolving. Replay it without authorizing a second provider send.
             if let Some(stored) = prepare
                 .scope_advisory_manifest_by_request_key(
                     workspace.id,
@@ -394,9 +381,12 @@ impl WorkspaceService {
                 )
                 .await?
             {
+                let existing = prepare
+                    .advisory_opportunity_by_request(workspace.id, &request.request_id.to_string())
+                    .await?;
                 let opportunity = validate_authored_replay_binding(
                     &stored,
-                    Some(&opportunity),
+                    existing.as_ref(),
                     request,
                     &config,
                     identity.principal_id,
@@ -414,7 +404,72 @@ impl WorkspaceService {
                     )
                     .await;
             }
+            if let Some(existing) = prepare
+                .advisory_opportunity_by_request(workspace.id, &request.request_id.to_string())
+                .await?
+            {
+                let opportunity = validate_authored_no_call_replay(
+                    Some(&existing),
+                    request,
+                    &config,
+                    identity.principal_id,
+                    session.id,
+                )?
+                .clone();
+                prepare.commit().await?;
+                return Ok(ScopeAdvisoryOutcome {
+                    opportunity,
+                    advice: None,
+                });
+            }
         }
+
+        let prepared_attempt = match prepare_scope_advice_attempt(
+            self.scope_advice_provider.as_ref(),
+            &typed_request,
+            &config,
+        ) {
+            Ok(value) => value,
+            Err(reason) => {
+                let material_digest = no_call_digest(request, config.revision, reason)?;
+                let revision = (reason != AdvisoryReason::DeterministicInputInvalid)
+                    .then_some(manifest.source.candidate_set_revision);
+                let opportunity = prepare
+                    .capture_advisory_opportunity(
+                        workspace.id,
+                        &scope_opportunity_input(
+                            request,
+                            &config,
+                            identity.principal_id,
+                            session.id,
+                            material_digest,
+                            AdvisoryOpportunityState::NoCall,
+                            reason,
+                            revision,
+                        ),
+                    )
+                    .await?;
+                prepare.commit().await?;
+                return Ok(ScopeAdvisoryOutcome {
+                    opportunity,
+                    advice: None,
+                });
+            }
+        };
+
+        let input = scope_opportunity_input(
+            request,
+            &config,
+            identity.principal_id,
+            session.id,
+            manifest.whole_set_digest.clone(),
+            AdvisoryOpportunityState::Prepared,
+            AdvisoryReason::DispatchAuthorized,
+            Some(manifest.source.candidate_set_revision),
+        );
+        let opportunity = prepare
+            .capture_advisory_opportunity(workspace.id, &input)
+            .await?;
         let manifest_record = ScopeManifestRecord {
             opportunity_id: opportunity.id,
             candidate_set_id: request.candidate_set_id,
@@ -498,44 +553,21 @@ impl WorkspaceService {
             recheck.commit().await?;
         }
 
-        let typed_request = ScopeAdviceRequest::from_manifest(&Sha256ScopeDigest, &manifest)?;
-        let payload = serde_json::to_vec(&typed_request).map_err(Error::invalid_arguments_from)?;
         let dispatch_id = Uuid::new_v4();
         let (provider_name, adapter_version) = self
             .scope_advice_provider
             .identity()
             .ok_or(Error::TransportUnavailable)?;
-        let profile = config
-            .provider_profile_ref
-            .clone()
-            .ok_or(Error::InvalidConfiguration)?;
-        let model = config
-            .model_configuration
-            .clone()
-            .ok_or(Error::InvalidConfiguration)?;
-        let configuration_snapshot = serde_json::json!({
-            "provider_profile_ref": profile,
-            "model_configuration": model,
-            "adapter_version": adapter_version,
-            "budget_policy_id": policy.policy_id,
-        });
-        let configuration_bytes =
-            serde_json::to_vec(&configuration_snapshot).map_err(Error::invalid_arguments_from)?;
-        let authorization = AdvisoryDispatchAuthorization {
+        let authorization = scope_dispatch_authorization(
+            &prepared_attempt,
             dispatch_id,
-            opportunity_id: opportunity.id,
-            predecessor_dispatch_id: None,
-            attempt_number: 1,
-            retry_basis: AdvisoryRetryBasis::Initial,
-            provider: provider_name.into(),
-            model: model.model,
-            configuration_snapshot,
-            configuration_digest: sha256(&configuration_bytes),
-            material_digest: opportunity.material_digest.clone(),
-            payload_digest: sha256(&payload),
-            request_payload: payload,
-        };
-        authorization.validate()?;
+            opportunity.id,
+            provider_name,
+            adapter_version,
+            &config,
+            opportunity.material_digest.clone(),
+            &policy.policy_id,
+        )?;
         let lifecycle = AdvisoryLifecycleCapability::internal();
         let (mut authorize, _, _) = self
             .scope_transaction(context, TransactionMode::ReadWrite)
@@ -605,11 +637,14 @@ impl WorkspaceService {
 
         let mut provider_observation = self
             .scope_advice_provider
-            .attempt(&ScopeAdviceProviderRequest {
-                dispatch_id,
-                request: typed_request.clone(),
-                budget_policy: policy,
-            })
+            .attempt_prepared(
+                &ScopeAdviceProviderRequest {
+                    dispatch_id,
+                    request: typed_request.clone(),
+                    budget_policy: policy,
+                },
+                prepared_attempt,
+            )
             .await
             .map(normalize_provider_success)
             .unwrap_or_else(provider_error_observation);
