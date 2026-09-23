@@ -11,9 +11,15 @@ impl WorkspaceService {
         let (mut tx, workspace, session) = self
             .candidate_transaction(context, TransactionMode::ReadWrite)
             .await?;
+        let principal = tx.session_principal(session.id).await?;
         let receipt = tect_domain::CandidateReceiptRequest::SaveDraft(request.clone());
-        if let Some(mut stored) = tx.candidate_receipt(workspace.id, &receipt).await? {
-            let principal = tx.session_principal(session.id).await?;
+        let replay = if request.selected_advisory.is_some() {
+            tx.selected_candidate_receipt(workspace.id, principal, session.id, request)
+                .await?
+        } else {
+            tx.candidate_receipt(workspace.id, &receipt).await?
+        };
+        if let Some(mut stored) = replay {
             stored.context.planning_knowledge = tx
                 .planning_consumption_status(
                     workspace.id,
@@ -44,7 +50,6 @@ impl WorkspaceService {
             guidance,
         )
         .await?;
-        let principal = tx.session_principal(session.id).await?;
         let consumed = tx
             .require_planning_knowledge(
                 workspace.id,
@@ -54,7 +59,12 @@ impl WorkspaceService {
                 request.consumed_knowledge.as_ref(),
             )
             .await?;
-        let mut stored = tx.save_candidate_draft(workspace.id, request).await?;
+        let mut stored = if request.selected_advisory.is_some() {
+            tx.save_selected_candidate_draft(workspace.id, principal, session.id, request)
+                .await?
+        } else {
+            tx.save_candidate_draft(workspace.id, request).await?
+        };
         if let Some(manifest) = &consumed {
             tx.register_planning_consumption(
                 workspace.id,

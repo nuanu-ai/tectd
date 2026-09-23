@@ -15,6 +15,9 @@ async fn persist_advice(
     .await?
     .ok_or(Error::NotFound)?;
     validate_guarded_advice_binding(&Sha256ScopeDigest, &manifest, &record.advice)?;
+    if record.advice.opportunity_id != Some(record.opportunity_id) {
+        return Err(Error::InputConflict);
+    }
     require_current_opportunity_config(
         tx,
         tenant,
@@ -93,6 +96,16 @@ async fn cas_disposition(
     workspace: Uuid,
     record: ScopeDispositionRecord,
 ) -> Result<ScopeDispositionRevision> {
+    // Request IDs are unique across the workspace, including across different advice IDs.
+    // Serialize replay checks before the advice-specific revision lock.
+    lock_scope_key(
+        tx,
+        tenant,
+        workspace,
+        "disposition-request",
+        record.request.request_id,
+    )
+    .await?;
     lock_scope_key(
         tx,
         tenant,

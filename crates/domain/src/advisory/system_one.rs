@@ -5,6 +5,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
+use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -197,6 +198,8 @@ pub struct GuardedScopeAdviceItem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuardedScopeAdvice {
     pub id: ScopeAdviceId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opportunity_id: Option<Uuid>,
     pub request_digest: String,
     pub source_digest: String,
     pub manifest_digest: String,
@@ -206,12 +209,31 @@ pub struct GuardedScopeAdvice {
     pub ranked_ids: Vec<ScopeAlternativeId>,
 }
 
+impl GuardedScopeAdvice {
+    pub fn content_digest(&self, digest: &impl ScopeDigest) -> Result<String> {
+        canonical_digest(
+            digest,
+            "tect.guarded-scope-advice/1",
+            &(
+                &self.request_digest,
+                &self.manifest_digest,
+                &self.eligible_set_digest,
+                &self.normalized_answers_digest,
+            ),
+        )
+    }
+}
+
 pub fn guard_scope_advice(
     digest: &impl ScopeDigest,
+    opportunity_id: Uuid,
     manifest: &ScopeConstructorManifest,
     request: &ScopeAdviceRequest,
     normalized: &NormalizedScopeAdviceAnswers,
 ) -> Result<GuardedScopeAdvice> {
+    if opportunity_id.is_nil() {
+        return Err(Error::InvalidArguments);
+    }
     request.validate(digest, manifest)?;
     let expected = manifest
         .emitted
@@ -238,7 +260,7 @@ pub fn guard_scope_advice(
         "tect.normalized-scope-advice-answers/1",
         &canonical_answers,
     )?;
-    let id = ScopeAdviceId(canonical_digest(
+    let content_digest = canonical_digest(
         digest,
         "tect.guarded-scope-advice/1",
         &(
@@ -247,6 +269,11 @@ pub fn guard_scope_advice(
             &manifest.eligible_set_digest,
             &normalized_answers_digest,
         ),
+    )?;
+    let id = ScopeAdviceId(canonical_digest(
+        digest,
+        "tect.guarded-scope-advice-occurrence/1",
+        &(opportunity_id, &content_digest),
     )?);
     let mut items = canonical_answers
         .into_iter()
@@ -271,6 +298,7 @@ pub fn guard_scope_advice(
         .collect();
     Ok(GuardedScopeAdvice {
         id,
+        opportunity_id: Some(opportunity_id),
         request_digest: request.digest.clone(),
         source_digest: manifest.source.digest.clone(),
         manifest_digest: manifest.whole_set_digest.clone(),
@@ -300,7 +328,18 @@ pub fn validate_guarded_advice_binding(
             })
             .collect(),
     };
-    if advice != &guard_scope_advice(digest, manifest, &request, &normalized)? {
+    let mut expected = guard_scope_advice(
+        digest,
+        advice.opportunity_id.unwrap_or(Uuid::from_u128(1)),
+        manifest,
+        &request,
+        &normalized,
+    )?;
+    if advice.opportunity_id.is_none() {
+        expected.id = ScopeAdviceId(expected.content_digest(digest)?);
+        expected.opportunity_id = None;
+    }
+    if advice != &expected {
         return Err(Error::InputConflict);
     }
     Ok(())

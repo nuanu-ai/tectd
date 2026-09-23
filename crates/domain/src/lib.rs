@@ -118,7 +118,7 @@ pub use scope_candidate_draft::{
     EmptyCandidateDisposition, EmptyCandidateDispositionKind, EvidenceDraft, EvidenceEntity,
     EvidenceKind, ProtectedChangeDisposition, ProtectedChangeDraft, ProtectedChangeEntity,
     ProtectedChangeReview, ResolvedCandidateDraft, ReviewCandidateSet, ReviewVerdict,
-    SaveCandidateDraft, ScopeCandidateDraft, ScopeCandidateReview,
+    SaveCandidateDraft, ScopeCandidateDraft, ScopeCandidateReview, SelectedScopeAdvisory,
 };
 pub use scope_candidates::{
     BeginCandidateSet, BeginCandidateSetOutcome, CandidateBoundary, CandidateContext,

@@ -14,7 +14,9 @@ mod write_tests;
 pub(crate) use begin::{ensure, replay as begin_replay};
 pub(crate) use fragment::fragment;
 pub(crate) use history::{historical, history};
-pub(crate) use save::{record_input, refresh, replay, save_draft, save_review};
+pub(crate) use save::{
+    record_input, refresh, replay, save_draft, save_draft_with_material, save_review,
+};
 
 use crate::storage_error;
 use sqlx::{Postgres, Transaction};

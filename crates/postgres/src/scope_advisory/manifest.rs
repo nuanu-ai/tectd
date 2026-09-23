@@ -144,7 +144,7 @@ async fn require_frozen_authority(
          JOIN scope_candidate_snapshots s \
            ON (s.tenant_id,s.workspace_id,s.candidate_set_id,s.id)=\
               (c.tenant_id,c.workspace_id,c.id,c.current_snapshot_id) \
-         WHERE c.tenant_id=$1 AND c.workspace_id=$2 AND c.id=$3 FOR UPDATE OF c",
+         WHERE c.tenant_id=$1 AND c.workspace_id=$2 AND c.id=$3 FOR UPDATE OF c,p",
     )
     .bind(tenant)
     .bind(workspace)

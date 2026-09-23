@@ -25,7 +25,7 @@ fn source_authored_identity() -> ScopeConstructorIdentity {
     }
 }
 
-fn authored_seed(
+pub(crate) fn authored_seed(
     tenant: Uuid,
     workspace: Uuid,
     source: &FrozenScopeSource,

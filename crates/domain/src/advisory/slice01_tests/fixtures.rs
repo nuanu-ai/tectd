@@ -186,6 +186,7 @@ pub(super) fn answers(
 pub(super) fn guarded(manifest: &ScopeConstructorManifest) -> GuardedScopeAdvice {
     guard_scope_advice(
         &digest(),
+        uuid::Uuid::from_u128(200),
         manifest,
         &ScopeAdviceRequest::from_manifest(&digest(), manifest).unwrap(),
         &answers(

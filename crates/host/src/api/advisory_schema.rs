@@ -37,7 +37,7 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
             "scope.advisory.disposition",
             "scope_advisory_disposition",
             "Explicitly accept one stored Scope alternative or reject all stored advice alternatives.",
-            "Requires the original authenticated session, exact opportunity, candidate set and guarded advice IDs, the current disposition revision, and one item for every eligible alternative. Unknown, duplicate or non-manifest IDs fail validation.",
+            "Requires the original authenticated session, exact opportunity, candidate set and guarded advice IDs, the current disposition revision, and one item for every eligible alternative. Accept selects one eligible alternative; reject_all selects none; supersede_with_deterministic_choice selects the manifest baseline. Unknown, duplicate or non-manifest IDs fail validation.",
             "Persists an audited disposition through compare-and-set. It does not authorize a caller, mutate Scope, or contact Jev.",
             "Repeat an identical request_id and payload for replay. A changed payload conflicts; a competing expected revision is stale.",
             scope_advisory_disposition_schema(),
@@ -173,7 +173,7 @@ fn scope_advisory_disposition_schema() -> Value {
             "request_id":uuid(),
             "advice_id":digest,
             "expected_revision":{"type":"integer","minimum":0},
-            "action":{"type":"string","enum":["accept","reject_all"]},
+            "action":{"type":"string","enum":["accept","reject_all","supersede_with_deterministic_choice"]},
             "selected_id":digest,
             "items":{"type":"array","minItems":1,"maxItems":100,"items":object_schema(json!({"alternative_id":digest,"state":{"type":"string","enum":["selected","not_selected"]}}),json!(["alternative_id","state"]))},
             "rationale":{"type":"string","minLength":1,"maxLength":4096}

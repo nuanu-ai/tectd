@@ -712,7 +712,14 @@ impl WorkspaceService {
             && provider_observation.response_payload.is_some()
         {
             provider_observation.answers.as_ref().and_then(|answers| {
-                guard_scope_advice(&Sha256ScopeDigest, &manifest, &typed_request, answers).ok()
+                guard_scope_advice(
+                    &Sha256ScopeDigest,
+                    opportunity.id,
+                    &manifest,
+                    &typed_request,
+                    answers,
+                )
+                .ok()
             })
         } else {
             None

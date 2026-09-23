@@ -17,6 +17,7 @@ include!("scope_advisory/manifest.rs");
 include!("scope_advisory/authority.rs");
 include!("scope_advisory/authored_supplier.rs");
 include!("scope_advisory/decisions.rs");
+include!("scope_advisory/caller_save.rs");
 include!("scope_advisory/finalize.rs");
 include!("scope_advisory/store.rs");
 

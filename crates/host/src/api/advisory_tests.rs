@@ -75,7 +75,11 @@ fn public_disposition_schema_is_command_only_and_requires_cas_binding() {
     assert_eq!(route.schema["additionalProperties"], false);
     assert_eq!(
         route.schema["properties"]["action"]["enum"],
-        json!(["accept", "reject_all"])
+        json!([
+            "accept",
+            "reject_all",
+            "supersede_with_deterministic_choice"
+        ])
     );
     for field in [
         "opportunity_id",
@@ -97,6 +101,13 @@ fn public_disposition_schema_is_command_only_and_requires_cas_binding() {
     }
     let valid = route.example.clone();
     assert!(decode_public_call("command", json!({"route":route.route,"params":valid})).is_ok());
+    let mut superseded = route.example.clone();
+    superseded["action"] = json!("supersede_with_deterministic_choice");
+    superseded["selected_id"] = superseded["items"][0]["alternative_id"].clone();
+    superseded["items"][0]["state"] = json!("selected");
+    assert!(
+        decode_public_call("command", json!({"route":route.route,"params":superseded})).is_ok()
+    );
     let mut forged = route.example.clone();
     forged["actor_id"] = json!(uuid::Uuid::new_v4());
     assert!(decode_public_call("command", json!({"route":route.route,"params":forged})).is_err());

@@ -145,7 +145,8 @@ async fn load_advice(
         .await?
         .ok_or(Error::StorageUnavailable)?;
     validate_guarded_advice_binding(&Sha256ScopeDigest, &manifest, &advice)?;
-    if advice.id.0 != row.advice_id
+    if advice.opportunity_id.is_some_and(|id| id != opportunity)
+        || advice.id.0 != row.advice_id
         || advice.source_digest != row.source_digest
         || advice.manifest_digest != row.manifest_digest
         || advice.eligible_set_digest != row.eligible_set_digest

@@ -28,6 +28,24 @@ impl ScopeCandidateStore for PgUnitOfWork {
         let tenant_id = self.tenant_id()?;
         scope_candidates::replay(self.transaction()?, tenant_id, workspace_id, request).await
     }
+    async fn selected_candidate_receipt(
+        &mut self,
+        workspace_id: Uuid,
+        actor_id: Uuid,
+        session_id: Uuid,
+        request: &SaveCandidateDraft,
+    ) -> Result<Option<StoredCandidateContext>> {
+        let tenant_id = self.tenant_id()?;
+        crate::scope_advisory::selected_candidate_receipt(
+            self.transaction()?,
+            tenant_id,
+            workspace_id,
+            actor_id,
+            session_id,
+            request,
+        )
+        .await
+    }
     async fn ensure_candidate_set(
         &mut self,
         workspace_id: Uuid,
@@ -192,8 +210,30 @@ impl ScopeCandidateStore for PgUnitOfWork {
         workspace_id: Uuid,
         request: &SaveCandidateDraft,
     ) -> Result<StoredCandidateContext> {
+        if request.selected_advisory.is_some() {
+            return Err(tect_domain::Error::InvalidArguments);
+        }
         let tenant_id = self.tenant_id()?;
         scope_candidates::save_draft(self.transaction()?, tenant_id, workspace_id, request).await
+    }
+
+    async fn save_selected_candidate_draft(
+        &mut self,
+        workspace_id: Uuid,
+        actor_id: Uuid,
+        session_id: Uuid,
+        request: &SaveCandidateDraft,
+    ) -> Result<StoredCandidateContext> {
+        let tenant_id = self.tenant_id()?;
+        crate::scope_advisory::save_selected_candidate_draft(
+            self.transaction()?,
+            tenant_id,
+            workspace_id,
+            actor_id,
+            session_id,
+            request,
+        )
+        .await
     }
 
     async fn save_candidate_review(

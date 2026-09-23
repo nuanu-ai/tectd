@@ -178,6 +178,7 @@ fn preservation_rechecks_source_and_set_but_grants_no_effect_authority() {
         ScopeAdviceRequest::from_manifest(&digest(), &observation.manifest).unwrap();
     observation.advice_id = guard_scope_advice(
         &digest(),
+        advice.opportunity_id.unwrap(),
         &observation.manifest,
         &current_request,
         &super::fixtures::answers(

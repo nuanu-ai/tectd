@@ -200,6 +200,17 @@ pub struct SaveCandidateDraft {
     pub draft: ScopeCandidateDraft,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_knowledge: Option<crate::PlanningManifestGuard>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_advisory: Option<SelectedScopeAdvisory>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectedScopeAdvisory {
+    pub opportunity_id: Uuid,
+    pub disposition_id: Uuid,
+    pub selected_id: crate::ScopeAlternativeId,
+    pub alternative_key: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

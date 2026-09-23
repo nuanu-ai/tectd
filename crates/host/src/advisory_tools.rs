@@ -197,10 +197,6 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<AdvisoryInvocation> 
                 || arguments.candidate_set_id.is_nil()
                 || arguments.request_id.is_nil()
                 || arguments.expected_revision < 0
-                || !matches!(
-                    arguments.action,
-                    ScopeDispositionAction::Accept | ScopeDispositionAction::RejectAll
-                )
             {
                 return Err(Error::InvalidArguments);
             }
@@ -500,13 +496,28 @@ mod tests {
             ("candidate_set_id", json!(uuid::Uuid::nil())),
             ("request_id", json!(uuid::Uuid::nil())),
             ("expected_revision", json!(-1)),
-            ("action", json!("supersede_with_deterministic_choice")),
+            ("action", json!("unknown")),
             ("advice_id", json!("unknown")),
         ] {
             let mut changed = request.clone();
             changed[field] = value;
             assert!(parse("scope_advisory_disposition", changed).is_err());
         }
+        let mut superseded = request;
+        superseded["action"] = json!("supersede_with_deterministic_choice");
+        superseded["selected_id"] = json!(alternative);
+        superseded["items"][0]["state"] = json!("selected");
+        let Ok(AdvisoryInvocation::ScopeDisposition {
+            request: parsed, ..
+        }) = parse("scope_advisory_disposition", superseded)
+        else {
+            panic!("valid deterministic supersession rejected")
+        };
+        assert_eq!(
+            parsed.action,
+            ScopeDispositionAction::SupersedeWithDeterministicChoice
+        );
+        assert_eq!(parsed.selected_id.unwrap().0, alternative);
     }
 
     #[test]

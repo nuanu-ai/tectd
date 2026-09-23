@@ -266,6 +266,15 @@ pub(super) fn save() -> Value {
                     "input_cursor":{"type":"integer","minimum":0},
                     "request_id":uuid(),
                     "consumed_knowledge":super::planning_manifest_guard(),
+                    "selected_advisory":object_schema(
+                        json!({
+                            "opportunity_id":uuid(),
+                            "disposition_id":uuid(),
+                            "selected_id":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                            "alternative_key":{"type":"string","minLength":1,"maxLength":64}
+                        }),
+                        json!(["opportunity_id","disposition_id","selected_id","alternative_key"])
+                    ),
                     "draft":draft
                 }),
                 json!(["kind","candidate_set_id","revision","snapshot_id","input_cursor","request_id","draft"])
