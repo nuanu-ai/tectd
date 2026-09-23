@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 use std::collections::HashSet;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 use tect_domain::{Error, HostAuth, Result, validate_setup_path};
@@ -187,9 +187,11 @@ async fn run_database_command(admin_url: &str, command: Command) -> Result<()> {
             out,
         } => {
             preflight_output(&out)?;
-            let enrollment =
-                tect_postgres::admin::enroll_verifier(&pool, tenant, workspace).await?;
-            write_auth_file(&out, &enrollment.auth)?;
+            let pending =
+                tect_postgres::admin::prepare_verifier_enrollment(&pool, tenant, workspace).await?;
+            let published = publish_verifier_auth_file(&out, pending.auth())?;
+            let enrollment = pending.commit().await?;
+            published.retain();
             println!(
                 "enrolled verifier host {} tenant {} principal {} workspace {}; auth written to {}",
                 enrollment.auth.host_id,
@@ -392,6 +394,98 @@ fn write_auth_file(path: &Path, auth: &HostAuth) -> Result<()> {
         let _ = std::fs::remove_file(&temporary);
     }
     result
+}
+
+/// Removes only the inode created by this invocation if an error occurs.
+struct PublishedAuthFile {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+    armed: bool,
+}
+
+impl PublishedAuthFile {
+    fn new(path: PathBuf, file: &File) -> Result<Self> {
+        let metadata = file.metadata().map_err(|_| Error::InvalidConfiguration)?;
+        Ok(Self {
+            path,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            armed: true,
+        })
+    }
+
+    fn same_inode(path: PathBuf, existing: &Self) -> Self {
+        Self {
+            path,
+            device: existing.device,
+            inode: existing.inode,
+            armed: true,
+        }
+    }
+
+    fn remove(&mut self) -> Result<()> {
+        if !self.armed {
+            return Ok(());
+        }
+        let metadata =
+            std::fs::symlink_metadata(&self.path).map_err(|_| Error::InvalidConfiguration)?;
+        if metadata.dev() != self.device || metadata.ino() != self.inode {
+            return Err(Error::InvalidConfiguration);
+        }
+        std::fs::remove_file(&self.path).map_err(|_| Error::InvalidConfiguration)?;
+        self.armed = false;
+        Ok(())
+    }
+
+    fn retain(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PublishedAuthFile {
+    fn drop(&mut self) {
+        let _ = self.remove();
+    }
+}
+
+fn publish_verifier_auth_file(path: &Path, auth: &HostAuth) -> Result<PublishedAuthFile> {
+    preflight_output(path)?;
+    let parent = path.parent().ok_or(Error::InvalidConfiguration)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or(Error::InvalidConfiguration)?;
+    let temporary = parent.join(format!(".{file_name}.{}.tmp", Uuid::new_v4()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&temporary)
+        .map_err(|_| Error::InvalidConfiguration)?;
+    let mut temporary_guard = match PublishedAuthFile::new(temporary.clone(), &file) {
+        Ok(guard) => guard,
+        Err(error) => {
+            let _ = std::fs::remove_file(temporary);
+            return Err(error);
+        }
+    };
+    let mut contents = serde_json::to_vec_pretty(auth).map_err(|_| Error::InvalidConfiguration)?;
+    contents.push(b'\n');
+    file.write_all(&contents)
+        .and_then(|()| file.sync_all())
+        .map_err(|_| Error::InvalidConfiguration)?;
+    std::fs::hard_link(&temporary_guard.path, path).map_err(|_| Error::InvalidConfiguration)?;
+    let destination_guard = PublishedAuthFile::same_inode(path.to_path_buf(), &temporary_guard);
+    File::open(path)
+        .and_then(|published| published.sync_all())
+        .and_then(|()| File::open(parent)?.sync_all())
+        .map_err(|_| Error::InvalidConfiguration)?;
+    temporary_guard.remove()?;
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| Error::InvalidConfiguration)?;
+    Ok(destination_guard)
 }
 
 fn write_and_link(temporary: &Path, destination: &Path, auth: &HostAuth) -> Result<()> {

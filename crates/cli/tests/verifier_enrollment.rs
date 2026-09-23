@@ -15,6 +15,20 @@ fn context(auth: &tect_domain::HostAuth, key: &str) -> RequestContext {
     }
 }
 
+async fn verifier_counts(pool: &PgPool, tenant_id: Uuid) -> (i64, i64, i64) {
+    sqlx::query_as(
+        "SELECT (SELECT count(*) FROM principals WHERE tenant_id=$1 AND role='verifier'), \
+                (SELECT count(*) FROM hosts h JOIN principals p ON p.id=h.principal_id \
+                 WHERE h.tenant_id=$1 AND p.role='verifier'), \
+                (SELECT count(*) FROM memberships m JOIN principals p ON p.id=m.principal_id \
+                 WHERE m.tenant_id=$1 AND p.role='verifier')",
+    )
+    .bind(tenant_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
 #[tokio::test]
 async fn verifier_enrollment_is_distinct_pregranted_and_cannot_open_owner_routes() {
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").expect("TECT_TEST_ADMIN_URL required");
@@ -144,6 +158,32 @@ async fn verifier_enrollment_is_distinct_pregranted_and_cannot_open_owner_routes
             .await,
         Err(Error::Forbidden)
     );
+
+    let counts_before = verifier_counts(&pool, owner.tenant_id).await;
+    let original = fs::read(&auth_path).unwrap();
+    let collision = tokio::process::Command::new(env!("CARGO_BIN_EXE_tect-admin"))
+        .args([
+            "enroll-verifier",
+            "--tenant",
+            &owner.tenant_id.to_string(),
+            "--workspace",
+            &workspace_id.to_string(),
+            "--out",
+            auth_path.to_str().unwrap(),
+        ])
+        .env("TECT_ADMIN_DATABASE_URL", &admin_url)
+        .output()
+        .await
+        .unwrap();
+    assert!(!collision.status.success());
+    assert_eq!(fs::read(&auth_path).unwrap(), original);
+    assert_eq!(verifier_counts(&pool, owner.tenant_id).await, counts_before);
+    let pending = admin::prepare_verifier_enrollment(&pool, owner.tenant_id, workspace_id)
+        .await
+        .unwrap();
+    assert_eq!(verifier_counts(&pool, owner.tenant_id).await, counts_before);
+    drop(pending);
+    assert_eq!(verifier_counts(&pool, owner.tenant_id).await, counts_before);
 
     let missing = admin::enroll_verifier(&pool, owner.tenant_id, Uuid::new_v4()).await;
     assert!(matches!(missing, Err(Error::NotFound)));

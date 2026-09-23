@@ -1,7 +1,7 @@
 use super::{Enrollment, generate_credential, hex_lower};
 use crate::storage_error;
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use tect_domain::{Error, HostAuth, Result};
 use uuid::Uuid;
 
@@ -12,6 +12,34 @@ pub async fn enroll_verifier(
     tenant_id: Uuid,
     workspace_id: Uuid,
 ) -> Result<Enrollment> {
+    prepare_verifier_enrollment(pool, tenant_id, workspace_id)
+        .await?
+        .commit()
+        .await
+}
+
+/// An uncommitted enrollment. Dropping it rolls back all database records.
+pub struct PendingVerifierEnrollment {
+    transaction: Transaction<'static, Postgres>,
+    enrollment: Enrollment,
+}
+
+impl PendingVerifierEnrollment {
+    pub fn auth(&self) -> &HostAuth {
+        &self.enrollment.auth
+    }
+
+    pub async fn commit(self) -> Result<Enrollment> {
+        self.transaction.commit().await.map_err(storage_error)?;
+        Ok(self.enrollment)
+    }
+}
+
+pub async fn prepare_verifier_enrollment(
+    pool: &PgPool,
+    tenant_id: Uuid,
+    workspace_id: Uuid,
+) -> Result<PendingVerifierEnrollment> {
     if tenant_id.is_nil() || workspace_id.is_nil() {
         return Err(Error::InvalidArguments);
     }
@@ -57,13 +85,15 @@ pub async fn enroll_verifier(
     .execute(&mut *transaction)
     .await
     .map_err(storage_error)?;
-    transaction.commit().await.map_err(storage_error)?;
-    Ok(Enrollment {
-        auth: HostAuth {
-            host_id,
-            credential,
+    Ok(PendingVerifierEnrollment {
+        transaction,
+        enrollment: Enrollment {
+            auth: HostAuth {
+                host_id,
+                credential,
+            },
+            tenant_id,
+            principal_id,
         },
-        tenant_id,
-        principal_id,
     })
 }
