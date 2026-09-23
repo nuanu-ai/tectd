@@ -265,17 +265,31 @@ async fn run_upgrade(admin_url: &str, database: &str, runtime_role: &str) -> Res
             "populated DK-1 retract/event/revision/receipt bytes changed during upgrade".into(),
         );
     }
-    let migration_count: i64 = sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations")
-        .fetch_one(&pool)
-        .await
-        .map_err(|error| error.to_string())?;
+    let embedded_migrations = sqlx::migrate!("../postgres/migrations");
+    let expected_count =
+        i64::try_from(embedded_migrations.iter().count()).map_err(|error| error.to_string())?;
+    let expected_latest = embedded_migrations
+        .iter()
+        .map(|migration| migration.version)
+        .max()
+        .ok_or("embedded migration set is empty")?;
+    let (migration_count, latest_version): (i64, Option<i64>) =
+        sqlx::query_as("SELECT count(*), max(version) FROM _sqlx_migrations")
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
     let native_table: Option<String> =
         sqlx::query_scalar("SELECT to_regclass('public.native_scopes')::text")
             .fetch_one(&pool)
             .await
             .map_err(|error| error.to_string())?;
-    if migration_count != 40 || native_table.as_deref() != Some("native_scopes") {
-        return Err("schema 40 was not installed after preserving legacy and DK-1 rows".into());
+    if migration_count != expected_count
+        || latest_version != Some(expected_latest)
+        || native_table.as_deref() != Some("native_scopes")
+    {
+        return Err(
+            "current schema was not installed after preserving legacy and DK-1 rows".into(),
+        );
     }
     pool.close().await;
     Ok(())
