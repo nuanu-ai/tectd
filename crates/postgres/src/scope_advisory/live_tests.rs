@@ -930,6 +930,32 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         .await
         .unwrap();
     unit.commit().await.unwrap();
+    let audit_query = AdvisoryAuditQuery {
+        limit: 1,
+        scope_id: None,
+        after: None,
+        capability: None,
+        decision_point: None,
+        reason: None,
+        state: None,
+    };
+    let mut unit = rw(&store, &enrollment.auth, tenant).await;
+    let before_caller = unit
+        .candidate_advisory_opportunity_detail(workspace, candidate, opportunity)
+        .await
+        .unwrap()
+        .opportunity;
+    assert_eq!(before_caller.guarded_advice_id, None);
+    assert_eq!(
+        before_caller.guarded_advice_digest.as_deref(),
+        Some(advice.id.0.as_str())
+    );
+    assert_eq!(before_caller.disposition_id, Some(disposition.id));
+    assert_eq!(before_caller.preservation_receipt_id, Some(preservation_id));
+    assert_eq!(before_caller.preservation_status.as_deref(), Some("passed"));
+    assert_eq!(before_caller.caller_receipt_id, None);
+    assert_eq!(before_caller.verifier_receipt_id, None);
+    drop(unit);
     let mut changed_preservation = preservation_input.clone();
     changed_preservation.disposition_id = Uuid::new_v4();
     let mut unit = rw(&store, &enrollment.auth, tenant).await;
@@ -994,6 +1020,20 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         .await
         .unwrap();
     unit.commit().await.unwrap();
+    let mut unit = rw(&store, &enrollment.auth, tenant).await;
+    let before_verifier = unit
+        .candidate_advisory_opportunity_detail(workspace, candidate, opportunity)
+        .await
+        .unwrap()
+        .opportunity;
+    assert_eq!(before_verifier.caller_receipt_id, Some(caller_request));
+    assert_eq!(before_verifier.caller_link_id, Some(caller.link_id));
+    assert_eq!(
+        before_verifier.preservation_receipt_id,
+        Some(preservation_id)
+    );
+    assert_eq!(before_verifier.verifier_receipt_id, None);
+    drop(unit);
     let mut changed_caller = caller.clone();
     changed_caller.preservation_receipt_id = Uuid::new_v4();
     let mut unit = rw(&store, &enrollment.auth, tenant).await;
@@ -1025,6 +1065,71 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         .await
         .unwrap();
     unit.commit().await.unwrap();
+    let skipped = Uuid::new_v4();
+    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'3',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','skip','1',$7,$8,'no_call','request_skip')")
+        .bind(skipped).bind(tenant).bind(workspace).bind(candidate).bind(session).bind(actor)
+        .bind(format!("skip-{skipped}")).bind(D).execute(&pool).await.unwrap();
+    let mut unit = rw(&store, &enrollment.auth, tenant).await;
+    let first = unit
+        .candidate_advisory_audit(workspace, candidate, &audit_query)
+        .await
+        .unwrap();
+    assert_eq!(first.opportunities.len(), 1);
+    assert_eq!(first.opportunities[0].id, skipped);
+    assert_eq!(first.opportunities[0].guarded_advice_digest, None);
+    assert_eq!(first.opportunities[0].disposition_id, None);
+    assert_eq!(first.opportunities[0].preservation_receipt_id, None);
+    assert_eq!(first.opportunities[0].preservation_status, None);
+    assert_eq!(first.opportunities[0].caller_receipt_id, None);
+    assert_eq!(first.opportunities[0].caller_link_id, None);
+    assert_eq!(first.opportunities[0].verifier_receipt_id, None);
+    let mut after = first.next_after;
+    let mut found = false;
+    while let Some(cursor) = after {
+        let page = unit
+            .candidate_advisory_audit(
+                workspace,
+                candidate,
+                &AdvisoryAuditQuery {
+                    after: Some(cursor),
+                    ..audit_query.clone()
+                },
+            )
+            .await
+            .unwrap();
+        if page.opportunities[0].id == opportunity {
+            assert_eq!(
+                page.opportunities[0].caller_receipt_id,
+                Some(caller_request)
+            );
+            assert_eq!(page.opportunities[0].caller_link_id, Some(caller.link_id));
+            assert_eq!(
+                page.opportunities[0].verifier_receipt_id,
+                Some(verifier.receipt_id)
+            );
+            assert_eq!(
+                page.opportunities[0].preservation_receipt_id,
+                Some(preservation_id)
+            );
+            found = true;
+        }
+        after = page.next_after;
+    }
+    assert!(
+        found,
+        "selected opportunity must remain reachable through pagination"
+    );
+    drop(unit);
+    let foreign = admin::enroll_host(&pool, None, vec![]).await.unwrap();
+    assert_ne!(foreign.tenant_id, tenant);
+    let mut foreign_unit = rw(&store, &foreign.auth, foreign.tenant_id).await;
+    let foreign_page = foreign_unit
+        .candidate_advisory_audit(workspace, candidate, &audit_query)
+        .await
+        .unwrap();
+    assert!(foreign_page.opportunities.is_empty());
+    assert_eq!(foreign_page.aggregate.opportunities, 0);
+    drop(foreign_unit);
     let completed_preselection: (bool, i64) = sqlx::query_as(
         "SELECT o.scope_id IS NULL,(SELECT count(*) FROM native_scopes n WHERE n.tenant_id=o.tenant_id AND n.workspace_id=o.workspace_id)::bigint FROM advisory_opportunity o WHERE o.id=$1",
     ).bind(opportunity).fetch_one(&pool).await.unwrap();
@@ -1562,6 +1667,22 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
                 (SELECT count(*) FROM advisory_scope_caller_link WHERE candidate_set_id=$1 AND request_id=$2 AND caller_result_revision=6)"
     ).bind(candidate).bind(save.request_id).fetch_one(&pool).await.unwrap();
     assert_eq!(committed, (1, 1, 1, 1));
+    let mut audit_unit = rw(&store, &enrollment.auth, tenant).await;
+    let selected_audit = audit_unit
+        .candidate_advisory_opportunity_detail(workspace, candidate, selected_opportunity)
+        .await
+        .unwrap()
+        .opportunity;
+    assert_eq!(selected_audit.disposition_id, Some(accepted_again.id));
+    assert_eq!(
+        selected_audit.preservation_status.as_deref(),
+        Some("passed")
+    );
+    assert!(selected_audit.preservation_receipt_id.is_some());
+    assert_eq!(selected_audit.caller_receipt_id, Some(save.request_id));
+    assert!(selected_audit.caller_link_id.is_some());
+    assert_eq!(selected_audit.verifier_receipt_id, None);
+    drop(audit_unit);
     let mut changed_payload = save.clone();
     changed_payload.draft.candidates[0].title = "Conflicting replay".into();
     let mut conflict = rw(&store, &enrollment.auth, tenant).await;

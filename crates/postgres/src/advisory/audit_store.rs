@@ -1,3 +1,55 @@
+async fn audit_links(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    opportunities: &mut [AdvisoryAuditOpportunity],
+) -> Result<()> {
+    if opportunities.is_empty() {
+        return Ok(());
+    }
+    let ids = opportunities.iter().map(|item| item.id).collect::<Vec<_>>();
+    let links: Vec<AuditLinksRow> = sqlx::query_as(
+        "SELECT o.id AS opportunity_id,a.advice_id AS guarded_advice_digest,d.disposition_id,\
+                p.receipt_id AS preservation_receipt_id,p.status AS preservation_status,\
+                c.caller_request_id AS caller_receipt_id,c.link_id AS caller_link_id,\
+                v.receipt_id AS verifier_receipt_id \
+         FROM advisory_opportunity o \
+         LEFT JOIN advisory_scope_advice a ON a.tenant_id=o.tenant_id AND a.workspace_id=o.workspace_id AND a.opportunity_id=o.id \
+         LEFT JOIN LATERAL (SELECT disposition_id FROM advisory_scope_disposition \
+             WHERE tenant_id=o.tenant_id AND workspace_id=o.workspace_id AND opportunity_id=o.id \
+             ORDER BY revision DESC,disposition_id DESC LIMIT 1) d ON true \
+         LEFT JOIN LATERAL (SELECT link_id,caller_request_id,preservation_receipt_id FROM advisory_scope_caller_link \
+             WHERE tenant_id=o.tenant_id AND workspace_id=o.workspace_id AND opportunity_id=o.id \
+               AND disposition_id=d.disposition_id \
+             ORDER BY created_at DESC,link_id DESC LIMIT 1) c ON true \
+         LEFT JOIN LATERAL (SELECT receipt_id,status FROM advisory_scope_preservation_receipt \
+             WHERE tenant_id=o.tenant_id AND workspace_id=o.workspace_id AND opportunity_id=o.id \
+               AND disposition_id=d.disposition_id \
+             ORDER BY (receipt_id=c.preservation_receipt_id) DESC,created_at DESC,receipt_id DESC LIMIT 1) p ON true \
+         LEFT JOIN LATERAL (SELECT receipt_id FROM advisory_scope_verifier_receipt \
+             WHERE tenant_id=o.tenant_id AND workspace_id=o.workspace_id AND opportunity_id=o.id \
+               AND caller_link_id=c.link_id \
+             ORDER BY created_at DESC,receipt_id DESC LIMIT 1) v ON true \
+         WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.id=ANY($3)",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(&ids)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    let links_by_id = links
+        .into_iter()
+        .map(|row| (row.opportunity_id, row))
+        .collect::<std::collections::HashMap<_, _>>();
+    for opportunity in opportunities {
+        if let Some(links) = links_by_id.get(&opportunity.id) {
+            apply_audit_links(opportunity, links);
+        }
+    }
+    Ok(())
+}
+
 async fn audit(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -34,10 +86,11 @@ async fn audit(
         rows.truncate(query.limit as usize);
     }
     let next_after = has_more.then(|| rows.last().expect("non-empty bounded page").id);
-    let opportunities = rows
+    let mut opportunities = rows
         .into_iter()
         .map(opportunity_audit_from_row)
         .collect::<Result<Vec<_>>>()?;
+    audit_links(tx, tenant, workspace, &mut opportunities).await?;
     let opportunity_ids = opportunities.iter().map(|row| row.id).collect::<Vec<_>>();
     let dispatch_rows: Vec<DispatchAuditRow> = if opportunity_ids.is_empty() {
         Vec::new()
@@ -122,8 +175,10 @@ async fn opportunity_detail(
     .fetch_all(&mut **tx)
     .await
     .map_err(storage_error)?;
+    let mut opportunities = vec![opportunity_audit_from_row(row)?];
+    audit_links(tx, tenant, workspace, &mut opportunities).await?;
     Ok(AdvisoryOpportunityDetail {
-        opportunity: opportunity_audit_from_row(row)?,
+        opportunity: opportunities.remove(0),
         dispatches: dispatch_rows
             .into_iter()
             .map(dispatch_audit_from_row)

@@ -71,8 +71,12 @@ pub struct AdvisoryAuditOpportunity {
     pub created_at: String,
     pub updated_at: String,
     pub guarded_advice_id: Option<Uuid>,
+    pub guarded_advice_digest: Option<String>,
     pub disposition_id: Option<Uuid>,
+    pub preservation_receipt_id: Option<Uuid>,
+    pub preservation_status: Option<String>,
     pub caller_receipt_id: Option<Uuid>,
+    pub caller_link_id: Option<Uuid>,
     pub verifier_receipt_id: Option<Uuid>,
 }
 

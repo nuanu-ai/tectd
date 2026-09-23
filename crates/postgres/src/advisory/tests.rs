@@ -110,8 +110,12 @@ mod audit_projection_tests {
         let projected = serde_json::to_value(opportunity).unwrap();
         for field in [
             "guarded_advice_id",
+            "guarded_advice_digest",
             "disposition_id",
+            "preservation_receipt_id",
+            "preservation_status",
             "caller_receipt_id",
+            "caller_link_id",
             "verifier_receipt_id",
         ] {
             assert_eq!(projected[field], serde_json::Value::Null);

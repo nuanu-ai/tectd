@@ -79,6 +79,18 @@ struct OpportunityAuditRow {
 }
 
 #[derive(sqlx::FromRow)]
+struct AuditLinksRow {
+    opportunity_id: Uuid,
+    guarded_advice_digest: Option<String>,
+    disposition_id: Option<Uuid>,
+    preservation_receipt_id: Option<Uuid>,
+    preservation_status: Option<String>,
+    caller_receipt_id: Option<Uuid>,
+    caller_link_id: Option<Uuid>,
+    verifier_receipt_id: Option<Uuid>,
+}
+
+#[derive(sqlx::FromRow)]
 struct DispatchAuditRow {
     id: Uuid,
     opportunity_id: Uuid,
@@ -280,10 +292,24 @@ fn opportunity_audit_from_row(row: OpportunityAuditRow) -> Result<AdvisoryAuditO
         created_at: row.created_at,
         updated_at: row.updated_at,
         guarded_advice_id: None,
+        guarded_advice_digest: None,
         disposition_id: None,
+        preservation_receipt_id: None,
+        preservation_status: None,
         caller_receipt_id: None,
+        caller_link_id: None,
         verifier_receipt_id: None,
     })
+}
+
+fn apply_audit_links(opportunity: &mut AdvisoryAuditOpportunity, links: &AuditLinksRow) {
+    opportunity.guarded_advice_digest = links.guarded_advice_digest.clone();
+    opportunity.disposition_id = links.disposition_id;
+    opportunity.preservation_receipt_id = links.preservation_receipt_id;
+    opportunity.preservation_status = links.preservation_status.clone();
+    opportunity.caller_receipt_id = links.caller_receipt_id;
+    opportunity.caller_link_id = links.caller_link_id;
+    opportunity.verifier_receipt_id = links.verifier_receipt_id;
 }
 
 fn dispatch_audit_from_row(row: DispatchAuditRow) -> Result<AdvisoryAuditDispatch> {
