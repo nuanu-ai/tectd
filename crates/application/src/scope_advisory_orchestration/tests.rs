@@ -725,6 +725,15 @@ async fn production_defaults_fail_closed_without_supplier_budget_or_provider() {
         None
     );
     assert!(crate::ScopeAdviceProvider::identity(&DisabledScopeAdviceProvider).is_none());
+    let source = include_str!("../scope_advisory_orchestration.rs");
+    let budget = source.find(".scope_budget").unwrap();
+    let no_call = source[budget..]
+        .find("AdvisoryReason::BudgetPolicyInvalid")
+        .unwrap();
+    let provider = source[budget..]
+        .find("prepare_scope_advice_attempt(")
+        .unwrap();
+    assert!(no_call < provider);
 }
 
 struct FixtureProvider {

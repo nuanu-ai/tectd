@@ -59,6 +59,7 @@ pub enum AdvisoryReason {
     DeterministicInputInvalid,
     CapabilityUnavailable,
     ProviderUnconfigured,
+    BudgetPolicyInvalid,
     ConfigurationChanged,
     DispatchAuthorized,
     ProviderResponse,
@@ -75,6 +76,7 @@ impl AdvisoryReason {
             Self::DeterministicInputInvalid => "deterministic_input_invalid",
             Self::CapabilityUnavailable => "capability_unavailable",
             Self::ProviderUnconfigured => "provider_unconfigured",
+            Self::BudgetPolicyInvalid => "budget_policy_invalid",
             Self::ConfigurationChanged => "configuration_changed",
             Self::DispatchAuthorized => "dispatch_authorized",
             Self::ProviderResponse => "provider_response",
@@ -97,6 +99,7 @@ pub const fn advisory_reason_matches_state(
                 | AdvisoryReason::DeterministicInputInvalid
                 | AdvisoryReason::CapabilityUnavailable
                 | AdvisoryReason::ProviderUnconfigured
+                | AdvisoryReason::BudgetPolicyInvalid
         ),
         AdvisoryOpportunityState::Prepared => matches!(reason, AdvisoryReason::DispatchAuthorized),
         AdvisoryOpportunityState::AwaitingResponse => matches!(

@@ -380,7 +380,7 @@ impl WorkspaceService {
                 no_call_digest(
                     request,
                     config.revision,
-                    AdvisoryReason::CapabilityUnavailable,
+                    AdvisoryReason::BudgetPolicyInvalid,
                 )?
             } else {
                 manifest.whole_set_digest.clone()
@@ -394,7 +394,7 @@ impl WorkspaceService {
                     session.id,
                     material_digest,
                     AdvisoryOpportunityState::NoCall,
-                    AdvisoryReason::CapabilityUnavailable,
+                    AdvisoryReason::BudgetPolicyInvalid,
                     Some(manifest.source.candidate_set_revision),
                 )
                 .await?;

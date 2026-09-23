@@ -145,7 +145,8 @@ pub(crate) struct ScopeBudgetPolicyEvaluation {
 #[async_trait]
 pub(crate) trait ScopeBudgetPolicy: Send + Sync {
     /// Pure owner policy evaluation: implementations must not reserve, charge,
-    /// release, or mutate budget state.
+    /// release, or mutate budget state. `None` means no approved, valid policy
+    /// authorizes dispatch; it is audited as `budget_policy_invalid`.
     async fn evaluate(
         &self,
         request: &ScopeBudgetRequest,

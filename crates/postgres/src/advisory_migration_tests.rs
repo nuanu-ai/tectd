@@ -1,4 +1,32 @@
 const MIGRATION: &str = include_str!("../migrations/0039_advisory_optionality_audit.sql");
+const BUDGET_REASON_MIGRATION: &str =
+    include_str!("../migrations/0044_advisory_budget_no_call_reason.sql");
+
+#[test]
+fn budget_reason_migration_keeps_prior_reasons_and_limits_the_new_reason_to_no_call() {
+    for reason in [
+        "workspace_disabled",
+        "session_skip",
+        "request_skip",
+        "deterministic_input_invalid",
+        "capability_unavailable",
+        "provider_unconfigured",
+        "budget_policy_invalid",
+        "configuration_changed",
+        "dispatch_authorized",
+        "provider_response",
+        "provider_failure",
+        "send_unknown",
+    ] {
+        assert!(BUDGET_REASON_MIGRATION.contains(reason), "missing {reason}");
+    }
+    assert!(BUDGET_REASON_MIGRATION.contains("(state = 'no_call' AND primary_reason IN"));
+    assert!(BUDGET_REASON_MIGRATION.contains("'budget_policy_invalid'\n        ))"));
+    assert!(
+        BUDGET_REASON_MIGRATION
+            .contains("(state = 'prepared' AND primary_reason = 'dispatch_authorized')")
+    );
+}
 
 #[test]
 fn advisory_migration_declares_the_exact_four_table_spine() {

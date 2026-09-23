@@ -193,6 +193,7 @@ fn reason(value: &str) -> Result<AdvisoryReason> {
         "deterministic_input_invalid" => Ok(AdvisoryReason::DeterministicInputInvalid),
         "capability_unavailable" => Ok(AdvisoryReason::CapabilityUnavailable),
         "provider_unconfigured" => Ok(AdvisoryReason::ProviderUnconfigured),
+        "budget_policy_invalid" => Ok(AdvisoryReason::BudgetPolicyInvalid),
         "configuration_changed" => Ok(AdvisoryReason::ConfigurationChanged),
         "dispatch_authorized" => Ok(AdvisoryReason::DispatchAuthorized),
         "provider_response" => Ok(AdvisoryReason::ProviderResponse),

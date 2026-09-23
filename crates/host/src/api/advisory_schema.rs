@@ -254,7 +254,7 @@ fn advisory_audit_schema(scope: bool) -> Value {
         ),
         (
             "reason".into(),
-            json!({"type":"string","enum":["workspace_disabled","session_skip","request_skip","deterministic_input_invalid","capability_unavailable","provider_unconfigured","configuration_changed","dispatch_authorized","provider_response","provider_failure","send_unknown"]}),
+            json!({"type":"string","enum":["workspace_disabled","session_skip","request_skip","deterministic_input_invalid","capability_unavailable","provider_unconfigured","budget_policy_invalid","configuration_changed","dispatch_authorized","provider_response","provider_failure","send_unknown"]}),
         ),
         (
             "state".into(),

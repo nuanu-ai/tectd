@@ -74,6 +74,28 @@ fn no_call_reason_must_match_the_narrowing_preference() {
 }
 
 #[test]
+fn budget_policy_invalid_is_a_typed_no_call_reason() {
+    let reason = AdvisoryReason::BudgetPolicyInvalid;
+    assert_eq!(reason.as_str(), "budget_policy_invalid");
+    assert_eq!(
+        serde_json::to_value(reason).unwrap(),
+        "budget_policy_invalid"
+    );
+    assert_eq!(
+        serde_json::from_str::<AdvisoryReason>("\"budget_policy_invalid\"").unwrap(),
+        reason
+    );
+    assert!(advisory_reason_matches_state(
+        AdvisoryOpportunityState::NoCall,
+        reason
+    ));
+    assert!(!advisory_reason_matches_state(
+        AdvisoryOpportunityState::Prepared,
+        reason
+    ));
+}
+
+#[test]
 fn reason_precedence_is_deterministic() {
     let base = AdvisoryPolicyInput {
         workspace_mode: WorkspaceAdvisoryMode::Optional,
