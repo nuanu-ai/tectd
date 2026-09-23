@@ -1,7 +1,8 @@
 use serde_json::Value;
+use tect_application::{AuthoredScopeSet, RunScopeAdvisory};
 use tect_domain::{
     AdvisoryAuditQuery, AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryOpportunityState,
-    AdvisoryReason, ConfigureWorkspaceAdvisory, Error, Result,
+    AdvisoryReason, AdvisoryRequestPreference, ConfigureWorkspaceAdvisory, Error, Result,
 };
 
 #[derive(serde::Deserialize)]
@@ -112,7 +113,19 @@ struct CandidateGetArguments {
     opportunity_id: uuid::Uuid,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScopeAdvisoryRequestArguments {
+    request_id: uuid::Uuid,
+    candidate_set_id: uuid::Uuid,
+    #[serde(default)]
+    request_preference: AdvisoryRequestPreference,
+    #[serde(default)]
+    authored_scope_set: Option<AuthoredScopeSet>,
+}
+
 pub(crate) enum AdvisoryInvocation {
+    ScopeRequest(RunScopeAdvisory),
     Config,
     Configure(ConfigureWorkspaceAdvisory),
     WorkspaceAudit(AdvisoryAuditQuery),
@@ -153,6 +166,29 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<AdvisoryInvocation> 
         return Err(Error::InvalidArguments);
     }
     match name {
+        "scope_advisory_request" => {
+            if arguments
+                .get("authored_scope_set")
+                .is_some_and(Value::is_null)
+            {
+                return Err(Error::InvalidArguments);
+            }
+            let arguments: ScopeAdvisoryRequestArguments =
+                serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
+            if arguments.request_id.is_nil() || arguments.candidate_set_id.is_nil() {
+                return Err(Error::InvalidArguments);
+            }
+            if let Some(authored) = &arguments.authored_scope_set {
+                authored.validate()?;
+            }
+            Ok(AdvisoryInvocation::ScopeRequest(RunScopeAdvisory {
+                request_id: arguments.request_id,
+                candidate_set_id: arguments.candidate_set_id,
+                session_preference: AdvisoryRequestPreference::UseWorkspace,
+                request_preference: arguments.request_preference,
+                authored_scope_set: arguments.authored_scope_set,
+            }))
+        }
         "get_advisory_config" => {
             if arguments.as_object().is_some_and(|value| value.is_empty()) {
                 Ok(AdvisoryInvocation::Config)
@@ -371,6 +407,79 @@ mod tests {
             ),
         ] {
             assert!(parse(name, arguments).is_err(), "accepted forged {name}");
+        }
+    }
+
+    #[test]
+    fn scope_request_binds_session_preference_and_refuses_forged_identity() {
+        let request_id = uuid::Uuid::new_v4();
+        let candidate_set_id = uuid::Uuid::new_v4();
+        let source_ref = uuid::Uuid::new_v4();
+        let active = json!({
+            "request_id":request_id,
+            "candidate_set_id":candidate_set_id,
+            "request_preference":"use_workspace",
+            "authored_scope_set":{
+                "expected_candidate_set_revision":1,
+                "baseline_key":"baseline",
+                "alternatives":[{
+                    "key":"baseline",
+                    "kind":"cohesive",
+                    "draft":{
+                        "boundary":"ongoing", "goals":[], "candidates":[],
+                        "empty_disposition":{"kind":"out_of_boundary","reason":"none","source_ref_id":source_ref}
+                    },
+                    "covered_source_ref_ids":[source_ref]
+                }]
+            }
+        });
+        let Ok(AdvisoryInvocation::ScopeRequest(request)) =
+            parse("scope_advisory_request", active.clone())
+        else {
+            panic!("valid authored request was rejected")
+        };
+        assert_eq!(
+            request.session_preference,
+            AdvisoryRequestPreference::UseWorkspace
+        );
+        assert_eq!(
+            request.request_preference,
+            AdvisoryRequestPreference::UseWorkspace
+        );
+        assert!(request.authored_scope_set.is_some());
+        let skipped = json!({"request_id":request_id,"candidate_set_id":candidate_set_id,"request_preference":"skip"});
+        let Ok(AdvisoryInvocation::ScopeRequest(request)) =
+            parse("scope_advisory_request", skipped)
+        else {
+            panic!("skipped request without source material was rejected")
+        };
+        assert_eq!(request.request_preference, AdvisoryRequestPreference::Skip);
+        assert!(request.authored_scope_set.is_none());
+        for field in [
+            "tenant_id",
+            "actor_id",
+            "workspace_id",
+            "session_id",
+            "session_preference",
+            "provider_api_key",
+        ] {
+            let mut forged = active.clone();
+            forged[field] = json!(uuid::Uuid::new_v4());
+            assert!(
+                parse("scope_advisory_request", forged).is_err(),
+                "accepted {field}"
+            );
+        }
+        let mut too_many = active.clone();
+        let alternative = too_many["authored_scope_set"]["alternatives"][0].clone();
+        too_many["authored_scope_set"]["alternatives"] =
+            serde_json::Value::Array(vec![alternative; 101]);
+        assert!(parse("scope_advisory_request", too_many).is_err());
+        for malformed in [
+            json!({"request_id":uuid::Uuid::nil(),"candidate_set_id":candidate_set_id}),
+            json!({"request_id":request_id,"candidate_set_id":candidate_set_id,"authored_scope_set":null}),
+        ] {
+            assert!(parse("scope_advisory_request", malformed).is_err());
         }
     }
 }

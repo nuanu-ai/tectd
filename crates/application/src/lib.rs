@@ -18,6 +18,7 @@ pub use planning_knowledge_ports::PlanningKnowledgeStore;
 pub use ports::{
     ProgramGuidance, ProgramOutputGuard, SourceInspector, Store, TransactionMode, UnitOfWork,
 };
+pub use scope_advisory_orchestration::{RunScopeAdvisory, ScopeAdvisoryOutcome};
 pub use scope_advisory_ports::{
     GuardedScopeAdviceRecord, ScopeAdvisoryStore, ScopeCallerLinkInput, ScopeDispositionRecord,
     ScopeManifestRecord, ScopePreparedAdvisoryDisposition, ScopePreservationReceiptInput,

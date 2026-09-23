@@ -22,6 +22,17 @@ macro_rules! route {
 pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
     vec![
         route!(
+            "command",
+            "scope.advisory.request",
+            "scope_advisory_request",
+            "Request optional Scope-decomposition advice for one candidate set using complete agent-authored alternatives.",
+            "Requires an authenticated open native session and accessible candidate set. Workspace disabled or request skip records an auditable no-call. An active request requires the full authored set at the expected candidate revision; session preference is bound by the host, not caller-supplied.",
+            "Records an opportunity; with production adapters disabled it cannot contact Jev. When separately enabled, the registered orchestration audits each dispatch before any provider attempt. It does not open a Scope or apply advice.",
+            "Repeat only with the same request_id and identical authored material; changed material conflicts. Inspect candidate.advisory.get/audit after uncertainty.",
+            scope_advisory_request_schema(),
+            json!({"request_id":example_id,"candidate_set_id":example_id,"request_preference":"skip"}),
+        ),
+        route!(
             "query",
             "workspace.advisory.config",
             "get_advisory_config",
@@ -105,6 +116,41 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
             json!({"candidate_set_id":example_id,"limit":50}),
         ),
     ]
+}
+
+fn scope_advisory_request_schema() -> Value {
+    let local_key =
+        json!({"type":"string","minLength":1,"maxLength":64,"pattern":"^[A-Za-z0-9._-]+$"});
+    let alternative = object_schema(
+        json!({
+            "key":local_key,
+            "kind":{"type":"string","enum":["cohesive","partitioned"]},
+            "draft":super::candidate_schema::authored_draft(),
+            "covered_source_ref_ids":{"type":"array","items":uuid(),"minItems":1,"uniqueItems":true}
+        }),
+        json!(["key", "kind", "draft", "covered_source_ref_ids"]),
+    );
+    let authored = object_schema(
+        json!({
+            "expected_candidate_set_revision":{"type":"integer","minimum":1},
+            "baseline_key":{"type":"string","minLength":1,"maxLength":64,"pattern":"^[A-Za-z0-9._-]+$"},
+            "alternatives":{"type":"array","items":alternative,"minItems":1,"maxItems":100}
+        }),
+        json!([
+            "expected_candidate_set_revision",
+            "baseline_key",
+            "alternatives"
+        ]),
+    );
+    object_schema(
+        json!({
+            "request_id":uuid(),
+            "candidate_set_id":uuid(),
+            "request_preference":{"type":"string","enum":["use_workspace","skip"]},
+            "authored_scope_set":authored
+        }),
+        json!(["request_id", "candidate_set_id"]),
+    )
 }
 
 fn advisory_candidate_audit_schema() -> Value {

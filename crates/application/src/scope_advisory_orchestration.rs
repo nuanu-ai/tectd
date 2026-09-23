@@ -22,7 +22,7 @@ mod tests;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RunScopeAdvisory {
+pub struct RunScopeAdvisory {
     pub request_id: Uuid,
     pub candidate_set_id: Uuid,
     pub session_preference: AdvisoryRequestPreference,
@@ -32,7 +32,7 @@ pub(crate) struct RunScopeAdvisory {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ScopeAdvisoryOutcome {
+pub struct ScopeAdvisoryOutcome {
     pub opportunity: AdvisoryOpportunity,
     pub advice: Option<GuardedScopeAdvice>,
 }
@@ -56,7 +56,7 @@ pub(crate) struct PreserveScopeAdvisory {
 }
 
 impl WorkspaceService {
-    pub(crate) async fn run_scope_advisory(
+    pub async fn run_scope_advisory(
         &self,
         context: &RequestContext,
         request: &RunScopeAdvisory,
@@ -136,6 +136,13 @@ impl WorkspaceService {
                 opportunity,
                 advice: None,
             });
+        }
+
+        // An active invocation needs the caller's complete authored set.
+        // Disabled and explicitly skipped invocations above remain auditable
+        // without requiring source material or enabling the provider.
+        if request.authored_scope_set.is_none() {
+            return Err(Error::InputPending);
         }
 
         if let Some(authored_request_digest) = authored_request_digest.as_deref() {

@@ -10,6 +10,18 @@ pub(crate) async fn execute(
     capacity: usize,
 ) -> Result<serde_json::Value> {
     let value = match invocation {
+        AdvisoryInvocation::ScopeRequest(request) => {
+            let outcome = service.run_scope_advisory(context, &request).await?;
+            serde_json::to_value(serde_json::json!({
+                "request_id": request.request_id,
+                "opportunity_id": outcome.opportunity.id,
+                "candidate_set_id": request.candidate_set_id,
+                "state": outcome.opportunity.state,
+                "reason": outcome.opportunity.primary_reason,
+                "provider_called": outcome.opportunity.provider_called,
+                "advice_id": outcome.advice.as_ref().map(|advice| &advice.id),
+            }))
+        }
         AdvisoryInvocation::Config => serde_json::to_value(service.advisory_config(context).await?),
         AdvisoryInvocation::Configure(request) => {
             serde_json::to_value(service.configure_advisory(context, &request).await?)

@@ -1028,7 +1028,12 @@ fn authored_lookup_replay_and_failure_paths_precede_external_attempts() {
     assert!(digest < request_lookup && request_lookup < replay);
     let provider = source.find(".attempt(&ScopeAdviceProviderRequest").unwrap();
     assert!(replay < observer && observer < supplier && replay < provider);
-    assert!(!source.contains("return Err(Error::InputPending)"));
+    let early_no_call = source.find("if let Some((reason, revision))").unwrap();
+    let active_input_gate = source
+        .find("if request.authored_scope_set.is_none()")
+        .unwrap();
+    assert!(early_no_call < active_input_gate && active_input_gate < observer);
+    assert!(source[active_input_gate..observer].contains("return Err(Error::InputPending)"));
 
     let authored_persist = source
         .find(".prepare_authored_scope_advisory_manifest(")
@@ -1109,14 +1114,15 @@ fn authored_supplier_failure_is_captured_as_no_call_before_budget_or_provider() 
 }
 
 #[test]
-fn provider_port_is_public_but_dispatch_entrypoints_and_injection_are_not() {
+fn authored_request_entry_is_public_but_dispatch_injection_and_effects_are_not() {
     let root = include_str!("../lib.rs");
     let service = include_str!("../service.rs");
     let orchestration = include_str!("../scope_advisory_orchestration.rs");
     assert!(root.contains("ScopeAdviceProviderRequest"));
     assert!(!root.contains("pub use scope_advisory_runtime::*;"));
     assert!(service.contains("#[cfg(test)]\n    pub(crate) fn with_scope_advisory_adapters"));
-    assert!(!orchestration.contains("pub async fn run_scope_advisory"));
+    assert!(orchestration.contains("pub async fn run_scope_advisory"));
+    assert!(root.contains("RunScopeAdvisory, ScopeAdvisoryOutcome"));
     assert!(!orchestration.contains("pub async fn decide_scope_advisory"));
     assert!(!orchestration.contains("pub async fn preserve_scope_advisory"));
 }

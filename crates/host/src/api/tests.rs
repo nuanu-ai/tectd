@@ -244,7 +244,7 @@ fn internal_legacy_phase_actions_can_retain_backend_receipts() {
 #[test]
 fn help_search_is_bounded_stable_filtered_and_bilingual() {
     let all = help(parse_help(json!({"mode":"search"})).unwrap()).unwrap();
-    assert_eq!(all["total_matches"], 75);
+    assert_eq!(all["total_matches"], routes().len() + 9);
     assert_eq!(all["returned"], 25);
     assert_eq!(all["truncated"], true);
     assert_eq!(all["hits"][0]["tool"], "get_state");

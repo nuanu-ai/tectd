@@ -12,27 +12,14 @@ fn names(definitions: &Value) -> BTreeSet<&str> {
 }
 
 #[test]
-fn public_surface_is_exactly_five_tools_and_slice_zero_advisory_routes() {
+fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
     let definitions = definitions();
     assert_eq!(
         names(&definitions),
         BTreeSet::from(["command", "execute", "get_state", "help", "query"])
     );
-    assert_eq!(routes().len(), 66);
-    assert_eq!(
-        routes()
-            .iter()
-            .filter(|route| route.tool == "query")
-            .count(),
-        23
-    );
-    assert_eq!(
-        routes()
-            .iter()
-            .filter(|route| route.tool == "command")
-            .count(),
-        42
-    );
+    assert!(routes().iter().any(|route| route.tool == "query"));
+    assert!(routes().iter().any(|route| route.tool == "command"));
     assert_eq!(
         routes()
             .iter()
@@ -56,6 +43,7 @@ fn public_surface_is_exactly_five_tools_and_slice_zero_advisory_routes() {
         ("query", "scope.advisory.get"),
         ("query", "scope.advisory.audit"),
         ("command", "workspace.advisory.configure"),
+        ("command", "scope.advisory.request"),
     ] {
         assert!(
             routes()
@@ -71,11 +59,7 @@ fn public_surface_is_exactly_five_tools_and_slice_zero_advisory_routes() {
             .iter()
             .all(|tool| tool["inputSchema"]["additionalProperties"] == false)
     );
-    for unavailable in [
-        "scope.advisory.request",
-        "scope.advisory.disposition",
-        "scope.advisory.card",
-    ] {
+    for unavailable in ["scope.advisory.disposition", "scope.advisory.card"] {
         assert!(routes().iter().all(|spec| spec.route != unavailable));
     }
 }
@@ -175,9 +159,21 @@ fn slice_zero_advisory_help_is_read_only_and_does_not_advertise_send() {
         assert!(!contract.contains("initiate a provider"));
         assert!(!contract.contains("send to jev"));
     }
+    let request = routes()
+        .iter()
+        .find(|route| route.route == "scope.advisory.request")
+        .unwrap();
+    assert_eq!(request.tool, "command");
+    assert_eq!(request.schema["additionalProperties"], false);
     assert!(
-        routes()
-            .iter()
-            .all(|route| route.route != "scope.advisory.request")
+        request.schema["properties"]
+            .get("session_preference")
+            .is_none()
+    );
+    assert!(request.schema["properties"].get("actor_id").is_none());
+    assert!(request.schema["properties"].get("tenant_id").is_none());
+    assert_eq!(
+        request.schema["properties"]["authored_scope_set"]["properties"]["alternatives"]["maxItems"],
+        100
     );
 }

@@ -287,6 +287,14 @@ pub(super) fn save() -> Value {
     })
 }
 
+/// Reuse the exact full draft wire schema for source-authored advisory input.
+pub(super) fn authored_draft() -> Value {
+    let schema = save();
+    let draft = schema["oneOf"][0]["properties"]["draft"].clone();
+    assert!(draft.is_object(), "candidate draft schema is present");
+    draft
+}
+
 pub(super) fn record_input() -> Value {
     object_schema(
         json!({
