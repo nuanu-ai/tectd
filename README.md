@@ -33,6 +33,10 @@ The application owns authorization order and transaction boundaries. SQLx stays 
 `tect-postgres`; environment, files, processes and protocol stay in `tect-host`.
 The composition binaries wire them together. Run `scripts/check-architecture.py`
 to enforce the dependency allowlist, inner-crate I/O boundary and 500-line limit.
+The 16 files already above that limit at commit `9e499835` are recorded with exact
+line counts and SHA-256 digests in `scripts/architecture-file-baseline.json`.
+They are frozen: any edit to one must split it below 500 lines and remove its
+baseline entry. New oversized files and stale baseline entries fail the gate.
 
 ## Local configuration
 

@@ -1,30 +1,185 @@
 name: Rust and PostgreSQL contracts
-on: [push, pull_request]
+on:
+  push:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
 jobs:
   verify:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:18.6
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: tect_test
-        ports: ["5432:5432"]
-        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 12
-    env:
-      TECT_TEST_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/tect_test
-      TECT_TEST_RUNTIME_URL: postgres://tect_ci:ci-fixture-only@127.0.0.1:5432/tect_test
-      TECT_TEST_RUNTIME_ROLE: tect_ci
+    if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Isolate Rust state
+        shell: bash
+        run: |
+          set -euo pipefail
+          rust_root="${RUNNER_TEMP}/tectd-rust-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$rust_root/cargo" "$rust_root/rustup"
+          {
+            echo "CARGO_HOME=$rust_root/cargo"
+            echo "RUSTUP_HOME=$rust_root/rustup"
+          } >> "$GITHUB_ENV"
+          echo "$rust_root/cargo/bin" >> "$GITHUB_PATH"
       - uses: dtolnay/rust-toolchain@1.93.0
         with:
           components: rustfmt, clippy
-      - name: Provision isolated CI runtime role
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.15.1
+          use-cache: false
+          use-tool-cache: false
+      - name: Configure owned portable linker
+        shell: bash
+        run: |
+          set -euo pipefail
+          tool_bin="${RUNNER_TEMP}/tectd-tool-bin-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$tool_bin"
+          printf '%s\n' '#!/usr/bin/env bash' 'exec zig cc "$@"' > "$tool_bin/cc"
+          printf '%s\n' '#!/usr/bin/env bash' 'exec zig c++ "$@"' > "$tool_bin/c++"
+          printf '%s\n' '#!/usr/bin/env bash' 'exec zig ar "$@"' > "$tool_bin/ar"
+          chmod 0700 "$tool_bin/cc" "$tool_bin/c++" "$tool_bin/ar"
+          {
+            echo "CC=$tool_bin/cc"
+            echo "CXX=$tool_bin/c++"
+            echo "AR=$tool_bin/ar"
+            echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=$tool_bin/cc"
+          } >> "$GITHUB_ENV"
+      - run: python3 scripts/check-architecture.py
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo build --workspace --all-targets --locked
+  verify-integration:
+    if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: rustfmt, clippy
+      - name: Provision pinned pgRDF PostgreSQL fixture
         env:
-          PGPASSWORD: postgres
-        run: psql -h 127.0.0.1 -U postgres -d tect_test -v ON_ERROR_STOP=1 -c "CREATE ROLE tect_ci LOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT PASSWORD 'ci-fixture-only'"
+          PGRDF_SHA256: 78b9efa983bc5b494f163a7896cd2260314830ac166e8ab2b04e549f91852b8f
+        run: |
+          set -euo pipefail
+          context="$(mktemp -d "${RUNNER_TEMP}/tectd-pgrdf.XXXXXXXX")"
+          cp containers/postgres/Dockerfile "$context/Dockerfile"
+          archive="$context/pgrdf-0.6.34-pg18-glibc-amd64.tar.gz"
+          curl --fail --location --silent --show-error \
+            --output "$archive" \
+            https://github.com/styk-tv/pgRDF/releases/download/v0.6.34/pgrdf-0.6.34-pg18-glibc-amd64.tar.gz
+          printf '%s  %s\n' "$PGRDF_SHA256" "$archive" | sha256sum --check --status
+          image="tectd-ci-postgres:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker build --platform linux/amd64 --tag "$image" "$context"
+          container="tectd-ci-postgres-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker run --rm --detach --name "$container" \
+            --publish 127.0.0.1::5432 \
+            --env POSTGRES_PASSWORD=postgres --env POSTGRES_DB=tect_test \
+            "$image"
+          ready=false
+          for attempt in $(seq 1 60); do
+            if docker exec "$container" pg_isready -U postgres -d tect_test >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then
+            docker logs "$container"
+            exit 1
+          fi
+          docker exec "$container" psql -U postgres -d tect_test -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE tect_ci LOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT PASSWORD 'ci-fixture-only'"
+          published="$(docker port "$container" 5432/tcp)"
+          port="${published##*:}"
+          {
+            echo "TECT_TEST_ADMIN_URL=postgres://postgres:postgres@127.0.0.1:${port}/tect_test"
+            echo "TECT_TEST_RUNTIME_URL=postgres://tect_ci:ci-fixture-only@127.0.0.1:${port}/tect_test"
+            echo 'TECT_TEST_RUNTIME_ROLE=tect_ci'
+          } >> "$GITHUB_ENV"
       - run: python3 scripts/check-architecture.py
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Remove CI PostgreSQL fixture
+        if: always()
+        run: |
+          docker rm --force "tectd-ci-postgres-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" || true
+          docker image rm "tectd-ci-postgres:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" || true
+  verify-fork:
+    if: github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: rustfmt, clippy
+      - name: Provision pinned pgRDF PostgreSQL fixture
+        env:
+          PGRDF_SHA256: 78b9efa983bc5b494f163a7896cd2260314830ac166e8ab2b04e549f91852b8f
+        run: |
+          set -euo pipefail
+          context="$(mktemp -d "${RUNNER_TEMP}/tectd-pgrdf.XXXXXXXX")"
+          cp containers/postgres/Dockerfile "$context/Dockerfile"
+          archive="$context/pgrdf-0.6.34-pg18-glibc-amd64.tar.gz"
+          curl --fail --location --silent --show-error \
+            --output "$archive" \
+            https://github.com/styk-tv/pgRDF/releases/download/v0.6.34/pgrdf-0.6.34-pg18-glibc-amd64.tar.gz
+          printf '%s  %s\n' "$PGRDF_SHA256" "$archive" | sha256sum --check --status
+          image="tectd-ci-postgres:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker build --platform linux/amd64 --tag "$image" "$context"
+          container="tectd-ci-postgres-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          docker run --rm --detach --name "$container" \
+            --publish 127.0.0.1::5432 \
+            --env POSTGRES_PASSWORD=postgres --env POSTGRES_DB=tect_test \
+            "$image"
+          ready=false
+          for attempt in $(seq 1 60); do
+            if docker exec "$container" pg_isready -U postgres -d tect_test >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$ready" != true ]; then
+            docker logs "$container"
+            exit 1
+          fi
+          docker exec "$container" psql -U postgres -d tect_test -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE tect_ci LOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT PASSWORD 'ci-fixture-only'"
+          published="$(docker port "$container" 5432/tcp)"
+          port="${published##*:}"
+          {
+            echo "TECT_TEST_ADMIN_URL=postgres://postgres:postgres@127.0.0.1:${port}/tect_test"
+            echo "TECT_TEST_RUNTIME_URL=postgres://tect_ci:ci-fixture-only@127.0.0.1:${port}/tect_test"
+            echo 'TECT_TEST_RUNTIME_ROLE=tect_ci'
+          } >> "$GITHUB_ENV"
+      - run: python3 scripts/check-architecture.py
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - name: Remove CI PostgreSQL fixture
+        if: always()
+        run: |
+          docker rm --force "tectd-ci-postgres-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" || true
+          docker image rm "tectd-ci-postgres:${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" || true
