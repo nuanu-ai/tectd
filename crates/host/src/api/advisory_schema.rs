@@ -135,7 +135,7 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
             "candidate_advisory_get",
             "Read one candidate-set advisory opportunity and its ordered dispatch facts.",
             "Requires an authenticated open owner or verifier session and a candidate set in the workspace; the opportunity must target that exact candidate set.",
-            "Returns metadata and dispatch facts. For advised scope decomposition, scope_decomposition version 1 contains the validated persisted manifest and guarded advice, including eligible IDs, baseline, ranked IDs, and typed answers; no-call opportunities omit it.",
+            "Returns metadata and dispatch facts. For an owner reading advised scope decomposition, scope_decomposition version 1 contains the validated persisted manifest and guarded advice, including eligible IDs, baseline, ranked IDs, and typed answers; verifier and no-call responses omit it.",
             "Safe to repeat.",
             object_schema(
                 json!({"candidate_set_id":uuid(),"opportunity_id":uuid()}),

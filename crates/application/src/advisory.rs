@@ -101,7 +101,7 @@ impl WorkspaceService {
     async fn candidate_read_transaction(
         &self,
         context: &tect_domain::RequestContext,
-    ) -> Result<(Box<dyn UnitOfWork>, tect_domain::Workspace)> {
+    ) -> Result<(Box<dyn UnitOfWork>, tect_domain::Workspace, PrincipalRole)> {
         let (mut tx, identity) = self
             .authenticated(context, TransactionMode::ReadOnly)
             .await?;
@@ -116,7 +116,7 @@ impl WorkspaceService {
             .await?
             .ok_or(Error::WorkspaceNotOpen)?;
         let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
-        Ok((tx, workspace))
+        Ok((tx, workspace, identity.role))
     }
 
     /// Authenticate a malformed candidate advisory call without granting the
@@ -125,7 +125,7 @@ impl WorkspaceService {
         &self,
         context: &tect_domain::RequestContext,
     ) -> Result<()> {
-        let (tx, _) = self.candidate_read_transaction(context).await?;
+        let (tx, _, _) = self.candidate_read_transaction(context).await?;
         tx.commit().await
     }
     async fn advisory_transaction(
@@ -251,7 +251,7 @@ impl WorkspaceService {
         if candidate_set_id.is_nil() || query.scope_id.is_some() {
             return Err(tect_domain::Error::InvalidArguments);
         }
-        let (mut tx, workspace) = self.candidate_read_transaction(context).await?;
+        let (mut tx, workspace, _) = self.candidate_read_transaction(context).await?;
         if !tx
             .advisory_candidate_set_exists(workspace.id, candidate_set_id)
             .await?
@@ -274,7 +274,7 @@ impl WorkspaceService {
         if candidate_set_id.is_nil() || opportunity_id.is_nil() {
             return Err(tect_domain::Error::InvalidArguments);
         }
-        let (mut tx, workspace) = self.candidate_read_transaction(context).await?;
+        let (mut tx, workspace, role) = self.candidate_read_transaction(context).await?;
         if !tx
             .advisory_candidate_set_exists(workspace.id, candidate_set_id)
             .await?
@@ -284,27 +284,29 @@ impl WorkspaceService {
         let mut detail = tx
             .candidate_advisory_opportunity_detail(workspace.id, candidate_set_id, opportunity_id)
             .await?;
-        if let Some(advice) = tx
-            .guarded_scope_advice(workspace.id, opportunity_id)
-            .await?
-        {
-            let manifest = tx
-                .scope_advisory_manifest(workspace.id, opportunity_id)
+        if role == PrincipalRole::Owner {
+            if let Some(advice) = tx
+                .guarded_scope_advice(workspace.id, opportunity_id)
                 .await?
-                .ok_or(Error::StorageUnavailable)?;
-            if manifest.source.candidate_set_id != candidate_set_id
-                || advice.opportunity_id.is_some_and(|id| id != opportunity_id)
-                || advice.source_digest != manifest.source.digest
-                || advice.manifest_digest != manifest.whole_set_digest
-                || advice.eligible_set_digest != manifest.eligible_set_digest
             {
-                return Err(Error::StorageUnavailable);
+                let manifest = tx
+                    .scope_advisory_manifest(workspace.id, opportunity_id)
+                    .await?
+                    .ok_or(Error::StorageUnavailable)?;
+                if manifest.source.candidate_set_id != candidate_set_id
+                    || advice.opportunity_id.is_some_and(|id| id != opportunity_id)
+                    || advice.source_digest != manifest.source.digest
+                    || advice.manifest_digest != manifest.whole_set_digest
+                    || advice.eligible_set_digest != manifest.eligible_set_digest
+                {
+                    return Err(Error::StorageUnavailable);
+                }
+                detail.scope_decomposition = Some(CandidateScopeAdvisoryProjection {
+                    version: 1,
+                    manifest,
+                    advice,
+                });
             }
-            detail.scope_decomposition = Some(CandidateScopeAdvisoryProjection {
-                version: 1,
-                manifest,
-                advice,
-            });
         }
         tx.commit().await?;
         Ok(detail)

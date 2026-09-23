@@ -461,7 +461,7 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
         detail["opportunity"]["selected_save_observation"]["qualification"],
         "independently_observed"
     );
-    assert_eq!(detail["scope_decomposition"], projection.clone());
+    assert!(detail.get("scope_decomposition").is_none());
     let audit = route(
         &mut verifier_mcp,
         "query",
