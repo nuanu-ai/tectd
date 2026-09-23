@@ -157,4 +157,13 @@ pub struct AdvisoryAuditPage {
 pub struct AdvisoryOpportunityDetail {
     pub opportunity: AdvisoryAuditOpportunity,
     pub dispatches: Vec<AdvisoryAuditDispatch>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_decomposition: Option<CandidateScopeAdvisoryProjection>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CandidateScopeAdvisoryProjection {
+    pub version: u32,
+    pub manifest: crate::ScopeConstructorManifest,
+    pub advice: crate::GuardedScopeAdvice,
 }

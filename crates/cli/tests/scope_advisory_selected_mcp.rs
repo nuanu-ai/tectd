@@ -286,11 +286,38 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
     .await
     .unwrap();
     unit.commit().await.unwrap();
+    let public_read = route(
+        &mut reader,
+        "query",
+        "candidate.advisory.get",
+        json!({"candidate_set_id":candidate_set,"opportunity_id":opportunity}),
+    )
+    .await;
+    let projection = &public_read["scope_decomposition"];
+    assert_eq!(projection["version"], 1);
+    assert_eq!(
+        projection["manifest"],
+        serde_json::to_value(&manifest).unwrap()
+    );
+    assert_eq!(projection["advice"], serde_json::to_value(&advice).unwrap());
+    assert_eq!(
+        projection["manifest"]["baseline_id"],
+        projection["advice"]["ranked_ids"][0]
+    );
+    let returned_advice_id = projection["advice"]["id"].clone();
+    let returned_selected_id = projection["manifest"]["baseline_id"].clone();
+    assert!(
+        projection["manifest"]["emitted"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|alternative| alternative["id"] == returned_selected_id)
+    );
     let selected = &manifest.emitted[0];
     let disposition = route(&mut author, "command", "scope.advisory.disposition", json!({
         "opportunity_id":opportunity,"candidate_set_id":candidate_set,"request_id":Uuid::new_v4(),
-        "advice_id":advice.id,"expected_revision":0,"action":"accept",
-        "selected_id":selected.id,"items":[{"alternative_id":selected.id,"state":"selected"}],
+        "advice_id":returned_advice_id,"expected_revision":0,"action":"accept",
+        "selected_id":returned_selected_id,"items":[{"alternative_id":returned_selected_id,"state":"selected"}],
         "rationale":"Use source-authored preview diagnosis"
     })).await;
     let save_request = Uuid::new_v4();
@@ -434,6 +461,7 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
         detail["opportunity"]["selected_save_observation"]["qualification"],
         "independently_observed"
     );
+    assert_eq!(detail["scope_decomposition"], projection.clone());
     let audit = route(
         &mut verifier_mcp,
         "query",

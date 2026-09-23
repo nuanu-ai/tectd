@@ -909,6 +909,23 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         .await
         .unwrap();
     unit.commit().await.unwrap();
+    let read_context = tect_domain::RequestContext {
+        auth: enrollment.auth.clone(),
+        native_session_id: session.to_string(),
+        workspace_key: format!("scope-live-{workspace}"),
+    };
+    let read = service
+        .candidate_advisory_get(&read_context, candidate, opportunity)
+        .await
+        .unwrap();
+    let projected = read.scope_decomposition.unwrap();
+    assert_eq!(projected.version, 1);
+    assert_eq!(projected.manifest, manifest);
+    assert_eq!(projected.advice, advice);
+    assert_eq!(
+        projected.manifest.baseline_id,
+        projected.advice.ranked_ids[0]
+    );
     set_config(&pool, tenant, workspace, false).await;
     let mut unit = rw(&store, &enrollment.auth, tenant).await;
     assert_eq!(
@@ -1129,7 +1146,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     };
     let mut partial = ScopeDispositionRequest {
         request_id: Uuid::new_v4(),
-        advice_id: advice.id.clone(),
+        advice_id: projected.advice.id.clone(),
         expected_revision: 0,
         action: ScopeDispositionAction::Accept,
         selected_id: Some(manifest.baseline_id.clone()),

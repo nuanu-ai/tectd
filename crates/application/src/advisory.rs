@@ -11,8 +11,8 @@ use sha2::{Digest, Sha256};
 use tect_domain::{
     ADVISORY_DECISION_POINT_VERSION, AdvisoryAuditPage, AdvisoryAuditQuery, AdvisoryCapability,
     AdvisoryDecisionPoint, AdvisoryOpportunityDetail, AdvisoryOpportunityInput,
-    ConfigureWorkspaceAdvisory, Error, PrincipalRole, Result, SelectedSaveObservation,
-    SelectedSaveObservationRequest, WorkspaceAdvisoryConfig,
+    CandidateScopeAdvisoryProjection, ConfigureWorkspaceAdvisory, Error, PrincipalRole, Result,
+    SelectedSaveObservation, SelectedSaveObservationRequest, WorkspaceAdvisoryConfig,
 };
 use uuid::Uuid;
 
@@ -281,9 +281,31 @@ impl WorkspaceService {
         {
             return Err(tect_domain::Error::NotFound);
         }
-        let detail = tx
+        let mut detail = tx
             .candidate_advisory_opportunity_detail(workspace.id, candidate_set_id, opportunity_id)
             .await?;
+        if let Some(advice) = tx
+            .guarded_scope_advice(workspace.id, opportunity_id)
+            .await?
+        {
+            let manifest = tx
+                .scope_advisory_manifest(workspace.id, opportunity_id)
+                .await?
+                .ok_or(Error::StorageUnavailable)?;
+            if manifest.source.candidate_set_id != candidate_set_id
+                || advice.opportunity_id.is_some_and(|id| id != opportunity_id)
+                || advice.source_digest != manifest.source.digest
+                || advice.manifest_digest != manifest.whole_set_digest
+                || advice.eligible_set_digest != manifest.eligible_set_digest
+            {
+                return Err(Error::StorageUnavailable);
+            }
+            detail.scope_decomposition = Some(CandidateScopeAdvisoryProjection {
+                version: 1,
+                manifest,
+                advice,
+            });
+        }
         tx.commit().await?;
         Ok(detail)
     }

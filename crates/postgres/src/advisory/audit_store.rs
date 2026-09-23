@@ -191,6 +191,7 @@ async fn opportunity_detail(
             .into_iter()
             .map(dispatch_audit_from_row)
             .collect::<Result<Vec<_>>>()?,
+        scope_decomposition: None,
     })
 }
 
