@@ -4,7 +4,7 @@ mod fragment;
 mod history;
 mod links;
 mod protected;
-mod resolve;
+pub(crate) mod resolve;
 mod save;
 mod snapshot;
 mod write;

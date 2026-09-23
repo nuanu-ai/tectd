@@ -1,9 +1,9 @@
 use super::*;
 use crate::{
-    DenyScopeBudget, DisabledScopeAdviceProvider, ScopeAdviceProvider, ScopeAdviceProviderError,
-    ScopeAdviceProviderObservation, ScopeAdviceProviderRequest, ScopeAuthorityObserver,
-    ScopeAuthorityOutcome, ScopeAuthorizedInvalidObservation, ScopeBudgetPolicy,
-    ScopeBudgetRequest, UnavailableScopeManifestSupplier,
+    AuthoredScopeAlternative, DenyScopeBudget, DisabledScopeAdviceProvider, ScopeAdviceProvider,
+    ScopeAdviceProviderError, ScopeAdviceProviderObservation, ScopeAdviceProviderRequest,
+    ScopeAuthorityObserver, ScopeAuthorityOutcome, ScopeAuthorizedInvalidObservation,
+    ScopeBudgetPolicy, ScopeBudgetRequest, UnavailableScopeManifestSupplier,
 };
 use async_trait::async_trait;
 use std::sync::{

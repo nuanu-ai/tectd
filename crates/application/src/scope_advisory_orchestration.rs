@@ -1,14 +1,13 @@
 use crate::{
-    AdvisoryLifecycleCapability, GuardedScopeAdviceRecord, ScopeAdviceProviderRequest,
-    ScopeAuthorityRequest, ScopeBudgetRequest, ScopeManifestRecord, Sha256ScopeDigest,
-    TransactionMode, WorkspaceService,
+    AdvisoryLifecycleCapability, AuthoredScopeSet, GuardedScopeAdviceRecord,
+    ScopeAdviceProviderRequest, ScopeAuthorityRequest, ScopeBudgetRequest, ScopeManifestRecord,
+    Sha256ScopeDigest, TransactionMode, WorkspaceService,
 };
 mod capture;
 mod decisions;
 mod helpers;
 use helpers::*;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 use tect_domain::{
     AdvisoryDispatchAuthorization, AdvisoryDispatchOutcome, AdvisoryDispatchSeal,
     AdvisoryOpportunity, AdvisoryOpportunityState, AdvisoryPolicyInput, AdvisoryReason,
@@ -20,63 +19,6 @@ use uuid::Uuid;
 
 #[cfg(test)]
 mod tests;
-
-/// Caller-authored alternatives are request-local until the source resolver
-/// freezes them against the authoritative candidate set and its fragments.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct AuthoredScopeAlternative {
-    pub key: String,
-    pub kind: tect_domain::ScopeDecompositionKind,
-    pub draft: tect_domain::ScopeCandidateDraft,
-    /// Explicit structural coverage claims; the resolver must verify them.
-    pub covered_source_ref_ids: Vec<Uuid>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct AuthoredScopeSet {
-    pub expected_candidate_set_revision: i64,
-    pub baseline_key: String,
-    pub alternatives: Vec<AuthoredScopeAlternative>,
-}
-
-impl AuthoredScopeSet {
-    pub fn validate(&self) -> Result<()> {
-        if self.expected_candidate_set_revision < 1
-            || self.alternatives.is_empty()
-            || self.alternatives.len() > 100
-        {
-            return Err(Error::InvalidArguments);
-        }
-        let mut keys = BTreeSet::new();
-        for alternative in &self.alternatives {
-            if !valid_request_local_key(&alternative.key)
-                || !keys.insert(&alternative.key)
-                || alternative.covered_source_ref_ids.iter().any(Uuid::is_nil)
-                || alternative
-                    .covered_source_ref_ids
-                    .windows(2)
-                    .any(|pair| pair[0] >= pair[1])
-            {
-                return Err(Error::InvalidArguments);
-            }
-            alternative.draft.validate()?;
-        }
-        if !keys.contains(&self.baseline_key) {
-            return Err(Error::InvalidArguments);
-        }
-        Ok(())
-    }
-}
-
-fn valid_request_local_key(key: &str) -> bool {
-    !key.is_empty()
-        && key.len() <= 64
-        && key
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

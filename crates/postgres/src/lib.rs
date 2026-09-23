@@ -42,7 +42,7 @@ pub use knowledge_recovery::{
     prepare_knowledge_suppression_manifest, record_knowledge_suppression_export,
 };
 pub use knowledge_search_admin::enable_knowledge_vector_search;
-pub use scope_advisory::PgScopeAuthorityObserver;
+pub use scope_advisory::{PgScopeAuthoredManifestSupplier, PgScopeAuthorityObserver};
 pub use store::PgStore;
 
 use tect_domain::Error;

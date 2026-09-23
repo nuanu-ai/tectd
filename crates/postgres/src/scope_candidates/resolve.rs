@@ -1,4 +1,5 @@
 use crate::storage_error;
+use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
 use std::collections::BTreeMap;
 use tect_domain::{
@@ -39,12 +40,12 @@ pub(super) struct Source {
     pub(super) body: String,
 }
 
-pub(super) struct ResolveContext {
-    pub(super) tenant_id: Uuid,
-    pub(super) workspace_id: Uuid,
-    pub(super) candidate_set_id: Uuid,
-    pub(super) snapshot_id: Uuid,
-    pub(super) latest_input: i64,
+pub(crate) struct ResolveContext {
+    pub(crate) tenant_id: Uuid,
+    pub(crate) workspace_id: Uuid,
+    pub(crate) candidate_set_id: Uuid,
+    pub(crate) snapshot_id: Uuid,
+    pub(crate) latest_input: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -62,6 +63,49 @@ pub(super) async fn resolve(
     context: &ResolveContext,
     draft: &ScopeCandidateDraft,
     previous: Option<&ResolvedCandidateDraft>,
+) -> Result<ResolvedCandidateDraft> {
+    resolve_with_allocator(transaction, context, draft, previous, &|_, _| {
+        Uuid::new_v4()
+    })
+    .await
+}
+
+/// Advisory-only resolution: local labels receive stable, request-scoped
+/// entity IDs. The normal saved-draft path above retains its random IDs.
+pub(crate) async fn resolve_authored(
+    transaction: &mut Transaction<'_, Postgres>,
+    context: &ResolveContext,
+    draft: &ScopeCandidateDraft,
+    previous: Option<&ResolvedCandidateDraft>,
+    seed: &[u8; 32],
+) -> Result<ResolvedCandidateDraft> {
+    resolve_with_allocator(transaction, context, draft, previous, &|kind, local| {
+        authored_local_id(seed, kind, local)
+    })
+    .await
+}
+
+fn authored_local_id(seed: &[u8; 32], kind: Kind, local: &str) -> Uuid {
+    let mut hash = Sha256::new();
+    hash.update(b"tect.scope-authored-entity-id/source-authored-v1\0");
+    hash.update(seed);
+    hash.update(kind.noun().as_bytes());
+    hash.update([0]);
+    hash.update(local.as_bytes());
+    let digest = hash.finalize();
+    let mut bytes = [0_u8; 16];
+    bytes.copy_from_slice(&digest[..16]);
+    bytes[6] = (bytes[6] & 0x0f) | 0x80;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(bytes)
+}
+
+async fn resolve_with_allocator(
+    transaction: &mut Transaction<'_, Postgres>,
+    context: &ResolveContext,
+    draft: &ScopeCandidateDraft,
+    previous: Option<&ResolvedCandidateDraft>,
+    local_id: &impl Fn(Kind, &str) -> Uuid,
 ) -> Result<ResolvedCandidateDraft> {
     let rows = sqlx::query_as::<_, SourceRow>(
         "SELECT r.id,r.snapshot_id,r.kind,r.input_sequence,r.program_field,c.body \
@@ -96,21 +140,25 @@ pub(super) async fn resolve(
         &mut handles,
         Kind::Goal,
         draft.goals.iter().map(|v| &v.identity),
+        local_id,
     )?;
     allocate(
         &mut handles,
         Kind::Evidence,
         draft.evidence.iter().map(|v| &v.identity),
+        local_id,
     )?;
     allocate(
         &mut handles,
         Kind::Candidate,
         draft.candidates.iter().map(|v| &v.identity),
+        local_id,
     )?;
     allocate(
         &mut handles,
         Kind::Blocker,
         draft.blockers.iter().map(|v| &v.identity),
+        local_id,
     )?;
     let labels: super::links::Labels = handles
         .iter()
@@ -352,11 +400,12 @@ fn allocate<'a>(
     handles: &mut BTreeMap<String, (Kind, Uuid)>,
     kind: Kind,
     identities: impl Iterator<Item = &'a DraftIdentity>,
+    local_id: &impl Fn(Kind, &str) -> Uuid,
 ) -> Result<()> {
     for identity in identities {
         if let Some(local) = &identity.local
             && handles
-                .insert(local.clone(), (kind, Uuid::new_v4()))
+                .insert(local.clone(), (kind, local_id(kind, local)))
                 .is_some()
         {
             return Err(reason(format!(
@@ -488,4 +537,42 @@ fn candidate(
             .map(|v| resolve_ref(v, handles, Kind::Evidence, evidence))
             .collect::<Result<_>>()?,
     })
+}
+
+#[cfg(test)]
+mod authored_identity_tests {
+    use super::*;
+
+    #[test]
+    fn advisory_ids_are_stable_and_kind_scoped_while_saved_ids_remain_random() {
+        let first = [1_u8; 32];
+        let second = [2_u8; 32];
+        let id = authored_local_id(&first, Kind::Candidate, "local");
+        assert_eq!(id, authored_local_id(&first, Kind::Candidate, "local"));
+        assert_ne!(id, authored_local_id(&second, Kind::Candidate, "local"));
+        assert_ne!(id, authored_local_id(&first, Kind::Goal, "local"));
+        assert_ne!(id, authored_local_id(&first, Kind::Candidate, "other"));
+        let identity = DraftIdentity {
+            local: Some("local".into()),
+            id: None,
+            revision: None,
+        };
+        let mut saved_first = BTreeMap::new();
+        let mut saved_second = BTreeMap::new();
+        allocate(
+            &mut saved_first,
+            Kind::Candidate,
+            [&identity].into_iter(),
+            &|_, _| Uuid::new_v4(),
+        )
+        .unwrap();
+        allocate(
+            &mut saved_second,
+            Kind::Candidate,
+            [&identity].into_iter(),
+            &|_, _| Uuid::new_v4(),
+        )
+        .unwrap();
+        assert!(saved_first != saved_second);
+    }
 }
