@@ -163,7 +163,7 @@ const BINDINGS: [BindingRecord; 8] = [
     },
 ];
 
-pub(crate) struct StaticCandidateGuidance;
+pub struct StaticCandidateGuidance;
 
 impl CandidateGuidance for StaticCandidateGuidance {
     fn snapshot(

@@ -72,6 +72,21 @@ impl KnowledgeQueryCache {
 }
 
 impl WorkspaceService {
+    /// Installs only the authoritative Scope source adapters. The budget stays
+    /// deny-by-default and the transport provider stays disabled.
+    pub fn new_with_scope_sources(
+        store: Arc<dyn Store>,
+        inspector: Arc<dyn SourceInspector>,
+        setup_files: Arc<dyn SetupFiles>,
+        authority: Arc<dyn crate::ScopeAuthorityObserver>,
+        supplier: Arc<dyn crate::ScopeManifestSupplier>,
+    ) -> Self {
+        let mut service = Self::new(store, inspector, setup_files);
+        service.scope_authority = authority;
+        service.scope_manifest_supplier = supplier;
+        service
+    }
+
     pub fn new(
         store: Arc<dyn Store>,
         inspector: Arc<dyn SourceInspector>,

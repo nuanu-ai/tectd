@@ -1,6 +1,38 @@
 use super::live_support::{D, manifest, reseal_manifest, rw, set_config};
 use super::*;
 use crate::{PgStore, admin};
+use tect_application::{SetupFiles, SourceInspector, WorkspaceService};
+
+struct UnusedHostAdapters;
+
+#[async_trait::async_trait]
+impl SourceInspector for UnusedHostAdapters {
+    async fn inspect(&self, _: &str, _: &[String]) -> Result<tect_domain::SourceLocation> {
+        Err(Error::InternalInvariant)
+    }
+}
+
+impl SetupFiles for UnusedHostAdapters {
+    fn resolve_directory(&self, _: &str, _: &[String]) -> Result<tect_domain::SetupDirectory> {
+        Err(Error::InternalInvariant)
+    }
+
+    fn inspect(
+        &self,
+        _: &tect_domain::SetupDirectory,
+        _: usize,
+    ) -> Result<tect_domain::FileObservation> {
+        Err(Error::InternalInvariant)
+    }
+
+    fn publish(
+        &self,
+        _: &tect_domain::SetupDirectory,
+        _: &str,
+    ) -> Result<tect_domain::FilePublication> {
+        Err(Error::InternalInvariant)
+    }
+}
 
 struct FixtureCandidateGuidance;
 
@@ -74,15 +106,34 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         .bind(program).bind(tenant).bind(workspace).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO scope_candidate_sets(id,tenant_id,workspace_id,program_id,origin_request_id,origin_input,origin_payload,revision,status,boundary,input_cursor,latest_input,max_input_bytes) VALUES($1,$2,$3,$4,$5,'input','{}',3,'ready','finite',2,2,4096)")
         .bind(candidate).bind(tenant).bind(workspace).bind(program).bind(Uuid::new_v4()).execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO scope_candidate_contents(tenant_id,workspace_id,digest,body) VALUES($1,$2,$3,'body')")
-        .bind(tenant).bind(workspace).bind(D).execute(&pool).await.unwrap();
+    let frozen_program_body = serde_json::json!({
+        "id": program,
+        "workspace_id": workspace,
+        "status": "open",
+        "revision": 4,
+        "name": "p",
+        "intent": "i",
+        "basis": "b",
+        "boundaries": "finite",
+        "constraints": "c",
+        "success": "s",
+        "working_notes": null,
+        "pending_question": null,
+        "current_step": "ready",
+        "input_cursor": 2,
+        "latest_input": 2
+    })
+    .to_string();
+    sqlx::query("INSERT INTO scope_candidate_contents(tenant_id,workspace_id,digest,body) VALUES($1,$2,$3,$4)")
+        .bind(tenant).bind(workspace).bind(D).bind(frozen_program_body).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO scope_candidate_snapshots(id,tenant_id,workspace_id,candidate_set_id,sequence,program_revision,program_latest_input,planning_latest_input,program_body_digest,selected_worktree_ids,selected_sources_digest,method_id,method_revision,method_digest,method_body,method_origin_refs,registry_revision,registry_digest,rules) VALUES($1,$2,$3,$4,1,4,2,2,$5,'{}',$5,'m','4',$5,'body','[]','3',$5,'[]')")
         .bind(snapshot).bind(tenant).bind(workspace).bind(candidate).bind(D).execute(&pool).await.unwrap();
-    for (id, field) in [(source_refs[0], "intent"), (source_refs[1], "basis")] {
-        sqlx::query("INSERT INTO scope_candidate_source_refs(id,tenant_id,workspace_id,candidate_set_id,snapshot_id,kind,program_field,body_digest,label) VALUES($1,$2,$3,$4,$5,'program_field',$6,$7,$6)")
-            .bind(id).bind(tenant).bind(workspace).bind(candidate).bind(snapshot)
-            .bind(field).bind(D).execute(&pool).await.unwrap();
-    }
+    sqlx::query("INSERT INTO scope_candidate_source_refs(id,tenant_id,workspace_id,candidate_set_id,snapshot_id,kind,program_field,body_digest,label) VALUES($1,$2,$3,$4,$5,'program_field','intent',$6,'intent')")
+        .bind(source_refs[0]).bind(tenant).bind(workspace).bind(candidate).bind(snapshot)
+        .bind(D).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO scope_candidate_source_refs(id,tenant_id,workspace_id,candidate_set_id,snapshot_id,kind,body_digest,label) VALUES($1,$2,$3,$4,$5,'program_success',$6,'success')")
+        .bind(source_refs[1]).bind(tenant).bind(workspace).bind(candidate).bind(snapshot)
+        .bind(D).execute(&pool).await.unwrap();
     let blank_digest = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
     sqlx::query("INSERT INTO scope_candidate_contents(tenant_id,workspace_id,digest,body) VALUES($1,$2,$3,'   ')")
         .bind(tenant).bind(workspace).bind(blank_digest).execute(&pool).await.unwrap();
@@ -132,6 +183,87 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     };
     assert_eq!(observed.source, manifest.source);
     assert_eq!(observed.obligations, manifest.obligations);
+    let service_authority = std::sync::Arc::new(PgScopeAuthorityObserver::new(
+        store.clone(),
+        std::sync::Arc::new(FixtureCandidateGuidance),
+    ));
+    let service_supplier = std::sync::Arc::new(PgScopeAuthoredManifestSupplier::new(
+        store.clone(),
+        service_authority.clone(),
+    ));
+    let authored_scope_set = tect_application::AuthoredScopeSet {
+        expected_candidate_set_revision: 3,
+        baseline_key: "baseline".into(),
+        alternatives: vec![tect_application::AuthoredScopeAlternative {
+            key: "baseline".into(),
+            kind: tect_domain::ScopeDecompositionKind::Cohesive,
+            draft: serde_json::from_value(serde_json::json!({
+                "boundary": "finite",
+                "goals": [{
+                    "identity": {"local": "goal"},
+                    "text": "Preserve source",
+                    "source_ref_id": source_refs[1],
+                    "resolution": {"kind": "candidate", "reference": {"local": "candidate"}}
+                }],
+                "candidates": [{
+                    "identity": {"local": "candidate"},
+                    "title": "Cohesive",
+                    "outcome": "Exact outcome",
+                    "trigger": "Exact trigger",
+                    "delivered_behavior": "Exact behavior",
+                    "proof": "Exact proof",
+                    "coverage_goals": [{"local": "goal"}]
+                }]
+            }))
+            .unwrap(),
+            covered_source_ref_ids: source_refs.to_vec(),
+        }],
+    };
+    service_supplier
+        .supply_authored(&tect_application::ScopeAuthoredManifestRequest {
+            tenant_id: tenant,
+            observation: observed.clone(),
+            authored_scope_set: authored_scope_set.clone(),
+        })
+        .await
+        .unwrap();
+    let service = WorkspaceService::new_with_scope_sources(
+        std::sync::Arc::new(store.clone()),
+        std::sync::Arc::new(UnusedHostAdapters),
+        std::sync::Arc::new(UnusedHostAdapters),
+        service_authority,
+        service_supplier,
+    );
+    let no_call = service
+        .run_scope_advisory(
+            &tect_domain::RequestContext {
+                auth: enrollment.auth.clone(),
+                native_session_id: session.to_string(),
+                workspace_key: format!("scope-live-{workspace}"),
+            },
+            &tect_application::RunScopeAdvisory {
+                request_id: Uuid::new_v4(),
+                candidate_set_id: candidate,
+                session_preference: tect_domain::AdvisoryRequestPreference::UseWorkspace,
+                request_preference: tect_domain::AdvisoryRequestPreference::UseWorkspace,
+                authored_scope_set: Some(authored_scope_set),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(no_call.opportunity.state, AdvisoryOpportunityState::NoCall);
+    assert_eq!(
+        no_call.opportunity.primary_reason,
+        AdvisoryReason::CapabilityUnavailable
+    );
+    assert!(no_call.advice.is_none());
+    let dispatch_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM advisory_dispatch WHERE opportunity_id=$1")
+            .bind(no_call.opportunity.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(dispatch_count, 0);
     assert_eq!(
         authority
             .observe(&ScopeAuthorityRequest {

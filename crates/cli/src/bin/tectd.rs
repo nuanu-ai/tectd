@@ -4,7 +4,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tect_application::WorkspaceService;
 use tect_domain::Error;
-use tect_postgres::PgStore;
+use tect_postgres::{PgScopeAuthoredManifestSupplier, PgScopeAuthorityObserver, PgStore};
 use tokio::net::UnixListener;
 
 #[path = "../knowledge_search_worker.rs"]
@@ -29,11 +29,21 @@ async fn run() -> tect_domain::Result<()> {
     validate_socket_parent(&socket)?;
     reject_existing_path(&socket)?;
 
-    let store = Arc::new(PgStore::connect(&database_url, max_connections).await?);
-    let mut service = WorkspaceService::new(
-        store,
+    let store = PgStore::connect(&database_url, max_connections).await?;
+    let authority = Arc::new(PgScopeAuthorityObserver::new(
+        store.clone(),
+        Arc::new(tect_host::StaticCandidateGuidance),
+    ));
+    let supplier = Arc::new(PgScopeAuthoredManifestSupplier::new(
+        store.clone(),
+        authority.clone(),
+    ));
+    let mut service = WorkspaceService::new_with_scope_sources(
+        Arc::new(store),
         Arc::new(tect_host::GitSourceInspector),
         Arc::new(tect_host::LocalSetupFiles),
+        authority,
+        supplier,
     );
     let embedding_enabled = match tect_host::LocalEmbeddingConfig::from_env() {
         Ok(Some(config)) => {

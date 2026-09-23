@@ -55,6 +55,7 @@ pub use knowledge_embedding::{LocalEmbeddingConfig, LocalKnowledgeEmbeddingWorke
 pub use mcp::run_stdio;
 #[doc(hidden)]
 pub use scope_guidance::CandidateEncoding;
+pub use scope_guidance::StaticCandidateGuidance;
 pub use setup_files::LocalSetupFiles;
 #[doc(hidden)]
 pub use slice_dispatch::NativePlanningEncoding;
