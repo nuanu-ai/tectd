@@ -733,6 +733,34 @@ struct FixtureProvider {
     observation: ScopeAdviceProviderObservation,
 }
 
+fn fixture_started_dispatch(
+    authorization: &AdvisoryDispatchAuthorization,
+    should_send: bool,
+) -> AdvisoryDispatchStart {
+    AdvisoryDispatchStart {
+        dispatch: tect_domain::AdvisoryDispatch {
+            id: authorization.dispatch_id,
+            opportunity_id: authorization.opportunity_id,
+            predecessor_dispatch_id: None,
+            attempt_number: 1,
+            provider: authorization.provider.clone(),
+            model: authorization.model.clone(),
+            configuration_digest: authorization.configuration_digest.clone(),
+            material_digest: authorization.material_digest.clone(),
+            payload_digest: authorization.payload_digest.clone(),
+            input_tokens: None,
+            output_tokens: None,
+            latency_ms: None,
+            state: AdvisoryDispatchState::Sending,
+            send_certainty: AdvisorySendCertainty::SentUnknown,
+            outcome: None,
+            retry_basis: tect_domain::AdvisoryRetryBasis::Initial,
+            raw_response_ref: None,
+        },
+        should_send,
+    }
+}
+
 #[async_trait]
 impl ScopeAdviceProvider for FixtureProvider {
     fn identity(&self) -> Option<(&'static str, &'static str)> {
@@ -755,8 +783,10 @@ impl ScopeAdviceProvider for FixtureProvider {
         &self,
         request: &ScopeAdviceProviderRequest,
         prepared: PreparedScopeAdviceAttempt,
+        permit: StartedScopeDispatchPermit,
     ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
         assert_eq!(prepared.request(), &request.request);
+        assert!(permit.permits(request.dispatch_id, &prepared));
         *self.received_body.lock().unwrap() = Some(prepared.body().to_vec());
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(self.observation.clone())
@@ -823,8 +853,15 @@ async fn fixture_provider_returns_normalized_answers_once() {
     .unwrap();
     assert_eq!(authorization.request_payload, expected_body);
     assert_eq!(authorization.payload_digest, sha256(&expected_body));
+    let started = fixture_started_dispatch(&authorization, true);
+    let permit =
+        StartedScopeDispatchPermit::after_committed_start(&started, &authorization, &prepared)
+            .unwrap();
     assert_eq!(
-        provider.attempt_prepared(&request, prepared).await.unwrap(),
+        provider
+            .attempt_prepared(&request, prepared, permit)
+            .await
+            .unwrap(),
         observation
     );
     assert_eq!(
@@ -832,6 +869,97 @@ async fn fixture_provider_returns_normalized_answers_once() {
         Some(authorization.request_payload)
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn permit_requires_send_start_and_binds_exact_prepared_entity() {
+    let request = fixture_scope_request();
+    let prepared = PreparedScopeAdviceAttempt::new(
+        request.clone(),
+        b"{\"scope\":\"private-marker\"}".to_vec(),
+        "fixture-profile".into(),
+        "fixture-model".into(),
+        "https://fixture.invalid/advice".into(),
+        "fixture-wire/1".into(),
+    )
+    .unwrap();
+    let mut config = no_call_config(WorkspaceAdvisoryMode::Optional);
+    config.provider_profile_ref = Some(AdvisoryProviderProfileRef {
+        id: "fixture-profile".into(),
+    });
+    config.model_configuration = Some(AdvisoryModelConfiguration {
+        model: "fixture-model".into(),
+    });
+    let authorization = scope_dispatch_authorization(
+        &prepared,
+        Uuid::from_u128(21),
+        Uuid::from_u128(22),
+        "fixture",
+        "v1",
+        &config,
+        "a".repeat(64),
+        "owner:fixture",
+    )
+    .unwrap();
+    let mut started = fixture_started_dispatch(&authorization, false);
+    assert!(
+        StartedScopeDispatchPermit::after_committed_start(&started, &authorization, &prepared)
+            .is_err()
+    );
+    started.should_send = true;
+    started.dispatch.state = AdvisoryDispatchState::Authorized;
+    assert!(
+        StartedScopeDispatchPermit::after_committed_start(&started, &authorization, &prepared)
+            .is_err()
+    );
+    started.dispatch.state = AdvisoryDispatchState::Sending;
+    let permit =
+        StartedScopeDispatchPermit::after_committed_start(&started, &authorization, &prepared)
+            .unwrap();
+    assert!(permit.permits(authorization.dispatch_id, &prepared));
+    assert!(!permit.permits(Uuid::from_u128(23), &prepared));
+    let changed_body = PreparedScopeAdviceAttempt::new(
+        request,
+        b"{\"scope\":\"different\"}".to_vec(),
+        "fixture-profile".into(),
+        "fixture-model".into(),
+        "https://fixture.invalid/advice".into(),
+        "fixture-wire/1".into(),
+    )
+    .unwrap();
+    assert!(!permit.permits(authorization.dispatch_id, &changed_body));
+    let rendered = format!("{prepared:?}");
+    assert!(!rendered.contains("private-marker"));
+    assert!(rendered.contains("[redacted]"));
+}
+
+#[test]
+fn invalid_utf8_is_rejected_before_transport() {
+    assert_eq!(
+        PreparedScopeAdviceAttempt::new(
+            fixture_scope_request(),
+            vec![0xff],
+            "profile".into(),
+            "model".into(),
+            "https://fixture.invalid/advice".into(),
+            "wire/1".into(),
+        ),
+        Err(ScopeAdviceProviderError::ProvenNotSent)
+    );
+}
+
+#[test]
+fn permit_is_minted_only_after_successful_start_commit_in_runtime_path() {
+    let source = include_str!("../scope_advisory_orchestration.rs");
+    let start = source.find(".start_advisory_dispatch(&lifecycle").unwrap();
+    let commit = source[start..].find("start.commit().await?").unwrap() + start;
+    let no_send = source[commit..].find("if !started.should_send").unwrap() + commit;
+    let mint = source[no_send..]
+        .find("StartedScopeDispatchPermit::after_committed_start")
+        .unwrap()
+        + no_send;
+    let send = source[mint..].find(".attempt_prepared(").unwrap() + mint;
+    assert!(start < commit && commit < no_send && no_send < mint && mint < send);
 }
 
 struct PreflightFixtureProvider {
@@ -871,6 +999,7 @@ impl ScopeAdviceProvider for PreflightFixtureProvider {
         &self,
         _: &ScopeAdviceProviderRequest,
         _: PreparedScopeAdviceAttempt,
+        _: StartedScopeDispatchPermit,
     ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
         self.attempt_calls.fetch_add(1, Ordering::SeqCst);
         Err(ScopeAdviceProviderError::ProvenNotSent)

@@ -506,6 +506,15 @@ fn config_and_source_have_no_hidden_defaults_retries_or_credential_rendering() {
         .is_err()
     );
     let source = include_str!("../../jev_scope_advice.rs");
+    assert!(!source.contains("pub async fn attempt_prepared("));
+    let trait_guard = source
+        .find("|| !permit.permits(request.dispatch_id, &prepared)")
+        .unwrap();
+    let trait_send = source[trait_guard..]
+        .find("JevScopeAdviceProvider::attempt_prepared(self, request.dispatch_id, prepared)")
+        .unwrap()
+        + trait_guard;
+    assert!(trait_guard < trait_send);
     assert_eq!(source.matches(".send()").count(), 1);
     assert!(source.contains(".retry(reqwest::retry::never())"));
     let receipt_boundary = source

@@ -8,6 +8,7 @@ use std::time::Duration;
 use tect_application::{
     PreparedScopeAdviceAttempt, ScopeAdviceProvider, ScopeAdviceProviderError,
     ScopeAdviceProviderFailureReason, ScopeAdviceProviderObservation, ScopeAdviceProviderRequest,
+    StartedScopeDispatchPermit,
 };
 use tect_domain::{
     AdvisoryDispatchOutcome, AdvisorySendCertainty, Error, Result, ScopeAdviceRequest,
@@ -168,7 +169,7 @@ impl JevScopeAdviceProvider {
         }
     }
 
-    pub async fn attempt_prepared(
+    async fn attempt_prepared(
         &self,
         dispatch_id: uuid::Uuid,
         prepared: PreparedScopeAdviceAttempt,
@@ -322,8 +323,10 @@ impl ScopeAdviceProvider for JevScopeAdviceProvider {
         &self,
         request: &ScopeAdviceProviderRequest,
         prepared: PreparedScopeAdviceAttempt,
+        permit: StartedScopeDispatchPermit,
     ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
-        if prepared.request() != &request.request {
+        if prepared.request() != &request.request || !permit.permits(request.dispatch_id, &prepared)
+        {
             return Err(ScopeAdviceProviderError::ProvenNotSent);
         }
         JevScopeAdviceProvider::attempt_prepared(self, request.dispatch_id, prepared).await

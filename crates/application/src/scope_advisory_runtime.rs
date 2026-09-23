@@ -162,7 +162,7 @@ pub struct ScopeAdviceProviderRequest {
 /// Immutable, application-owned representation of the exact request body and
 /// provider target prepared before dispatch authorization. It contains no
 /// credentials and can only be consumed, not mutated.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(PartialEq, Eq)]
 pub struct PreparedScopeAdviceAttempt {
     request: ScopeAdviceRequest,
     body: Vec<u8>,
@@ -172,6 +172,16 @@ pub struct PreparedScopeAdviceAttempt {
     wire_version: String,
     body_length: usize,
     body_sha256: String,
+}
+
+impl std::fmt::Debug for PreparedScopeAdviceAttempt {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreparedScopeAdviceAttempt")
+            .field("body", &"[redacted]")
+            .field("body_length", &self.body_length)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PreparedScopeAdviceAttempt {
@@ -187,6 +197,7 @@ impl PreparedScopeAdviceAttempt {
             || model.is_empty()
             || destination.is_empty()
             || wire_version.is_empty()
+            || std::str::from_utf8(&body).is_err()
         {
             return Err(ScopeAdviceProviderError::ProvenNotSent);
         }
@@ -311,6 +322,7 @@ pub trait ScopeAdviceProvider: Send + Sync {
         &self,
         request: &ScopeAdviceProviderRequest,
         prepared: PreparedScopeAdviceAttempt,
+        permit: crate::scope_advisory_orchestration::StartedScopeDispatchPermit,
     ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError>;
 }
 
@@ -373,6 +385,7 @@ impl ScopeAdviceProvider for DisabledScopeAdviceProvider {
         &self,
         _: &ScopeAdviceProviderRequest,
         _: PreparedScopeAdviceAttempt,
+        _: crate::scope_advisory_orchestration::StartedScopeDispatchPermit,
     ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
         Err(ScopeAdviceProviderError::ProvenNotSent)
     }

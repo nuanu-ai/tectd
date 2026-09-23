@@ -1,7 +1,7 @@
 use crate::{
     AdvisoryLifecycleCapability, AuthoredScopeSet, GuardedScopeAdviceRecord,
-    ScopeAdviceProviderRequest, ScopeAuthorityRequest, ScopeBudgetRequest, ScopeManifestRecord,
-    Sha256ScopeDigest, TransactionMode, WorkspaceService,
+    PreparedScopeAdviceAttempt, ScopeAdviceProviderRequest, ScopeAuthorityRequest,
+    ScopeBudgetRequest, ScopeManifestRecord, Sha256ScopeDigest, TransactionMode, WorkspaceService,
 };
 mod capture;
 mod decisions;
@@ -9,10 +9,11 @@ mod helpers;
 use helpers::*;
 use serde::{Deserialize, Serialize};
 use tect_domain::{
-    AdvisoryDispatchOutcome, AdvisoryDispatchSeal, AdvisoryDispatchState, AdvisoryOpportunity,
-    AdvisoryOpportunityState, AdvisoryPolicyInput, AdvisoryReason, AdvisoryRequestPreference,
-    AdvisorySendCertainty, Error, GuardedScopeAdvice, RequestContext, Result, ScopeAdviceRequest,
-    ScopeDispositionRequest, ScopeDispositionRevision, assess_advisory_policy, guard_scope_advice,
+    AdvisoryDispatchAuthorization, AdvisoryDispatchOutcome, AdvisoryDispatchSeal,
+    AdvisoryDispatchStart, AdvisoryDispatchState, AdvisoryOpportunity, AdvisoryOpportunityState,
+    AdvisoryPolicyInput, AdvisoryReason, AdvisoryRequestPreference, AdvisorySendCertainty, Error,
+    GuardedScopeAdvice, RequestContext, Result, ScopeAdviceRequest, ScopeDispositionRequest,
+    ScopeDispositionRevision, assess_advisory_policy, guard_scope_advice,
 };
 use uuid::Uuid;
 
@@ -34,6 +35,64 @@ pub struct RunScopeAdvisory {
 pub struct ScopeAdvisoryOutcome {
     pub opportunity: AdvisoryOpportunity,
     pub advice: Option<GuardedScopeAdvice>,
+}
+
+/// One-use transport capability minted only after the audited dispatch start
+/// transaction has committed. Its private constructor is in this module.
+pub struct StartedScopeDispatchPermit {
+    dispatch_id: Uuid,
+    body_sha256: String,
+    body_length: usize,
+    profile: String,
+    model: String,
+    destination: String,
+    wire_version: String,
+    configuration_digest: String,
+}
+
+impl StartedScopeDispatchPermit {
+    fn after_committed_start(
+        started: &AdvisoryDispatchStart,
+        authorization: &AdvisoryDispatchAuthorization,
+        prepared: &PreparedScopeAdviceAttempt,
+    ) -> Result<Self> {
+        let dispatch = &started.dispatch;
+        if !started.should_send
+            || dispatch.state != AdvisoryDispatchState::Sending
+            || dispatch.send_certainty != AdvisorySendCertainty::SentUnknown
+            || dispatch.id != authorization.dispatch_id
+            || dispatch.opportunity_id != authorization.opportunity_id
+            || dispatch.configuration_digest != authorization.configuration_digest
+            || dispatch.payload_digest != authorization.payload_digest
+            || dispatch.model != prepared.model()
+            || authorization.request_payload != prepared.body()
+            || authorization.payload_digest != prepared.body_sha256()
+            || prepared.body_length() != prepared.body().len()
+        {
+            return Err(Error::InputConflict);
+        }
+        Ok(Self {
+            dispatch_id: dispatch.id,
+            body_sha256: prepared.body_sha256().to_owned(),
+            body_length: prepared.body_length(),
+            profile: prepared.profile().to_owned(),
+            model: prepared.model().to_owned(),
+            destination: prepared.destination().to_owned(),
+            wire_version: prepared.wire_version().to_owned(),
+            configuration_digest: dispatch.configuration_digest.clone(),
+        })
+    }
+
+    pub fn permits(&self, dispatch_id: Uuid, prepared: &PreparedScopeAdviceAttempt) -> bool {
+        self.dispatch_id == dispatch_id
+            && self.body_sha256 == prepared.body_sha256()
+            && self.body_length == prepared.body_length()
+            && self.profile == prepared.profile()
+            && self.model == prepared.model()
+            && self.destination == prepared.destination()
+            && self.wire_version == prepared.wire_version()
+            && !self.configuration_digest.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -635,6 +694,12 @@ impl WorkspaceService {
             return Err(Error::InputConflict);
         }
 
+        let send_permit = StartedScopeDispatchPermit::after_committed_start(
+            &started,
+            &authorization,
+            &prepared_attempt,
+        )?;
+
         let mut provider_observation = self
             .scope_advice_provider
             .attempt_prepared(
@@ -644,6 +709,7 @@ impl WorkspaceService {
                     budget_policy: policy,
                 },
                 prepared_attempt,
+                send_permit,
             )
             .await
             .map(normalize_provider_success)
