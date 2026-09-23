@@ -82,6 +82,8 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
                 | "workspace_advisory_audit"
                 | "scope_advisory_get"
                 | "scope_advisory_audit"
+                | "candidate_advisory_get"
+                | "candidate_advisory_audit"
         ) =>
         {
             crate::advisory_tools::parse(name, arguments).map(Invocation::Advisory)

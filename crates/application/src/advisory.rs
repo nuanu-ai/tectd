@@ -146,6 +146,57 @@ impl WorkspaceService {
         Ok(detail)
     }
 
+    pub async fn candidate_advisory_audit(
+        &self,
+        context: &tect_domain::RequestContext,
+        candidate_set_id: uuid::Uuid,
+        query: &AdvisoryAuditQuery,
+    ) -> Result<AdvisoryAuditPage> {
+        query.validate()?;
+        if candidate_set_id.is_nil() || query.scope_id.is_some() {
+            return Err(tect_domain::Error::InvalidArguments);
+        }
+        let (mut tx, workspace, _) = self
+            .advisory_transaction(context, TransactionMode::ReadOnly)
+            .await?;
+        if !tx
+            .advisory_candidate_set_exists(workspace.id, candidate_set_id)
+            .await?
+        {
+            return Err(tect_domain::Error::NotFound);
+        }
+        let page = tx
+            .candidate_advisory_audit(workspace.id, candidate_set_id, query)
+            .await?;
+        tx.commit().await?;
+        Ok(page)
+    }
+
+    pub async fn candidate_advisory_get(
+        &self,
+        context: &tect_domain::RequestContext,
+        candidate_set_id: uuid::Uuid,
+        opportunity_id: uuid::Uuid,
+    ) -> Result<AdvisoryOpportunityDetail> {
+        if candidate_set_id.is_nil() || opportunity_id.is_nil() {
+            return Err(tect_domain::Error::InvalidArguments);
+        }
+        let (mut tx, workspace, _) = self
+            .advisory_transaction(context, TransactionMode::ReadOnly)
+            .await?;
+        if !tx
+            .advisory_candidate_set_exists(workspace.id, candidate_set_id)
+            .await?
+        {
+            return Err(tect_domain::Error::NotFound);
+        }
+        let detail = tx
+            .candidate_advisory_opportunity_detail(workspace.id, candidate_set_id, opportunity_id)
+            .await?;
+        tx.commit().await?;
+        Ok(detail)
+    }
+
     /// Controlled Slice-00 fixture boundary. No public production route reaches
     /// this while the capability remains unavailable.
     #[cfg(test)]

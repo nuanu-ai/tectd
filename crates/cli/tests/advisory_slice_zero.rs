@@ -154,6 +154,24 @@ async fn slice_zero_is_live_tenant_safe_durable_and_routed() {
     assert_eq!(history, [0, 1, 2]);
 
     let (source, candidate) = ready_source_candidate(&mut client, &repo).await;
+    let candidate_set_id = id(&source["candidate_set"]["id"]);
+    let native_scopes_before: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM native_scopes WHERE tenant_id=$1 AND workspace_id=$2 AND source_candidate_set_id=$3",
+    )
+    .bind(enrollment.tenant_id)
+    .bind(workspace_id)
+    .bind(candidate_set_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(native_scopes_before, 0);
+    route(
+        &mut client,
+        "query",
+        "candidate.advisory.audit",
+        json!({"candidate_set_id":candidate_set_id,"limit":10}),
+    )
+    .await;
     let opened_scope = route(
         &mut client,
         "command",
@@ -371,6 +389,125 @@ async fn slice_zero_is_live_tenant_safe_durable_and_routed() {
     assert_eq!(detail["dispatches"][0]["send_certainty"], "sent_unknown");
     assert_eq!(detail["dispatches"][0]["request_bytes"], 7);
 
+    let candidate_opportunity = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,scope_id,work_item_kind,work_item_id,session_id,authorized_actor_id,source_revision,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) \
+         VALUES($1,$2,$3,NULL,'scope_candidate_set',$4,$5,$6,'1','scope_decomposition','scope.decomposition.before_selection',2,'use_workspace','use_workspace','slice-00.v1',$7,$8,'no_call','request_skip')",
+    )
+    .bind(candidate_opportunity)
+    .bind(enrollment.tenant_id)
+    .bind(workspace_id)
+    .bind(candidate_set_id)
+    .bind(session_id)
+    .bind(principal_id)
+    .bind(format!("candidate-audit-{candidate_opportunity}"))
+    .bind("8".repeat(64))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let second_candidate_opportunity = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,scope_id,work_item_kind,work_item_id,session_id,authorized_actor_id,source_revision,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) \
+         SELECT $2,tenant_id,workspace_id,scope_id,work_item_kind,work_item_id,session_id,authorized_actor_id,source_revision,capability,decision_point,config_revision,session_preference,request_preference,policy_version,$3,material_digest,state,primary_reason FROM advisory_opportunity WHERE id=$1",
+    )
+    .bind(candidate_opportunity)
+    .bind(second_candidate_opportunity)
+    .bind(format!("candidate-audit-{second_candidate_opportunity}"))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let candidate_audit = route(
+        &mut client,
+        "query",
+        "candidate.advisory.audit",
+        json!({"candidate_set_id":candidate_set_id,"limit":100}),
+    )
+    .await;
+    assert!(
+        candidate_audit["opportunities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == candidate_opportunity.to_string())
+    );
+    assert!(
+        !candidate_audit["opportunities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == opportunity_id.to_string())
+    );
+    assert!(
+        candidate_audit["aggregate"]["no_call_by_reason"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["reason"] == "request_skip" && row["count"].as_i64().unwrap() >= 2)
+    );
+    let first_page = route(
+        &mut client,
+        "query",
+        "candidate.advisory.audit",
+        json!({"candidate_set_id":candidate_set_id,"limit":1,"reason":"request_skip"}),
+    )
+    .await;
+    let second_page = route(&mut client, "query", "candidate.advisory.audit", json!({"candidate_set_id":candidate_set_id,"limit":1,"reason":"request_skip","after":first_page["next_after"]})).await;
+    assert_ne!(
+        first_page["opportunities"][0]["id"],
+        second_page["opportunities"][0]["id"]
+    );
+    assert_eq!(first_page["aggregate"], second_page["aggregate"]);
+    let candidate_detail = route(
+        &mut client,
+        "query",
+        "candidate.advisory.get",
+        json!({"candidate_set_id":candidate_set_id,"opportunity_id":candidate_opportunity}),
+    )
+    .await;
+    assert_eq!(
+        candidate_detail["opportunity"]["work_item_id"],
+        candidate_set_id.to_string()
+    );
+    assert_eq!(
+        route_error(
+            &mut client,
+            "query",
+            "candidate.advisory.get",
+            json!({"candidate_set_id":candidate_set_id,"opportunity_id":opportunity_id})
+        )
+        .await["error"]["code"],
+        "not_found"
+    );
+    assert_eq!(
+        route_error(
+            &mut client,
+            "query",
+            "candidate.advisory.audit",
+            json!({"candidate_set_id":Uuid::new_v4(),"limit":10})
+        )
+        .await["error"]["code"],
+        "not_found"
+    );
+
+    let mut other_workspace = Mcp::start(
+        &socket,
+        &config_path,
+        &Uuid::new_v4().to_string(),
+        &format!("candidate-other-workspace-{}", Uuid::new_v4()),
+    )
+    .await;
+    other_workspace.call("open_workspace", json!({})).await;
+    assert_eq!(
+        route_error(
+            &mut other_workspace,
+            "query",
+            "candidate.advisory.audit",
+            json!({"candidate_set_id":candidate_set_id,"limit":10}),
+        )
+        .await["error"]["code"],
+        "not_found"
+    );
+
     let enrollment_b = admin::enroll_host(&pool, None, Vec::new()).await.unwrap();
     let config_b = root.join("host-b.json");
     host_file(&config_b, &enrollment_b.auth);
@@ -382,6 +519,16 @@ async fn slice_zero_is_live_tenant_safe_durable_and_routed() {
     )
     .await;
     tenant_b.call("open_workspace", json!({})).await;
+    assert_eq!(
+        route_error(
+            &mut tenant_b,
+            "query",
+            "candidate.advisory.get",
+            json!({"candidate_set_id":candidate_set_id,"opportunity_id":candidate_opportunity})
+        )
+        .await["error"]["code"],
+        "not_found"
+    );
     route(
         &mut tenant_b,
         "command",

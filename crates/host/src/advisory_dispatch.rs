@@ -30,6 +30,22 @@ pub(crate) async fn execute(
                 .scope_advisory_get(context, scope_id, opportunity_id)
                 .await?,
         ),
+        AdvisoryInvocation::CandidateAudit {
+            candidate_set_id,
+            query,
+        } => serde_json::to_value(
+            service
+                .candidate_advisory_audit(context, candidate_set_id, &query)
+                .await?,
+        ),
+        AdvisoryInvocation::CandidateGet {
+            candidate_set_id,
+            opportunity_id,
+        } => serde_json::to_value(
+            service
+                .candidate_advisory_get(context, candidate_set_id, opportunity_id)
+                .await?,
+        ),
     }
     .map_err(tect_domain::Error::invalid_arguments_from)?;
     let value = responses::with_actions(value, Vec::new(), None);

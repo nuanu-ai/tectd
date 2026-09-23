@@ -105,6 +105,23 @@ pub trait AdvisoryStore: Send {
         scope_id: Uuid,
         opportunity_id: Uuid,
     ) -> Result<AdvisoryOpportunityDetail>;
+    async fn advisory_candidate_set_exists(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+    ) -> Result<bool>;
+    async fn candidate_advisory_audit(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+        query: &AdvisoryAuditQuery,
+    ) -> Result<AdvisoryAuditPage>;
+    async fn candidate_advisory_opportunity_detail(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+        opportunity_id: Uuid,
+    ) -> Result<AdvisoryOpportunityDetail>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

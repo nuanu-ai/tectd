@@ -79,7 +79,43 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
             advisory_audit_schema(true),
             json!({"scope_id":example_id,"limit":50}),
         ),
+        route!(
+            "query",
+            "candidate.advisory.get",
+            "candidate_advisory_get",
+            "Read one candidate-set advisory opportunity and its ordered dispatch facts.",
+            "Requires an authenticated open native session and a candidate set in the workspace; the opportunity must target that exact candidate set.",
+            "Returns metadata and dispatch facts without request or response bodies.",
+            "Safe to repeat.",
+            object_schema(
+                json!({"candidate_set_id":uuid(),"opportunity_id":uuid()}),
+                json!(["candidate_set_id", "opportunity_id"])
+            ),
+            json!({"candidate_set_id":example_id,"opportunity_id":example_id}),
+        ),
+        route!(
+            "query",
+            "candidate.advisory.audit",
+            "candidate_advisory_audit",
+            "Read a filtered page of opportunities, dispatch facts and aggregates for one candidate set.",
+            "Requires an authenticated open native session and a candidate set in the workspace; after is the preceding page's last opportunity ID.",
+            "Returns exact counts and no-call reasons without raw provider bodies.",
+            "Safe to repeat with the same filters and cursor.",
+            advisory_candidate_audit_schema(),
+            json!({"candidate_set_id":example_id,"limit":50}),
+        ),
     ]
+}
+
+fn advisory_candidate_audit_schema() -> Value {
+    let mut schema = advisory_audit_schema(false);
+    let properties = schema["properties"]
+        .as_object_mut()
+        .expect("object schema properties");
+    properties.remove("scope_id");
+    properties.insert("candidate_set_id".into(), uuid());
+    schema["required"] = json!(["candidate_set_id", "limit"]);
+    schema
 }
 
 fn advisory_config_schema() -> Value {
