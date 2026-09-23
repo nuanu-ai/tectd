@@ -58,6 +58,13 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         .execute(&pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO memberships(tenant_id,workspace_id,principal_id) VALUES($1,$2,$3)")
+        .bind(tenant)
+        .bind(workspace)
+        .bind(actor)
+        .execute(&pool)
+        .await
+        .unwrap();
     for id in [session, verifier_session] {
         sqlx::query("INSERT INTO agent_sessions(id,tenant_id,host_id,workspace_id,native_session_id) VALUES($1,$2,$3,$4,$5)")
             .bind(id).bind(tenant).bind(enrollment.auth.host_id).bind(workspace).bind(id.to_string())
