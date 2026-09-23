@@ -3,6 +3,8 @@ use tect_application::{AuthoredScopeSet, RunScopeAdvisory};
 use tect_domain::{
     AdvisoryAuditQuery, AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryOpportunityState,
     AdvisoryReason, AdvisoryRequestPreference, ConfigureWorkspaceAdvisory, Error, Result,
+    ScopeAdviceId, ScopeAlternativeId, ScopeDispositionAction, ScopeDispositionItem,
+    ScopeDispositionRequest,
 };
 
 #[derive(serde::Deserialize)]
@@ -124,8 +126,27 @@ struct ScopeAdvisoryRequestArguments {
     authored_scope_set: Option<AuthoredScopeSet>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScopeAdvisoryDispositionArguments {
+    opportunity_id: uuid::Uuid,
+    candidate_set_id: uuid::Uuid,
+    request_id: uuid::Uuid,
+    advice_id: ScopeAdviceId,
+    expected_revision: i64,
+    action: ScopeDispositionAction,
+    selected_id: Option<ScopeAlternativeId>,
+    items: Vec<ScopeDispositionItem>,
+    rationale: String,
+}
+
 pub(crate) enum AdvisoryInvocation {
     ScopeRequest(RunScopeAdvisory),
+    ScopeDisposition {
+        opportunity_id: uuid::Uuid,
+        candidate_set_id: uuid::Uuid,
+        request: ScopeDispositionRequest,
+    },
     Config,
     Configure(ConfigureWorkspaceAdvisory),
     WorkspaceAudit(AdvisoryAuditQuery),
@@ -166,6 +187,38 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<AdvisoryInvocation> 
         return Err(Error::InvalidArguments);
     }
     match name {
+        "scope_advisory_disposition" => {
+            if arguments.get("selected_id").is_some_and(Value::is_null) {
+                return Err(Error::InvalidArguments);
+            }
+            let arguments: ScopeAdvisoryDispositionArguments =
+                serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
+            if arguments.opportunity_id.is_nil()
+                || arguments.candidate_set_id.is_nil()
+                || arguments.request_id.is_nil()
+                || arguments.expected_revision < 0
+                || !matches!(
+                    arguments.action,
+                    ScopeDispositionAction::Accept | ScopeDispositionAction::RejectAll
+                )
+            {
+                return Err(Error::InvalidArguments);
+            }
+            arguments.advice_id.validate()?;
+            Ok(AdvisoryInvocation::ScopeDisposition {
+                opportunity_id: arguments.opportunity_id,
+                candidate_set_id: arguments.candidate_set_id,
+                request: ScopeDispositionRequest {
+                    request_id: arguments.request_id,
+                    advice_id: arguments.advice_id,
+                    expected_revision: arguments.expected_revision,
+                    action: arguments.action,
+                    selected_id: arguments.selected_id,
+                    items: arguments.items,
+                    rationale: arguments.rationale,
+                },
+            })
+        }
         "scope_advisory_request" => {
             if arguments
                 .get("authored_scope_set")
@@ -407,6 +460,52 @@ mod tests {
             ),
         ] {
             assert!(parse(name, arguments).is_err(), "accepted forged {name}");
+        }
+    }
+
+    #[test]
+    fn disposition_route_accepts_only_explicit_stored_identity_shape() {
+        let id = uuid::Uuid::new_v4();
+        let digest = "a".repeat(64);
+        let alternative = "b".repeat(64);
+        let request = json!({
+            "opportunity_id": id,
+            "candidate_set_id": id,
+            "request_id": id,
+            "advice_id": digest,
+            "expected_revision": 0,
+            "action": "reject_all",
+            "items": [{"alternative_id": alternative, "state": "not_selected"}],
+            "rationale": "reject this advice"
+        });
+        let Ok(AdvisoryInvocation::ScopeDisposition {
+            request: parsed, ..
+        }) = parse("scope_advisory_disposition", request.clone())
+        else {
+            panic!("valid disposition rejected")
+        };
+        assert_eq!(parsed.action, ScopeDispositionAction::RejectAll);
+        for (field, value) in [
+            ("actor_id", json!(id)),
+            ("session_id", json!(id)),
+            ("workspace_id", json!(id)),
+            ("provider_instruction", json!("run")),
+        ] {
+            let mut changed = request.clone();
+            changed[field] = value;
+            assert!(parse("scope_advisory_disposition", changed).is_err());
+        }
+        for (field, value) in [
+            ("opportunity_id", json!(uuid::Uuid::nil())),
+            ("candidate_set_id", json!(uuid::Uuid::nil())),
+            ("request_id", json!(uuid::Uuid::nil())),
+            ("expected_revision", json!(-1)),
+            ("action", json!("supersede_with_deterministic_choice")),
+            ("advice_id", json!("unknown")),
+        ] {
+            let mut changed = request.clone();
+            changed[field] = value;
+            assert!(parse("scope_advisory_disposition", changed).is_err());
         }
     }
 

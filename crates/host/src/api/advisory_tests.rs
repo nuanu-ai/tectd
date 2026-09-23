@@ -44,6 +44,7 @@ fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
         ("query", "scope.advisory.audit"),
         ("command", "workspace.advisory.configure"),
         ("command", "scope.advisory.request"),
+        ("command", "scope.advisory.disposition"),
     ] {
         assert!(
             routes()
@@ -59,9 +60,53 @@ fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
             .iter()
             .all(|tool| tool["inputSchema"]["additionalProperties"] == false)
     );
-    for unavailable in ["scope.advisory.disposition", "scope.advisory.card"] {
+    for unavailable in ["scope.advisory.card"] {
         assert!(routes().iter().all(|spec| spec.route != unavailable));
     }
+}
+
+#[test]
+fn public_disposition_schema_is_command_only_and_requires_cas_binding() {
+    let route = routes()
+        .iter()
+        .find(|route| route.route == "scope.advisory.disposition")
+        .unwrap();
+    assert_eq!(route.tool, "command");
+    assert_eq!(route.schema["additionalProperties"], false);
+    assert_eq!(
+        route.schema["properties"]["action"]["enum"],
+        json!(["accept", "reject_all"])
+    );
+    for field in [
+        "opportunity_id",
+        "candidate_set_id",
+        "request_id",
+        "advice_id",
+        "expected_revision",
+        "action",
+        "items",
+        "rationale",
+    ] {
+        assert!(
+            route.schema["required"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|value| value == field)
+        );
+    }
+    let valid = route.example.clone();
+    assert!(decode_public_call("command", json!({"route":route.route,"params":valid})).is_ok());
+    let mut forged = route.example.clone();
+    forged["actor_id"] = json!(uuid::Uuid::new_v4());
+    assert!(decode_public_call("command", json!({"route":route.route,"params":forged})).is_err());
+    assert!(
+        decode_public_call(
+            "execute",
+            json!({"route":route.route,"params":route.example})
+        )
+        .is_err()
+    );
 }
 
 #[test]

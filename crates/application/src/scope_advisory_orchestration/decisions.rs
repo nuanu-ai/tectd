@@ -1,20 +1,25 @@
-use super::{DecideScopeAdvisory, PreserveScopeAdvisory};
+use super::PreserveScopeAdvisory;
 use crate::{
     ScopeAuthorityRequest, ScopeDispositionRecord, ScopePreservationReceiptInput,
     Sha256ScopeDigest, TransactionMode, WorkspaceService,
 };
 use tect_domain::{
-    FreshScopeObservation, RequestContext, Result, ScopeDispositionRevision,
-    ScopePreservationResult, evaluate_scope_preservation,
+    FreshScopeObservation, RequestContext, Result, ScopeDispositionRequest,
+    ScopeDispositionRevision, ScopePreservationResult, evaluate_scope_preservation,
 };
 use uuid::Uuid;
 
 impl WorkspaceService {
-    pub(crate) async fn decide_scope_advisory(
+    pub async fn decide_scope_advisory(
         &self,
         context: &RequestContext,
-        input: DecideScopeAdvisory,
+        opportunity_id: Uuid,
+        candidate_set_id: Uuid,
+        request: ScopeDispositionRequest,
     ) -> Result<ScopeDispositionRevision> {
+        if opportunity_id.is_nil() || candidate_set_id.is_nil() {
+            return Err(tect_domain::Error::InvalidArguments);
+        }
         let (mut tx, workspace, session) = self
             .scope_transaction(context, TransactionMode::ReadWrite)
             .await?;
@@ -23,11 +28,11 @@ impl WorkspaceService {
             .cas_scope_advisory_disposition(
                 workspace.id,
                 ScopeDispositionRecord {
-                    opportunity_id: input.opportunity_id,
-                    candidate_set_id: input.candidate_set_id,
+                    opportunity_id,
+                    candidate_set_id,
                     actor_id: actor,
                     session_id: session.id,
-                    request: input.request,
+                    request,
                 },
             )
             .await?;

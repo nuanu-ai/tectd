@@ -596,20 +596,23 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         Err(Error::InvalidArguments)
     );
     partial.items = vec![item];
-    let disposition = unit
-        .cas_scope_advisory_disposition(
-            workspace,
-            ScopeDispositionRecord {
-                opportunity_id: opportunity,
-                candidate_set_id: candidate,
-                actor_id: actor,
-                session_id: session,
-                request: partial.clone(),
-            },
-        )
+    drop(unit);
+    let context = tect_domain::RequestContext {
+        auth: enrollment.auth.clone(),
+        native_session_id: session.to_string(),
+        workspace_key: format!("scope-live-{workspace}"),
+    };
+    let disposition = service
+        .decide_scope_advisory(&context, opportunity, candidate, partial.clone())
         .await
         .unwrap();
-    unit.commit().await.unwrap();
+    assert_eq!(
+        service
+            .decide_scope_advisory(&context, opportunity, candidate, partial.clone())
+            .await
+            .unwrap(),
+        disposition
+    );
     let mut changed_lineage = partial.clone();
     changed_lineage.advice_id = ScopeAdviceId(D.into());
     let mut unit = rw(&store, &enrollment.auth, tenant).await;

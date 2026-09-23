@@ -12,8 +12,8 @@ use tect_domain::{
     AdvisoryDispatchAuthorization, AdvisoryDispatchOutcome, AdvisoryDispatchSeal,
     AdvisoryDispatchStart, AdvisoryDispatchState, AdvisoryOpportunity, AdvisoryOpportunityState,
     AdvisoryPolicyInput, AdvisoryReason, AdvisoryRequestPreference, AdvisorySendCertainty, Error,
-    GuardedScopeAdvice, RequestContext, Result, ScopeAdviceRequest, ScopeDispositionRequest,
-    ScopeDispositionRevision, assess_advisory_policy, guard_scope_advice,
+    GuardedScopeAdvice, RequestContext, Result, ScopeAdviceRequest, ScopeDispositionRevision,
+    assess_advisory_policy, guard_scope_advice,
 };
 use uuid::Uuid;
 
@@ -93,13 +93,6 @@ impl StartedScopeDispatchPermit {
             && self.wire_version == prepared.wire_version()
             && !self.configuration_digest.is_empty()
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DecideScopeAdvisory {
-    pub opportunity_id: Uuid,
-    pub candidate_set_id: Uuid,
-    pub request: ScopeDispositionRequest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

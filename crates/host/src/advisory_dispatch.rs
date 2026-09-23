@@ -22,6 +22,15 @@ pub(crate) async fn execute(
                 "advice_id": outcome.advice.as_ref().map(|advice| &advice.id),
             }))
         }
+        AdvisoryInvocation::ScopeDisposition {
+            opportunity_id,
+            candidate_set_id,
+            request,
+        } => serde_json::to_value(
+            service
+                .decide_scope_advisory(context, opportunity_id, candidate_set_id, request)
+                .await?,
+        ),
         AdvisoryInvocation::Config => serde_json::to_value(service.advisory_config(context).await?),
         AdvisoryInvocation::Configure(request) => {
             serde_json::to_value(service.configure_advisory(context, &request).await?)

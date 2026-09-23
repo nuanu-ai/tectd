@@ -33,6 +33,17 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
             json!({"request_id":example_id,"candidate_set_id":example_id,"request_preference":"skip"}),
         ),
         route!(
+            "command",
+            "scope.advisory.disposition",
+            "scope_advisory_disposition",
+            "Explicitly accept one stored Scope alternative or reject all stored advice alternatives.",
+            "Requires the original authenticated session, exact opportunity, candidate set and guarded advice IDs, the current disposition revision, and one item for every eligible alternative. Unknown, duplicate or non-manifest IDs fail validation.",
+            "Persists an audited disposition through compare-and-set. It does not authorize a caller, mutate Scope, or contact Jev.",
+            "Repeat an identical request_id and payload for replay. A changed payload conflicts; a competing expected revision is stale.",
+            scope_advisory_disposition_schema(),
+            json!({"opportunity_id":example_id,"candidate_set_id":example_id,"request_id":example_id,"advice_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","expected_revision":0,"action":"reject_all","items":[{"alternative_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"not_selected"}],"rationale":"Do not use this advice"}),
+        ),
+        route!(
             "query",
             "workspace.advisory.config",
             "get_advisory_config",
@@ -150,6 +161,33 @@ fn scope_advisory_request_schema() -> Value {
             "authored_scope_set":authored
         }),
         json!(["request_id", "candidate_set_id"]),
+    )
+}
+
+fn scope_advisory_disposition_schema() -> Value {
+    let digest = json!({"type":"string","pattern":"^[0-9a-f]{64}$"});
+    object_schema(
+        json!({
+            "opportunity_id":uuid(),
+            "candidate_set_id":uuid(),
+            "request_id":uuid(),
+            "advice_id":digest,
+            "expected_revision":{"type":"integer","minimum":0},
+            "action":{"type":"string","enum":["accept","reject_all"]},
+            "selected_id":digest,
+            "items":{"type":"array","minItems":1,"maxItems":100,"items":object_schema(json!({"alternative_id":digest,"state":{"type":"string","enum":["selected","not_selected"]}}),json!(["alternative_id","state"]))},
+            "rationale":{"type":"string","minLength":1,"maxLength":4096}
+        }),
+        json!([
+            "opportunity_id",
+            "candidate_set_id",
+            "request_id",
+            "advice_id",
+            "expected_revision",
+            "action",
+            "items",
+            "rationale"
+        ]),
     )
 }
 
