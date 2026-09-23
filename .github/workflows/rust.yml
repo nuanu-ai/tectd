@@ -2,7 +2,8 @@ name: Rust and PostgreSQL contracts
 on: [push, pull_request]
 jobs:
   verify:
-    runs-on: [self-hosted, Linux, X64, comino]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
