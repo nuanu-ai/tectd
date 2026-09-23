@@ -283,7 +283,10 @@ fn try_failure_with_state(
         error_data["details"] =
             serde_json::to_value(diagnostic).map_err(|_| Error::InternalInvariant)?;
     }
-    if let Some((name, arguments)) = call
+    if matches!(
+        error,
+        Error::InvalidArguments | Error::InvalidArgumentsDetail(_)
+    ) && let Some((name, arguments)) = call
         && matches!(name, "query" | "command" | "execute")
         && let Some(route) = arguments.get("route").and_then(Value::as_str)
         && let Some(contract) = crate::api::route_contract(name, route)

@@ -216,7 +216,13 @@ impl McpSession {
         match call_tool_bounded(&self.socket, &context, name, arguments.clone(), capacity).await {
             Ok(result) => success_response(id, successful_tool_result(result)),
             Err(error) => {
-                let error = public_decode_error.unwrap_or(error);
+                // The daemon authenticates even an unrecognized public call.
+                // Keep its access refusal; only replace the sentinel's own
+                // InvalidArguments with the caller's useful decode diagnostic.
+                let error = match (public_decode_error, error) {
+                    (Some(decoded), Error::InvalidArguments) => decoded,
+                    (_, daemon) => daemon,
+                };
                 let (failure_name, failure_arguments) = if public_decode_failed {
                     (params.name.as_str(), &params.arguments)
                 } else {

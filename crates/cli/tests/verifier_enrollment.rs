@@ -200,6 +200,23 @@ async fn verifier_enrollment_is_distinct_pregranted_and_cannot_open_owner_routes
         socket.clone(),
     )
     .await;
+    let owner_path = private.path().canonicalize().unwrap().join("owner.json");
+    recovery_support::host_file(&owner_path, &owner.auth);
+    let mut owner_mcp = Mcp::start(
+        &socket,
+        &owner_path,
+        &Uuid::new_v4().to_string(),
+        "verifier-existing",
+    )
+    .await;
+    owner_mcp.call("open_workspace", json!({})).await;
+    let owner_validation = owner_mcp
+        .call_error("command", json!({"route":"program.save","params":{}}))
+        .await;
+    assert_eq!(owner_validation["error"]["code"], "invalid_arguments");
+    assert!(owner_validation["error"]["route_contract"].is_object());
+    assert!(!owner_validation["actions"].as_array().unwrap().is_empty());
+    owner_mcp.finish().await;
     let mut mcp = Mcp::start(
         &socket,
         &auth_path,
@@ -289,24 +306,33 @@ async fn verifier_enrollment_is_distinct_pregranted_and_cannot_open_owner_routes
         let denied = mcp
             .call_error(tool, json!({"route":route,"params":params}))
             .await;
-        if route == "future.unknown.route" {
-            assert!(denied["error"].is_object(), "{route}: {denied}");
-        } else {
-            assert_eq!(denied["error"]["code"], "forbidden", "{route}: {denied}");
-        }
+        assert_eq!(denied["error"]["code"], "forbidden", "{route}: {denied}");
+        assert_eq!(denied["actions"], json!([]));
+        assert!(denied["error"].get("route_contract").is_none());
     }
     assert_eq!(
         mcp.call_error("get_state", json!({})).await["error"]["code"],
         "forbidden"
     );
-    assert!(
-        mcp.call_error(
-            "command",
-            json!({"route":"workspace.open","params":{"role":"owner"}})
-        )
-        .await["error"]
-            .is_object()
-    );
+    for (tool, route, params) in [
+        ("command", "program.save", json!({})),
+        ("command", "workspace.open", json!({"role":"owner"})),
+        ("query", "program.save", json!({})),
+        ("execute", "scope.advisory.request", json!({})),
+    ] {
+        let denied = mcp
+            .call_error(tool, json!({"route":route,"params":params}))
+            .await;
+        assert_eq!(
+            denied["error"]["code"], "forbidden",
+            "{tool}/{route}: {denied}"
+        );
+        assert_eq!(denied["actions"], json!([]));
+        assert_eq!(denied["recommended_action"], json!(null));
+        assert!(denied["error"].get("route_contract").is_none());
+        assert!(denied["error"].get("tool").is_none());
+        assert!(denied["error"].get("route").is_none());
+    }
     for (table, before) in protected.into_iter().zip(baseline) {
         let after: i64 =
             sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE tenant_id=$1"))
