@@ -1,7 +1,45 @@
 use super::live_support::{D, manifest, reseal_manifest, rw, set_config};
 use super::*;
 use crate::{PgStore, admin};
-use tect_application::{SetupFiles, SourceInspector, WorkspaceService};
+use tect_application::{
+    DenyScopeBudget, PreparedScopeAdviceAttempt, ScopeAdviceProvider, ScopeAdviceProviderError,
+    ScopeAdviceProviderObservation, ScopeAdviceProviderRequest, SetupFiles, SourceInspector,
+    StartedScopeDispatchPermit, WorkspaceService,
+};
+
+struct CountingCapableProvider(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+#[async_trait::async_trait]
+impl ScopeAdviceProvider for CountingCapableProvider {
+    fn identity(&self) -> Option<(&'static str, &'static str)> {
+        Some(("test-only", "fixture"))
+    }
+
+    fn prepare(
+        &self,
+        request: &tect_domain::ScopeAdviceRequest,
+    ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        PreparedScopeAdviceAttempt::new(
+            request.clone(),
+            b"{}".to_vec(),
+            "test-only".into(),
+            "fixture".into(),
+            "https://fixture.invalid".into(),
+            "fixture.v1".into(),
+        )
+    }
+
+    async fn attempt_prepared(
+        &self,
+        _: &ScopeAdviceProviderRequest,
+        _: PreparedScopeAdviceAttempt,
+        _: StartedScopeDispatchPermit,
+    ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Err(ScopeAdviceProviderError::ProvenNotSent)
+    }
+}
 
 struct UnusedHostAdapters;
 
@@ -284,6 +322,69 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
             .await
             .unwrap();
     assert_eq!(dispatch_count, 0);
+    let provider_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let budget_service = WorkspaceService::new_with_scope_advisory_adapters(
+        std::sync::Arc::new(store.clone()),
+        std::sync::Arc::new(UnusedHostAdapters),
+        std::sync::Arc::new(UnusedHostAdapters),
+        std::sync::Arc::new(PgScopeAuthorityObserver::new(
+            store.clone(),
+            std::sync::Arc::new(FixtureCandidateGuidance),
+        )),
+        std::sync::Arc::new(PgScopeAuthoredManifestSupplier::new(
+            store.clone(),
+            std::sync::Arc::new(PgScopeAuthorityObserver::new(
+                store.clone(),
+                std::sync::Arc::new(FixtureCandidateGuidance),
+            )),
+        )),
+        std::sync::Arc::new(DenyScopeBudget),
+        std::sync::Arc::new(CountingCapableProvider(provider_calls.clone())),
+    );
+    let budget_no_call = budget_service
+        .run_scope_advisory(
+            &tect_domain::RequestContext {
+                auth: enrollment.auth.clone(),
+                native_session_id: session.to_string(),
+                workspace_key: format!("scope-live-{workspace}"),
+            },
+            &tect_application::RunScopeAdvisory {
+                request_id: Uuid::new_v4(),
+                candidate_set_id: candidate,
+                session_preference: tect_domain::AdvisoryRequestPreference::UseWorkspace,
+                request_preference: tect_domain::AdvisoryRequestPreference::UseWorkspace,
+                authored_scope_set: Some(authored_scope_set.clone()),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        budget_no_call.opportunity.state,
+        AdvisoryOpportunityState::NoCall
+    );
+    assert_eq!(
+        budget_no_call.opportunity.primary_reason,
+        AdvisoryReason::BudgetPolicyInvalid
+    );
+    assert!(budget_no_call.advice.is_none());
+    assert_eq!(provider_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    let (state, reason): (String, String) =
+        sqlx::query_as("SELECT state,primary_reason FROM advisory_opportunity WHERE id=$1")
+            .bind(budget_no_call.opportunity.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        (state.as_str(), reason.as_str()),
+        ("no_call", "budget_policy_invalid")
+    );
+    let budget_dispatches: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM advisory_dispatch WHERE opportunity_id=$1")
+            .bind(budget_no_call.opportunity.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(budget_dispatches, 0);
     assert_eq!(
         authority
             .observe(&ScopeAuthorityRequest {

@@ -108,24 +108,26 @@ impl WorkspaceService {
         }
     }
 
-    /// Deliberate adapter-facing Slice-01 composition seam. No host route uses
-    /// this until the owner supplies a constructor, budget policy and provider.
-    #[cfg(test)]
-    pub(crate) fn with_scope_advisory_adapters(
-        mut self,
+    /// Explicit composition seam for a host that has selected its own budget
+    /// policy and provider. Existing constructors retain their deny/disabled
+    /// defaults; the daemon does not call this constructor.
+    pub fn new_with_scope_advisory_adapters(
+        store: Arc<dyn Store>,
+        inspector: Arc<dyn SourceInspector>,
+        setup_files: Arc<dyn SetupFiles>,
         authority: Arc<dyn crate::ScopeAuthorityObserver>,
         supplier: Arc<dyn crate::ScopeManifestSupplier>,
         budget: Arc<dyn crate::ScopeBudgetPolicy>,
         provider: Arc<dyn crate::ScopeAdviceProvider>,
     ) -> Self {
-        self.scope_authority = authority;
-        self.scope_manifest_supplier = supplier;
-        self.scope_budget = budget;
-        self.scope_advice_provider = provider;
-        self
+        let mut service =
+            Self::new_with_scope_sources(store, inspector, setup_files, authority, supplier);
+        service.scope_budget = budget;
+        service.scope_advice_provider = provider;
+        service
     }
 
-    /// Test-only fixture hook. Production construction has no provider injection path.
+    /// Test-only fixture hook for the separate legacy advisory provider.
     #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn with_advisory_provider(

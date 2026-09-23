@@ -1445,13 +1445,13 @@ fn authored_supplier_failure_is_captured_as_no_call_before_budget_or_provider() 
 }
 
 #[test]
-fn authored_request_entry_is_public_but_dispatch_injection_and_effects_are_not() {
+fn authored_request_entry_and_explicit_adapter_constructor_are_public_without_effects() {
     let root = include_str!("../lib.rs");
     let service = include_str!("../service.rs");
     let orchestration = include_str!("../scope_advisory_orchestration.rs");
     assert!(root.contains("ScopeAdviceProviderRequest"));
     assert!(!root.contains("pub use scope_advisory_runtime::*;"));
-    assert!(service.contains("#[cfg(test)]\n    pub(crate) fn with_scope_advisory_adapters"));
+    assert!(service.contains("pub fn new_with_scope_advisory_adapters("));
     assert!(orchestration.contains("pub async fn run_scope_advisory"));
     assert!(root.contains("RunScopeAdvisory, ScopeAdvisoryOutcome"));
     assert!(!orchestration.contains("pub async fn decide_scope_advisory"));

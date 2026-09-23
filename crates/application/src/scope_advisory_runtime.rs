@@ -129,7 +129,7 @@ pub trait ScopeManifestSupplier: Send + Sync {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ScopeBudgetRequest {
+pub struct ScopeBudgetRequest {
     pub workspace_id: Uuid,
     pub actor_id: Uuid,
     pub candidate_set_id: Uuid,
@@ -138,12 +138,12 @@ pub(crate) struct ScopeBudgetRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ScopeBudgetPolicyEvaluation {
+pub struct ScopeBudgetPolicyEvaluation {
     pub policy_id: String,
 }
 
 #[async_trait]
-pub(crate) trait ScopeBudgetPolicy: Send + Sync {
+pub trait ScopeBudgetPolicy: Send + Sync {
     /// Pure owner policy evaluation: implementations must not reserve, charge,
     /// release, or mutate budget state. `None` means no approved, valid policy
     /// authorizes dispatch; it is audited as `budget_policy_invalid`.
@@ -158,6 +158,12 @@ pub struct ScopeAdviceProviderRequest {
     pub dispatch_id: Uuid,
     pub request: ScopeAdviceRequest,
     pub(crate) budget_policy: ScopeBudgetPolicyEvaluation,
+}
+
+impl ScopeAdviceProviderRequest {
+    pub fn budget_policy_id(&self) -> &str {
+        &self.budget_policy.policy_id
+    }
 }
 
 /// Immutable, application-owned representation of the exact request body and
@@ -358,7 +364,7 @@ impl ScopeManifestSupplier for UnavailableScopeManifestSupplier {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct DenyScopeBudget;
+pub struct DenyScopeBudget;
 #[async_trait]
 impl ScopeBudgetPolicy for DenyScopeBudget {
     async fn evaluate(
