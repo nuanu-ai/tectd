@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "requires disposable PostgreSQL 18.6 and TECT_TEST_*; run with `cargo test -p tect-cli --test scope_advisory_no_call -- --ignored --nocapture`"]
-async fn public_scope_advisory_request_records_disabled_no_call_without_dispatch() {
+async fn public_scope_advisory_request_audits_disabled_and_optional_skip_without_dispatch() {
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").expect("TECT_TEST_ADMIN_URL required");
     let runtime_url =
         std::env::var("TECT_TEST_RUNTIME_URL").expect("TECT_TEST_RUNTIME_URL required");
@@ -48,6 +48,7 @@ async fn public_scope_advisory_request_records_disabled_no_call_without_dispatch
     let config = route(&mut client, "query", "workspace.advisory.config", json!({})).await;
     assert_eq!(config["revision"], 0);
     assert_eq!(config["mode"], "disabled");
+    let workspace_id = id(&config["workspace_id"]);
 
     let request_id = Uuid::new_v4();
     let request = route(
@@ -90,6 +91,93 @@ async fn public_scope_advisory_request_records_disabled_no_call_without_dispatch
         "workspace_disabled"
     );
     assert_eq!(audit["aggregate"]["no_call_by_reason"][0]["count"], 1);
+
+    let configured = route(
+        &mut client,
+        "command",
+        "workspace.advisory.configure",
+        json!({"expected_revision":0,"mode":"optional"}),
+    )
+    .await;
+    assert_eq!(configured["workspace_id"], workspace_id.to_string());
+    assert_eq!(configured["revision"], 1);
+    assert_eq!(configured["mode"], "optional");
+
+    let skipped_id = Uuid::new_v4();
+    let skipped = route(
+        &mut client,
+        "command",
+        "scope.advisory.request",
+        json!({
+            "request_id": skipped_id,
+            "candidate_set_id": candidate_set_id,
+            "request_preference": "skip"
+        }),
+    )
+    .await;
+    assert_eq!(skipped["request_id"], skipped_id.to_string());
+    assert_eq!(skipped["state"], "no_call");
+    assert_eq!(skipped["reason"], "request_skip");
+    assert_eq!(skipped["provider_called"], false);
+
+    let (session_id, actor_id): (Uuid, Uuid) = sqlx::query_as(
+        "SELECT s.id,h.principal_id FROM agent_sessions s JOIN hosts h \
+         ON h.tenant_id=s.tenant_id AND h.id=s.host_id \
+         WHERE s.tenant_id=$1 AND s.native_session_id=$2",
+    )
+    .bind(enrollment.tenant_id)
+    .bind(&native_session)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let skipped_audit = route(
+        &mut client,
+        "query",
+        "candidate.advisory.get",
+        json!({"candidate_set_id":candidate_set_id,"opportunity_id":skipped["opportunity_id"]}),
+    )
+    .await;
+    let opportunity = &skipped_audit["opportunity"];
+    assert_eq!(opportunity["workspace_id"], workspace_id.to_string());
+    assert_eq!(opportunity["work_item_id"], candidate_set_id.to_string());
+    assert_eq!(opportunity["session_id"], session_id.to_string());
+    assert_eq!(opportunity["authorized_actor_id"], actor_id.to_string());
+    assert_eq!(opportunity["request_key"], skipped_id.to_string());
+    assert_eq!(opportunity["config_revision"], 1);
+    assert_eq!(opportunity["session_preference"], "use_workspace");
+    assert_eq!(opportunity["request_preference"], "skip");
+    assert_eq!(opportunity["state"], "no_call");
+    assert_eq!(opportunity["primary_reason"], "request_skip");
+    assert!(skipped_audit["dispatches"].as_array().unwrap().is_empty());
+
+    let skipped_page = route(
+        &mut client,
+        "query",
+        "candidate.advisory.audit",
+        json!({"candidate_set_id":candidate_set_id,"limit":10,"reason":"request_skip"}),
+    )
+    .await;
+    assert_eq!(skipped_page["opportunities"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        skipped_page["opportunities"][0]["id"],
+        skipped["opportunity_id"]
+    );
+    assert!(skipped_page["dispatches"].as_array().unwrap().is_empty());
+    assert_eq!(skipped_page["aggregate"]["no_call_opportunities"], 1);
+    assert_eq!(skipped_page["aggregate"]["authorized_attempts"], 0);
+    assert_eq!(skipped_page["aggregate"]["confirmed_sent_attempts"], 0);
+    assert_eq!(skipped_page["aggregate"]["send_unknown_attempts"], 0);
+
+    let history: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT revision,mode FROM advisory_workspace_config_history \
+         WHERE tenant_id=$1 AND workspace_id=$2 ORDER BY revision",
+    )
+    .bind(enrollment.tenant_id)
+    .bind(workspace_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(history, [(0, "disabled".into()), (1, "optional".into())]);
 
     client.finish().await;
     daemon.crash().await;
