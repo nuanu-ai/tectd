@@ -1,5 +1,7 @@
 use super::scope_source::{canonical_digest, valid_digest, valid_id, validate_obligations};
-use crate::{Error, FrozenScopeSource, Result, ScopeCandidateDraft, ScopeDigest, SourceObligation};
+use crate::{
+    Error, FrozenScopeSource, ResolvedCandidateDraft, Result, ScopeDigest, SourceObligation,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -39,7 +41,9 @@ pub struct ObligationCoverage {
 pub struct ScopeDecompositionAlternative {
     pub id: ScopeAlternativeId,
     pub kind: ScopeDecompositionKind,
-    pub material: ScopeCandidateDraft,
+    /// Frozen saved draft with authoritative entity IDs; never an unresolved
+    /// command draft or an implicitly generated decomposition.
+    pub material: ResolvedCandidateDraft,
     pub material_digest: String,
     pub coverage: Vec<ObligationCoverage>,
 }
@@ -97,9 +101,12 @@ impl ScopeConstructorManifest {
             return Err(Error::InvalidArguments);
         }
         let mut by_id = BTreeMap::new();
+        let mut material_digests = BTreeSet::new();
         for alternative in &self.emitted {
             validate_alternative(digest, self, alternative)?;
-            if by_id.insert(alternative.id.clone(), true).is_some() {
+            if by_id.insert(alternative.id.clone(), true).is_some()
+                || !material_digests.insert(&alternative.material_digest)
+            {
                 return Err(Error::InvalidArguments);
             }
         }
@@ -107,6 +114,7 @@ impl ScopeConstructorManifest {
             validate_alternative(digest, self, &rejected.alternative)?;
             if rejected.reason_codes.is_empty()
                 || rejected.reason_codes.iter().any(|value| !valid_id(value))
+                || !material_digests.insert(&rejected.alternative.material_digest)
                 || by_id
                     .insert(rejected.alternative.id.clone(), false)
                     .is_some()
@@ -135,7 +143,7 @@ impl ScopeConstructorManifest {
             .collect::<Vec<_>>();
         canonical_digest(
             digest,
-            "tect.scope-eligible-set/1",
+            "tect.scope-eligible-set/2",
             &(&self.source.digest, &self.constructor, values),
         )
     }
@@ -172,7 +180,7 @@ impl ScopeConstructorManifest {
             .collect::<Vec<_>>();
         canonical_digest(
             digest,
-            "tect.scope-constructor-manifest/1",
+            "tect.scope-constructor-manifest/2",
             &(
                 &self.constructor,
                 &self.source,
@@ -193,9 +201,9 @@ impl ScopeConstructorManifest {
 
 pub fn scope_candidate_material_digest(
     digest: &impl ScopeDigest,
-    material: &ScopeCandidateDraft,
+    material: &ResolvedCandidateDraft,
 ) -> Result<String> {
-    canonical_digest(digest, "tect.scope-candidate-material/1", material)
+    canonical_digest(digest, "tect.scope-candidate-material/2", material)
 }
 
 pub fn stable_scope_alternative_id(
@@ -212,7 +220,7 @@ pub fn stable_scope_alternative_id(
     let coverage = canonical_coverage(coverage);
     Ok(ScopeAlternativeId(canonical_digest(
         digest,
-        "tect.scope-alternative-id/1",
+        "tect.scope-alternative-id/2",
         &(constructor, source_digest, kind, material_digest, coverage),
     )?))
 }

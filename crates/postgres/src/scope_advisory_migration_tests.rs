@@ -38,7 +38,7 @@ fn migration_has_exactly_seven_authoritative_aggregates_and_no_budget_placeholde
 fn aggregates_are_canonical_json_with_relational_case_and_digest_lineage() {
     for schema in [
         "tect.scope-source-obligations/1",
-        "tect.scope-constructor-manifest/1",
+        "tect.scope-constructor-manifest/2",
         "tect.guarded-scope-advice/1",
         "tect.scope-disposition-revision/1",
         "tect.scope-preservation/1",

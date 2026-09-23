@@ -118,34 +118,26 @@ pub(super) fn fixture_manifest() -> ScopeConstructorManifest {
     manifest
 }
 
-fn draft(source_ref: Uuid, title: &str) -> ScopeCandidateDraft {
-    ScopeCandidateDraft {
+fn draft(source_ref: Uuid, title: &str) -> ResolvedCandidateDraft {
+    let goal_id = Uuid::from_u128(51);
+    let candidate_id = Uuid::from_u128(52);
+    ResolvedCandidateDraft {
         boundary: CandidateBoundary::Finite,
-        goals: vec![CoverageGoalDraft {
-            identity: DraftIdentity {
-                local: Some("goal".into()),
-                id: None,
-                revision: None,
-            },
+        goals: vec![CoverageGoalEntity {
+            id: goal_id,
+            revision: 1,
             text: "Preserve the source outcome".into(),
             source_ref_id: source_ref,
             exact_quote: None,
-            resolution: CoverageResolutionDraft {
+            resolution: CoverageResolutionEntity {
                 kind: CoverageResolutionKind::Candidate,
-                reference: CandidateRef {
-                    local: Some("candidate".into()),
-                    id: None,
-                },
+                id: candidate_id,
             },
         }],
         evidence: Vec::new(),
-        candidates: vec![CandidateDraft {
-            identity: DraftIdentity {
-                local: Some("candidate".into()),
-                id: None,
-                revision: None,
-            },
-            change_rationale: None,
+        candidates: vec![CandidateEntity {
+            id: candidate_id,
+            revision: 1,
             title: title.into(),
             outcome: "Exact supplied outcome".into(),
             trigger: "Exact supplied trigger".into(),
@@ -154,17 +146,20 @@ fn draft(source_ref: Uuid, title: &str) -> ScopeCandidateDraft {
             includes: vec!["supplied".into()],
             excludes: Vec::new(),
             dependencies: Vec::new(),
-            coverage_goals: vec![CandidateRef {
-                local: Some("goal".into()),
-                id: None,
-            }],
-            evidence: Vec::new(),
+            coverage_goal_ids: vec![goal_id],
+            evidence_ids: Vec::new(),
         }],
         blockers: Vec::new(),
         pending_question: None,
         empty_disposition: None,
         protected_changes: Vec::new(),
-        supersessions: Vec::new(),
+        delta: CandidateDelta {
+            added: vec![CandidateAdded {
+                candidate_id,
+                revision: 1,
+            }],
+            ..CandidateDelta::default()
+        },
     }
 }
 

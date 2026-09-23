@@ -46,33 +46,25 @@ pub(super) fn manifest(candidate: Uuid, snapshot: Uuid, program: Uuid) -> ScopeC
         condition_ids: vec![],
         exception_ids: vec![],
     }];
-    let material = ScopeCandidateDraft {
+    let goal_id = Uuid::new_v4();
+    let candidate_id = Uuid::new_v4();
+    let material = ResolvedCandidateDraft {
         boundary: CandidateBoundary::Finite,
-        goals: vec![CoverageGoalDraft {
-            identity: DraftIdentity {
-                local: Some("goal".into()),
-                id: None,
-                revision: None,
-            },
+        goals: vec![CoverageGoalEntity {
+            id: goal_id,
+            revision: 1,
             text: "Preserve source".into(),
             source_ref_id: Uuid::new_v4(),
             exact_quote: None,
-            resolution: CoverageResolutionDraft {
+            resolution: CoverageResolutionEntity {
                 kind: CoverageResolutionKind::Candidate,
-                reference: CandidateRef {
-                    local: Some("candidate".into()),
-                    id: None,
-                },
+                id: candidate_id,
             },
         }],
         evidence: vec![],
-        candidates: vec![CandidateDraft {
-            identity: DraftIdentity {
-                local: Some("candidate".into()),
-                id: None,
-                revision: None,
-            },
-            change_rationale: None,
+        candidates: vec![CandidateEntity {
+            id: candidate_id,
+            revision: 1,
             title: "Cohesive".into(),
             outcome: "Exact outcome".into(),
             trigger: "Exact trigger".into(),
@@ -81,17 +73,20 @@ pub(super) fn manifest(candidate: Uuid, snapshot: Uuid, program: Uuid) -> ScopeC
             includes: vec!["source".into()],
             excludes: vec![],
             dependencies: vec![],
-            coverage_goals: vec![CandidateRef {
-                local: Some("goal".into()),
-                id: None,
-            }],
-            evidence: vec![],
+            coverage_goal_ids: vec![goal_id],
+            evidence_ids: vec![],
         }],
         blockers: vec![],
         pending_question: None,
         empty_disposition: None,
         protected_changes: vec![],
-        supersessions: vec![],
+        delta: CandidateDelta {
+            added: vec![CandidateAdded {
+                candidate_id,
+                revision: 1,
+            }],
+            ..CandidateDelta::default()
+        },
     };
     let material_digest = scope_candidate_material_digest(&Sha256ScopeDigest, &material).unwrap();
     let id = stable_scope_alternative_id(

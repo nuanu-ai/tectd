@@ -290,6 +290,7 @@ pub struct ReviewCandidateSet {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CoverageGoalEntity {
     pub id: Uuid,
     pub revision: i64,
@@ -300,12 +301,14 @@ pub struct CoverageGoalEntity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CoverageResolutionEntity {
     pub kind: CoverageResolutionKind,
     pub id: Uuid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvidenceEntity {
     pub id: Uuid,
     pub revision: i64,
@@ -316,6 +319,7 @@ pub struct EvidenceEntity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateEntity {
     pub id: Uuid,
     pub revision: i64,
@@ -332,6 +336,7 @@ pub struct CandidateEntity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BlockerEntity {
     pub id: Uuid,
     pub revision: i64,
@@ -340,6 +345,7 @@ pub struct BlockerEntity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResolvedCandidateDraft {
     pub boundary: CandidateBoundary,
     pub goals: Vec<CoverageGoalEntity>,
@@ -354,6 +360,7 @@ pub struct ResolvedCandidateDraft {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateDelta {
     pub added: Vec<CandidateAdded>,
     pub changed: Vec<CandidateChanged>,
@@ -362,12 +369,14 @@ pub struct CandidateDelta {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateAdded {
     pub candidate_id: Uuid,
     pub revision: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateChanged {
     pub candidate_id: Uuid,
     pub from_revision: i64,
@@ -376,12 +385,14 @@ pub struct CandidateChanged {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateUnchanged {
     pub candidate_id: Uuid,
     pub revision: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateSuperseded {
     pub prior: CandidateEntity,
     pub reason: String,

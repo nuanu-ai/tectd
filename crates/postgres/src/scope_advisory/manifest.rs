@@ -162,7 +162,7 @@ async fn prepare_manifest(
         "INSERT INTO advisory_scope_manifest \
          (tenant_id,workspace_id,opportunity_id,case_id,source_digest,constructor_id,constructor_version,\
           constructor_digest,baseline_alternative_id,eligible_set_digest,whole_set_digest,aggregate_schema,aggregate_payload) \
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'tect.scope-constructor-manifest/1',$12)",
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'tect.scope-constructor-manifest/2',$12)",
     )
     .bind(tenant)
     .bind(workspace)

@@ -47,7 +47,7 @@ CREATE TABLE advisory_scope_manifest (
         (source_digest ~ '^[0-9a-f]{64}$' AND constructor_digest ~ '^[0-9a-f]{64}$'
          AND baseline_alternative_id ~ '^[0-9a-f]{64}$' AND eligible_set_digest ~ '^[0-9a-f]{64}$'
          AND whole_set_digest ~ '^[0-9a-f]{64}$'),
-    CONSTRAINT advisory_scope_manifest_schema_check CHECK (aggregate_schema='tect.scope-constructor-manifest/1'),
+    CONSTRAINT advisory_scope_manifest_schema_check CHECK (aggregate_schema='tect.scope-constructor-manifest/2'),
     CONSTRAINT advisory_scope_manifest_payload_check CHECK (pg_catalog.jsonb_typeof(aggregate_payload)='object'),
     CONSTRAINT advisory_scope_manifest_source_fk FOREIGN KEY
         (tenant_id,workspace_id,opportunity_id,case_id,source_digest)
