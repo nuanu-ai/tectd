@@ -38,7 +38,8 @@ pub use error::{
     PipelineArtifactViolation, Result,
 };
 pub use identity::{
-    HostAuth, HostIdentity, RequestContext, validate_native_id, validate_workspace_key,
+    HostAuth, HostIdentity, PrincipalRole, RequestContext, validate_native_id,
+    validate_workspace_key,
 };
 pub use knowledge_consumer::*;
 pub use knowledge_document::*;

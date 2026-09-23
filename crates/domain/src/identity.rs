@@ -46,8 +46,15 @@ pub struct HostIdentity {
     pub host_id: Uuid,
     pub tenant_id: Uuid,
     pub principal_id: Uuid,
+    pub role: PrincipalRole,
     pub allowed_source_roots: Vec<String>,
     pub allowed_setup_roots: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrincipalRole {
+    Owner,
+    Verifier,
 }
 
 pub fn validate_native_id(value: &str) -> Result<()> {

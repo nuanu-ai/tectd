@@ -65,6 +65,14 @@ with the repeated source/setup root arguments above. These commands are atomic a
 idempotent. Registration verifies an existing host exactly and rejects changed,
 duplicate, or revoked identity instead of rotating or restoring it.
 
+For a distinct verifier identity, the operator can run
+`tect-admin enroll-verifier --tenant UUID --workspace UUID --out /absolute/private/verifier.json`.
+The workspace must already belong to that tenant. The command creates a new verifier
+principal, host credential, and membership only for that workspace. Verifier session
+opening is disabled until its separate workflow is implemented; this credential does
+not grant owner commands. The output file follows the same private-file rules as owner
+enrollment.
+
 Operators create portable application and durable-knowledge backups with
 `tect-admin backup --out /absolute/new/private-directory --runtime-role ROLE`.
 The parent directory must be private (`0700`), and PostgreSQL 18 `pg_dump` and

@@ -53,6 +53,14 @@ enum Command {
         #[arg(long)]
         out: PathBuf,
     },
+    EnrollVerifier {
+        #[arg(long)]
+        tenant: Uuid,
+        #[arg(long)]
+        workspace: Uuid,
+        #[arg(long)]
+        out: PathBuf,
+    },
     EnsureTenant {
         #[arg(long)]
         tenant: Uuid,
@@ -170,6 +178,24 @@ async fn run_database_command(admin_url: &str, command: Command) -> Result<()> {
                 enrollment.auth.host_id,
                 enrollment.tenant_id,
                 enrollment.principal_id,
+                out.display()
+            );
+        }
+        Command::EnrollVerifier {
+            tenant,
+            workspace,
+            out,
+        } => {
+            preflight_output(&out)?;
+            let enrollment =
+                tect_postgres::admin::enroll_verifier(&pool, tenant, workspace).await?;
+            write_auth_file(&out, &enrollment.auth)?;
+            println!(
+                "enrolled verifier host {} tenant {} principal {} workspace {}; auth written to {}",
+                enrollment.auth.host_id,
+                enrollment.tenant_id,
+                enrollment.principal_id,
+                workspace,
                 out.display()
             );
         }

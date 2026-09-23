@@ -12,6 +12,7 @@ mod backup;
 mod migration;
 mod runtime_prerequisites;
 mod scope_advisory;
+mod verifier;
 pub use backup::{
     BackupGraph, BackupIdentity, BackupSnapshot, RestoreGraph, begin_backup_snapshot,
     create_restore_database, current_schema_version, grant_database_connect, restore_graphs,
@@ -19,6 +20,7 @@ pub use backup::{
 };
 pub use migration::{migrate, validate_runtime_role};
 pub use runtime_prerequisites::{HostRegistration, TenantIdentity, ensure_tenant, register_host};
+pub use verifier::enroll_verifier;
 
 #[derive(Debug)]
 pub struct Enrollment {

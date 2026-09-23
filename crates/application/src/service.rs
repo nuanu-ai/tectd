@@ -278,6 +278,9 @@ impl WorkspaceService {
 
     pub async fn open_workspace(&self, context: &RequestContext) -> Result<WorkspaceState> {
         let (mut tx, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
+        if identity.role != tect_domain::PrincipalRole::Owner {
+            return Err(Error::Forbidden);
+        }
         tx.lock_native_session(identity.host_id, &context.native_session_id)
             .await?;
         if let Some(session) = tx
