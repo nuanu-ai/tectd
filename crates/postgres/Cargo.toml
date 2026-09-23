@@ -23,3 +23,5 @@ workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+tect-host.workspace = true
+reqwest.workspace = true

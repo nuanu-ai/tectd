@@ -3,9 +3,105 @@ use super::*;
 use crate::{PgStore, admin};
 use tect_application::{
     DenyScopeBudget, PreparedScopeAdviceAttempt, ScopeAdviceProvider, ScopeAdviceProviderError,
-    ScopeAdviceProviderObservation, ScopeAdviceProviderRequest, SetupFiles, SourceInspector,
+    ScopeAdviceProviderObservation, ScopeAdviceProviderRequest, ScopeBudgetPolicy,
+    ScopeBudgetPolicyEvaluation, ScopeBudgetRequest, SetupFiles, SourceInspector,
     StartedScopeDispatchPermit, WorkspaceService,
 };
+
+struct SyntheticPositiveBudget;
+
+#[async_trait::async_trait]
+impl ScopeBudgetPolicy for SyntheticPositiveBudget {
+    async fn evaluate(
+        &self,
+        _: &ScopeBudgetRequest,
+    ) -> Result<Option<ScopeBudgetPolicyEvaluation>> {
+        Ok(Some(ScopeBudgetPolicyEvaluation {
+            policy_id: "test-only-synthetic-positive".into(),
+        }))
+    }
+}
+
+async fn fake_jev_once() -> (
+    reqwest::Url,
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<(Vec<u8>, bool)>,
+) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = reqwest::Url::parse(&format!(
+        "http://{}/v1/systemone",
+        listener.local_addr().unwrap()
+    ))
+    .unwrap();
+    let (done_sender, done_receiver) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let header_end = loop {
+            let read = socket.read(&mut buffer).await.unwrap();
+            assert!(read > 0);
+            request.extend_from_slice(&buffer[..read]);
+            if let Some(position) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                break position + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&request[..header_end]);
+        let length: usize = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse().unwrap())
+            })
+            .unwrap();
+        while request.len() < header_end + length {
+            let read = socket.read(&mut buffer).await.unwrap();
+            assert!(read > 0);
+            request.extend_from_slice(&buffer[..read]);
+        }
+        let body = request[header_end..].to_vec();
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let mut answers = serde_json::Map::new();
+        for alternative in parsed["state"]["alternatives"].as_array().unwrap() {
+            let id = alternative["id"].as_str().unwrap();
+            answers.insert(
+                format!("choice_{id}"),
+                serde_json::json!({
+                    "type":"choice", "choice":"PREFERRED", "confidence":0.8,
+                    "probabilities":{"NON_PREFERRED":0.2,"PREFERRED":0.8}
+                }),
+            );
+            answers.insert(
+                format!("score_{id}"),
+                serde_json::json!({
+                    "type":"score", "score":2.4, "confidence":0.7,
+                    "legend":{"0":"conflict","1":"weak_fit","2":"fit","3":"strong_fit"},
+                    "probabilities":{"0":0.05,"1":0.1,"2":0.55,"3":0.3}
+                }),
+            );
+        }
+        let response = serde_json::to_vec(&serde_json::json!({
+            "model":"jev", "answers":answers,
+            "usage":{"input_tokens":11,"output_tokens":5}
+        }))
+        .unwrap();
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            response.len()
+        );
+        socket.write_all(head.as_bytes()).await.unwrap();
+        socket.write_all(&response).await.unwrap();
+        let second_call = tokio::select! {
+            biased;
+            accepted = listener.accept() => accepted.is_ok(),
+            _ = done_receiver => false,
+        };
+        (body, second_call)
+    });
+    (endpoint, done_sender, server)
+}
 
 struct CountingCapableProvider(std::sync::Arc<std::sync::atomic::AtomicUsize>);
 
@@ -385,6 +481,152 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
             .await
             .unwrap();
     assert_eq!(budget_dispatches, 0);
+
+    // Explicit test-only opt-in crosses the real Jev HTTP adapter and the
+    // committed dispatch lifecycle. The same request is replayed while the
+    // listener is open so an accidental retry is visible on the socket.
+    let (endpoint, fake_done, fake_server) = fake_jev_once().await;
+    let jev = tect_host::JevScopeAdviceProvider::new(
+        tect_host::JevScopeAdviceConfig {
+            profile: "fixture".into(),
+            endpoint: endpoint.clone(),
+            model: "jev".into(),
+            timeout: std::time::Duration::from_secs(2),
+            maximum_request_bytes: 65_536,
+            maximum_response_bytes: 65_536,
+        },
+        "test-only-credential".into(),
+    )
+    .unwrap();
+    let positive_service = WorkspaceService::new_with_scope_advisory_adapters(
+        std::sync::Arc::new(store.clone()),
+        std::sync::Arc::new(UnusedHostAdapters),
+        std::sync::Arc::new(UnusedHostAdapters),
+        std::sync::Arc::new(PgScopeAuthorityObserver::new(
+            store.clone(),
+            std::sync::Arc::new(FixtureCandidateGuidance),
+        )),
+        std::sync::Arc::new(PgScopeAuthoredManifestSupplier::new(
+            store.clone(),
+            std::sync::Arc::new(PgScopeAuthorityObserver::new(
+                store.clone(),
+                std::sync::Arc::new(FixtureCandidateGuidance),
+            )),
+        )),
+        std::sync::Arc::new(SyntheticPositiveBudget),
+        std::sync::Arc::new(jev),
+    );
+    let positive_context = tect_domain::RequestContext {
+        auth: enrollment.auth.clone(),
+        native_session_id: session.to_string(),
+        workspace_key: format!("scope-live-{workspace}"),
+    };
+    let positive_request = tect_application::RunScopeAdvisory {
+        request_id: Uuid::new_v4(),
+        candidate_set_id: candidate,
+        session_preference: tect_domain::AdvisoryRequestPreference::UseWorkspace,
+        request_preference: tect_domain::AdvisoryRequestPreference::UseWorkspace,
+        authored_scope_set: Some(authored_scope_set.clone()),
+    };
+    let positive = positive_service
+        .run_scope_advisory(&positive_context, &positive_request)
+        .await
+        .unwrap();
+    assert_eq!(
+        positive.opportunity.state,
+        AdvisoryOpportunityState::Advised
+    );
+    assert_eq!(
+        positive.opportunity.primary_reason,
+        AdvisoryReason::ProviderResponse
+    );
+    assert!(positive.advice.is_some());
+    let replay = positive_service
+        .run_scope_advisory(&positive_context, &positive_request)
+        .await
+        .unwrap();
+    assert_eq!(replay.opportunity.id, positive.opportunity.id);
+    assert_eq!(replay.opportunity.state, positive.opportunity.state);
+    assert_eq!(replay.advice, positive.advice);
+    assert!(!replay.opportunity.provider_called);
+    fake_done.send(()).unwrap();
+    let (received_body, second_call) = fake_server.await.unwrap();
+    assert!(!second_call, "replay sent a second HTTP request");
+    let dispatch_rows: Vec<(i32, String, String, String, String, String, String, serde_json::Value, Vec<u8>, String, String, Option<String>, bool, bool)> = sqlx::query_as(
+        "SELECT attempt_number,provider,model,state,send_certainty,outcome,retry_basis,configuration_snapshot,request_payload,payload_digest,material_digest,raw_response_ref,send_started_at IS NOT NULL,sealed_at IS NOT NULL FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3 ORDER BY attempt_number",
+    )
+    .bind(tenant).bind(workspace).bind(positive.opportunity.id)
+    .fetch_all(&pool).await.unwrap();
+    assert_eq!(dispatch_rows.len(), 1);
+    let (
+        attempt,
+        provider_name,
+        model,
+        state,
+        certainty,
+        outcome,
+        retry_basis,
+        config_snapshot,
+        request_payload,
+        payload_digest,
+        material_digest,
+        raw_ref,
+        started,
+        sealed,
+    ) = &dispatch_rows[0];
+    assert_eq!(
+        (*attempt, provider_name.as_str(), model.as_str()),
+        (1, "jev-system-one", "jev")
+    );
+    assert_eq!(
+        (
+            state.as_str(),
+            certainty.as_str(),
+            outcome.as_str(),
+            retry_basis.as_str()
+        ),
+        ("sealed", "sent", "provider_response", "initial")
+    );
+    assert!(*started && *sealed);
+    assert_eq!(
+        config_snapshot["budget_policy_id"],
+        "test-only-synthetic-positive"
+    );
+    assert_eq!(config_snapshot["destination"], endpoint.as_str());
+    assert_eq!(request_payload, &received_body);
+    assert_eq!(
+        payload_digest,
+        &format!("{:x}", sha2::Sha256::digest(&received_body))
+    );
+    assert_eq!(material_digest, &positive.opportunity.material_digest);
+    assert!(raw_ref.as_deref().unwrap().contains("jev:fixture:"));
+    let receipt: (Vec<u8>, Option<i64>, Option<i64>) = sqlx::query_as(
+        "SELECT response_payload,input_tokens,output_tokens FROM advisory_dispatch WHERE opportunity_id=$1",
+    ).bind(positive.opportunity.id).fetch_one(&pool).await.unwrap();
+    assert_eq!(receipt.1, Some(11));
+    assert_eq!(receipt.2, Some(5));
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&receipt.0).unwrap()["model"],
+        "jev"
+    );
+    let audit: (String, String, i64) = sqlx::query_as(
+        "SELECT state,primary_reason,(SELECT count(*) FROM advisory_dispatch d WHERE d.opportunity_id=o.id)::bigint FROM advisory_opportunity o WHERE id=$1",
+    ).bind(positive.opportunity.id).fetch_one(&pool).await.unwrap();
+    assert_eq!(audit, ("advised".into(), "provider_response".into(), 1));
+    let attribution: (String, String, String, Uuid, String) = sqlx::query_as(
+        "SELECT capability,decision_point,work_item_kind,work_item_id,source_revision FROM advisory_opportunity WHERE id=$1",
+    ).bind(positive.opportunity.id).fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        attribution,
+        (
+            "scope_decomposition".into(),
+            "scope.decomposition.before_selection".into(),
+            "scope_candidate_set".into(),
+            candidate,
+            "3".into(),
+        )
+    );
+
     assert_eq!(
         authority
             .observe(&ScopeAuthorityRequest {
