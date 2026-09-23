@@ -149,6 +149,20 @@ async fn public_scope_advisory_request_audits_disabled_and_optional_skip_without
     assert_eq!(opportunity["state"], "no_call");
     assert_eq!(opportunity["primary_reason"], "request_skip");
     assert!(skipped_audit["dispatches"].as_array().unwrap().is_empty());
+    let dispatch_attempt_rows: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM advisory_dispatch \
+         WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3",
+    )
+    .bind(enrollment.tenant_id)
+    .bind(workspace_id)
+    .bind(id(&skipped["opportunity_id"]))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        dispatch_attempt_rows, 0,
+        "explicit skip must persist no dispatch or provider-attempt row"
+    );
 
     let skipped_page = route(
         &mut client,
