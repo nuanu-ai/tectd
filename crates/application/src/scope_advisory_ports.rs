@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use tect_domain::{
-    FreshScopeObservation, GuardedScopeAdvice, Result, ScopeConstructorManifest,
+    AdvisoryReason, FreshScopeObservation, GuardedScopeAdvice, Result, ScopeConstructorManifest,
     ScopeDispositionRequest, ScopeDispositionRevision, ScopePreservationResult,
 };
 use uuid::Uuid;
@@ -19,6 +19,14 @@ pub struct StoredScopeManifestRecord {
     pub record: ScopeManifestRecord,
     /// Canonical caller-authored input digest, absent only for legacy requests.
     pub authored_request_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopePreparedAdvisoryDisposition {
+    pub opportunity_id: Uuid,
+    pub candidate_set_id: Uuid,
+    pub expected_source_digest: String,
+    pub reason: AdvisoryReason,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +136,12 @@ pub trait ScopeAdvisoryStore: Send {
         &mut self,
         workspace_id: Uuid,
         opportunity_id: Uuid,
+    ) -> Result<()>;
+
+    async fn finalize_prepared_scope_advisory_without_dispatch(
+        &mut self,
+        workspace_id: Uuid,
+        record: &ScopePreparedAdvisoryDisposition,
     ) -> Result<()>;
 
     async fn cas_scope_advisory_disposition(

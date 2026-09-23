@@ -287,10 +287,83 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         Err(Error::InputConflict)
     );
     replay.commit().await.unwrap();
+
+    let stale_opportunity = Uuid::new_v4();
+    let stale_request_key = format!("request-{stale_opportunity}");
+    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'3',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','use_workspace','1',$7,$8,'prepared','dispatch_authorized')")
+        .bind(stale_opportunity).bind(tenant).bind(workspace).bind(candidate).bind(session).bind(actor)
+        .bind(&stale_request_key).bind(D).execute(&pool).await.unwrap();
+    let stale_prepared = ScopeManifestRecord {
+        opportunity_id: stale_opportunity,
+        candidate_set_id: candidate,
+        config_revision: prepared.config_revision,
+        opportunity_material_digest: prepared.opportunity_material_digest.clone(),
+        manifest: manifest.clone(),
+    };
+    let stale_disposition = ScopePreparedAdvisoryDisposition {
+        opportunity_id: stale_opportunity,
+        candidate_set_id: candidate,
+        expected_source_digest: manifest.source.digest.clone(),
+        reason: AdvisoryReason::DeterministicInputInvalid,
+    };
+    let mut stale_unit = rw(&store, &enrollment.auth, tenant).await;
+    stale_unit
+        .prepare_scope_advisory_manifest(workspace, &stale_prepared)
+        .await
+        .unwrap();
+    stale_unit
+        .finalize_prepared_scope_advisory_without_dispatch(workspace, &stale_disposition)
+        .await
+        .unwrap();
+    stale_unit.commit().await.unwrap();
+    let mut stale_replay = rw(&store, &enrollment.auth, tenant).await;
+    stale_replay
+        .finalize_prepared_scope_advisory_without_dispatch(workspace, &stale_disposition)
+        .await
+        .unwrap();
+    stale_replay.commit().await.unwrap();
+    let stale_state: (String, String) = sqlx::query_as(
+        "SELECT state,primary_reason FROM advisory_opportunity WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(stale_opportunity)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        stale_state,
+        ("no_call".into(), "deterministic_input_invalid".into())
+    );
+    let stale_attempts: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(stale_opportunity)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(stale_attempts, 0);
+
     sqlx::query("UPDATE advisory_opportunity SET state='awaiting_response',primary_reason='send_unknown' WHERE id=$1")
         .bind(opportunity).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO advisory_dispatch(id,tenant_id,workspace_id,opportunity_id,attempt_number,provider,model,configuration_snapshot,configuration_digest,material_digest,payload_digest,request_payload,state,send_certainty,retry_basis,send_started_at) VALUES($1,$2,$3,$4,1,'fixture','jev','{}',$5,$5,$5,'x','sending','sent_unknown','initial',clock_timestamp())")
         .bind(dispatch).bind(tenant).bind(workspace).bind(opportunity).bind(D).execute(&pool).await.unwrap();
+    let dispatched_invalidation = ScopePreparedAdvisoryDisposition {
+        opportunity_id: opportunity,
+        candidate_set_id: candidate,
+        expected_source_digest: manifest.source.digest.clone(),
+        reason: AdvisoryReason::DeterministicInputInvalid,
+    };
+    let mut dispatched_unit = rw(&store, &enrollment.auth, tenant).await;
+    assert_eq!(
+        dispatched_unit
+            .finalize_prepared_scope_advisory_without_dispatch(workspace, &dispatched_invalidation,)
+            .await,
+        Err(Error::InputConflict)
+    );
+    dispatched_unit.commit().await.unwrap();
     let request = ScopeAdviceRequest::from_manifest(&Sha256ScopeDigest, &manifest).unwrap();
     let answers = NormalizedScopeAdviceAnswers {
         answers: vec![NormalizedScopeAdviceAnswer {
@@ -596,6 +669,26 @@ fn authored_request_digest_requires_lowercase_sha256_hex() {
     assert!(!super::valid_authored_request_digest(&"A".repeat(64)));
     assert!(!super::valid_authored_request_digest(&"g".repeat(64)));
     assert!(!super::valid_authored_request_digest(&"a".repeat(63)));
+}
+
+#[test]
+fn prepared_scope_disposition_uses_only_pre_dispatch_terminal_reasons() {
+    assert_eq!(
+        super::prepared_scope_disposition_state(AdvisoryReason::DeterministicInputInvalid),
+        Ok("no_call")
+    );
+    assert_eq!(
+        super::prepared_scope_disposition_state(AdvisoryReason::ConfigurationChanged),
+        Ok("invalidated")
+    );
+    assert_eq!(
+        super::prepared_scope_disposition_state(AdvisoryReason::ProviderUnconfigured),
+        Err(Error::InvalidArguments)
+    );
+    assert!(super::valid_scope_source_digest(&"a".repeat(64)));
+    assert!(!super::valid_scope_source_digest(&"A".repeat(64)));
+    assert!(!super::valid_scope_source_digest(&"z".repeat(64)));
+    assert!(!super::valid_scope_source_digest(&"a".repeat(63)));
 }
 
 #[tokio::test]

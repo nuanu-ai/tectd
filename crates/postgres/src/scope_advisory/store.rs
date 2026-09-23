@@ -48,13 +48,7 @@ impl ScopeAdvisoryStore for PgUnitOfWork {
         request_key: &str,
     ) -> Result<Option<StoredScopeManifestRecord>> {
         let tenant = self.tenant_id()?;
-        load_manifest_by_request_key(
-            self.transaction()?,
-            tenant,
-            workspace_id,
-            request_key,
-        )
-        .await
+        load_manifest_by_request_key(self.transaction()?, tenant, workspace_id, request_key).await
     }
 
     async fn guarded_scope_advice(
@@ -100,6 +94,21 @@ impl ScopeAdvisoryStore for PgUnitOfWork {
         let tenant = self.tenant_id()?;
         invalidate_advice_opportunity(self.transaction()?, tenant, workspace_id, opportunity_id)
             .await
+    }
+
+    async fn finalize_prepared_scope_advisory_without_dispatch(
+        &mut self,
+        workspace_id: Uuid,
+        record: &ScopePreparedAdvisoryDisposition,
+    ) -> Result<()> {
+        let tenant = self.tenant_id()?;
+        finish_prepared_scope_advisory_without_dispatch(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            record,
+        )
+        .await
     }
 
     async fn cas_scope_advisory_disposition(

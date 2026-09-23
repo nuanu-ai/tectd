@@ -6,8 +6,8 @@ use tect_application::{
     ScopeAuthorityObservation, ScopeAuthorityObserver, ScopeAuthorityOutcome,
     ScopeAuthorityRequest, ScopeAuthorizedInvalidObservation, ScopeCallerLinkInput,
     ScopeDispositionRecord, ScopeManifestRecord, ScopeManifestSupplier,
-    ScopePreservationReceiptInput, ScopeVerifierReceiptInput, Sha256ScopeDigest,
-    StoredScopeManifestRecord,
+    ScopePreparedAdvisoryDisposition, ScopePreservationReceiptInput, ScopeVerifierReceiptInput,
+    Sha256ScopeDigest, StoredScopeManifestRecord,
 };
 use tect_domain::*;
 use uuid::Uuid;

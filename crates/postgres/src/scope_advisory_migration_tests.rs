@@ -161,6 +161,29 @@ fn authored_request_digest_is_optional_manifest_lineage_and_not_provider_request
 }
 
 #[test]
+fn prepared_scope_disposition_is_audited_and_refuses_any_dispatch_attempt() {
+    for token in [
+        "finalize_prepared_scope_advisory_without_dispatch",
+        "ScopePreparedAdvisoryDisposition",
+        "expected_source_digest",
+    ] {
+        assert!(PORT.contains(token), "missing port contract {token}");
+    }
+    for token in [
+        "FOR UPDATE OF o",
+        "AdvisoryOpportunityState::Prepared.as_str()",
+        "AdvisoryReason::DispatchAuthorized.as_str()",
+        "SELECT EXISTS(SELECT 1 FROM advisory_dispatch",
+        "NOT EXISTS (SELECT 1 FROM advisory_dispatch d",
+        "m.source_digest=$7",
+        "AdvisoryReason::DeterministicInputInvalid",
+        "AdvisoryReason::ConfigurationChanged",
+    ] {
+        assert!(FINALIZE.contains(token), "missing CAS guard {token}");
+    }
+}
+
+#[test]
 fn guarded_advice_and_advised_transition_share_one_transaction() {
     for token in [
         "SET state='advised'",
