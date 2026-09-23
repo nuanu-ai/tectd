@@ -86,17 +86,78 @@ async fn fixture(
 }
 
 fn provider(endpoint: Url, timeout: Duration, maximum: usize) -> JevScopeAdviceProvider {
+    provider_with_caps(endpoint, timeout, usize::MAX, maximum)
+}
+
+fn provider_with_caps(
+    endpoint: Url,
+    timeout: Duration,
+    maximum_request_bytes: usize,
+    maximum_response_bytes: usize,
+) -> JevScopeAdviceProvider {
     JevScopeAdviceProvider::new(
         JevScopeAdviceConfig {
             profile: "fixture".into(),
             endpoint,
             model: "jev-1.13.0".into(),
             timeout,
-            maximum_response_bytes: maximum,
+            maximum_request_bytes,
+            maximum_response_bytes,
         },
         "secret-fixture-credential".into(),
     )
     .unwrap()
+}
+
+#[tokio::test]
+async fn serialized_request_at_cap_is_sent_once() {
+    let request = request();
+    let payload = serialize_request("jev-1.13.0", &request).unwrap();
+    let (endpoint, calls, captured, server) = fixture(FixtureResponse {
+        status: 200,
+        content_type: "application/json",
+        body: serde_json::to_vec(&valid_response()).unwrap(),
+        delay: Duration::ZERO,
+    })
+    .await;
+    let observation = provider_with_caps(endpoint, Duration::from_secs(1), payload.len(), 16_384)
+        .attempt_request(DISPATCH_ID, &request)
+        .await
+        .unwrap();
+    server.await.unwrap();
+    let captured = captured.await.unwrap();
+    let body_start = captured
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    assert_eq!(&captured[body_start..], payload);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(observation.send_certainty, AdvisorySendCertainty::Sent);
+}
+
+#[tokio::test]
+async fn serialized_request_one_byte_over_cap_is_proven_not_sent() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let endpoint = Url::parse(&format!("http://{address}/v1/systemone")).unwrap();
+    let mut request = request();
+    request.alternatives[0]
+        .covered_obligation_ids
+        .push("private-request-marker".into());
+    let payload = serialize_request("jev-1.13.0", &request).unwrap();
+    let result = provider_with_caps(endpoint, Duration::from_secs(1), payload.len() - 1, 16_384)
+        .attempt_request(DISPATCH_ID, &request)
+        .await;
+    assert_eq!(result, Err(ScopeAdviceProviderError::ProvenNotSent));
+    let rendered = format!("{result:?}");
+    assert!(!rendered.contains("private-request-marker"));
+    assert!(!rendered.contains("secret-fixture-credential"));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -320,10 +381,25 @@ fn config_and_source_have_no_hidden_defaults_retries_or_credential_rendering() {
     assert!(
         JevScopeAdviceProvider::new(
             JevScopeAdviceConfig {
+                profile: "fixture".into(),
+                endpoint: Url::parse("https://api.typesafe.ai/v1/systemone").unwrap(),
+                model: "jev-1.13.0".into(),
+                timeout: Duration::from_secs(1),
+                maximum_request_bytes: 0,
+                maximum_response_bytes: 1,
+            },
+            "credential".into(),
+        )
+        .is_err()
+    );
+    assert!(
+        JevScopeAdviceProvider::new(
+            JevScopeAdviceConfig {
                 profile: "".into(),
                 endpoint: Url::parse("https://api.typesafe.ai/v1/systemone").unwrap(),
                 model: "jev-1.13.0".into(),
                 timeout: Duration::from_secs(1),
+                maximum_request_bytes: 1,
                 maximum_response_bytes: 1,
             },
             "credential".into(),

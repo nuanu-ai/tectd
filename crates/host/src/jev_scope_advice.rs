@@ -24,6 +24,7 @@ pub struct JevScopeAdviceConfig {
     pub endpoint: Url,
     pub model: String,
     pub timeout: Duration,
+    pub maximum_request_bytes: usize,
     pub maximum_response_bytes: usize,
 }
 
@@ -39,6 +40,7 @@ impl JevScopeAdviceConfig {
             || !self.endpoint.username().is_empty()
             || self.endpoint.password().is_some()
             || self.timeout.is_zero()
+            || self.maximum_request_bytes == 0
             || self.maximum_response_bytes == 0
         {
             return Err(Error::InvalidConfiguration);
@@ -150,6 +152,9 @@ impl JevScopeAdviceProvider {
     ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
         let payload = wire::serialize_request(&self.config.model, request)
             .map_err(|_| ScopeAdviceProviderError::ProvenNotSent)?;
+        if payload.len() > self.config.maximum_request_bytes {
+            return Err(ScopeAdviceProviderError::ProvenNotSent);
+        }
         let started = std::time::Instant::now();
         let response = self
             .client
