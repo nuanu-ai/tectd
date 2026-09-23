@@ -1,7 +1,7 @@
 //! Actual concurrent PostgreSQL authorization and operator CLI boundaries.
 use sqlx::PgPool;
 use std::{sync::Arc, time::Duration};
-use tect_application::{Store, TransactionMode, WorkspaceService};
+use tect_application::{Store, TransactionMode, VerifySelectedSave, WorkspaceService};
 use tect_domain::{Error, HostAuth, RequestContext, StateStatus};
 use tect_postgres::{PgStore, admin};
 use uuid::Uuid;
@@ -189,4 +189,101 @@ async fn operator_revocation_serializes_with_admission_and_never_reopens_identit
     assert_eq!(runtime_without_scope, 0);
     let can_update: bool = sqlx::query_scalar("SELECT has_table_privilege(current_user,'agent_sessions','UPDATE') OR has_table_privilege(current_user,'hosts','UPDATE')").fetch_one(store.pool()).await.unwrap();
     assert!(!can_update);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn verifier_observation_waits_for_session_revoke_and_rejects_revoked_session() {
+    let admin_url = std::env::var("TECT_TEST_ADMIN_URL").expect("TECT_TEST_ADMIN_URL required");
+    let runtime_url =
+        std::env::var("TECT_TEST_RUNTIME_URL").expect("TECT_TEST_RUNTIME_URL required");
+    let role = std::env::var("TECT_TEST_RUNTIME_ROLE").expect("TECT_TEST_RUNTIME_ROLE required");
+    let pool = PgPool::connect(&admin_url).await.unwrap();
+    admin::migrate(&pool, &role).await.unwrap();
+    let revoke_tag = format!("tect-verifier-revoke-{}", Uuid::new_v4());
+    let verify_tag = format!("tect-verifier-verify-{}", Uuid::new_v4());
+    let revoker = PgPool::connect(&tagged_url(&admin_url, &revoke_tag))
+        .await
+        .unwrap();
+    let store = Arc::new(
+        PgStore::connect(&tagged_url(&runtime_url, &verify_tag), 4)
+            .await
+            .unwrap(),
+    );
+    let service = Arc::new(WorkspaceService::new(
+        store,
+        Arc::new(tect_host::GitSourceInspector),
+        Arc::new(tect_host::LocalSetupFiles),
+    ));
+    let owner = admin::enroll_host(&pool, None, Vec::new()).await.unwrap();
+    let owner_ctx = context(&owner.auth, &format!("verifier-revoke-{}", Uuid::new_v4()));
+    let workspace = service
+        .open_workspace(&owner_ctx)
+        .await
+        .unwrap()
+        .workspace
+        .unwrap()
+        .id;
+    let verifier = admin::prepare_verifier_enrollment(&pool, owner.tenant_id, workspace)
+        .await
+        .unwrap()
+        .try_commit()
+        .await
+        .unwrap();
+    let verify_ctx = context(&verifier.auth, &owner_ctx.workspace_key);
+    let session_id = service
+        .open_workspace(&verify_ctx)
+        .await
+        .unwrap()
+        .session
+        .unwrap()
+        .id;
+    let request = VerifySelectedSave {
+        request_id: Uuid::new_v4(),
+        opportunity_id: Uuid::new_v4(),
+        candidate_set_id: Uuid::new_v4(),
+        caller_link_id: Uuid::new_v4(),
+        caller_receipt_request_id: Uuid::new_v4(),
+        target_revision: 1,
+    };
+
+    // Queue revoke before verification on the same native-session lock.
+    let mut blocker = pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text || ':' || $2,0))")
+        .bind(verifier.auth.host_id)
+        .bind(&verify_ctx.native_session_id)
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    let revoke = tokio::spawn(async move { admin::revoke_session(&revoker, session_id).await });
+    wait_for_lock(&pool, &revoke_tag).await;
+    let verify = {
+        let service = service.clone();
+        let ctx = verify_ctx.clone();
+        let request = request.clone();
+        tokio::spawn(async move { service.verify_selected_save(&ctx, &request).await })
+    };
+    wait_for_lock(&pool, &verify_tag).await;
+    assert!(!verify.is_finished());
+    blocker.commit().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), revoke)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), verify)
+            .await
+            .unwrap()
+            .unwrap(),
+        Err(Error::SessionRevoked)
+    );
+    let observations: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM advisory_scope_selected_save_observation WHERE tenant_id=$1 AND request_id=$2",
+    )
+    .bind(owner.tenant_id)
+    .bind(request.request_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(observations, 0);
 }

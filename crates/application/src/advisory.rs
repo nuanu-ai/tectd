@@ -59,6 +59,10 @@ impl WorkspaceService {
         if identity.role != PrincipalRole::Verifier {
             return Err(Error::Forbidden);
         }
+        if mode == TransactionMode::ReadWrite {
+            tx.lock_native_session(identity.host_id, &context.native_session_id)
+                .await?;
+        }
         let session = tx
             .session(identity.host_id, &context.native_session_id)
             .await?
