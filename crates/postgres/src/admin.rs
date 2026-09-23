@@ -20,7 +20,11 @@ pub use backup::{
 };
 pub use migration::{migrate, validate_runtime_role};
 pub use runtime_prerequisites::{HostRegistration, TenantIdentity, ensure_tenant, register_host};
-pub use verifier::{PendingVerifierEnrollment, enroll_verifier, prepare_verifier_enrollment};
+pub use verifier::{
+    PendingVerifierEnrollment, VerifierCommitDecision, VerifierCommitFailure,
+    VerifierEnrollmentState, prepare_verifier_enrollment, resolve_verifier_commit,
+    verifier_enrollment_state,
+};
 
 #[derive(Debug)]
 pub struct Enrollment {

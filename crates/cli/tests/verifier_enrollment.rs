@@ -63,9 +63,18 @@ async fn verifier_enrollment_is_distinct_pregranted_and_cannot_open_owner_routes
     .fetch_one(&pool)
     .await
     .unwrap();
-    let verifier = admin::enroll_verifier(&pool, owner.tenant_id, workspace_id)
+    let verifier = admin::prepare_verifier_enrollment(&pool, owner.tenant_id, workspace_id)
+        .await
+        .unwrap()
+        .try_commit()
         .await
         .unwrap();
+    assert_eq!(
+        admin::verifier_enrollment_state(&pool, &verifier, workspace_id)
+            .await
+            .unwrap(),
+        admin::VerifierEnrollmentState::Committed
+    );
     assert_ne!(verifier.principal_id, owner.principal_id);
     assert_ne!(verifier.auth.host_id, owner.auth.host_id);
     assert_ne!(verifier.auth.credential, owner.auth.credential);
@@ -184,11 +193,26 @@ async fn verifier_enrollment_is_distinct_pregranted_and_cannot_open_owner_routes
     assert_eq!(verifier_counts(&pool, owner.tenant_id).await, counts_before);
     drop(pending);
     assert_eq!(verifier_counts(&pool, owner.tenant_id).await, counts_before);
+    let absent = admin::Enrollment {
+        auth: tect_domain::HostAuth {
+            host_id: Uuid::new_v4(),
+            credential: "0".repeat(64),
+        },
+        tenant_id: owner.tenant_id,
+        principal_id: Uuid::new_v4(),
+    };
+    assert_eq!(
+        admin::verifier_enrollment_state(&pool, &absent, workspace_id)
+            .await
+            .unwrap(),
+        admin::VerifierEnrollmentState::Absent
+    );
 
-    let missing = admin::enroll_verifier(&pool, owner.tenant_id, Uuid::new_v4()).await;
+    let missing = admin::prepare_verifier_enrollment(&pool, owner.tenant_id, Uuid::new_v4()).await;
     assert!(matches!(missing, Err(Error::NotFound)));
     let foreign_owner = admin::enroll_host(&pool, None, vec![]).await.unwrap();
-    let foreign = admin::enroll_verifier(&pool, foreign_owner.tenant_id, workspace_id).await;
+    let foreign =
+        admin::prepare_verifier_enrollment(&pool, foreign_owner.tenant_id, workspace_id).await;
     assert!(matches!(foreign, Err(Error::NotFound)));
     let owner_count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM principals WHERE tenant_id=$1 AND role='owner'")

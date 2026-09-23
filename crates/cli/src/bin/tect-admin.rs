@@ -189,9 +189,55 @@ async fn run_database_command(admin_url: &str, command: Command) -> Result<()> {
             preflight_output(&out)?;
             let pending =
                 tect_postgres::admin::prepare_verifier_enrollment(&pool, tenant, workspace).await?;
-            let published = publish_verifier_auth_file(&out, pending.auth())?;
-            let enrollment = pending.commit().await?;
-            published.retain();
+            let mut published = publish_verifier_auth_file(&out, pending.auth())?;
+            let enrollment = match pending.try_commit().await {
+                Ok(enrollment) => {
+                    published.retain();
+                    enrollment
+                }
+                Err(failure) => {
+                    // The COMMIT acknowledgement may be lost after PostgreSQL commits.
+                    let state = match tect_postgres::admin::connect_admin(admin_url).await {
+                        Ok(fresh_pool) => tect_postgres::admin::verifier_enrollment_state(
+                            &fresh_pool,
+                            &failure.enrollment,
+                            workspace,
+                        )
+                        .await
+                        .ok(),
+                        Err(_) => None,
+                    };
+                    match tect_postgres::admin::resolve_verifier_commit(
+                        failure.database_rejected,
+                        state,
+                    ) {
+                        tect_postgres::admin::VerifierCommitDecision::RecoverSuccess => {
+                            published.retain();
+                            eprintln!(
+                                "verifier enrollment recovered after unacknowledged commit; database identity verified for host {}",
+                                failure.enrollment.auth.host_id,
+                            );
+                            failure.enrollment
+                        }
+                        tect_postgres::admin::VerifierCommitDecision::RemoveCredential => {
+                            published.remove()?;
+                            return Err(Error::StorageUnavailable);
+                        }
+                        tect_postgres::admin::VerifierCommitDecision::PreserveCredential => {
+                            published.retain();
+                            eprintln!(
+                                "verifier enrollment outcome uncertain: tenant {} workspace {} principal {} host {}; private credential preserved at {}; verify database state before reuse or cleanup",
+                                failure.enrollment.tenant_id,
+                                workspace,
+                                failure.enrollment.principal_id,
+                                failure.enrollment.auth.host_id,
+                                out.display(),
+                            );
+                            return Err(Error::StorageUnavailable);
+                        }
+                    }
+                }
+            };
             println!(
                 "enrolled verifier host {} tenant {} principal {} workspace {}; auth written to {}",
                 enrollment.auth.host_id,

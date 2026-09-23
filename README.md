@@ -73,6 +73,11 @@ opening is disabled until its separate workflow is implemented; this credential 
 not grant owner commands. The output file follows the same private-file rules as owner
 enrollment.
 
+If PostgreSQL does not acknowledge the final commit, the command checks the
+generated identity through a fresh admin connection. If the outcome remains
+uncertain, it reports the tenant, workspace, principal, and host IDs and preserves
+the private credential file for operator reconciliation.
+
 Operators create portable application and durable-knowledge backups with
 `tect-admin backup --out /absolute/new/private-directory --runtime-role ROLE`.
 The parent directory must be private (`0700`), and PostgreSQL 18 `pg_dump` and
