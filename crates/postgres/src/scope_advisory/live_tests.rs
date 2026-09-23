@@ -871,6 +871,8 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     .await
     .unwrap();
     tx.commit().await.unwrap();
+    sqlx::query("INSERT INTO advisory_workspace_config_history(tenant_id,workspace_id,revision,previous_revision,mode,provider_profile_ref,model_configuration,changed_by_principal_id,changed_by_session_id) VALUES($1,$2,2,1,'disabled',NULL,NULL,$3,$4)")
+        .bind(tenant).bind(workspace).bind(actor).bind(session).execute(&pool).await.unwrap();
     sqlx::query("UPDATE advisory_workspace_config SET revision=2,mode='disabled',provider_profile_ref=NULL,model_configuration=NULL WHERE tenant_id=$1 AND workspace_id=$2")
         .bind(tenant).bind(workspace).execute(&pool).await.unwrap();
     let mut tx = runtime_pool.begin().await.unwrap();
