@@ -1,4 +1,4 @@
-use super::live_support::{D, manifest, rw, set_config};
+use super::live_support::{D, manifest, reseal_manifest, rw, set_config};
 use super::*;
 use crate::{PgStore, admin};
 
@@ -20,6 +20,8 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     let program = Uuid::new_v4();
     let candidate = Uuid::new_v4();
     let snapshot = Uuid::new_v4();
+    let mut source_refs = [Uuid::new_v4(), Uuid::new_v4()];
+    source_refs.sort();
     let opportunity = Uuid::new_v4();
     let dispatch = Uuid::new_v4();
     sqlx::query("INSERT INTO workspaces(id,tenant_id,key) VALUES($1,$2,$3)")
@@ -42,6 +44,17 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         .bind(tenant).bind(workspace).bind(D).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO scope_candidate_snapshots(id,tenant_id,workspace_id,candidate_set_id,sequence,program_revision,program_latest_input,planning_latest_input,program_body_digest,selected_worktree_ids,selected_sources_digest,method_id,method_revision,method_digest,method_body,method_origin_refs,registry_revision,registry_digest,rules) VALUES($1,$2,$3,$4,1,4,2,2,$5,'{}',$5,'m','4',$5,'body','[]','3',$5,'[]')")
         .bind(snapshot).bind(tenant).bind(workspace).bind(candidate).bind(D).execute(&pool).await.unwrap();
+    for (id, field) in [(source_refs[0], "intent"), (source_refs[1], "basis")] {
+        sqlx::query("INSERT INTO scope_candidate_source_refs(id,tenant_id,workspace_id,candidate_set_id,snapshot_id,kind,program_field,body_digest,label) VALUES($1,$2,$3,$4,$5,'program_field',$6,$7,$6)")
+            .bind(id).bind(tenant).bind(workspace).bind(candidate).bind(snapshot)
+            .bind(field).bind(D).execute(&pool).await.unwrap();
+    }
+    let blank_digest = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    sqlx::query("INSERT INTO scope_candidate_contents(tenant_id,workspace_id,digest,body) VALUES($1,$2,$3,'   ')")
+        .bind(tenant).bind(workspace).bind(blank_digest).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO scope_candidate_source_refs(tenant_id,workspace_id,candidate_set_id,snapshot_id,kind,program_field,body_digest,label) VALUES($1,$2,$3,$4,'program_field','name',$5,'name')")
+        .bind(tenant).bind(workspace).bind(candidate).bind(snapshot).bind(blank_digest)
+        .execute(&pool).await.unwrap();
     sqlx::query("UPDATE scope_candidate_sets SET current_snapshot_id=$1 WHERE id=$2")
         .bind(snapshot)
         .bind(candidate)
@@ -62,8 +75,20 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     ).bind(opportunity).fetch_one(&pool).await.unwrap();
     assert_eq!(preselection, (true, 0));
 
-    let manifest = manifest(candidate, snapshot, program);
+    let manifest = manifest(
+        candidate,
+        snapshot,
+        program,
+        &[(source_refs[0], D), (source_refs[1], D)],
+    );
     let store = PgStore::connect(&runtime_url, 4).await.unwrap();
+    let prepared = ScopeManifestRecord {
+        opportunity_id: opportunity,
+        candidate_set_id: candidate,
+        config_revision: 1,
+        opportunity_material_digest: D.into(),
+        manifest: manifest.clone(),
+    };
     let mut unit = rw(&store, &enrollment.auth, tenant).await;
     let wrong = ScopeManifestRecord {
         opportunity_id: opportunity,
@@ -113,13 +138,63 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
             .await,
         Err(Error::InvalidArguments)
     );
-    let prepared = ScopeManifestRecord {
+    let make_record = |manifest: ScopeConstructorManifest| ScopeManifestRecord {
         opportunity_id: opportunity,
         candidate_set_id: candidate,
         config_revision: 1,
         opportunity_material_digest: D.into(),
-        manifest: manifest.clone(),
+        manifest,
     };
+    let missing =
+        super::live_support::manifest(candidate, snapshot, program, &[(source_refs[0], D)]);
+    assert_eq!(
+        unit.prepare_scope_advisory_manifest(workspace, &make_record(missing))
+            .await,
+        Err(Error::InvalidSource)
+    );
+    let extra = super::live_support::manifest(
+        candidate,
+        snapshot,
+        program,
+        &[
+            (source_refs[0], D),
+            (source_refs[1], D),
+            (Uuid::new_v4(), D),
+        ],
+    );
+    assert_eq!(
+        unit.prepare_scope_advisory_manifest(workspace, &make_record(extra))
+            .await,
+        Err(Error::InvalidSource)
+    );
+    let different_digest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    let altered = super::live_support::manifest(
+        candidate,
+        snapshot,
+        program,
+        &[(source_refs[0], D), (source_refs[1], different_digest)],
+    );
+    assert_eq!(
+        unit.prepare_scope_advisory_manifest(workspace, &make_record(altered))
+            .await,
+        Err(Error::InvalidSource)
+    );
+    let mut omitted_coverage = manifest.clone();
+    omitted_coverage.emitted[0].coverage.pop();
+    reseal_manifest(&mut omitted_coverage);
+    assert_eq!(
+        unit.prepare_scope_advisory_manifest(workspace, &make_record(omitted_coverage))
+            .await,
+        Err(Error::InvalidSource)
+    );
+    let mut stale_snapshot = manifest.clone();
+    stale_snapshot.source.snapshot_id = Uuid::new_v4();
+    reseal_manifest(&mut stale_snapshot);
+    assert_eq!(
+        unit.prepare_scope_advisory_manifest(workspace, &make_record(stale_snapshot))
+            .await,
+        Err(Error::StaleRevision)
+    );
     unit.prepare_scope_advisory_manifest(workspace, &prepared)
         .await
         .unwrap();
@@ -425,4 +500,134 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         .execute(&pool)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires disposable PG18 and TECT_TEST_ADMIN_URL/TECT_TEST_RUNTIME_URL/TECT_TEST_RUNTIME_ROLE"]
+async fn published_source_snapshots_are_permanently_frozen_and_refresh_advances() {
+    let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
+    let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
+    let role = std::env::var("TECT_TEST_RUNTIME_ROLE").unwrap();
+    let pool = sqlx::PgPool::connect(&admin_url).await.unwrap();
+    admin::migrate(&pool, &role).await.unwrap();
+    let runtime = sqlx::PgPool::connect(&runtime_url).await.unwrap();
+    let enrollment = admin::enroll_host(&pool, None, vec![]).await.unwrap();
+    let tenant = enrollment.tenant_id;
+    let workspace = Uuid::new_v4();
+    let program = Uuid::new_v4();
+    let candidate = Uuid::new_v4();
+    let first = Uuid::new_v4();
+    let second = Uuid::new_v4();
+    sqlx::query("INSERT INTO workspaces(id,tenant_id,key) VALUES($1,$2,$3)")
+        .bind(workspace)
+        .bind(tenant)
+        .bind(format!("source-freeze-{workspace}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO programs(id,tenant_id,workspace_id,status,revision,name,intent,basis,boundaries,constraints,success,current_step,input_cursor,latest_input,max_input_bytes) VALUES($1,$2,$3,'open',1,'p','i','b','finite','c','s','ready',0,1,4096)")
+        .bind(program).bind(tenant).bind(workspace).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO scope_candidate_sets(id,tenant_id,workspace_id,program_id,origin_request_id,origin_input,origin_payload,status,boundary,max_input_bytes) VALUES($1,$2,$3,$4,$5,'input','{}','ready','finite',4096)")
+        .bind(candidate).bind(tenant).bind(workspace).bind(program).bind(Uuid::new_v4())
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO scope_candidate_contents(tenant_id,workspace_id,digest,body) VALUES($1,$2,$3,'body')")
+        .bind(tenant).bind(workspace).bind(D).execute(&pool).await.unwrap();
+    for (id, sequence) in [(first, 1_i64), (second, 2)] {
+        sqlx::query("INSERT INTO scope_candidate_snapshots(id,tenant_id,workspace_id,candidate_set_id,sequence,program_revision,program_latest_input,planning_latest_input,program_body_digest,selected_worktree_ids,selected_sources_digest,method_id,method_revision,method_digest,method_body,method_origin_refs,registry_revision,registry_digest,rules) VALUES($1,$2,$3,$4,$5,1,1,1,$6,'{}',$6,'m','1',$6,'body','[]','1',$6,'[]')")
+            .bind(id).bind(tenant).bind(workspace).bind(candidate).bind(sequence).bind(D)
+            .execute(&pool).await.unwrap();
+    }
+
+    // Exercise the trigger through the actual runtime role and tenant policy.
+    let mut runtime_tx = runtime.begin().await.unwrap();
+    sqlx::query("SELECT set_config('tect.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *runtime_tx)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO scope_candidate_source_refs(tenant_id,workspace_id,candidate_set_id,snapshot_id,kind,program_field,body_digest,label) VALUES($1,$2,$3,$4,'program_field','intent',$5,'intent')")
+        .bind(tenant).bind(workspace).bind(candidate).bind(first).bind(D)
+        .execute(&mut *runtime_tx).await.unwrap();
+    runtime_tx.commit().await.unwrap();
+    sqlx::query("UPDATE scope_candidate_sets SET current_snapshot_id=$1 WHERE id=$2")
+        .bind(first)
+        .bind(candidate)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let late = sqlx::query("INSERT INTO scope_candidate_source_refs(tenant_id,workspace_id,candidate_set_id,snapshot_id,kind,program_field,body_digest,label) VALUES($1,$2,$3,$4,'program_field','basis',$5,'basis')")
+        .bind(tenant).bind(workspace).bind(candidate).bind(first).bind(D)
+        .execute(&pool).await;
+    assert!(
+        late.is_err(),
+        "published snapshot accepted a late reference"
+    );
+
+    // A pending refresh can accumulate refs, then publish at a greater sequence.
+    sqlx::query("INSERT INTO scope_candidate_source_refs(tenant_id,workspace_id,candidate_set_id,snapshot_id,kind,program_field,body_digest,label) VALUES($1,$2,$3,$4,'program_field','basis',$5,'basis')")
+        .bind(tenant).bind(workspace).bind(candidate).bind(second).bind(D)
+        .execute(&pool).await.unwrap();
+    sqlx::query("UPDATE scope_candidate_sets SET current_snapshot_id=$1 WHERE id=$2")
+        .bind(second)
+        .bind(candidate)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE scope_candidate_sets SET current_snapshot_id=$1,revision=revision+1 WHERE id=$2",
+    )
+    .bind(second)
+    .bind(candidate)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        sqlx::query("UPDATE scope_candidate_sets SET current_snapshot_id=$1 WHERE id=$2")
+            .bind(first)
+            .bind(candidate)
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert!(
+        sqlx::query("UPDATE scope_candidate_sets SET current_snapshot_id=NULL WHERE id=$1")
+            .bind(candidate)
+            .execute(&pool)
+            .await
+            .is_err()
+    );
+    assert!(sqlx::query("INSERT INTO scope_candidate_source_refs(tenant_id,workspace_id,candidate_set_id,snapshot_id,kind,program_field,body_digest,label) VALUES($1,$2,$3,$4,'program_field','constraints',$5,'constraints')")
+        .bind(tenant).bind(workspace).bind(candidate).bind(second).bind(D)
+        .execute(&pool).await.is_err());
+
+    // Publication holds the same set-row lock as manifest preparation.
+    let third = Uuid::new_v4();
+    sqlx::query("INSERT INTO scope_candidate_snapshots(id,tenant_id,workspace_id,candidate_set_id,sequence,program_revision,program_latest_input,planning_latest_input,program_body_digest,selected_worktree_ids,selected_sources_digest,method_id,method_revision,method_digest,method_body,method_origin_refs,registry_revision,registry_digest,rules) VALUES($1,$2,$3,$4,3,1,1,1,$5,'{}',$5,'m','1',$5,'body','[]','1',$5,'[]')")
+        .bind(third).bind(tenant).bind(workspace).bind(candidate).bind(D)
+        .execute(&pool).await.unwrap();
+    let mut publisher = pool.begin().await.unwrap();
+    sqlx::query("UPDATE scope_candidate_sets SET current_snapshot_id=$1 WHERE id=$2")
+        .bind(third)
+        .bind(candidate)
+        .execute(&mut *publisher)
+        .await
+        .unwrap();
+    let insert_pool = pool.clone();
+    let insert = tokio::spawn(async move {
+        sqlx::query("INSERT INTO scope_candidate_source_refs(tenant_id,workspace_id,candidate_set_id,snapshot_id,kind,program_field,body_digest,label) VALUES($1,$2,$3,$4,'program_field','boundaries',$5,'boundaries')")
+            .bind(tenant).bind(workspace).bind(candidate).bind(third).bind(D)
+            .execute(&insert_pool).await
+    });
+    tokio::pin!(insert);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(150), &mut insert)
+            .await
+            .is_err(),
+        "insert did not wait for publication lock"
+    );
+    publisher.commit().await.unwrap();
+    assert!(
+        insert.await.unwrap().is_err(),
+        "concurrent append escaped publication freeze"
+    );
 }

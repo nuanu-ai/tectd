@@ -38,6 +38,69 @@ struct FrozenAuthorityRow {
     registry_digest: String,
 }
 
+#[derive(sqlx::FromRow)]
+struct PersistedSourceFragment {
+    id: Uuid,
+    body_digest: String,
+    body: String,
+}
+
+async fn require_persisted_fragments(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    source: &FrozenScopeSource,
+    obligations: &[SourceObligation],
+) -> Result<()> {
+    // The candidate-set revision and current snapshot were checked and locked
+    // in this transaction by require_frozen_authority.
+    let fragments: Vec<PersistedSourceFragment> = sqlx::query_as(
+        "SELECT r.id,r.body_digest,c.body FROM scope_candidate_source_refs r \
+         JOIN scope_candidate_contents c ON (c.tenant_id,c.workspace_id,c.digest)=\
+           (r.tenant_id,r.workspace_id,r.body_digest) \
+         WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.candidate_set_id=$3 \
+           AND r.snapshot_id=$4 ORDER BY r.id",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(source.candidate_set_id)
+    .bind(source.snapshot_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    let mut expected_inputs = Vec::new();
+    let mut expected_obligations = Vec::new();
+    for fragment in fragments {
+        if fragment.body.trim().is_empty() {
+            continue;
+        }
+        let id = fragment.id.to_string();
+        expected_inputs.push(FrozenSourceInput {
+            id: id.clone(),
+            version: source.snapshot_id.to_string(),
+            digest: fragment.body_digest.clone(),
+            provenance: format!("scope_candidate_source_ref:{id}"),
+            applicability: SourceApplicability::Applicable,
+        });
+        expected_obligations.push(SourceObligation {
+            id: id.clone(),
+            source_input_id: id,
+            statement_digest: fragment.body_digest,
+            conditions: vec![],
+            exceptions: vec![],
+        });
+    }
+    if expected_inputs.is_empty() {
+        return Err(Error::InvalidSource);
+    }
+    expected_inputs.sort_by(|a, b| a.id.cmp(&b.id));
+    expected_obligations.sort_by(|a, b| a.id.cmp(&b.id));
+    if source.inputs != expected_inputs || obligations != expected_obligations {
+        return Err(Error::InvalidSource);
+    }
+    Ok(())
+}
+
 async fn require_frozen_authority(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -120,6 +183,7 @@ async fn prepare_manifest(
         return Err(Error::InputConflict);
     }
     require_frozen_authority(tx, tenant, workspace, source).await?;
+    require_persisted_fragments(tx, tenant, workspace, source, &record.manifest.obligations).await?;
     if let Some(existing) = load_manifest(
         tx,
         tenant,

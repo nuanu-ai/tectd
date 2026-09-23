@@ -4,7 +4,14 @@ use tect_application::{Store, TransactionMode};
 
 pub(super) const D: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
-pub(super) fn manifest(candidate: Uuid, snapshot: Uuid, program: Uuid) -> ScopeConstructorManifest {
+pub(super) fn manifest(
+    candidate: Uuid,
+    snapshot: Uuid,
+    program: Uuid,
+    fragments: &[(Uuid, &str)],
+) -> ScopeConstructorManifest {
+    let mut fragments = fragments.to_vec();
+    fragments.sort_by_key(|(id, _)| *id);
     let mut source = FrozenScopeSource {
         candidate_set_id: candidate,
         candidate_set_revision: 3,
@@ -19,33 +26,42 @@ pub(super) fn manifest(candidate: Uuid, snapshot: Uuid, program: Uuid) -> ScopeC
         method_digest: D.into(),
         registry_revision: "3".into(),
         registry_digest: D.into(),
-        inputs: vec![FrozenSourceInput {
-            id: "program.intent".into(),
-            version: "4".into(),
-            digest: D.into(),
-            provenance: "program.intent@4".into(),
-            applicability: SourceApplicability::Applicable,
-        }],
+        inputs: fragments
+            .iter()
+            .map(|(id, digest)| FrozenSourceInput {
+                id: id.to_string(),
+                version: snapshot.to_string(),
+                digest: (*digest).into(),
+                provenance: format!("scope_candidate_source_ref:{id}"),
+                applicability: SourceApplicability::Applicable,
+            })
+            .collect(),
         digest: String::new(),
     };
     source.digest = source.canonical_digest(&Sha256ScopeDigest).unwrap();
-    let obligations = vec![SourceObligation {
-        id: "obligation.intent".into(),
-        source_input_id: "program.intent".into(),
-        statement_digest: D.into(),
-        conditions: vec![],
-        exceptions: vec![],
-    }];
+    let obligations = fragments
+        .iter()
+        .map(|(id, digest)| SourceObligation {
+            id: id.to_string(),
+            source_input_id: id.to_string(),
+            statement_digest: (*digest).into(),
+            conditions: vec![],
+            exceptions: vec![],
+        })
+        .collect();
     let constructor = ScopeConstructorIdentity {
         id: "fixture-constructor".into(),
         version: "1".into(),
         digest: D.into(),
     };
-    let coverage = vec![ObligationCoverage {
-        obligation_id: "obligation.intent".into(),
-        condition_ids: vec![],
-        exception_ids: vec![],
-    }];
+    let coverage = fragments
+        .iter()
+        .map(|(id, _)| ObligationCoverage {
+            obligation_id: id.to_string(),
+            condition_ids: vec![],
+            exception_ids: vec![],
+        })
+        .collect::<Vec<_>>();
     let goal_id = Uuid::new_v4();
     let candidate_id = Uuid::new_v4();
     let material = ResolvedCandidateDraft {
@@ -54,7 +70,7 @@ pub(super) fn manifest(candidate: Uuid, snapshot: Uuid, program: Uuid) -> ScopeC
             id: goal_id,
             revision: 1,
             text: "Preserve source".into(),
-            source_ref_id: Uuid::new_v4(),
+            source_ref_id: fragments[0].0,
             exact_quote: None,
             resolution: CoverageResolutionEntity {
                 kind: CoverageResolutionKind::Candidate,
@@ -123,6 +139,33 @@ pub(super) fn manifest(candidate: Uuid, snapshot: Uuid, program: Uuid) -> ScopeC
         .canonical_whole_set_digest(&Sha256ScopeDigest)
         .unwrap();
     value
+}
+
+pub(super) fn reseal_manifest(value: &mut ScopeConstructorManifest) {
+    value.source.digest = value.source.canonical_digest(&Sha256ScopeDigest).unwrap();
+    for alternative in &mut value.emitted {
+        alternative.id = stable_scope_alternative_id(
+            &Sha256ScopeDigest,
+            &value.constructor,
+            &value.source.digest,
+            alternative.kind,
+            &alternative.material_digest,
+            &alternative.coverage,
+        )
+        .unwrap();
+    }
+    value.baseline_id = value.emitted[0].id.clone();
+    value.ordered_ids = value
+        .emitted
+        .iter()
+        .map(|alternative| alternative.id.clone())
+        .collect();
+    value.eligible_set_digest = value
+        .canonical_eligible_set_digest(&Sha256ScopeDigest)
+        .unwrap();
+    value.whole_set_digest = value
+        .canonical_whole_set_digest(&Sha256ScopeDigest)
+        .unwrap();
 }
 
 pub(super) async fn rw(

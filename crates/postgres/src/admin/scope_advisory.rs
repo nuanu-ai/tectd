@@ -290,6 +290,28 @@ pub(super) async fn validate_advisory_schema(
     .fetch_one(&mut **transaction)
     .await
     .map_err(storage_error)?;
+    let snapshot_freeze_ready: bool = sqlx::query_scalar(
+        "SELECT pg_catalog.count(*)=2 AND pg_catalog.bool_and(t.tgenabled='O' AND NOT p.prosecdef) \
+         FROM pg_catalog.pg_trigger t JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid \
+         WHERE t.tgrelid IN ('public.scope_candidate_sets'::regclass, \
+                             'public.scope_candidate_source_refs'::regclass) \
+           AND t.tgname=ANY($1)",
+    )
+    .bind([
+        "scope_candidate_sets_snapshot_forward",
+        "scope_candidate_source_refs_freeze",
+    ])
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(storage_error)?;
+    let snapshot_read_ready: bool = sqlx::query_scalar(
+        "SELECT pg_catalog.has_table_privilege($1,'public.scope_candidate_sets','SELECT') \
+         AND pg_catalog.has_table_privilege($1,'public.scope_candidate_snapshots','SELECT')",
+    )
+    .bind(runtime_role)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(storage_error)?;
     if !schema_ready
         || !indexes_ready
         || !policies_ready
@@ -304,6 +326,8 @@ pub(super) async fn validate_advisory_schema(
         || !slice_indexes_ready
         || !slice_policies_ready
         || !slice_runtime_ready
+        || !snapshot_freeze_ready
+        || !snapshot_read_ready
     {
         return Err(Error::InvalidConfiguration);
     }
