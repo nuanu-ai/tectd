@@ -77,6 +77,31 @@ impl WorkspaceService {
         // The workspace-scoped candidate lookup still proves target access.
         let early_no_call =
             early_no_call_target(&mut *read, workspace.id, &config, request).await?;
+        let authored_request_digest = if early_no_call.is_none() {
+            request
+                .authored_scope_set
+                .as_ref()
+                .map(authored_request_digest)
+                .transpose()?
+        } else {
+            None
+        };
+        let stored_authored_manifest = if authored_request_digest.is_some() {
+            read.scope_advisory_manifest_by_request_key(
+                workspace.id,
+                &request.request_id.to_string(),
+            )
+            .await?
+        } else {
+            None
+        };
+        let existing_authored_opportunity =
+            if stored_authored_manifest.is_some() && existing.is_none() {
+                read.advisory_opportunity_by_request(workspace.id, &request.request_id.to_string())
+                    .await?
+            } else {
+                existing.clone()
+            };
         read.commit().await?;
 
         if let Some((reason, revision)) = early_no_call {
@@ -113,10 +138,43 @@ impl WorkspaceService {
             });
         }
 
-        // Source-authored active material requires the resolver's authoritative
-        // fragment and candidate-set binding before any provider dispatch.
-        if request.authored_scope_set.is_some() {
-            return Err(Error::InputPending);
+        if let Some(authored_request_digest) = authored_request_digest.as_deref() {
+            if let Some(stored) = stored_authored_manifest.as_ref() {
+                let opportunity = validate_authored_replay_binding(
+                    stored,
+                    existing_authored_opportunity.as_ref(),
+                    request,
+                    &config,
+                    identity.principal_id,
+                    session.id,
+                    authored_request_digest,
+                )?
+                .clone();
+                return self
+                    .replay_authored_scope_advisory(
+                        context,
+                        workspace.id,
+                        opportunity,
+                        &stored.record,
+                    )
+                    .await;
+            }
+            // Without a persisted manifest, replay only a no-call whose
+            // material digest proves this exact authored request; legacy or
+            // changed requests under the same key conflict.
+            if let Some(existing) = existing.as_ref() {
+                return Ok(ScopeAdvisoryOutcome {
+                    opportunity: validate_authored_no_call_replay(
+                        Some(existing),
+                        request,
+                        &config,
+                        identity.principal_id,
+                        session.id,
+                    )?
+                    .clone(),
+                    advice: None,
+                });
+            }
         }
 
         let authority_request = ScopeAuthorityRequest {
@@ -164,15 +222,16 @@ impl WorkspaceService {
                 )
                 .await;
         }
-        let manifest = match self.scope_manifest_supplier.supply(&observation).await {
-            Ok(value)
-                if value.validate(&Sha256ScopeDigest).is_ok()
-                    && value.source == observation.source
-                    && value.obligations == observation.obligations =>
-            {
-                value
-            }
-            _ => {
+        let manifest = match supply_scope_manifest(
+            self.scope_manifest_supplier.as_ref(),
+            identity.tenant_id,
+            &observation,
+            request,
+        )
+        .await
+        {
+            Ok(value) => value,
+            Err(_) => {
                 return self
                     .capture_invalid_scope_input(
                         context,
@@ -225,6 +284,11 @@ impl WorkspaceService {
             provider_configured: config.provider_configured(),
         });
         if preliminary.state == AdvisoryOpportunityState::NoCall {
+            let material_digest = if authored_request_digest.is_some() {
+                no_call_digest(request, config.revision, preliminary.reason)?
+            } else {
+                manifest.whole_set_digest.clone()
+            };
             let opportunity = self
                 .capture_scope_opportunity(
                     context,
@@ -232,7 +296,7 @@ impl WorkspaceService {
                     &config,
                     identity.principal_id,
                     session.id,
-                    manifest.whole_set_digest.clone(),
+                    material_digest,
                     preliminary.state,
                     preliminary.reason,
                     Some(manifest.source.candidate_set_revision),
@@ -254,6 +318,15 @@ impl WorkspaceService {
             })
             .await?;
         let Some(policy) = policy else {
+            let material_digest = if authored_request_digest.is_some() {
+                no_call_digest(
+                    request,
+                    config.revision,
+                    AdvisoryReason::CapabilityUnavailable,
+                )?
+            } else {
+                manifest.whole_set_digest.clone()
+            };
             let opportunity = self
                 .capture_scope_opportunity(
                     context,
@@ -261,7 +334,7 @@ impl WorkspaceService {
                     &config,
                     identity.principal_id,
                     session.id,
-                    manifest.whole_set_digest.clone(),
+                    material_digest,
                     AdvisoryOpportunityState::NoCall,
                     AdvisoryReason::CapabilityUnavailable,
                     Some(manifest.source.candidate_set_revision),
@@ -303,22 +376,120 @@ impl WorkspaceService {
         let opportunity = prepare
             .capture_advisory_opportunity(workspace.id, &input)
             .await?;
-        let stored = prepare
-            .prepare_scope_advisory_manifest(
-                workspace.id,
-                &ScopeManifestRecord {
-                    opportunity_id: opportunity.id,
-                    candidate_set_id: request.candidate_set_id,
-                    config_revision: config.revision,
-                    opportunity_material_digest: opportunity.material_digest.clone(),
-                    manifest: manifest.clone(),
-                },
-            )
-            .await?;
+        if let Some(authored_request_digest) = authored_request_digest.as_deref() {
+            // Close the read/resolve/write race: a concurrent identical call
+            // may have committed the same request key while this request was
+            // resolving. Replay it without authorizing a second provider send.
+            if let Some(stored) = prepare
+                .scope_advisory_manifest_by_request_key(
+                    workspace.id,
+                    &request.request_id.to_string(),
+                )
+                .await?
+            {
+                let opportunity = validate_authored_replay_binding(
+                    &stored,
+                    Some(&opportunity),
+                    request,
+                    &config,
+                    identity.principal_id,
+                    session.id,
+                    authored_request_digest,
+                )?
+                .clone();
+                prepare.commit().await?;
+                return self
+                    .replay_authored_scope_advisory(
+                        context,
+                        workspace.id,
+                        opportunity,
+                        &stored.record,
+                    )
+                    .await;
+            }
+        }
+        let manifest_record = ScopeManifestRecord {
+            opportunity_id: opportunity.id,
+            candidate_set_id: request.candidate_set_id,
+            config_revision: config.revision,
+            opportunity_material_digest: opportunity.material_digest.clone(),
+            manifest: manifest.clone(),
+        };
+        let stored = if let Some(authored_request_digest) = authored_request_digest.as_deref() {
+            prepare
+                .prepare_authored_scope_advisory_manifest(
+                    workspace.id,
+                    &manifest_record,
+                    authored_request_digest,
+                )
+                .await?
+        } else {
+            prepare
+                .prepare_scope_advisory_manifest(workspace.id, &manifest_record)
+                .await?
+        };
         if stored != manifest {
             return Err(Error::InputConflict);
         }
         prepare.commit().await?;
+
+        if authored_request_digest.is_some() {
+            let current_source = match self.scope_authority.observe(&authority_request).await {
+                Ok(crate::ScopeAuthorityOutcome::Authorized(value))
+                    if validate_observation(&authority_request, &value).is_ok()
+                        && value == observation =>
+                {
+                    supply_scope_manifest(
+                        self.scope_manifest_supplier.as_ref(),
+                        identity.tenant_id,
+                        &value,
+                        request,
+                    )
+                    .await
+                    .is_ok_and(|fresh| fresh == manifest)
+                }
+                _ => false,
+            };
+            let (mut recheck, _, _) = self
+                .scope_transaction(context, TransactionMode::ReadWrite)
+                .await?;
+            let current_config = recheck.advisory_config(workspace.id).await?;
+            let current_manifest = recheck
+                .scope_advisory_manifest(workspace.id, opportunity.id)
+                .await?;
+            let reason = if current_config != config {
+                Some(AdvisoryReason::ConfigurationChanged)
+            } else if !current_source || current_manifest.as_ref() != Some(&manifest) {
+                Some(AdvisoryReason::DeterministicInputInvalid)
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                let disposition = crate::ScopePreparedAdvisoryDisposition {
+                    opportunity_id: opportunity.id,
+                    candidate_set_id: request.candidate_set_id,
+                    expected_source_digest: manifest.source.digest.clone(),
+                    reason,
+                };
+                recheck
+                    .finalize_prepared_scope_advisory_without_dispatch(workspace.id, &disposition)
+                    .await?;
+                recheck.commit().await?;
+                return Ok(ScopeAdvisoryOutcome {
+                    opportunity: AdvisoryOpportunity {
+                        state: if reason == AdvisoryReason::ConfigurationChanged {
+                            AdvisoryOpportunityState::Invalidated
+                        } else {
+                            AdvisoryOpportunityState::NoCall
+                        },
+                        primary_reason: reason,
+                        ..opportunity
+                    },
+                    advice: None,
+                });
+            }
+            recheck.commit().await?;
+        }
 
         let typed_request = ScopeAdviceRequest::from_manifest(&Sha256ScopeDigest, &manifest)?;
         let payload = serde_json::to_vec(&typed_request).map_err(Error::invalid_arguments_from)?;
@@ -446,7 +617,14 @@ impl WorkspaceService {
             Ok(crate::ScopeAuthorityOutcome::Authorized(value))
                 if validate_observation(&authority_request, value).is_ok() =>
             {
-                self.scope_manifest_supplier.supply(value).await.ok()
+                supply_scope_manifest(
+                    self.scope_manifest_supplier.as_ref(),
+                    identity.tenant_id,
+                    value,
+                    request,
+                )
+                .await
+                .ok()
             }
             _ => None,
         };
@@ -507,6 +685,40 @@ impl WorkspaceService {
                 ..opportunity
             },
             advice: Some(advice),
+        })
+    }
+
+    async fn replay_authored_scope_advisory(
+        &self,
+        context: &RequestContext,
+        workspace_id: Uuid,
+        opportunity: AdvisoryOpportunity,
+        record: &ScopeManifestRecord,
+    ) -> Result<ScopeAdvisoryOutcome> {
+        let advice = if opportunity.state == AdvisoryOpportunityState::Advised {
+            let (mut replay, workspace, _) = self
+                .scope_transaction(context, TransactionMode::ReadOnly)
+                .await?;
+            if workspace.id != workspace_id {
+                return Err(Error::InputConflict);
+            }
+            let advice = replay
+                .guarded_scope_advice(workspace_id, opportunity.id)
+                .await?
+                .ok_or(Error::StorageUnavailable)?;
+            tect_domain::validate_guarded_advice_binding(
+                &Sha256ScopeDigest,
+                &record.manifest,
+                &advice,
+            )?;
+            replay.commit().await?;
+            Some(advice)
+        } else {
+            None
+        };
+        Ok(ScopeAdvisoryOutcome {
+            opportunity,
+            advice,
         })
     }
 

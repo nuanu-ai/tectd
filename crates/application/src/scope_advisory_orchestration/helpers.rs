@@ -1,14 +1,16 @@
 use super::RunScopeAdvisory;
 use crate::{
-    ScopeAdviceProviderError, ScopeAdviceProviderObservation, ScopeAuthorityObservation,
-    ScopeAuthorityRequest, ScopeAuthorizedInvalidObservation,
+    ScopeAdviceProviderError, ScopeAdviceProviderObservation, ScopeAuthoredManifestRequest,
+    ScopeAuthorityObservation, ScopeAuthorityRequest, ScopeAuthorizedInvalidObservation,
+    ScopeManifestSupplier, StoredScopeManifestRecord,
 };
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tect_domain::{
-    AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryDispatchOutcome, AdvisoryOpportunityInput,
-    AdvisoryOpportunityState, AdvisoryReason, AdvisoryRequestPreference, AdvisorySendCertainty,
-    Error, Result, WorkspaceAdvisoryConfig, WorkspaceAdvisoryMode,
+    AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryDispatchOutcome, AdvisoryOpportunity,
+    AdvisoryOpportunityInput, AdvisoryOpportunityState, AdvisoryReason, AdvisoryRequestPreference,
+    AdvisorySendCertainty, Error, Result, ScopeConstructorManifest, WorkspaceAdvisoryConfig,
+    WorkspaceAdvisoryMode,
 };
 use uuid::Uuid;
 
@@ -130,6 +132,107 @@ pub(super) fn validate_observation(
         return Err(Error::InputConflict);
     }
     Ok(())
+}
+
+pub(super) async fn supply_scope_manifest(
+    supplier: &dyn ScopeManifestSupplier,
+    tenant_id: Uuid,
+    observation: &ScopeAuthorityObservation,
+    request: &RunScopeAdvisory,
+) -> Result<ScopeConstructorManifest> {
+    let manifest = if let Some(authored_scope_set) = &request.authored_scope_set {
+        if authored_scope_set.expected_candidate_set_revision
+            != observation.source.candidate_set_revision
+        {
+            return Err(Error::StaleRevision);
+        }
+        supplier
+            .supply_authored(&ScopeAuthoredManifestRequest {
+                tenant_id,
+                observation: observation.clone(),
+                authored_scope_set: authored_scope_set.clone(),
+            })
+            .await?
+    } else {
+        supplier.supply(observation).await?
+    };
+    manifest.validate(&crate::Sha256ScopeDigest)?;
+    if manifest.source != observation.source || manifest.obligations != observation.obligations {
+        return Err(Error::InputConflict);
+    }
+    Ok(manifest)
+}
+
+pub(super) fn validate_authored_replay_binding<'a>(
+    stored: &StoredScopeManifestRecord,
+    opportunity: Option<&'a AdvisoryOpportunity>,
+    request: &RunScopeAdvisory,
+    config: &WorkspaceAdvisoryConfig,
+    actor_id: Uuid,
+    session_id: Uuid,
+    authored_request_digest: &str,
+) -> Result<&'a AdvisoryOpportunity> {
+    let opportunity = opportunity.ok_or(Error::StorageUnavailable)?;
+    let manifest = &stored.record.manifest;
+    manifest.validate(&crate::Sha256ScopeDigest)?;
+    if stored.authored_request_digest.as_deref() != Some(authored_request_digest)
+        || stored.record.opportunity_id != opportunity.id
+        || opportunity.workflow_occurrence_key != request.request_id.to_string()
+        || opportunity.authorized_actor_id != actor_id
+        || opportunity.session_id != session_id
+        || opportunity.target_kind != "scope_candidate_set"
+        || opportunity.target_id != Some(request.candidate_set_id)
+        || stored.record.candidate_set_id != request.candidate_set_id
+        || manifest.source.candidate_set_id != request.candidate_set_id
+        || manifest.source.candidate_set_revision
+            != request
+                .authored_scope_set
+                .as_ref()
+                .ok_or(Error::InputConflict)?
+                .expected_candidate_set_revision
+        || stored.record.config_revision != config.revision
+        || stored.record.opportunity_material_digest != manifest.whole_set_digest
+        || opportunity.work_revision != Some(manifest.source.candidate_set_revision)
+        || opportunity.config_revision != config.revision
+        || opportunity.material_digest != manifest.whole_set_digest
+    {
+        return Err(Error::InputConflict);
+    }
+    Ok(opportunity)
+}
+
+pub(super) fn validate_authored_no_call_replay<'a>(
+    opportunity: Option<&'a AdvisoryOpportunity>,
+    request: &RunScopeAdvisory,
+    config: &WorkspaceAdvisoryConfig,
+    actor_id: Uuid,
+    session_id: Uuid,
+) -> Result<&'a AdvisoryOpportunity> {
+    let opportunity = opportunity.ok_or(Error::StorageUnavailable)?;
+    let authored = request
+        .authored_scope_set
+        .as_ref()
+        .ok_or(Error::InputConflict)?;
+    let expected_revision =
+        if opportunity.primary_reason == AdvisoryReason::DeterministicInputInvalid {
+            None
+        } else {
+            Some(authored.expected_candidate_set_revision)
+        };
+    let expected_digest = no_call_digest(request, config.revision, opportunity.primary_reason)?;
+    if opportunity.state != AdvisoryOpportunityState::NoCall
+        || opportunity.workflow_occurrence_key != request.request_id.to_string()
+        || opportunity.authorized_actor_id != actor_id
+        || opportunity.session_id != session_id
+        || opportunity.target_kind != "scope_candidate_set"
+        || opportunity.target_id != Some(request.candidate_set_id)
+        || opportunity.work_revision != expected_revision
+        || opportunity.config_revision != config.revision
+        || opportunity.material_digest != expected_digest
+    {
+        return Err(Error::InputConflict);
+    }
+    Ok(opportunity)
 }
 
 pub(super) fn failed_observation() -> ScopeAdviceProviderObservation {

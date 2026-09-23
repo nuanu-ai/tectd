@@ -2,8 +2,9 @@ use super::*;
 use crate::{
     AuthoredScopeAlternative, DenyScopeBudget, DisabledScopeAdviceProvider, ScopeAdviceProvider,
     ScopeAdviceProviderError, ScopeAdviceProviderObservation, ScopeAdviceProviderRequest,
-    ScopeAuthorityObserver, ScopeAuthorityOutcome, ScopeAuthorizedInvalidObservation,
-    ScopeBudgetPolicy, ScopeBudgetRequest, UnavailableScopeManifestSupplier,
+    ScopeAuthoredManifestRequest, ScopeAuthorityObserver, ScopeAuthorityOutcome,
+    ScopeAuthorizedInvalidObservation, ScopeBudgetPolicy, ScopeBudgetRequest,
+    ScopeManifestSupplier, UnavailableScopeManifestSupplier,
 };
 use async_trait::async_trait;
 use std::sync::{
@@ -11,9 +12,14 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use tect_domain::{
-    AdvisoryDispatchOutcome, AdvisoryReason, AdvisoryRequestPreference, AdvisorySendCertainty,
-    ConfidenceBasisPoints, FrozenScopeSource, NormalizedScopeAdviceAnswers, ScopeAdviceChoice,
-    ScopeAdviceScoreBand, WorkspaceAdvisoryConfig, WorkspaceAdvisoryMode,
+    AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryDispatchOutcome, AdvisoryOpportunity,
+    AdvisoryOpportunityState, AdvisoryReason, AdvisoryRequestPreference, AdvisorySendCertainty,
+    BuildSourceAuthoredScopeManifest, ConfidenceBasisPoints, EmptyCandidateDisposition,
+    EmptyCandidateDispositionKind, FrozenScopeSource, FrozenSourceInput,
+    NormalizedScopeAdviceAnswers, ObligationCoverage, ResolvedCandidateDraft, ScopeAdviceChoice,
+    ScopeAdviceScoreBand, ScopeConstructorIdentity, ScopeDecompositionKind, SourceApplicability,
+    SourceAuthoredScopeAlternative, SourceObligation, WorkspaceAdvisoryConfig,
+    WorkspaceAdvisoryMode,
 };
 
 fn no_call_config(mode: WorkspaceAdvisoryMode) -> WorkspaceAdvisoryConfig {
@@ -132,7 +138,7 @@ fn early_no_call_branch_precedes_all_external_advisory_ports() {
     assert!(source[branch..return_from_branch].contains("return Ok(ScopeAdvisoryOutcome"));
     for port in [
         "scope_authority.observe(&authority_request)",
-        "scope_manifest_supplier.supply(&observation)",
+        "supply_scope_manifest(",
         ".scope_budget",
         ".attempt(&ScopeAdviceProviderRequest",
     ] {
@@ -206,6 +212,388 @@ fn authored_set() -> AuthoredScopeSet {
             covered_source_ref_ids: vec![Uuid::from_u128(10), Uuid::from_u128(11)],
         }],
     }
+}
+
+struct RecordingManifestSupplier {
+    authored_calls: Arc<AtomicUsize>,
+    legacy_calls: Arc<AtomicUsize>,
+    seen_authored: Arc<std::sync::Mutex<Option<ScopeAuthoredManifestRequest>>>,
+    manifest: tect_domain::ScopeConstructorManifest,
+    fail_authored: bool,
+}
+
+#[async_trait]
+impl ScopeManifestSupplier for RecordingManifestSupplier {
+    fn identity(&self) -> Option<(&'static str, &'static str)> {
+        Some(("fixture", "authored-v1"))
+    }
+
+    async fn supply(
+        &self,
+        _: &crate::ScopeAuthorityObservation,
+    ) -> tect_domain::Result<tect_domain::ScopeConstructorManifest> {
+        self.legacy_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(self.manifest.clone())
+    }
+
+    async fn supply_authored(
+        &self,
+        request: &ScopeAuthoredManifestRequest,
+    ) -> tect_domain::Result<tect_domain::ScopeConstructorManifest> {
+        self.authored_calls.fetch_add(1, Ordering::SeqCst);
+        *self.seen_authored.lock().unwrap() = Some(request.clone());
+        if self.fail_authored {
+            return Err(Error::InputPending);
+        }
+        Ok(self.manifest.clone())
+    }
+}
+
+fn authored_source(candidate_set_id: Uuid, revision: i64) -> FrozenScopeSource {
+    let digest = "a".repeat(64);
+    let mut source = FrozenScopeSource {
+        candidate_set_id,
+        candidate_set_revision: revision,
+        snapshot_id: Uuid::from_u128(20),
+        input_cursor: 0,
+        program_id: Uuid::from_u128(21),
+        program_revision: 1,
+        program_latest_input: 0,
+        planning_latest_input: 0,
+        selected_sources_digest: digest.clone(),
+        method_revision: "1".into(),
+        method_digest: digest.clone(),
+        registry_revision: "1".into(),
+        registry_digest: digest.clone(),
+        inputs: vec![FrozenSourceInput {
+            id: "program.intent".into(),
+            version: "1".into(),
+            digest: digest.clone(),
+            provenance: "program.intent@1".into(),
+            applicability: SourceApplicability::Applicable,
+        }],
+        digest: String::new(),
+    };
+    source.digest = source.canonical_digest(&Sha256ScopeDigest).unwrap();
+    source
+}
+
+fn authored_manifest(source: FrozenScopeSource) -> tect_domain::ScopeConstructorManifest {
+    let digest = "a".repeat(64);
+    tect_domain::build_source_authored_scope_manifest(
+        &Sha256ScopeDigest,
+        BuildSourceAuthoredScopeManifest {
+            constructor: ScopeConstructorIdentity {
+                id: "fixture-constructor".into(),
+                version: "1".into(),
+                digest: digest.clone(),
+            },
+            source,
+            obligations: vec![SourceObligation {
+                id: "obligation.intent".into(),
+                source_input_id: "program.intent".into(),
+                statement_digest: digest,
+                conditions: vec![],
+                exceptions: vec![],
+            }],
+            alternatives: vec![SourceAuthoredScopeAlternative {
+                key: "baseline".into(),
+                kind: ScopeDecompositionKind::Cohesive,
+                material: ResolvedCandidateDraft {
+                    boundary: tect_domain::CandidateBoundary::Ongoing,
+                    goals: vec![],
+                    evidence: vec![],
+                    candidates: vec![],
+                    blockers: vec![],
+                    pending_question: None,
+                    empty_disposition: Some(EmptyCandidateDisposition {
+                        kind: EmptyCandidateDispositionKind::OutOfBoundary,
+                        reason: "No in-boundary work".into(),
+                        source_ref_id: Uuid::from_u128(22),
+                    }),
+                    protected_changes: vec![],
+                    delta: Default::default(),
+                },
+                coverage: vec![ObligationCoverage {
+                    obligation_id: "obligation.intent".into(),
+                    condition_ids: vec![],
+                    exception_ids: vec![],
+                }],
+            }],
+            baseline_key: "baseline".into(),
+        },
+    )
+    .unwrap()
+}
+
+fn opportunity_for_authored_manifest(
+    request: &RunScopeAdvisory,
+    config: &WorkspaceAdvisoryConfig,
+    manifest: &tect_domain::ScopeConstructorManifest,
+) -> AdvisoryOpportunity {
+    AdvisoryOpportunity {
+        id: Uuid::from_u128(40),
+        workspace_id: config.workspace_id,
+        session_id: Uuid::from_u128(41),
+        authorized_actor_id: Uuid::from_u128(42),
+        capability: AdvisoryCapability::ScopeDecomposition,
+        decision_point: AdvisoryDecisionPoint::ScopeDecompositionBeforeSelection,
+        decision_point_version: 1,
+        workflow_occurrence_key: request.request_id.to_string(),
+        target_kind: "scope_candidate_set".into(),
+        target_id: Some(request.candidate_set_id),
+        work_revision: Some(manifest.source.candidate_set_revision),
+        source_ref: None,
+        session_preference: request.session_preference,
+        request_preference: request.request_preference,
+        config_revision: config.revision,
+        material_digest: manifest.whole_set_digest.clone(),
+        state: AdvisoryOpportunityState::Prepared,
+        primary_reason: AdvisoryReason::DispatchAuthorized,
+        provider_called: false,
+    }
+}
+
+#[tokio::test]
+async fn authored_supply_receives_authority_and_exact_request_without_legacy_fallback() {
+    let candidate_set_id = Uuid::from_u128(5);
+    let source = authored_source(candidate_set_id, 7);
+    let observation = crate::ScopeAuthorityObservation {
+        workspace_id: Uuid::from_u128(1),
+        actor_id: Uuid::from_u128(2),
+        session_id: Uuid::from_u128(3),
+        candidate_set_id,
+        source: source.clone(),
+        obligations: vec![SourceObligation {
+            id: "obligation.intent".into(),
+            source_input_id: "program.intent".into(),
+            statement_digest: "a".repeat(64),
+            conditions: vec![],
+            exceptions: vec![],
+        }],
+    };
+    let manifest = authored_manifest(source);
+    let authored_calls = Arc::new(AtomicUsize::new(0));
+    let legacy_calls = Arc::new(AtomicUsize::new(0));
+    let seen_authored = Arc::new(std::sync::Mutex::new(None));
+    let supplier = RecordingManifestSupplier {
+        authored_calls: authored_calls.clone(),
+        legacy_calls: legacy_calls.clone(),
+        seen_authored: seen_authored.clone(),
+        manifest: manifest.clone(),
+        fail_authored: false,
+    };
+    let request = RunScopeAdvisory {
+        request_id: Uuid::from_u128(6),
+        candidate_set_id,
+        session_preference: AdvisoryRequestPreference::UseWorkspace,
+        request_preference: AdvisoryRequestPreference::UseWorkspace,
+        authored_scope_set: Some(authored_set()),
+    };
+
+    assert_eq!(
+        supply_scope_manifest(&supplier, Uuid::from_u128(9), &observation, &request).await,
+        Ok(manifest)
+    );
+    assert_eq!(authored_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(legacy_calls.load(Ordering::SeqCst), 0);
+    let seen = seen_authored.lock().unwrap().clone().unwrap();
+    assert_eq!(seen.tenant_id, Uuid::from_u128(9));
+    assert_eq!(seen.observation, observation);
+    assert_eq!(seen.authored_scope_set, request.authored_scope_set.unwrap());
+}
+
+#[tokio::test]
+async fn authored_revision_mismatch_and_supplier_failure_fail_closed() {
+    let candidate_set_id = Uuid::from_u128(5);
+    let source = authored_source(candidate_set_id, 8);
+    let observation = crate::ScopeAuthorityObservation {
+        workspace_id: Uuid::from_u128(1),
+        actor_id: Uuid::from_u128(2),
+        session_id: Uuid::from_u128(3),
+        candidate_set_id,
+        source: source.clone(),
+        obligations: vec![SourceObligation {
+            id: "obligation.intent".into(),
+            source_input_id: "program.intent".into(),
+            statement_digest: "a".repeat(64),
+            conditions: vec![],
+            exceptions: vec![],
+        }],
+    };
+    let authored_calls = Arc::new(AtomicUsize::new(0));
+    let legacy_calls = Arc::new(AtomicUsize::new(0));
+    let supplier = RecordingManifestSupplier {
+        authored_calls: authored_calls.clone(),
+        legacy_calls: legacy_calls.clone(),
+        seen_authored: Arc::new(std::sync::Mutex::new(None)),
+        manifest: authored_manifest(source),
+        fail_authored: false,
+    };
+    let request = RunScopeAdvisory {
+        request_id: Uuid::from_u128(6),
+        candidate_set_id,
+        session_preference: AdvisoryRequestPreference::UseWorkspace,
+        request_preference: AdvisoryRequestPreference::UseWorkspace,
+        authored_scope_set: Some(authored_set()),
+    };
+    assert_eq!(
+        supply_scope_manifest(&supplier, Uuid::from_u128(9), &observation, &request).await,
+        Err(Error::StaleRevision)
+    );
+    assert_eq!(authored_calls.load(Ordering::SeqCst), 0);
+
+    let failing = RecordingManifestSupplier {
+        authored_calls: authored_calls.clone(),
+        legacy_calls: legacy_calls.clone(),
+        seen_authored: supplier.seen_authored.clone(),
+        manifest: supplier.manifest.clone(),
+        fail_authored: true,
+    };
+    let mut matching_request = request;
+    matching_request
+        .authored_scope_set
+        .as_mut()
+        .unwrap()
+        .expected_candidate_set_revision = 8;
+    assert_eq!(
+        supply_scope_manifest(
+            &failing,
+            Uuid::from_u128(9),
+            &observation,
+            &matching_request
+        )
+        .await,
+        Err(Error::InputPending)
+    );
+    assert_eq!(authored_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(legacy_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn authored_manifest_replay_binds_request_digest_and_all_persisted_identity() {
+    let candidate_set_id = Uuid::from_u128(5);
+    let manifest = authored_manifest(authored_source(candidate_set_id, 7));
+    let config = no_call_config(WorkspaceAdvisoryMode::Optional);
+    let request = RunScopeAdvisory {
+        request_id: Uuid::from_u128(6),
+        candidate_set_id,
+        session_preference: AdvisoryRequestPreference::UseWorkspace,
+        request_preference: AdvisoryRequestPreference::UseWorkspace,
+        authored_scope_set: Some(authored_set()),
+    };
+    let digest = authored_request_digest(request.authored_scope_set.as_ref().unwrap()).unwrap();
+    let opportunity = opportunity_for_authored_manifest(&request, &config, &manifest);
+    let record = ScopeManifestRecord {
+        opportunity_id: opportunity.id,
+        candidate_set_id,
+        config_revision: config.revision,
+        opportunity_material_digest: manifest.whole_set_digest.clone(),
+        manifest,
+    };
+    let stored = crate::StoredScopeManifestRecord {
+        record,
+        authored_request_digest: Some(digest.clone()),
+    };
+    assert!(
+        validate_authored_replay_binding(
+            &stored,
+            Some(&opportunity),
+            &request,
+            &config,
+            Uuid::from_u128(42),
+            Uuid::from_u128(41),
+            &digest,
+        )
+        .is_ok()
+    );
+    assert_eq!(
+        validate_authored_replay_binding(
+            &stored,
+            Some(&opportunity),
+            &request,
+            &config,
+            Uuid::from_u128(42),
+            Uuid::from_u128(41),
+            &"b".repeat(64),
+        ),
+        Err(Error::InputConflict)
+    );
+    let mut legacy = stored;
+    legacy.authored_request_digest = None;
+    assert_eq!(
+        validate_authored_replay_binding(
+            &legacy,
+            Some(&opportunity),
+            &request,
+            &config,
+            Uuid::from_u128(42),
+            Uuid::from_u128(41),
+            &digest,
+        ),
+        Err(Error::InputConflict)
+    );
+}
+
+#[test]
+fn authored_no_call_replay_conflicts_on_changed_request_payload() {
+    let config = no_call_config(WorkspaceAdvisoryMode::Optional);
+    let mut request = RunScopeAdvisory {
+        request_id: Uuid::from_u128(6),
+        candidate_set_id: Uuid::from_u128(5),
+        session_preference: AdvisoryRequestPreference::UseWorkspace,
+        request_preference: AdvisoryRequestPreference::UseWorkspace,
+        authored_scope_set: Some(authored_set()),
+    };
+    let reason = AdvisoryReason::CapabilityUnavailable;
+    let opportunity = AdvisoryOpportunity {
+        id: Uuid::from_u128(40),
+        workspace_id: config.workspace_id,
+        session_id: Uuid::from_u128(41),
+        authorized_actor_id: Uuid::from_u128(42),
+        capability: AdvisoryCapability::ScopeDecomposition,
+        decision_point: AdvisoryDecisionPoint::ScopeDecompositionBeforeSelection,
+        decision_point_version: 1,
+        workflow_occurrence_key: request.request_id.to_string(),
+        target_kind: "scope_candidate_set".into(),
+        target_id: Some(request.candidate_set_id),
+        work_revision: Some(7),
+        source_ref: None,
+        session_preference: request.session_preference,
+        request_preference: request.request_preference,
+        config_revision: config.revision,
+        material_digest: no_call_digest(&request, config.revision, reason).unwrap(),
+        state: AdvisoryOpportunityState::NoCall,
+        primary_reason: reason,
+        provider_called: false,
+    };
+    assert!(
+        validate_authored_no_call_replay(
+            Some(&opportunity),
+            &request,
+            &config,
+            Uuid::from_u128(42),
+            Uuid::from_u128(41),
+        )
+        .is_ok()
+    );
+    request.authored_scope_set.as_mut().unwrap().alternatives[0]
+        .draft
+        .empty_disposition
+        .as_mut()
+        .unwrap()
+        .reason
+        .push('!');
+    assert_eq!(
+        validate_authored_no_call_replay(
+            Some(&opportunity),
+            &request,
+            &config,
+            Uuid::from_u128(42),
+            Uuid::from_u128(41),
+        ),
+        Err(Error::InputConflict)
+    );
 }
 
 #[test]
@@ -538,7 +926,7 @@ fn authorized_invalid_observation_routes_to_durable_invalid_capture_before_polic
     assert!(missing_supplier < policy);
     assert!(orchestration[missing_supplier..policy].contains("capture_invalid_scope_input"));
     let supplied_manifest = orchestration
-        .find("let manifest = match self.scope_manifest_supplier.supply")
+        .find("let manifest = match supply_scope_manifest(")
         .unwrap();
     assert!(supplied_manifest < policy);
     assert!(orchestration[supplied_manifest..policy].contains("capture_invalid_scope_input"));
@@ -560,6 +948,60 @@ fn replay_precedes_policy_and_provider_and_success_is_rechecked_atomically() {
     assert!(sealed < reobserved && reobserved < finalized);
     assert!(source.contains("invalidate_scope_advisory"));
     assert_eq!(source.matches("capture_invalid_scope_input").count(), 4);
+}
+
+#[test]
+fn authored_lookup_replay_and_failure_paths_precede_external_attempts() {
+    let source = include_str!("../scope_advisory_orchestration.rs");
+    let digest = source.find(".map(authored_request_digest)").unwrap();
+    let request_lookup = source
+        .find("read.scope_advisory_manifest_by_request_key")
+        .unwrap();
+    let replay = source.find("replay_authored_scope_advisory(").unwrap();
+    let observer = source
+        .find("self.scope_authority.observe(&authority_request)")
+        .unwrap();
+    let supplier = source.find("supply_scope_manifest(").unwrap();
+    assert!(digest < request_lookup && request_lookup < replay);
+    assert!(replay < observer && observer < supplier);
+    assert!(!source.contains("return Err(Error::InputPending)"));
+
+    let authored_persist = source
+        .find(".prepare_authored_scope_advisory_manifest(")
+        .unwrap();
+    let persisted_commit = source[authored_persist..]
+        .find("prepare.commit().await?")
+        .unwrap()
+        + authored_persist;
+    let reobserved = source[persisted_commit..]
+        .find("self.scope_authority.observe(&authority_request)")
+        .unwrap()
+        + persisted_commit;
+    let no_call_transition = source[reobserved..]
+        .find("finalize_prepared_scope_advisory_without_dispatch")
+        .unwrap()
+        + reobserved;
+    let provider = source.find(".attempt(&ScopeAdviceProviderRequest").unwrap();
+    assert!(authored_persist < persisted_commit);
+    assert!(persisted_commit < reobserved);
+    assert!(reobserved < no_call_transition && no_call_transition < provider);
+}
+
+#[test]
+fn authored_supplier_failure_is_captured_as_no_call_before_budget_or_provider() {
+    let source = include_str!("../scope_advisory_orchestration.rs");
+    let supplied = source
+        .find("let manifest = match supply_scope_manifest(")
+        .unwrap();
+    let failure = source[supplied..].find("Err(_) =>").unwrap() + supplied;
+    let capture = source[failure..]
+        .find("capture_invalid_scope_input")
+        .unwrap()
+        + failure;
+    let budget = source.find(".scope_budget").unwrap();
+    let provider = source.find(".attempt(&ScopeAdviceProviderRequest").unwrap();
+    assert!(supplied < failure && failure < capture);
+    assert!(capture < budget && budget < provider);
 }
 
 #[test]
