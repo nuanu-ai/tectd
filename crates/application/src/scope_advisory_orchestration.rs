@@ -22,7 +22,6 @@ mod tests;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RunScopeAdvisory {
     pub request_id: Uuid,
-    pub case_id: Uuid,
     pub candidate_set_id: Uuid,
     pub session_preference: AdvisoryRequestPreference,
     pub request_preference: AdvisoryRequestPreference,
@@ -37,7 +36,7 @@ pub(crate) struct ScopeAdvisoryOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DecideScopeAdvisory {
     pub opportunity_id: Uuid,
-    pub case_id: Uuid,
+    pub candidate_set_id: Uuid,
     pub request: ScopeDispositionRequest,
 }
 
@@ -46,7 +45,7 @@ pub(crate) struct PreserveScopeAdvisory {
     pub receipt_id: Uuid,
     pub request_id: Uuid,
     pub opportunity_id: Uuid,
-    pub case_id: Uuid,
+    pub candidate_set_id: Uuid,
     pub manifest: tect_domain::ScopeConstructorManifest,
     pub advice: GuardedScopeAdvice,
     pub disposition: ScopeDispositionRevision,
@@ -58,10 +57,7 @@ impl WorkspaceService {
         context: &RequestContext,
         request: &RunScopeAdvisory,
     ) -> Result<ScopeAdvisoryOutcome> {
-        if request.request_id.is_nil()
-            || request.case_id.is_nil()
-            || request.candidate_set_id.is_nil()
-        {
+        if request.request_id.is_nil() || request.candidate_set_id.is_nil() {
             return Err(Error::InvalidArguments);
         }
         let (mut read, identity) = self.authorized(context, TransactionMode::ReadOnly).await?;
@@ -76,7 +72,6 @@ impl WorkspaceService {
             workspace_id: workspace.id,
             actor_id: identity.principal_id,
             session_id: session.id,
-            case_id: request.case_id,
             candidate_set_id: request.candidate_set_id,
         };
         let observation = match self.scope_authority.observe(&authority_request).await? {
@@ -138,7 +133,8 @@ impl WorkspaceService {
             }
         };
         if let Some(existing) = existing {
-            if existing.target_id != Some(request.case_id)
+            if existing.target_kind != "scope_candidate_set"
+                || existing.target_id != Some(request.candidate_set_id)
                 || existing.work_revision != Some(manifest.source.candidate_set_revision)
                 || existing.config_revision != config.revision
                 || existing.material_digest != manifest.whole_set_digest
@@ -200,7 +196,7 @@ impl WorkspaceService {
             .evaluate(&ScopeBudgetRequest {
                 workspace_id: workspace.id,
                 actor_id: identity.principal_id,
-                case_id: request.case_id,
+                candidate_set_id: request.candidate_set_id,
                 config_revision: config.revision,
                 manifest_digest: manifest.whole_set_digest.clone(),
             })
@@ -260,7 +256,7 @@ impl WorkspaceService {
                 workspace.id,
                 &ScopeManifestRecord {
                     opportunity_id: opportunity.id,
-                    case_id: request.case_id,
+                    candidate_set_id: request.candidate_set_id,
                     config_revision: config.revision,
                     opportunity_material_digest: opportunity.material_digest.clone(),
                     manifest: manifest.clone(),
@@ -428,7 +424,7 @@ impl WorkspaceService {
                 workspace.id,
                 &GuardedScopeAdviceRecord {
                     opportunity_id: opportunity.id,
-                    case_id: request.case_id,
+                    candidate_set_id: request.candidate_set_id,
                     dispatch_id,
                     dispatch_material_digest: dispatch.material_digest,
                     config_revision: config.revision,

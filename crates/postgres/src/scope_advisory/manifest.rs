@@ -7,7 +7,6 @@ struct SourceObligationsAggregate {
 
 #[derive(sqlx::FromRow)]
 struct ManifestRow {
-    case_id: Uuid,
     candidate_set_id: Uuid,
     candidate_set_revision: i64,
     snapshot_id: Uuid,
@@ -92,9 +91,10 @@ async fn prepare_manifest(
     record: &ScopeManifestRecord,
 ) -> Result<ScopeConstructorManifest> {
     record.manifest.validate(&Sha256ScopeDigest)?;
-    let opportunity: Option<(Uuid, i64, String)> = sqlx::query_as(
-        "SELECT scope_id,config_revision,material_digest FROM advisory_opportunity \
+    let opportunity: Option<(Option<Uuid>, Option<String>, i64, String)> = sqlx::query_as(
+        "SELECT work_item_id,source_revision,config_revision,material_digest FROM advisory_opportunity \
          WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 \
+         AND scope_id IS NULL AND work_item_kind='scope_candidate_set' \
          AND capability='scope_decomposition' \
          AND decision_point='scope.decomposition.before_selection' \
          AND state='prepared' AND primary_reason='dispatch_authorized' FOR UPDATE",
@@ -107,7 +107,8 @@ async fn prepare_manifest(
     .map_err(storage_error)?;
     if opportunity
         != Some((
-            record.case_id,
+            Some(record.candidate_set_id),
+            Some(record.manifest.source.candidate_set_revision.to_string()),
             record.config_revision,
             record.opportunity_material_digest.clone(),
         ))
@@ -115,13 +116,16 @@ async fn prepare_manifest(
         return Err(Error::InputConflict);
     }
     let source = &record.manifest.source;
+    if source.candidate_set_id != record.candidate_set_id {
+        return Err(Error::InputConflict);
+    }
     require_frozen_authority(tx, tenant, workspace, source).await?;
     if let Some(existing) = load_manifest(
         tx,
         tenant,
         workspace,
         record.opportunity_id,
-        Some(record.case_id),
+        Some(record.candidate_set_id),
     )
     .await?
     {
@@ -140,17 +144,16 @@ async fn prepare_manifest(
     let manifest_payload = serde_json::to_value(&record.manifest).map_err(storage_error)?;
     sqlx::query(
         "INSERT INTO advisory_scope_source_snapshot \
-         (tenant_id,workspace_id,opportunity_id,case_id,config_revision,opportunity_material_digest,\
-          candidate_set_id,candidate_set_revision,snapshot_id,source_digest,aggregate_schema,aggregate_payload) \
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'tect.scope-source-obligations/1',$11)",
+         (tenant_id,workspace_id,opportunity_id,candidate_set_id,config_revision,opportunity_material_digest,\
+          candidate_set_revision,snapshot_id,source_digest,aggregate_schema,aggregate_payload) \
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'tect.scope-source-obligations/1',$10)",
     )
     .bind(tenant)
     .bind(workspace)
     .bind(record.opportunity_id)
-    .bind(record.case_id)
+    .bind(record.candidate_set_id)
     .bind(record.config_revision)
     .bind(&record.opportunity_material_digest)
-    .bind(source.candidate_set_id)
     .bind(source.candidate_set_revision)
     .bind(source.snapshot_id)
     .bind(&source.digest)
@@ -160,14 +163,14 @@ async fn prepare_manifest(
     .map_err(storage_error)?;
     sqlx::query(
         "INSERT INTO advisory_scope_manifest \
-         (tenant_id,workspace_id,opportunity_id,case_id,source_digest,constructor_id,constructor_version,\
+         (tenant_id,workspace_id,opportunity_id,candidate_set_id,source_digest,constructor_id,constructor_version,\
           constructor_digest,baseline_alternative_id,eligible_set_digest,whole_set_digest,aggregate_schema,aggregate_payload) \
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'tect.scope-constructor-manifest/2',$12)",
     )
     .bind(tenant)
     .bind(workspace)
     .bind(record.opportunity_id)
-    .bind(record.case_id)
+    .bind(record.candidate_set_id)
     .bind(&source.digest)
     .bind(&record.manifest.constructor.id)
     .bind(&record.manifest.constructor.version)
@@ -187,16 +190,16 @@ async fn load_manifest(
     tenant: Uuid,
     workspace: Uuid,
     opportunity: Uuid,
-    expected_case: Option<Uuid>,
+    expected_candidate: Option<Uuid>,
 ) -> Result<Option<ScopeConstructorManifest>> {
     let row: Option<ManifestRow> = sqlx::query_as(
-        "SELECT m.case_id,s.candidate_set_id,s.candidate_set_revision,s.snapshot_id,m.source_digest,\
+        "SELECT m.candidate_set_id,s.candidate_set_revision,s.snapshot_id,m.source_digest,\
                 m.constructor_id,m.constructor_version,m.constructor_digest,\
                 m.baseline_alternative_id,m.eligible_set_digest,\
                 m.whole_set_digest,s.aggregate_payload AS source_payload,\
                 m.aggregate_payload AS manifest_payload \
          FROM advisory_scope_manifest m JOIN advisory_scope_source_snapshot s \
-           USING(tenant_id,workspace_id,opportunity_id,case_id,source_digest) \
+           USING(tenant_id,workspace_id,opportunity_id,candidate_set_id,source_digest) \
          WHERE m.tenant_id=$1 AND m.workspace_id=$2 AND m.opportunity_id=$3",
     )
     .bind(tenant)
@@ -206,7 +209,7 @@ async fn load_manifest(
     .await
     .map_err(storage_error)?;
     let Some(row) = row else { return Ok(None) };
-    if expected_case.is_some_and(|value| value != row.case_id) {
+    if expected_candidate.is_some_and(|value| value != row.candidate_set_id) {
         return Err(Error::InputConflict);
     }
     let source: SourceObligationsAggregate =

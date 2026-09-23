@@ -35,7 +35,7 @@ fn migration_has_exactly_seven_authoritative_aggregates_and_no_budget_placeholde
 }
 
 #[test]
-fn aggregates_are_canonical_json_with_relational_case_and_digest_lineage() {
+fn aggregates_are_canonical_json_with_candidate_and_digest_lineage() {
     for schema in [
         "tect.scope-source-obligations/1",
         "tect.scope-constructor-manifest/2",
@@ -47,7 +47,7 @@ fn aggregates_are_canonical_json_with_relational_case_and_digest_lineage() {
     }
     for relation in [
         "advisory_scope_source_opportunity_fk",
-        "advisory_scope_source_case_fk",
+        "advisory_scope_source_candidate_fk",
         "advisory_scope_manifest_source_fk",
         "advisory_scope_advice_manifest_fk",
         "advisory_scope_advice_dispatch_fk",
@@ -61,7 +61,9 @@ fn aggregates_are_canonical_json_with_relational_case_and_digest_lineage() {
     ] {
         assert!(MIGRATION.contains(relation), "missing {relation}");
     }
-    assert!(MIGRATION.matches("case_id").count() > 20);
+    assert!(MIGRATION.matches("candidate_set_id").count() > 20);
+    assert!(!MIGRATION.contains("REFERENCES native_scopes"));
+    assert!(MIGRATION.contains("scope_id IS NULL"));
 }
 
 #[test]
@@ -123,7 +125,7 @@ fn current_config_guard_and_replay_lineage_are_explicit() {
         "c.model_configuration=h.model_configuration",
         "Err(Error::StaleContext)",
         "row.opportunity_id != record.opportunity_id",
-        "row.case_id != record.case_id",
+        "row.candidate_set_id != record.candidate_set_id",
         "preservation_receipt_id",
     ] {
         assert!(
@@ -152,6 +154,8 @@ fn guarded_advice_and_advised_transition_share_one_transaction() {
 #[test]
 fn startup_validator_checks_specific_schema_contract() {
     for token in [
+        "advisory_opportunity_preselection_target_check",
+        "advisory_opportunity_candidate_material_unique",
         "advisory_scope_source_candidate_fk",
         "advisory_scope_source_snapshot_fk",
         "advisory_scope_disposition_actor_fk",
@@ -177,7 +181,7 @@ fn runtime_contract_is_append_only_tenant_safe_and_port_only() {
         "ENABLE ROW LEVEL SECURITY",
         "FORCE ROW LEVEL SECURITY",
         "FROM PUBLIC",
-        "advisory_scope_case_lookup_idx",
+        "advisory_scope_candidate_lookup_idx",
         "advisory_scope_disposition_lookup_idx",
         "advisory_scope_caller_lookup_idx",
     ] {

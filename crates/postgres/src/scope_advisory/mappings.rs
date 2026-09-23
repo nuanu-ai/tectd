@@ -1,6 +1,6 @@
 #[derive(sqlx::FromRow)]
 struct AdviceRow {
-    case_id: Uuid,
+    candidate_set_id: Uuid,
     advice_id: String,
     dispatch_id: Uuid,
     dispatch_material_digest: String,
@@ -16,7 +16,7 @@ struct AdviceRow {
 #[derive(sqlx::FromRow)]
 struct DispositionRow {
     opportunity_id: Uuid,
-    case_id: Uuid,
+    candidate_set_id: Uuid,
     actor_id: Uuid,
     session_id: Uuid,
     disposition_id: Uuid,
@@ -83,7 +83,7 @@ async fn require_current_opportunity_config(
     tenant: Uuid,
     workspace: Uuid,
     opportunity: Uuid,
-    case_id: Uuid,
+    candidate_set_id: Uuid,
     config_revision: i64,
 ) -> Result<()> {
     let current: Option<i64> = sqlx::query_scalar(
@@ -92,7 +92,8 @@ async fn require_current_opportunity_config(
            ON (c.tenant_id,c.workspace_id)=(o.tenant_id,o.workspace_id) \
          JOIN advisory_workspace_config_history h \
            ON (h.tenant_id,h.workspace_id,h.revision)=(c.tenant_id,c.workspace_id,c.revision) \
-         WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.id=$3 AND o.scope_id=$4 \
+         WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.id=$3 \
+           AND o.scope_id IS NULL AND o.work_item_kind='scope_candidate_set' AND o.work_item_id=$4 \
            AND o.config_revision=$5 AND c.revision=$5 \
            AND o.capability='scope_decomposition' \
            AND o.decision_point='scope.decomposition.before_selection' \
@@ -105,7 +106,7 @@ async fn require_current_opportunity_config(
     .bind(tenant)
     .bind(workspace)
     .bind(opportunity)
-    .bind(case_id)
+    .bind(candidate_set_id)
     .bind(config_revision)
     .fetch_optional(&mut **tx)
     .await
@@ -121,10 +122,10 @@ async fn load_advice(
     tenant: Uuid,
     workspace: Uuid,
     opportunity: Uuid,
-    expected_case: Option<Uuid>,
+    expected_candidate: Option<Uuid>,
 ) -> Result<Option<(AdviceRow, GuardedScopeAdvice)>> {
     let row: Option<AdviceRow> = sqlx::query_as(
-        "SELECT case_id,advice_id,dispatch_id,dispatch_material_digest,config_revision,source_digest,\
+        "SELECT candidate_set_id,advice_id,dispatch_id,dispatch_material_digest,config_revision,source_digest,\
                 manifest_digest,eligible_set_digest,request_digest,normalized_answers_digest,aggregate_payload \
          FROM advisory_scope_advice WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3",
     )
@@ -135,12 +136,12 @@ async fn load_advice(
     .await
     .map_err(storage_error)?;
     let Some(row) = row else { return Ok(None) };
-    if expected_case.is_some_and(|value| value != row.case_id) {
+    if expected_candidate.is_some_and(|value| value != row.candidate_set_id) {
         return Err(Error::InputConflict);
     }
     let advice: GuardedScopeAdvice =
         serde_json::from_value(row.aggregate_payload.clone()).map_err(storage_error)?;
-    let manifest = load_manifest(tx, tenant, workspace, opportunity, Some(row.case_id))
+    let manifest = load_manifest(tx, tenant, workspace, opportunity, Some(row.candidate_set_id))
         .await?
         .ok_or(Error::StorageUnavailable)?;
     validate_guarded_advice_binding(&Sha256ScopeDigest, &manifest, &advice)?;
@@ -164,10 +165,10 @@ async fn load_disposition(
 ) -> Result<ScopeDispositionRevision> {
     let revision: ScopeDispositionRevision =
         serde_json::from_value(row.aggregate_payload).map_err(storage_error)?;
-    let manifest = load_manifest(tx, tenant, workspace, row.opportunity_id, Some(row.case_id))
+    let manifest = load_manifest(tx, tenant, workspace, row.opportunity_id, Some(row.candidate_set_id))
         .await?
         .ok_or(Error::StorageUnavailable)?;
-    let (_, advice) = load_advice(tx, tenant, workspace, row.opportunity_id, Some(row.case_id))
+    let (_, advice) = load_advice(tx, tenant, workspace, row.opportunity_id, Some(row.candidate_set_id))
         .await?
         .ok_or(Error::StorageUnavailable)?;
     revision.validate(&Sha256ScopeDigest, &manifest, &advice)?;

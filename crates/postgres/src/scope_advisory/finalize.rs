@@ -7,7 +7,8 @@ async fn finalize_advice(
     let updated = sqlx::query(
         "UPDATE advisory_opportunity o SET state='advised',primary_reason='provider_response',updated_at=pg_catalog.clock_timestamp() \
          FROM advisory_workspace_config c,advisory_dispatch d \
-         WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.id=$3 AND o.scope_id=$4 \
+         WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.id=$3 \
+           AND o.scope_id IS NULL AND o.work_item_kind='scope_candidate_set' AND o.work_item_id=$4 \
            AND o.state='awaiting_response' AND o.config_revision=$5 \
            AND c.tenant_id=o.tenant_id AND c.workspace_id=o.workspace_id \
            AND c.revision=$5 AND c.mode='optional' \
@@ -18,7 +19,7 @@ async fn finalize_advice(
     .bind(tenant)
     .bind(workspace)
     .bind(record.opportunity_id)
-    .bind(record.case_id)
+    .bind(record.candidate_set_id)
     .bind(record.config_revision)
     .bind(record.dispatch_id)
     .bind(&record.dispatch_material_digest)

@@ -29,7 +29,7 @@ pub(super) fn scope_opportunity_input(
         decision_point_version: tect_domain::ADVISORY_DECISION_POINT_VERSION,
         workflow_occurrence_key: request.request_id.to_string(),
         target_kind: "scope_candidate_set".into(),
-        target_id: Some(request.case_id),
+        target_id: Some(request.candidate_set_id),
         work_revision: revision,
         source_ref: None,
         session_preference: request.session_preference,
@@ -49,13 +49,11 @@ pub(super) fn validate_invalid_observation(
         observation.workspace_id,
         observation.actor_id,
         observation.session_id,
-        observation.case_id,
         observation.candidate_set_id,
     ) != (
         request.workspace_id,
         request.actor_id,
         request.session_id,
-        request.case_id,
         request.candidate_set_id,
     ) {
         return Err(Error::InputConflict);
@@ -71,12 +69,12 @@ pub(super) fn validate_observation(
         observation.workspace_id,
         observation.actor_id,
         observation.session_id,
-        observation.case_id,
+        observation.candidate_set_id,
     ) != (
         request.workspace_id,
         request.actor_id,
         request.session_id,
-        request.case_id,
+        request.candidate_set_id,
     ) || observation.source.candidate_set_id != request.candidate_set_id
     {
         return Err(Error::InputConflict);
@@ -141,7 +139,6 @@ pub(super) fn no_call_digest(
     let value = serde_json::json!({
         "schema": "tect.scope-advisory-no-call/1",
         "request_id": request.request_id,
-        "case_id": request.case_id,
         "candidate_set_id": request.candidate_set_id,
         "session_preference": request.session_preference.as_str(),
         "request_preference": request.request_preference.as_str(),

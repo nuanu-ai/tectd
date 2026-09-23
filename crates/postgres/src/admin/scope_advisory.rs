@@ -157,12 +157,11 @@ pub(super) async fn validate_advisory_schema(
     .await
     .map_err(storage_error)?;
     let slice_constraints_ready: bool = sqlx::query_scalar(
-        "SELECT pg_catalog.count(*)=20 FROM pg_catalog.pg_constraint \
+        "SELECT pg_catalog.count(*)=19 FROM pg_catalog.pg_constraint \
          WHERE connamespace='public'::regnamespace AND conname=ANY($1)",
     )
     .bind([
         "advisory_scope_source_opportunity_fk",
-        "advisory_scope_source_case_fk",
         "advisory_scope_source_candidate_fk",
         "advisory_scope_source_snapshot_fk",
         "advisory_scope_manifest_source_fk",
@@ -186,10 +185,11 @@ pub(super) async fn validate_advisory_schema(
     .await
     .map_err(storage_error)?;
     let slice_checks_ready: bool = sqlx::query_scalar(
-        "SELECT pg_catalog.count(*)=22 FROM pg_catalog.pg_constraint \
+        "SELECT pg_catalog.count(*)=23 FROM pg_catalog.pg_constraint \
          WHERE connamespace='public'::regnamespace AND conname=ANY($1)",
     )
     .bind([
+        "advisory_opportunity_preselection_target_check",
         "advisory_scope_source_revision_check",
         "advisory_scope_source_digest_check",
         "advisory_scope_source_schema_check",
@@ -217,22 +217,23 @@ pub(super) async fn validate_advisory_schema(
     .await
     .map_err(storage_error)?;
     let slice_unique_ready: bool = sqlx::query_scalar(
-        "SELECT pg_catalog.count(*)=13 FROM pg_catalog.pg_constraint \
+        "SELECT pg_catalog.count(*)=14 FROM pg_catalog.pg_constraint \
          WHERE connamespace='public'::regnamespace AND conname=ANY($1)",
     )
     .bind([
+        "advisory_opportunity_candidate_material_unique",
         "advisory_scope_source_identity_unique",
         "advisory_scope_manifest_identity_unique",
         "advisory_scope_advice_opportunity_unique",
-        "advisory_scope_advice_case_unique",
+        "advisory_scope_advice_candidate_unique",
         "advisory_scope_disposition_request_unique",
         "advisory_scope_disposition_revision_unique",
         "advisory_scope_disposition_chain_unique",
         "advisory_scope_disposition_one_successor_unique",
         "advisory_scope_preservation_request_unique",
-        "advisory_scope_preservation_case_unique",
+        "advisory_scope_preservation_candidate_unique",
         "advisory_scope_caller_request_unique",
-        "advisory_scope_caller_case_unique",
+        "advisory_scope_caller_candidate_unique",
         "advisory_scope_verifier_request_unique",
     ])
     .fetch_one(&mut **transaction)
@@ -243,7 +244,7 @@ pub(super) async fn validate_advisory_schema(
          WHERE schemaname='public' AND indexname=ANY($1)",
     )
     .bind([
-        "advisory_scope_case_lookup_idx",
+        "advisory_scope_candidate_lookup_idx",
         "advisory_scope_disposition_lookup_idx",
         "advisory_scope_disposition_one_root_unique",
         "advisory_scope_caller_lookup_idx",

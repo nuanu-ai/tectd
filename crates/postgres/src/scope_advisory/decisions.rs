@@ -10,7 +10,7 @@ async fn persist_advice(
         tenant,
         workspace,
         record.opportunity_id,
-        Some(record.case_id),
+        Some(record.candidate_set_id),
     )
     .await?
     .ok_or(Error::NotFound)?;
@@ -20,7 +20,7 @@ async fn persist_advice(
         tenant,
         workspace,
         record.opportunity_id,
-        record.case_id,
+        record.candidate_set_id,
         record.config_revision,
     )
     .await?;
@@ -29,7 +29,7 @@ async fn persist_advice(
         tenant,
         workspace,
         record.opportunity_id,
-        Some(record.case_id),
+        Some(record.candidate_set_id),
     )
     .await?
     {
@@ -47,7 +47,7 @@ async fn persist_advice(
     let payload = serde_json::to_value(advice).map_err(storage_error)?;
     let inserted = sqlx::query(
         "INSERT INTO advisory_scope_advice \
-         (tenant_id,workspace_id,opportunity_id,case_id,advice_id,dispatch_id,dispatch_material_digest,\
+         (tenant_id,workspace_id,opportunity_id,candidate_set_id,advice_id,dispatch_id,dispatch_material_digest,\
           config_revision,source_digest,manifest_digest,eligible_set_digest,request_digest,\
           normalized_answers_digest,aggregate_schema,aggregate_payload) \
          SELECT $1,$2,$3,$4,$5,d.id,d.material_digest,$6,$7,$8,$9,$10,$11,\
@@ -57,13 +57,17 @@ async fn persist_advice(
          WHERE d.tenant_id=$1 AND d.workspace_id=$2 AND d.opportunity_id=$3 AND d.id=$13 \
            AND d.material_digest=$14 AND d.state='sealed' AND d.send_certainty='sent' \
            AND d.outcome='provider_response' AND d.response_payload IS NOT NULL AND d.sealed_at IS NOT NULL \
-           AND o.scope_id=$4 AND o.config_revision=$6 AND o.material_digest=$14 \
+           AND o.scope_id IS NULL AND o.work_item_kind='scope_candidate_set' \
+           AND o.work_item_id=$4 AND EXISTS (SELECT 1 FROM advisory_scope_source_snapshot s \
+               WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.opportunity_id=$3 \
+               AND s.candidate_set_id=$4 AND o.source_revision=s.candidate_set_revision::text) \
+           AND o.config_revision=$6 AND o.material_digest=$14 \
            AND o.state='advised' AND o.primary_reason='provider_response' FOR UPDATE OF d,o",
     )
     .bind(tenant)
     .bind(workspace)
     .bind(record.opportunity_id)
-    .bind(record.case_id)
+    .bind(record.candidate_set_id)
     .bind(&advice.id.0)
     .bind(record.config_revision)
     .bind(&advice.source_digest)
@@ -98,7 +102,7 @@ async fn cas_disposition(
     )
     .await?;
     let replay: Option<DispositionRow> = sqlx::query_as(
-        "SELECT opportunity_id,case_id,actor_id,session_id,disposition_id,request_id,advice_id,\
+        "SELECT opportunity_id,candidate_set_id,actor_id,session_id,disposition_id,request_id,advice_id,\
                 revision,predecessor_id,action,selected_alternative_id,aggregate_payload \
          FROM advisory_scope_disposition WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3",
     )
@@ -110,7 +114,7 @@ async fn cas_disposition(
     .map_err(storage_error)?;
     if replay.as_ref().is_some_and(|row| {
         row.opportunity_id != record.opportunity_id
-            || row.case_id != record.case_id
+            || row.candidate_set_id != record.candidate_set_id
             || row.advice_id != record.request.advice_id.0
             || row.actor_id != record.actor_id
             || row.session_id != record.session_id
@@ -121,12 +125,12 @@ async fn cas_disposition(
         "SELECT o.authorized_actor_id,o.session_id,a.config_revision FROM advisory_scope_advice a \
          JOIN advisory_opportunity o USING(tenant_id,workspace_id) \
          WHERE a.tenant_id=$1 AND a.workspace_id=$2 AND a.opportunity_id=$3 \
-           AND a.case_id=$4 AND o.id=a.opportunity_id",
+           AND a.candidate_set_id=$4 AND o.id=a.opportunity_id",
     )
     .bind(tenant)
     .bind(workspace)
     .bind(record.opportunity_id)
-    .bind(record.case_id)
+    .bind(record.candidate_set_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(storage_error)?;
@@ -141,7 +145,7 @@ async fn cas_disposition(
         tenant,
         workspace,
         record.opportunity_id,
-        record.case_id,
+        record.candidate_set_id,
         config_revision,
     )
     .await?;
@@ -165,7 +169,7 @@ async fn cas_disposition(
         tenant,
         workspace,
         record.opportunity_id,
-        Some(record.case_id),
+        Some(record.candidate_set_id),
     )
     .await?
     .ok_or(Error::NotFound)?;
@@ -174,12 +178,12 @@ async fn cas_disposition(
         tenant,
         workspace,
         record.opportunity_id,
-        Some(record.case_id),
+        Some(record.candidate_set_id),
     )
     .await?
     .ok_or(Error::NotFound)?;
     let current_row: Option<DispositionRow> = sqlx::query_as(
-        "SELECT opportunity_id,case_id,actor_id,session_id,disposition_id,request_id,advice_id,\
+        "SELECT opportunity_id,candidate_set_id,actor_id,session_id,disposition_id,request_id,advice_id,\
                 revision,predecessor_id,action,selected_alternative_id,aggregate_payload \
          FROM advisory_scope_disposition WHERE tenant_id=$1 AND workspace_id=$2 AND advice_id=$3 \
          ORDER BY revision DESC LIMIT 1",
@@ -204,13 +208,13 @@ async fn cas_disposition(
     let payload = serde_json::to_value(&revision).map_err(storage_error)?;
     sqlx::query(
         "INSERT INTO advisory_scope_disposition \
-         (tenant_id,workspace_id,opportunity_id,case_id,disposition_id,request_id,advice_id,revision,\
+         (tenant_id,workspace_id,opportunity_id,candidate_set_id,disposition_id,request_id,advice_id,revision,\
           predecessor_id,predecessor_revision,actor_id,session_id,action,selected_alternative_id,\
           aggregate_schema,aggregate_payload) \
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,\
                 'tect.scope-disposition-revision/1',$15)",
     )
-    .bind(tenant).bind(workspace).bind(record.opportunity_id).bind(record.case_id)
+    .bind(tenant).bind(workspace).bind(record.opportunity_id).bind(record.candidate_set_id)
     .bind(revision.id).bind(revision.request_id).bind(&revision.advice_id.0).bind(revision.revision)
     .bind(revision.supersedes_id).bind(current.as_ref().map(|value| value.revision))
     .bind(record.actor_id).bind(record.session_id).bind(disposition_action(revision.action))
@@ -227,30 +231,30 @@ async fn persist_preservation(
 ) -> Result<Uuid> {
     lock_scope_key(tx, tenant, workspace, "preservation", input.disposition_id).await?;
     let existing: Option<(Uuid,Uuid,Uuid,String,Uuid,serde_json::Value,serde_json::Value)> = sqlx::query_as(
-        "SELECT receipt_id,opportunity_id,case_id,advice_id,disposition_id,observation_payload,result_payload FROM advisory_scope_preservation_receipt \
+        "SELECT receipt_id,opportunity_id,candidate_set_id,advice_id,disposition_id,observation_payload,result_payload FROM advisory_scope_preservation_receipt \
          WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3",
     ).bind(tenant).bind(workspace).bind(input.request_id)
       .fetch_optional(&mut **tx).await.map_err(storage_error)?;
     if existing.as_ref().is_some_and(|row| {
         row.0 != input.receipt_id
             || row.1 != input.opportunity_id
-            || row.2 != input.case_id
+            || row.2 != input.candidate_set_id
             || row.3 != input.observation.advice_id.0
             || row.4 != input.disposition_id
     }) {
         return Err(Error::InputConflict);
     }
     let row: DispositionRow = sqlx::query_as(
-        "SELECT opportunity_id,case_id,actor_id,session_id,disposition_id,request_id,advice_id,\
+        "SELECT opportunity_id,candidate_set_id,actor_id,session_id,disposition_id,request_id,advice_id,\
                 revision,predecessor_id,action,selected_alternative_id,aggregate_payload \
          FROM advisory_scope_disposition WHERE tenant_id=$1 AND workspace_id=$2 \
-           AND disposition_id=$3 AND opportunity_id=$4 AND case_id=$5",
+           AND disposition_id=$3 AND opportunity_id=$4 AND candidate_set_id=$5",
     )
     .bind(tenant)
     .bind(workspace)
     .bind(input.disposition_id)
     .bind(input.opportunity_id)
-    .bind(input.case_id)
+    .bind(input.candidate_set_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(storage_error)?
@@ -261,7 +265,7 @@ async fn persist_preservation(
         tenant,
         workspace,
         input.opportunity_id,
-        Some(input.case_id),
+        Some(input.candidate_set_id),
     )
     .await?
     .ok_or(Error::NotFound)?;
@@ -270,7 +274,7 @@ async fn persist_preservation(
         tenant,
         workspace,
         input.opportunity_id,
-        Some(input.case_id),
+        Some(input.candidate_set_id),
     )
     .await?
     .ok_or(Error::NotFound)?;
@@ -279,7 +283,7 @@ async fn persist_preservation(
         tenant,
         workspace,
         input.opportunity_id,
-        input.case_id,
+        input.candidate_set_id,
         advice_header.config_revision,
     )
     .await?;
@@ -301,7 +305,7 @@ async fn persist_preservation(
             == (
                 input.receipt_id,
                 input.opportunity_id,
-                input.case_id,
+                input.candidate_set_id,
                 advice.id.0.clone(),
                 input.disposition_id,
                 observation_payload,
@@ -314,11 +318,11 @@ async fn persist_preservation(
     }
     sqlx::query(
         "INSERT INTO advisory_scope_preservation_receipt \
-         (tenant_id,workspace_id,opportunity_id,case_id,receipt_id,request_id,advice_id,disposition_id,\
+         (tenant_id,workspace_id,opportunity_id,candidate_set_id,receipt_id,request_id,advice_id,disposition_id,\
           disposition_revision,source_digest,manifest_digest,eligible_set_digest,\
           observed_candidate_set_revision,status,aggregate_schema,observation_payload,result_payload) \
          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'tect.scope-preservation/1',$15,$16)",
-    ).bind(tenant).bind(workspace).bind(input.opportunity_id).bind(input.case_id)
+    ).bind(tenant).bind(workspace).bind(input.opportunity_id).bind(input.candidate_set_id)
       .bind(input.receipt_id).bind(input.request_id).bind(&advice.id.0).bind(input.disposition_id)
       .bind(disposition.revision).bind(&manifest.source.digest).bind(&manifest.whole_set_digest)
       .bind(&manifest.eligible_set_digest).bind(input.observation.candidate_set_revision)
@@ -346,7 +350,7 @@ async fn persist_caller_link(
         tenant,
         workspace,
         input.opportunity_id,
-        Some(input.case_id),
+        Some(input.candidate_set_id),
     )
     .await?
     .ok_or(Error::NotFound)?;
@@ -355,19 +359,19 @@ async fn persist_caller_link(
         tenant,
         workspace,
         input.opportunity_id,
-        input.case_id,
+        input.candidate_set_id,
         advice_header.config_revision,
     )
     .await?;
     let lineage: Option<(Uuid, Uuid)> = sqlx::query_as(
         "SELECT p.disposition_id,p.receipt_id FROM advisory_scope_preservation_receipt p \
-         WHERE p.tenant_id=$1 AND p.workspace_id=$2 AND p.opportunity_id=$3 AND p.case_id=$4 \
+         WHERE p.tenant_id=$1 AND p.workspace_id=$2 AND p.opportunity_id=$3 AND p.candidate_set_id=$4 \
            AND p.receipt_id=$5 AND p.status='passed'",
     )
     .bind(tenant)
     .bind(workspace)
     .bind(input.opportunity_id)
-    .bind(input.case_id)
+    .bind(input.candidate_set_id)
     .bind(input.preservation_receipt_id)
     .fetch_optional(&mut **tx)
     .await
@@ -385,8 +389,8 @@ async fn persist_caller_link(
     {
         return Err(Error::InputConflict);
     }
-    let existing: Option<(Uuid,Uuid,Uuid,Uuid,Uuid,Uuid,Uuid,String,Uuid,i64,Uuid,Uuid)> = sqlx::query_as(
-        "SELECT link_id,request_id,opportunity_id,case_id,disposition_id,preservation_receipt_id,candidate_set_id,caller_operation,\
+    let existing: Option<(Uuid,Uuid,Uuid,Uuid,Uuid,Uuid,String,Uuid,i64,Uuid,Uuid)> = sqlx::query_as(
+        "SELECT link_id,request_id,opportunity_id,candidate_set_id,disposition_id,preservation_receipt_id,caller_operation,\
                 caller_request_id,caller_result_revision,actor_id,session_id FROM advisory_scope_caller_link \
          WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3",
     ).bind(tenant).bind(workspace).bind(input.request_id)
@@ -395,10 +399,9 @@ async fn persist_caller_link(
         input.link_id,
         input.request_id,
         input.opportunity_id,
-        input.case_id,
+        input.candidate_set_id,
         input.disposition_id,
         input.preservation_receipt_id,
-        input.candidate_set_id,
         input.caller_operation.clone(),
         input.caller_request_id,
         input.caller_result_revision,
@@ -414,12 +417,12 @@ async fn persist_caller_link(
     }
     sqlx::query(
         "INSERT INTO advisory_scope_caller_link \
-         (tenant_id,workspace_id,opportunity_id,case_id,link_id,request_id,disposition_id,\
-          preservation_receipt_id,candidate_set_id,caller_operation,caller_request_id,caller_result_revision,actor_id,session_id) \
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)",
-    ).bind(tenant).bind(workspace).bind(input.opportunity_id).bind(input.case_id).bind(input.link_id)
+         (tenant_id,workspace_id,opportunity_id,candidate_set_id,link_id,request_id,disposition_id,\
+          preservation_receipt_id,caller_operation,caller_request_id,caller_result_revision,actor_id,session_id) \
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+    ).bind(tenant).bind(workspace).bind(input.opportunity_id).bind(input.candidate_set_id).bind(input.link_id)
       .bind(input.request_id).bind(input.disposition_id).bind(input.preservation_receipt_id)
-      .bind(input.candidate_set_id).bind(&input.caller_operation).bind(input.caller_request_id)
+      .bind(&input.caller_operation).bind(input.caller_request_id)
       .bind(input.caller_result_revision).bind(input.actor_id).bind(input.session_id)
       .execute(&mut **tx).await.map_err(storage_error)?;
     Ok(input.link_id)
@@ -436,9 +439,9 @@ async fn persist_verifier(
         "SELECT c.actor_id,c.session_id,d.actor_id,d.session_id,c.candidate_set_id,c.caller_result_revision \
          FROM advisory_scope_caller_link c JOIN advisory_scope_disposition d \
            ON (d.tenant_id,d.workspace_id,d.disposition_id)=(c.tenant_id,c.workspace_id,c.disposition_id) \
-         WHERE c.tenant_id=$1 AND c.workspace_id=$2 AND c.opportunity_id=$3 AND c.case_id=$4 \
+         WHERE c.tenant_id=$1 AND c.workspace_id=$2 AND c.opportunity_id=$3 AND c.candidate_set_id=$4 \
            AND c.link_id=$5",
-    ).bind(tenant).bind(workspace).bind(input.opportunity_id).bind(input.case_id)
+    ).bind(tenant).bind(workspace).bind(input.opportunity_id).bind(input.candidate_set_id)
       .bind(input.caller_link_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     let Some((caller_actor, caller_session, decision_actor, decision_session, candidate, revision)) =
         identities
@@ -454,7 +457,7 @@ async fn persist_verifier(
         return Err(Error::InputConflict);
     }
     let existing: Option<(Uuid,Uuid,Uuid,Uuid,Uuid,Uuid,Uuid,i64,String)> = sqlx::query_as(
-        "SELECT receipt_id,request_id,opportunity_id,case_id,caller_link_id,actor_id,session_id,verified_revision,verifier_digest \
+        "SELECT receipt_id,request_id,opportunity_id,candidate_set_id,caller_link_id,actor_id,session_id,verified_revision,verifier_digest \
          FROM advisory_scope_verifier_receipt WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3",
     ).bind(tenant).bind(workspace).bind(input.request_id)
       .fetch_optional(&mut **tx).await.map_err(storage_error)?;
@@ -462,7 +465,7 @@ async fn persist_verifier(
         input.receipt_id,
         input.request_id,
         input.opportunity_id,
-        input.case_id,
+        input.candidate_set_id,
         input.caller_link_id,
         input.actor_id,
         input.session_id,
@@ -478,11 +481,11 @@ async fn persist_verifier(
     }
     sqlx::query(
         "INSERT INTO advisory_scope_verifier_receipt \
-         (tenant_id,workspace_id,opportunity_id,case_id,receipt_id,request_id,caller_link_id,\
-          candidate_set_id,actor_id,session_id,verified_revision,verifier_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
-    ).bind(tenant).bind(workspace).bind(input.opportunity_id).bind(input.case_id)
+         (tenant_id,workspace_id,opportunity_id,candidate_set_id,receipt_id,request_id,caller_link_id,\
+          actor_id,session_id,verified_revision,verifier_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+    ).bind(tenant).bind(workspace).bind(input.opportunity_id).bind(input.candidate_set_id)
       .bind(input.receipt_id).bind(input.request_id).bind(input.caller_link_id)
-      .bind(input.candidate_set_id).bind(input.actor_id).bind(input.session_id)
+      .bind(input.actor_id).bind(input.session_id)
       .bind(input.verified_revision)
       .bind(&input.verifier_digest).execute(&mut **tx).await.map_err(storage_error)?;
     Ok(input.receipt_id)

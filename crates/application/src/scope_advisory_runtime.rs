@@ -11,7 +11,6 @@ pub(crate) struct ScopeAuthorityRequest {
     pub workspace_id: Uuid,
     pub actor_id: Uuid,
     pub session_id: Uuid,
-    pub case_id: Uuid,
     pub candidate_set_id: Uuid,
 }
 
@@ -20,7 +19,7 @@ pub(crate) struct ScopeAuthorityObservation {
     pub workspace_id: Uuid,
     pub actor_id: Uuid,
     pub session_id: Uuid,
-    pub case_id: Uuid,
+    pub candidate_set_id: Uuid,
     pub source: FrozenScopeSource,
     pub obligations: Vec<SourceObligation>,
 }
@@ -30,7 +29,6 @@ pub(crate) struct ScopeAuthorizedInvalidObservation {
     pub workspace_id: Uuid,
     pub actor_id: Uuid,
     pub session_id: Uuid,
-    pub case_id: Uuid,
     pub candidate_set_id: Uuid,
 }
 
@@ -60,7 +58,7 @@ pub(crate) trait ScopeManifestSupplier: Send + Sync {
 pub(crate) struct ScopeBudgetRequest {
     pub workspace_id: Uuid,
     pub actor_id: Uuid,
-    pub case_id: Uuid,
+    pub candidate_set_id: Uuid,
     pub config_revision: i64,
     pub manifest_digest: String,
 }

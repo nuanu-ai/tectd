@@ -20,7 +20,6 @@ use tect_domain::{
 fn no_call_material_is_deterministic_and_binds_reason_and_revision() {
     let request = RunScopeAdvisory {
         request_id: Uuid::from_u128(1),
-        case_id: Uuid::from_u128(2),
         candidate_set_id: Uuid::from_u128(3),
         session_preference: AdvisoryRequestPreference::UseWorkspace,
         request_preference: AdvisoryRequestPreference::UseWorkspace,
@@ -49,7 +48,7 @@ async fn production_defaults_fail_closed_without_supplier_budget_or_provider() {
             .evaluate(&ScopeBudgetRequest {
                 workspace_id: Uuid::from_u128(1),
                 actor_id: Uuid::from_u128(2),
-                case_id: Uuid::from_u128(3),
+                candidate_set_id: Uuid::from_u128(3),
                 config_revision: 0,
                 manifest_digest: "a".repeat(64),
             })
@@ -230,31 +229,30 @@ fn source(candidate_set_id: Uuid) -> FrozenScopeSource {
 }
 
 #[test]
-fn authority_binding_keeps_case_and_candidate_set_id_distinct() {
+fn authority_binding_requires_candidate_set_identity() {
     let request = crate::ScopeAuthorityRequest {
         workspace_id: Uuid::from_u128(1),
         actor_id: Uuid::from_u128(2),
         session_id: Uuid::from_u128(3),
-        case_id: Uuid::from_u128(4),
         candidate_set_id: Uuid::from_u128(5),
     };
     let observation = crate::ScopeAuthorityObservation {
         workspace_id: request.workspace_id,
         actor_id: request.actor_id,
         session_id: request.session_id,
-        case_id: request.case_id,
+        candidate_set_id: request.candidate_set_id,
         source: source(request.candidate_set_id),
         obligations: Vec::new(),
     };
     assert!(validate_observation(&request, &observation).is_ok());
-    let mut wrong_case = observation.clone();
-    wrong_case.case_id = request.candidate_set_id;
+    let mut wrong_observation = observation.clone();
+    wrong_observation.candidate_set_id = Uuid::from_u128(4);
     assert_eq!(
-        validate_observation(&request, &wrong_case),
+        validate_observation(&request, &wrong_observation),
         Err(tect_domain::Error::InputConflict)
     );
     let mut wrong_candidate = observation;
-    wrong_candidate.source.candidate_set_id = request.case_id;
+    wrong_candidate.source.candidate_set_id = Uuid::from_u128(4);
     assert_eq!(
         validate_observation(&request, &wrong_candidate),
         Err(tect_domain::Error::InputConflict)
@@ -279,7 +277,6 @@ async fn unauthorized_observer_error_has_no_registered_decision_point() {
         workspace_id: Uuid::from_u128(1),
         actor_id: Uuid::from_u128(2),
         session_id: Uuid::from_u128(3),
-        case_id: Uuid::from_u128(4),
         candidate_set_id: Uuid::from_u128(5),
     };
     assert_eq!(
@@ -296,14 +293,12 @@ fn authorized_invalid_observation_routes_to_durable_invalid_capture_before_polic
         workspace_id: Uuid::from_u128(1),
         actor_id: Uuid::from_u128(2),
         session_id: Uuid::from_u128(3),
-        case_id: Uuid::from_u128(4),
         candidate_set_id: Uuid::from_u128(5),
     };
     let invalid = ScopeAuthorizedInvalidObservation {
         workspace_id: request.workspace_id,
         actor_id: request.actor_id,
         session_id: request.session_id,
-        case_id: request.case_id,
         candidate_set_id: request.candidate_set_id,
     };
     assert!(validate_invalid_observation(&request, &invalid).is_ok());

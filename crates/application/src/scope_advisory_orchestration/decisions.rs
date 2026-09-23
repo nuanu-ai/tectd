@@ -24,7 +24,7 @@ impl WorkspaceService {
                 workspace.id,
                 ScopeDispositionRecord {
                     opportunity_id: input.opportunity_id,
-                    case_id: input.case_id,
+                    candidate_set_id: input.candidate_set_id,
                     actor_id: actor,
                     session_id: session.id,
                     request: input.request,
@@ -49,8 +49,7 @@ impl WorkspaceService {
             workspace_id: workspace.id,
             actor_id: actor,
             session_id: session.id,
-            case_id: input.case_id,
-            candidate_set_id: input.manifest.source.candidate_set_id,
+            candidate_set_id: input.candidate_set_id,
         };
         let current = match self.scope_authority.observe(&authority_request).await? {
             crate::ScopeAuthorityOutcome::Authorized(value) => value,
@@ -84,7 +83,7 @@ impl WorkspaceService {
                     receipt_id: input.receipt_id,
                     request_id: input.request_id,
                     opportunity_id: input.opportunity_id,
-                    case_id: input.case_id,
+                    candidate_set_id: input.candidate_set_id,
                     disposition_id: input.disposition.id,
                     observation,
                     result: result.clone(),

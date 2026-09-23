@@ -8,7 +8,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeManifestRecord {
     pub opportunity_id: Uuid,
-    pub case_id: Uuid,
+    pub candidate_set_id: Uuid,
     pub config_revision: i64,
     pub opportunity_material_digest: String,
     pub manifest: ScopeConstructorManifest,
@@ -17,7 +17,7 @@ pub struct ScopeManifestRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuardedScopeAdviceRecord {
     pub opportunity_id: Uuid,
-    pub case_id: Uuid,
+    pub candidate_set_id: Uuid,
     pub dispatch_id: Uuid,
     pub dispatch_material_digest: String,
     pub config_revision: i64,
@@ -27,7 +27,7 @@ pub struct GuardedScopeAdviceRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeDispositionRecord {
     pub opportunity_id: Uuid,
-    pub case_id: Uuid,
+    pub candidate_set_id: Uuid,
     pub actor_id: Uuid,
     pub session_id: Uuid,
     pub request: ScopeDispositionRequest,
@@ -38,7 +38,7 @@ pub struct ScopePreservationReceiptInput {
     pub receipt_id: Uuid,
     pub request_id: Uuid,
     pub opportunity_id: Uuid,
-    pub case_id: Uuid,
+    pub candidate_set_id: Uuid,
     pub disposition_id: Uuid,
     pub observation: FreshScopeObservation,
     pub result: ScopePreservationResult,
@@ -49,10 +49,9 @@ pub struct ScopeCallerLinkInput {
     pub link_id: Uuid,
     pub request_id: Uuid,
     pub opportunity_id: Uuid,
-    pub case_id: Uuid,
+    pub candidate_set_id: Uuid,
     pub disposition_id: Uuid,
     pub preservation_receipt_id: Uuid,
-    pub candidate_set_id: Uuid,
     pub caller_operation: String,
     pub caller_request_id: Uuid,
     pub caller_result_revision: i64,
@@ -65,9 +64,8 @@ pub struct ScopeVerifierReceiptInput {
     pub receipt_id: Uuid,
     pub request_id: Uuid,
     pub opportunity_id: Uuid,
-    pub case_id: Uuid,
-    pub caller_link_id: Uuid,
     pub candidate_set_id: Uuid,
+    pub caller_link_id: Uuid,
     pub actor_id: Uuid,
     pub session_id: Uuid,
     pub verified_revision: i64,
