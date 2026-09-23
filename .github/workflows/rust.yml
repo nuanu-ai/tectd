@@ -17,6 +17,56 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Isolate Rust state
+        shell: bash
+        run: |
+          set -euo pipefail
+          rust_root="${RUNNER_TEMP}/tectd-rust-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$rust_root/cargo" "$rust_root/rustup"
+          {
+            echo "CARGO_HOME=$rust_root/cargo"
+            echo "RUSTUP_HOME=$rust_root/rustup"
+          } >> "$GITHUB_ENV"
+          echo "$rust_root/cargo/bin" >> "$GITHUB_PATH"
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: rustfmt, clippy
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29
+        with:
+          version: 0.15.1
+          use-cache: false
+          use-tool-cache: false
+      - name: Configure owned portable linker
+        shell: bash
+        run: |
+          set -euo pipefail
+          tool_bin="${RUNNER_TEMP}/tectd-tool-bin-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$tool_bin"
+          printf '%s\n' '#!/usr/bin/env bash' 'exec zig cc "$@"' > "$tool_bin/cc"
+          printf '%s\n' '#!/usr/bin/env bash' 'exec zig c++ "$@"' > "$tool_bin/c++"
+          printf '%s\n' '#!/usr/bin/env bash' 'exec zig ar "$@"' > "$tool_bin/ar"
+          chmod 0700 "$tool_bin/cc" "$tool_bin/c++" "$tool_bin/ar"
+          {
+            echo "CC=$tool_bin/cc"
+            echo "CXX=$tool_bin/c++"
+            echo "AR=$tool_bin/ar"
+            echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=$tool_bin/cc"
+          } >> "$GITHUB_ENV"
+      - run: python3 scripts/check-architecture.py
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo build --workspace --all-targets --locked
+  verify-integration:
+    if: github.event_name != 'pull_request_target' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - uses: dtolnay/rust-toolchain@1.93.0
         with:
           components: rustfmt, clippy
