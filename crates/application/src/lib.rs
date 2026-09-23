@@ -1,6 +1,6 @@
 //! Application policy and ports. Adapters depend on this crate, never the reverse.
 mod advisory;
-pub use advisory::Sha256ScopeDigest;
+pub use advisory::{Sha256ScopeDigest, VerifySelectedSave};
 mod advisory_ports;
 mod planning_knowledge_ports;
 mod ports;

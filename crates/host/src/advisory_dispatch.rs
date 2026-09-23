@@ -10,6 +10,14 @@ pub(crate) async fn execute(
     capacity: usize,
 ) -> Result<serde_json::Value> {
     let value = match invocation {
+        AdvisoryInvocation::VerifySelectedSave(request) => {
+            let observation = service.verify_selected_save(context, &request).await?;
+            serde_json::to_value(serde_json::json!({
+                "observation": observation,
+                "establishes_independent_approval": false,
+                "establishes_current_acceptance": false,
+            }))
+        }
         AdvisoryInvocation::ScopeRequest(request) => {
             let outcome = service.run_scope_advisory(context, &request).await?;
             serde_json::to_value(serde_json::json!({

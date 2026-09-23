@@ -211,7 +211,23 @@ impl McpSession {
         let public_decode_error = routed.as_ref().err().cloned();
         let (name, arguments) = match routed {
             Ok(call) => (call.name, call.arguments),
-            Err(_) => (crate::api::INVALID_PUBLIC_CALL, Value::Object(Map::new())),
+            Err(_) => {
+                let candidate_route = match (
+                    params.name.as_str(),
+                    params.arguments.get("route").and_then(Value::as_str),
+                ) {
+                    ("command", Some("candidate.advisory.verify")) => {
+                        Some("candidate_advisory_verify")
+                    }
+                    ("query", Some("candidate.advisory.get")) => Some("candidate_advisory_get"),
+                    ("query", Some("candidate.advisory.audit")) => Some("candidate_advisory_audit"),
+                    _ => None,
+                };
+                (
+                    candidate_route.unwrap_or(crate::api::INVALID_PUBLIC_CALL),
+                    Value::Object(Map::new()),
+                )
+            }
         };
         match call_tool_bounded(&self.socket, &context, name, arguments.clone(), capacity).await {
             Ok(result) => success_response(id, successful_tool_result(result)),

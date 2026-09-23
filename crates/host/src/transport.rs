@@ -164,12 +164,13 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
         return WireResponse::Error { error };
     }
     if request.output_capacity > MAX_FRAME_BYTES {
-        return authenticate_invalid_request(service, &request.context).await;
+        return authenticate_invalid_request(service, &request.context, &request.tool_name).await;
     }
     let invocation = match parse_invocation(&request.tool_name, request.arguments) {
         Ok(invocation) => invocation,
         Err(_) => {
-            return authenticate_invalid_request(service, &request.context).await;
+            return authenticate_invalid_request(service, &request.context, &request.tool_name)
+                .await;
         }
     };
 
@@ -295,8 +296,21 @@ fn validate_wire_version(request: &WireRequest) -> Result<()> {
 async fn authenticate_invalid_request(
     service: &WorkspaceService,
     context: &RequestContext,
+    tool_name: &str,
 ) -> WireResponse {
-    let authorization = timeout(OPERATION_TIMEOUT, service.get_state(context)).await;
+    let authorization = timeout(OPERATION_TIMEOUT, async {
+        if matches!(
+            tool_name,
+            "candidate_advisory_verify" | "candidate_advisory_get" | "candidate_advisory_audit"
+        ) {
+            service
+                .authenticate_candidate_advisory_session(context)
+                .await
+        } else {
+            service.get_state(context).await.map(|_| ())
+        }
+    })
+    .await;
     match authorization {
         Ok(Ok(_)) => WireResponse::Error {
             error: Error::InvalidArguments,

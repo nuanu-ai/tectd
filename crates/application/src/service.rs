@@ -159,7 +159,7 @@ impl WorkspaceService {
         Ok((tx, identity))
     }
 
-    async fn authenticated(
+    pub(crate) async fn authenticated(
         &self,
         context: &RequestContext,
         mode: TransactionMode,

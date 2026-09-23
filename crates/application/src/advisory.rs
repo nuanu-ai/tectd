@@ -11,12 +11,25 @@ use sha2::{Digest, Sha256};
 use tect_domain::{
     ADVISORY_DECISION_POINT_VERSION, AdvisoryAuditPage, AdvisoryAuditQuery, AdvisoryCapability,
     AdvisoryDecisionPoint, AdvisoryOpportunityDetail, AdvisoryOpportunityInput,
-    ConfigureWorkspaceAdvisory, Result, WorkspaceAdvisoryConfig,
+    ConfigureWorkspaceAdvisory, Error, PrincipalRole, Result, SelectedSaveObservation,
+    SelectedSaveObservationRequest, WorkspaceAdvisoryConfig,
 };
+use uuid::Uuid;
+
+/// Public verifier input. Identity and session are bound to the host credential.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifySelectedSave {
+    pub request_id: Uuid,
+    pub opportunity_id: Uuid,
+    pub candidate_set_id: Uuid,
+    pub caller_link_id: Uuid,
+    pub caller_receipt_request_id: Uuid,
+    pub target_revision: i64,
+}
 #[cfg(test)]
 use tect_domain::{
     AdvisoryDispatchAuthorization, AdvisoryDispatchSeal, AdvisoryDispatchState,
-    AdvisoryOpportunityState, AdvisoryReconciliationEvidence, AdvisoryRetryBasis, Error,
+    AdvisoryOpportunityState, AdvisoryReconciliationEvidence, AdvisoryRetryBasis,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -33,6 +46,84 @@ impl tect_domain::ScopeDigest for Sha256ScopeDigest {
 }
 
 impl WorkspaceService {
+    async fn verifier_candidate_transaction(
+        &self,
+        context: &tect_domain::RequestContext,
+        mode: TransactionMode,
+    ) -> Result<(
+        Box<dyn UnitOfWork>,
+        tect_domain::Workspace,
+        tect_domain::Session,
+    )> {
+        let (mut tx, identity) = self.authenticated(context, mode).await?;
+        if identity.role != PrincipalRole::Verifier {
+            return Err(Error::Forbidden);
+        }
+        let session = tx
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
+        Ok((tx, workspace, session))
+    }
+
+    pub async fn verify_selected_save(
+        &self,
+        context: &tect_domain::RequestContext,
+        request: &VerifySelectedSave,
+    ) -> Result<SelectedSaveObservation> {
+        let (mut tx, workspace, session) = self
+            .verifier_candidate_transaction(context, TransactionMode::ReadWrite)
+            .await?;
+        let bound = SelectedSaveObservationRequest {
+            request_id: request.request_id,
+            opportunity_id: request.opportunity_id,
+            candidate_set_id: request.candidate_set_id,
+            caller_link_id: request.caller_link_id,
+            caller_receipt_request_id: request.caller_receipt_request_id,
+            target_revision: request.target_revision,
+            session_id: session.id,
+        };
+        if !bound.valid() {
+            return Err(Error::InvalidArguments);
+        }
+        let observed = tx
+            .independently_observe_selected_scope_save(workspace.id, &bound)
+            .await?;
+        tx.commit().await?;
+        Ok(observed)
+    }
+
+    async fn candidate_read_transaction(
+        &self,
+        context: &tect_domain::RequestContext,
+    ) -> Result<(Box<dyn UnitOfWork>, tect_domain::Workspace)> {
+        let (mut tx, identity) = self
+            .authenticated(context, TransactionMode::ReadOnly)
+            .await?;
+        if !matches!(
+            identity.role,
+            PrincipalRole::Owner | PrincipalRole::Verifier
+        ) {
+            return Err(Error::Forbidden);
+        }
+        let session = tx
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
+        Ok((tx, workspace))
+    }
+
+    /// Authenticate a malformed candidate advisory call without granting the
+    /// verifier any of the general workspace state surface.
+    pub async fn authenticate_candidate_advisory_session(
+        &self,
+        context: &tect_domain::RequestContext,
+    ) -> Result<()> {
+        let (tx, _) = self.candidate_read_transaction(context).await?;
+        tx.commit().await
+    }
     async fn advisory_transaction(
         &self,
         context: &tect_domain::RequestContext,
@@ -156,9 +247,7 @@ impl WorkspaceService {
         if candidate_set_id.is_nil() || query.scope_id.is_some() {
             return Err(tect_domain::Error::InvalidArguments);
         }
-        let (mut tx, workspace, _) = self
-            .advisory_transaction(context, TransactionMode::ReadOnly)
-            .await?;
+        let (mut tx, workspace) = self.candidate_read_transaction(context).await?;
         if !tx
             .advisory_candidate_set_exists(workspace.id, candidate_set_id)
             .await?
@@ -181,9 +270,7 @@ impl WorkspaceService {
         if candidate_set_id.is_nil() || opportunity_id.is_nil() {
             return Err(tect_domain::Error::InvalidArguments);
         }
-        let (mut tx, workspace, _) = self
-            .advisory_transaction(context, TransactionMode::ReadOnly)
-            .await?;
+        let (mut tx, workspace) = self.candidate_read_transaction(context).await?;
         if !tx
             .advisory_candidate_set_exists(workspace.id, candidate_set_id)
             .await?

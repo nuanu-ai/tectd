@@ -1,5 +1,5 @@
 use serde_json::Value;
-use tect_application::{AuthoredScopeSet, RunScopeAdvisory};
+use tect_application::{AuthoredScopeSet, RunScopeAdvisory, VerifySelectedSave};
 use tect_domain::{
     AdvisoryAuditQuery, AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryOpportunityState,
     AdvisoryReason, AdvisoryRequestPreference, ConfigureWorkspaceAdvisory, Error, Result,
@@ -117,6 +117,17 @@ struct CandidateGetArguments {
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CandidateVerifyArguments {
+    request_id: uuid::Uuid,
+    opportunity_id: uuid::Uuid,
+    candidate_set_id: uuid::Uuid,
+    caller_link_id: uuid::Uuid,
+    caller_receipt_request_id: uuid::Uuid,
+    target_revision: i64,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ScopeAdvisoryRequestArguments {
     request_id: uuid::Uuid,
     candidate_set_id: uuid::Uuid,
@@ -141,6 +152,7 @@ struct ScopeAdvisoryDispositionArguments {
 }
 
 pub(crate) enum AdvisoryInvocation {
+    VerifySelectedSave(VerifySelectedSave),
     ScopeRequest(RunScopeAdvisory),
     ScopeDisposition {
         opportunity_id: uuid::Uuid,
@@ -187,6 +199,28 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<AdvisoryInvocation> 
         return Err(Error::InvalidArguments);
     }
     match name {
+        "candidate_advisory_verify" => {
+            let arguments: CandidateVerifyArguments =
+                serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
+            let request = VerifySelectedSave {
+                request_id: arguments.request_id,
+                opportunity_id: arguments.opportunity_id,
+                candidate_set_id: arguments.candidate_set_id,
+                caller_link_id: arguments.caller_link_id,
+                caller_receipt_request_id: arguments.caller_receipt_request_id,
+                target_revision: arguments.target_revision,
+            };
+            if request.request_id.is_nil()
+                || request.opportunity_id.is_nil()
+                || request.candidate_set_id.is_nil()
+                || request.caller_link_id.is_nil()
+                || request.caller_receipt_request_id.is_nil()
+                || request.target_revision < 1
+            {
+                return Err(Error::InvalidArguments);
+            }
+            Ok(AdvisoryInvocation::VerifySelectedSave(request))
+        }
         "scope_advisory_disposition" => {
             if arguments.get("selected_id").is_some_and(Value::is_null) {
                 return Err(Error::InvalidArguments);

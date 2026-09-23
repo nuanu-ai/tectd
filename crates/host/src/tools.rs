@@ -78,6 +78,7 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
         _ if matches!(
             name,
             "scope_advisory_request"
+                | "candidate_advisory_verify"
                 | "scope_advisory_disposition"
                 | "get_advisory_config"
                 | "configure_advisory"
@@ -198,7 +199,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            44
+            45
         );
     }
 

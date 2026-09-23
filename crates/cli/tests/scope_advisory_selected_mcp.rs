@@ -338,8 +338,8 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
     let links: (i64,i64,i64) = sqlx::query_as("SELECT (SELECT count(*) FROM advisory_scope_preservation_receipt WHERE candidate_set_id=$1 AND request_id=$2 AND status='passed'),(SELECT count(*) FROM advisory_scope_caller_link WHERE candidate_set_id=$1 AND request_id=$2),(SELECT count(*) FROM scope_candidate_receipts WHERE candidate_set_id=$1 AND request_id=$2)")
         .bind(candidate_set).bind(save_request).fetch_one(&pool).await.unwrap();
     assert_eq!(links, (1, 1, 1));
-    let binding: (Uuid,Uuid,Uuid,Uuid,Uuid,Uuid,i64) = sqlx::query_as(
-        "SELECT l.opportunity_id,l.disposition_id,l.actor_id,l.session_id,p.request_id,p.receipt_id,l.caller_result_revision FROM advisory_scope_caller_link l JOIN advisory_scope_preservation_receipt p ON (p.tenant_id,p.workspace_id,p.receipt_id)=(l.tenant_id,l.workspace_id,l.preservation_receipt_id) WHERE l.tenant_id=$1 AND l.workspace_id=$2 AND l.candidate_set_id=$3 AND l.request_id=$4"
+    let binding: (Uuid,Uuid,Uuid,Uuid,Uuid,Uuid,i64,Uuid) = sqlx::query_as(
+        "SELECT l.opportunity_id,l.disposition_id,l.actor_id,l.session_id,p.request_id,p.receipt_id,l.caller_result_revision,l.link_id FROM advisory_scope_caller_link l JOIN advisory_scope_preservation_receipt p ON (p.tenant_id,p.workspace_id,p.receipt_id)=(l.tenant_id,l.workspace_id,l.preservation_receipt_id) WHERE l.tenant_id=$1 AND l.workspace_id=$2 AND l.candidate_set_id=$3 AND l.request_id=$4"
     ).bind(enrollment.tenant_id).bind(workspace).bind(candidate_set).bind(save_request)
         .fetch_one(&pool).await.unwrap();
     assert_eq!(binding.0, opportunity);
@@ -369,6 +369,170 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
         dispatches, 1,
         "only the fixture dispatch exists; MCP did not call a provider"
     );
+    let verifier = admin::prepare_verifier_enrollment(&pool, enrollment.tenant_id, workspace)
+        .await
+        .unwrap()
+        .try_commit()
+        .await
+        .unwrap();
+    assert_ne!(verifier.principal_id, enrollment.principal_id);
+    let verifier_file = root.join("verifier-host.json");
+    host_file(&verifier_file, &verifier.auth);
+    let mut verifier_mcp =
+        Mcp::start(&socket, &verifier_file, &Uuid::new_v4().to_string(), &key).await;
+    route(&mut verifier_mcp, "command", "workspace.open", json!({})).await;
+    let verify_request = json!({
+        "request_id":Uuid::new_v4(),"opportunity_id":opportunity,"candidate_set_id":candidate_set,
+        "caller_link_id":binding.7,"caller_receipt_request_id":save_request,"target_revision":binding.6
+    });
+    let owner_forbidden = route_error(
+        &mut author,
+        "command",
+        "candidate.advisory.verify",
+        verify_request.clone(),
+    )
+    .await;
+    assert_eq!(owner_forbidden["error"]["code"], "forbidden");
+    let before_verify: (i64,i64,i64) = sqlx::query_as("SELECT (SELECT count(*) FROM scope_candidate_receipts WHERE tenant_id=$1 AND workspace_id=$2),(SELECT count(*) FROM advisory_scope_caller_link WHERE tenant_id=$1 AND workspace_id=$2),(SELECT count(*) FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2)")
+        .bind(enrollment.tenant_id).bind(workspace).fetch_one(&pool).await.unwrap();
+    let pass = route(
+        &mut verifier_mcp,
+        "command",
+        "candidate.advisory.verify",
+        verify_request.clone(),
+    )
+    .await;
+    assert_eq!(pass["observation"]["status"], "passed");
+    assert_eq!(
+        pass["observation"]["qualification"],
+        "independently_observed"
+    );
+    assert_eq!(
+        pass["observation"]["actor_id"],
+        verifier.principal_id.to_string()
+    );
+    assert_eq!(pass["establishes_independent_approval"], false);
+    assert_eq!(pass["establishes_current_acceptance"], false);
+    assert_eq!(
+        route(
+            &mut verifier_mcp,
+            "command",
+            "candidate.advisory.verify",
+            verify_request.clone()
+        )
+        .await,
+        pass
+    );
+    let detail = route(
+        &mut verifier_mcp,
+        "query",
+        "candidate.advisory.get",
+        json!({"candidate_set_id":candidate_set,"opportunity_id":opportunity}),
+    )
+    .await;
+    assert_eq!(
+        detail["opportunity"]["selected_save_observation"]["qualification"],
+        "independently_observed"
+    );
+    let audit = route(
+        &mut verifier_mcp,
+        "query",
+        "candidate.advisory.audit",
+        json!({"candidate_set_id":candidate_set,"limit":50}),
+    )
+    .await;
+    assert!(audit.to_string().contains("independently_observed"));
+    for field in [
+        "actor_id",
+        "session_id",
+        "status",
+        "evidence_digest",
+        "qualification",
+        "verifier_digest",
+    ] {
+        let mut forged = verify_request.clone();
+        forged[field] = json!("forged");
+        let rejection = route_error(
+            &mut verifier_mcp,
+            "command",
+            "candidate.advisory.verify",
+            forged,
+        )
+        .await;
+        assert_eq!(rejection["error"]["code"], "invalid_arguments", "{field}");
+    }
+    let mut wrong_target = verify_request.clone();
+    wrong_target["caller_link_id"] = json!(Uuid::new_v4());
+    assert_eq!(
+        route_error(
+            &mut verifier_mcp,
+            "command",
+            "candidate.advisory.verify",
+            wrong_target
+        )
+        .await["error"]["code"],
+        "forbidden"
+    );
+    let another_file = root.join("another-verifier-host.json");
+    host_file(&another_file, &verifier.auth);
+    let mut another_session =
+        Mcp::start(&socket, &another_file, &Uuid::new_v4().to_string(), &key).await;
+    route(&mut another_session, "command", "workspace.open", json!({})).await;
+    assert_eq!(
+        route_error(
+            &mut another_session,
+            "command",
+            "candidate.advisory.verify",
+            verify_request.clone()
+        )
+        .await["error"]["code"],
+        "input_conflict"
+    );
+    let foreign_owner = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+    let foreign_file = root.join("foreign-host.json");
+    host_file(&foreign_file, &foreign_owner.auth);
+    let mut foreign_mcp =
+        Mcp::start(&socket, &foreign_file, &Uuid::new_v4().to_string(), &key).await;
+    route(&mut foreign_mcp, "command", "workspace.open", json!({})).await;
+    assert_eq!(
+        route_error(
+            &mut foreign_mcp,
+            "query",
+            "candidate.advisory.get",
+            json!({"candidate_set_id":candidate_set,"opportunity_id":opportunity})
+        )
+        .await["error"]["code"],
+        "not_found"
+    );
+    let after_verify: (i64,i64,i64) = sqlx::query_as("SELECT (SELECT count(*) FROM scope_candidate_receipts WHERE tenant_id=$1 AND workspace_id=$2),(SELECT count(*) FROM advisory_scope_caller_link WHERE tenant_id=$1 AND workspace_id=$2),(SELECT count(*) FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2)")
+        .bind(enrollment.tenant_id).bind(workspace).fetch_one(&pool).await.unwrap();
+    assert_eq!(before_verify, after_verify);
+    sqlx::query("UPDATE scope_candidate_drafts SET payload='{}'::jsonb WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 AND set_revision=$4")
+        .bind(enrollment.tenant_id).bind(workspace).bind(candidate_set).bind(binding.6).execute(&pool).await.unwrap();
+    let mut failed_request = verify_request.clone();
+    failed_request["request_id"] = json!(Uuid::new_v4());
+    let failure = route(
+        &mut verifier_mcp,
+        "command",
+        "candidate.advisory.verify",
+        failed_request,
+    )
+    .await;
+    assert_eq!(failure["observation"]["status"], "failed");
+    assert_eq!(
+        failure["observation"]["qualification"],
+        "independently_observed"
+    );
+    assert!(
+        failure["observation"]["reason_codes"]
+            .to_string()
+            .contains("saved_material_missing_or_mismatched")
+    );
+    foreign_mcp.finish().await;
+    another_session.finish().await;
+    verifier_mcp.finish().await;
     author.finish().await;
     reader.finish().await;
     daemon.crash().await;

@@ -102,11 +102,39 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
             json!({"scope_id":example_id,"limit":50}),
         ),
         route!(
+            "command",
+            "candidate.advisory.verify",
+            "candidate_advisory_verify",
+            "Independently verify the recorded selected candidate save from server-held evidence.",
+            "Requires a distinct enrolled verifier principal with an open session and workspace membership. The caller supplies only the exact saved target and request IDs; the host binds verifier identity and session.",
+            "Records a server-computed passed or failed observation with independent qualification. It grants no approval or current acceptance and changes no candidate or caller material.",
+            "Repeat an identical request_id and target for replay. Changed target or session conflicts; inspect candidate.advisory.get/audit after uncertainty.",
+            object_schema(
+                json!({
+                    "request_id":uuid(),
+                    "opportunity_id":uuid(),
+                    "candidate_set_id":uuid(),
+                    "caller_link_id":uuid(),
+                    "caller_receipt_request_id":uuid(),
+                    "target_revision":{"type":"integer","minimum":1}
+                }),
+                json!([
+                    "request_id",
+                    "opportunity_id",
+                    "candidate_set_id",
+                    "caller_link_id",
+                    "caller_receipt_request_id",
+                    "target_revision"
+                ]),
+            ),
+            json!({"request_id":example_id,"opportunity_id":example_id,"candidate_set_id":example_id,"caller_link_id":example_id,"caller_receipt_request_id":example_id,"target_revision":1}),
+        ),
+        route!(
             "query",
             "candidate.advisory.get",
             "candidate_advisory_get",
             "Read one candidate-set advisory opportunity and its ordered dispatch facts.",
-            "Requires an authenticated open native session and a candidate set in the workspace; the opportunity must target that exact candidate set.",
+            "Requires an authenticated open owner or verifier session and a candidate set in the workspace; the opportunity must target that exact candidate set.",
             "Returns metadata and dispatch facts without request or response bodies.",
             "Safe to repeat.",
             object_schema(
@@ -120,7 +148,7 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
             "candidate.advisory.audit",
             "candidate_advisory_audit",
             "Read a filtered page of opportunities, dispatch facts and aggregates for one candidate set.",
-            "Requires an authenticated open native session and a candidate set in the workspace; after is the preceding page's last opportunity ID.",
+            "Requires an authenticated open owner or verifier session and a candidate set in the workspace; after is the preceding page's last opportunity ID.",
             "Returns exact counts and no-call reasons without raw provider bodies.",
             "Safe to repeat with the same filters and cursor.",
             advisory_candidate_audit_schema(),
