@@ -48,6 +48,33 @@ pub struct ScopeDecompositionAlternative {
     pub coverage: Vec<ObligationCoverage>,
 }
 
+/// A caller-authored full resolved alternative before the domain binds it to
+/// the frozen source and assigns its authoritative advisory identity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceAuthoredScopeAlternative {
+    /// Request-local key used only to select the deterministic baseline.
+    pub key: String,
+    pub kind: ScopeDecompositionKind,
+    pub material: ResolvedCandidateDraft,
+    pub coverage: Vec<ObligationCoverage>,
+}
+
+/// Complete input to the pure source-authored manifest constructor.
+///
+/// `constructor` is required because this layer has no authority to infer an
+/// implementation identity or revision. The source and alternatives must
+/// already have been loaded and resolved by their authoritative caller.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuildSourceAuthoredScopeManifest {
+    pub constructor: ScopeConstructorIdentity,
+    pub source: FrozenScopeSource,
+    pub obligations: Vec<SourceObligation>,
+    pub alternatives: Vec<SourceAuthoredScopeAlternative>,
+    pub baseline_key: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RejectedScopeAlternative {
@@ -81,11 +108,8 @@ pub struct ScopeConstructorManifest {
 impl ScopeConstructorManifest {
     pub fn validate(&self, digest: &impl ScopeDigest) -> Result<()> {
         self.source.validate(digest)?;
-        if !valid_id(&self.constructor.id)
-            || !valid_id(&self.constructor.version)
-            || !valid_digest(&self.constructor.digest)
-            || self.emitted.is_empty()
-        {
+        self.constructor.validate()?;
+        if self.emitted.is_empty() {
             return Err(Error::InvalidArguments);
         }
         validate_obligations(&self.source, &self.obligations)?;
@@ -197,6 +221,89 @@ impl ScopeConstructorManifest {
     pub fn eligible(&self, id: &ScopeAlternativeId) -> Option<&ScopeDecompositionAlternative> {
         self.emitted.iter().find(|value| &value.id == id)
     }
+}
+
+impl ScopeConstructorIdentity {
+    pub fn validate(&self) -> Result<()> {
+        if !valid_id(&self.id) || !valid_id(&self.version) || !valid_digest(&self.digest) {
+            return Err(Error::InvalidArguments);
+        }
+        Ok(())
+    }
+}
+
+/// Resolve agent-authored alternatives into a deterministic eligible manifest.
+/// Candidate content is preserved byte-for-byte at the value level: this
+/// function validates and binds supplied material but never constructs or
+/// splits candidate content from the source.
+pub fn build_source_authored_scope_manifest(
+    digest: &impl ScopeDigest,
+    input: BuildSourceAuthoredScopeManifest,
+) -> Result<ScopeConstructorManifest> {
+    input.source.validate(digest)?;
+    input.constructor.validate()?;
+    validate_obligations(&input.source, &input.obligations)?;
+    if !valid_id(&input.baseline_key)
+        || input.alternatives.is_empty()
+        || input.alternatives.len() > 100
+    {
+        return Err(Error::InvalidArguments);
+    }
+
+    let mut keys = BTreeSet::new();
+    let mut by_key = BTreeMap::new();
+    let mut emitted = Vec::with_capacity(input.alternatives.len());
+    for alternative in input.alternatives {
+        if !valid_id(&alternative.key) || !keys.insert(alternative.key.clone()) {
+            return Err(Error::InvalidArguments);
+        }
+        alternative.material.validate()?;
+        let coverage = canonical_coverage(&alternative.coverage);
+        validate_coverage(&input.obligations, &coverage)?;
+        let material_digest = scope_candidate_material_digest(digest, &alternative.material)?;
+        let id = stable_scope_alternative_id(
+            digest,
+            &input.constructor,
+            &input.source.digest,
+            alternative.kind,
+            &material_digest,
+            &coverage,
+        )?;
+        if by_key.insert(alternative.key, id.clone()).is_some() {
+            return Err(Error::InvalidArguments);
+        }
+        emitted.push(ScopeDecompositionAlternative {
+            id,
+            kind: alternative.kind,
+            material: alternative.material,
+            material_digest,
+            coverage,
+        });
+    }
+    emitted.sort_by(|left, right| left.id.cmp(&right.id));
+    let baseline_id = by_key
+        .get(&input.baseline_key)
+        .cloned()
+        .ok_or(Error::InvalidArguments)?;
+    let ordered_ids = emitted
+        .iter()
+        .map(|value| value.id.clone())
+        .collect::<Vec<_>>();
+    let mut manifest = ScopeConstructorManifest {
+        constructor: input.constructor,
+        source: input.source,
+        obligations: input.obligations,
+        emitted,
+        rejected: Vec::new(),
+        baseline_id,
+        ordered_ids,
+        eligible_set_digest: String::new(),
+        whole_set_digest: String::new(),
+    };
+    manifest.eligible_set_digest = manifest.canonical_eligible_set_digest(digest)?;
+    manifest.whole_set_digest = manifest.canonical_whole_set_digest(digest)?;
+    manifest.validate(digest)?;
+    Ok(manifest)
 }
 
 pub fn scope_candidate_material_digest(
