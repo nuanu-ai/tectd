@@ -570,6 +570,12 @@ impl WorkspaceService {
         if !started.should_send {
             if started.dispatch.state == AdvisoryDispatchState::Cancelled
                 && started.dispatch.send_certainty == AdvisorySendCertainty::NotSent
+                && started.dispatch.opportunity_id == opportunity.id
+                && started.dispatch.outcome.is_none()
+                && started.dispatch.input_tokens.is_none()
+                && started.dispatch.output_tokens.is_none()
+                && started.dispatch.latency_ms.is_none()
+                && started.dispatch.raw_response_ref.is_none()
             {
                 let (mut terminal_tx, terminal_workspace, _) = self
                     .scope_transaction(context, TransactionMode::ReadOnly)

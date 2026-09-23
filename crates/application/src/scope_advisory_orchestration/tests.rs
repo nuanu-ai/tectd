@@ -1086,6 +1086,9 @@ fn authorize_staleness_and_cancelled_start_terminalize_before_provider_attempt()
         helper.contains("Error::StaleContext => Some(AdvisoryReason::DeterministicInputInvalid)")
     );
     assert!(helper.contains("if !expected || opportunity.provider_called"));
+    assert!(source.contains("started.dispatch.opportunity_id == opportunity.id"));
+    assert!(source.contains("started.dispatch.outcome.is_none()"));
+    assert!(source.contains("started.dispatch.raw_response_ref.is_none()"));
 }
 
 #[test]
