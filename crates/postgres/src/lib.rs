@@ -1,5 +1,8 @@
 //! PostgreSQL persistence and operator-only administration.
 pub mod admin;
+mod advisory;
+#[cfg(test)]
+mod advisory_migration_tests;
 mod durable_knowledge;
 mod durable_knowledge_admin;
 mod durable_knowledge_store;
@@ -19,6 +22,9 @@ mod planning_knowledge;
 mod planning_knowledge_store;
 mod programs;
 mod runtime;
+mod scope_advisory;
+#[cfg(test)]
+mod scope_advisory_migration_tests;
 mod scope_candidate_store;
 mod scope_candidates;
 mod setup_store;

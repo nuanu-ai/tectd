@@ -171,6 +171,8 @@ pub struct BeginCandidateSet {
     pub input: String,
     #[serde(default)]
     pub task_context: crate::PlanningTaskContext,
+    #[serde(default)]
+    pub advisory_preference: crate::AdvisoryRequestPreference,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

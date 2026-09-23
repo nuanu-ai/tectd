@@ -812,7 +812,7 @@ async fn lightweight_v07_accepts_omitted_body_and_persists_backend_evidence() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(migration_count, 38);
+    assert_eq!(migration_count, 40);
     let body_check: String = sqlx::query_scalar(
         "SELECT pg_catalog.pg_get_constraintdef(oid) FROM pg_catalog.pg_constraint \
          WHERE conrelid='slice_pipeline_phase_outputs'::regclass \

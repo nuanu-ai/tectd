@@ -8,6 +8,16 @@ pub struct WorkspaceService {
     store: Arc<dyn Store>,
     pub(crate) inspector: Arc<dyn SourceInspector>,
     pub(crate) setup_files: Arc<dyn SetupFiles>,
+    #[allow(dead_code)]
+    pub(crate) advisory_provider: Arc<dyn crate::AdvisoryProvider>,
+    pub(crate) scope_authority: Arc<dyn crate::ScopeAuthorityObserver>,
+    pub(crate) scope_manifest_supplier: Arc<dyn crate::ScopeManifestSupplier>,
+    pub(crate) scope_budget: Arc<dyn crate::ScopeBudgetPolicy>,
+    pub(crate) scope_advice_provider: Arc<dyn crate::ScopeAdviceProvider>,
+    #[allow(dead_code)]
+    pub(crate) scope_caller: Arc<dyn crate::ScopeCaller>,
+    #[allow(dead_code)]
+    pub(crate) scope_verifier: Arc<dyn crate::ScopeVerifier>,
     pub(crate) knowledge_embedding_provider: Arc<dyn crate::KnowledgeEmbeddingProvider>,
     pub(crate) query_embedding_cache: std::sync::Mutex<KnowledgeQueryCache>,
 }
@@ -71,9 +81,44 @@ impl WorkspaceService {
             store,
             inspector,
             setup_files,
+            advisory_provider: Arc::new(crate::DisabledAdvisoryProvider),
+            scope_authority: Arc::new(crate::UnavailableScopeAuthorityObserver),
+            scope_manifest_supplier: Arc::new(crate::UnavailableScopeManifestSupplier),
+            scope_budget: Arc::new(crate::DenyScopeBudget),
+            scope_advice_provider: Arc::new(crate::DisabledScopeAdviceProvider),
+            scope_caller: Arc::new(crate::DisabledScopeCaller),
+            scope_verifier: Arc::new(crate::DisabledScopeVerifier),
             knowledge_embedding_provider: Arc::new(crate::DisabledKnowledgeEmbeddingProvider),
             query_embedding_cache: std::sync::Mutex::new(KnowledgeQueryCache::new()),
         }
+    }
+
+    /// Deliberate adapter-facing Slice-01 composition seam. No host route uses
+    /// this until the owner supplies a constructor, budget policy and provider.
+    #[cfg(test)]
+    pub(crate) fn with_scope_advisory_adapters(
+        mut self,
+        authority: Arc<dyn crate::ScopeAuthorityObserver>,
+        supplier: Arc<dyn crate::ScopeManifestSupplier>,
+        budget: Arc<dyn crate::ScopeBudgetPolicy>,
+        provider: Arc<dyn crate::ScopeAdviceProvider>,
+    ) -> Self {
+        self.scope_authority = authority;
+        self.scope_manifest_supplier = supplier;
+        self.scope_budget = budget;
+        self.scope_advice_provider = provider;
+        self
+    }
+
+    /// Test-only fixture hook. Production construction has no provider injection path.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn with_advisory_provider(
+        mut self,
+        provider: Arc<dyn crate::AdvisoryProvider>,
+    ) -> Self {
+        self.advisory_provider = provider;
+        self
     }
 
     pub fn with_knowledge_embedding_provider(

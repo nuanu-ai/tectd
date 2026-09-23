@@ -11,6 +11,7 @@ static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 mod backup;
 mod migration;
 mod runtime_prerequisites;
+mod scope_advisory;
 pub use backup::{
     BackupGraph, BackupIdentity, BackupSnapshot, RestoreGraph, begin_backup_snapshot,
     create_restore_database, current_schema_version, grant_database_connect, restore_graphs,

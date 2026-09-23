@@ -236,6 +236,7 @@ async fn baseline_large_program_and_input_are_exactly_fragmented_and_failed_outp
                 input: "This material fits; only the actual begin response exceeds the injected budget."
                     .into(),
                 task_context: Default::default(),
+                advisory_preference: Default::default(),
             },
             &FixtureGuidance,
             &guard,
@@ -291,6 +292,7 @@ async fn baseline_large_program_and_input_are_exactly_fragmented_and_failed_outp
                     target_iris: Some(vec!["urn:tect:dk4:capacity:match".into()]),
                     ..Default::default()
                 },
+                advisory_preference: Default::default(),
             },
             &FixtureGuidance,
             &large_manifest_guard,

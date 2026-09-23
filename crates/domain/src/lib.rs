@@ -1,4 +1,5 @@
 //! Pure identities, values and invariants. No environment, transport or persistence.
+mod advisory;
 mod durable_knowledge;
 mod durable_knowledge_validation;
 mod engineering_review;
@@ -30,6 +31,7 @@ pub use program::{
 };
 pub use program_page::{ProgramCursor, ProgramInput, ProgramList, ProgramPage, ProgramSummary};
 
+pub use advisory::*;
 pub use durable_knowledge::*;
 pub use error::{
     Error, MAX_PIPELINE_ARTIFACT_DIAGNOSTIC_VIOLATIONS, PipelineArtifactDiagnostic,

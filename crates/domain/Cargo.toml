@@ -11,5 +11,8 @@ serde_json.workspace = true
 uuid.workspace = true
 oxrdf.workspace = true
 
+[dev-dependencies]
+sha2.workspace = true
+
 [lints]
 workspace = true

@@ -1,0 +1,345 @@
+use super::*;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use tect_application::ScopeAdviceProviderError;
+use tect_domain::{AdvisoryDispatchOutcome, AdvisorySendCertainty};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+
+struct FixtureResponse {
+    status: u16,
+    content_type: &'static str,
+    body: Vec<u8>,
+    delay: Duration,
+}
+
+async fn fixture(
+    response: FixtureResponse,
+) -> (
+    Url,
+    Arc<AtomicUsize>,
+    oneshot::Receiver<Vec<u8>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let server_calls = calls.clone();
+    let (sender, receiver) = oneshot::channel();
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        server_calls.fetch_add(1, Ordering::SeqCst);
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let header_end = loop {
+            let count = socket.read(&mut buffer).await.unwrap();
+            if count == 0 {
+                return;
+            }
+            request.extend_from_slice(&buffer[..count]);
+            if let Some(index) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                break index + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&request[..header_end]);
+        let length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        while request.len() < header_end + length {
+            let count = socket.read(&mut buffer).await.unwrap();
+            if count == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..count]);
+        }
+        let _ = sender.send(request);
+        tokio::time::sleep(response.delay).await;
+        let reason = if response.status == 200 {
+            "OK"
+        } else {
+            "ERROR"
+        };
+        let head = format!(
+            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            response.status,
+            reason,
+            response.content_type,
+            response.body.len()
+        );
+        socket.write_all(head.as_bytes()).await.unwrap();
+        socket.write_all(&response.body).await.unwrap();
+    });
+    (
+        Url::parse(&format!("http://{address}/v1/systemone")).unwrap(),
+        calls,
+        receiver,
+        task,
+    )
+}
+
+fn provider(endpoint: Url, timeout: Duration, maximum: usize) -> JevScopeAdviceProvider {
+    JevScopeAdviceProvider::new(
+        JevScopeAdviceConfig {
+            profile: "fixture".into(),
+            endpoint,
+            model: "jev-1.13.0".into(),
+            timeout,
+            maximum_response_bytes: maximum,
+        },
+        "secret-fixture-credential".into(),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn http_success_sends_exact_body_once_and_does_not_leak_credential() {
+    let response = serde_json::to_vec(&valid_response()).unwrap();
+    let (endpoint, calls, captured, server) = fixture(FixtureResponse {
+        status: 200,
+        content_type: "application/json; charset=utf-8",
+        body: response.clone(),
+        delay: Duration::ZERO,
+    })
+    .await;
+    let provider = provider(endpoint, Duration::from_secs(1), 16_384);
+    let request = request();
+    let observation = provider
+        .attempt_request(DISPATCH_ID, &request)
+        .await
+        .unwrap();
+    server.await.unwrap();
+    let captured = captured.await.unwrap();
+    let split = captured
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    let headers = String::from_utf8_lossy(&captured[..split]);
+    assert!(
+        headers.contains("authorization: Bearer secret-fixture-credential")
+            || headers.contains("Authorization: Bearer secret-fixture-credential")
+    );
+    assert_eq!(
+        &captured[split..],
+        serialize_request("jev-1.13.0", &request).unwrap()
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        observation.outcome,
+        AdvisoryDispatchOutcome::ProviderResponse
+    );
+    assert_eq!(observation.send_certainty, AdvisorySendCertainty::Sent);
+    assert_eq!(observation.response_payload, Some(response));
+    assert!(observation.latency_ms.is_some_and(|value| value >= 0));
+    assert_eq!(observation.failure_reason, None);
+    let rendered = format!("{observation:?}");
+    assert!(!rendered.contains("secret-fixture-credential"));
+    assert!(
+        observation
+            .raw_response_ref
+            .as_deref()
+            .unwrap()
+            .contains("sha256:")
+    );
+}
+
+async fn assert_received_failure(
+    status: u16,
+    content_type: &'static str,
+    body: Vec<u8>,
+    maximum: usize,
+    reason: ScopeAdviceProviderFailureReason,
+) -> ScopeAdviceProviderObservation {
+    let (endpoint, calls, _, server) = fixture(FixtureResponse {
+        status,
+        content_type,
+        body,
+        delay: Duration::ZERO,
+    })
+    .await;
+    let observation = provider(endpoint, Duration::from_secs(1), maximum)
+        .attempt_request(DISPATCH_ID, &request())
+        .await
+        .unwrap();
+    server.await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        observation.outcome,
+        AdvisoryDispatchOutcome::ProviderFailure
+    );
+    assert_eq!(observation.send_certainty, AdvisorySendCertainty::Sent);
+    assert!(observation.answers.is_none());
+    assert_eq!(observation.failure_reason, Some(reason));
+    assert!(observation.latency_ms.is_some_and(|value| value >= 0));
+    observation
+}
+
+#[tokio::test]
+async fn malformed_oversize_non_json_and_status_are_sent_failures_without_retry() {
+    assert_received_failure(
+        200,
+        "application/json",
+        b"{".to_vec(),
+        1024,
+        ScopeAdviceProviderFailureReason::InvalidResponse,
+    )
+    .await;
+    let oversize = assert_received_failure(
+        200,
+        "application/json",
+        vec![b'x'; 1025],
+        1024,
+        ScopeAdviceProviderFailureReason::ResponseOversize,
+    )
+    .await;
+    assert_eq!(oversize.response_payload.as_ref().unwrap().len(), 1024);
+    assert!(
+        oversize
+            .raw_response_ref
+            .as_deref()
+            .unwrap()
+            .contains("oversize:observed-1025:retained-1024:sha256:")
+    );
+    assert_received_failure(
+        200,
+        "text/plain",
+        b"{}".to_vec(),
+        1024,
+        ScopeAdviceProviderFailureReason::InvalidContentType,
+    )
+    .await;
+    assert_received_failure(
+        529,
+        "application/json",
+        b"{}".to_vec(),
+        1024,
+        ScopeAdviceProviderFailureReason::HttpStatus,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn duplicate_keys_at_nested_levels_are_rejected_after_one_http_call() {
+    let choice = format!("choice_{ID}");
+    for body in [
+        br#"{"model":"jev-1.13.0","model":"jev-1.13.0","answers":{},"usage":null}"#.to_vec(),
+        format!(r#"{{"model":"jev-1.13.0","answers":{{"{choice}":{{"type":"choice","type":"choice"}}}},"usage":null}}"#).into_bytes(),
+        format!(r#"{{"model":"jev-1.13.0","answers":{{"{choice}":{{"type":"choice","choice":"PREFERRED","confidence":0.8,"probabilities":{{"PREFERRED":0.8,"PREFERRED":0.8,"NON_PREFERRED":0.2}}}}}},"usage":null}}"#).into_bytes(),
+    ] {
+        assert_received_failure(
+            200,
+            "application/json",
+            body,
+            4096,
+            ScopeAdviceProviderFailureReason::InvalidResponse,
+        )
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn body_timeout_preserves_partial_bytes_digest_count_and_typed_reason() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = socket.read(&mut request).await.unwrap();
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 20\r\n\r\nabc")
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    });
+    let endpoint = Url::parse(&format!("http://{address}/v1/systemone")).unwrap();
+    let observation = provider(endpoint, Duration::from_millis(40), 1024)
+        .attempt_request(DISPATCH_ID, &request())
+        .await
+        .unwrap();
+    assert_eq!(observation.send_certainty, AdvisorySendCertainty::Sent);
+    assert_eq!(
+        observation.failure_reason,
+        Some(ScopeAdviceProviderFailureReason::ResponseBodyRead)
+    );
+    assert_eq!(
+        observation.response_payload.as_deref(),
+        Some(b"abc".as_slice())
+    );
+    let reference = observation.raw_response_ref.as_deref().unwrap();
+    assert!(reference.contains("body-read:observed-3:retained-3:sha256:"));
+    assert!(observation.latency_ms.is_some_and(|value| value >= 1));
+    server.abort();
+}
+
+#[tokio::test]
+async fn timeout_and_connection_failure_are_sent_unknown_without_retry() {
+    let (endpoint, calls, _, server) = fixture(FixtureResponse {
+        status: 200,
+        content_type: "application/json",
+        body: serde_json::to_vec(&valid_response()).unwrap(),
+        delay: Duration::from_millis(200),
+    })
+    .await;
+    let timed_out = provider(endpoint, Duration::from_millis(20), 16_384)
+        .attempt_request(DISPATCH_ID, &request())
+        .await;
+    assert!(
+        matches!(timed_out, Err(ScopeAdviceProviderError::SentUnknown { latency_ms, .. }) if latency_ms >= 1)
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    server.abort();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let closed = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut bytes = [0_u8; 1024];
+        let _ = socket.read(&mut bytes).await;
+    });
+    let endpoint = Url::parse(&format!("http://{address}/v1/systemone")).unwrap();
+    let failed = provider(endpoint, Duration::from_millis(100), 16_384)
+        .attempt_request(DISPATCH_ID, &request())
+        .await;
+    assert!(matches!(
+        failed,
+        Err(ScopeAdviceProviderError::SentUnknown { .. })
+    ));
+    closed.await.unwrap();
+}
+
+#[test]
+fn config_and_source_have_no_hidden_defaults_retries_or_credential_rendering() {
+    assert!(
+        JevScopeAdviceProvider::new(
+            JevScopeAdviceConfig {
+                profile: "".into(),
+                endpoint: Url::parse("https://api.typesafe.ai/v1/systemone").unwrap(),
+                model: "jev-1.13.0".into(),
+                timeout: Duration::from_secs(1),
+                maximum_response_bytes: 1,
+            },
+            "credential".into(),
+        )
+        .is_err()
+    );
+    let source = include_str!("../../jev_scope_advice.rs");
+    assert_eq!(source.matches(".send()").count(), 1);
+    assert!(source.contains(".retry(reqwest::retry::never())"));
+    let receipt_boundary = source
+        .find("let receipt_latency_ms = elapsed_ms(started);")
+        .unwrap();
+    assert!(receipt_boundary < source.find("wire::parse_response(&bytes").unwrap());
+    assert!(source.contains("latency_ms: Some(receipt_latency_ms)"));
+    assert!(!source.contains("TYPESAFE_API_KEY"));
+    assert!(!source.contains("api.typesafe.ai"));
+    assert!(!source.contains("jev-1.13.0"));
+    assert!(!source.contains("#[derive(Debug)]\npub struct JevScopeAdviceProvider"));
+}

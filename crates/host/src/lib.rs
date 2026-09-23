@@ -1,9 +1,12 @@
 //! Native host configuration and bounded local transports.
 
+mod advisory_dispatch;
+mod advisory_tools;
 mod api;
 mod context;
 mod frame;
 mod git;
+mod jev_scope_advice;
 mod knowledge_dispatch;
 mod knowledge_embedding;
 mod knowledge_lifecycle_definitions;
@@ -47,6 +50,7 @@ mod workspace_output;
 
 pub use context::{HostContext, host_context_from_env, read_host_auth_file};
 pub use git::GitSourceInspector;
+pub use jev_scope_advice::{JevScopeAdviceConfig, JevScopeAdviceProvider};
 pub use knowledge_embedding::{LocalEmbeddingConfig, LocalKnowledgeEmbeddingWorker};
 pub use mcp::run_stdio;
 #[doc(hidden)]

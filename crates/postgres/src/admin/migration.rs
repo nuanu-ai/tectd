@@ -22,6 +22,25 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
              agent_sessions, workspace_events TO {quoted_role}"
         ),
         format!(
+            "REVOKE ALL PRIVILEGES ON TABLE advisory_workspace_config, \
+             advisory_workspace_config_history, advisory_opportunity, advisory_dispatch \
+             FROM {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT, UPDATE(revision,mode,provider_profile_ref,model_configuration,updated_by_principal_id,updated_by_session_id,updated_at) \
+             ON TABLE advisory_workspace_config TO {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT ON TABLE advisory_workspace_config_history, \
+             advisory_opportunity, advisory_dispatch TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(state,primary_reason,updated_at) ON TABLE advisory_opportunity TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(response_payload,input_tokens,output_tokens,latency_ms,state,send_certainty,outcome,raw_response_ref,send_started_at,sealed_at) ON TABLE advisory_dispatch TO {quoted_role}"
+        ),
+        format!(
             "GRANT SELECT, INSERT ON TABLE source_repositories, source_worktrees \
              TO {quoted_role}"
         ),
@@ -276,6 +295,8 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
             .await
             .map_err(storage_error)?;
     }
+    super::scope_advisory::grant_scope_advisory_runtime(&mut transaction, &quoted_role).await?;
+    super::scope_advisory::validate_advisory_schema(&mut transaction, runtime_role).await?;
     crate::knowledge_search_admin::grant_search_runtime(&mut transaction, runtime_role).await?;
     transaction.commit().await.map_err(storage_error)
 }
@@ -300,6 +321,12 @@ pub async fn validate_runtime_role(pool: &PgPool, runtime_role: &str) -> Result<
                          'tenants', 'principals', 'hosts', 'workspaces', 'memberships',
                          'agent_sessions', 'source_repositories', 'source_worktrees',
                          'session_worktrees', 'workspace_events', 'programs', 'program_inputs',
+                         'advisory_workspace_config', 'advisory_workspace_config_history',
+                         'advisory_opportunity', 'advisory_dispatch',
+                         'advisory_scope_source_snapshot', 'advisory_scope_manifest',
+                         'advisory_scope_advice', 'advisory_scope_disposition',
+                         'advisory_scope_preservation_receipt',
+                         'advisory_scope_caller_link', 'advisory_scope_verifier_receipt',
                          'setup_session_directories', 'workspace_setups', 'workspace_setup_inputs',
                          'scope_candidate_sets', 'scope_candidate_inputs',
                          'scope_candidate_contents', 'scope_candidate_snapshots',

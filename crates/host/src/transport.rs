@@ -239,6 +239,9 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
             Invocation::KnowledgeSearch(query) => {
                 crate::knowledge_search_dispatch::execute(context, query, service, capacity).await
             }
+            Invocation::Advisory(invocation) => {
+                crate::advisory_dispatch::execute(context, invocation, service, capacity).await
+            }
             Invocation::KnowledgeMaintenance(invocation) => {
                 crate::knowledge_maintenance_dispatch::execute(
                     context, invocation, service, capacity,

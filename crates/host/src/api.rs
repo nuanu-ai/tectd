@@ -1,7 +1,9 @@
+mod advisory_schema;
 mod candidate_schema;
 mod catalog;
 mod catalog_aliases;
 mod catalog_support;
+mod dynamic_help;
 mod knowledge_lifecycle_schema;
 mod knowledge_maintenance_schema;
 mod knowledge_schema;
@@ -10,6 +12,7 @@ mod slice_schema;
 
 use crate::tools::{annotations, object_schema};
 use catalog::{RouteSpec, routes};
+use dynamic_help::tool_summary;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use tect_domain::{Error, Result};
@@ -303,7 +306,8 @@ fn search(text: Option<&str>, tool_filter: Option<&str>) -> Value {
     let mut hits = Vec::new();
     for tool in PUBLIC_TOOLS {
         let description = tool_summary(tool);
-        if tool_filter.is_none_or(|filter| filter == tool) && matches(&[tool, description]) {
+        if tool_filter.is_none_or(|filter| filter == tool) && matches(&[tool, description.as_str()])
+        {
             hits.push(json!({"kind":"tool","tool":tool,"summary":description}));
         }
     }
@@ -398,17 +402,6 @@ pub(crate) fn attach_route_contract(action: &mut Value) -> Result<()> {
     let spec = route_for(tool, route).ok_or(Error::InternalInvariant)?;
     action["route_contract"] = describe_route(&spec);
     Ok(())
-}
-
-fn tool_summary(tool: &str) -> &'static str {
-    match tool {
-        "get_state" => "Read bounded DB-only state for the current native session.",
-        "query" => "Run one of sixteen named read-only routes.",
-        "command" => "Run one of thirty-six named logical state-transition routes.",
-        "execute" => "Run the single explicit external-effect route setup.apply.",
-        "help" => "Search or describe this API and its four embedded methods.",
-        _ => "",
-    }
 }
 
 fn route_for(tool: &str, route: &str) -> Option<RouteSpec> {
@@ -528,5 +521,7 @@ fn empty_object(value: &Value) -> bool {
     value.as_object().is_some_and(Map::is_empty)
 }
 
+#[cfg(test)]
+mod advisory_tests;
 #[cfg(test)]
 mod tests;

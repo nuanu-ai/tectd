@@ -1,0 +1,40 @@
+use crate::advisory_tools::AdvisoryInvocation;
+use crate::{Result, responses};
+use tect_application::WorkspaceService;
+use tect_domain::RequestContext;
+
+pub(crate) async fn execute(
+    context: &RequestContext,
+    invocation: AdvisoryInvocation,
+    service: &WorkspaceService,
+    capacity: usize,
+) -> Result<serde_json::Value> {
+    let value = match invocation {
+        AdvisoryInvocation::Config => serde_json::to_value(service.advisory_config(context).await?),
+        AdvisoryInvocation::Configure(request) => {
+            serde_json::to_value(service.configure_advisory(context, &request).await?)
+        }
+        AdvisoryInvocation::WorkspaceAudit(query) => {
+            serde_json::to_value(service.advisory_audit(context, &query).await?)
+        }
+        AdvisoryInvocation::ScopeAudit { scope_id, query } => serde_json::to_value(
+            service
+                .scope_advisory_audit(context, scope_id, &query)
+                .await?,
+        ),
+        AdvisoryInvocation::ScopeGet {
+            scope_id,
+            opportunity_id,
+        } => serde_json::to_value(
+            service
+                .scope_advisory_get(context, scope_id, opportunity_id)
+                .await?,
+        ),
+    }
+    .map_err(tect_domain::Error::invalid_arguments_from)?;
+    let value = responses::with_actions(value, Vec::new(), None);
+    if responses::encoded_len(&value)? > capacity {
+        return Err(tect_domain::Error::RequestTooLarge);
+    }
+    Ok(value)
+}

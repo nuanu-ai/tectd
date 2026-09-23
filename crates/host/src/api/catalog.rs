@@ -1,14 +1,13 @@
-use crate::tools::object_schema;
-use serde_json::json;
-use std::sync::OnceLock;
-use tect_domain::{MAX_SOURCE_PATH_BYTES, MAX_WORKTREES};
-
 pub(crate) use super::catalog_support::RouteSpec;
 use super::catalog_support::{nullable_text, page_limit, text, uuid};
 use super::{
     candidate_schema, knowledge_lifecycle_schema, knowledge_maintenance_schema, knowledge_schema,
     knowledge_search_schema, slice_schema,
 };
+use crate::tools::object_schema;
+use serde_json::json;
+use std::sync::OnceLock;
+use tect_domain::{MAX_SOURCE_PATH_BYTES, MAX_WORKTREES};
 
 macro_rules! route {
     ($tool:expr, $name:expr, $internal:expr, $summary:expr, $conditions:expr,
@@ -538,6 +537,7 @@ fn build_routes() -> Vec<RouteSpec> {
     routes.extend(knowledge_lifecycle_schema::routes(example_id));
     routes.extend(knowledge_maintenance_schema::routes(example_id));
     routes.push(knowledge_search_schema::route());
+    routes.extend(super::advisory_schema::routes(example_id));
     routes.extend([
         route!("command", "slice.pipeline.evidence_artifact.register", "slice_pipeline_evidence_artifact_register", "Register immutable evidence metadata and receive a backend-issued artifact identity.", "Requires an authenticated open native session; the supplied digest, size and provenance describe the exact future bytes.", "Creates an uploading artifact revision; no evidence is ready until finalize succeeds.", "The same request replays the same artifact; changed payload conflicts.", object_schema(json!({"request_id":uuid(),"digest":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"},"size":{"type":"integer","minimum":0},"format":text(),"provenance":text(),"target":text()}), json!(["request_id","digest","size","format","provenance","target"])), json!({"request_id":example_id,"digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":12,"format":"text/plain","provenance":"operator-observed","target":"slice"})),
         route!("command", "slice.pipeline.evidence_artifact.finalize", "slice_pipeline_evidence_artifact_finalize", "Finalize one registered evidence artifact by hashing and sizing the submitted bytes.", "Requires an uploading artifact revision.", "Marks the immutable revision ready only when digest and byte size match; mismatches are durably rejected.", "The same request replays the same final state.", object_schema(json!({"request_id":uuid(),"artifact_id":uuid(),"revision":{"type":"integer","minimum":1},"body":{"type":"string"}}), json!(["request_id","artifact_id","revision","body"])), json!({"request_id":example_id,"artifact_id":example_id,"revision":1,"body":"exact evidence bytes"})),

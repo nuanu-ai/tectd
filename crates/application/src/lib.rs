@@ -1,12 +1,32 @@
 //! Application policy and ports. Adapters depend on this crate, never the reverse.
+mod advisory;
+pub use advisory::Sha256ScopeDigest;
+mod advisory_ports;
 mod planning_knowledge_ports;
 mod ports;
 mod programs;
+mod scope_advisory_orchestration;
+mod scope_advisory_ports;
+mod scope_advisory_runtime;
 mod service;
 
+#[doc(hidden)]
+pub use advisory_ports::AdvisoryLifecycleCapability;
+pub use advisory_ports::AdvisoryStore;
+pub(crate) use advisory_ports::{AdvisoryProvider, DisabledAdvisoryProvider};
 pub use planning_knowledge_ports::PlanningKnowledgeStore;
 pub use ports::{
     ProgramGuidance, ProgramOutputGuard, SourceInspector, Store, TransactionMode, UnitOfWork,
+};
+pub use scope_advisory_ports::{
+    GuardedScopeAdviceRecord, ScopeAdvisoryStore, ScopeCallerLinkInput, ScopeDispositionRecord,
+    ScopeManifestRecord, ScopePreservationReceiptInput, ScopeVerifierReceiptInput,
+};
+pub(crate) use scope_advisory_runtime::*;
+#[doc(hidden)]
+pub use scope_advisory_runtime::{
+    ScopeAdviceProvider, ScopeAdviceProviderError, ScopeAdviceProviderFailureReason,
+    ScopeAdviceProviderObservation, ScopeAdviceProviderRequest,
 };
 pub use service::WorkspaceService;
 
@@ -51,6 +71,94 @@ pub use knowledge_search_ports::{
     DisabledKnowledgeEmbeddingProvider, KnowledgeEmbeddingProvider, KnowledgeSearchOutputGuard,
     KnowledgeSearchStore,
 };
+
+#[cfg(test)]
+mod advisory_architecture_tests {
+    fn assert_no_forbidden_imports(name: &str, source: &str, forbidden_imports: &[&str]) {
+        for forbidden in forbidden_imports {
+            assert!(!source.contains(forbidden), "{name} imports {forbidden}");
+        }
+    }
+
+    #[test]
+    fn domain_and_application_remain_inward_only() {
+        let domain_manifest = include_str!("../../domain/Cargo.toml");
+        let application_manifest = include_str!("../Cargo.toml");
+        let application_advisory = include_str!("advisory.rs");
+        let application_ports = include_str!("advisory_ports.rs");
+        let application_scope_ports = include_str!("scope_advisory_ports.rs");
+        let application_scope_runtime = include_str!("scope_advisory_runtime.rs");
+        let application_scope_orchestration = include_str!("scope_advisory_orchestration.rs");
+        let application_scope_capture = include_str!("scope_advisory_orchestration/capture.rs");
+        let application_scope_decisions = include_str!("scope_advisory_orchestration/decisions.rs");
+        let application_scope_helpers = include_str!("scope_advisory_orchestration/helpers.rs");
+        let architecture_check = include_str!("../../../scripts/check-architecture.py");
+        for (name, source) in [
+            ("domain manifest", domain_manifest),
+            ("application manifest", application_manifest),
+        ] {
+            assert_no_forbidden_imports(
+                name,
+                source,
+                &["sqlx", "reqwest", "hyper", "tect-postgres", "tect-host"],
+            );
+        }
+        for (name, source) in [
+            ("application advisory", application_advisory),
+            ("application advisory ports", application_ports),
+            ("application scope advisory ports", application_scope_ports),
+            (
+                "application scope advisory runtime",
+                application_scope_runtime,
+            ),
+            (
+                "application scope advisory orchestration",
+                application_scope_orchestration,
+            ),
+            (
+                "application scope advisory capture",
+                application_scope_capture,
+            ),
+            (
+                "application scope advisory decisions",
+                application_scope_decisions,
+            ),
+            (
+                "application scope advisory helpers",
+                application_scope_helpers,
+            ),
+        ] {
+            assert_no_forbidden_imports(
+                name,
+                source,
+                &[
+                    "sqlx::",
+                    concat!("std", "::env"),
+                    "reqwest::",
+                    "hyper::",
+                    "tect_postgres",
+                    "tect_host",
+                    "JevDto",
+                ],
+            );
+        }
+        assert!(architecture_check.contains("domain_advisory_sources"));
+        assert!(architecture_check.contains("rglob(\"*.rs\")"));
+        assert!(architecture_check.contains("if not is_test_fixture(source)"));
+    }
+
+    #[test]
+    fn host_and_postgres_are_outward_adapters() {
+        let postgres_manifest = include_str!("../../postgres/Cargo.toml");
+        let host_manifest = include_str!("../../host/Cargo.toml");
+        for manifest in [postgres_manifest, host_manifest] {
+            assert!(manifest.contains("tect-domain.workspace = true"));
+            assert!(manifest.contains("tect-application.workspace = true"));
+        }
+        assert!(postgres_manifest.contains("sqlx.workspace = true"));
+        assert!(!host_manifest.contains("tect-postgres.workspace = true"));
+    }
+}
 
 mod setup_access;
 mod setup_apply;

@@ -127,9 +127,9 @@ async fn run_upgrade(
         .fetch_one(&pool)
         .await
         .map_err(|error| error.to_string())?;
-    if migration_count != 38 {
+    if migration_count != 40 {
         return Err(format!(
-            "expected 38 migrations, observed {migration_count}"
+            "expected 40 migrations, observed {migration_count}"
         ));
     }
     let knowledge_table_count: i64 = sqlx::query_scalar(
