@@ -1,7 +1,7 @@
 use crate::storage_error;
 use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use tect_domain::{
     BlockerEntity, CandidateBoundary, CandidateDraft, CandidateEntity, CandidateRef,
     CoverageGoalEntity, CoverageResolutionEntity, CoverageResolutionKind, DraftIdentity, Error,
@@ -64,7 +64,7 @@ pub(super) async fn resolve(
     draft: &ScopeCandidateDraft,
     previous: Option<&ResolvedCandidateDraft>,
 ) -> Result<ResolvedCandidateDraft> {
-    resolve_with_allocator(transaction, context, draft, previous, &|_, _| {
+    resolve_with_allocator(transaction, context, draft, previous, None, &|_, _| {
         Uuid::new_v4()
     })
     .await
@@ -78,11 +78,47 @@ pub(crate) async fn resolve_authored(
     draft: &ScopeCandidateDraft,
     previous: Option<&ResolvedCandidateDraft>,
     seed: &[u8; 32],
+    allowed_source_ids: &BTreeSet<Uuid>,
 ) -> Result<ResolvedCandidateDraft> {
-    resolve_with_allocator(transaction, context, draft, previous, &|kind, local| {
-        authored_local_id(seed, kind, local)
-    })
+    require_authored_source_refs(draft, allowed_source_ids)?;
+    resolve_with_allocator(
+        transaction,
+        context,
+        draft,
+        previous,
+        Some(allowed_source_ids),
+        &|kind, local| authored_local_id(seed, kind, local),
+    )
     .await
+}
+
+fn require_authored_source_refs(
+    draft: &ScopeCandidateDraft,
+    allowed: &BTreeSet<Uuid>,
+) -> Result<()> {
+    let cited = draft
+        .goals
+        .iter()
+        .map(|value| value.source_ref_id)
+        .chain(draft.evidence.iter().map(|value| value.source_ref_id))
+        .chain(draft.blockers.iter().map(|value| value.source_ref_id))
+        .chain(
+            draft
+                .empty_disposition
+                .iter()
+                .map(|value| value.source_ref_id),
+        )
+        .chain(
+            draft
+                .protected_changes
+                .iter()
+                .map(|value| value.authority_source_ref_id),
+        );
+    if cited.into_iter().all(|id| allowed.contains(&id)) {
+        Ok(())
+    } else {
+        Err(Error::InvalidSource)
+    }
 }
 
 fn authored_local_id(seed: &[u8; 32], kind: Kind, local: &str) -> Uuid {
@@ -105,6 +141,7 @@ async fn resolve_with_allocator(
     context: &ResolveContext,
     draft: &ScopeCandidateDraft,
     previous: Option<&ResolvedCandidateDraft>,
+    allowed_source_ids: Option<&BTreeSet<Uuid>>,
     local_id: &impl Fn(Kind, &str) -> Uuid,
 ) -> Result<ResolvedCandidateDraft> {
     let rows = sqlx::query_as::<_, SourceRow>(
@@ -122,6 +159,7 @@ async fn resolve_with_allocator(
     .map_err(storage_error)?;
     let sources: BTreeMap<_, _> = rows
         .into_iter()
+        .filter(|row| allowed_source_ids.is_none_or(|allowed| allowed.contains(&row.id)))
         .map(|row| {
             (
                 row.id,
@@ -542,6 +580,55 @@ fn candidate(
 #[cfg(test)]
 mod authored_identity_tests {
     use super::*;
+
+    #[test]
+    fn authored_citations_reject_blank_ref_across_every_source_field() {
+        let nonblank = Uuid::from_u128(1);
+        let blank = Uuid::from_u128(2);
+        let allowed = BTreeSet::from([nonblank]);
+        let base = serde_json::json!({
+            "boundary": "finite",
+            "goals": [{
+                "identity": {"local": "goal"}, "text": "goal",
+                "source_ref_id": nonblank,
+                "resolution": {"kind": "candidate", "reference": {"local": "candidate"}}
+            }],
+            "evidence": [{
+                "identity": {"local": "evidence"}, "kind": "verified_evidence",
+                "summary": "evidence", "source_ref_id": nonblank
+            }],
+            "candidates": [],
+            "blockers": [{
+                "identity": {"local": "blocker"}, "summary": "blocker",
+                "source_ref_id": nonblank
+            }],
+            "empty_disposition": {
+                "kind": "needs_input", "reason": "pending", "source_ref_id": nonblank
+            },
+            "protected_changes": [{
+                "accepted_evidence_id": nonblank, "disposition": "delete",
+                "rationale": "change", "authority_source_ref_id": nonblank
+            }]
+        });
+        let draft: ScopeCandidateDraft = serde_json::from_value(base.clone()).unwrap();
+        assert_eq!(require_authored_source_refs(&draft, &allowed), Ok(()));
+        for pointer in [
+            "/goals/0/source_ref_id",
+            "/evidence/0/source_ref_id",
+            "/blockers/0/source_ref_id",
+            "/empty_disposition/source_ref_id",
+            "/protected_changes/0/authority_source_ref_id",
+        ] {
+            let mut value = base.clone();
+            *value.pointer_mut(pointer).unwrap() = serde_json::json!(blank);
+            let draft: ScopeCandidateDraft = serde_json::from_value(value).unwrap();
+            assert_eq!(
+                require_authored_source_refs(&draft, &allowed),
+                Err(Error::InvalidSource),
+                "{pointer}"
+            );
+        }
+    }
 
     #[test]
     fn advisory_ids_are_stable_and_kind_scoped_while_saved_ids_remain_random() {

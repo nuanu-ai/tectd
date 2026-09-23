@@ -185,6 +185,11 @@ impl ScopeManifestSupplier for PgScopeAuthoredManifestSupplier {
         if inputs != source.inputs || obligations != observation.obligations {
             return Err(Error::StaleRevision);
         }
+        let allowed_source_ids = source
+            .inputs
+            .iter()
+            .map(|input| Uuid::parse_str(&input.id).map_err(|_| Error::InvalidSource))
+            .collect::<Result<BTreeSet<_>>>()?;
 
         let constructor = source_authored_identity();
         let mut alternatives = Vec::with_capacity(request.authored_scope_set.alternatives.len());
@@ -215,6 +220,7 @@ impl ScopeManifestSupplier for PgScopeAuthoredManifestSupplier {
                 &alternative.draft,
                 stored.draft.as_ref(),
                 &seed,
+                &allowed_source_ids,
             )
             .await?;
             alternatives.push(SourceAuthoredScopeAlternative {
