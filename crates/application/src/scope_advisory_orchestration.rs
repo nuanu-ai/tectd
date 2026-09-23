@@ -10,8 +10,8 @@ use helpers::*;
 use serde::{Deserialize, Serialize};
 use tect_domain::{
     AdvisoryDispatchAuthorization, AdvisoryDispatchOutcome, AdvisoryDispatchSeal,
-    AdvisoryOpportunity, AdvisoryOpportunityState, AdvisoryPolicyInput, AdvisoryReason,
-    AdvisoryRequestPreference, AdvisoryRetryBasis, AdvisorySendCertainty, Error,
+    AdvisoryDispatchState, AdvisoryOpportunity, AdvisoryOpportunityState, AdvisoryPolicyInput,
+    AdvisoryReason, AdvisoryRequestPreference, AdvisoryRetryBasis, AdvisorySendCertainty, Error,
     GuardedScopeAdvice, RequestContext, Result, ScopeAdviceRequest, ScopeDispositionRequest,
     ScopeDispositionRevision, assess_advisory_policy, guard_scope_advice,
 };
@@ -533,18 +533,60 @@ impl WorkspaceService {
         let (mut authorize, _, _) = self
             .scope_transaction(context, TransactionMode::ReadWrite)
             .await?;
-        authorize
+        let authorized = match authorize
             .authorize_advisory_dispatch(&lifecycle, workspace.id, config.revision, &authorization)
-            .await?;
+            .await
+        {
+            Ok(value) => value,
+            Err(error) => {
+                if let Some(reason) = prepared_scope_stale_reason(&error) {
+                    // The persistence adapter returns these two stale codes only
+                    // before creating a dispatch row. Drop this failed UOW so
+                    // its transaction rolls back, then CAS the prepared record
+                    // to an audited no-call/invalidated state in a fresh UOW.
+                    drop(authorize);
+                    return self
+                        .finalize_prepared_scope_stale(
+                            context,
+                            workspace.id,
+                            opportunity.id,
+                            request.candidate_set_id,
+                            &manifest.source.digest,
+                            reason,
+                        )
+                        .await;
+                }
+                return Err(error);
+            }
+        };
         authorize.commit().await?;
         let (mut start, _, _) = self
             .scope_transaction(context, TransactionMode::ReadWrite)
             .await?;
         let started = start
-            .start_advisory_dispatch(&lifecycle, workspace.id, dispatch_id)
+            .start_advisory_dispatch(&lifecycle, workspace.id, authorized.id)
             .await?;
         start.commit().await?;
         if !started.should_send {
+            if started.dispatch.state == AdvisoryDispatchState::Cancelled
+                && started.dispatch.send_certainty == AdvisorySendCertainty::NotSent
+            {
+                let (mut terminal_tx, terminal_workspace, _) = self
+                    .scope_transaction(context, TransactionMode::ReadOnly)
+                    .await?;
+                if terminal_workspace.id != workspace.id {
+                    return Err(Error::InputConflict);
+                }
+                let terminal = terminal_tx
+                    .advisory_opportunity_for_dispatch(workspace.id, opportunity.id)
+                    .await?;
+                let terminal = validate_terminalized_pre_dispatch_opportunity(terminal)?;
+                terminal_tx.commit().await?;
+                return Ok(ScopeAdvisoryOutcome {
+                    opportunity: terminal,
+                    advice: None,
+                });
+            }
             return Err(Error::InputConflict);
         }
 
@@ -685,6 +727,40 @@ impl WorkspaceService {
                 ..opportunity
             },
             advice: Some(advice),
+        })
+    }
+
+    async fn finalize_prepared_scope_stale(
+        &self,
+        context: &RequestContext,
+        workspace_id: Uuid,
+        opportunity_id: Uuid,
+        candidate_set_id: Uuid,
+        expected_source_digest: &str,
+        reason: AdvisoryReason,
+    ) -> Result<ScopeAdvisoryOutcome> {
+        let disposition = crate::ScopePreparedAdvisoryDisposition {
+            opportunity_id,
+            candidate_set_id,
+            expected_source_digest: expected_source_digest.to_owned(),
+            reason,
+        };
+        let (mut tx, workspace, _) = self
+            .scope_transaction(context, TransactionMode::ReadWrite)
+            .await?;
+        if workspace.id != workspace_id {
+            return Err(Error::InputConflict);
+        }
+        tx.finalize_prepared_scope_advisory_without_dispatch(workspace_id, &disposition)
+            .await?;
+        let opportunity = tx
+            .advisory_opportunity_for_dispatch(workspace_id, opportunity_id)
+            .await?;
+        let opportunity = validate_terminalized_pre_dispatch_opportunity(opportunity)?;
+        tx.commit().await?;
+        Ok(ScopeAdvisoryOutcome {
+            opportunity,
+            advice: None,
         })
     }
 

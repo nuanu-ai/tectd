@@ -235,6 +235,28 @@ pub(super) fn validate_authored_no_call_replay<'a>(
     Ok(opportunity)
 }
 
+pub(super) fn prepared_scope_stale_reason(error: &Error) -> Option<AdvisoryReason> {
+    match error {
+        Error::StaleRevision => Some(AdvisoryReason::ConfigurationChanged),
+        Error::StaleContext => Some(AdvisoryReason::DeterministicInputInvalid),
+        _ => None,
+    }
+}
+
+pub(super) fn validate_terminalized_pre_dispatch_opportunity(
+    opportunity: AdvisoryOpportunity,
+) -> Result<AdvisoryOpportunity> {
+    let expected = match (opportunity.state, opportunity.primary_reason) {
+        (AdvisoryOpportunityState::Invalidated, AdvisoryReason::ConfigurationChanged) => true,
+        (AdvisoryOpportunityState::NoCall, AdvisoryReason::DeterministicInputInvalid) => true,
+        _ => false,
+    };
+    if !expected || opportunity.provider_called {
+        return Err(Error::InputConflict);
+    }
+    Ok(opportunity)
+}
+
 pub(super) fn failed_observation() -> ScopeAdviceProviderObservation {
     ScopeAdviceProviderObservation {
         send_certainty: AdvisorySendCertainty::NotSent,

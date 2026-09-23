@@ -536,6 +536,69 @@ fn authored_manifest_replay_binds_request_digest_and_all_persisted_identity() {
 }
 
 #[test]
+fn dispatch_stale_errors_map_only_to_their_audited_terminal_reasons() {
+    assert_eq!(
+        prepared_scope_stale_reason(&Error::StaleRevision),
+        Some(AdvisoryReason::ConfigurationChanged)
+    );
+    assert_eq!(
+        prepared_scope_stale_reason(&Error::StaleContext),
+        Some(AdvisoryReason::DeterministicInputInvalid)
+    );
+    assert_eq!(prepared_scope_stale_reason(&Error::InputConflict), None);
+    assert_eq!(prepared_scope_stale_reason(&Error::NotFound), None);
+
+    let candidate_set_id = Uuid::from_u128(5);
+    let manifest = authored_manifest(authored_source(candidate_set_id, 7));
+    let config = no_call_config(WorkspaceAdvisoryMode::Optional);
+    let request = RunScopeAdvisory {
+        request_id: Uuid::from_u128(6),
+        candidate_set_id,
+        session_preference: AdvisoryRequestPreference::UseWorkspace,
+        request_preference: AdvisoryRequestPreference::UseWorkspace,
+        authored_scope_set: Some(authored_set()),
+    };
+    let prepared = opportunity_for_authored_manifest(&request, &config, &manifest);
+    assert_eq!(
+        validate_terminalized_pre_dispatch_opportunity(AdvisoryOpportunity {
+            state: AdvisoryOpportunityState::Prepared,
+            primary_reason: AdvisoryReason::DispatchAuthorized,
+            ..prepared.clone()
+        }),
+        Err(Error::InputConflict)
+    );
+    assert_eq!(
+        validate_terminalized_pre_dispatch_opportunity(AdvisoryOpportunity {
+            state: AdvisoryOpportunityState::Invalidated,
+            primary_reason: AdvisoryReason::ConfigurationChanged,
+            ..prepared.clone()
+        })
+        .unwrap()
+        .state,
+        AdvisoryOpportunityState::Invalidated
+    );
+    assert_eq!(
+        validate_terminalized_pre_dispatch_opportunity(AdvisoryOpportunity {
+            state: AdvisoryOpportunityState::NoCall,
+            primary_reason: AdvisoryReason::DeterministicInputInvalid,
+            ..prepared.clone()
+        })
+        .unwrap()
+        .primary_reason,
+        AdvisoryReason::DeterministicInputInvalid
+    );
+    assert_eq!(
+        validate_terminalized_pre_dispatch_opportunity(AdvisoryOpportunity {
+            state: AdvisoryOpportunityState::NoCall,
+            primary_reason: AdvisoryReason::DeterministicInputInvalid,
+            provider_called: true,
+            ..prepared
+        }),
+        Err(Error::InputConflict)
+    );
+}
+
+#[test]
 fn authored_no_call_replay_conflicts_on_changed_request_payload() {
     let config = no_call_config(WorkspaceAdvisoryMode::Optional);
     let mut request = RunScopeAdvisory {
@@ -963,7 +1026,8 @@ fn authored_lookup_replay_and_failure_paths_precede_external_attempts() {
         .unwrap();
     let supplier = source.find("supply_scope_manifest(").unwrap();
     assert!(digest < request_lookup && request_lookup < replay);
-    assert!(replay < observer && observer < supplier);
+    let provider = source.find(".attempt(&ScopeAdviceProviderRequest").unwrap();
+    assert!(replay < observer && observer < supplier && replay < provider);
     assert!(!source.contains("return Err(Error::InputPending)"));
 
     let authored_persist = source
@@ -985,6 +1049,43 @@ fn authored_lookup_replay_and_failure_paths_precede_external_attempts() {
     assert!(authored_persist < persisted_commit);
     assert!(persisted_commit < reobserved);
     assert!(reobserved < no_call_transition && no_call_transition < provider);
+}
+
+#[test]
+fn authorize_staleness_and_cancelled_start_terminalize_before_provider_attempt() {
+    let source = include_str!("../scope_advisory_orchestration.rs");
+    let authorize = source
+        .find(".authorize_advisory_dispatch(&lifecycle")
+        .unwrap();
+    let stale_mapping = source[authorize..]
+        .find("prepared_scope_stale_reason(&error)")
+        .unwrap()
+        + authorize;
+    let rollback = source[stale_mapping..].find("drop(authorize)").unwrap() + stale_mapping;
+    let close = source[rollback..]
+        .find(".finalize_prepared_scope_stale(")
+        .unwrap()
+        + rollback;
+    let start = source.find(".start_advisory_dispatch(&lifecycle").unwrap();
+    let cancelled = source[start..]
+        .find("started.dispatch.state == AdvisoryDispatchState::Cancelled")
+        .unwrap()
+        + start;
+    let terminal_load = source[cancelled..]
+        .find("advisory_opportunity_for_dispatch(workspace.id, opportunity.id)")
+        .unwrap()
+        + cancelled;
+    let provider = source.find(".attempt(&ScopeAdviceProviderRequest").unwrap();
+    assert!(authorize < stale_mapping && stale_mapping < rollback && rollback < close);
+    assert!(close < start && start < cancelled && cancelled < terminal_load);
+    assert!(terminal_load < provider);
+
+    let helper = include_str!("helpers.rs");
+    assert!(helper.contains("Error::StaleRevision => Some(AdvisoryReason::ConfigurationChanged)"));
+    assert!(
+        helper.contains("Error::StaleContext => Some(AdvisoryReason::DeterministicInputInvalid)")
+    );
+    assert!(helper.contains("if !expected || opportunity.provider_called"));
 }
 
 #[test]
