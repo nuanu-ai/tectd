@@ -7,6 +7,49 @@ use tect_domain::{
 use uuid::Uuid;
 
 impl WorkspaceService {
+    pub(super) async fn capture_early_scope_no_call(
+        &self,
+        context: &RequestContext,
+        request: &RunScopeAdvisory,
+        config: &WorkspaceAdvisoryConfig,
+        actor: Uuid,
+        session: Uuid,
+        material_digest: String,
+        reason: AdvisoryReason,
+        revision: i64,
+    ) -> Result<tect_domain::AdvisoryOpportunity> {
+        let (mut tx, workspace, fresh_session) = self
+            .scope_transaction(context, crate::TransactionMode::ReadWrite)
+            .await?;
+        if fresh_session.id != session
+            || tx.advisory_config(workspace.id).await? != *config
+            || tx
+                .lock_candidate_revision(workspace.id, request.candidate_set_id)
+                .await?
+                .ok_or(tect_domain::Error::NotFound)?
+                != revision
+        {
+            return Err(tect_domain::Error::StaleRevision);
+        }
+        let value = tx
+            .capture_advisory_opportunity(
+                workspace.id,
+                &super::scope_opportunity_input(
+                    request,
+                    config,
+                    actor,
+                    session,
+                    material_digest,
+                    AdvisoryOpportunityState::NoCall,
+                    reason,
+                    Some(revision),
+                ),
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(value)
+    }
+
     pub(super) async fn capture_scope_opportunity(
         &self,
         context: &RequestContext,

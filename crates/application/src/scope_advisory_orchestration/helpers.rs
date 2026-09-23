@@ -3,13 +3,63 @@ use crate::{
     ScopeAdviceProviderError, ScopeAdviceProviderObservation, ScopeAuthorityObservation,
     ScopeAuthorityRequest, ScopeAuthorizedInvalidObservation,
 };
+use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tect_domain::{
     AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryDispatchOutcome, AdvisoryOpportunityInput,
-    AdvisoryOpportunityState, AdvisoryReason, AdvisorySendCertainty, Error, Result,
-    WorkspaceAdvisoryConfig,
+    AdvisoryOpportunityState, AdvisoryReason, AdvisoryRequestPreference, AdvisorySendCertainty,
+    Error, Result, WorkspaceAdvisoryConfig, WorkspaceAdvisoryMode,
 };
 use uuid::Uuid;
+
+#[async_trait]
+pub(super) trait EarlyCandidateRevision: Send {
+    async fn revision(&mut self, workspace_id: Uuid, candidate_set_id: Uuid)
+    -> Result<Option<i64>>;
+}
+
+#[async_trait]
+impl EarlyCandidateRevision for dyn crate::UnitOfWork + '_ {
+    async fn revision(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+    ) -> Result<Option<i64>> {
+        self.candidate_revision(workspace_id, candidate_set_id)
+            .await
+    }
+}
+
+pub(super) async fn early_no_call_target<T: EarlyCandidateRevision + ?Sized>(
+    port: &mut T,
+    workspace_id: Uuid,
+    config: &WorkspaceAdvisoryConfig,
+    request: &RunScopeAdvisory,
+) -> Result<Option<(AdvisoryReason, i64)>> {
+    let Some(reason) = early_no_call_reason(config, request) else {
+        return Ok(None);
+    };
+    let revision = port
+        .revision(workspace_id, request.candidate_set_id)
+        .await?
+        .ok_or(Error::NotFound)?;
+    Ok(Some((reason, revision)))
+}
+
+pub(super) fn early_no_call_reason(
+    config: &WorkspaceAdvisoryConfig,
+    request: &RunScopeAdvisory,
+) -> Option<AdvisoryReason> {
+    if config.mode == WorkspaceAdvisoryMode::Disabled {
+        Some(AdvisoryReason::WorkspaceDisabled)
+    } else if request.session_preference == AdvisoryRequestPreference::Skip {
+        Some(AdvisoryReason::SessionSkip)
+    } else if request.request_preference == AdvisoryRequestPreference::Skip {
+        Some(AdvisoryReason::RequestSkip)
+    } else {
+        None
+    }
+}
 
 pub(super) fn scope_opportunity_input(
     request: &RunScopeAdvisory,

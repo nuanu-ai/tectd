@@ -66,7 +66,45 @@ impl WorkspaceService {
         let existing = read
             .advisory_opportunity_by_request(workspace.id, &request.request_id.to_string())
             .await?;
+        // Disabled and explicitly skipped requests do not need source material.
+        // The workspace-scoped candidate lookup still proves target access.
+        let early_no_call =
+            early_no_call_target(&mut *read, workspace.id, &config, request).await?;
         read.commit().await?;
+
+        if let Some((reason, revision)) = early_no_call {
+            let digest = no_call_digest(request, config.revision, reason)?;
+            if let Some(existing) = existing {
+                if existing.target_kind != "scope_candidate_set"
+                    || existing.target_id != Some(request.candidate_set_id)
+                    || existing.work_revision != Some(revision)
+                    || existing.config_revision != config.revision
+                    || existing.material_digest != digest
+                {
+                    return Err(Error::InputConflict);
+                }
+                return Ok(ScopeAdvisoryOutcome {
+                    opportunity: existing,
+                    advice: None,
+                });
+            }
+            let opportunity = self
+                .capture_early_scope_no_call(
+                    context,
+                    request,
+                    &config,
+                    identity.principal_id,
+                    session.id,
+                    digest,
+                    reason,
+                    revision,
+                )
+                .await?;
+            return Ok(ScopeAdvisoryOutcome {
+                opportunity,
+                advice: None,
+            });
+        }
 
         let authority_request = ScopeAuthorityRequest {
             workspace_id: workspace.id,

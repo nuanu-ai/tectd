@@ -64,6 +64,42 @@ impl ScopeCandidateStore for PgUnitOfWork {
         .await
     }
 
+    async fn candidate_revision(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+    ) -> Result<Option<i64>> {
+        let tenant_id = self.tenant_id()?;
+        sqlx::query_scalar(
+            "SELECT revision FROM scope_candidate_sets \
+             WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
+        )
+        .bind(tenant_id)
+        .bind(workspace_id)
+        .bind(candidate_set_id)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(crate::storage_error)
+    }
+
+    async fn lock_candidate_revision(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+    ) -> Result<Option<i64>> {
+        let tenant_id = self.tenant_id()?;
+        sqlx::query_scalar(
+            "SELECT revision FROM scope_candidate_sets \
+             WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR SHARE",
+        )
+        .bind(tenant_id)
+        .bind(workspace_id)
+        .bind(candidate_set_id)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(crate::storage_error)
+    }
+
     async fn candidate_history(
         &mut self,
         workspace_id: Uuid,

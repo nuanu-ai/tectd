@@ -49,6 +49,18 @@ pub trait ScopeCandidateStore: Send {
         workspace_id: Uuid,
         candidate_set_id: Uuid,
     ) -> Result<Option<StoredCandidateContext>>;
+    /// Tenant/workspace-scoped target lookup without loading source material.
+    async fn candidate_revision(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+    ) -> Result<Option<i64>>;
+    /// Lock the target row through the write transaction until opportunity capture commits.
+    async fn lock_candidate_revision(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+    ) -> Result<Option<i64>>;
     async fn candidate_heads(
         &mut self,
         workspace_id: Uuid,
