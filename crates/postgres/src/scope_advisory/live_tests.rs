@@ -2,6 +2,32 @@ use super::live_support::{D, manifest, reseal_manifest, rw, set_config};
 use super::*;
 use crate::{PgStore, admin};
 
+struct FixtureCandidateGuidance;
+
+impl tect_application::CandidateGuidance for FixtureCandidateGuidance {
+    fn snapshot(
+        &self,
+        program: Program,
+        selected_worktrees: Vec<WorktreeSummary>,
+    ) -> Result<CandidateSnapshotMaterial> {
+        Ok(CandidateSnapshotMaterial {
+            program,
+            selected_worktrees,
+            selected_sources_digest: D.into(),
+            method: CandidateMethodSnapshot {
+                id: "m".into(),
+                revision: "4".into(),
+                digest: D.into(),
+                body: "body".into(),
+                origin_refs: vec![],
+            },
+            registry_revision: "3".into(),
+            registry_digest: D.into(),
+            rules: vec![],
+        })
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires disposable PG18 and TECT_TEST_ADMIN_URL/TECT_TEST_RUNTIME_URL/TECT_TEST_RUNTIME_ROLE"]
 async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lineage_and_identity()
@@ -82,6 +108,8 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         &[(source_refs[0], D), (source_refs[1], D)],
     );
     let store = PgStore::connect(&runtime_url, 4).await.unwrap();
+    let authority =
+        PgScopeAuthorityObserver::new(store.clone(), std::sync::Arc::new(FixtureCandidateGuidance));
     let authority_request = ScopeAuthorityRequest {
         tenant_id: tenant,
         workspace_id: workspace,
@@ -89,14 +117,14 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         session_id: session,
         candidate_set_id: candidate,
     };
-    let observed = store.observe(&authority_request).await.unwrap();
+    let observed = authority.observe(&authority_request).await.unwrap();
     let ScopeAuthorityOutcome::Authorized(observed) = observed else {
         panic!("persisted source must be authorized");
     };
     assert_eq!(observed.source, manifest.source);
     assert_eq!(observed.obligations, manifest.obligations);
     assert_eq!(
-        store
+        authority
             .observe(&ScopeAuthorityRequest {
                 actor_id: Uuid::new_v4(),
                 ..authority_request

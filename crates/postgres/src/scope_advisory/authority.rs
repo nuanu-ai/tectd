@@ -1,3 +1,17 @@
+pub struct PgScopeAuthorityObserver {
+    store: crate::PgStore,
+    guidance: std::sync::Arc<dyn tect_application::CandidateGuidance>,
+}
+
+impl PgScopeAuthorityObserver {
+    pub fn new(
+        store: crate::PgStore,
+        guidance: std::sync::Arc<dyn tect_application::CandidateGuidance>,
+    ) -> Self {
+        Self { store, guidance }
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct SourceAuthorityRow {
     candidate_set_revision: i64,
@@ -27,11 +41,36 @@ fn invalid_source(request: &ScopeAuthorityRequest) -> ScopeAuthorityOutcome {
     })
 }
 
-fn require_current_source(row: &SourceAuthorityRow) -> Result<()> {
+struct GuidanceFingerprint<'a> {
+    selected_sources_digest: &'a str,
+    method_revision: &'a str,
+    method_digest: &'a str,
+    registry_revision: &'a str,
+    registry_digest: &'a str,
+}
+
+impl<'a> From<&'a CandidateSnapshotMaterial> for GuidanceFingerprint<'a> {
+    fn from(value: &'a CandidateSnapshotMaterial) -> Self {
+        Self {
+            selected_sources_digest: &value.selected_sources_digest,
+            method_revision: &value.method.revision,
+            method_digest: &value.method.digest,
+            registry_revision: &value.registry_revision,
+            registry_digest: &value.registry_digest,
+        }
+    }
+}
+
+fn require_current_source(row: &SourceAuthorityRow, current: &GuidanceFingerprint<'_>) -> Result<()> {
     if row.program_revision != row.snapshot_program_revision
         || row.program_current_latest != row.program_latest_input
         || row.candidate_latest_input != row.planning_latest_input
         || row.input_cursor != row.candidate_latest_input
+        || row.selected_sources_digest != current.selected_sources_digest
+        || row.method_revision != current.method_revision
+        || row.method_digest != current.method_digest
+        || row.registry_revision != current.registry_revision
+        || row.registry_digest != current.registry_digest
     {
         return Err(Error::StaleRevision);
     }
@@ -39,7 +78,7 @@ fn require_current_source(row: &SourceAuthorityRow) -> Result<()> {
 }
 
 #[async_trait]
-impl ScopeAuthorityObserver for crate::PgStore {
+impl ScopeAuthorityObserver for PgScopeAuthorityObserver {
     async fn observe(&self, request: &ScopeAuthorityRequest) -> Result<ScopeAuthorityOutcome> {
         if request.tenant_id.is_nil()
             || request.workspace_id.is_nil()
@@ -49,7 +88,7 @@ impl ScopeAuthorityObserver for crate::PgStore {
         {
             return Err(Error::InvalidArguments);
         }
-        let mut tx = self.pool().begin().await.map_err(storage_error)?;
+        let mut tx = self.store.pool().begin().await.map_err(storage_error)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *tx)
             .await
@@ -62,24 +101,20 @@ impl ScopeAuthorityObserver for crate::PgStore {
 
         // Recheck the session and actor after crossing out of the application's
         // authenticated transaction. The scoped tenant setting activates RLS.
-        let authorized: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM agent_sessions s JOIN hosts h \
-             ON (h.tenant_id,h.id)=(s.tenant_id,s.host_id) JOIN memberships m \
-             ON (m.tenant_id,m.workspace_id,m.principal_id)=\
-                (s.tenant_id,s.workspace_id,h.principal_id) \
+        let host_id: Option<Uuid> = sqlx::query_scalar(
+            "SELECT s.host_id FROM agent_sessions s JOIN memberships m \
+             ON (m.tenant_id,m.workspace_id)=(s.tenant_id,s.workspace_id) \
              WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.id=$3 \
-               AND h.principal_id=$4 AND NOT s.revoked)",
+               AND m.principal_id=$4 AND public.tect_dk_session_principal(s.id)=$4",
         )
         .bind(request.tenant_id)
         .bind(request.workspace_id)
         .bind(request.session_id)
         .bind(request.actor_id)
-        .fetch_one(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(storage_error)?;
-        if !authorized {
-            return Err(Error::Forbidden);
-        }
+        let Some(host_id) = host_id else { return Err(Error::Forbidden) };
 
         let row: Option<SourceAuthorityRow> = sqlx::query_as(
             "SELECT c.revision AS candidate_set_revision,s.id AS snapshot_id,c.input_cursor,\
@@ -114,7 +149,25 @@ impl ScopeAuthorityObserver for crate::PgStore {
         if row.program_payload_erased {
             return Ok(invalid_source(request));
         }
-        require_current_source(&row)?;
+        let program = crate::programs::program(
+            &mut tx,
+            request.tenant_id,
+            request.workspace_id,
+            row.program_id,
+            false,
+        )
+        .await?
+        .ok_or(Error::NotFound)?;
+        let selected_worktrees = crate::sources::selected_worktrees(
+            &mut tx,
+            request.tenant_id,
+            request.workspace_id,
+            host_id,
+            request.session_id,
+        )
+        .await?;
+        let current = self.guidance.snapshot(program, selected_worktrees)?;
+        require_current_source(&row, &GuidanceFingerprint::from(&current))?;
 
         let fragments = load_persisted_fragments(
             &mut tx,
@@ -225,17 +278,68 @@ mod authority_tests {
             registry_revision: String::new(),
             registry_digest: String::new(),
         };
-        assert_eq!(require_current_source(&row), Ok(()));
+        let current = GuidanceFingerprint {
+            selected_sources_digest: "",
+            method_revision: "",
+            method_digest: "",
+            registry_revision: "",
+            registry_digest: "",
+        };
+        assert_eq!(require_current_source(&row, &current), Ok(()));
         row.program_revision += 1;
-        assert_eq!(require_current_source(&row), Err(Error::StaleRevision));
+        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
         row.program_revision -= 1;
         row.program_current_latest += 1;
-        assert_eq!(require_current_source(&row), Err(Error::StaleRevision));
+        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
         row.program_current_latest -= 1;
         row.candidate_latest_input += 1;
-        assert_eq!(require_current_source(&row), Err(Error::StaleRevision));
+        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
         row.candidate_latest_input -= 1;
         row.input_cursor -= 1;
-        assert_eq!(require_current_source(&row), Err(Error::StaleRevision));
+        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
+    }
+
+    #[test]
+    fn source_freshness_rejects_changed_selected_sources_method_and_registry() {
+        let row = SourceAuthorityRow {
+            candidate_set_revision: 3,
+            snapshot_id: Uuid::from_u128(1),
+            input_cursor: 2,
+            candidate_latest_input: 2,
+            program_id: Uuid::from_u128(2),
+            program_revision: 4,
+            program_current_latest: 2,
+            program_payload_erased: false,
+            snapshot_program_revision: 4,
+            program_latest_input: 2,
+            planning_latest_input: 2,
+            selected_sources_digest: "sources".into(),
+            method_revision: "4".into(),
+            method_digest: "method".into(),
+            registry_revision: "3".into(),
+            registry_digest: "registry".into(),
+        };
+        let mut current = GuidanceFingerprint {
+            selected_sources_digest: "sources",
+            method_revision: "4",
+            method_digest: "method",
+            registry_revision: "3",
+            registry_digest: "registry",
+        };
+        assert_eq!(require_current_source(&row, &current), Ok(()));
+        current.selected_sources_digest = "changed";
+        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
+        current.selected_sources_digest = "sources";
+        current.method_revision = "5";
+        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
+        current.method_revision = "4";
+        current.method_digest = "changed";
+        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
+        current.method_digest = "method";
+        current.registry_revision = "4";
+        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
+        current.registry_revision = "3";
+        current.registry_digest = "changed";
+        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
     }
 }
