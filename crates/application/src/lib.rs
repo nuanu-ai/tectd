@@ -21,6 +21,7 @@ pub use ports::{
 pub use scope_advisory_ports::{
     GuardedScopeAdviceRecord, ScopeAdvisoryStore, ScopeCallerLinkInput, ScopeDispositionRecord,
     ScopeManifestRecord, ScopePreservationReceiptInput, ScopeVerifierReceiptInput,
+    StoredScopeManifestRecord,
 };
 pub(crate) use scope_advisory_runtime::*;
 #[doc(hidden)]

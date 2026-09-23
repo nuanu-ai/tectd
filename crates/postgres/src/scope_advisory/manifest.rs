@@ -10,6 +10,9 @@ struct ManifestRow {
     candidate_set_id: Uuid,
     candidate_set_revision: i64,
     snapshot_id: Uuid,
+    config_revision: i64,
+    opportunity_material_digest: String,
+    authored_request_digest: Option<String>,
     source_digest: String,
     constructor_id: String,
     constructor_version: String,
@@ -177,8 +180,12 @@ async fn prepare_manifest(
     tenant: Uuid,
     workspace: Uuid,
     record: &ScopeManifestRecord,
+    authored_request_digest: Option<&str>,
 ) -> Result<ScopeConstructorManifest> {
     record.manifest.validate(&Sha256ScopeDigest)?;
+    if authored_request_digest.is_some_and(|value| !valid_authored_request_digest(value)) {
+        return Err(Error::InvalidArguments);
+    }
     let opportunity: Option<(Option<Uuid>, Option<String>, i64, String)> = sqlx::query_as(
         "SELECT work_item_id,source_revision,config_revision,material_digest FROM advisory_opportunity \
          WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 \
@@ -209,7 +216,7 @@ async fn prepare_manifest(
     }
     require_frozen_authority(tx, tenant, workspace, source).await?;
     require_persisted_fragments(tx, tenant, workspace, source, &record.manifest.obligations).await?;
-    if let Some(existing) = load_manifest(
+    if let Some(existing) = load_manifest_record(
         tx,
         tenant,
         workspace,
@@ -218,8 +225,10 @@ async fn prepare_manifest(
     )
     .await?
     {
-        return if existing == record.manifest {
-            Ok(existing)
+        return if existing.record.manifest == record.manifest
+            && existing.authored_request_digest.as_deref() == authored_request_digest
+        {
+            Ok(existing.record.manifest)
         } else {
             Err(Error::InputConflict)
         };
@@ -253,8 +262,9 @@ async fn prepare_manifest(
     sqlx::query(
         "INSERT INTO advisory_scope_manifest \
          (tenant_id,workspace_id,opportunity_id,candidate_set_id,source_digest,constructor_id,constructor_version,\
-          constructor_digest,baseline_alternative_id,eligible_set_digest,whole_set_digest,aggregate_schema,aggregate_payload) \
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'tect.scope-constructor-manifest/2',$12)",
+          constructor_digest,baseline_alternative_id,eligible_set_digest,whole_set_digest,authored_request_digest,\
+          aggregate_schema,aggregate_payload) \
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'tect.scope-constructor-manifest/2',$13)",
     )
     .bind(tenant)
     .bind(workspace)
@@ -267,6 +277,7 @@ async fn prepare_manifest(
     .bind(&record.manifest.baseline_id.0)
     .bind(&record.manifest.eligible_set_digest)
     .bind(&record.manifest.whole_set_digest)
+    .bind(authored_request_digest)
     .bind(manifest_payload)
     .execute(&mut **tx)
     .await
@@ -281,8 +292,57 @@ async fn load_manifest(
     opportunity: Uuid,
     expected_candidate: Option<Uuid>,
 ) -> Result<Option<ScopeConstructorManifest>> {
+    Ok(load_manifest_record(tx, tenant, workspace, opportunity, expected_candidate)
+        .await?
+        .map(|value| value.record.manifest))
+}
+
+fn valid_authored_request_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+async fn load_manifest_by_request_key(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    request_key: &str,
+) -> Result<Option<StoredScopeManifestRecord>> {
+    let opportunity: Option<Uuid> = sqlx::query_scalar(
+        "SELECT o.id FROM advisory_opportunity o JOIN advisory_scope_manifest m \
+           ON (m.tenant_id,m.workspace_id,m.opportunity_id)=(o.tenant_id,o.workspace_id,o.id) \
+         WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.request_key=$3 \
+           AND o.scope_id IS NULL AND o.work_item_kind='scope_candidate_set' \
+           AND o.capability='scope_decomposition' \
+           AND o.decision_point='scope.decomposition.before_selection'",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(request_key)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    let Some(opportunity) = opportunity else {
+        return Ok(None);
+    };
+    load_manifest_record(tx, tenant, workspace, opportunity, None)
+        .await?
+        .map(Some)
+        .ok_or(Error::StorageUnavailable)
+}
+
+async fn load_manifest_record(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    opportunity: Uuid,
+    expected_candidate: Option<Uuid>,
+) -> Result<Option<StoredScopeManifestRecord>> {
     let row: Option<ManifestRow> = sqlx::query_as(
-        "SELECT m.candidate_set_id,s.candidate_set_revision,s.snapshot_id,m.source_digest,\
+        "SELECT m.candidate_set_id,s.candidate_set_revision,s.snapshot_id,\
+                s.config_revision,s.opportunity_material_digest,m.authored_request_digest,m.source_digest,\
                 m.constructor_id,m.constructor_version,m.constructor_digest,\
                 m.baseline_alternative_id,m.eligible_set_digest,\
                 m.whole_set_digest,s.aggregate_payload AS source_payload,\
@@ -306,6 +366,13 @@ async fn load_manifest(
     let manifest: ScopeConstructorManifest =
         serde_json::from_value(row.manifest_payload).map_err(storage_error)?;
     manifest.validate(&Sha256ScopeDigest)?;
+    if row
+        .authored_request_digest
+        .as_deref()
+        .is_some_and(|value| !valid_authored_request_digest(value))
+    {
+        return Err(Error::StorageUnavailable);
+    }
     if manifest.source != source.source
         || manifest.obligations != source.obligations
         || manifest.source.candidate_set_id != row.candidate_set_id
@@ -321,5 +388,14 @@ async fn load_manifest(
     {
         return Err(Error::StorageUnavailable);
     }
-    Ok(Some(manifest))
+    Ok(Some(StoredScopeManifestRecord {
+        record: ScopeManifestRecord {
+            opportunity_id: opportunity,
+            candidate_set_id: row.candidate_set_id,
+            config_revision: row.config_revision,
+            opportunity_material_digest: row.opportunity_material_digest,
+            manifest,
+        },
+        authored_request_digest: row.authored_request_digest,
+    }))
 }

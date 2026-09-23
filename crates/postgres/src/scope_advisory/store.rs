@@ -6,7 +6,24 @@ impl ScopeAdvisoryStore for PgUnitOfWork {
         record: &ScopeManifestRecord,
     ) -> Result<ScopeConstructorManifest> {
         let tenant = self.tenant_id()?;
-        prepare_manifest(self.transaction()?, tenant, workspace_id, record).await
+        prepare_manifest(self.transaction()?, tenant, workspace_id, record, None).await
+    }
+
+    async fn prepare_authored_scope_advisory_manifest(
+        &mut self,
+        workspace_id: Uuid,
+        record: &ScopeManifestRecord,
+        authored_request_digest: &str,
+    ) -> Result<ScopeConstructorManifest> {
+        let tenant = self.tenant_id()?;
+        prepare_manifest(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            record,
+            Some(authored_request_digest),
+        )
+        .await
     }
 
     async fn scope_advisory_manifest(
@@ -21,6 +38,21 @@ impl ScopeAdvisoryStore for PgUnitOfWork {
             workspace_id,
             opportunity_id,
             None,
+        )
+        .await
+    }
+
+    async fn scope_advisory_manifest_by_request_key(
+        &mut self,
+        workspace_id: Uuid,
+        request_key: &str,
+    ) -> Result<Option<StoredScopeManifestRecord>> {
+        let tenant = self.tenant_id()?;
+        load_manifest_by_request_key(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            request_key,
         )
         .await
     }

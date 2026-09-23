@@ -15,6 +15,13 @@ pub struct ScopeManifestRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredScopeManifestRecord {
+    pub record: ScopeManifestRecord,
+    /// Canonical caller-authored input digest, absent only for legacy requests.
+    pub authored_request_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GuardedScopeAdviceRecord {
     pub opportunity_id: Uuid,
     pub candidate_set_id: Uuid,
@@ -80,11 +87,24 @@ pub trait ScopeAdvisoryStore: Send {
         record: &ScopeManifestRecord,
     ) -> Result<ScopeConstructorManifest>;
 
+    async fn prepare_authored_scope_advisory_manifest(
+        &mut self,
+        workspace_id: Uuid,
+        record: &ScopeManifestRecord,
+        authored_request_digest: &str,
+    ) -> Result<ScopeConstructorManifest>;
+
     async fn scope_advisory_manifest(
         &mut self,
         workspace_id: Uuid,
         opportunity_id: Uuid,
     ) -> Result<Option<ScopeConstructorManifest>>;
+
+    async fn scope_advisory_manifest_by_request_key(
+        &mut self,
+        workspace_id: Uuid,
+        request_key: &str,
+    ) -> Result<Option<StoredScopeManifestRecord>>;
 
     async fn guarded_scope_advice(
         &mut self,

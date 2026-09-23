@@ -1,4 +1,6 @@
 const MIGRATION: &str = include_str!("../migrations/0040_scope_advisory_persistence.sql");
+const AUTHORED_REQUEST_MIGRATION: &str =
+    include_str!("../migrations/0042_scope_authored_request_manifest_binding.sql");
 const MANIFEST: &str = include_str!("scope_advisory/manifest.rs");
 const DECISIONS: &str = include_str!("scope_advisory/decisions.rs");
 const FINALIZE: &str = include_str!("scope_advisory/finalize.rs");
@@ -133,6 +135,29 @@ fn current_config_guard_and_replay_lineage_are_explicit() {
             "missing {token}"
         );
     }
+}
+
+#[test]
+fn authored_request_digest_is_optional_manifest_lineage_and_not_provider_request_digest() {
+    for token in [
+        "ADD COLUMN authored_request_digest text",
+        "authored_request_digest IS NULL OR authored_request_digest ~ '^[0-9a-f]{64}$'",
+        "DROP CONSTRAINT advisory_scope_manifest_digest_check",
+        "ADD CONSTRAINT advisory_scope_manifest_digest_check",
+    ] {
+        assert!(
+            AUTHORED_REQUEST_MIGRATION.contains(token),
+            "missing {token}"
+        );
+    }
+    assert!(!AUTHORED_REQUEST_MIGRATION.contains("CREATE TABLE"));
+    assert!(PORT.contains("authored_request_digest: Option<String>"));
+    assert!(PORT.contains("prepare_authored_scope_advisory_manifest"));
+    assert!(PORT.contains("scope_advisory_manifest_by_request_key"));
+    assert!(MANIFEST.contains("authored_request_digest.as_deref() == authored_request_digest"));
+    assert!(MANIFEST.contains("o.request_key=$3"));
+    assert!(MANIFEST.contains("o.tenant_id=$1 AND o.workspace_id=$2"));
+    assert!(!AUTHORED_REQUEST_MIGRATION.contains("advisory_scope_advice"));
 }
 
 #[test]

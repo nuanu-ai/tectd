@@ -50,6 +50,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     source_refs.sort();
     let opportunity = Uuid::new_v4();
     let dispatch = Uuid::new_v4();
+    let request_key = format!("request-{opportunity}");
     sqlx::query("INSERT INTO workspaces(id,tenant_id,key) VALUES($1,$2,$3)")
         .bind(workspace)
         .bind(tenant)
@@ -95,7 +96,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         .bind(tenant).bind(workspace).bind(actor).bind(session).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'3',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','use_workspace','1',$7,$8,'prepared','dispatch_authorized')")
         .bind(opportunity).bind(tenant).bind(workspace).bind(candidate).bind(session).bind(actor)
-        .bind(format!("request-{opportunity}")).bind(D).execute(&pool).await.unwrap();
+        .bind(&request_key).bind(D).execute(&pool).await.unwrap();
     let preselection: (bool, i64) = sqlx::query_as(
         "SELECT o.scope_id IS NULL,(SELECT count(*) FROM native_scopes n WHERE n.tenant_id=o.tenant_id AND n.workspace_id=o.workspace_id)::bigint FROM advisory_opportunity o WHERE o.id=$1",
     ).bind(opportunity).fetch_one(&pool).await.unwrap();
@@ -140,6 +141,18 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         manifest: manifest.clone(),
     };
     let mut unit = rw(&store, &enrollment.auth, tenant).await;
+    assert!(
+        unit.scope_advisory_manifest_by_request_key(workspace, &request_key)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        unit.scope_advisory_manifest_by_request_key(Uuid::new_v4(), &request_key)
+            .await
+            .unwrap()
+            .is_none()
+    );
     let wrong = ScopeManifestRecord {
         opportunity_id: opportunity,
         candidate_set_id: Uuid::new_v4(),
@@ -245,10 +258,35 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
             .await,
         Err(Error::StaleRevision)
     );
-    unit.prepare_scope_advisory_manifest(workspace, &prepared)
+    let authored_request_digest = "a".repeat(64);
+    unit.prepare_authored_scope_advisory_manifest(workspace, &prepared, &authored_request_digest)
         .await
         .unwrap();
+    let stored = unit
+        .scope_advisory_manifest_by_request_key(workspace, &request_key)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.record, prepared);
+    assert_eq!(
+        stored.authored_request_digest.as_deref(),
+        Some(authored_request_digest.as_str())
+    );
     unit.commit().await.unwrap();
+    let mut replay = rw(&store, &enrollment.auth, tenant).await;
+    let stored_replay = replay
+        .scope_advisory_manifest_by_request_key(workspace, &request_key)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored_replay, stored);
+    assert_eq!(
+        replay
+            .prepare_authored_scope_advisory_manifest(workspace, &prepared, &"b".repeat(64),)
+            .await,
+        Err(Error::InputConflict)
+    );
+    replay.commit().await.unwrap();
     sqlx::query("UPDATE advisory_opportunity SET state='awaiting_response',primary_reason='send_unknown' WHERE id=$1")
         .bind(opportunity).execute(&pool).await.unwrap();
     sqlx::query("INSERT INTO advisory_dispatch(id,tenant_id,workspace_id,opportunity_id,attempt_number,provider,model,configuration_snapshot,configuration_digest,material_digest,payload_digest,request_payload,state,send_certainty,retry_basis,send_started_at) VALUES($1,$2,$3,$4,1,'fixture','jev','{}',$5,$5,$5,'x','sending','sent_unknown','initial',clock_timestamp())")
@@ -550,6 +588,14 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         .execute(&pool)
         .await
         .unwrap();
+}
+
+#[test]
+fn authored_request_digest_requires_lowercase_sha256_hex() {
+    assert!(super::valid_authored_request_digest(&"a".repeat(64)));
+    assert!(!super::valid_authored_request_digest(&"A".repeat(64)));
+    assert!(!super::valid_authored_request_digest(&"g".repeat(64)));
+    assert!(!super::valid_authored_request_digest(&"a".repeat(63)));
 }
 
 #[tokio::test]
