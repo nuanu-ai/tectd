@@ -48,6 +48,7 @@ async fn early_no_call_uses_only_target_port_and_requires_target_access() {
         candidate_set_id: Uuid::from_u128(3),
         session_preference: AdvisoryRequestPreference::UseWorkspace,
         request_preference: AdvisoryRequestPreference::UseWorkspace,
+        authored_scope_set: None,
     };
     let mut target = FakeEarlyCandidateRevision {
         calls: 0,
@@ -97,6 +98,7 @@ fn early_no_call_gate_preserves_disabled_session_request_precedence() {
         candidate_set_id: Uuid::from_u128(3),
         session_preference: AdvisoryRequestPreference::Skip,
         request_preference: AdvisoryRequestPreference::Skip,
+        authored_scope_set: None,
     };
     assert_eq!(
         early_no_call_reason(&no_call_config(WorkspaceAdvisoryMode::Disabled), &request),
@@ -162,6 +164,7 @@ fn no_call_material_is_deterministic_and_binds_reason_and_revision() {
         candidate_set_id: Uuid::from_u128(3),
         session_preference: AdvisoryRequestPreference::UseWorkspace,
         request_preference: AdvisoryRequestPreference::UseWorkspace,
+        authored_scope_set: None,
     };
     let first = no_call_digest(&request, 3, AdvisoryReason::CapabilityUnavailable).unwrap();
     assert_eq!(
@@ -176,6 +179,81 @@ fn no_call_material_is_deterministic_and_binds_reason_and_revision() {
         first,
         no_call_digest(&request, 3, AdvisoryReason::ProviderUnconfigured).unwrap()
     );
+}
+
+fn authored_set() -> AuthoredScopeSet {
+    AuthoredScopeSet {
+        expected_candidate_set_revision: 7,
+        baseline_key: "baseline".into(),
+        alternatives: vec![AuthoredScopeAlternative {
+            key: "baseline".into(),
+            kind: tect_domain::ScopeDecompositionKind::Cohesive,
+            draft: tect_domain::ScopeCandidateDraft {
+                boundary: tect_domain::CandidateBoundary::Ongoing,
+                goals: vec![],
+                evidence: vec![],
+                candidates: vec![],
+                blockers: vec![],
+                pending_question: None,
+                empty_disposition: Some(tect_domain::EmptyCandidateDisposition {
+                    kind: tect_domain::EmptyCandidateDispositionKind::OutOfBoundary,
+                    reason: "No in-boundary work".into(),
+                    source_ref_id: Uuid::from_u128(10),
+                }),
+                protected_changes: vec![],
+                supersessions: vec![],
+            },
+            covered_source_ref_ids: vec![Uuid::from_u128(10), Uuid::from_u128(11)],
+        }],
+    }
+}
+
+#[test]
+fn authored_contract_rejects_missing_baseline_duplicate_keys_and_unsorted_coverage() {
+    let mut authored = authored_set();
+    authored.validate().unwrap();
+    authored.baseline_key = "missing".into();
+    assert_eq!(authored.validate(), Err(Error::InvalidArguments));
+    authored.baseline_key = "baseline".into();
+    authored.alternatives.push(authored.alternatives[0].clone());
+    assert_eq!(authored.validate(), Err(Error::InvalidArguments));
+    authored.alternatives.pop();
+    authored.alternatives[0].covered_source_ref_ids.reverse();
+    assert_eq!(authored.validate(), Err(Error::InvalidArguments));
+}
+
+#[test]
+fn authored_request_digest_changes_no_call_material_and_rejects_unknown_fields() {
+    let mut request = RunScopeAdvisory {
+        request_id: Uuid::from_u128(1),
+        candidate_set_id: Uuid::from_u128(3),
+        session_preference: AdvisoryRequestPreference::UseWorkspace,
+        request_preference: AdvisoryRequestPreference::Skip,
+        authored_scope_set: None,
+    };
+    let absent = no_call_digest(&request, 3, AdvisoryReason::RequestSkip).unwrap();
+    request.authored_scope_set = Some(authored_set());
+    let first = no_call_digest(&request, 3, AdvisoryReason::RequestSkip).unwrap();
+    assert_ne!(absent, first);
+    assert_eq!(
+        first,
+        no_call_digest(&request, 3, AdvisoryReason::RequestSkip).unwrap()
+    );
+    request.authored_scope_set.as_mut().unwrap().alternatives[0]
+        .draft
+        .empty_disposition
+        .as_mut()
+        .unwrap()
+        .reason
+        .push('!');
+    assert_ne!(
+        first,
+        no_call_digest(&request, 3, AdvisoryReason::RequestSkip).unwrap()
+    );
+
+    let mut value = serde_json::to_value(authored_set()).unwrap();
+    value["unexpected"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<AuthoredScopeSet>(value).is_err());
 }
 
 #[tokio::test]

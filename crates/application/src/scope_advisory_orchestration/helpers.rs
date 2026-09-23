@@ -186,7 +186,7 @@ pub(super) fn no_call_digest(
     config_revision: i64,
     reason: AdvisoryReason,
 ) -> Result<String> {
-    let value = serde_json::json!({
+    let mut value = serde_json::json!({
         "schema": "tect.scope-advisory-no-call/1",
         "request_id": request.request_id,
         "candidate_set_id": request.candidate_set_id,
@@ -195,9 +195,22 @@ pub(super) fn no_call_digest(
         "config_revision": config_revision,
         "reason": reason.as_str(),
     });
+    if let Some(authored) = &request.authored_scope_set {
+        value["authored_request_digest"] =
+            serde_json::Value::String(authored_request_digest(authored)?);
+    }
     Ok(sha256(
         &serde_json::to_vec(&value).map_err(Error::invalid_arguments_from)?,
     ))
+}
+
+pub(super) fn authored_request_digest(authored: &super::AuthoredScopeSet) -> Result<String> {
+    authored.validate()?;
+    let bytes = serde_json::to_vec(authored).map_err(Error::invalid_arguments_from)?;
+    let mut digest = Sha256::new();
+    digest.update(b"tect.scope-advisory-authored-request/1\0");
+    digest.update(bytes);
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 pub(super) fn sha256(bytes: &[u8]) -> String {
