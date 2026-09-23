@@ -137,6 +137,88 @@ async fn serialized_request_at_cap_is_sent_once() {
 }
 
 #[tokio::test]
+async fn prepared_entity_is_the_received_entity_with_exact_digest_and_binding() {
+    let (endpoint, calls, captured, server) = fixture(FixtureResponse {
+        status: 200,
+        content_type: "application/json",
+        body: serde_json::to_vec(&valid_response()).unwrap(),
+        delay: Duration::ZERO,
+    })
+    .await;
+    let provider = provider(endpoint.clone(), Duration::from_secs(1), 16_384);
+    let request = request();
+    let prepared = provider.prepare(&request).unwrap();
+    let expected_body = prepared.body().to_vec();
+    let expected_digest = prepared.sha256().to_owned();
+    assert_eq!(prepared.byte_length(), expected_body.len());
+    assert_eq!(
+        expected_digest,
+        format!("{:x}", Sha256::digest(&expected_body))
+    );
+    assert_eq!(prepared.profile(), "fixture");
+    assert_eq!(prepared.model(), "jev-1.13.0");
+    assert_eq!(prepared.wire_format(), WIRE_FORMAT);
+    assert_eq!(prepared.endpoint(), &endpoint);
+
+    let observation = provider
+        .attempt_prepared(DISPATCH_ID, prepared)
+        .await
+        .unwrap();
+    server.await.unwrap();
+    let captured = captured.await.unwrap();
+    let body_start = captured
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    assert_eq!(&captured[body_start..], expected_body);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        observation.outcome,
+        AdvisoryDispatchOutcome::ProviderResponse
+    );
+}
+
+#[tokio::test]
+async fn prepared_digest_changes_with_model_or_content_and_mismatch_is_not_sent() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let endpoint = Url::parse(&format!("http://{address}/v1/systemone")).unwrap();
+    let provider = provider(endpoint.clone(), Duration::from_secs(1), 16_384);
+    let original = provider.prepare(&request()).unwrap();
+    let mut modified = request();
+    modified.alternatives[0]
+        .covered_obligation_ids
+        .push("second-obligation".into());
+    let changed_content = provider.prepare(&modified).unwrap();
+    assert_ne!(original.sha256(), changed_content.sha256());
+
+    let other_model = JevScopeAdviceProvider::new(
+        JevScopeAdviceConfig {
+            profile: "fixture".into(),
+            endpoint,
+            model: "jev-2".into(),
+            timeout: Duration::from_secs(1),
+            maximum_request_bytes: 16_384,
+            maximum_response_bytes: 16_384,
+        },
+        "secret-fixture-credential".into(),
+    )
+    .unwrap();
+    let changed_model = other_model.prepare(&request()).unwrap();
+    assert_ne!(original.sha256(), changed_model.sha256());
+    assert_eq!(
+        provider.attempt_prepared(DISPATCH_ID, changed_model).await,
+        Err(ScopeAdviceProviderError::ProvenNotSent)
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
 async fn serialized_request_one_byte_over_cap_is_proven_not_sent() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -146,9 +228,12 @@ async fn serialized_request_one_byte_over_cap_is_proven_not_sent() {
         .covered_obligation_ids
         .push("private-request-marker".into());
     let payload = serialize_request("jev-1.13.0", &request).unwrap();
-    let result = provider_with_caps(endpoint, Duration::from_secs(1), payload.len() - 1, 16_384)
-        .attempt_request(DISPATCH_ID, &request)
-        .await;
+    let provider = provider_with_caps(endpoint, Duration::from_secs(1), payload.len() - 1, 16_384);
+    assert!(matches!(
+        provider.prepare(&request),
+        Err(ScopeAdviceProviderError::ProvenNotSent)
+    ));
+    let result = provider.attempt_request(DISPATCH_ID, &request).await;
     assert_eq!(result, Err(ScopeAdviceProviderError::ProvenNotSent));
     let rendered = format!("{result:?}");
     assert!(!rendered.contains("private-request-marker"));

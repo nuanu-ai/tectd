@@ -15,6 +15,8 @@ use tect_domain::{
 
 mod wire;
 
+const WIRE_FORMAT: &str = "jev-system-one-json/1";
+
 #[cfg(test)]
 mod tests;
 
@@ -57,6 +59,49 @@ pub struct JevScopeAdviceProvider {
     authorization: HeaderValue,
 }
 
+/// Owns the exact, immutable UTF-8 HTTP entity body and the identity against
+/// which it was prepared. No credential is retained in this value.
+pub struct PreparedJevScopeRequest {
+    body: Vec<u8>,
+    request: ScopeAdviceRequest,
+    profile: String,
+    model: String,
+    wire_format: &'static str,
+    endpoint: Url,
+    byte_length: usize,
+    sha256: String,
+}
+
+impl PreparedJevScopeRequest {
+    pub fn body(&self) -> &[u8] {
+        &self.body
+    }
+
+    pub fn byte_length(&self) -> usize {
+        self.byte_length
+    }
+
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    pub fn profile(&self) -> &str {
+        &self.profile
+    }
+
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub fn wire_format(&self) -> &'static str {
+        self.wire_format
+    }
+
+    pub fn endpoint(&self) -> &Url {
+        &self.endpoint
+    }
+}
+
 impl JevScopeAdviceProvider {
     pub fn new(config: JevScopeAdviceConfig, bearer_credential: String) -> Result<Self> {
         config.validate()?;
@@ -76,6 +121,29 @@ impl JevScopeAdviceProvider {
             config,
             client,
             authorization,
+        })
+    }
+
+    pub fn prepare(
+        &self,
+        request: &ScopeAdviceRequest,
+    ) -> std::result::Result<PreparedJevScopeRequest, ScopeAdviceProviderError> {
+        let body = wire::serialize_request(&self.config.model, request)
+            .map_err(|_| ScopeAdviceProviderError::ProvenNotSent)?;
+        if body.len() > self.config.maximum_request_bytes {
+            return Err(ScopeAdviceProviderError::ProvenNotSent);
+        }
+        let byte_length = body.len();
+        let sha256 = format!("{:x}", Sha256::digest(&body));
+        Ok(PreparedJevScopeRequest {
+            body,
+            request: request.clone(),
+            profile: self.config.profile.clone(),
+            model: self.config.model.clone(),
+            wire_format: WIRE_FORMAT,
+            endpoint: self.config.endpoint.clone(),
+            byte_length,
+            sha256,
         })
     }
 
@@ -145,23 +213,29 @@ impl JevScopeAdviceProvider {
         }
     }
 
-    async fn attempt_request(
+    pub async fn attempt_prepared(
         &self,
         dispatch_id: uuid::Uuid,
-        request: &ScopeAdviceRequest,
+        prepared: PreparedJevScopeRequest,
     ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
-        let payload = wire::serialize_request(&self.config.model, request)
-            .map_err(|_| ScopeAdviceProviderError::ProvenNotSent)?;
-        if payload.len() > self.config.maximum_request_bytes {
+        if prepared.profile != self.config.profile
+            || prepared.model != self.config.model
+            || prepared.wire_format != WIRE_FORMAT
+            || prepared.endpoint != self.config.endpoint
+            || prepared.byte_length != prepared.body.len()
+            || prepared.byte_length > self.config.maximum_request_bytes
+            || prepared.sha256 != format!("{:x}", Sha256::digest(&prepared.body))
+        {
             return Err(ScopeAdviceProviderError::ProvenNotSent);
         }
+        let PreparedJevScopeRequest { body, request, .. } = prepared;
         let started = std::time::Instant::now();
         let response = self
             .client
             .post(self.config.endpoint.clone())
             .header(AUTHORIZATION, self.authorization.clone())
             .header(CONTENT_TYPE, "application/json")
-            .body(payload)
+            .body(body)
             .send()
             .await
             .map_err(|_| ScopeAdviceProviderError::SentUnknown {
@@ -229,7 +303,7 @@ impl JevScopeAdviceProvider {
             ));
         }
         let raw_response_ref = self.raw_ref(dispatch_id, &bytes);
-        let Ok(parsed) = wire::parse_response(&bytes, &self.config.model, request) else {
+        let Ok(parsed) = wire::parse_response(&bytes, &self.config.model, &request) else {
             let observed_bytes = bytes.len();
             return Ok(self.received_failure(
                 dispatch_id,
@@ -250,6 +324,15 @@ impl JevScopeAdviceProvider {
             raw_response_ref: Some(raw_response_ref),
             failure_reason: None,
         })
+    }
+
+    async fn attempt_request(
+        &self,
+        dispatch_id: uuid::Uuid,
+        request: &ScopeAdviceRequest,
+    ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
+        let prepared = self.prepare(request)?;
+        self.attempt_prepared(dispatch_id, prepared).await
     }
 }
 
