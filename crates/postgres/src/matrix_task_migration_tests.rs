@@ -55,13 +55,23 @@ fn accepted_input_is_versioned_idempotent_and_keeps_fact_state() {
     ] {
         assert!(MIGRATION.contains(field), "missing {field}");
     }
-    for forbidden in [
-        "verified_at",
-        "verification_status",
-        "CREATE TRIGGER",
-        "advisory_dispatch",
-    ] {
+    for forbidden in ["verified_at", "verification_status", "advisory_dispatch"] {
         assert!(!MIGRATION.contains(forbidden), "unexpected {forbidden}");
+    }
+}
+
+#[test]
+fn task_head_transition_is_database_guarded_without_skips_or_regressions() {
+    for required in [
+        "CREATE FUNCTION matrix_tasks_enforce_revision_step() RETURNS trigger",
+        "IF TG_OP = 'INSERT' THEN",
+        "IF NEW.current_revision <> 1 THEN",
+        "ELSIF NEW.current_revision <> OLD.current_revision + 1 THEN",
+        "CREATE TRIGGER matrix_tasks_revision_step",
+        "BEFORE INSERT OR UPDATE OF current_revision ON matrix_tasks",
+        "REVOKE ALL PRIVILEGES ON FUNCTION matrix_tasks_enforce_revision_step() FROM PUBLIC",
+    ] {
+        assert!(MIGRATION.contains(required), "missing {required}");
     }
 }
 

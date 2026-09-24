@@ -66,6 +66,30 @@ ALTER TABLE matrix_tasks
     REFERENCES matrix_task_revisions (tenant_id, workspace_id, task_id, revision)
     DEFERRABLE INITIALLY DEFERRED;
 
+-- The deferred FK proves the selected revision exists at commit; this guard
+-- also prevents a head from jumping ahead or returning to an older revision.
+CREATE FUNCTION matrix_tasks_enforce_revision_step() RETURNS trigger
+LANGUAGE plpgsql AS $revision_step$
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        IF NEW.current_revision <> 1 THEN
+            RAISE EXCEPTION 'matrix task head must start at revision 1'
+                USING ERRCODE = '23514';
+        END IF;
+    ELSIF NEW.current_revision <> OLD.current_revision + 1 THEN
+        RAISE EXCEPTION 'matrix task head must advance exactly one revision'
+            USING ERRCODE = '23514';
+    END IF;
+    RETURN NEW;
+END
+$revision_step$;
+
+CREATE TRIGGER matrix_tasks_revision_step
+    BEFORE INSERT OR UPDATE OF current_revision ON matrix_tasks
+    FOR EACH ROW EXECUTE FUNCTION matrix_tasks_enforce_revision_step();
+
+REVOKE ALL PRIVILEGES ON FUNCTION matrix_tasks_enforce_revision_step() FROM PUBLIC;
+
 CREATE INDEX matrix_task_revisions_recent_idx ON matrix_task_revisions
     (tenant_id, workspace_id, recorded_at DESC, task_id, revision DESC);
 
