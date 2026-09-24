@@ -37,8 +37,8 @@ pub struct MatrixTaskRevision {
     pub recorded_by_session_id: Uuid,
 }
 
-/// Records a decision at the current saved Matrix task revision. Preparation
-/// and budget authorization are pure; this request never sends to a provider.
+/// Records a terminal no-call decision at the current saved Matrix task
+/// revision. Active preparation remains gated until dispatch is durable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestEngineeringAdvisory {
     pub task_id: Uuid,
@@ -103,50 +103,36 @@ impl WorkspaceService {
         let existing = tx
             .advisory_opportunity_by_request(workspace.id, &request.request_key)
             .await?;
-        if let Some(existing) = existing.as_ref() {
-            if !matrix_advisory_replay_matches(existing, request, session.id, identity.principal_id)
-            {
+        if let Some(existing) = existing {
+            if !matrix_advisory_replay_matches(
+                &existing,
+                request,
+                session.id,
+                identity.principal_id,
+            ) {
                 return Err(Error::InputConflict);
             }
+            tx.commit().await?;
+            return Ok(existing);
         }
         let revision = tx
             .lock_matrix_task(workspace.id, request.task_id)
             .await?
             .ok_or(Error::NotFound)?;
-        if existing.is_some() && revision.revision != request.expected_task_revision {
-            return Err(Error::InputConflict);
-        }
-        if existing.is_none() && revision.revision != request.expected_task_revision {
+        if revision.revision != request.expected_task_revision {
             return Err(Error::StaleRevision);
         }
         let config = tx.advisory_config(workspace.id).await?;
-        let mut input = matrix_advisory_opportunity_input(
+        let input = matrix_advisory_opportunity_input(
             &revision,
             request,
             &config,
             session.id,
             identity.principal_id,
         )?;
-        if let Some(existing) = existing {
-            if existing.material_digest != input.material_digest
-                || existing.config_revision != input.config_revision
-                || existing.matrix_choice_set_digest != input.matrix_choice_set_digest
-            {
-                return Err(Error::InputConflict);
-            }
-            tx.commit().await?;
-            return Ok(existing);
-        }
-        crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
-            &mut input,
-            &revision,
-            &config,
-            workspace.id,
-            identity.principal_id,
-            self.matrix_advice_provider.as_ref(),
-            self.matrix_budget.as_ref(),
-        )
-        .await?;
+        // The public request remains terminal until prepared body and dispatch
+        // authorization can be persisted together. Pure preparation is kept
+        // separately for the future dispatch orchestration boundary.
         let result = tx
             .capture_advisory_opportunity(workspace.id, &input)
             .await?;
@@ -291,24 +277,12 @@ fn matrix_advisory_opportunity_input(
     } else {
         AdvisoryReason::CapabilityUnavailable
     };
-    let evaluation_digest = revision
-        .choice_set
-        .as_ref()
-        .filter(|_| {
-            matches!(
-                eligibility,
-                MatrixAdviceEligibility::EligibleForAdvice { .. }
-            )
-        })
-        .map(|choice| tect_domain::matrix_evaluation_digest(&revision.input, &composition, choice))
-        .transpose()?;
     let material = serde_json::to_vec(&(
         "tect.matrix-advisory-opportunity/1",
         revision.task_id,
         revision.revision,
         &revision.input_digest,
         &revision.choice_set_digest,
-        &evaluation_digest,
         &composition,
         config,
         request.session_preference,
@@ -539,6 +513,14 @@ mod tests {
             Uuid::new_v4(),
         )
         .unwrap();
+        let legacy_no_call_digest = input.material_digest.clone();
+        let expected_evaluation_digest = tect_domain::matrix_evaluation_digest(
+            &revision.input,
+            &compose_current_revision(revision.clone(), revision.revision).unwrap(),
+            revision.choice_set.as_ref().unwrap(),
+        )
+        .unwrap()
+        .unwrap();
         let provider = TestProvider(identity);
         let actor_id = input.authorized_actor_id;
         crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
@@ -554,6 +536,7 @@ mod tests {
         .unwrap();
         assert_eq!(input.state, AdvisoryOpportunityState::Prepared);
         assert_eq!(input.primary_reason, AdvisoryReason::DispatchAuthorized);
+        assert_eq!(input.material_digest, expected_evaluation_digest);
         let mut denied = matrix_advisory_opportunity_input(
             &revision,
             &request,
@@ -576,6 +559,7 @@ mod tests {
         .unwrap();
         assert_eq!(denied.state, AdvisoryOpportunityState::NoCall);
         assert_eq!(denied.primary_reason, AdvisoryReason::BudgetPolicyInvalid);
+        assert_eq!(denied.material_digest, legacy_no_call_digest);
     }
 
     #[test]
@@ -669,6 +653,23 @@ mod tests {
         let actor = Uuid::new_v4();
         let input = matrix_advisory_opportunity_input(&revision, &request, &config, session, actor)
             .unwrap();
+        let legacy_material = serde_json::to_vec(&(
+            "tect.matrix-advisory-opportunity/1",
+            revision.task_id,
+            revision.revision,
+            &revision.input_digest,
+            &revision.choice_set_digest,
+            &compose_current_revision(revision.clone(), revision.revision).unwrap(),
+            &config,
+            request.session_preference,
+            request.request_preference,
+            ADVISORY_POLICY_VERSION,
+        ))
+        .unwrap();
+        assert_eq!(
+            input.material_digest,
+            format!("{:x}", Sha256::digest(legacy_material))
+        );
         let receipt = AdvisoryOpportunity {
             id: Uuid::new_v4(),
             workspace_id: config.workspace_id,
@@ -735,6 +736,17 @@ mod tests {
         assert!(matrix_advisory_replay_matches(
             &receipt, &request, session, actor
         ));
+        // A saved receipt is replayable independently of the current task
+        // head and workspace configuration, which may have advanced.
+        let mut advanced_head = revision.clone();
+        advanced_head.revision += 1;
+        let mut changed_config = config.clone();
+        changed_config.revision += 1;
+        assert_ne!(advanced_head.revision, request.expected_task_revision);
+        assert_ne!(changed_config.revision, receipt.config_revision);
+        assert!(matrix_advisory_replay_matches(
+            &receipt, &request, session, actor
+        ));
         for state in [
             AdvisoryOpportunityState::Prepared,
             AdvisoryOpportunityState::Advised,
@@ -763,6 +775,11 @@ mod tests {
             actor
         ));
         let mut changed = request.clone();
+        changed.task_id = Uuid::new_v4();
+        assert!(!matrix_advisory_replay_matches(
+            &receipt, &changed, session, actor
+        ));
+        changed = request.clone();
         changed.expected_task_revision += 1;
         assert!(!matrix_advisory_replay_matches(
             &receipt, &changed, session, actor

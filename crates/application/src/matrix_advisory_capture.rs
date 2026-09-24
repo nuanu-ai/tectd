@@ -61,6 +61,9 @@ pub(crate) async fn prepare_eligible_matrix_opportunity(
     let authorization = budget.authorize(&budget_request).await;
     match authorization {
         Ok(Some(auth)) if valid_policy_id(&auth.policy_id) => {
+            // Positive opportunities bind the exact Matrix evaluation. The
+            // legacy no-call digest remains unchanged for existing receipts.
+            input.material_digest = request.binding().evaluation_digest.clone();
             input.state = AdvisoryOpportunityState::Prepared;
             input.primary_reason = AdvisoryReason::DispatchAuthorized;
         }

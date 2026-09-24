@@ -224,6 +224,7 @@ fn binding_matches_opportunity(
         && opportunity.matrix_task_revision == Some(binding.task_revision)
         && opportunity.matrix_choice_set_digest.as_deref()
             == Some(binding.choice_set_digest.as_str())
+        && opportunity.material_digest == binding.evaluation_digest
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,6 +294,48 @@ impl MatrixBudgetPolicy for DenyMatrixBudget {
 mod tests {
     use super::*;
     use crate::{DisabledMatrixAdviceProvider, MatrixAdviceProvider};
+    use tect_domain::{
+        AdvisoryDecisionPoint, AdvisoryOpportunityState, AdvisoryReason, AdvisoryRequestPreference,
+    };
+
+    #[test]
+    fn dispatch_permit_binding_rejects_different_evaluation_material() {
+        let binding = MatrixProviderBinding {
+            task_id: Uuid::new_v4(),
+            task_revision: 2,
+            input_digest: "a".repeat(64),
+            choice_set_id: "choice".into(),
+            choice_set_version: 1,
+            choice_set_digest: "b".repeat(64),
+            evaluation_digest: "c".repeat(64),
+        };
+        let mut opportunity = AdvisoryOpportunity {
+            id: Uuid::new_v4(),
+            workspace_id: Uuid::new_v4(),
+            session_id: Uuid::new_v4(),
+            authorized_actor_id: Uuid::new_v4(),
+            capability: AdvisoryCapability::EngineeringProfile,
+            decision_point: AdvisoryDecisionPoint::EngineeringProfileBeforeSelection,
+            decision_point_version: 1,
+            workflow_occurrence_key: "key".into(),
+            target_kind: "matrix_task".into(),
+            target_id: Some(binding.task_id),
+            work_revision: Some(binding.task_revision),
+            matrix_task_revision: Some(binding.task_revision),
+            matrix_choice_set_digest: Some(binding.choice_set_digest.clone()),
+            source_ref: None,
+            session_preference: AdvisoryRequestPreference::UseWorkspace,
+            request_preference: AdvisoryRequestPreference::UseWorkspace,
+            config_revision: 1,
+            material_digest: binding.evaluation_digest.clone(),
+            state: AdvisoryOpportunityState::Prepared,
+            primary_reason: AdvisoryReason::DispatchAuthorized,
+            provider_called: false,
+        };
+        assert!(binding_matches_opportunity(&binding, &opportunity));
+        opportunity.material_digest = "d".repeat(64);
+        assert!(!binding_matches_opportunity(&binding, &opportunity));
+    }
 
     #[tokio::test]
     async fn disabled_identity_and_default_budget_deny() {
