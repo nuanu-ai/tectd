@@ -85,6 +85,8 @@ pub(super) fn scope_opportunity_input(
         target_kind: "scope_candidate_set".into(),
         target_id: Some(request.candidate_set_id),
         work_revision: revision,
+        matrix_task_revision: None,
+        matrix_choice_set_digest: None,
         source_ref: None,
         session_preference: request.session_preference,
         request_preference: request.request_preference,

@@ -18,7 +18,8 @@ pub use advisory_ports::AdvisoryStore;
 pub(crate) use advisory_ports::{AdvisoryProvider, DisabledAdvisoryProvider};
 pub use matrix_task_ports::MatrixTaskStore;
 pub use matrix_tasks::{
-    MATRIX_INPUT_SCHEMA, MatrixTaskRevision, RecordMatrixTask, canonical_matrix_input_digest,
+    MATRIX_INPUT_SCHEMA, MatrixTaskRevision, RecordMatrixTask, RequestEngineeringAdvisory,
+    canonical_matrix_input_digest,
 };
 pub use planning_knowledge_ports::PlanningKnowledgeStore;
 pub use ports::{

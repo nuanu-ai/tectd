@@ -1,8 +1,11 @@
 use crate::{TransactionMode, WorkspaceService};
 use sha2::{Digest, Sha256};
 use tect_domain::{
-    EngineeringChoiceSet, EngineeringMatrixComposition, EngineeringMatrixInput, Error,
-    OwnerReportedEngineeringMatrixFacts, RequestContext, Result,
+    ADVISORY_DECISION_POINT_VERSION, ADVISORY_POLICY_VERSION, AdvisoryCapability,
+    AdvisoryDecisionPoint, AdvisoryOpportunity, AdvisoryOpportunityInput, AdvisoryOpportunityState,
+    AdvisoryReason, AdvisoryRequestPreference, EngineeringChoiceSet, EngineeringMatrixComposition,
+    EngineeringMatrixInput, Error, MatrixAdviceEligibility, OwnerReportedEngineeringMatrixFacts,
+    RequestContext, Result, WorkspaceAdvisoryConfig, WorkspaceAdvisoryMode,
     compose_owner_reported_engineering_matrix,
 };
 use uuid::Uuid;
@@ -34,7 +37,77 @@ pub struct MatrixTaskRevision {
     pub recorded_by_session_id: Uuid,
 }
 
+/// Records a decision at the current saved Matrix task revision. No provider is
+/// available at this boundary, so every accepted request is a terminal no-call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestEngineeringAdvisory {
+    pub task_id: Uuid,
+    pub expected_task_revision: i64,
+    pub request_key: String,
+    pub session_preference: AdvisoryRequestPreference,
+    pub request_preference: AdvisoryRequestPreference,
+}
+
 impl WorkspaceService {
+    pub async fn request_engineering_advisory(
+        &self,
+        context: &RequestContext,
+        request: &RequestEngineeringAdvisory,
+    ) -> Result<AdvisoryOpportunity> {
+        if request.task_id.is_nil()
+            || request.expected_task_revision < 1
+            || request.request_key.is_empty()
+            || request.request_key.len() > 256
+            || request.request_key.contains('\0')
+            || request.request_key.trim() != request.request_key
+        {
+            return Err(Error::InvalidArguments);
+        }
+        let (mut tx, identity) = self
+            .authenticated(context, TransactionMode::ReadWrite)
+            .await?;
+        tx.lock_native_session(identity.host_id, &context.native_session_id)
+            .await?;
+        let session = tx
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
+        let existing = tx
+            .advisory_opportunity_by_request(workspace.id, &request.request_key)
+            .await?;
+        if let Some(existing) = existing.as_ref() {
+            if !matrix_advisory_replay_matches(existing, request, session.id, identity.principal_id)
+            {
+                return Err(Error::InputConflict);
+            }
+        }
+        let revision = tx
+            .lock_matrix_task(workspace.id, request.task_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        if let Some(existing) = existing {
+            tx.commit().await?;
+            return Ok(existing);
+        }
+        if revision.revision != request.expected_task_revision {
+            return Err(Error::StaleRevision);
+        }
+        let config = tx.advisory_config(workspace.id).await?;
+        let input = matrix_advisory_opportunity_input(
+            &revision,
+            request,
+            &config,
+            session.id,
+            identity.principal_id,
+        )?;
+        let result = tx
+            .capture_advisory_opportunity(workspace.id, &input)
+            .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
     pub async fn record_matrix_task(
         &self,
         context: &RequestContext,
@@ -97,6 +170,89 @@ impl WorkspaceService {
         let revision = self.get_matrix_task(context, task_id).await?;
         compose_current_revision(revision, expected_task_revision)
     }
+}
+
+fn matrix_advisory_replay_matches(
+    existing: &AdvisoryOpportunity,
+    request: &RequestEngineeringAdvisory,
+    session_id: Uuid,
+    actor_id: Uuid,
+) -> bool {
+    existing.capability == AdvisoryCapability::EngineeringProfile
+        && existing.decision_point == AdvisoryDecisionPoint::EngineeringProfileBeforeSelection
+        && existing.target_kind == "matrix_task"
+        && existing.target_id == Some(request.task_id)
+        && existing.matrix_task_revision == Some(request.expected_task_revision)
+        && existing.work_revision == Some(request.expected_task_revision)
+        && existing.workflow_occurrence_key == request.request_key
+        && existing.session_id == session_id
+        && existing.authorized_actor_id == actor_id
+        && existing.session_preference == request.session_preference
+        && existing.request_preference == request.request_preference
+        && existing.state == AdvisoryOpportunityState::NoCall
+        && !existing.provider_called
+}
+
+fn matrix_advisory_opportunity_input(
+    revision: &MatrixTaskRevision,
+    request: &RequestEngineeringAdvisory,
+    config: &WorkspaceAdvisoryConfig,
+    session_id: Uuid,
+    actor_id: Uuid,
+) -> Result<AdvisoryOpportunityInput> {
+    let composition = compose_current_revision(revision.clone(), request.expected_task_revision)?;
+    let eligibility = revision
+        .choice_set
+        .as_ref()
+        .map(|choice| choice.validate(&revision.input))
+        .transpose()?
+        .unwrap_or(MatrixAdviceEligibility::NotApplicable);
+    let reason = if config.mode == WorkspaceAdvisoryMode::Disabled {
+        AdvisoryReason::WorkspaceDisabled
+    } else if request.session_preference == AdvisoryRequestPreference::Skip {
+        AdvisoryReason::SessionSkip
+    } else if request.request_preference == AdvisoryRequestPreference::Skip {
+        AdvisoryReason::RequestSkip
+    } else if eligibility == MatrixAdviceEligibility::NotApplicable {
+        AdvisoryReason::ChoiceSetNotApplicable
+    } else {
+        AdvisoryReason::CapabilityUnavailable
+    };
+    let material = serde_json::to_vec(&(
+        "tect.matrix-advisory-opportunity/1",
+        revision.task_id,
+        revision.revision,
+        &revision.input_digest,
+        &revision.choice_set_digest,
+        &composition,
+        config,
+        request.session_preference,
+        request.request_preference,
+        ADVISORY_POLICY_VERSION,
+    ))
+    .map_err(|_| Error::InternalInvariant)?;
+    let input = AdvisoryOpportunityInput {
+        session_id,
+        authorized_actor_id: actor_id,
+        capability: AdvisoryCapability::EngineeringProfile,
+        decision_point: AdvisoryDecisionPoint::EngineeringProfileBeforeSelection,
+        decision_point_version: ADVISORY_DECISION_POINT_VERSION,
+        workflow_occurrence_key: request.request_key.clone(),
+        target_kind: "matrix_task".into(),
+        target_id: Some(revision.task_id),
+        work_revision: Some(revision.revision),
+        matrix_task_revision: Some(revision.revision),
+        matrix_choice_set_digest: revision.choice_set_digest.clone(),
+        source_ref: None,
+        session_preference: request.session_preference,
+        request_preference: request.request_preference,
+        config_revision: config.revision,
+        material_digest: format!("{:x}", Sha256::digest(material)),
+        state: AdvisoryOpportunityState::NoCall,
+        primary_reason: reason,
+    };
+    input.validate()?;
+    Ok(input)
 }
 
 fn compose_current_revision(
@@ -189,6 +345,168 @@ mod tests {
             recorded_by_principal_id: Uuid::new_v4(),
             recorded_by_session_id: Uuid::new_v4(),
         }
+    }
+
+    fn advisory_request(task_id: Uuid) -> RequestEngineeringAdvisory {
+        RequestEngineeringAdvisory {
+            task_id,
+            expected_task_revision: 2,
+            request_key: Uuid::new_v4().to_string(),
+            session_preference: AdvisoryRequestPreference::UseWorkspace,
+            request_preference: AdvisoryRequestPreference::UseWorkspace,
+        }
+    }
+
+    fn advisory_config(mode: WorkspaceAdvisoryMode) -> WorkspaceAdvisoryConfig {
+        WorkspaceAdvisoryConfig {
+            workspace_id: Uuid::new_v4(),
+            revision: 1,
+            mode,
+            materialized: true,
+            provider_profile_ref: None,
+            model_configuration: None,
+        }
+    }
+
+    #[test]
+    fn matrix_no_call_precedence_and_digest_bind_stored_material() {
+        let mut revision = stored_revision();
+        let mut request = advisory_request(revision.task_id);
+        let session = Uuid::new_v4();
+        let actor = Uuid::new_v4();
+        let mut config = advisory_config(WorkspaceAdvisoryMode::Disabled);
+        let disabled =
+            matrix_advisory_opportunity_input(&revision, &request, &config, session, actor)
+                .unwrap();
+        assert_eq!(disabled.primary_reason, AdvisoryReason::WorkspaceDisabled);
+        config.mode = WorkspaceAdvisoryMode::Optional;
+        request.session_preference = AdvisoryRequestPreference::Skip;
+        assert_eq!(
+            matrix_advisory_opportunity_input(&revision, &request, &config, session, actor)
+                .unwrap()
+                .primary_reason,
+            AdvisoryReason::SessionSkip
+        );
+        request.session_preference = AdvisoryRequestPreference::UseWorkspace;
+        request.request_preference = AdvisoryRequestPreference::Skip;
+        assert_eq!(
+            matrix_advisory_opportunity_input(&revision, &request, &config, session, actor)
+                .unwrap()
+                .primary_reason,
+            AdvisoryReason::RequestSkip
+        );
+        request.request_preference = AdvisoryRequestPreference::UseWorkspace;
+        let absent =
+            matrix_advisory_opportunity_input(&revision, &request, &config, session, actor)
+                .unwrap();
+        assert_eq!(
+            absent.primary_reason,
+            AdvisoryReason::ChoiceSetNotApplicable
+        );
+        assert_eq!(absent.matrix_task_revision, Some(2));
+        assert_eq!(absent.matrix_choice_set_digest, None);
+
+        let choice = EngineeringChoiceSet {
+            schema: MATRIX_CHOICE_SET_SCHEMA.into(),
+            choice_set_id: "choice-1".into(),
+            version: 1,
+            task_id: revision.task_id.to_string(),
+            task_revision: "2".into(),
+            decision_question: "Which approach?".into(),
+            candidates: ["a", "b"]
+                .into_iter()
+                .map(|id| EngineeringCandidate {
+                    candidate_id: id.into(),
+                    title: id.into(),
+                    approach: id.into(),
+                    assumption_fact_ids: vec![],
+                })
+                .collect(),
+        };
+        revision.choice_set_digest = Some(choice.canonical_digest(&revision.input).unwrap());
+        revision.choice_set = Some(choice);
+        let eligible =
+            matrix_advisory_opportunity_input(&revision, &request, &config, session, actor)
+                .unwrap();
+        assert_eq!(
+            eligible.primary_reason,
+            AdvisoryReason::CapabilityUnavailable
+        );
+        assert_eq!(eligible.state, AdvisoryOpportunityState::NoCall);
+        assert_ne!(eligible.material_digest, absent.material_digest);
+        revision.input_digest = "changed-input".into();
+        assert_ne!(
+            matrix_advisory_opportunity_input(&revision, &request, &config, session, actor)
+                .unwrap()
+                .material_digest,
+            eligible.material_digest
+        );
+        config.revision += 1;
+        assert_ne!(
+            matrix_advisory_opportunity_input(&revision, &request, &config, session, actor)
+                .unwrap()
+                .material_digest,
+            eligible.material_digest
+        );
+    }
+
+    #[test]
+    fn matrix_no_call_replay_binds_actor_session_and_request() {
+        let revision = stored_revision();
+        let request = advisory_request(revision.task_id);
+        let config = advisory_config(WorkspaceAdvisoryMode::Optional);
+        let session = Uuid::new_v4();
+        let actor = Uuid::new_v4();
+        let input = matrix_advisory_opportunity_input(&revision, &request, &config, session, actor)
+            .unwrap();
+        let receipt = AdvisoryOpportunity {
+            id: Uuid::new_v4(),
+            workspace_id: config.workspace_id,
+            session_id: session,
+            authorized_actor_id: actor,
+            capability: input.capability,
+            decision_point: input.decision_point,
+            decision_point_version: input.decision_point_version,
+            workflow_occurrence_key: input.workflow_occurrence_key,
+            target_kind: input.target_kind,
+            target_id: input.target_id,
+            work_revision: input.work_revision,
+            matrix_task_revision: input.matrix_task_revision,
+            matrix_choice_set_digest: input.matrix_choice_set_digest,
+            source_ref: None,
+            session_preference: input.session_preference,
+            request_preference: input.request_preference,
+            config_revision: input.config_revision,
+            material_digest: input.material_digest,
+            state: input.state,
+            primary_reason: input.primary_reason,
+            provider_called: false,
+        };
+        assert!(matrix_advisory_replay_matches(
+            &receipt, &request, session, actor
+        ));
+        assert!(!matrix_advisory_replay_matches(
+            &receipt,
+            &request,
+            session,
+            Uuid::new_v4()
+        ));
+        assert!(!matrix_advisory_replay_matches(
+            &receipt,
+            &request,
+            Uuid::new_v4(),
+            actor
+        ));
+        let mut changed = request.clone();
+        changed.expected_task_revision += 1;
+        assert!(!matrix_advisory_replay_matches(
+            &receipt, &changed, session, actor
+        ));
+        changed = request.clone();
+        changed.request_preference = AdvisoryRequestPreference::Skip;
+        assert!(!matrix_advisory_replay_matches(
+            &receipt, &changed, session, actor
+        ));
     }
 
     #[test]

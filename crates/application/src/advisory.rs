@@ -363,6 +363,8 @@ pub(crate) fn scope_decomposition_opportunity(
         target_kind: "program".into(),
         target_id: Some(request.program_id),
         work_revision: Some(request.program_revision),
+        matrix_task_revision: None,
+        matrix_choice_set_digest: None,
         source_ref: None,
         session_preference,
         request_preference: request.advisory_preference,

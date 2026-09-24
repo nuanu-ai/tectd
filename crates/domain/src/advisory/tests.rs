@@ -14,6 +14,8 @@ fn opportunity(preference: AdvisoryRequestPreference) -> AdvisoryOpportunityInpu
         target_kind: "program".into(),
         target_id: Some(Uuid::new_v4()),
         work_revision: Some(1),
+        matrix_task_revision: None,
+        matrix_choice_set_digest: None,
         source_ref: None,
         session_preference: AdvisoryRequestPreference::UseWorkspace,
         request_preference: preference,
@@ -70,6 +72,27 @@ fn no_call_reason_must_match_the_narrowing_preference() {
     let mut input = opportunity(AdvisoryRequestPreference::Skip);
     assert!(input.validate().is_ok());
     input.request_preference = AdvisoryRequestPreference::UseWorkspace;
+    assert_eq!(input.validate(), Err(Error::InvalidArguments));
+}
+
+#[test]
+fn engineering_profile_requires_exact_typed_matrix_binding() {
+    let mut input = opportunity(AdvisoryRequestPreference::UseWorkspace);
+    input.capability = AdvisoryCapability::EngineeringProfile;
+    input.decision_point = AdvisoryDecisionPoint::EngineeringProfileBeforeSelection;
+    input.target_kind = "matrix_task".into();
+    input.matrix_task_revision = Some(1);
+    input.state = AdvisoryOpportunityState::NoCall;
+    input.primary_reason = AdvisoryReason::ChoiceSetNotApplicable;
+    assert!(input.validate().is_ok());
+    input.work_revision = Some(2);
+    assert_eq!(input.validate(), Err(Error::InvalidArguments));
+    input.work_revision = Some(1);
+    input.matrix_choice_set_digest = Some("not-a-sha".into());
+    assert_eq!(input.validate(), Err(Error::InvalidArguments));
+    input.matrix_choice_set_digest = None;
+    input.state = AdvisoryOpportunityState::Prepared;
+    input.primary_reason = AdvisoryReason::DispatchAuthorized;
     assert_eq!(input.validate(), Err(Error::InvalidArguments));
 }
 

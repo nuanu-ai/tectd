@@ -338,6 +338,36 @@ impl MatrixTaskStore for PgUnitOfWork {
         .map_err(storage_error)?;
         row.map(decode_revision).transpose()
     }
+
+    async fn lock_matrix_task(
+        &mut self,
+        workspace_id: Uuid,
+        task_id: Uuid,
+    ) -> Result<Option<MatrixTaskRevision>> {
+        let tenant_id = self.tenant_id()?;
+        let head: Option<i64> = sqlx::query_scalar(
+            "SELECT current_revision FROM matrix_tasks WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE",
+        )
+        .bind(tenant_id)
+        .bind(workspace_id)
+        .bind(task_id)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
+        match head {
+            Some(revision) => {
+                let current = self.matrix_task(workspace_id, task_id).await?;
+                if current
+                    .as_ref()
+                    .is_none_or(|value| value.revision != revision)
+                {
+                    return Err(Error::InternalInvariant);
+                }
+                Ok(current)
+            }
+            None => Ok(None),
+        }
+    }
 }
 
 #[cfg(test)]

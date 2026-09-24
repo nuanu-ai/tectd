@@ -96,6 +96,8 @@ impl DurableOpportunityBoundary for OpportunitySpy {
             target_kind: input.target_kind.clone(),
             target_id: input.target_id,
             work_revision: input.work_revision,
+            matrix_task_revision: input.matrix_task_revision,
+            matrix_choice_set_digest: input.matrix_choice_set_digest.clone(),
             source_ref: input.source_ref.clone(),
             session_preference: input.session_preference,
             request_preference: input.request_preference,

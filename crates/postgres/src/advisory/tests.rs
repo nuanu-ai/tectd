@@ -3,6 +3,48 @@ mod audit_projection_tests {
     use super::*;
 
     #[test]
+    fn matrix_binding_survives_opportunity_row_projection() {
+        let workspace = Uuid::new_v4();
+        let task = Uuid::new_v4();
+        let choice_digest = "a".repeat(64);
+        let opportunity = opportunity_from_row(
+            workspace,
+            OpportunityRow {
+                id: Uuid::new_v4(),
+                session_id: Uuid::new_v4(),
+                authorized_actor_id: Uuid::new_v4(),
+                work_item_kind: "matrix_task".into(),
+                work_item_id: Some(task),
+                source_revision: Some("7".into()),
+                matrix_task_revision: Some(7),
+                matrix_choice_set_digest: Some(choice_digest.clone()),
+                capability: "engineering_profile".into(),
+                decision_point: ENGINEERING_PROFILE_DECISION_POINT.into(),
+                config_revision: 3,
+                session_preference: "use_workspace".into(),
+                request_preference: "use_workspace".into(),
+                request_key: "request".into(),
+                material_digest: "b".repeat(64),
+                state: "no_call".into(),
+                primary_reason: "capability_unavailable".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(opportunity.workspace_id, workspace);
+        assert_eq!(opportunity.target_id, Some(task));
+        assert_eq!(opportunity.matrix_task_revision, Some(7));
+        assert_eq!(
+            opportunity.matrix_choice_set_digest.as_deref(),
+            Some(choice_digest.as_str())
+        );
+        assert_eq!(
+            opportunity.primary_reason,
+            AdvisoryReason::CapabilityUnavailable
+        );
+        assert!(!opportunity.provider_called);
+    }
+
+    #[test]
     fn engineering_profile_decision_point_decodes_without_changing_scope_or_unknown_rows() {
         assert_eq!(
             decision_point(ENGINEERING_PROFILE_DECISION_POINT),
@@ -70,7 +112,10 @@ mod audit_projection_tests {
             }],
         )
         .unwrap();
-        assert_eq!(aggregate.no_call_by_reason[0].reason, AdvisoryReason::BudgetPolicyInvalid);
+        assert_eq!(
+            aggregate.no_call_by_reason[0].reason,
+            AdvisoryReason::BudgetPolicyInvalid
+        );
         assert_eq!(aggregate.no_call_by_reason[0].count, 1);
         assert_eq!(aggregate.authorized_attempts, 0);
     }
@@ -235,13 +280,15 @@ mod budget_reason_persistence_tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO memberships(tenant_id,workspace_id,principal_id) VALUES($1,$2,$3)")
-            .bind(tenant)
-            .bind(workspace)
-            .bind(actor)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO memberships(tenant_id,workspace_id,principal_id) VALUES($1,$2,$3)",
+        )
+        .bind(tenant)
+        .bind(workspace)
+        .bind(actor)
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query("INSERT INTO agent_sessions(id,tenant_id,host_id,workspace_id,native_session_id) VALUES($1,$2,$3,$4,$5)")
             .bind(session)
             .bind(tenant)
@@ -291,6 +338,8 @@ mod budget_reason_persistence_tests {
                     target_kind: "scope_candidate_set".into(),
                     target_id: Some(candidate),
                     work_revision: Some(3),
+                    matrix_task_revision: None,
+                    matrix_choice_set_digest: None,
                     source_ref: None,
                     session_preference: AdvisoryRequestPreference::UseWorkspace,
                     request_preference: AdvisoryRequestPreference::UseWorkspace,
@@ -333,11 +382,17 @@ mod budget_reason_persistence_tests {
             .unwrap();
         read.commit().await.unwrap();
         assert_eq!(audit.opportunities.len(), 1);
-        assert_eq!(audit.opportunities[0].primary_reason, AdvisoryReason::BudgetPolicyInvalid);
+        assert_eq!(
+            audit.opportunities[0].primary_reason,
+            AdvisoryReason::BudgetPolicyInvalid
+        );
         assert!(audit.dispatches.is_empty());
         assert_eq!(audit.aggregate.no_call_opportunities, 1);
         assert_eq!(audit.aggregate.authorized_attempts, 0);
-        assert_eq!(audit.aggregate.no_call_by_reason[0].reason, AdvisoryReason::BudgetPolicyInvalid);
+        assert_eq!(
+            audit.aggregate.no_call_by_reason[0].reason,
+            AdvisoryReason::BudgetPolicyInvalid
+        );
         assert_eq!(audit.aggregate.no_call_by_reason[0].count, 1);
     }
 }

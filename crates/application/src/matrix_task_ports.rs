@@ -21,4 +21,11 @@ pub trait MatrixTaskStore: Send {
         workspace_id: Uuid,
         task_id: Uuid,
     ) -> Result<Option<MatrixTaskRevision>>;
+
+    /// Lock the task head and read its current immutable revision in this UoW.
+    async fn lock_matrix_task(
+        &mut self,
+        workspace_id: Uuid,
+        task_id: Uuid,
+    ) -> Result<Option<MatrixTaskRevision>>;
 }

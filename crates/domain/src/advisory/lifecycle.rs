@@ -223,6 +223,9 @@ pub struct AdvisoryOpportunityInput {
     pub target_kind: String,
     pub target_id: Option<Uuid>,
     pub work_revision: Option<i64>,
+    /// Exact stored Matrix revision; present only for engineering-profile opportunities.
+    pub matrix_task_revision: Option<i64>,
+    pub matrix_choice_set_digest: Option<String>,
     pub source_ref: Option<String>,
     pub session_preference: AdvisoryRequestPreference,
     pub request_preference: AdvisoryRequestPreference,
@@ -248,6 +251,21 @@ impl AdvisoryOpportunityInput {
             || !valid_sha256(&self.material_digest)
             || self.work_revision.is_some_and(|revision| revision < 1)
             || !self.decision_point.supports(self.capability)
+            || match self.capability {
+                AdvisoryCapability::EngineeringProfile => {
+                    self.target_kind != "matrix_task"
+                        || self.target_id.is_none()
+                        || self.matrix_task_revision != self.work_revision
+                        || self.matrix_task_revision.is_none()
+                        || self
+                            .matrix_choice_set_digest
+                            .as_ref()
+                            .is_some_and(|digest| !valid_sha256(digest))
+                        || (self.matrix_choice_set_digest.is_none()
+                            && self.state != AdvisoryOpportunityState::NoCall)
+                }
+                _ => self.matrix_task_revision.is_some() || self.matrix_choice_set_digest.is_some(),
+            }
         {
             return Err(Error::InvalidArguments);
         }
@@ -276,6 +294,8 @@ pub struct AdvisoryOpportunity {
     pub target_kind: String,
     pub target_id: Option<Uuid>,
     pub work_revision: Option<i64>,
+    pub matrix_task_revision: Option<i64>,
+    pub matrix_choice_set_digest: Option<String>,
     pub source_ref: Option<String>,
     pub session_preference: AdvisoryRequestPreference,
     pub request_preference: AdvisoryRequestPreference,
