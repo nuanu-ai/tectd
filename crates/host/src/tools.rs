@@ -14,6 +14,7 @@ pub(crate) enum Invocation {
     KnowledgeMaintenance(crate::knowledge_maintenance_tools::KnowledgeMaintenanceInvocation),
     KnowledgeSearch(tect_domain::KnowledgeSearchQuery),
     Advisory(crate::advisory_tools::AdvisoryInvocation),
+    PipelineRecommendationPrepare(tect_application::PreparePipelineRecommendation),
     MatrixTask(crate::matrix_task_tools::MatrixTaskInvocation),
     MatrixVerification(tect_application::VerifyMatrixTask),
     MatrixPlanningEffect(crate::matrix_planning_effect_tools::MatrixPlanningEffectInvocation),
@@ -77,6 +78,8 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
             })
         }
         "help" => crate::api::parse_help(arguments).map(Invocation::Help),
+        "pipeline_recommendation_prepare" => crate::pipeline_recommendation_tools::parse(arguments)
+            .map(Invocation::PipelineRecommendationPrepare),
         "knowledge_search" => {
             crate::knowledge_search_tools::parse(name, arguments).map(Invocation::KnowledgeSearch)
         }

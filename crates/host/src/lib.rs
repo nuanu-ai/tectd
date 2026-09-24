@@ -32,6 +32,7 @@ mod mcp;
 mod pipeline_definitions;
 mod pipeline_dispatch;
 mod pipeline_output;
+mod pipeline_recommendation_tools;
 mod pipeline_tools;
 mod program_output;
 mod program_tools;
@@ -59,6 +60,7 @@ pub use git::GitSourceInspector;
 pub use jev_scope_advice::{JevScopeAdviceConfig, JevScopeAdviceProvider};
 pub use knowledge_embedding::{LocalEmbeddingConfig, LocalKnowledgeEmbeddingWorker};
 pub use mcp::run_stdio;
+pub use pipeline_definitions::StaticPipelineRecommendationDefinitions;
 #[doc(hidden)]
 pub use scope_guidance::CandidateEncoding;
 pub use scope_guidance::StaticCandidateGuidance;

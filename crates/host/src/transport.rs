@@ -366,6 +366,23 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
             Invocation::Advisory(invocation) => {
                 crate::advisory_dispatch::execute(context, invocation, service, capacity).await
             }
+            Invocation::PipelineRecommendationPrepare(request) => {
+                let prepared = service
+                    .prepare_pipeline_recommendation(context, &request)
+                    .await?;
+                let result = serde_json::json!({
+                    "opportunity_id": prepared.opportunity.id,
+                    "state": prepared.opportunity.state,
+                    "reason": prepared.opportunity.primary_reason,
+                    "eligible_kind_ids": prepared.context.eligible_kind_ids,
+                    "manifest_digest": prepared.manifest.digest,
+                });
+                let result = crate::responses::with_actions(result, Vec::new(), None);
+                if crate::responses::encoded_len(&result)? > capacity {
+                    return Err(Error::RequestTooLarge);
+                }
+                Ok(result)
+            }
             Invocation::KnowledgeMaintenance(invocation) => {
                 crate::knowledge_maintenance_dispatch::execute(
                     context, invocation, service, capacity,

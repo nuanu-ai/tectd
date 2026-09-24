@@ -23,6 +23,34 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
     vec![
         route!(
             "command",
+            "pipeline.recommendation.prepare",
+            "pipeline_recommendation_prepare",
+            "Prepare a durable pipeline and verification recommendation opportunity for one current saved Work node.",
+            "Requires an authenticated Owner with an active native session, exact current candidate-set and Work revisions, a saved Matrix disposition and independent match attestation. Preferences default to use_workspace; skip records a no-call.",
+            "Records the opportunity, source context, and immutable eligible-choice manifest. Returns only the opportunity ID, state, reason, stable eligible IDs, and manifest digest. No provider call, pipeline execution, phase transition, or verification occurs.",
+            "Repeat only the same request key and identical actor, session, revisions, and preferences. Changed material conflicts.",
+            object_schema(
+                json!({
+                    "candidate_set_id":uuid(),
+                    "expected_candidate_set_revision":{"type":"integer","minimum":2},
+                    "work_node_id":uuid(),
+                    "expected_work_node_revision":{"type":"integer","minimum":1},
+                    "request_key":{"type":"string","minLength":1,"maxLength":256,"x-maxUtf8Bytes":256,"description":"One to 256 UTF-8 bytes, no NUL or leading or trailing Unicode whitespace."},
+                    "session_preference":{"type":"string","enum":["use_workspace","skip"],"default":"use_workspace"},
+                    "request_preference":{"type":"string","enum":["use_workspace","skip"],"default":"use_workspace"}
+                }),
+                json!([
+                    "candidate_set_id",
+                    "expected_candidate_set_revision",
+                    "work_node_id",
+                    "expected_work_node_revision",
+                    "request_key"
+                ]),
+            ),
+            json!({"candidate_set_id":example_id,"expected_candidate_set_revision":2,"work_node_id":example_id,"expected_work_node_revision":1,"request_key":"work-1"}),
+        ),
+        route!(
+            "command",
             "engineering.advisory.request",
             "request_engineering_advisory",
             "Record an optional Engineering Matrix advisory opportunity for one exact saved task revision.",

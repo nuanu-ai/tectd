@@ -47,6 +47,7 @@ fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
         ("command", "scope.advisory.request"),
         ("command", "scope.advisory.disposition"),
         ("command", "engineering.advisory.request"),
+        ("command", "pipeline.recommendation.prepare"),
         ("query", "engineering.advisory.get"),
     ] {
         assert!(
@@ -98,6 +99,32 @@ fn matrix_advisory_routes_use_exact_task_and_request_key() {
         );
     }
     assert!(decode_public_call("query", json!({"route":"engineering.advisory.get","params":{"task_id":task_id,"request_key":"matrix-1","workspace_id":task_id}})).is_err());
+}
+
+#[test]
+fn pipeline_prepare_is_strict_command_with_no_execution_authority() {
+    let route = routes()
+        .iter()
+        .find(|spec| spec.route == "pipeline.recommendation.prepare")
+        .unwrap();
+    assert_eq!(route.tool, "command");
+    assert_eq!(route.schema["additionalProperties"], false);
+    assert_eq!(
+        route.schema["properties"]["expected_candidate_set_revision"]["minimum"],
+        2
+    );
+    assert!(route.effects.contains("No provider call"));
+    let params = route.example.clone();
+    assert_eq!(
+        decode_public_call(
+            "command",
+            json!({"route":route.route,"params":params.clone()})
+        )
+        .unwrap()
+        .name,
+        "pipeline_recommendation_prepare"
+    );
+    assert!(decode_public_call("execute", json!({"route":route.route,"params":params})).is_err());
 }
 
 #[test]
