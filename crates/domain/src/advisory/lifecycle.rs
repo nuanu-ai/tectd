@@ -65,6 +65,7 @@ pub enum AdvisoryReason {
     BudgetPolicyInvalid,
     ConfigurationChanged,
     MatrixTaskRevisionChanged,
+    MatrixVerificationStale,
     DispatchAuthorized,
     ProviderResponse,
     ProviderFailure,
@@ -86,6 +87,7 @@ impl AdvisoryReason {
             Self::BudgetPolicyInvalid => "budget_policy_invalid",
             Self::ConfigurationChanged => "configuration_changed",
             Self::MatrixTaskRevisionChanged => "matrix_task_revision_changed",
+            Self::MatrixVerificationStale => "matrix_verification_stale",
             Self::DispatchAuthorized => "dispatch_authorized",
             Self::ProviderResponse => "provider_response",
             Self::ProviderFailure => "provider_failure",
@@ -121,7 +123,9 @@ pub const fn advisory_reason_matches_state(
         AdvisoryOpportunityState::Invalidated => {
             matches!(
                 reason,
-                AdvisoryReason::ConfigurationChanged | AdvisoryReason::MatrixTaskRevisionChanged
+                AdvisoryReason::ConfigurationChanged
+                    | AdvisoryReason::MatrixTaskRevisionChanged
+                    | AdvisoryReason::MatrixVerificationStale
             )
         }
         AdvisoryOpportunityState::Failed => matches!(reason, AdvisoryReason::ProviderFailure),
@@ -296,8 +300,10 @@ impl AdvisoryOpportunityInput {
             return Err(Error::InvalidArguments);
         }
         if !advisory_reason_matches_state(self.state, self.primary_reason)
-            || self.primary_reason == AdvisoryReason::MatrixTaskRevisionChanged
-                && self.capability != AdvisoryCapability::EngineeringProfile
+            || matches!(
+                self.primary_reason,
+                AdvisoryReason::MatrixTaskRevisionChanged | AdvisoryReason::MatrixVerificationStale
+            ) && self.capability != AdvisoryCapability::EngineeringProfile
             || matches!(
                 self.primary_reason,
                 AdvisoryReason::MatrixEvidenceUnresolved | AdvisoryReason::MatrixSourceUnverified

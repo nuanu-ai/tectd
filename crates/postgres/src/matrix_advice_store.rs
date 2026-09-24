@@ -180,16 +180,6 @@ impl MatrixAdviceStore for PgUnitOfWork {
         ).bind(tenant).bind(workspace_id).bind(record.dispatch_id)
             .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?
             .ok_or(Error::InputConflict)?;
-        if let Some(prior) = self
-            .guarded_matrix_advice(workspace_id, record.opportunity_id)
-            .await?
-        {
-            return if prior.record == *record {
-                Ok(prior)
-            } else {
-                Err(Error::InputConflict)
-            };
-        }
         let task_id: Option<Uuid> = opportunity.try_get("work_item_id").map_err(storage_error)?;
         let revision: Option<i64> = opportunity
             .try_get("matrix_task_revision")
@@ -341,6 +331,56 @@ impl MatrixAdviceStore for PgUnitOfWork {
                 != Some(serde_json::json!(record.model_configuration))
         {
             return Err(Error::StaleRevision);
+        }
+        // The head lock also serializes verifier inserts. A replacement header,
+        // changed input, or expired evidence must reject direct store callers.
+        let latest: Option<(Uuid, String, String)> = sqlx::query_as(
+            "SELECT id,record_digest,input_digest FROM matrix_verifications \
+             WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 AND task_revision=$4 \
+             ORDER BY verified_at DESC,id DESC LIMIT 1",
+        )
+        .bind(tenant)
+        .bind(workspace_id)
+        .bind(record.binding.task_id)
+        .bind(record.binding.task_revision)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
+        let Some((verification_id, latest_digest, verified_input_digest)) = latest else {
+            return Err(Error::StaleRevision);
+        };
+        if record.binding.verification_digest.as_deref() != Some(latest_digest.as_str())
+            || verification_digest.as_deref() != Some(latest_digest.as_str())
+            || verified_input_digest != current.input_digest
+        {
+            return Err(Error::StaleRevision);
+        }
+        let bindings_valid: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM matrix_verification_bindings \
+               WHERE tenant_id=$1 AND workspace_id=$2 AND verification_id=$3) \
+             AND NOT EXISTS (SELECT 1 FROM matrix_verification_bindings \
+               WHERE tenant_id=$1 AND workspace_id=$2 AND verification_id=$3 \
+                 AND (validation_outcome <> 'accepted' OR expires_at <= \
+                   EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())))",
+        )
+        .bind(tenant)
+        .bind(workspace_id)
+        .bind(verification_id)
+        .fetch_one(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
+        if !bindings_valid {
+            return Err(Error::StaleRevision);
+        }
+        if let Some(prior) = self
+            .guarded_matrix_advice(workspace_id, record.opportunity_id)
+            .await?
+        {
+            return if prior.record == *record {
+                Ok(prior)
+            } else {
+                Err(Error::InputConflict)
+            };
         }
         let choice = current.choice_set.as_ref().ok_or(Error::InputConflict)?;
         let eligibility = choice.validate(&current.input)?;

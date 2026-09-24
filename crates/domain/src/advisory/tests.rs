@@ -181,6 +181,34 @@ fn matrix_revision_change_is_matrix_only_invalidation() {
 }
 
 #[test]
+fn matrix_verification_stale_is_matrix_only_terminal_invalidation() {
+    let reason = AdvisoryReason::MatrixVerificationStale;
+    assert_eq!(reason.as_str(), "matrix_verification_stale");
+    assert_eq!(
+        serde_json::from_str::<AdvisoryReason>("\"matrix_verification_stale\"").unwrap(),
+        reason
+    );
+    assert!(advisory_reason_matches_state(
+        AdvisoryOpportunityState::Invalidated,
+        reason
+    ));
+    assert!(!advisory_reason_matches_state(
+        AdvisoryOpportunityState::NoCall,
+        reason
+    ));
+    let mut input = opportunity(AdvisoryRequestPreference::UseWorkspace);
+    input.state = AdvisoryOpportunityState::Invalidated;
+    input.primary_reason = reason;
+    assert_eq!(input.validate(), Err(Error::InvalidArguments));
+    input.capability = AdvisoryCapability::EngineeringProfile;
+    input.decision_point = AdvisoryDecisionPoint::EngineeringProfileBeforeSelection;
+    input.target_kind = "matrix_task".into();
+    input.matrix_task_revision = Some(1);
+    input.matrix_choice_set_digest = Some("b".repeat(64));
+    assert!(input.validate().is_ok());
+}
+
+#[test]
 fn reason_precedence_is_deterministic() {
     let base = AdvisoryPolicyInput {
         workspace_mode: WorkspaceAdvisoryMode::Optional,

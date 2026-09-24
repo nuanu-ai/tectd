@@ -18,6 +18,8 @@ use tect_domain::{
 use uuid::Uuid;
 
 const EXPECTED_DATABASE: &str = "tect_test";
+const SYSTEM_ID: &str = "7689109430044371904";
+const DATABASE_OID: i64 = 16384;
 
 fn disposable_endpoints(
     admin_url: &str,
@@ -69,7 +71,8 @@ async fn verify_disposable_cluster(admin_pool: &PgPool, runtime_pool: &PgPool, r
     assert!((180000..190000).contains(&admin_identity.0));
     assert_eq!(admin_identity.1, EXPECTED_DATABASE);
     assert_eq!(admin_identity.2, "postgres");
-    assert!(admin_identity.4.parse::<u64>().is_ok_and(|id| id != 0));
+    assert_eq!(admin_identity.3, DATABASE_OID);
+    assert_eq!(admin_identity.4, SYSTEM_ID);
 
     // Hold the runtime connection while the administrator confirms its backend
     // PID belongs to the same database on this server.
@@ -113,6 +116,9 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
     let tenant_id = owner.tenant_id;
     let workspace_id = Uuid::new_v4();
     let session_id = Uuid::new_v4();
+    let verifier_id = Uuid::new_v4();
+    let verifier_host = Uuid::new_v4();
+    let verifier_session = Uuid::new_v4();
     let task_id = Uuid::new_v4();
     let opportunity_id = Uuid::new_v4();
     let dispatch_id = Uuid::new_v4();
@@ -156,6 +162,7 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
     let evaluation_digest = matrix_evaluation_digest(&input, &composition, &choice)
         .unwrap()
         .unwrap();
+    let verification_digest = sha(format!("verification-{task_id}").as_bytes());
     let binding = MatrixProviderBinding {
         task_id,
         task_revision: 1,
@@ -164,7 +171,7 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
         choice_set_version: 1,
         choice_set_digest: choice_digest.clone(),
         evaluation_digest: evaluation_digest.clone(),
-        verification_digest: None,
+        verification_digest: Some(verification_digest.clone()),
     };
     let profile = AdvisoryProviderProfileRef {
         id: "synthetic-provider".into(),
@@ -199,8 +206,34 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
         .execute(&admin_pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO principals (id,tenant_id,role) VALUES ($1,$2,'verifier')")
+        .bind(verifier_id)
+        .bind(tenant_id)
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO hosts (id,tenant_id,principal_id,credential_digest) VALUES ($1,$2,$3,$4)",
+    )
+    .bind(verifier_host)
+    .bind(tenant_id)
+    .bind(verifier_id)
+    .bind(sha(verifier_host.to_string().as_bytes()))
+    .execute(&admin_pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO memberships (tenant_id,workspace_id,principal_id) VALUES ($1,$2,$3)")
+        .bind(tenant_id)
+        .bind(workspace_id)
+        .bind(verifier_id)
+        .execute(&admin_pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO agent_sessions (id,tenant_id,host_id,workspace_id,native_session_id) VALUES ($1,$2,$3,$4,$5)")
         .bind(session_id).bind(tenant_id).bind(owner.auth.host_id).bind(workspace_id)
+        .bind(Uuid::new_v4().to_string()).execute(&admin_pool).await.unwrap();
+    sqlx::query("INSERT INTO agent_sessions (id,tenant_id,host_id,workspace_id,native_session_id) VALUES ($1,$2,$3,$4,$5)")
+        .bind(verifier_session).bind(tenant_id).bind(verifier_host).bind(workspace_id)
         .bind(Uuid::new_v4().to_string()).execute(&admin_pool).await.unwrap();
     let mut fixture = runtime_pool.begin().await.unwrap();
     sqlx::query("SELECT pg_catalog.set_config('tect.tenant_id',$1,true)")
@@ -223,15 +256,35 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
         .bind(serde_json::to_value(&choice).unwrap()).bind(&choice_digest)
         .bind(owner.principal_id).bind(session_id).execute(&mut *fixture).await.unwrap();
     fixture.commit().await.unwrap();
+    let mut fixture = runtime_pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_catalog.set_config('tect.tenant_id',$1,true)")
+        .bind(tenant_id.to_string())
+        .execute(&mut *fixture)
+        .await
+        .unwrap();
+    let verification_id: Uuid = sqlx::query_scalar("INSERT INTO matrix_verifications (tenant_id,workspace_id,task_id,task_revision,input_digest,schema,owner_principal_id,verifier_principal_id,verifier_session_id,verification_reason,policy_version,record_digest) VALUES ($1,$2,$3,1,$4,'tect.matrix-verification/1',$5,$6,$7,'matrix_facts_verified','synthetic-policy/1',$8) RETURNING id")
+        .bind(tenant_id).bind(workspace_id).bind(task_id).bind(&input_digest)
+        .bind(owner.principal_id).bind(verifier_id).bind(verifier_session)
+        .bind(&verification_digest).fetch_one(&mut *fixture).await.unwrap();
+    let now: i64 =
+        sqlx::query_scalar("SELECT EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())::bigint")
+            .fetch_one(&mut *fixture)
+            .await
+            .unwrap();
+    sqlx::query("INSERT INTO matrix_verification_bindings (tenant_id,workspace_id,verification_id,fact_path,value_digest,evidence_ref,content_digest,source,subject,observed_at,expires_at,validation_outcome) VALUES ($1,$2,$3,'mode',$4,'synthetic-ref',$5,'synthetic','matrix-task',$6,$7,'accepted')")
+        .bind(tenant_id).bind(workspace_id).bind(verification_id).bind(&input_digest)
+        .bind(sha(b"synthetic-ref")).bind(now - 1).bind(now + 3600)
+        .execute(&mut *fixture).await.unwrap();
+    fixture.commit().await.unwrap();
     sqlx::query("INSERT INTO advisory_workspace_config_history (tenant_id,workspace_id,revision,mode,provider_profile_ref,model_configuration,changed_by_principal_id,changed_by_session_id) VALUES ($1,$2,0,'optional',$3,$4,$5,$6)")
         .bind(tenant_id).bind(workspace_id).bind(&profile.id).bind(serde_json::json!(model))
         .bind(owner.principal_id).bind(session_id).execute(&admin_pool).await.unwrap();
     sqlx::query("INSERT INTO advisory_workspace_config (tenant_id,workspace_id,revision,mode,provider_profile_ref,model_configuration,updated_by_principal_id,updated_by_session_id) VALUES ($1,$2,0,'optional',$3,$4,$5,$6)")
         .bind(tenant_id).bind(workspace_id).bind(&profile.id).bind(serde_json::json!(model))
         .bind(owner.principal_id).bind(session_id).execute(&admin_pool).await.unwrap();
-    sqlx::query("INSERT INTO advisory_opportunity (id,tenant_id,workspace_id,work_item_kind,work_item_id,session_id,authorized_actor_id,source_revision,capability,decision_point,matrix_task_revision,matrix_choice_set_digest,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES ($1,$2,$3,'matrix_task',$4,$5,$6,'1','engineering_profile','engineering.profile.before_selection',1,$7,0,'use_workspace','use_workspace','test-policy',$8,$9,'prepared','dispatch_authorized')")
+    sqlx::query("INSERT INTO advisory_opportunity (id,tenant_id,workspace_id,work_item_kind,work_item_id,session_id,authorized_actor_id,source_revision,capability,decision_point,matrix_task_revision,matrix_choice_set_digest,matrix_verification_digest,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES ($1,$2,$3,'matrix_task',$4,$5,$6,'1','engineering_profile','engineering.profile.before_selection',1,$7,$8,0,'use_workspace','use_workspace','test-policy',$9,$10,'prepared','dispatch_authorized')")
         .bind(opportunity_id).bind(tenant_id).bind(workspace_id).bind(task_id)
-        .bind(session_id).bind(owner.principal_id).bind(&choice_digest)
+        .bind(session_id).bind(owner.principal_id).bind(&choice_digest).bind(&verification_digest)
         .bind(format!("matrix-advice-{}", Uuid::new_v4())).bind(&evaluation_digest)
         .execute(&admin_pool).await.unwrap();
     sqlx::query("INSERT INTO advisory_dispatch (id,tenant_id,workspace_id,opportunity_id,attempt_number,provider,model,configuration_snapshot,configuration_digest,material_digest,payload_digest,request_payload,response_payload,state,send_certainty,outcome,retry_basis,send_started_at,sealed_at) VALUES ($1,$2,$3,$4,1,$5,$6,$7,$8,$9,$10,$11,$12,'sealed','sent','provider_response','initial',clock_timestamp(),clock_timestamp())")
@@ -320,4 +373,34 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
             .unwrap()
             .get("response_payload");
     assert_eq!(dispatch_raw, raw);
+
+    // A newer immutable verification supersedes the bound header. Replaying
+    // an otherwise exact advice record now fails closed, including when the
+    // replacement's evidence has already expired.
+    let replacement_digest = sha(format!("replacement-{task_id}").as_bytes());
+    let mut replacement = runtime_pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_catalog.set_config('tect.tenant_id',$1,true)")
+        .bind(tenant_id.to_string())
+        .execute(&mut *replacement)
+        .await
+        .unwrap();
+    let replacement_id: Uuid = sqlx::query_scalar("INSERT INTO matrix_verifications (tenant_id,workspace_id,task_id,task_revision,input_digest,schema,owner_principal_id,verifier_principal_id,verifier_session_id,verification_reason,policy_version,record_digest) VALUES ($1,$2,$3,1,$4,'tect.matrix-verification/1',$5,$6,$7,'matrix_facts_verified','synthetic-policy/1',$8) RETURNING id")
+        .bind(tenant_id).bind(workspace_id).bind(task_id).bind(&input_digest)
+        .bind(owner.principal_id).bind(verifier_id).bind(verifier_session)
+        .bind(&replacement_digest).fetch_one(&mut *replacement).await.unwrap();
+    sqlx::query("INSERT INTO matrix_verification_bindings (tenant_id,workspace_id,verification_id,fact_path,value_digest,evidence_ref,content_digest,source,subject,observed_at,expires_at,validation_outcome) VALUES ($1,$2,$3,'mode',$4,'expired-ref',$5,'synthetic','matrix-task',$6,$7,'accepted')")
+        .bind(tenant_id).bind(workspace_id).bind(replacement_id).bind(&input_digest)
+        .bind(sha(b"expired-ref")).bind(now - 20).bind(now - 10)
+        .execute(&mut *replacement).await.unwrap();
+    replacement.commit().await.unwrap();
+    let mut unit = PgUnitOfWork::test_begin(&runtime_pool, tenant_id).await;
+    assert_eq!(
+        unit.persist_guarded_matrix_advice(workspace_id, &record)
+            .await,
+        Err(Error::StaleRevision)
+    );
+    Box::new(unit).commit().await.unwrap();
+    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM advisory_matrix_advice WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3")
+        .bind(tenant_id).bind(workspace_id).bind(opportunity_id).fetch_one(&admin_pool).await.unwrap();
+    assert_eq!(count, 1);
 }

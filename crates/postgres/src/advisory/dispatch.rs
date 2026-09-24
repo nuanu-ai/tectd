@@ -1,5 +1,11 @@
 const DISPATCH_COLUMNS: &str = "id,opportunity_id,predecessor_dispatch_id,attempt_number,provider,model,configuration_snapshot,configuration_digest,material_digest,payload_digest,request_payload,response_payload,input_tokens,output_tokens,latency_ms,state,send_certainty,outcome,retry_basis,raw_response_ref";
 
+#[derive(PartialEq, Eq)]
+enum MatrixChoiceStatus {
+    Current,
+    VerificationStale,
+}
+
 fn supported_dispatch_opportunity(opportunity: &AdvisoryOpportunity) -> bool {
     matches!(
         (opportunity.capability, opportunity.decision_point),
@@ -18,7 +24,7 @@ async fn require_current_matrix_choice(
     tenant: Uuid,
     workspace: Uuid,
     opportunity: &AdvisoryOpportunity,
-) -> Result<()> {
+) -> Result<MatrixChoiceStatus> {
     if opportunity.capability != AdvisoryCapability::EngineeringProfile
         || opportunity.decision_point != AdvisoryDecisionPoint::EngineeringProfileBeforeSelection
         || opportunity.workspace_id != workspace
@@ -64,10 +70,9 @@ async fn require_current_matrix_choice(
     if choice_digest.as_deref() != Some(expected_digest) {
         return Err(Error::StaleContext);
     }
-    let expected_verification = opportunity
-        .matrix_verification_digest
-        .as_deref()
-        .ok_or(Error::StaleContext)?;
+    let Some(expected_verification) = opportunity.matrix_verification_digest.as_deref() else {
+        return Ok(MatrixChoiceStatus::VerificationStale);
+    };
     // The newest exact-revision verification is authoritative. Never fall back
     // to an older header if its replacement is stale or its evidence expired.
     let latest: Option<(Uuid, String, String)> = sqlx::query_as(
@@ -83,10 +88,10 @@ async fn require_current_matrix_choice(
     .await
     .map_err(storage_error)?;
     let Some((verification_id, verification_digest, verified_input_digest)) = latest else {
-        return Err(Error::StaleContext);
+        return Ok(MatrixChoiceStatus::VerificationStale);
     };
     if verification_digest != expected_verification || verified_input_digest != input_digest {
-        return Err(Error::StaleContext);
+        return Ok(MatrixChoiceStatus::VerificationStale);
     }
     let bindings_valid: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM matrix_verification_bindings \
@@ -103,9 +108,9 @@ async fn require_current_matrix_choice(
     .await
     .map_err(storage_error)?;
     if !bindings_valid {
-        return Err(Error::StaleContext);
+        return Ok(MatrixChoiceStatus::VerificationStale);
     }
-    Ok(())
+    Ok(MatrixChoiceStatus::Current)
 }
 
 async fn terminalize_stale_authored_dispatch(
@@ -292,7 +297,11 @@ async fn authorize_dispatch(
             if current.1 != "optional" {
                 return Err(Error::InvalidConfiguration);
             }
-            require_current_matrix_choice(tx, tenant, workspace, &opportunity).await?;
+            if require_current_matrix_choice(tx, tenant, workspace, &opportunity).await?
+                != MatrixChoiceStatus::Current
+            {
+                return Err(Error::StaleContext);
+            }
         }
         return dispatch_from_row(&existing);
     }
@@ -320,7 +329,11 @@ async fn authorize_dispatch(
         return Err(Error::InvalidConfiguration);
     }
     if opportunity.capability == AdvisoryCapability::EngineeringProfile {
-        require_current_matrix_choice(tx, tenant, workspace, &opportunity).await?;
+        if require_current_matrix_choice(tx, tenant, workspace, &opportunity).await?
+            != MatrixChoiceStatus::Current
+        {
+            return Err(Error::StaleContext);
+        }
     }
     if let Some(predecessor) = input.predecessor_dispatch_id {
         let previous = dispatch_by_id(tx, tenant, workspace, predecessor, true).await?;
@@ -440,7 +453,10 @@ async fn start_dispatch(
                     Some(AdvisoryReason::ConfigurationChanged)
                 } else {
                     match require_current_matrix_choice(tx, tenant, workspace, &opportunity).await {
-                        Ok(()) => None,
+                        Ok(MatrixChoiceStatus::Current) => None,
+                        Ok(MatrixChoiceStatus::VerificationStale) => {
+                            Some(AdvisoryReason::DeterministicInputInvalid)
+                        }
                         Err(Error::StaleContext) => Some(AdvisoryReason::DeterministicInputInvalid),
                         Err(error) => return Err(error),
                     }
@@ -726,22 +742,25 @@ async fn finalize_opportunity(
         && current.1 == "optional"
     {
         match require_current_matrix_choice(tx, tenant, workspace, &opportunity).await {
-            Ok(()) => false,
-            Err(Error::StaleContext) => true,
+            Ok(MatrixChoiceStatus::Current) => None,
+            Ok(MatrixChoiceStatus::VerificationStale) => {
+                Some(AdvisoryReason::MatrixVerificationStale)
+            }
+            Err(Error::StaleContext) => Some(AdvisoryReason::MatrixTaskRevisionChanged),
             Err(error) => return Err(error),
         }
     } else {
-        false
+        None
     };
     let (state, reason) = if current.0 != expected_config_revision || current.1 != "optional" {
         (
             AdvisoryOpportunityState::Invalidated,
             AdvisoryReason::ConfigurationChanged,
         )
-    } else if matrix_stale {
+    } else if let Some(reason) = matrix_stale {
         (
             AdvisoryOpportunityState::Invalidated,
-            AdvisoryReason::MatrixTaskRevisionChanged,
+            reason,
         )
     } else if persisted_outcome == Some(AdvisoryDispatchOutcome::ProviderResponse) {
         (

@@ -5,6 +5,24 @@ const ADVICE_LINK: &str =
     include_str!("../migrations/0056_matrix_advisory_verification_binding.sql");
 const ADVICE_DISPATCH: &str = include_str!("advisory/dispatch.rs");
 const ADVICE_STORE: &str = include_str!("matrix_advice_store.rs");
+const STALE_REASON: &str = include_str!("../migrations/0057_matrix_verification_stale_reason.sql");
+
+#[test]
+fn post_response_verification_drift_is_terminal_and_matrix_only() {
+    assert!(STALE_REASON.contains("'matrix_verification_stale'"));
+    assert!(
+        STALE_REASON
+            .contains("AND capability = 'engineering_profile' AND work_item_kind = 'matrix_task'")
+    );
+    assert!(STALE_REASON.contains("NOT VALID"));
+    assert!(ADVICE_DISPATCH.contains("Some(AdvisoryReason::MatrixVerificationStale)"));
+    assert!(
+        ADVICE_STORE.contains(
+            "record.binding.verification_digest.as_deref() != Some(latest_digest.as_str())"
+        )
+    );
+    assert!(ADVICE_STORE.contains("EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())"));
+}
 
 #[test]
 fn positive_matrix_advice_requires_exact_immutable_verification() {
