@@ -51,7 +51,7 @@ pub struct StartedScopeDispatchPermit {
 }
 
 impl StartedScopeDispatchPermit {
-    pub(super) fn after_committed_start(
+    fn after_committed_start(
         started: &AdvisoryDispatchStart,
         authorization: &AdvisoryDispatchAuthorization,
         prepared: &PreparedScopeAdviceAttempt,
