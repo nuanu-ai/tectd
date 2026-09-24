@@ -386,6 +386,14 @@ fn registered_decision_point_is_closed_and_capability_owned() {
     );
     assert!(engineering.supports(AdvisoryCapability::EngineeringProfile));
     assert!(!engineering.supports(AdvisoryCapability::ScopeDecomposition));
+    let pipeline = AdvisoryDecisionPoint::PipelineRecommendationBeforeSliceOpen;
+    assert_eq!(pipeline.as_str(), PIPELINE_RECOMMENDATION_DECISION_POINT);
+    assert!(pipeline.supports(AdvisoryCapability::PipelineRecommendation));
+    assert!(!pipeline.supports(AdvisoryCapability::EngineeringProfile));
+    assert_eq!(
+        PIPELINE_RECOMMENDATION_DECISION_POINT.parse::<AdvisoryDecisionPoint>(),
+        Ok(pipeline)
+    );
     assert_eq!(
         ENGINEERING_PROFILE_DECISION_POINT.parse::<AdvisoryDecisionPoint>(),
         Ok(engineering)

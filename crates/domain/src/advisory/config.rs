@@ -5,6 +5,8 @@ use uuid::Uuid;
 
 pub const SCOPE_DECOMPOSITION_DECISION_POINT: &str = "scope.decomposition.before_selection";
 pub const ENGINEERING_PROFILE_DECISION_POINT: &str = "engineering.profile.before_selection";
+pub const PIPELINE_RECOMMENDATION_DECISION_POINT: &str =
+    "pipeline_recommendation_before_slice_open";
 pub const ADVISORY_DECISION_POINT_VERSION: i32 = 1;
 pub const ADVISORY_CONFIG_REVISION_DEFAULT: i64 = 0;
 pub const ADVISORY_POLICY_VERSION: &str = "slice-00.v1";
@@ -61,6 +63,8 @@ pub enum AdvisoryDecisionPoint {
     ScopeDecompositionBeforeSelection,
     #[serde(rename = "engineering.profile.before_selection")]
     EngineeringProfileBeforeSelection,
+    #[serde(rename = "pipeline_recommendation_before_slice_open")]
+    PipelineRecommendationBeforeSliceOpen,
 }
 
 impl AdvisoryDecisionPoint {
@@ -68,6 +72,7 @@ impl AdvisoryDecisionPoint {
         match self {
             Self::ScopeDecompositionBeforeSelection => SCOPE_DECOMPOSITION_DECISION_POINT,
             Self::EngineeringProfileBeforeSelection => ENGINEERING_PROFILE_DECISION_POINT,
+            Self::PipelineRecommendationBeforeSliceOpen => PIPELINE_RECOMMENDATION_DECISION_POINT,
         }
     }
 
@@ -75,6 +80,9 @@ impl AdvisoryDecisionPoint {
         match self {
             Self::ScopeDecompositionBeforeSelection => AdvisoryCapability::ScopeDecomposition,
             Self::EngineeringProfileBeforeSelection => AdvisoryCapability::EngineeringProfile,
+            Self::PipelineRecommendationBeforeSliceOpen => {
+                AdvisoryCapability::PipelineRecommendation
+            }
         }
     }
 
@@ -87,6 +95,9 @@ impl AdvisoryDecisionPoint {
             ) | (
                 Self::EngineeringProfileBeforeSelection,
                 AdvisoryCapability::EngineeringProfile
+            ) | (
+                Self::PipelineRecommendationBeforeSliceOpen,
+                AdvisoryCapability::PipelineRecommendation
             )
         )
     }
@@ -105,6 +116,9 @@ impl std::str::FromStr for AdvisoryDecisionPoint {
         match value {
             SCOPE_DECOMPOSITION_DECISION_POINT => Ok(Self::ScopeDecompositionBeforeSelection),
             ENGINEERING_PROFILE_DECISION_POINT => Ok(Self::EngineeringProfileBeforeSelection),
+            PIPELINE_RECOMMENDATION_DECISION_POINT => {
+                Ok(Self::PipelineRecommendationBeforeSliceOpen)
+            }
             _ => Err(Error::InvalidArguments),
         }
     }

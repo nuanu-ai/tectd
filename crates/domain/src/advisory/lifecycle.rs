@@ -294,6 +294,27 @@ impl AdvisoryOpportunityInput {
                                 | AdvisoryOpportunityState::Advised
                         ) && self.matrix_verification_digest.is_none())
                 }
+                AdvisoryCapability::PipelineRecommendation => {
+                    self.target_kind != "slice_candidate_node"
+                        || self.target_id.is_none()
+                        || self.work_revision.is_none()
+                        || self.matrix_task_revision.is_none()
+                        || self
+                            .matrix_choice_set_digest
+                            .as_ref()
+                            .is_some_and(|digest| !valid_sha256(digest))
+                        || self
+                            .matrix_verification_digest
+                            .as_ref()
+                            .is_some_and(|digest| !valid_sha256(digest))
+                        || matches!(
+                            self.state,
+                            AdvisoryOpportunityState::Prepared
+                                | AdvisoryOpportunityState::AwaitingResponse
+                                | AdvisoryOpportunityState::Advised
+                        ) && (self.matrix_choice_set_digest.is_none()
+                            || self.matrix_verification_digest.is_none())
+                }
                 _ => {
                     self.matrix_task_revision.is_some()
                         || self.matrix_choice_set_digest.is_some()
