@@ -26,8 +26,6 @@ jobs:
           - 5432/tcp
         options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 12
     env:
-      TECT_TEST_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:${{ job.services.postgres.ports[5432] }}/tect_test
-      TECT_TEST_RUNTIME_URL: postgres://tect_ci:ci-fixture-only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/tect_test
       TECT_TEST_RUNTIME_ROLE: tect_ci
       CARGO_PROFILE_DEV_DEBUG: "0"
       CARGO_PROFILE_TEST_DEBUG: "0"
@@ -38,6 +36,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.93.0
         with:
           components: rustfmt
+      - name: Export isolated PostgreSQL test URLs
+        env:
+          PG_PORT: ${{ job.services.postgres.ports[5432] }}
+        run: |
+          printf '%s\n' \
+            "TECT_TEST_ADMIN_URL=postgres://postgres:postgres@127.0.0.1:${PG_PORT}/tect_test" \
+            "TECT_TEST_RUNTIME_URL=postgres://tect_ci:ci-fixture-only@127.0.0.1:${PG_PORT}/tect_test" \
+            >> "$GITHUB_ENV"
       - name: Provision isolated CI runtime role
         env:
           PGPASSWORD: postgres
@@ -56,7 +62,15 @@ jobs:
         run: |
           cargo test -p tect-host --lib matrix_task_tools::tests
           cargo test -p tect-host --lib matrix_advisory_tools::tests
-          cargo test -p tect-host --lib jev_matrix_advice::tests
+          test_count="$(
+            cargo test -p tect-host --lib jev_matrix_advice::wire::tests -- --list |
+              awk '/: test$/ { count += 1 } END { print count + 0 }'
+          )"
+          if [ "$test_count" -eq 0 ]; then
+            echo "No tests matched jev_matrix_advice::wire::tests" >&2
+            exit 1
+          fi
+          cargo test -p tect-host --lib jev_matrix_advice::wire::tests
       - name: PostgreSQL Matrix live lineage
         run: cargo test -p tect-postgres --lib matrix_task_revisions_enforce_atomic_owner_accepted_lineage -- --ignored
       - name: MCP task source end to end
