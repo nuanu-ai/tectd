@@ -2,7 +2,9 @@
 //! Shape and eligibility do not establish feasibility, source authority, or permission to act.
 
 use crate::{
-    EngineeringMatrixComposition, EngineeringMatrixInput, Error, OperationalFacts, Result,
+    EngineeringMatrixComposition, EngineeringMatrixInput, Error, MatrixSourceVerificationStatus,
+    OperationalFacts, OwnerReportedEngineeringMatrixFacts, Result, VerifiedEngineeringMatrixFacts,
+    compose_engineering_matrix, compose_owner_reported_engineering_matrix,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -96,7 +98,8 @@ impl EngineeringChoiceSet {
 }
 
 /// Explicit evaluation binding. A caller must supply the stored input and its
-/// composition for the exact revision; this function rejects a mismatched task.
+/// composition for the exact revision; this function rejects mismatched or
+/// incomplete composition rather than hashing caller-selected obligations.
 pub fn matrix_evaluation_digest(
     input: &EngineeringMatrixInput,
     composition: &EngineeringMatrixComposition,
@@ -108,6 +111,27 @@ pub fn matrix_evaluation_digest(
     {
         return Err(Error::StaleRevision);
     }
+    let expected = match composition.source_verification_status {
+        MatrixSourceVerificationStatus::VerifiedByCaller => compose_engineering_matrix(
+            &VerifiedEngineeringMatrixFacts::bind_caller_verified_task_revision(
+                choice_set.task_id.clone(),
+                choice_set.task_revision.clone(),
+                input.clone(),
+            )?,
+        ),
+        MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification => {
+            compose_owner_reported_engineering_matrix(
+                &OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
+                    choice_set.task_id.clone(),
+                    choice_set.task_revision.clone(),
+                    input.clone(),
+                )?,
+            )
+        }
+    };
+    if *composition != expected {
+        return Err(Error::InvalidArguments);
+    }
     if eligibility == MatrixAdviceEligibility::NotApplicable {
         return Ok(None);
     }
@@ -117,6 +141,7 @@ pub fn matrix_evaluation_digest(
         MATRIX_EVALUATION_CONTRACT_VERSION,
         &composition.task_id,
         &composition.task_revision,
+        composition.catalogue_version,
         input,
         &composition.source_verification_status,
         &composition.mandatory_cards,

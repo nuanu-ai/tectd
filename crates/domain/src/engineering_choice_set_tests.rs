@@ -118,9 +118,17 @@ fn canonical_digest_is_order_independent_and_binding_changes_with_facts() {
     changed.criticality = MatrixFact::Unknown {
         provenance: crate::FactProvenance("owner-revision-7".into()),
     };
+    let changed_composition = compose_owner_reported_engineering_matrix(
+        &OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
+            "task-1".into(),
+            "7".into(),
+            changed.clone(),
+        )
+        .unwrap(),
+    );
     assert_ne!(
         digest,
-        matrix_evaluation_digest(&changed, &composition, &left)
+        matrix_evaluation_digest(&changed, &changed_composition, &left)
             .unwrap()
             .unwrap()
     );
@@ -130,6 +138,58 @@ fn canonical_digest_is_order_independent_and_binding_changes_with_facts() {
         matrix_evaluation_digest(&input(), &composition, &stale),
         Err(Error::StaleRevision)
     );
+}
+
+#[test]
+fn evaluation_rejects_changed_catalogue_or_forged_same_revision_composition() {
+    let facts = input();
+    let set = choices(&["a", "b"]);
+    let composition = compose_owner_reported_engineering_matrix(
+        &OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
+            "task-1".into(),
+            "7".into(),
+            facts.clone(),
+        )
+        .unwrap(),
+    );
+    let digest = matrix_evaluation_digest(&facts, &composition, &set)
+        .unwrap()
+        .unwrap();
+    // Explicitly pin the catalogue version in the hash payload, even when a
+    // policy update happens to leave the current applicable card list intact.
+    let old_payload_without_catalogue = sha256_json(&(
+        MATRIX_EVALUATION_CONTRACT_VERSION,
+        &composition.task_id,
+        &composition.task_revision,
+        &facts,
+        &composition.source_verification_status,
+        &composition.mandatory_cards,
+        &composition.unresolved_evidence,
+        set.canonical_digest(&facts).unwrap(),
+    ))
+    .unwrap();
+    assert_ne!(digest, old_payload_without_catalogue);
+
+    let mut forged = composition.clone();
+    forged.catalogue_version = "EM02-INITIAL@changed";
+    assert_eq!(
+        matrix_evaluation_digest(&facts, &forged, &set),
+        Err(Error::InvalidArguments)
+    );
+    let mut forged = composition.clone();
+    forged.mandatory_cards.clear();
+    assert_eq!(
+        matrix_evaluation_digest(&facts, &forged, &set),
+        Err(Error::InvalidArguments)
+    );
+    let mut forged = composition.clone();
+    forged.unresolved_evidence.clear();
+    assert_eq!(
+        matrix_evaluation_digest(&facts, &forged, &set),
+        Err(Error::InvalidArguments)
+    );
+    // Pending owner facts remain pending; recomposition does not upgrade them.
+    assert!(matrix_evaluation_digest(&facts, &composition, &set).is_ok());
 }
 
 #[test]
