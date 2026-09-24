@@ -9,6 +9,7 @@ use uuid::Uuid;
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 mod backup;
+mod matrix_advisory;
 mod migration;
 mod runtime_prerequisites;
 mod scope_advisory;
