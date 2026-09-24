@@ -14,6 +14,24 @@ pub enum EngineeringMode {
     Production,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProtectedGuarantee {
+    Payment,
+    Secret,
+    Data,
+}
+
+/// A commitment is evaluated against its own verified evidence, never a mode label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommitmentEvidence {
+    NoCommitment,
+    WithinVerifiedLimit,
+    LacksEvidence,
+    ExceedsVerifiedLimit,
+}
+
 /// A source reference, deliberately without a task, Program or workspace binding.
 /// Its authority and freshness must be established outside this value model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +163,13 @@ pub struct EngineeringMatrixInput {
     pub criticality: MatrixFact<String>,
     pub intent: MatrixFact<EngineeringIntent>,
     pub urgency: MatrixFact<String>,
+    pub promised_behavior: MatrixFact<String>,
+    pub promised_proof: MatrixFact<String>,
+    pub affected_guarantees: MatrixFact<Vec<ProtectedGuarantee>>,
+    pub actual_exposure: MatrixFact<bool>,
+    pub demand_commitment: MatrixFact<CommitmentEvidence>,
+    pub latency_commitment: MatrixFact<CommitmentEvidence>,
+    pub urgent_repair: MatrixFact<bool>,
 }
 
 impl EngineeringMatrixInput {
@@ -154,6 +179,22 @@ impl EngineeringMatrixInput {
         self.criticality.validate(|value| validate_text(value))?;
         self.intent.validate(EngineeringIntent::validate)?;
         self.urgency.validate(|value| validate_text(value))?;
+        self.promised_behavior
+            .validate(|value| validate_text(value))?;
+        self.promised_proof.validate(|value| validate_text(value))?;
+        self.affected_guarantees.validate(|values| {
+            if values.is_empty()
+                || values.iter().copied().collect::<BTreeSet<_>>().len() != values.len()
+            {
+                Err(Error::InvalidArguments)
+            } else {
+                Ok(())
+            }
+        })?;
+        self.actual_exposure.validate(|_| Ok(()))?;
+        self.demand_commitment.validate(|_| Ok(()))?;
+        self.latency_commitment.validate(|_| Ok(()))?;
+        self.urgent_repair.validate(|_| Ok(()))?;
         if matches!(
             (&self.mode, &self.intent),
             (
@@ -211,6 +252,13 @@ mod tests {
             criticality: known("payments affected".into()),
             intent: known(EngineeringIntent::ProductionHotfix),
             urgency: known("urgent repair".into()),
+            promised_behavior: known("no duplicate charge".into()),
+            promised_proof: known("focused regression".into()),
+            affected_guarantees: known(vec![ProtectedGuarantee::Payment]),
+            actual_exposure: known(true),
+            demand_commitment: known(CommitmentEvidence::NoCommitment),
+            latency_commitment: known(CommitmentEvidence::NoCommitment),
+            urgent_repair: known(true),
         }
     }
 
