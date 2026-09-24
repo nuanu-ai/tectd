@@ -73,6 +73,32 @@ fn routed_envelopes_and_optional_nulls_fail_closed() {
 }
 
 #[test]
+fn advisory_audit_routes_expose_choice_set_not_applicable_reason() {
+    for route in [
+        "workspace.advisory.audit",
+        "scope.advisory.audit",
+        "candidate.advisory.audit",
+    ] {
+        let spec = routes().iter().find(|spec| spec.route == route).unwrap();
+        let choices = spec.schema["properties"]["reason"]["enum"]
+            .as_array()
+            .unwrap();
+        assert!(
+            choices.contains(&json!("choice_set_not_applicable")),
+            "{route}"
+        );
+        let described = help(
+            parse_help(json!({"mode":"describe","tool":"query","route":route})).unwrap(),
+        )
+        .unwrap();
+        let public_choices = described["params_schema"]["properties"]["reason"]["enum"]
+            .as_array()
+            .unwrap();
+        assert!(public_choices.contains(&json!("choice_set_not_applicable")), "{route}");
+    }
+}
+
+#[test]
 fn matrix_task_routes_are_discoverable_and_strict() {
     let definitions = definitions();
     assert_eq!(definitions["tools"].as_array().unwrap().len(), 5);

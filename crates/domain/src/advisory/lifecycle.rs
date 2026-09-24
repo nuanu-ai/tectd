@@ -56,6 +56,7 @@ pub enum AdvisoryReason {
     WorkspaceDisabled,
     SessionSkip,
     RequestSkip,
+    ChoiceSetNotApplicable,
     DeterministicInputInvalid,
     CapabilityUnavailable,
     ProviderUnconfigured,
@@ -73,6 +74,7 @@ impl AdvisoryReason {
             Self::WorkspaceDisabled => "workspace_disabled",
             Self::SessionSkip => "session_skip",
             Self::RequestSkip => "request_skip",
+            Self::ChoiceSetNotApplicable => "choice_set_not_applicable",
             Self::DeterministicInputInvalid => "deterministic_input_invalid",
             Self::CapabilityUnavailable => "capability_unavailable",
             Self::ProviderUnconfigured => "provider_unconfigured",
@@ -96,6 +98,7 @@ pub const fn advisory_reason_matches_state(
             AdvisoryReason::WorkspaceDisabled
                 | AdvisoryReason::SessionSkip
                 | AdvisoryReason::RequestSkip
+                | AdvisoryReason::ChoiceSetNotApplicable
                 | AdvisoryReason::DeterministicInputInvalid
                 | AdvisoryReason::CapabilityUnavailable
                 | AdvisoryReason::ProviderUnconfigured

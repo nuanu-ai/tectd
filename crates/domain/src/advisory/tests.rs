@@ -96,6 +96,28 @@ fn budget_policy_invalid_is_a_typed_no_call_reason() {
 }
 
 #[test]
+fn choice_set_not_applicable_is_a_typed_no_call_reason() {
+    let reason = AdvisoryReason::ChoiceSetNotApplicable;
+    assert_eq!(reason.as_str(), "choice_set_not_applicable");
+    assert_eq!(
+        serde_json::to_value(reason).unwrap(),
+        "choice_set_not_applicable"
+    );
+    assert_eq!(
+        serde_json::from_str::<AdvisoryReason>("\"choice_set_not_applicable\"").unwrap(),
+        reason
+    );
+    assert!(advisory_reason_matches_state(
+        AdvisoryOpportunityState::NoCall,
+        reason
+    ));
+    assert!(!advisory_reason_matches_state(
+        AdvisoryOpportunityState::Prepared,
+        reason
+    ));
+}
+
+#[test]
 fn reason_precedence_is_deterministic() {
     let base = AdvisoryPolicyInput {
         workspace_mode: WorkspaceAdvisoryMode::Optional,

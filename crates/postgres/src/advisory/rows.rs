@@ -196,6 +196,7 @@ fn reason(value: &str) -> Result<AdvisoryReason> {
         "workspace_disabled" => Ok(AdvisoryReason::WorkspaceDisabled),
         "session_skip" => Ok(AdvisoryReason::SessionSkip),
         "request_skip" => Ok(AdvisoryReason::RequestSkip),
+        "choice_set_not_applicable" => Ok(AdvisoryReason::ChoiceSetNotApplicable),
         "deterministic_input_invalid" => Ok(AdvisoryReason::DeterministicInputInvalid),
         "capability_unavailable" => Ok(AdvisoryReason::CapabilityUnavailable),
         "provider_unconfigured" => Ok(AdvisoryReason::ProviderUnconfigured),

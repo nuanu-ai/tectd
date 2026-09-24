@@ -3,6 +3,37 @@ mod audit_projection_tests {
     use super::*;
 
     #[test]
+    fn choice_set_not_applicable_reason_parses_and_survives_audit_projection() {
+        assert_eq!(
+            reason("choice_set_not_applicable").unwrap(),
+            AdvisoryReason::ChoiceSetNotApplicable
+        );
+        let aggregate = audit_aggregate_from_rows(
+            AuditAggregateRow {
+                opportunities: 1,
+                opportunities_with_attempts: 0,
+                no_call_opportunities: 1,
+                authorized_attempts: 0,
+                confirmed_sent_attempts: 0,
+                send_unknown_attempts: 0,
+                proven_unsent_attempts: 0,
+                known_input_tokens: 0,
+                known_output_tokens: 0,
+                attempts_with_unknown_token_usage: 0,
+            },
+            vec![ReasonCountRow {
+                reason: "choice_set_not_applicable".into(),
+                count: 1,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            aggregate.no_call_by_reason[0].reason,
+            AdvisoryReason::ChoiceSetNotApplicable
+        );
+    }
+
+    #[test]
     fn budget_policy_invalid_reason_survives_audit_projection() {
         let aggregate = audit_aggregate_from_rows(
             AuditAggregateRow {
