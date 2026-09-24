@@ -35,6 +35,8 @@ mod matrix_planning_selection_store;
 #[cfg(test)]
 mod pipeline_advice_migration_tests;
 #[cfg(test)]
+mod pipeline_advice_manifest_migration_tests;
+#[cfg(test)]
 mod matrix_task_migration_tests;
 #[cfg(test)]
 mod matrix_task_pg_tests;
