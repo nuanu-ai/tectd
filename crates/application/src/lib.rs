@@ -2,6 +2,7 @@
 mod advisory;
 pub use advisory::{Sha256ScopeDigest, VerifySelectedSave};
 mod advisory_ports;
+mod matrix_advice_ports;
 mod matrix_advice_runtime;
 mod matrix_advisory_capture;
 mod matrix_task_ports;
@@ -21,6 +22,10 @@ pub(crate) use advisory_ports::{AdvisoryProvider, DisabledAdvisoryProvider};
 pub use advisory_ports::{
     DisabledMatrixAdviceProvider, MatrixAdviceProvider, MatrixProviderBinding,
     MatrixProviderRequest, MatrixProviderResponse,
+};
+pub use matrix_advice_ports::{
+    GuardedMatrixAdviceOutcome, GuardedMatrixAdviceRecord, MatrixAdviceStore,
+    StoredGuardedMatrixAdviceRecord,
 };
 pub use matrix_advice_runtime::{
     DenyMatrixBudget, MAX_PREPARED_MATRIX_BODY_BYTES, MatrixBudgetAuthorization,
