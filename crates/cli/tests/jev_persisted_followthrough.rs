@@ -7,7 +7,7 @@ mod recovery_support;
 mod support;
 
 use recovery_support::{Daemon, Mcp, private_temp, tagged_url};
-use serde_json::json;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::{
@@ -41,10 +41,10 @@ fn private_auth(name: &str) -> (String, HostAuth) {
     (path, auth)
 }
 
-fn check_private_output(path: &Path) {
+fn check_private_path(path: &Path) {
     assert!(
-        path.is_absolute() && !path.exists(),
-        "private output must be a new absolute file"
+        path.is_absolute(),
+        "private output must be an absolute file"
     );
     let parent = path.parent().unwrap();
     assert!(parent.is_dir());
@@ -56,17 +56,44 @@ fn check_private_output(path: &Path) {
 }
 
 fn write_private(path: &Path, bytes: &[u8]) {
-    check_private_output(path);
+    check_private_path(path);
     let parent = path.parent().unwrap();
+    let temp = parent.join(format!(".jev-recovery-{}.tmp", Uuid::new_v4()));
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(path)
+        .open(&temp)
         .unwrap();
     file.write_all(bytes).unwrap();
     file.sync_all().unwrap();
+    // hard_link is an atomic no-replace publication in the same directory.
+    // A crash before it leaves only a private temporary file; a retry never
+    // overwrites an already published credential or receipt.
+    fs::hard_link(&temp, path).unwrap();
     fs::File::open(parent).unwrap().sync_all().unwrap();
+    fs::remove_file(temp).unwrap();
+    fs::File::open(parent).unwrap().sync_all().unwrap();
+}
+
+async fn assert_database_identity(pool: &PgPool, system: &str, database_oid: i64) {
+    let version: String = sqlx::query_scalar("SHOW server_version_num")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(version.parse::<i32>().unwrap() / 10_000, 18);
+    let actual: (String, i64) = sqlx::query_as(
+        "SELECT system_identifier::text,(SELECT oid::bigint FROM pg_catalog.pg_database \
+         WHERE datname=pg_catalog.current_database()) FROM pg_catalog.pg_control_system()",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        actual,
+        (system.to_owned(), database_oid),
+        "database identity differs"
+    );
 }
 
 async fn assert_host(pool: &PgPool, auth: &HostAuth, tenant: Uuid, role: &str) -> Uuid {
@@ -115,12 +142,14 @@ async fn persisted_live_advice_through_public_mcp() {
 
     let admin_url = required("JEV_FOLLOWTHROUGH_ADMIN_URL");
     let runtime_url = required("JEV_FOLLOWTHROUGH_RUNTIME_URL");
-    let pool = PgPool::connect(&admin_url).await.unwrap();
-    let version: String = sqlx::query_scalar("SHOW server_version_num")
-        .fetch_one(&pool)
-        .await
+    let expected_system = required("JEV_FOLLOWTHROUGH_SYSTEM_IDENTIFIER");
+    let expected_database_oid = required("JEV_FOLLOWTHROUGH_DATABASE_OID")
+        .parse::<i64>()
         .unwrap();
-    assert_eq!(version.parse::<i32>().unwrap() / 10_000, 18);
+    let pool = PgPool::connect(&admin_url).await.unwrap();
+    assert_database_identity(&pool, &expected_system, expected_database_oid).await;
+    let runtime_pool = PgPool::connect(&runtime_url).await.unwrap();
+    assert_database_identity(&runtime_pool, &expected_system, expected_database_oid).await;
     let owner_actor = assert_host(&pool, &owner_auth, tenant, "owner").await;
     let verifier_actor = assert_host(&pool, &verifier_auth, tenant, "verifier").await;
     assert_ne!(owner_actor, verifier_actor);
@@ -248,6 +277,14 @@ async fn persisted_live_advice_through_public_mcp() {
     );
     assert_eq!(advice["opportunity_id"], opportunity.to_string());
     assert_eq!(advice["ranked_ids"].as_array().unwrap().len(), 2);
+    assert_eq!(advice["items"].as_array().unwrap().len(), 2);
+    assert!(
+        advice["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| item["choice"] == "preferred")
+    );
     // JEV preferred both alternatives in this evidence. The caller explicitly
     // supersedes that non-exclusive advice with the frozen deterministic baseline.
     assert!(
@@ -426,32 +463,22 @@ async fn recover_original_owner_host_credential() {
     let auth_path = required("JEV_FOLLOWTHROUGH_OWNER_AUTH_FILE");
     let receipt_path = required("JEV_FOLLOWTHROUGH_RECOVERY_RECEIPT_FILE");
     assert_ne!(auth_path, receipt_path);
+    check_private_path(Path::new(&auth_path));
+    check_private_path(Path::new(&receipt_path));
     assert!(
-        Path::new(&auth_path).is_absolute() && !Path::new(&auth_path).exists(),
-        "recover only when original auth file is absent"
+        Path::new(&auth_path).exists() || !Path::new(&receipt_path).exists(),
+        "recovery receipt exists without its private credential file"
     );
-    assert!(Path::new(&receipt_path).is_absolute() && !Path::new(&receipt_path).exists());
-    check_private_output(Path::new(&auth_path));
-    check_private_output(Path::new(&receipt_path));
+    if Path::new(&receipt_path).exists() {
+        assert_eq!(
+            fs::metadata(&receipt_path).unwrap().permissions().mode() & 0o077,
+            0,
+            "recovery receipt must remain private"
+        );
+    }
     let admin_url = required("JEV_FOLLOWTHROUGH_ADMIN_URL");
     let pool = PgPool::connect(&admin_url).await.unwrap();
-    let version: String = sqlx::query_scalar("SHOW server_version_num")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(version.parse::<i32>().unwrap() / 10_000, 18);
-    let (system, database_oid): (String, i64) = sqlx::query_as(
-        "SELECT system_identifier::text,(SELECT oid::bigint FROM pg_catalog.pg_database \
-         WHERE datname=pg_catalog.current_database()) FROM pg_catalog.pg_control_system()",
-    )
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(
-        (system.as_str(), database_oid),
-        (expected_system.as_str(), expected_database_oid),
-        "isolated database identity differs"
-    );
+    assert_database_identity(&pool, &expected_system, expected_database_oid).await;
     let mut tx = pool.begin().await.unwrap();
     let (actual_session, actual_host, actor, state, reason): (Uuid, Uuid, Uuid, String, String) =
         sqlx::query_as(
@@ -475,7 +502,7 @@ async fn recover_original_owner_host_credential() {
         (state.as_str(), reason.as_str()),
         ("advised", "provider_response")
     );
-    let (host_actor, old_digest, revoked, role): (Uuid, String, bool, String) = sqlx::query_as(
+    let (host_actor, stored_digest, revoked, role): (Uuid, String, bool, String) = sqlx::query_as(
         "SELECT h.principal_id,h.credential_digest,h.revoked,p.role FROM hosts h \
          JOIN principals p ON (p.tenant_id,p.id)=(h.tenant_id,h.principal_id) \
          WHERE h.tenant_id=$1 AND h.id=$2 FOR UPDATE OF h",
@@ -488,34 +515,57 @@ async fn recover_original_owner_host_credential() {
     assert_eq!(host_actor, actor);
     assert_eq!(role, "owner");
     assert!(!revoked);
-    assert_eq!(old_digest, expected_old_digest);
     let (dispatch_count, advice_count, disposition_count): (i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
                 (SELECT count(*) FROM advisory_scope_advice WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
                 (SELECT count(*) FROM advisory_scope_disposition WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3)",
     ).bind(tenant).bind(workspace).bind(opportunity).fetch_one(&mut *tx).await.unwrap();
     assert_eq!((dispatch_count, advice_count, disposition_count), (1, 1, 0));
-    let credential = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-    let auth = HostAuth {
-        host_id: expected_host,
-        credential,
+    // The host row lock serializes recovery attempts. Reuse the exact private
+    // credential after any process loss; never generate a second value while
+    // a previously published one may already be committed in PostgreSQL.
+    let auth = if Path::new(&auth_path).exists() {
+        private_auth("JEV_FOLLOWTHROUGH_OWNER_AUTH_FILE").1
+    } else {
+        assert_eq!(
+            stored_digest, expected_old_digest,
+            "DB digest changed but no recoverable private credential exists"
+        );
+        let credential = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+        let auth = HostAuth {
+            host_id: expected_host,
+            credential,
+        };
+        write_private(Path::new(&auth_path), &serde_json::to_vec(&auth).unwrap());
+        auth
     };
+    assert_eq!(auth.host_id, expected_host);
     let new_digest = format!("{:x}", Sha256::digest(auth.credential.as_bytes()));
-    assert_ne!(new_digest, old_digest);
-    write_private(Path::new(&auth_path), &serde_json::to_vec(&auth).unwrap());
-    let updated = sqlx::query(
-        "UPDATE hosts SET credential_digest=$1 WHERE id=$2 AND tenant_id=$3 \
-         AND principal_id=$4 AND credential_digest=$5 AND NOT revoked",
-    )
-    .bind(&new_digest)
-    .bind(expected_host)
-    .bind(tenant)
-    .bind(actor)
-    .bind(&old_digest)
-    .execute(&mut *tx)
-    .await
-    .unwrap();
-    assert_eq!(updated.rows_affected(), 1);
+    assert_ne!(new_digest, expected_old_digest);
+    if stored_digest == expected_old_digest {
+        assert!(
+            !Path::new(&receipt_path).exists(),
+            "committed receipt contradicts old host digest"
+        );
+        let updated = sqlx::query(
+            "UPDATE hosts SET credential_digest=$1 WHERE id=$2 AND tenant_id=$3 \
+             AND principal_id=$4 AND credential_digest=$5 AND NOT revoked",
+        )
+        .bind(&new_digest)
+        .bind(expected_host)
+        .bind(tenant)
+        .bind(actor)
+        .bind(&expected_old_digest)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        assert_eq!(updated.rows_affected(), 1);
+    } else {
+        assert_eq!(
+            stored_digest, new_digest,
+            "host digest matches neither original nor private recovery credential"
+        );
+    }
     tx.commit().await.unwrap();
     let stored: String =
         sqlx::query_scalar("SELECT credential_digest FROM hosts WHERE tenant_id=$1 AND id=$2")
@@ -529,14 +579,19 @@ async fn recover_original_owner_host_credential() {
         "action":"isolated_fixture_owner_credential_rotation",
         "opportunity_id":opportunity,"tenant_id":tenant,"workspace_id":workspace,
         "session_id":expected_session,"host_id":expected_host,"actor_id":actor,
-        "system_identifier":system,"database_oid":database_oid,
-        "old_credential_digest":old_digest,"new_credential_digest":new_digest,
+        "system_identifier":expected_system,"database_oid":expected_database_oid,
+        "old_credential_digest":expected_old_digest,"new_credential_digest":new_digest,
         "status":"committed"
     });
-    write_private(
-        Path::new(&receipt_path),
-        &serde_json::to_vec_pretty(&receipt).unwrap(),
-    );
+    if Path::new(&receipt_path).exists() {
+        let existing: Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+        assert_eq!(existing, receipt, "existing recovery receipt differs");
+    } else {
+        write_private(
+            Path::new(&receipt_path),
+            &serde_json::to_vec_pretty(&receipt).unwrap(),
+        );
+    }
     println!(
         "isolated owner credential recovered: opportunity={opportunity} host={expected_host} \
         session={expected_session} dispatches=1 receipt={receipt_path}"
