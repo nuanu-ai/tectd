@@ -18,8 +18,6 @@ use tect_domain::{
 use uuid::Uuid;
 
 const EXPECTED_DATABASE: &str = "tect_test";
-const SYSTEM_ID: &str = "7689109430044371904";
-const DATABASE_OID: i64 = 16384;
 
 fn disposable_endpoints(
     admin_url: &str,
@@ -59,6 +57,14 @@ fn sha(bytes: &[u8]) -> String {
 async fn verify_disposable_cluster(admin_pool: &PgPool, runtime_pool: &PgPool, role: &str) {
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
     assert_eq!(role, "tect_ci");
+    let expected_system_id: u64 = std::env::var("TECT_TEST_EXPECTED_PG_SYSTEM_ID")
+        .expect("fresh disposable PostgreSQL system ID required")
+        .parse()
+        .expect("numeric disposable PostgreSQL system ID required");
+    let expected_database_oid: i64 = std::env::var("TECT_TEST_EXPECTED_DB_OID")
+        .expect("fresh disposable database OID required")
+        .parse()
+        .expect("numeric disposable database OID required");
     let admin_identity: (i32, String, String, i64, String) = sqlx::query_as(
         "SELECT current_setting('server_version_num')::integer, \
                 current_database(), current_user, \
@@ -71,8 +77,8 @@ async fn verify_disposable_cluster(admin_pool: &PgPool, runtime_pool: &PgPool, r
     assert!((180000..190000).contains(&admin_identity.0));
     assert_eq!(admin_identity.1, EXPECTED_DATABASE);
     assert_eq!(admin_identity.2, "postgres");
-    assert_eq!(admin_identity.3, DATABASE_OID);
-    assert_eq!(admin_identity.4, SYSTEM_ID);
+    assert_eq!(admin_identity.3, expected_database_oid);
+    assert_eq!(admin_identity.4, expected_system_id.to_string());
 
     // Hold the runtime connection while the administrator confirms its backend
     // PID belongs to the same database on this server.
