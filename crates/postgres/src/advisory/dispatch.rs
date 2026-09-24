@@ -603,20 +603,67 @@ async fn finalize_opportunity(
     expected_config_revision: i64,
     dispatch: &AdvisoryDispatch,
 ) -> Result<AdvisoryOpportunity> {
+    let persisted = dispatch_by_id(tx, tenant, workspace, dispatch.id, true).await?;
+    if dispatch.opportunity_id != opportunity_id || persisted.opportunity_id != opportunity_id {
+        return Err(Error::InputConflict);
+    }
+    let opportunity = opportunity_by_id(tx, tenant, workspace, opportunity_id, true).await?;
+    if !supported_dispatch_opportunity(&opportunity)
+        || expected_config_revision != opportunity.config_revision
+        || persisted.material_digest != opportunity.material_digest
+    {
+        return Err(Error::InputConflict);
+    }
+    let latest_dispatch: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 \
+         AND opportunity_id=$3 ORDER BY attempt_number DESC LIMIT 1",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(opportunity_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    if latest_dispatch != Some(persisted.id) {
+        return Err(Error::InputConflict);
+    }
+    let persisted_state = dispatch_state(&persisted.state)?;
+    let persisted_certainty = send_certainty(&persisted.send_certainty)?;
+    let persisted_outcome = dispatch_outcome(persisted.outcome)?;
+    if !matches!(
+        (persisted_state, persisted_certainty, persisted_outcome),
+        (
+            AdvisoryDispatchState::Sealed,
+            AdvisorySendCertainty::Sent,
+            Some(
+                AdvisoryDispatchOutcome::ProviderResponse
+                    | AdvisoryDispatchOutcome::ProviderFailure
+            )
+        ) | (
+            AdvisoryDispatchState::Sealed,
+            AdvisorySendCertainty::NotSent | AdvisorySendCertainty::SentUnknown,
+            Some(AdvisoryDispatchOutcome::ProviderFailure)
+        ) | (
+            AdvisoryDispatchState::Sending,
+            AdvisorySendCertainty::SentUnknown,
+            None
+        )
+    ) {
+        return Err(Error::InputConflict);
+    }
     let current: (i64, String) = sqlx::query_as("SELECT revision,mode FROM advisory_workspace_config WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE")
         .bind(tenant).bind(workspace).fetch_one(&mut **tx).await.map_err(storage_error)?;
-    let opportunity = opportunity_by_id(tx, tenant, workspace, opportunity_id, true).await?;
     let (state, reason) = if current.0 != expected_config_revision || current.1 != "optional" {
         (
             AdvisoryOpportunityState::Invalidated,
             AdvisoryReason::ConfigurationChanged,
         )
-    } else if dispatch.outcome == Some(AdvisoryDispatchOutcome::ProviderResponse) {
+    } else if persisted_outcome == Some(AdvisoryDispatchOutcome::ProviderResponse) {
         (
             AdvisoryOpportunityState::Advised,
             AdvisoryReason::ProviderResponse,
         )
-    } else if dispatch.send_certainty == AdvisorySendCertainty::SentUnknown {
+    } else if persisted_certainty == AdvisorySendCertainty::SentUnknown {
         (
             AdvisoryOpportunityState::Unresolved,
             AdvisoryReason::SendUnknown,
@@ -627,8 +674,26 @@ async fn finalize_opportunity(
             AdvisoryReason::ProviderFailure,
         )
     };
-    sqlx::query("UPDATE advisory_opportunity SET state=$4,primary_reason=$5,updated_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
-        .bind(tenant).bind(workspace).bind(opportunity_id).bind(state.as_str()).bind(reason.as_str()).execute(&mut **tx).await.map_err(storage_error)?;
+    if opportunity.state == state && opportunity.primary_reason == reason {
+        return Ok(AdvisoryOpportunity {
+            provider_called: true,
+            ..opportunity
+        });
+    }
+    if !matches!(
+        opportunity.state,
+        AdvisoryOpportunityState::AwaitingResponse | AdvisoryOpportunityState::Unresolved
+    ) || !opportunity.state.can_transition_to(state)
+    {
+        return Err(Error::InputConflict);
+    }
+    let updated = sqlx::query("UPDATE advisory_opportunity SET state=$4,primary_reason=$5,updated_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND state=$6 AND primary_reason=$7")
+        .bind(tenant).bind(workspace).bind(opportunity_id).bind(state.as_str()).bind(reason.as_str())
+        .bind(opportunity.state.as_str()).bind(opportunity.primary_reason.as_str())
+        .execute(&mut **tx).await.map_err(storage_error)?;
+    if updated.rows_affected() != 1 {
+        return Err(Error::InputConflict);
+    }
     Ok(AdvisoryOpportunity {
         state,
         primary_reason: reason,
