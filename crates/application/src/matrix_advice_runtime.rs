@@ -211,6 +211,16 @@ impl MatrixStartedDispatchPermit {
             && self.body_length == prepared.body_length()
             && self.body_sha256 == prepared.body_sha256
     }
+
+    /// Consume the committed-start capability at the provider boundary. The
+    /// opportunity, dispatch, and configuration were checked when this private
+    /// capability was minted; the provider receives only the prepared attempt.
+    pub fn permits_prepared(self, prepared: &PreparedMatrixAdviceAttempt) -> bool {
+        self.binding == prepared.binding
+            && self.identity == prepared.identity
+            && self.body_length == prepared.body_length()
+            && self.body_sha256 == prepared.body_sha256
+    }
 }
 
 fn binding_matches_opportunity(
@@ -302,6 +312,65 @@ mod tests {
     use tect_domain::{
         AdvisoryDecisionPoint, AdvisoryOpportunityState, AdvisoryReason, AdvisoryRequestPreference,
     };
+
+    #[test]
+    fn committed_permit_matches_only_its_prepared_attempt() {
+        let binding = MatrixProviderBinding {
+            task_id: Uuid::new_v4(),
+            task_revision: 1,
+            input_digest: "a".repeat(64),
+            choice_set_id: "choice".into(),
+            choice_set_version: 1,
+            choice_set_digest: "b".repeat(64),
+            evaluation_digest: "c".repeat(64),
+            verification_digest: None,
+        };
+        let identity = MatrixProviderIdentity {
+            provider_profile_ref: AdvisoryProviderProfileRef { id: "test".into() },
+            model_configuration: AdvisoryModelConfiguration {
+                model: "test-model".into(),
+            },
+            destination: "test-target".into(),
+            wire_version: "test-wire/1".into(),
+        };
+        let prepared = PreparedMatrixAdviceAttempt {
+            binding: binding.clone(),
+            identity: identity.clone(),
+            body: b"exact-body".to_vec(),
+            body_sha256: format!("{:x}", Sha256::digest(b"exact-body")),
+        };
+        let permit = || MatrixStartedDispatchPermit {
+            opportunity_id: Uuid::new_v4(),
+            dispatch_id: Uuid::new_v4(),
+            configuration_digest: "d".repeat(64),
+            binding: binding.clone(),
+            identity: identity.clone(),
+            body_length: prepared.body_length(),
+            body_sha256: prepared.body_sha256.clone(),
+        };
+        assert!(permit().permits_prepared(&prepared));
+
+        let mut changed = PreparedMatrixAdviceAttempt {
+            binding: binding.clone(),
+            identity: identity.clone(),
+            body: b"other-body".to_vec(),
+            body_sha256: format!("{:x}", Sha256::digest(b"other-body")),
+        };
+        assert!(!permit().permits_prepared(&changed));
+        changed = PreparedMatrixAdviceAttempt {
+            binding: binding.clone(),
+            identity: MatrixProviderIdentity {
+                destination: "other-target".into(),
+                ..identity.clone()
+            },
+            body: prepared.body.clone(),
+            body_sha256: prepared.body_sha256.clone(),
+        };
+        assert!(!permit().permits_prepared(&changed));
+        changed.identity = identity.clone();
+        changed.binding.task_id = Uuid::new_v4();
+        assert!(!permit().permits_prepared(&changed));
+    }
 
     #[test]
     fn dispatch_permit_binding_rejects_different_evaluation_material() {
