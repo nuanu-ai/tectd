@@ -7,8 +7,7 @@ use crate::{CurrentMatrixAdvice, RevalidatedMatrixVerification};
 
 /// Agent-authored decision over an exact saved Matrix task and opportunity.
 /// Actor identity is deliberately absent; it comes from the authenticated session.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordMatrixDisposition {
     pub request_id: Uuid,
     pub task_id: Uuid,
@@ -59,11 +58,42 @@ impl RecordMatrixDisposition {
 
     pub fn material_digest(&self) -> Result<String> {
         self.validate()?;
-        let bytes = serde_json::to_vec(self).map_err(|_| Error::InternalInvariant)?;
+        let bytes = self.canonical_material_bytes()?;
         let mut hash = Sha256::new();
         hash.update(b"tect.matrix-disposition/1\0");
         hash.update(bytes);
         Ok(format!("{:x}", hash.finalize()))
+    }
+
+    /// Reproduce the former derived-Serde struct encoding byte for byte. The
+    /// explicit field order and JSON string escaping preserve old receipt
+    /// digests without introducing a direct Serde dependency into application.
+    fn canonical_material_bytes(&self) -> Result<Vec<u8>> {
+        let mut bytes = Vec::with_capacity(512);
+        bytes.push(b'{');
+        macro_rules! field {
+            ($name:literal, $value:expr) => {
+                bytes.extend_from_slice(concat!("\"", $name, "\":").as_bytes());
+                bytes.extend(serde_json::to_vec(&$value).map_err(|_| Error::InternalInvariant)?);
+                bytes.push(b',');
+            };
+        }
+        field!("request_id", self.request_id);
+        field!("task_id", self.task_id);
+        field!("expected_task_revision", self.expected_task_revision);
+        field!("expected_input_digest", &self.expected_input_digest);
+        field!(
+            "expected_choice_set_digest",
+            &self.expected_choice_set_digest
+        );
+        field!("opportunity_id", self.opportunity_id);
+        field!("basis", self.basis);
+        field!("advice_id", self.advice_id);
+        field!("advice_digest", &self.advice_digest);
+        field!("decision", &self.decision);
+        bytes.pop(); // final comma
+        bytes.push(b'}');
+        Ok(bytes)
     }
 }
 
@@ -128,6 +158,53 @@ mod tests {
                 blocked_reason: "Await independent evidence".into(),
             },
         }
+    }
+
+    #[test]
+    fn canonical_material_retains_legacy_json_bytes_and_stable_hash() {
+        let request = RecordMatrixDisposition {
+            request_id: Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap(),
+            task_id: Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap(),
+            expected_task_revision: 2,
+            expected_input_digest: "a".repeat(64),
+            expected_choice_set_digest: Some("b".repeat(64)),
+            opportunity_id: Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap(),
+            basis: MatrixDispositionBasis::NoCall,
+            advice_id: None,
+            advice_digest: None,
+            decision: MatrixDispositionDecision::Blocked {
+                blocked_reason: "A,B:C".into(),
+            },
+        };
+        let old_json = concat!(
+            "{\"request_id\":\"11111111-1111-4111-8111-111111111111\",",
+            "\"task_id\":\"22222222-2222-4222-8222-222222222222\",",
+            "\"expected_task_revision\":2,\"expected_input_digest\":\"%INPUT%\",",
+            "\"expected_choice_set_digest\":\"%CHOICE%\",",
+            "\"opportunity_id\":\"33333333-3333-4333-8333-333333333333\",",
+            "\"basis\":\"no_call\",\"advice_id\":null,\"advice_digest\":null,",
+            "\"decision\":{\"outcome\":\"blocked\",\"blocked_reason\":\"A,B:C\"}}"
+        )
+        .replace("%INPUT%", &"a".repeat(64))
+        .replace("%CHOICE%", &"b".repeat(64));
+        assert_eq!(
+            request.canonical_material_bytes().unwrap(),
+            old_json.as_bytes()
+        );
+        let mut old_hash = Sha256::new();
+        old_hash.update(b"tect.matrix-disposition/1\0");
+        old_hash.update(old_json.as_bytes());
+        assert_eq!(
+            request.material_digest().unwrap(),
+            format!("{:x}", old_hash.finalize())
+        );
+        assert_eq!(request.material_digest(), request.clone().material_digest());
+
+        let mut changed = request.clone();
+        changed.decision = MatrixDispositionDecision::Blocked {
+            blocked_reason: "A,B:C,".into(),
+        };
+        assert_ne!(request.material_digest(), changed.material_digest());
     }
 
     /// Models the persistence port's request-id guard without a database.
