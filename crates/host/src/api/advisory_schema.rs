@@ -23,6 +23,40 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
     vec![
         route!(
             "command",
+            "engineering.advisory.request",
+            "request_engineering_advisory",
+            "Record an optional Engineering Matrix advisory opportunity for one exact saved task revision.",
+            "Requires an authenticated open native session, workspace membership, the current positive task revision, and a request key unique to this opportunity. The optional session and request preferences each default to use_workspace; skip records a no-call. A saved choice set with fewer than two eligible candidates is not applicable.",
+            "Records a terminal no_call opportunity with its reason, task revision, optional choice-set digest, configuration revision, and material digest. The provider is never called; no advice, choice, release, or approval is established.",
+            "Repeat the same request key with identical task revision, actor/session, and preferences. Changed material conflicts; inspect engineering.advisory.get after uncertainty.",
+            object_schema(
+                json!({
+                    "task_id":uuid(),
+                    "expected_task_revision":{"type":"integer","minimum":1},
+                    "request_key":{"type":"string","minLength":1,"maxLength":256,"x-maxUtf8Bytes":256,"description":"One to 256 UTF-8 bytes, no NUL, and no leading or trailing Unicode whitespace. Host validation enforces byte and trim limits."},
+                    "session_preference":{"type":"string","enum":["use_workspace","skip"],"default":"use_workspace"},
+                    "request_preference":{"type":"string","enum":["use_workspace","skip"],"default":"use_workspace"}
+                }),
+                json!(["task_id", "expected_task_revision", "request_key"]),
+            ),
+            json!({"task_id":example_id,"expected_task_revision":1,"request_key":"matrix-task-1","request_preference":"use_workspace"}),
+        ),
+        route!(
+            "query",
+            "engineering.advisory.get",
+            "get_engineering_advisory",
+            "Read the terminal Engineering Matrix advisory receipt for one exact task and request key.",
+            "Requires an authenticated open native session in the receipt's workspace. The receipt must target the exact Matrix task and request key.",
+            "Returns the saved no-call state and reason, task revision, optional choice-set digest, configuration revision, material digest, and provider_called=false; no advice or release is inferred.",
+            "Safe to repeat; a missing or mismatched receipt returns not_found.",
+            object_schema(
+                json!({"task_id":uuid(),"request_key":{"type":"string","minLength":1,"maxLength":256,"x-maxUtf8Bytes":256,"description":"One to 256 UTF-8 bytes, no NUL, and no leading or trailing Unicode whitespace. Host validation enforces byte and trim limits."}}),
+                json!(["task_id", "request_key"]),
+            ),
+            json!({"task_id":example_id,"request_key":"matrix-task-1"}),
+        ),
+        route!(
+            "command",
             "scope.advisory.request",
             "scope_advisory_request",
             "Request optional Scope-decomposition advice for one candidate set using complete agent-authored alternatives.",

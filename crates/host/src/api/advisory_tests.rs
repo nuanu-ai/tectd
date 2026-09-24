@@ -46,6 +46,8 @@ fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
         ("command", "workspace.advisory.configure"),
         ("command", "scope.advisory.request"),
         ("command", "scope.advisory.disposition"),
+        ("command", "engineering.advisory.request"),
+        ("query", "engineering.advisory.get"),
     ] {
         assert!(
             routes()
@@ -61,6 +63,41 @@ fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
             .iter()
             .all(|tool| tool["inputSchema"]["additionalProperties"] == false)
     );
+}
+
+#[test]
+fn matrix_advisory_routes_use_exact_task_and_request_key() {
+    let task_id = uuid::Uuid::new_v4();
+    let request = json!({"task_id":task_id,"expected_task_revision":1,"request_key":"matrix-1","session_preference":"use_workspace","request_preference":"skip"});
+    let get = json!({"task_id":task_id,"request_key":"matrix-1"});
+    for (tool, route, params) in [
+        ("command", "engineering.advisory.request", request.clone()),
+        ("query", "engineering.advisory.get", get.clone()),
+    ] {
+        let spec = routes()
+            .iter()
+            .find(|spec| spec.tool == tool && spec.route == route)
+            .unwrap();
+        assert_eq!(spec.schema["additionalProperties"], false);
+        assert!(decode_public_call(tool, json!({"route":route,"params":params})).is_ok());
+        assert!(
+            decode_public_call("execute", json!({"route":route,"params":spec.example})).is_err()
+        );
+    }
+    for params in [
+        json!({"task_id":task_id,"expected_task_revision":0,"request_key":"matrix-1"}),
+        json!({"task_id":task_id,"expected_task_revision":1,"request_key":" matrix-1"}),
+        json!({"task_id":task_id,"expected_task_revision":1,"request_key":"matrix-1","principal_id":task_id}),
+    ] {
+        assert!(
+            decode_public_call(
+                "command",
+                json!({"route":"engineering.advisory.request","params":params})
+            )
+            .is_err()
+        );
+    }
+    assert!(decode_public_call("query", json!({"route":"engineering.advisory.get","params":{"task_id":task_id,"request_key":"matrix-1","workspace_id":task_id}})).is_err());
 }
 
 #[test]

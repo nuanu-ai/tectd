@@ -256,6 +256,28 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                     None,
                 ))
             }
+            Invocation::MatrixAdvisory(invocation) => {
+                let opportunity = match invocation {
+                    crate::matrix_advisory_tools::MatrixAdvisoryInvocation::Request(request) => {
+                        service
+                            .request_engineering_advisory(context, &request)
+                            .await?
+                    }
+                    crate::matrix_advisory_tools::MatrixAdvisoryInvocation::Get {
+                        task_id,
+                        request_key,
+                    } => {
+                        service
+                            .get_engineering_advisory(context, task_id, &request_key)
+                            .await?
+                    }
+                };
+                Ok(responses::with_actions(
+                    crate::matrix_advisory_tools::receipt(opportunity),
+                    Vec::new(),
+                    None,
+                ))
+            }
             Invocation::Advisory(invocation) => {
                 crate::advisory_dispatch::execute(context, invocation, service, capacity).await
             }
