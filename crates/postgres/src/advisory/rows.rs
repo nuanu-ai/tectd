@@ -166,6 +166,9 @@ fn decision_point(value: &str) -> Result<AdvisoryDecisionPoint> {
         SCOPE_DECOMPOSITION_DECISION_POINT => {
             Ok(AdvisoryDecisionPoint::ScopeDecompositionBeforeSelection)
         }
+        ENGINEERING_PROFILE_DECISION_POINT => {
+            Ok(AdvisoryDecisionPoint::EngineeringProfileBeforeSelection)
+        }
         _ => Err(Error::StorageUnavailable),
     }
 }

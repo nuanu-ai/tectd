@@ -285,8 +285,45 @@ fn registered_decision_point_is_closed_and_capability_owned() {
         !AdvisoryDecisionPoint::ScopeDecompositionBeforeSelection
             .supports(AdvisoryCapability::PipelineRecommendation)
     );
+    let engineering = AdvisoryDecisionPoint::EngineeringProfileBeforeSelection;
+    assert_eq!(engineering.as_str(), ENGINEERING_PROFILE_DECISION_POINT);
+    assert_eq!(engineering.to_string(), ENGINEERING_PROFILE_DECISION_POINT);
+    assert_eq!(
+        engineering.capability(),
+        AdvisoryCapability::EngineeringProfile
+    );
+    assert!(engineering.supports(AdvisoryCapability::EngineeringProfile));
+    assert!(!engineering.supports(AdvisoryCapability::ScopeDecomposition));
+    assert_eq!(
+        ENGINEERING_PROFILE_DECISION_POINT.parse::<AdvisoryDecisionPoint>(),
+        Ok(engineering)
+    );
+    assert_eq!(
+        serde_json::to_value(engineering).unwrap(),
+        serde_json::json!(ENGINEERING_PROFILE_DECISION_POINT)
+    );
+    assert_eq!(
+        serde_json::from_value::<AdvisoryDecisionPoint>(serde_json::json!(
+            ENGINEERING_PROFILE_DECISION_POINT
+        )),
+        Ok(engineering)
+    );
+    assert_eq!(
+        SCOPE_DECOMPOSITION_DECISION_POINT.parse::<AdvisoryDecisionPoint>(),
+        Ok(AdvisoryDecisionPoint::ScopeDecompositionBeforeSelection)
+    );
+    assert!(
+        "engineering.profile.unknown"
+            .parse::<AdvisoryDecisionPoint>()
+            .is_err()
+    );
     let mut input = opportunity(AdvisoryRequestPreference::UseWorkspace);
     input.capability = AdvisoryCapability::PipelineRecommendation;
+    assert_eq!(input.validate(), Err(Error::InvalidArguments));
+    input.capability = AdvisoryCapability::EngineeringProfile;
+    input.decision_point = engineering;
+    assert!(input.validate().is_ok());
+    input.capability = AdvisoryCapability::ScopeDecomposition;
     assert_eq!(input.validate(), Err(Error::InvalidArguments));
     assert!(
         serde_json::from_value::<AdvisoryDecisionPoint>(serde_json::json!(

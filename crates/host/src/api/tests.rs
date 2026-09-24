@@ -99,6 +99,37 @@ fn advisory_audit_routes_expose_choice_set_not_applicable_reason() {
 }
 
 #[test]
+fn advisory_audit_routes_expose_engineering_profile_decision_point() {
+    for route in [
+        "workspace.advisory.audit",
+        "scope.advisory.audit",
+        "candidate.advisory.audit",
+    ] {
+        let spec = routes().iter().find(|spec| spec.route == route).unwrap();
+        let choices = &spec.schema["properties"]["decision_point"]["enum"];
+        assert!(
+            choices
+                .as_array()
+                .unwrap()
+                .contains(&json!("engineering.profile.before_selection")),
+            "{route}"
+        );
+        let described =
+            help(parse_help(json!({"mode":"describe","tool":"query","route":route})).unwrap())
+                .unwrap();
+        let public_choices = &described["params_schema"]["properties"]["decision_point"]["enum"];
+        assert!(
+            public_choices
+                .as_array()
+                .unwrap()
+                .contains(&json!("engineering.profile.before_selection")),
+            "{route}"
+        );
+    }
+    assert_eq!(definitions()["tools"].as_array().unwrap().len(), 5);
+}
+
+#[test]
 fn matrix_task_routes_are_discoverable_and_strict() {
     let definitions = definitions();
     assert_eq!(definitions["tools"].as_array().unwrap().len(), 5);

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub const SCOPE_DECOMPOSITION_DECISION_POINT: &str = "scope.decomposition.before_selection";
+pub const ENGINEERING_PROFILE_DECISION_POINT: &str = "engineering.profile.before_selection";
 pub const ADVISORY_DECISION_POINT_VERSION: i32 = 1;
 pub const ADVISORY_CONFIG_REVISION_DEFAULT: i64 = 0;
 pub const ADVISORY_POLICY_VERSION: &str = "slice-00.v1";
@@ -58,18 +59,22 @@ pub enum AdvisoryCapability {
 pub enum AdvisoryDecisionPoint {
     #[serde(rename = "scope.decomposition.before_selection")]
     ScopeDecompositionBeforeSelection,
+    #[serde(rename = "engineering.profile.before_selection")]
+    EngineeringProfileBeforeSelection,
 }
 
 impl AdvisoryDecisionPoint {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ScopeDecompositionBeforeSelection => SCOPE_DECOMPOSITION_DECISION_POINT,
+            Self::EngineeringProfileBeforeSelection => ENGINEERING_PROFILE_DECISION_POINT,
         }
     }
 
     pub const fn capability(self) -> AdvisoryCapability {
         match self {
             Self::ScopeDecompositionBeforeSelection => AdvisoryCapability::ScopeDecomposition,
+            Self::EngineeringProfileBeforeSelection => AdvisoryCapability::EngineeringProfile,
         }
     }
 
@@ -79,8 +84,29 @@ impl AdvisoryDecisionPoint {
             (
                 Self::ScopeDecompositionBeforeSelection,
                 AdvisoryCapability::ScopeDecomposition
+            ) | (
+                Self::EngineeringProfileBeforeSelection,
+                AdvisoryCapability::EngineeringProfile
             )
         )
+    }
+}
+
+impl std::fmt::Display for AdvisoryDecisionPoint {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for AdvisoryDecisionPoint {
+    type Err = Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            SCOPE_DECOMPOSITION_DECISION_POINT => Ok(Self::ScopeDecompositionBeforeSelection),
+            ENGINEERING_PROFILE_DECISION_POINT => Ok(Self::EngineeringProfileBeforeSelection),
+            _ => Err(Error::InvalidArguments),
+        }
     }
 }
 

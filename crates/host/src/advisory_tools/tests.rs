@@ -146,6 +146,30 @@ fn advisory_routes_decode_only_their_strict_shapes() {
 }
 
 #[test]
+fn workspace_audit_accepts_engineering_profile_filter_and_rejects_mismatched_capability() {
+    let parsed = parse(
+        "workspace_advisory_audit",
+        json!({
+            "limit": 10,
+            "capability": "engineering_profile",
+            "decision_point": "engineering.profile.before_selection"
+        }),
+    );
+    assert!(matches!(parsed, Ok(AdvisoryInvocation::WorkspaceAudit(_))));
+    assert!(
+        parse(
+            "workspace_advisory_audit",
+            json!({
+                "limit": 10,
+                "capability": "scope_decomposition",
+                "decision_point": "engineering.profile.before_selection"
+            }),
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn matrix_card_parser_rejects_unknown_and_forged_inputs() {
     let id = uuid::Uuid::new_v4();
     assert!(matches!(

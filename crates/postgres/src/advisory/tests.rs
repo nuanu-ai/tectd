@@ -3,6 +3,22 @@ mod audit_projection_tests {
     use super::*;
 
     #[test]
+    fn engineering_profile_decision_point_decodes_without_changing_scope_or_unknown_rows() {
+        assert_eq!(
+            decision_point(ENGINEERING_PROFILE_DECISION_POINT),
+            Ok(AdvisoryDecisionPoint::EngineeringProfileBeforeSelection)
+        );
+        assert_eq!(
+            decision_point(SCOPE_DECOMPOSITION_DECISION_POINT),
+            Ok(AdvisoryDecisionPoint::ScopeDecompositionBeforeSelection)
+        );
+        assert_eq!(
+            decision_point("engineering.profile.unknown"),
+            Err(Error::StorageUnavailable)
+        );
+    }
+
+    #[test]
     fn choice_set_not_applicable_reason_parses_and_survives_audit_projection() {
         assert_eq!(
             reason("choice_set_not_applicable").unwrap(),
