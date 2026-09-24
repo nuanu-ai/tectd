@@ -3,6 +3,8 @@ const PRIOR: &str = include_str!("../migrations/0049_engineering_profile_opportu
 const PRIOR_REASON: &str = include_str!("../migrations/0044_advisory_budget_no_call_reason.sql");
 const REVISION_REASON: &str =
     include_str!("../migrations/0053_matrix_task_revision_changed_reason.sql");
+const READINESS_REASONS: &str =
+    include_str!("../migrations/0054_matrix_readiness_no_call_reasons.sql");
 
 fn check_expression<'a>(migration: &'a str, constraint: &str) -> &'a str {
     let start = migration
@@ -87,4 +89,19 @@ fn revision_reason_only_extends_matrix_invalidation_constraints() {
     ));
     let matrix_only = "OR (state = 'invalidated' AND primary_reason = 'matrix_task_revision_changed' AND capability = 'engineering_profile' AND work_item_kind = 'matrix_task') ";
     assert_eq!(state_after.replace(matrix_only, ""), state_before);
+}
+
+#[test]
+fn readiness_reasons_are_matrix_no_call_only() {
+    for reason in ["matrix_evidence_unresolved", "matrix_source_unverified"] {
+        assert_eq!(READINESS_REASONS.matches(&format!("'{reason}'")).count(), 2);
+    }
+    assert!(READINESS_REASONS.contains("state = 'no_call' AND primary_reason IN"));
+    assert!(
+        READINESS_REASONS
+            .contains("capability = 'engineering_profile' AND work_item_kind = 'matrix_task'")
+    );
+    assert!(
+        READINESS_REASONS.contains("state = 'prepared' AND primary_reason = 'dispatch_authorized'")
+    );
 }

@@ -76,6 +76,8 @@ mod audit_projection_tests {
 
     #[test]
     fn choice_set_not_applicable_reason_parses_and_survives_audit_projection() {
+        assert_eq!(reason("matrix_evidence_unresolved").unwrap(), AdvisoryReason::MatrixEvidenceUnresolved);
+        assert_eq!(reason("matrix_source_unverified").unwrap(), AdvisoryReason::MatrixSourceUnverified);
         assert_eq!(
             reason("choice_set_not_applicable").unwrap(),
             AdvisoryReason::ChoiceSetNotApplicable

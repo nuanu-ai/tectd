@@ -4,9 +4,9 @@ use tect_domain::{
     ADVISORY_DECISION_POINT_VERSION, ADVISORY_POLICY_VERSION, AdvisoryCapability,
     AdvisoryDecisionPoint, AdvisoryOpportunity, AdvisoryOpportunityInput, AdvisoryOpportunityState,
     AdvisoryReason, AdvisoryRequestPreference, EngineeringChoiceSet, EngineeringMatrixComposition,
-    EngineeringMatrixInput, Error, MatrixAdviceEligibility, OwnerReportedEngineeringMatrixFacts,
-    RequestContext, Result, WorkspaceAdvisoryConfig, WorkspaceAdvisoryMode,
-    compose_owner_reported_engineering_matrix,
+    EngineeringMatrixInput, Error, MatrixAdviceEligibility, MatrixSourceVerificationStatus,
+    OwnerReportedEngineeringMatrixFacts, RequestContext, Result, WorkspaceAdvisoryConfig,
+    WorkspaceAdvisoryMode, compose_owner_reported_engineering_matrix,
 };
 use uuid::Uuid;
 
@@ -322,6 +322,12 @@ fn matrix_advisory_opportunity_input(
         AdvisoryReason::RequestSkip
     } else if eligibility == MatrixAdviceEligibility::NotApplicable {
         AdvisoryReason::ChoiceSetNotApplicable
+    } else if !composition.unresolved_evidence.is_empty() {
+        AdvisoryReason::MatrixEvidenceUnresolved
+    } else if composition.source_verification_status
+        != MatrixSourceVerificationStatus::VerifiedByCaller
+    {
+        AdvisoryReason::MatrixSourceUnverified
     } else {
         AdvisoryReason::CapabilityUnavailable
     };
@@ -503,7 +509,8 @@ mod tests {
         }
 
         fn prepare(&self, request: &MatrixProviderRequest) -> Result<PreparedMatrixAdviceAttempt> {
-            PreparedMatrixAdviceAttempt::new(request, self.0.clone(), b"{}".to_vec())
+            let _ = request;
+            panic!("unverified Matrix must not prepare a provider attempt")
         }
 
         async fn attempt_prepared(
@@ -530,7 +537,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn eligible_matrix_prepares_only_after_budget_authorizes() {
+    async fn owner_reported_matrix_never_prepares_even_with_budget() {
         let mut revision = stored_revision();
         revision.input.mode = known(EngineeringMode::Demo);
         revision.input_digest =
@@ -576,6 +583,10 @@ mod tests {
             Uuid::new_v4(),
         )
         .unwrap();
+        assert_eq!(
+            input.primary_reason,
+            AdvisoryReason::MatrixEvidenceUnresolved
+        );
         let legacy_no_call_digest = input.material_digest.clone();
         let expected_evaluation_digest = tect_domain::matrix_evaluation_digest(
             &revision.input,
@@ -697,21 +708,10 @@ mod tests {
         )
         .await
         .unwrap();
-        let crate::matrix_advisory_capture::PreparedMatrixOpportunity::Authorized {
-            prepared,
-            authorization,
-        } = captured
-        else {
-            panic!("eligible authorized Matrix must retain prepared attempt");
-        };
-        assert_eq!(authorization.policy_id, "test-policy");
-        assert_eq!(prepared.identity(), &provider.0);
-        assert_eq!(prepared.body(), b"{}");
-        assert_eq!(
-            prepared.body_sha256(),
-            format!("{:x}", Sha256::digest(b"{}"))
-        );
-        assert_eq!(prepared.binding(), provider_request.binding());
+        assert!(matches!(
+            captured,
+            crate::matrix_advisory_capture::PreparedMatrixOpportunity::NoCall
+        ));
         assert_eq!(
             revision.input.mode,
             MatrixFact::Known {
@@ -719,9 +719,13 @@ mod tests {
                 provenance: FactProvenance("owner report".into()),
             }
         );
-        assert_eq!(input.state, AdvisoryOpportunityState::Prepared);
-        assert_eq!(input.primary_reason, AdvisoryReason::DispatchAuthorized);
-        assert_eq!(input.material_digest, expected_evaluation_digest);
+        assert_eq!(input.state, AdvisoryOpportunityState::NoCall);
+        assert_eq!(
+            input.primary_reason,
+            AdvisoryReason::MatrixEvidenceUnresolved
+        );
+        assert_eq!(input.material_digest, legacy_no_call_digest);
+        assert!(!expected_evaluation_digest.is_empty());
         let mut denied = matrix_advisory_opportunity_input(
             &revision,
             &request,
@@ -747,12 +751,15 @@ mod tests {
             crate::matrix_advisory_capture::PreparedMatrixOpportunity::NoCall
         ));
         assert_eq!(denied.state, AdvisoryOpportunityState::NoCall);
-        assert_eq!(denied.primary_reason, AdvisoryReason::BudgetPolicyInvalid);
+        assert_eq!(
+            denied.primary_reason,
+            AdvisoryReason::MatrixEvidenceUnresolved
+        );
         assert_eq!(denied.material_digest, legacy_no_call_digest);
     }
 
-    #[test]
-    fn matrix_no_call_precedence_and_digest_bind_stored_material() {
+    #[tokio::test]
+    async fn matrix_no_call_precedence_and_digest_bind_stored_material() {
         let mut revision = stored_revision();
         let mut request = advisory_request(revision.task_id);
         let session = Uuid::new_v4();
@@ -813,10 +820,40 @@ mod tests {
                 .unwrap();
         assert_eq!(
             eligible.primary_reason,
-            AdvisoryReason::CapabilityUnavailable
+            AdvisoryReason::MatrixEvidenceUnresolved
         );
         assert_eq!(eligible.state, AdvisoryOpportunityState::NoCall);
         assert_ne!(eligible.material_digest, absent.material_digest);
+        let provider = TestProvider(MatrixProviderIdentity {
+            provider_profile_ref: tect_domain::AdvisoryProviderProfileRef {
+                id: "test-profile".into(),
+            },
+            model_configuration: tect_domain::AdvisoryModelConfiguration {
+                model: "test-model".into(),
+            },
+            destination: "test-destination".into(),
+            wire_version: "test-wire/1".into(),
+        });
+        let mut all_absent = eligible.clone();
+        let result = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
+            &mut all_absent,
+            &revision,
+            &config,
+            config.workspace_id,
+            actor,
+            &provider,
+            &TestBudget(true),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            result,
+            crate::matrix_advisory_capture::PreparedMatrixOpportunity::NoCall
+        ));
+        assert_eq!(
+            all_absent.primary_reason,
+            AdvisoryReason::MatrixEvidenceUnresolved
+        );
         revision.input_digest = "changed-input".into();
         assert_ne!(
             matrix_advisory_opportunity_input(&revision, &request, &config, session, actor)
@@ -1021,7 +1058,7 @@ mod tests {
         assert_eq!(eligible.state, AdvisoryOpportunityState::NoCall);
         assert_eq!(
             eligible.primary_reason,
-            AdvisoryReason::CapabilityUnavailable
+            AdvisoryReason::MatrixEvidenceUnresolved
         );
         assert_eq!(
             eligible.material_digest,
@@ -1039,8 +1076,8 @@ mod tests {
         assert!(!output.is_resolved());
     }
 
-    #[test]
-    fn complete_stored_demo_remains_pending_independent_verification() {
+    #[tokio::test]
+    async fn complete_stored_demo_remains_pending_independent_verification() {
         let mut stored = stored_revision();
         stored.input = EngineeringMatrixInput {
             mode: known(EngineeringMode::Demo),
@@ -1066,13 +1103,79 @@ mod tests {
             latency_commitment: known(CommitmentEvidence::NoCommitment),
             urgent_repair: known(false),
         };
-        let output = compose_current_revision(stored, 2).unwrap();
+        let output = compose_current_revision(stored.clone(), 2).unwrap();
         assert!(output.unresolved_evidence.is_empty());
         assert_eq!(
             output.source_verification_status,
             MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification
         );
         assert!(!output.is_resolved());
+        let choice = EngineeringChoiceSet {
+            schema: MATRIX_CHOICE_SET_SCHEMA.into(),
+            choice_set_id: "verified-source-needed".into(),
+            version: 1,
+            task_id: stored.task_id.to_string(),
+            task_revision: stored.revision.to_string(),
+            decision_question: "Which approach?".into(),
+            candidates: ["a", "b"]
+                .into_iter()
+                .map(|id| EngineeringCandidate {
+                    candidate_id: id.into(),
+                    title: id.into(),
+                    approach: id.into(),
+                    assumption_fact_ids: vec![],
+                })
+                .collect(),
+        };
+        stored.input_digest =
+            canonical_matrix_input_digest(&serde_json::to_value(&stored.input).unwrap()).unwrap();
+        stored.choice_set_digest = Some(choice.canonical_digest(&stored.input).unwrap());
+        stored.choice_set = Some(choice);
+        let request = advisory_request(stored.task_id);
+        let config = advisory_config(WorkspaceAdvisoryMode::Optional);
+        let mut receipt = matrix_advisory_opportunity_input(
+            &stored,
+            &request,
+            &config,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        )
+        .unwrap();
+        assert_eq!(
+            receipt.primary_reason,
+            AdvisoryReason::MatrixSourceUnverified
+        );
+        let provider = TestProvider(MatrixProviderIdentity {
+            provider_profile_ref: tect_domain::AdvisoryProviderProfileRef {
+                id: "test-profile".into(),
+            },
+            model_configuration: tect_domain::AdvisoryModelConfiguration {
+                model: "test-model".into(),
+            },
+            destination: "test-destination".into(),
+            wire_version: "test-wire/1".into(),
+        });
+        let actor_id = receipt.authorized_actor_id;
+        let prepared = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
+            &mut receipt,
+            &stored,
+            &config,
+            config.workspace_id,
+            actor_id,
+            &provider,
+            &TestBudget(true),
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            prepared,
+            crate::matrix_advisory_capture::PreparedMatrixOpportunity::NoCall
+        ));
+        assert_eq!(receipt.state, AdvisoryOpportunityState::NoCall);
+        assert_eq!(
+            receipt.primary_reason,
+            AdvisoryReason::MatrixSourceUnverified
+        );
     }
 
     #[test]

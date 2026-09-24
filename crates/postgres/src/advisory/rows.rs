@@ -202,6 +202,8 @@ fn reason(value: &str) -> Result<AdvisoryReason> {
         "session_skip" => Ok(AdvisoryReason::SessionSkip),
         "request_skip" => Ok(AdvisoryReason::RequestSkip),
         "choice_set_not_applicable" => Ok(AdvisoryReason::ChoiceSetNotApplicable),
+        "matrix_evidence_unresolved" => Ok(AdvisoryReason::MatrixEvidenceUnresolved),
+        "matrix_source_unverified" => Ok(AdvisoryReason::MatrixSourceUnverified),
         "deterministic_input_invalid" => Ok(AdvisoryReason::DeterministicInputInvalid),
         "capability_unavailable" => Ok(AdvisoryReason::CapabilityUnavailable),
         "provider_unconfigured" => Ok(AdvisoryReason::ProviderUnconfigured),

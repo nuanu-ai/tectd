@@ -34,6 +34,16 @@ pub(crate) async fn prepare_eligible_matrix_opportunity(
     if input.primary_reason != AdvisoryReason::CapabilityUnavailable {
         return Ok(PreparedMatrixOpportunity::NoCall);
     }
+    let composition =
+        super::matrix_tasks::compose_current_revision(revision.clone(), revision.revision)?;
+    if !composition.unresolved_evidence.is_empty() {
+        input.primary_reason = AdvisoryReason::MatrixEvidenceUnresolved;
+        return Ok(PreparedMatrixOpportunity::NoCall);
+    }
+    if !composition.is_resolved() {
+        input.primary_reason = AdvisoryReason::MatrixSourceUnverified;
+        return Ok(PreparedMatrixOpportunity::NoCall);
+    }
     let (Some(profile), Some(model)) = (
         config.provider_profile_ref.as_ref(),
         config.model_configuration.as_ref(),
@@ -48,8 +58,6 @@ pub(crate) async fn prepare_eligible_matrix_opportunity(
         input.primary_reason = AdvisoryReason::ProviderUnconfigured;
         return Ok(PreparedMatrixOpportunity::NoCall);
     }
-    let composition =
-        super::matrix_tasks::compose_current_revision(revision.clone(), revision.revision)?;
     let request = match MatrixProviderRequest::new(
         revision.clone(),
         composition,
