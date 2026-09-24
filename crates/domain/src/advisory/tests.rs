@@ -346,6 +346,9 @@ fn registered_decision_point_is_closed_and_capability_owned() {
     assert_eq!(input.validate(), Err(Error::InvalidArguments));
     input.capability = AdvisoryCapability::EngineeringProfile;
     input.decision_point = engineering;
+    input.target_kind = "matrix_task".into();
+    input.matrix_task_revision = input.work_revision;
+    input.matrix_choice_set_digest = Some("b".repeat(64));
     assert!(input.validate().is_ok());
     input.capability = AdvisoryCapability::ScopeDecomposition;
     assert_eq!(input.validate(), Err(Error::InvalidArguments));
