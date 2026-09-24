@@ -157,7 +157,7 @@ async fn prepared_entity_is_the_received_entity_with_exact_digest_and_binding() 
     );
     assert_eq!(prepared.profile(), "fixture");
     assert_eq!(prepared.model(), "jev-1.13.0");
-    assert_eq!(prepared.wire_version(), WIRE_FORMAT);
+    assert_eq!(prepared.wire_version(), "jev-system-one-json/2");
     assert_eq!(prepared.destination(), endpoint.as_str());
 
     let observation = provider
@@ -186,6 +186,20 @@ async fn prepared_digest_changes_with_model_or_content_and_mismatch_is_not_sent(
     let endpoint = Url::parse(&format!("http://{address}/v1/systemone")).unwrap();
     let provider = provider(endpoint.clone(), Duration::from_secs(1), 16_384);
     let original = provider.prepare(&request()).unwrap();
+    let legacy_label = PreparedScopeAdviceAttempt::new(
+        request(),
+        original.body().to_vec(),
+        "fixture".into(),
+        "jev-1.13.0".into(),
+        endpoint.as_str().into(),
+        "jev-system-one-json/1".into(),
+    )
+    .unwrap();
+    assert_eq!(legacy_label.wire_version(), "jev-system-one-json/1");
+    assert_eq!(
+        provider.attempt_prepared(DISPATCH_ID, legacy_label).await,
+        Err(ScopeAdviceProviderError::ProvenNotSent)
+    );
     let mut modified = request();
     modified.alternatives[0]
         .covered_obligation_ids

@@ -618,6 +618,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         "test-only-synthetic-positive"
     );
     assert_eq!(config_snapshot["destination"], endpoint.as_str());
+    assert_eq!(config_snapshot["wire_version"], "jev-system-one-json/2");
     assert_eq!(request_payload, &received_body);
     assert_eq!(
         payload_digest,

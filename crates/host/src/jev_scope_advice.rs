@@ -16,7 +16,7 @@ use tect_domain::{
 
 mod wire;
 
-const WIRE_FORMAT: &str = "jev-system-one-json/1";
+const WIRE_FORMAT: &str = "jev-system-one-json/2";
 
 #[cfg(test)]
 mod tests;
