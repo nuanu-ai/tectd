@@ -108,8 +108,8 @@ impl ScopeAdviceProvider for FakeProvider {
 }
 
 /// Refuse to migrate or enroll if either URL is not the isolated test database.
-/// Compare cluster system identifiers and database OIDs, then see the held
-/// runtime backend from admin as an additional instance identity check.
+/// See the held runtime backend from admin to prove both URLs reach the same
+/// PostgreSQL instance and database OID without requiring runtime monitor grants.
 async fn disposable_pg18_pair(admin_url: &str, runtime_url: &str, role: &str) -> PgPool {
     let admin_pool = PgPool::connect(admin_url).await.unwrap();
     let label = format!("tect-active-preflight-{}", Uuid::new_v4());
@@ -126,11 +126,15 @@ async fn disposable_pg18_pair(admin_url: &str, runtime_url: &str, role: &str) ->
         .fetch_one(&admin_pool)
         .await
         .unwrap();
-    let (runtime_database, runtime_oid, runtime_user, runtime_version, runtime_system, runtime_pid):
-        (String, i64, String, i32, String, i32) = sqlx::query_as(
+    let (runtime_database, runtime_oid, runtime_user, runtime_version, runtime_pid): (
+        String,
+        i64,
+        String,
+        i32,
+        i32,
+    ) = sqlx::query_as(
         "SELECT current_database(),oid::bigint,current_user, \
-         current_setting('server_version_num')::integer, \
-         (SELECT system_identifier::text FROM pg_catalog.pg_control_system()),pg_backend_pid() \
+         current_setting('server_version_num')::integer,pg_backend_pid() \
          FROM pg_catalog.pg_database WHERE datname=current_database()",
     )
     .fetch_one(&mut *runtime)
@@ -150,9 +154,9 @@ async fn disposable_pg18_pair(admin_url: &str, runtime_url: &str, role: &str) ->
         runtime_user, role,
         "runtime URL must use the test runtime role"
     );
-    assert_eq!(
-        admin_system, runtime_system,
-        "cluster identities must match"
+    assert!(
+        admin_system.parse::<u64>().is_ok_and(|value| value != 0),
+        "admin URL must expose a valid cluster system identifier"
     );
     assert_eq!(admin_oid, runtime_oid, "database OIDs must match");
     let same_backend: bool = sqlx::query_scalar(
