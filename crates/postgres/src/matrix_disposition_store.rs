@@ -3,9 +3,14 @@ use sha2::{Digest, Sha256};
 use sqlx::{Row, postgres::PgRow};
 use tect_application::{
     CurrentMatrixAdvice, GuardedMatrixAdviceOutcome, MatrixDispositionRecord,
-    MatrixDispositionStore, MatrixTaskStore, RecordMatrixDisposition,
+    MatrixDispositionStore, MatrixTaskStore, MatrixVerificationStore, RecordMatrixDisposition,
+    RevalidatedMatrixVerification,
 };
-use tect_domain::{Error, MatrixDispositionBasis, MatrixDispositionDecision, Result};
+use tect_domain::{
+    Error, MatrixDispositionBasis, MatrixDispositionDecision, OwnerReportedEngineeringMatrixFacts,
+    Result, compose_independently_verified_owner_matrix, evaluate_matrix_verification,
+    matrix_verified_disposition_digest,
+};
 use uuid::Uuid;
 
 use crate::{storage_error, store::PgUnitOfWork};
@@ -75,6 +80,20 @@ fn same_request(
         && prior.recorded_by_session_id == session_id
 }
 
+fn selected_receipt_matches(
+    reason: &str,
+    captured_verification_digest: Option<&str>,
+    current_verification_digest: &str,
+    captured_material_digest: &str,
+    recomposed_material_digest: &str,
+) -> bool {
+    !matches!(
+        reason,
+        "matrix_evidence_unresolved" | "matrix_source_unverified"
+    ) && captured_verification_digest == Some(current_verification_digest)
+        && captured_material_digest == recomposed_material_digest
+}
+
 impl PgUnitOfWork {
     async fn disposition_retry_or_error(
         &mut self,
@@ -131,6 +150,7 @@ impl MatrixDispositionStore for PgUnitOfWork {
         session_id: Uuid,
         request: &RecordMatrixDisposition,
         current_advice: Option<&CurrentMatrixAdvice>,
+        current_verification: Option<&RevalidatedMatrixVerification>,
     ) -> Result<MatrixDispositionRecord> {
         request.validate()?;
         if workspace_id.is_nil()
@@ -252,6 +272,68 @@ impl MatrixDispositionStore for PgUnitOfWork {
             {
                 return Err(Error::InvalidArguments);
             }
+            let token = current_verification.ok_or(Error::StaleContext)?;
+            let digest = token.record_digest();
+            let saved = self
+                .matrix_verification_for_revision(
+                    workspace_id,
+                    request.task_id,
+                    revision,
+                    &request.expected_input_digest,
+                )
+                .await?
+                .ok_or(Error::StaleContext)?;
+            if saved.digest != digest
+                || saved.owner_principal != current.recorded_by_principal_id.to_string()
+                || saved.verifier_principal == saved.owner_principal
+            {
+                return Err(Error::StaleContext);
+            }
+            let now: i64 = sqlx::query_scalar(
+                "SELECT FLOOR(EXTRACT(EPOCH FROM pg_catalog.clock_timestamp()))::bigint",
+            )
+            .fetch_one(&mut **self.transaction()?)
+            .await
+            .map_err(storage_error)?;
+            let validated = evaluate_matrix_verification(
+                &request.task_id.to_string(),
+                &revision.to_string(),
+                &current.input,
+                &saved,
+                now,
+            )
+            .map_err(|_| Error::StaleContext)?;
+            let reported = OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
+                request.task_id.to_string(),
+                revision.to_string(),
+                current.input.clone(),
+            )
+            .map_err(|_| Error::StaleContext)?;
+            let composition = compose_independently_verified_owner_matrix(&reported, &validated)
+                .map_err(|_| Error::StaleContext)?;
+            let evaluation =
+                matrix_verified_disposition_digest(&current.input, &composition, set, &validated)
+                    .map_err(|_| Error::StaleContext)?;
+            let reason: String = opportunity
+                .try_get("primary_reason")
+                .map_err(storage_error)?;
+            let captured_verification: Option<String> = opportunity
+                .try_get("matrix_verification_digest")
+                .map_err(storage_error)?;
+            let captured_material: String = opportunity
+                .try_get("material_digest")
+                .map_err(storage_error)?;
+            if !selected_receipt_matches(
+                &reason,
+                captured_verification.as_deref(),
+                digest,
+                &captured_material,
+                &evaluation,
+            ) {
+                return Err(Error::StaleContext);
+            }
+        } else if current_verification.is_some() {
+            return Err(Error::StaleContext);
         }
 
         if request.basis == MatrixDispositionBasis::AfterAdvice {
@@ -538,5 +620,39 @@ mod tests {
             blocked_reason: "new decision".into(),
         };
         assert!(!same_request(&prior, actor, session, &changed));
+    }
+
+    #[test]
+    fn selected_skip_requires_captured_current_verified_material() {
+        let verification = "a".repeat(64);
+        let singleton_material = "b".repeat(64);
+        assert!(selected_receipt_matches(
+            "request_skip",
+            Some(&verification),
+            &verification,
+            &singleton_material,
+            &singleton_material,
+        ));
+        assert!(!selected_receipt_matches(
+            "request_skip",
+            None,
+            &verification,
+            &singleton_material,
+            &singleton_material,
+        ));
+        assert!(!selected_receipt_matches(
+            "matrix_evidence_unresolved",
+            Some(&verification),
+            &verification,
+            &singleton_material,
+            &singleton_material,
+        ));
+        assert!(!selected_receipt_matches(
+            "request_skip",
+            Some(&verification),
+            &verification,
+            &singleton_material,
+            &"c".repeat(64),
+        ));
     }
 }
