@@ -266,6 +266,7 @@ pub trait MatrixAdviceStore: Send {
         expected_config_revision: i64,
         dispatch: &AdvisoryDispatch,
         record: Option<&GuardedMatrixAdviceRecord>,
+        verification_stale: bool,
     ) -> Result<AdvisoryOpportunity>;
 }
 

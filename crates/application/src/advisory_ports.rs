@@ -70,6 +70,15 @@ pub trait AdvisoryStore: Send {
         workspace_id: Uuid,
         dispatch_id: Uuid,
     ) -> Result<AdvisoryDispatchStart>;
+    /// The Matrix-specific gate consumes the application's fresh external
+    /// evidence decision in the same transaction as the committed send start.
+    async fn start_verified_matrix_dispatch(
+        &mut self,
+        capability: &AdvisoryLifecycleCapability,
+        workspace_id: Uuid,
+        dispatch_id: Uuid,
+        verification_current: bool,
+    ) -> Result<AdvisoryDispatchStart>;
     async fn seal_advisory_dispatch(
         &mut self,
         capability: &AdvisoryLifecycleCapability,

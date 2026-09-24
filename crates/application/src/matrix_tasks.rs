@@ -123,18 +123,53 @@ impl WorkspaceService {
             return Err(Error::StaleRevision);
         }
         let config = tx.advisory_config(workspace.id).await?;
-        let input = matrix_advisory_opportunity_input(
+        let (composition, verification) = compose_current_revision_with_validated_verification(
+            tx.matrix_verification_store(),
+            self.matrix_evidence_validator.as_ref(),
+            workspace.id,
+            revision.clone(),
+            request.expected_task_revision,
+            crate::matrix_verification::current_epoch_seconds()?,
+        )
+        .await?;
+        let mut input = matrix_advisory_opportunity_input(
             &revision,
             request,
             &config,
             session.id,
             identity.principal_id,
         )?;
-        let mut input = input;
+        let mut provider_request = None;
+        if matches!(
+            input.primary_reason,
+            AdvisoryReason::MatrixSourceUnverified | AdvisoryReason::MatrixEvidenceUnresolved
+        ) {
+            if let Some(verification) = verification.as_ref() {
+                if !composition.unresolved_evidence.is_empty() {
+                    input.primary_reason = AdvisoryReason::MatrixEvidenceUnresolved;
+                } else if !composition.is_resolved() {
+                    input.primary_reason = AdvisoryReason::MatrixSourceUnverified;
+                } else if let (Some(profile), Some(model)) = (
+                    config.provider_profile_ref.clone(),
+                    config.model_configuration.clone(),
+                ) {
+                    let verified = crate::MatrixProviderRequest::new_verified(
+                        revision.clone(),
+                        composition,
+                        verification,
+                        profile,
+                        model,
+                    )?;
+                    input.primary_reason = AdvisoryReason::CapabilityUnavailable;
+                    provider_request = Some(verified);
+                } else {
+                    input.primary_reason = AdvisoryReason::ProviderUnconfigured;
+                }
+            }
+        }
         let prepared = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
             &mut input,
-            &revision,
-            &config,
+            provider_request.as_ref(),
             workspace.id,
             identity.principal_id,
             self.matrix_advice_provider.as_ref(),
@@ -152,18 +187,7 @@ impl WorkspaceService {
             tx.commit().await?;
             return Ok(opportunity);
         };
-        let provider_request = crate::MatrixProviderRequest::new(
-            revision.clone(),
-            compose_current_revision(revision, request.expected_task_revision)?,
-            config
-                .provider_profile_ref
-                .clone()
-                .ok_or(Error::InternalInvariant)?,
-            config
-                .model_configuration
-                .clone()
-                .ok_or(Error::InternalInvariant)?,
-        )?;
+        let provider_request = provider_request.ok_or(Error::InternalInvariant)?;
         let authorization = crate::matrix_advisory_dispatch::authorize_prepared_matrix(
             opportunity.id,
             &opportunity,
@@ -325,7 +349,7 @@ fn matrix_advisory_replay_matches(
         )
 }
 
-fn matrix_advisory_opportunity_input(
+pub(crate) fn matrix_advisory_opportunity_input(
     revision: &MatrixTaskRevision,
     request: &RequestEngineeringAdvisory,
     config: &WorkspaceAdvisoryConfig,
@@ -532,6 +556,44 @@ pub(crate) async fn compose_current_revision_with_validated_verification(
             validated,
         )),
     ))
+}
+
+/// Rebuild the exact positive request from the current task head and newest
+/// independently revalidated evidence. A changed or missing binding is stale.
+pub(crate) async fn matrix_request_still_current(
+    store: Option<&mut dyn MatrixVerificationStore>,
+    validator: &dyn MatrixEvidenceValidator,
+    workspace_id: Uuid,
+    current: Option<MatrixTaskRevision>,
+    expected: &crate::MatrixProviderRequest,
+) -> bool {
+    let Some(current) = current else { return false };
+    let Ok(now) = crate::matrix_verification::current_epoch_seconds() else {
+        return false;
+    };
+    let Ok((composition, Some(verification))) =
+        compose_current_revision_with_validated_verification(
+            store,
+            validator,
+            workspace_id,
+            current.clone(),
+            expected.revision().revision,
+            now,
+        )
+        .await
+    else {
+        return false;
+    };
+    let Ok(fresh) = crate::MatrixProviderRequest::new_verified(
+        current,
+        composition,
+        &verification,
+        expected.provider_profile_ref().clone(),
+        expected.model_configuration().clone(),
+    ) else {
+        return false;
+    };
+    &fresh == expected
 }
 
 /// Hash the same canonical JSON representation that the store persists.
@@ -833,8 +895,7 @@ mod tests {
         let actor_id = input.authorized_actor_id;
         let captured = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
             &mut input,
-            &revision,
-            &config,
+            None,
             config.workspace_id,
             actor_id,
             &provider,
@@ -871,8 +932,7 @@ mod tests {
         let actor_id = denied.authorized_actor_id;
         let denied_capture = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
             &mut denied,
-            &revision,
-            &config,
+            None,
             config.workspace_id,
             actor_id,
             &provider,
@@ -971,8 +1031,7 @@ mod tests {
         let mut all_absent = eligible.clone();
         let result = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
             &mut all_absent,
-            &revision,
-            &config,
+            None,
             config.workspace_id,
             actor,
             &provider,
@@ -1293,8 +1352,7 @@ mod tests {
         let actor_id = receipt.authorized_actor_id;
         let prepared = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
             &mut receipt,
-            &stored,
-            &config,
+            None,
             config.workspace_id,
             actor_id,
             &provider,

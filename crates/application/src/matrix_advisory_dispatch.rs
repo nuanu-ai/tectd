@@ -5,8 +5,7 @@ use crate::{
 use sha2::{Digest, Sha256};
 use tect_domain::{
     AdvisoryDispatchAuthorization, AdvisoryDispatchOutcome, AdvisoryDispatchSeal,
-    AdvisoryOpportunity, AdvisoryRetryBasis, AdvisorySendCertainty,
-    Error, RequestContext, Result,
+    AdvisoryOpportunity, AdvisoryRetryBasis, AdvisorySendCertainty, Error, RequestContext, Result,
 };
 use uuid::Uuid;
 
@@ -142,8 +141,27 @@ impl WorkspaceService {
         {
             return Err(Error::InputConflict);
         }
+        let current = start
+            .lock_matrix_task(workspace_id, provider_request.revision().task_id)
+            .await?;
+        let verification_current = crate::matrix_tasks::matrix_request_still_current(
+            start.matrix_verification_store(),
+            self.matrix_evidence_validator.as_ref(),
+            workspace_id,
+            current,
+            &provider_request,
+        )
+        .await
+            && prepared.validate_for(&provider_request).is_ok()
+            && authorization.payload_digest == prepared.body_sha256()
+            && authorization.request_payload == prepared.body();
         let started = start
-            .start_advisory_dispatch(&lifecycle, workspace_id, authorization.dispatch_id)
+            .start_verified_matrix_dispatch(
+                &lifecycle,
+                workspace_id,
+                authorization.dispatch_id,
+                verification_current,
+            )
             .await?;
         start.commit().await?;
         if !started.should_send {
@@ -197,6 +215,22 @@ impl WorkspaceService {
         let (mut finalize, _) = self
             .authenticated(context, TransactionMode::ReadWrite)
             .await?;
+        // Lock the occurrence before the task, matching persistence's lock
+        // order. The external validator runs again after the transport result.
+        let _ = finalize
+            .advisory_opportunity_for_dispatch(workspace_id, opportunity.id)
+            .await?;
+        let current = finalize
+            .lock_matrix_task(workspace_id, provider_request.revision().task_id)
+            .await?;
+        let verification_stale = !crate::matrix_tasks::matrix_request_still_current(
+            finalize.matrix_verification_store(),
+            self.matrix_evidence_validator.as_ref(),
+            workspace_id,
+            current,
+            &provider_request,
+        )
+        .await;
         let result = finalize
             .finalize_guarded_matrix_advice(
                 &lifecycle,
@@ -205,6 +239,7 @@ impl WorkspaceService {
                 config_revision,
                 &dispatch,
                 guarded.as_ref(),
+                verification_stale,
             )
             .await?;
         finalize.commit().await?;

@@ -207,6 +207,11 @@ pub(crate) fn current_epoch_seconds() -> Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        MatrixAdviceProvider, MatrixBudgetAuthorization, MatrixBudgetPolicy, MatrixBudgetRequest,
+        MatrixProviderIdentity, MatrixProviderRequest, MatrixProviderResponse,
+        MatrixStartedDispatchPermit, PreparedMatrixAdviceAttempt,
+    };
     use async_trait::async_trait;
     use tect_domain::{
         CommitmentEvidence, EngineeringIntent, EngineeringMatrixInput, EngineeringMode,
@@ -316,6 +321,41 @@ mod tests {
 
     struct FakeValidator {
         trusted: bool,
+    }
+
+    struct FakeAdviceProvider(MatrixProviderIdentity);
+
+    #[async_trait]
+    impl MatrixAdviceProvider for FakeAdviceProvider {
+        fn identity(&self) -> Option<MatrixProviderIdentity> {
+            Some(self.0.clone())
+        }
+
+        fn prepare(&self, request: &MatrixProviderRequest) -> Result<PreparedMatrixAdviceAttempt> {
+            PreparedMatrixAdviceAttempt::new(request, self.0.clone(), b"verified-body".to_vec())
+        }
+
+        async fn attempt_prepared(
+            &self,
+            _: PreparedMatrixAdviceAttempt,
+            _: MatrixStartedDispatchPermit,
+        ) -> Result<MatrixProviderResponse> {
+            panic!("capture must not send")
+        }
+    }
+
+    struct FakeBudget;
+
+    #[async_trait]
+    impl MatrixBudgetPolicy for FakeBudget {
+        async fn authorize(
+            &self,
+            _: &MatrixBudgetRequest,
+        ) -> Result<Option<MatrixBudgetAuthorization>> {
+            Ok(Some(MatrixBudgetAuthorization {
+                policy_id: "test-budget".into(),
+            }))
+        }
     }
 
     #[async_trait]
@@ -556,6 +596,58 @@ mod tests {
             )
             .unwrap()
             .unwrap()
+        );
+        let config = tect_domain::WorkspaceAdvisoryConfig {
+            workspace_id: workspace,
+            revision: 1,
+            mode: tect_domain::WorkspaceAdvisoryMode::Optional,
+            materialized: true,
+            provider_profile_ref: Some(provider.provider_profile_ref().clone()),
+            model_configuration: Some(provider.model_configuration().clone()),
+        };
+        let advice_request = crate::RequestEngineeringAdvisory {
+            task_id: revision.task_id,
+            expected_task_revision: revision.revision,
+            request_key: "verified-capture".into(),
+            session_preference: tect_domain::AdvisoryRequestPreference::UseWorkspace,
+            request_preference: tect_domain::AdvisoryRequestPreference::UseWorkspace,
+        };
+        let mut opportunity = crate::matrix_tasks::matrix_advisory_opportunity_input(
+            &revision,
+            &advice_request,
+            &config,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        )
+        .unwrap();
+        opportunity.primary_reason = tect_domain::AdvisoryReason::CapabilityUnavailable;
+        let fake_provider = FakeAdviceProvider(MatrixProviderIdentity {
+            provider_profile_ref: provider.provider_profile_ref().clone(),
+            model_configuration: provider.model_configuration().clone(),
+            destination: "fake".into(),
+            wire_version: "fake/1".into(),
+        });
+        let prepared = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
+            &mut opportunity,
+            Some(&provider),
+            workspace,
+            Uuid::new_v4(),
+            &fake_provider,
+            &FakeBudget,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            prepared,
+            crate::matrix_advisory_capture::PreparedMatrixOpportunity::Authorized { .. }
+        ));
+        assert_eq!(
+            opportunity.matrix_verification_digest.as_deref(),
+            Some(record.digest.as_str())
+        );
+        assert_eq!(
+            opportunity.material_digest,
+            provider.binding().evaluation_digest
         );
         let (revoked, token) =
             crate::matrix_tasks::compose_current_revision_with_validated_verification(
