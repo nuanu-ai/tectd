@@ -85,6 +85,7 @@ struct OpportunityAuditRow {
 #[derive(sqlx::FromRow)]
 struct AuditLinksRow {
     opportunity_id: Uuid,
+    guarded_advice_id: Option<Uuid>,
     guarded_advice_digest: Option<String>,
     disposition_id: Option<Uuid>,
     preservation_receipt_id: Option<Uuid>,
@@ -323,6 +324,7 @@ fn opportunity_audit_from_row(row: OpportunityAuditRow) -> Result<AdvisoryAuditO
 }
 
 fn apply_audit_links(opportunity: &mut AdvisoryAuditOpportunity, links: &AuditLinksRow) {
+    opportunity.guarded_advice_id = links.guarded_advice_id;
     opportunity.guarded_advice_digest = links.guarded_advice_digest.clone();
     opportunity.disposition_id = links.disposition_id;
     opportunity.preservation_receipt_id = links.preservation_receipt_id;

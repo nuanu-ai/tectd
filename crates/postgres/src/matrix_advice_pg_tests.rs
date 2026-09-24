@@ -10,10 +10,10 @@ use tect_application::{
     canonical_matrix_input_digest,
 };
 use tect_domain::{
-    AdvisoryModelConfiguration, AdvisoryProviderProfileRef, EngineeringCandidate,
-    EngineeringChoiceSet, EngineeringMatrixInput, Error, EvidenceValidationOutcome,
-    MATRIX_CHOICE_SET_SCHEMA, MATRIX_VERIFICATION_SCHEMA, MatrixEvidenceBinding,
-    MatrixVerificationRecord, OwnerReportedEngineeringMatrixFacts,
+    AdvisoryAuditQuery, AdvisoryCapability, AdvisoryModelConfiguration, AdvisoryProviderProfileRef,
+    EngineeringCandidate, EngineeringChoiceSet, EngineeringMatrixInput, Error,
+    EvidenceValidationOutcome, MATRIX_CHOICE_SET_SCHEMA, MATRIX_VERIFICATION_SCHEMA,
+    MatrixEvidenceBinding, MatrixVerificationRecord, OwnerReportedEngineeringMatrixFacts,
     compose_independently_verified_owner_matrix, evaluate_matrix_verification,
     matrix_verified_evaluation_digest, required_matrix_facts,
 };
@@ -486,6 +486,35 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
         .unwrap();
     assert_eq!(read, saved);
     assert_eq!(read.record.raw_response_payload, raw);
+    let audit = unit
+        .advisory_audit(
+            workspace_id,
+            None,
+            &AdvisoryAuditQuery {
+                limit: 1,
+                scope_id: None,
+                after: None,
+                capability: Some(AdvisoryCapability::EngineeringProfile),
+                decision_point: None,
+                reason: None,
+                state: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(audit.opportunities.len(), 1);
+    let audited = &audit.opportunities[0];
+    assert_eq!(audited.id, opportunity_id);
+    assert_eq!(audited.guarded_advice_id, Some(saved.advice_id));
+    assert_eq!(
+        audited.guarded_advice_digest,
+        Some(record.advice_digest.clone())
+    );
+    assert_eq!(audited.disposition_id, None);
+    assert_eq!(audited.caller_receipt_id, None);
+    assert_eq!(audited.verifier_receipt_id, None);
+    let audit_json = serde_json::to_string(&audit).unwrap();
+    assert!(!audit_json.contains("synthetic provider response"));
     assert_eq!(
         unit.persist_guarded_matrix_advice(workspace_id, &record)
             .await

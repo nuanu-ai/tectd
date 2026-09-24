@@ -9,7 +9,9 @@ async fn audit_links(
     }
     let ids = opportunities.iter().map(|item| item.id).collect::<Vec<_>>();
     let links: Vec<AuditLinksRow> = sqlx::query_as(
-        "SELECT o.id AS opportunity_id,a.advice_id AS guarded_advice_digest,d.disposition_id,\
+        "SELECT o.id AS opportunity_id,ma.advice_id AS guarded_advice_id,\
+                COALESCE(ma.advice_digest,a.advice_id::text) AS guarded_advice_digest,\
+                COALESCE(md.disposition_id,d.disposition_id) AS disposition_id,\
                 p.receipt_id AS preservation_receipt_id,p.status AS preservation_status,\
                 c.caller_request_id AS caller_receipt_id,c.link_id AS caller_link_id,\
                 v.receipt_id AS verifier_receipt_id,\
@@ -18,6 +20,14 @@ async fn audit_links(
                 obs.evidence_digest AS observation_evidence_digest,obs.qualification AS observation_qualification \
          FROM advisory_opportunity o \
          LEFT JOIN advisory_scope_advice a ON a.tenant_id=o.tenant_id AND a.workspace_id=o.workspace_id AND a.opportunity_id=o.id \
+         LEFT JOIN advisory_matrix_advice ma ON ma.tenant_id=o.tenant_id AND ma.workspace_id=o.workspace_id \
+             AND ma.opportunity_id=o.id AND o.capability='engineering_profile' AND o.work_item_kind='matrix_task' \
+             AND ma.task_id=o.work_item_id AND ma.matrix_task_revision=o.matrix_task_revision \
+             AND ma.matrix_choice_set_digest=o.matrix_choice_set_digest \
+         LEFT JOIN advisory_matrix_disposition md ON md.tenant_id=o.tenant_id AND md.workspace_id=o.workspace_id \
+             AND md.opportunity_id=o.id AND o.capability='engineering_profile' AND o.work_item_kind='matrix_task' \
+             AND md.task_id=o.work_item_id AND md.matrix_task_revision=o.matrix_task_revision \
+             AND md.matrix_choice_binding_key=o.matrix_choice_binding_key \
          LEFT JOIN LATERAL (SELECT disposition_id FROM advisory_scope_disposition \
              WHERE tenant_id=o.tenant_id AND workspace_id=o.workspace_id AND opportunity_id=o.id \
              ORDER BY revision DESC,disposition_id DESC LIMIT 1) d ON true \
