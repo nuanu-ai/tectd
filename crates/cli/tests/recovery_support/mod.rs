@@ -141,7 +141,20 @@ impl Daemon {
     }
 
     pub async fn start_with(binary: &Path, url: &str, socket: PathBuf) -> Self {
-        Self::start_configured(binary, url, socket, None).await
+        Self::start_configured(binary, url, socket, None, false).await
+    }
+
+    /// Start a query-only audit daemon without inherited background workers.
+    #[allow(dead_code)]
+    pub async fn start_read_only_audit(url: &str, socket: PathBuf) -> Self {
+        Self::start_configured(
+            Path::new(env!("CARGO_BIN_EXE_tectd")),
+            url,
+            socket,
+            None,
+            true,
+        )
+        .await
     }
 
     #[allow(dead_code)]
@@ -151,6 +164,7 @@ impl Daemon {
             url,
             socket,
             Some(contexts),
+            false,
         )
         .await
     }
@@ -160,6 +174,7 @@ impl Daemon {
         url: &str,
         socket: PathBuf,
         maintenance_contexts: Option<&Path>,
+        read_only_audit: bool,
     ) -> Self {
         let stderr_path = socket.with_extension("stderr");
         let log = fs::OpenOptions::new()
@@ -177,6 +192,15 @@ impl Daemon {
             .stdout(Stdio::null())
             .stderr(Stdio::from(log))
             .kill_on_drop(true);
+        if read_only_audit {
+            // All current tectd knowledge worker switches are inherited from
+            // the parent by default. Keep audit startup free of worker writes.
+            command
+                .env_remove("TECT_KNOWLEDGE_EMBEDDING_PYTHON")
+                .env_remove("TECT_KNOWLEDGE_EMBEDDING_MODEL_DIR")
+                .env_remove("TECT_KNOWLEDGE_MAINTENANCE")
+                .env_remove("TECT_KNOWLEDGE_SEARCH_CONTEXTS");
+        }
         if let Some(contexts) = maintenance_contexts {
             command
                 .env("TECT_KNOWLEDGE_MAINTENANCE", "1")

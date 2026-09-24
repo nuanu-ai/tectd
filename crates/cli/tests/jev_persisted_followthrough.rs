@@ -767,6 +767,30 @@ async fn audit_completed_followthrough_read_only() {
     .await
     .unwrap();
     assert_eq!((revision, status.as_str()), (4, "review_required"));
+    let source: (i64, Uuid, String, Value, Value, String) = sqlx::query_as(
+        "SELECT s.candidate_set_revision,s.snapshot_id,s.source_digest,s.aggregate_payload, \
+                m.aggregate_payload,o.source_revision \
+         FROM advisory_scope_source_snapshot s \
+         JOIN advisory_scope_manifest m ON (m.tenant_id,m.workspace_id,m.opportunity_id,m.candidate_set_id,m.source_digest)= \
+             (s.tenant_id,s.workspace_id,s.opportunity_id,s.candidate_set_id,s.source_digest) \
+         JOIN advisory_opportunity o ON (o.tenant_id,o.workspace_id,o.id,o.work_item_id)= \
+             (s.tenant_id,s.workspace_id,s.opportunity_id,s.candidate_set_id) \
+         WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.opportunity_id=$3 AND s.candidate_set_id=$4",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(opportunity)
+    .bind(candidate)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((source.0, source.5.as_str()), (3, "3"));
+    assert!(!source.1.is_nil(), "frozen source snapshot required");
+    assert_eq!(source.3["candidate_set_id"], candidate.to_string());
+    assert_eq!(source.3["candidate_set_revision"], source.0);
+    assert_eq!(source.3["snapshot_id"], source.1.to_string());
+    assert_eq!(source.3["digest"], source.2);
+    assert_eq!(source.4["source"], source.3);
 
     let (owner_native, owner_host, workspace_key): (String, Uuid, String) = sqlx::query_as(
         "SELECT s.native_session_id,s.host_id,w.key FROM agent_sessions s JOIN workspaces w \
@@ -833,11 +857,36 @@ async fn audit_completed_followthrough_read_only() {
             "independently_observed".into()
         )
     );
+    let preservation: (Uuid, Uuid, String, Uuid, i64) = sqlx::query_as(
+        "SELECT l.preservation_receipt_id,p.receipt_id,p.status,p.disposition_id, \
+                p.observed_candidate_set_revision \
+         FROM advisory_scope_caller_link l JOIN advisory_scope_preservation_receipt p \
+         ON (p.tenant_id,p.workspace_id,p.opportunity_id,p.candidate_set_id,p.receipt_id)= \
+            (l.tenant_id,l.workspace_id,l.opportunity_id,l.candidate_set_id,l.preservation_receipt_id) \
+         WHERE l.tenant_id=$1 AND l.workspace_id=$2 AND l.opportunity_id=$3 \
+           AND l.candidate_set_id=$4 AND l.link_id=$5 AND l.disposition_id=$6",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(opportunity)
+    .bind(candidate)
+    .bind(caller_link)
+    .bind(disposition)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        preservation.0, preservation.1,
+        "linked preservation receipt"
+    );
+    assert_eq!(preservation.2, "passed");
+    assert_eq!(preservation.3, disposition);
+    assert_eq!(preservation.4, source.0);
     let counts: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
                 (SELECT count(*) FROM advisory_scope_disposition WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
                 (SELECT count(*) FROM advisory_scope_caller_link WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
-                (SELECT count(*) FROM advisory_scope_preservation_receipt WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3 AND status='passed'), \
+                (SELECT count(*) FROM advisory_scope_preservation_receipt WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
                 (SELECT count(*) FROM advisory_scope_selected_save_observation WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
                 (SELECT count(*) FROM advisory_scope_verifier_receipt WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3)",
     )
@@ -852,7 +901,7 @@ async fn audit_completed_followthrough_read_only() {
     let temp = private_temp();
     let socket = temp.path().canonicalize().unwrap().join("jev-audit.sock");
     let runtime = tagged_url(&runtime_url, &format!("jev-audit-{}", Uuid::new_v4()));
-    let mut daemon = Daemon::start(&runtime, socket.clone()).await;
+    let mut daemon = Daemon::start_read_only_audit(&runtime, socket.clone()).await;
     let mut owner = Mcp::start(
         &socket,
         Path::new(&owner_path),
@@ -867,7 +916,7 @@ async fn audit_completed_followthrough_read_only() {
         &workspace_key,
     )
     .await;
-    for client in [&mut owner, &mut verifier] {
+    for (role, client) in [("owner", &mut owner), ("verifier", &mut verifier)] {
         let detail = route(
             client,
             "query",
@@ -891,6 +940,15 @@ async fn audit_completed_followthrough_read_only() {
         assert_eq!(observed["qualification"], "independently_observed");
         assert_eq!(observed["establishes_independent_approval"], false);
         assert_eq!(observed["establishes_current_acceptance"], false);
+        if role == "owner" {
+            assert_eq!(detail["scope_decomposition"]["manifest"], source.4);
+            assert_eq!(
+                detail["scope_decomposition"]["manifest"]["source"],
+                source.3
+            );
+        } else {
+            assert!(detail.get("scope_decomposition").is_none());
+        }
         let audit = route(
             client,
             "query",
@@ -912,7 +970,7 @@ async fn audit_completed_followthrough_read_only() {
         "SELECT (SELECT count(*) FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
                 (SELECT count(*) FROM advisory_scope_disposition WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
                 (SELECT count(*) FROM advisory_scope_caller_link WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
-                (SELECT count(*) FROM advisory_scope_preservation_receipt WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3 AND status='passed'), \
+                (SELECT count(*) FROM advisory_scope_preservation_receipt WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
                 (SELECT count(*) FROM advisory_scope_selected_save_observation WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
                 (SELECT count(*) FROM advisory_scope_verifier_receipt WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3)",
     )
