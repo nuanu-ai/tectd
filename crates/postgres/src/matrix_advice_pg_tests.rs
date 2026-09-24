@@ -2,7 +2,8 @@
 
 use crate::{admin, store::PgUnitOfWork};
 use sha2::{Digest, Sha256};
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Row, postgres::PgConnectOptions};
+use std::str::FromStr;
 use tect_application::{
     GuardedMatrixAdviceOutcome, GuardedMatrixAdviceRecord, MatrixAdviceStore,
     MatrixProviderBinding, UnitOfWork, canonical_matrix_advice_digest,
@@ -16,8 +17,38 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
-const EXPECTED_DATA_DIRECTORY: &str = "/tmp/tectd-matrix-pg18.6-Ry8kWr/data";
 const EXPECTED_DATABASE: &str = "tect_test";
+
+fn disposable_endpoints(
+    admin_url: &str,
+    runtime_url: &str,
+    role: &str,
+) -> (PgConnectOptions, PgConnectOptions) {
+    assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
+    assert_eq!(role, "tect_ci");
+    let admin = PgConnectOptions::from_str(admin_url).expect("valid admin URL");
+    let runtime = PgConnectOptions::from_str(runtime_url).expect("valid runtime URL");
+    assert_eq!(admin.get_username(), "postgres");
+    assert_eq!(runtime.get_username(), role);
+    for options in [&admin, &runtime] {
+        assert_eq!(options.get_database(), Some(EXPECTED_DATABASE));
+        if let Some(socket) = options.get_socket() {
+            assert!(
+                socket.is_absolute(),
+                "test socket must be an absolute local path"
+            );
+        } else {
+            assert!(
+                matches!(options.get_host(), "localhost" | "127.0.0.1" | "::1"),
+                "test TCP endpoint must be loopback"
+            );
+        }
+    }
+    assert_eq!(admin.get_socket(), runtime.get_socket());
+    assert_eq!(admin.get_host(), runtime.get_host());
+    assert_eq!(admin.get_port(), runtime.get_port());
+    (admin, runtime)
+}
 
 fn sha(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -26,24 +57,28 @@ fn sha(bytes: &[u8]) -> String {
 async fn verify_disposable_cluster(admin_pool: &PgPool, runtime_pool: &PgPool, role: &str) {
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
     assert_eq!(role, "tect_ci");
-    let admin_identity: (i32, String, String, String) = sqlx::query_as(
+    let admin_identity: (i32, String, String, i64, String) = sqlx::query_as(
         "SELECT current_setting('server_version_num')::integer, \
-                current_setting('data_directory'), current_database(), current_user",
+                current_database(), current_user, \
+                (SELECT oid::bigint FROM pg_catalog.pg_database WHERE datname=current_database()), \
+                (SELECT system_identifier::text FROM pg_catalog.pg_control_system())",
     )
     .fetch_one(admin_pool)
     .await
     .unwrap();
     assert!((180000..190000).contains(&admin_identity.0));
-    assert_eq!(admin_identity.1, EXPECTED_DATA_DIRECTORY);
-    assert_eq!(admin_identity.2, EXPECTED_DATABASE);
-    assert_eq!(admin_identity.3, "postgres");
+    assert_eq!(admin_identity.1, EXPECTED_DATABASE);
+    assert_eq!(admin_identity.2, "postgres");
+    assert!(admin_identity.4.parse::<u64>().is_ok_and(|id| id != 0));
 
-    // Runtime cannot read data_directory. Hold its connection and ask the
-    // administrator to prove that backend PID belongs to this same server.
+    // Hold the runtime connection while the administrator confirms its backend
+    // PID belongs to the same database on this server.
     let mut runtime = runtime_pool.acquire().await.unwrap();
-    let runtime_identity: (i32, String, String, i32) = sqlx::query_as(
+    let runtime_identity: (i32, String, String, i64, i32) = sqlx::query_as(
         "SELECT current_setting('server_version_num')::integer, \
-                current_database(), current_user, pg_backend_pid()",
+                current_database(), current_user, \
+                (SELECT oid::bigint FROM pg_catalog.pg_database WHERE datname=current_database()), \
+                pg_backend_pid()",
     )
     .fetch_one(&mut *runtime)
     .await
@@ -51,9 +86,10 @@ async fn verify_disposable_cluster(admin_pool: &PgPool, runtime_pool: &PgPool, r
     assert_eq!(runtime_identity.0, admin_identity.0);
     assert_eq!(runtime_identity.1, EXPECTED_DATABASE);
     assert_eq!(runtime_identity.2, role);
+    assert_eq!(runtime_identity.3, admin_identity.3);
     let observed: (String, String) =
         sqlx::query_as("SELECT datname, usename FROM pg_stat_activity WHERE pid=$1")
-            .bind(runtime_identity.3)
+            .bind(runtime_identity.4)
             .fetch_one(admin_pool)
             .await
             .unwrap();
@@ -67,8 +103,9 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
     let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
     let role = std::env::var("TECT_TEST_RUNTIME_ROLE").unwrap();
-    let admin_pool = PgPool::connect(&admin_url).await.unwrap();
-    let runtime_pool = PgPool::connect(&runtime_url).await.unwrap();
+    let (admin_options, runtime_options) = disposable_endpoints(&admin_url, &runtime_url, &role);
+    let admin_pool = PgPool::connect_with(admin_options).await.unwrap();
+    let runtime_pool = PgPool::connect_with(runtime_options).await.unwrap();
     verify_disposable_cluster(&admin_pool, &runtime_pool, &role).await;
     admin::migrate(&admin_pool, &role).await.unwrap();
 
