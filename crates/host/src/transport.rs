@@ -259,9 +259,10 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
             Invocation::MatrixAdvisory(invocation) => {
                 let opportunity = match invocation {
                     crate::matrix_advisory_tools::MatrixAdvisoryInvocation::Request(request) => {
-                        service
-                            .request_engineering_advisory(context, &request)
-                            .await?
+                        crate::matrix_advisory_tools::guarded_request(&request, capacity, || {
+                            service.request_engineering_advisory(context, &request)
+                        })
+                        .await?
                     }
                     crate::matrix_advisory_tools::MatrixAdvisoryInvocation::Get {
                         task_id,

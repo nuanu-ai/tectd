@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::future::Future;
 use tect_application::RequestEngineeringAdvisory;
 use tect_domain::{AdvisoryOpportunity, AdvisoryRequestPreference, Error, Result};
 use uuid::Uuid;
@@ -68,6 +69,46 @@ fn valid_request_key(key: &str) -> bool {
     !key.is_empty() && key.len() <= 256 && !key.contains('\0') && key.trim() == key
 }
 
+/// The service persists before returning. Reserve space for the largest
+/// possible receipt using this request's exact JSON-escaped key. UUIDs have
+/// fixed width, digests are 64 hex bytes, i64::MIN is the widest revision,
+/// and deterministic_input_invalid is the longest advisory reason.
+pub(crate) fn guard_request_output(
+    request: &RequestEngineeringAdvisory,
+    capacity: usize,
+) -> Result<()> {
+    let projected = json!({
+        "task_id": request.task_id,
+        "task_revision": i64::MIN,
+        "choice_set_digest": "0".repeat(64),
+        "request_key": request.request_key,
+        "opportunity_id": Uuid::nil(),
+        "state": "no_call",
+        "reason": "deterministic_input_invalid",
+        "config_revision": i64::MIN,
+        "material_digest": "0".repeat(64),
+        "provider_called": false,
+    });
+    let projected = crate::responses::with_actions(projected, Vec::new(), None);
+    if crate::responses::encoded_len(&projected)? > capacity {
+        return Err(Error::RequestTooLarge);
+    }
+    Ok(())
+}
+
+pub(crate) async fn guarded_request<F, Fut>(
+    request: &RequestEngineeringAdvisory,
+    capacity: usize,
+    send: F,
+) -> Result<AdvisoryOpportunity>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<AdvisoryOpportunity>>,
+{
+    guard_request_output(request, capacity)?;
+    send().await
+}
+
 pub(crate) fn receipt(value: AdvisoryOpportunity) -> Value {
     json!({
         "task_id": value.target_id,
@@ -86,6 +127,7 @@ pub(crate) fn receipt(value: AdvisoryOpportunity) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
     fn strict_matrix_advisory_arguments() {
@@ -118,5 +160,24 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn tiny_output_capacity_rejects_before_service_invocation() {
+        let request = RequestEngineeringAdvisory {
+            task_id: Uuid::new_v4(),
+            expected_task_revision: 1,
+            request_key: "matrix-1".into(),
+            session_preference: AdvisoryRequestPreference::UseWorkspace,
+            request_preference: AdvisoryRequestPreference::UseWorkspace,
+        };
+        let called = Cell::new(false);
+        let result = guarded_request(&request, 1, || {
+            called.set(true);
+            async { Err(Error::TransportUnavailable) }
+        })
+        .await;
+        assert!(matches!(result, Err(Error::RequestTooLarge)));
+        assert!(!called.get());
     }
 }
