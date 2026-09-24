@@ -107,6 +107,74 @@ impl ScopeAdviceProvider for FakeProvider {
     }
 }
 
+/// Refuse to migrate or enroll if either URL is not the isolated test database.
+/// Compare cluster system identifiers and database OIDs, then see the held
+/// runtime backend from admin as an additional instance identity check.
+async fn disposable_pg18_pair(admin_url: &str, runtime_url: &str, role: &str) -> PgPool {
+    let admin_pool = PgPool::connect(admin_url).await.unwrap();
+    let label = format!("tect-active-preflight-{}", Uuid::new_v4());
+    let runtime_pool = PgPool::connect(&tagged_url(runtime_url, &label))
+        .await
+        .unwrap();
+    let mut runtime = runtime_pool.acquire().await.unwrap();
+    let (admin_database, admin_oid, admin_version, admin_system): (String, i64, i32, String) =
+        sqlx::query_as(
+            "SELECT current_database(),oid::bigint,current_setting('server_version_num')::integer, \
+         (SELECT system_identifier::text FROM pg_catalog.pg_control_system()) \
+         FROM pg_catalog.pg_database WHERE datname=current_database()",
+        )
+        .fetch_one(&admin_pool)
+        .await
+        .unwrap();
+    let (runtime_database, runtime_oid, runtime_user, runtime_version, runtime_system, runtime_pid):
+        (String, i64, String, i32, String, i32) = sqlx::query_as(
+        "SELECT current_database(),oid::bigint,current_user, \
+         current_setting('server_version_num')::integer, \
+         (SELECT system_identifier::text FROM pg_catalog.pg_control_system()),pg_backend_pid() \
+         FROM pg_catalog.pg_database WHERE datname=current_database()",
+    )
+    .fetch_one(&mut *runtime)
+    .await
+    .unwrap();
+    assert_eq!(
+        admin_database, "tect_test",
+        "admin URL must target tect_test"
+    );
+    assert_eq!(
+        runtime_database, "tect_test",
+        "runtime URL must target tect_test"
+    );
+    assert_eq!(admin_version / 10_000, 18, "admin URL must target PG18");
+    assert_eq!(runtime_version / 10_000, 18, "runtime URL must target PG18");
+    assert_eq!(
+        runtime_user, role,
+        "runtime URL must use the test runtime role"
+    );
+    assert_eq!(
+        admin_system, runtime_system,
+        "cluster identities must match"
+    );
+    assert_eq!(admin_oid, runtime_oid, "database OIDs must match");
+    let same_backend: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_stat_activity a \
+         JOIN pg_catalog.pg_roles r ON r.oid=a.usesysid \
+         WHERE a.pid=$1 AND a.datid::bigint=$2 AND a.application_name=$3 \
+         AND r.rolname=$4)",
+    )
+    .bind(runtime_pid)
+    .bind(admin_oid)
+    .bind(&label)
+    .bind(role)
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert!(
+        same_backend,
+        "admin and runtime URLs must reach the same PG instance"
+    );
+    admin_pool
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "requires disposable PostgreSQL 18.6 and TECT_TEST_*"]
 async fn public_mcp_active_request_persists_advice_and_replay_does_not_redispatch() {
@@ -114,13 +182,8 @@ async fn public_mcp_active_request_persists_advice_and_replay_does_not_redispatc
     let runtime_url =
         std::env::var("TECT_TEST_RUNTIME_URL").expect("TECT_TEST_RUNTIME_URL required");
     let role = std::env::var("TECT_TEST_RUNTIME_ROLE").expect("TECT_TEST_RUNTIME_ROLE required");
-    let pool = PgPool::connect(&admin_url).await.unwrap();
+    let pool = disposable_pg18_pair(&admin_url, &runtime_url, &role).await;
     admin::migrate(&pool, &role).await.unwrap();
-    let version: String = sqlx::query_scalar("SHOW server_version_num")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(version.parse::<i32>().unwrap(), 180_006);
 
     let temp = private_temp();
     let root = temp.path().canonicalize().unwrap();
