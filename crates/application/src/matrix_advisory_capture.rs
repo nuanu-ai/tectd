@@ -1,12 +1,22 @@
 use crate::{
-    MatrixAdviceProvider, MatrixBudgetPolicy, MatrixBudgetRequest, MatrixProviderRequest,
-    MatrixTaskRevision,
+    MatrixAdviceProvider, MatrixBudgetAuthorization, MatrixBudgetPolicy, MatrixBudgetRequest,
+    MatrixProviderRequest, MatrixTaskRevision, PreparedMatrixAdviceAttempt,
 };
 use tect_domain::{
     AdvisoryOpportunityInput, AdvisoryOpportunityState, AdvisoryReason, Error,
     WorkspaceAdvisoryConfig,
 };
 use uuid::Uuid;
+
+/// Captured preparation is retained for the later, transaction-bound dispatch
+/// flow. NoCall carries no provider body or budget grant.
+pub(crate) enum PreparedMatrixOpportunity {
+    Authorized {
+        prepared: PreparedMatrixAdviceAttempt,
+        authorization: MatrixBudgetAuthorization,
+    },
+    NoCall,
+}
 
 /// Pure preparation and budget decision for an eligible, enabled Matrix task.
 /// This boundary captures Prepared/DispatchAuthorized only. A later packet must
@@ -20,23 +30,23 @@ pub(crate) async fn prepare_eligible_matrix_opportunity(
     actor_id: Uuid,
     provider: &dyn MatrixAdviceProvider,
     budget: &dyn MatrixBudgetPolicy,
-) -> tect_domain::Result<()> {
+) -> tect_domain::Result<PreparedMatrixOpportunity> {
     if input.primary_reason != AdvisoryReason::CapabilityUnavailable {
-        return Ok(());
+        return Ok(PreparedMatrixOpportunity::NoCall);
     }
     let (Some(profile), Some(model)) = (
         config.provider_profile_ref.as_ref(),
         config.model_configuration.as_ref(),
     ) else {
         input.primary_reason = AdvisoryReason::ProviderUnconfigured;
-        return Ok(());
+        return Ok(PreparedMatrixOpportunity::NoCall);
     };
     let Some(identity) = provider.identity() else {
-        return Ok(());
+        return Ok(PreparedMatrixOpportunity::NoCall);
     };
     if identity.provider_profile_ref != *profile || identity.model_configuration != *model {
         input.primary_reason = AdvisoryReason::ProviderUnconfigured;
-        return Ok(());
+        return Ok(PreparedMatrixOpportunity::NoCall);
     }
     let composition =
         super::matrix_tasks::compose_current_revision(revision.clone(), revision.revision)?;
@@ -47,7 +57,7 @@ pub(crate) async fn prepare_eligible_matrix_opportunity(
         model.clone(),
     ) {
         Ok(request) => request,
-        Err(_) => return Ok(()),
+        Err(_) => return Ok(PreparedMatrixOpportunity::NoCall),
     };
     let prepared = match provider.prepare(&request) {
         Ok(prepared)
@@ -55,23 +65,29 @@ pub(crate) async fn prepare_eligible_matrix_opportunity(
         {
             prepared
         }
-        _ => return Ok(()),
+        _ => return Ok(PreparedMatrixOpportunity::NoCall),
     };
     let budget_request = MatrixBudgetRequest::from_prepared(workspace_id, actor_id, &prepared)?;
     let authorization = budget.authorize(&budget_request).await;
-    match authorization {
+    let result = match authorization {
         Ok(Some(auth)) if valid_policy_id(&auth.policy_id) => {
             // Positive opportunities bind the exact Matrix evaluation. The
             // legacy no-call digest remains unchanged for existing receipts.
             input.material_digest = request.binding().evaluation_digest.clone();
             input.state = AdvisoryOpportunityState::Prepared;
             input.primary_reason = AdvisoryReason::DispatchAuthorized;
+            PreparedMatrixOpportunity::Authorized {
+                prepared,
+                authorization: auth,
+            }
         }
         Ok(None) | Err(_) | Ok(Some(_)) => {
             input.primary_reason = AdvisoryReason::BudgetPolicyInvalid;
+            PreparedMatrixOpportunity::NoCall
         }
-    }
-    input.validate().map_err(|_| Error::InternalInvariant)
+    };
+    input.validate().map_err(|_| Error::InternalInvariant)?;
+    Ok(result)
 }
 
 fn valid_policy_id(value: &str) -> bool {

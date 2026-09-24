@@ -484,6 +484,7 @@ mod tests {
     #[tokio::test]
     async fn eligible_matrix_prepares_only_after_budget_authorizes() {
         let mut revision = stored_revision();
+        revision.input.mode = known(EngineeringMode::Demo);
         revision.input_digest =
             canonical_matrix_input_digest(&serde_json::to_value(&revision.input).unwrap()).unwrap();
         let choice = EngineeringChoiceSet {
@@ -563,7 +564,7 @@ mod tests {
         );
         let provider = TestProvider(identity);
         let actor_id = input.authorized_actor_id;
-        crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
+        let captured = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
             &mut input,
             &revision,
             &config,
@@ -574,6 +575,28 @@ mod tests {
         )
         .await
         .unwrap();
+        let crate::matrix_advisory_capture::PreparedMatrixOpportunity::Authorized {
+            prepared,
+            authorization,
+        } = captured
+        else {
+            panic!("eligible authorized Matrix must retain prepared attempt");
+        };
+        assert_eq!(authorization.policy_id, "test-policy");
+        assert_eq!(prepared.identity(), &provider.0);
+        assert_eq!(prepared.body(), b"{}");
+        assert_eq!(
+            prepared.body_sha256(),
+            format!("{:x}", Sha256::digest(b"{}"))
+        );
+        assert_eq!(prepared.binding(), provider_request.binding());
+        assert_eq!(
+            revision.input.mode,
+            MatrixFact::Known {
+                value: EngineeringMode::Demo,
+                provenance: FactProvenance("owner report".into()),
+            }
+        );
         assert_eq!(input.state, AdvisoryOpportunityState::Prepared);
         assert_eq!(input.primary_reason, AdvisoryReason::DispatchAuthorized);
         assert_eq!(input.material_digest, expected_evaluation_digest);
@@ -586,7 +609,7 @@ mod tests {
         )
         .unwrap();
         let actor_id = denied.authorized_actor_id;
-        crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
+        let denied_capture = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
             &mut denied,
             &revision,
             &config,
@@ -597,6 +620,10 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(matches!(
+            denied_capture,
+            crate::matrix_advisory_capture::PreparedMatrixOpportunity::NoCall
+        ));
         assert_eq!(denied.state, AdvisoryOpportunityState::NoCall);
         assert_eq!(denied.primary_reason, AdvisoryReason::BudgetPolicyInvalid);
         assert_eq!(denied.material_digest, legacy_no_call_digest);
