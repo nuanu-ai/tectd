@@ -9,7 +9,8 @@ use tect_application::{
 use tect_domain::{
     AdvisoryDispatch, AdvisoryModelConfiguration, AdvisoryOpportunity, AdvisoryOpportunityState,
     AdvisoryProviderProfileRef, EngineeringChoiceSet, EngineeringMatrixInput, Error,
-    OwnerReportedEngineeringMatrixFacts, Result, compose_independently_verified_owner_matrix,
+    MatrixVerificationRecord, OwnerReportedEngineeringMatrixFacts, Result,
+    ValidatedMatrixVerification, compose_independently_verified_owner_matrix,
     evaluate_matrix_verification, matrix_verified_evaluation_digest,
 };
 use uuid::Uuid;
@@ -83,6 +84,30 @@ fn outcome_columns(
         GuardedMatrixAdviceOutcome::Abstained { reason } => ("abstained", None, reason.clone()),
         GuardedMatrixAdviceOutcome::Rejected { reason } => ("rejected", None, Some(reason.clone())),
     }
+}
+
+fn validated_for_guarded_advice(
+    task_id: Uuid,
+    revision: i64,
+    input: &EngineeringMatrixInput,
+    verification: &MatrixVerificationRecord,
+    verified_fresh_under_lock: bool,
+    verified_epoch: i64,
+    current_epoch: i64,
+) -> Result<ValidatedMatrixVerification> {
+    let validation_epoch = if verified_fresh_under_lock {
+        verified_epoch
+    } else {
+        current_epoch
+    };
+    evaluate_matrix_verification(
+        &task_id.to_string(),
+        &revision.to_string(),
+        input,
+        verification,
+        validation_epoch,
+    )
+    .map_err(|_| Error::StaleRevision)
 }
 
 #[async_trait]
@@ -455,7 +480,9 @@ impl PgUnitOfWork {
         // The head lock also serializes verifier inserts. A replacement header,
         // changed input, or expired evidence must reject direct store callers.
         let latest = sqlx::query(
-            "SELECT id,input_digest,schema,owner_principal_id,verifier_principal_id,policy_version,record_digest,verification_reason FROM matrix_verifications \
+            "SELECT id,input_digest,schema,owner_principal_id,verifier_principal_id,policy_version,record_digest,verification_reason, \
+                    FLOOR(EXTRACT(EPOCH FROM verified_at))::bigint AS verified_epoch \
+             FROM matrix_verifications \
              WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 AND task_revision=$4 \
              ORDER BY verified_at DESC,id DESC LIMIT 1",
         )
@@ -470,6 +497,7 @@ impl PgUnitOfWork {
             return Err(Error::StaleRevision);
         };
         let verification_id: Uuid = latest.try_get("id").map_err(storage_error)?;
+        let verified_epoch: i64 = latest.try_get("verified_epoch").map_err(storage_error)?;
         let latest_digest: String = latest.try_get("record_digest").map_err(storage_error)?;
         let verified_input_digest: String =
             latest.try_get("input_digest").map_err(storage_error)?;
@@ -520,19 +548,26 @@ impl PgUnitOfWork {
         let verification = self
             .decode_verification(workspace_id, current.task_id, current.revision, latest)
             .await?;
-        let now: i64 =
-            sqlx::query_scalar("SELECT EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())::bigint")
-                .fetch_one(&mut **self.transaction()?)
-                .await
-                .map_err(storage_error)?;
-        let validated = evaluate_matrix_verification(
-            &current.task_id.to_string(),
-            &current.revision.to_string(),
+        // Finalize already checked expiry under this task lock before it
+        // terminalized the opportunity. A second clock read can cross the
+        // expiry boundary and roll that transition back after a sent reply.
+        // The immutable verified_at checks canonical record structure in
+        // that path; direct writes and later replays still require fresh time.
+        let current_epoch: i64 = sqlx::query_scalar(
+            "SELECT FLOOR(EXTRACT(EPOCH FROM pg_catalog.clock_timestamp()))::bigint",
+        )
+        .fetch_one(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
+        let validated = validated_for_guarded_advice(
+            current.task_id,
+            current.revision,
             &current.input,
             &verification,
-            now,
-        )
-        .map_err(|_| Error::StaleRevision)?;
+            verified_fresh_under_lock,
+            verified_epoch,
+            current_epoch,
+        )?;
         let reported = OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
             current.task_id.to_string(),
             current.revision.to_string(),
@@ -573,6 +608,10 @@ impl PgUnitOfWork {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tect_domain::{
+        EvidenceValidationOutcome, MATRIX_VERIFICATION_SCHEMA, MatrixEvidenceBinding,
+        matrix_input_digest, required_matrix_facts,
+    };
 
     #[test]
     fn rejected_outcome_has_no_ranking_or_usable_kind() {
@@ -582,5 +621,56 @@ mod tests {
         assert_eq!(kind, "rejected");
         assert!(ranks.is_none());
         assert_eq!(reason.as_deref(), Some("guard rejected response"));
+    }
+
+    #[test]
+    fn finalize_freshness_survives_later_expiry_but_direct_persist_does_not() {
+        let input: EngineeringMatrixInput = serde_json::from_value(serde_json::json!({
+            "mode":{"state":"known","value":"demo","provenance":"owner"},
+            "envelope":{"scale":{"state":"known","value":"one request","provenance":"owner"},
+              "operational_facts":{"state":"known_empty","provenance":"owner"}},
+            "criticality":{"state":"known","value":"low","provenance":"owner"},
+            "intent":{"state":"known","value":{"kind":"other","description":"demo"},"provenance":"owner"},
+            "urgency":{"state":"known","value":"ordinary","provenance":"owner"},
+            "promised_behavior":{"state":"known","value":"demo","provenance":"owner"},
+            "promised_proof":{"state":"known","value":"check","provenance":"owner"},
+            "affected_guarantees":{"state":"known_empty","provenance":"owner"},
+            "actual_exposure":{"state":"known","value":false,"provenance":"owner"},
+            "demand_commitment":{"state":"known","value":"no_commitment","provenance":"owner"},
+            "latency_commitment":{"state":"known","value":"no_commitment","provenance":"owner"},
+            "urgent_repair":{"state":"known","value":false,"provenance":"owner"}
+        })).unwrap();
+        let task_id = Uuid::new_v4();
+        let mut record = MatrixVerificationRecord {
+            schema: MATRIX_VERIFICATION_SCHEMA.into(),
+            task_id: task_id.to_string(),
+            task_revision: "1".into(),
+            input_digest: matrix_input_digest(&input).unwrap(),
+            owner_principal: Uuid::new_v4().to_string(),
+            verifier_principal: Uuid::new_v4().to_string(),
+            policy_version: "test/1".into(),
+            bindings: required_matrix_facts(&input)
+                .unwrap()
+                .into_iter()
+                .map(|fact| MatrixEvidenceBinding {
+                    fact_path: fact.path,
+                    value_digest: fact.value_digest,
+                    evidence_ref: "synthetic".into(),
+                    content_digest: "a".repeat(64),
+                    source: "synthetic".into(),
+                    subject: "test".into(),
+                    observed_at: 99,
+                    expires_at: 101,
+                    validation_outcome: EvidenceValidationOutcome::Accepted,
+                })
+                .collect(),
+            digest: String::new(),
+        };
+        record.digest = record.canonical_digest().unwrap();
+        assert!(validated_for_guarded_advice(task_id, 1, &input, &record, true, 100, 101).is_ok());
+        assert_eq!(
+            validated_for_guarded_advice(task_id, 1, &input, &record, false, 100, 101),
+            Err(Error::StaleRevision)
+        );
     }
 }
