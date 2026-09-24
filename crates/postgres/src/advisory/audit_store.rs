@@ -272,6 +272,20 @@ impl AdvisoryStore for PgUnitOfWork {
         opportunity_by_request_key(self.transaction()?, tenant, workspace_id, request_key).await
     }
 
+    async fn matrix_dispatch_for_recovery(
+        &mut self,
+        _capability: &tect_application::AdvisoryLifecycleCapability,
+        workspace_id: Uuid,
+        actor_id: Uuid,
+        opportunity_id: Uuid,
+        dispatch_id: Option<Uuid>,
+    ) -> Result<tect_application::StoredMatrixDispatch> {
+        let tenant = self.tenant_id()?;
+        matrix_dispatch_for_recovery(
+            self.transaction()?, tenant, workspace_id, actor_id, opportunity_id, dispatch_id,
+        ).await
+    }
+
     async fn authorize_advisory_dispatch(
         &mut self,
         _capability: &tect_application::AdvisoryLifecycleCapability,

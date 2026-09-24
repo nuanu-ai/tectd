@@ -226,10 +226,24 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
         model: "synthetic-model".into(),
     };
     let raw = b"synthetic provider response: ranked [a,b]".to_vec();
-    let request = b"synthetic provider request".to_vec();
+    let request = serde_json::to_vec(&serde_json::json!({
+        "model": model.model,
+        "state": {"binding": {
+            "task_id": binding.task_id.to_string(),
+            "task_revision": binding.task_revision.to_string(),
+            "input_digest": binding.input_digest,
+            "choice_set_id": binding.choice_set_id,
+            "choice_set_version": binding.choice_set_version,
+            "choice_set_digest": binding.choice_set_digest,
+            "evaluation_digest": binding.evaluation_digest,
+            "verification_digest": binding.verification_digest,
+        }}
+    }))
+    .unwrap();
     let request_sha = sha(&request);
     let snapshot = serde_json::json!({
         "provider_profile_ref": profile, "model_configuration": model,
+        "destination": "synthetic-endpoint", "wire_version": "matrix-ranking/2",
         "request_body_length": request.len(), "request_body_sha256": request_sha
     });
     let configuration_digest = sha(&serde_json::to_vec(&snapshot).unwrap());
@@ -339,6 +353,50 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
         .execute(&admin_pool).await.unwrap();
     sqlx::query("UPDATE advisory_opportunity SET state='advised',primary_reason='provider_response' WHERE id=$1")
         .bind(opportunity_id).execute(&admin_pool).await.unwrap();
+
+    let mut recovery_tx = runtime_pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_catalog.set_config('tect.tenant_id',$1,true)")
+        .bind(tenant_id.to_string())
+        .execute(&mut *recovery_tx)
+        .await
+        .unwrap();
+    let recovered = crate::advisory::matrix_dispatch_for_recovery(
+        &mut recovery_tx,
+        tenant_id,
+        workspace_id,
+        owner.principal_id,
+        opportunity_id,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered.binding, binding);
+    assert_eq!(recovered.request_payload, request);
+    assert_eq!(recovered.request_payload_sha256, request_sha);
+    assert_eq!(recovered.response_payload, Some(raw.clone()));
+    assert_eq!(recovered.response_payload_sha256, Some(sha(&raw)));
+    assert_eq!(
+        recovered.dispatch.state,
+        tect_domain::AdvisoryDispatchState::Sealed
+    );
+    assert_eq!(
+        recovered.dispatch.send_certainty,
+        tect_domain::AdvisorySendCertainty::Sent
+    );
+    assert_eq!(
+        crate::advisory::matrix_dispatch_for_recovery(
+            &mut recovery_tx,
+            tenant_id,
+            workspace_id,
+            verifier_id,
+            opportunity_id,
+            Some(dispatch_id),
+        )
+        .await
+        .err(),
+        Some(Error::NotFound)
+    );
+    recovery_tx.commit().await.unwrap();
 
     let outcome = GuardedMatrixAdviceOutcome::Ranked {
         ranked_choice_ids: vec!["a".into(), "b".into()],

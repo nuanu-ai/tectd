@@ -57,6 +57,17 @@ pub trait AdvisoryStore: Send {
         workspace_id: Uuid,
         request_key: &str,
     ) -> Result<Option<AdvisoryOpportunity>>;
+    /// Internal recovery evidence for one Matrix attempt. `None` resolves only
+    /// the initial attempt for a known opportunity; `Some` requires an exact
+    /// dispatch ID. The capability keeps bytes off the general audit surface.
+    async fn matrix_dispatch_for_recovery(
+        &mut self,
+        capability: &AdvisoryLifecycleCapability,
+        workspace_id: Uuid,
+        actor_id: Uuid,
+        opportunity_id: Uuid,
+        dispatch_id: Option<Uuid>,
+    ) -> Result<StoredMatrixDispatch>;
     async fn authorize_advisory_dispatch(
         &mut self,
         capability: &AdvisoryLifecycleCapability,
@@ -134,6 +145,38 @@ pub trait AdvisoryStore: Send {
         candidate_set_id: Uuid,
         opportunity_id: Uuid,
     ) -> Result<AdvisoryOpportunityDetail>;
+}
+
+/// Persisted Matrix attempt, including exact transport bytes. Never serialize
+/// this into an MCP or audit response.
+#[derive(Clone, PartialEq, Eq)]
+pub struct StoredMatrixDispatch {
+    pub dispatch: AdvisoryDispatch,
+    pub binding: MatrixProviderBinding,
+    pub provider_profile_ref: AdvisoryProviderProfileRef,
+    pub model_configuration: AdvisoryModelConfiguration,
+    pub configuration_snapshot: serde_json::Value,
+    pub destination: String,
+    pub wire_version: String,
+    pub request_payload: Vec<u8>,
+    pub request_payload_sha256: String,
+    pub response_payload: Option<Vec<u8>>,
+    pub response_payload_sha256: Option<String>,
+}
+
+impl std::fmt::Debug for StoredMatrixDispatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredMatrixDispatch")
+            .field("dispatch", &self.dispatch)
+            .field("binding", &self.binding)
+            .field("provider_profile_ref", &self.provider_profile_ref)
+            .field("model_configuration", &self.model_configuration)
+            .field("destination", &self.destination)
+            .field("wire_version", &self.wire_version)
+            .field("request_payload_sha256", &self.request_payload_sha256)
+            .field("response_payload_sha256", &self.response_payload_sha256)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
