@@ -1,10 +1,67 @@
-use crate::{MatrixProviderRequest, UnitOfWork, WorkspaceService};
+use crate::{MatrixPlanningMappedNode, MatrixProviderRequest, UnitOfWork, WorkspaceService};
 use tect_domain::{
     AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryOpportunityState, AdvisoryReason,
     ENGINEERING_MATRIX_CATALOGUE_VERSION, Error, MatrixDispositionBasis, MatrixDispositionDecision,
-    MatrixPlanningSelection, MatrixSourceVerificationStatus, Result,
+    MatrixPlanningSelection, MatrixSourceVerificationStatus, Result, SliceCandidateContext,
+    SliceCandidateDraft, SliceCandidateDraftNode, SliceCandidateNode,
 };
 use uuid::Uuid;
+
+/// Resolve caller-attributed draft positions to the exact nodes saved by the
+/// native operation. The native resolver currently preserves submitted order.
+pub(super) fn resolve_selected_matrix_nodes(
+    selection: &MatrixPlanningSelection,
+    draft: &SliceCandidateDraft,
+    saved: &SliceCandidateContext,
+) -> Result<Vec<MatrixPlanningMappedNode>> {
+    let nodes = &saved.draft.as_ref().ok_or(Error::InternalInvariant)?.nodes;
+    if nodes.len() != draft.nodes.len()
+        || draft.nodes.iter().zip(nodes).any(|(input, output)| {
+            !matches!(
+                (input, output),
+                (
+                    SliceCandidateDraftNode::Work { .. },
+                    SliceCandidateNode::Work { .. }
+                ) | (
+                    SliceCandidateDraftNode::Decision { .. },
+                    SliceCandidateNode::Decision { .. }
+                )
+            )
+        })
+    {
+        return Err(Error::InternalInvariant);
+    }
+    selection
+        .mapped_draft_node_indices
+        .iter()
+        .map(|&draft_index| {
+            let input = draft
+                .nodes
+                .get(draft_index)
+                .ok_or(Error::InvalidArguments)?;
+            let output = nodes.get(draft_index).ok_or(Error::InternalInvariant)?;
+            let identity = match input {
+                SliceCandidateDraftNode::Work { identity, .. }
+                | SliceCandidateDraftNode::Decision { identity, .. } => identity,
+            };
+            if identity.candidate_id.is_some_and(|id| id != output.id())
+                || identity.revision.is_some_and(|revision| {
+                    output.revision() != revision
+                        && revision.checked_add(1) != Some(output.revision())
+                })
+                || output.id().is_nil()
+                || output.revision() < 1
+            {
+                return Err(Error::InternalInvariant);
+            }
+            Ok(MatrixPlanningMappedNode {
+                draft_index,
+                node_id: output.id(),
+                node_revision: output.revision(),
+            })
+        })
+        .collect()
+}
 
 /// Recheck every Matrix binding inside the same write unit of work, before the
 /// native planning mutation. These digests are server-derived for the link.

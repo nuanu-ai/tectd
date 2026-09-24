@@ -97,7 +97,13 @@ impl WorkspaceService {
                     )
                     .await?
                     .ok_or(Error::InternalInvariant)?;
+                let mapped_nodes = super::matrix_selection::resolve_selected_matrix_nodes(
+                    selection,
+                    &request.draft,
+                    &value,
+                )?;
                 if link.selection != *selection
+                    || link.mapped_nodes != mapped_nodes
                     || link.caller_principal_id != principal
                     || link.caller_session_id != session.id
                     || link.scope_id != request.scope_id
@@ -155,6 +161,11 @@ impl WorkspaceService {
         if let (Some(selection), Some((evaluation_digest, catalogue_version))) =
             (&request.matrix_selection, matrix_binding)
         {
+            let mapped_nodes = super::matrix_selection::resolve_selected_matrix_nodes(
+                selection,
+                &request.draft,
+                &value,
+            )?;
             tx.matrix_planning_selection_store()
                 .ok_or(Error::StorageUnavailable)?
                 .link_matrix_planning_selection(
@@ -169,6 +180,7 @@ impl WorkspaceService {
                         candidate_set_id: request.candidate_set_id,
                         caller_request_id: request.request_id,
                         result_revision: value.candidate_set.revision,
+                        mapped_nodes,
                     },
                 )
                 .await?;

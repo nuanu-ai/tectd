@@ -45,7 +45,7 @@ pub use matrix_disposition_ports::{
     MatrixDispositionRecord, MatrixDispositionStore, RecordMatrixDisposition,
 };
 pub use matrix_planning_selection_ports::{
-    MatrixPlanningSelectionLink, MatrixPlanningSelectionStore,
+    MatrixPlanningMappedNode, MatrixPlanningSelectionLink, MatrixPlanningSelectionStore,
 };
 pub use matrix_task_ports::MatrixTaskStore;
 pub use matrix_tasks::{

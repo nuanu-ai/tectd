@@ -4,6 +4,13 @@ use uuid::Uuid;
 
 use crate::MatrixDispositionRecord;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatrixPlanningMappedNode {
+    pub draft_index: usize,
+    pub node_id: Uuid,
+    pub node_revision: i64,
+}
+
 /// Server-validated binding to one real native planning save receipt.
 /// `evaluation_digest` covers current verified input, composition and choice set.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,6 +24,7 @@ pub struct MatrixPlanningSelectionLink {
     pub candidate_set_id: Uuid,
     pub caller_request_id: Uuid,
     pub result_revision: i64,
+    pub mapped_nodes: Vec<MatrixPlanningMappedNode>,
 }
 
 /// All methods run in the native save's unit of work. The adapter must check
