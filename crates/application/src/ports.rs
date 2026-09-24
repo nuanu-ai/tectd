@@ -35,6 +35,7 @@ pub trait UnitOfWork:
     + crate::ScopeAdvisoryStore
     + crate::MatrixTaskStore
     + crate::MatrixAdviceStore
+    + crate::MatrixDispositionStore
 {
     /// Optional append-only persistence seam. Unconfigured adapters deny use.
     fn matrix_verification_store(&mut self) -> Option<&mut dyn crate::MatrixVerificationStore> {

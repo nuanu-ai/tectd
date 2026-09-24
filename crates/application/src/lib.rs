@@ -4,6 +4,8 @@ pub use advisory::{Sha256ScopeDigest, VerifySelectedSave};
 mod advisory_ports;
 mod matrix_advice_ports;
 mod matrix_advice_runtime;
+mod matrix_disposition;
+mod matrix_disposition_ports;
 mod matrix_advisory_capture;
 mod matrix_advisory_dispatch;
 mod matrix_task_ports;
@@ -37,6 +39,9 @@ pub use matrix_advice_runtime::{
     DenyMatrixBudget, MAX_PREPARED_MATRIX_BODY_BYTES, MatrixBudgetAuthorization,
     MatrixBudgetPolicy, MatrixBudgetRequest, MatrixProviderIdentity, MatrixStartedDispatchPermit,
     PreparedMatrixAdviceAttempt,
+};
+pub use matrix_disposition_ports::{
+    MatrixDispositionRecord, MatrixDispositionStore, RecordMatrixDisposition,
 };
 pub use matrix_task_ports::MatrixTaskStore;
 pub use matrix_tasks::{

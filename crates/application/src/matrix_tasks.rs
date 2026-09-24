@@ -394,7 +394,7 @@ impl WorkspaceService {
     }
 }
 
-fn current_public_matrix_advice(
+pub(crate) fn current_public_matrix_advice(
     receipt: &AdvisoryOpportunity,
     stored: &crate::StoredGuardedMatrixAdviceRecord,
     config: &WorkspaceAdvisoryConfig,

@@ -4,6 +4,7 @@ mod durable_knowledge;
 mod durable_knowledge_validation;
 mod engineering_choice_set;
 mod engineering_matrix_composer;
+mod engineering_matrix_disposition;
 mod engineering_matrix_input;
 mod engineering_matrix_verification;
 mod engineering_review;
@@ -39,6 +40,7 @@ pub use advisory::*;
 pub use durable_knowledge::*;
 pub use engineering_choice_set::*;
 pub use engineering_matrix_composer::*;
+pub use engineering_matrix_disposition::*;
 pub use engineering_matrix_input::*;
 pub use engineering_matrix_verification::*;
 pub use error::{
