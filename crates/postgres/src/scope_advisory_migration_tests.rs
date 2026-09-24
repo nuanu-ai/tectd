@@ -3,10 +3,18 @@ const AUTHORED_REQUEST_MIGRATION: &str =
     include_str!("../migrations/0042_scope_authored_request_manifest_binding.sql");
 const MANIFEST: &str = include_str!("scope_advisory/manifest.rs");
 const DECISIONS: &str = include_str!("scope_advisory/decisions.rs");
+const DISPOSITION_PRESERVATION: &str = include_str!("scope_advisory/disposition_preservation.rs");
+const CALLER_VERIFIER: &str = include_str!("scope_advisory/caller_verifier.rs");
 const FINALIZE: &str = include_str!("scope_advisory/finalize.rs");
 const MAPPINGS: &str = include_str!("scope_advisory/mappings.rs");
 const ADMIN_VALIDATOR: &str = include_str!("admin/scope_advisory.rs");
 const PORT: &str = include_str!("../../application/src/scope_advisory_ports.rs");
+
+fn decisions_contain(token: &str) -> bool {
+    DECISIONS.contains(token)
+        || DISPOSITION_PRESERVATION.contains(token)
+        || CALLER_VERIFIER.contains(token)
+}
 
 #[test]
 fn migration_has_exactly_seven_authoritative_aggregates_and_no_budget_placeholder() {
@@ -78,12 +86,12 @@ fn every_aggregate_write_and_read_is_domain_validated() {
         "evaluate_scope_preservation(",
     ] {
         assert!(
-            MANIFEST.contains(token) || MAPPINGS.contains(token) || DECISIONS.contains(token),
+            MANIFEST.contains(token) || MAPPINGS.contains(token) || decisions_contain(token),
             "missing validation {token}"
         );
     }
     assert!(MAPPINGS.contains("serde_json::from_value"));
-    assert!(DECISIONS.contains("serde_json::to_value"));
+    assert!(decisions_contain("serde_json::to_value"));
 }
 
 #[test]
@@ -103,7 +111,7 @@ fn lifecycle_cas_and_independence_guards_are_explicit() {
         "input.actor_id == decision_actor && input.session_id == decision_session",
     ] {
         assert!(
-            MANIFEST.contains(token) || DECISIONS.contains(token),
+            MANIFEST.contains(token) || decisions_contain(token),
             "missing {token}"
         );
     }
@@ -131,7 +139,7 @@ fn current_config_guard_and_replay_lineage_are_explicit() {
         "preservation_receipt_id",
     ] {
         assert!(
-            MAPPINGS.contains(token) || DECISIONS.contains(token),
+            MAPPINGS.contains(token) || decisions_contain(token),
             "missing {token}"
         );
     }
@@ -248,7 +256,14 @@ fn runtime_contract_is_append_only_tenant_safe_and_port_only() {
     ] {
         assert!(PORT.contains(method));
     }
-    for source in [PORT, MANIFEST, DECISIONS, MAPPINGS] {
+    for source in [
+        PORT,
+        MANIFEST,
+        DECISIONS,
+        DISPOSITION_PRESERVATION,
+        CALLER_VERIFIER,
+        MAPPINGS,
+    ] {
         assert!(!source.contains("raw_response"));
         assert!(!source.contains("response_payload bytea"));
     }
