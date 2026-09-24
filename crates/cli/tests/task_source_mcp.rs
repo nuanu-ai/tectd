@@ -301,6 +301,94 @@ async fn task_source_revisions_replay_conflict_staleness_and_workspace_isolation
     .await;
     assert_eq!(after_refusals, rev2);
 
+    let rev3_input = source_input("production", "Payment-facing preview");
+    let choice_set = json!({
+        "schema":"tect.matrix-choice-set/1",
+        "choice_set_id":"preview-implementation-options",
+        "version":1,
+        "task_id":task_id.to_string(),
+        "task_revision":"3",
+        "decision_question":"Which approach should address the payment-facing preview?",
+        "candidates":[
+            {
+                "candidate_id":"adapt-existing-preview",
+                "title":"Adapt existing preview",
+                "approach":"Adapt the current preview path to use the recorded payment state.",
+                "assumption_fact_ids":["criticality"]
+            },
+            {
+                "candidate_id":"separate-payment-preview",
+                "title":"Separate payment preview",
+                "approach":"Build a separate payment preview path with an explicit mode boundary.",
+                "assumption_fact_ids":["mode"]
+            }
+        ]
+    });
+    let rev3_request_id = Uuid::new_v4();
+    let mut rev3_params = record(task_id, 3, rev3_request_id, rev3_input.clone());
+    rev3_params["choice_set"] = choice_set.clone();
+    let rev3 = route(
+        &mut owner,
+        "command",
+        "task.source.record",
+        rev3_params.clone(),
+    )
+    .await;
+    assert_receipt(&rev3, task_id, 3, rev3_request_id, &rev3_input);
+    assert_eq!(rev3["choice_set"], choice_set);
+    let choice_digest = rev3["choice_set_digest"]
+        .as_str()
+        .expect("choice-set digest");
+    assert_eq!(choice_digest.len(), 64);
+    assert!(choice_digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    let current3 = route(
+        &mut owner,
+        "query",
+        "task.source.get",
+        json!({"task_id":task_id}),
+    )
+    .await;
+    assert_eq!(
+        current3, rev3,
+        "current read must include revision 3 choice set"
+    );
+    let rev3_replay = route(
+        &mut owner,
+        "command",
+        "task.source.record",
+        rev3_params.clone(),
+    )
+    .await;
+    assert_eq!(
+        rev3_replay, rev3,
+        "exact choice-set replay must return its receipt"
+    );
+    let mut changed_choice = rev3_params;
+    changed_choice["choice_set"]["candidates"][0]["approach"] =
+        json!("Replace the current preview path with a new implementation.");
+    let choice_conflict = owner
+        .call_error(
+            "command",
+            json!({"route":"task.source.record","params":changed_choice}),
+        )
+        .await;
+    assert_eq!(choice_conflict["error"]["code"], "input_conflict");
+    let stale_rev2 = owner
+        .call_error(
+            "command",
+            json!({"route":"task.source.record","params":record(task_id, 2, Uuid::new_v4(), rev3_input)}),
+        )
+        .await;
+    assert_eq!(stale_rev2["error"]["code"], "stale_revision");
+    let after_choice_refusals = route(
+        &mut owner,
+        "query",
+        "task.source.get",
+        json!({"task_id":task_id}),
+    )
+    .await;
+    assert_eq!(after_choice_refusals, rev3);
+
     let other_key = format!("matrix-other-{}", Uuid::new_v4());
     let mut other = Mcp::start(&socket, &config, &Uuid::new_v4().to_string(), &other_key).await;
     let other_open = other.call("open_workspace", json!({})).await;
