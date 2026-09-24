@@ -92,6 +92,17 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
         ),
         route!(
             "query",
+            "scope.advisory.card",
+            "scope_advisory_card",
+            "Compose the versioned Engineering Matrix cards for one exact saved task revision.",
+            "Requires an authenticated open native session, workspace membership, a current task UUID, and its exact positive revision. detail defaults to summary; full requires one card_id from the returned catalogue.",
+            "Returns catalogue version, task identity and revision, every applicable card ID and summary, and unresolved evidence. Full detail adds the selected card body. This read never contacts Jev or changes an advisory opportunity.",
+            "Safe to repeat for the same task revision; a changed revision is stale.",
+            matrix_card_schema(),
+            json!({"task_id":example_id,"expected_task_revision":1}),
+        ),
+        route!(
+            "query",
             "scope.advisory.audit",
             "scope_advisory_audit",
             "Read a stable filtered page of advisory opportunities and dispatch facts for one exact scope.",
@@ -155,6 +166,21 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
             json!({"candidate_set_id":example_id,"limit":50}),
         ),
     ]
+}
+
+fn matrix_card_schema() -> Value {
+    let mut schema = object_schema(
+        json!({
+            "task_id":uuid(),
+            "expected_task_revision":{"type":"integer","minimum":1},
+            "card_id":{"type":"string","enum":["EM02-SCOPE@0.1","EM02-PROTECT@0.1","EM02-OPERATE@0.1","EM02-CAPACITY@0.1","EM02-HOTFIX@0.1"]},
+            "detail":{"type":"string","enum":["summary","full"],"default":"summary"}
+        }),
+        json!(["task_id", "expected_task_revision"]),
+    );
+    schema["if"] = json!({"properties":{"detail":{"const":"full"}},"required":["detail"]});
+    schema["then"] = json!({"required":["card_id"]});
+    schema
 }
 
 fn scope_advisory_request_schema() -> Value {

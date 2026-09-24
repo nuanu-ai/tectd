@@ -41,6 +41,7 @@ fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
         ("query", "workspace.advisory.config"),
         ("query", "workspace.advisory.audit"),
         ("query", "scope.advisory.get"),
+        ("query", "scope.advisory.card"),
         ("query", "scope.advisory.audit"),
         ("command", "workspace.advisory.configure"),
         ("command", "scope.advisory.request"),
@@ -60,8 +61,35 @@ fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
             .iter()
             .all(|tool| tool["inputSchema"]["additionalProperties"] == false)
     );
-    for unavailable in ["scope.advisory.card"] {
-        assert!(routes().iter().all(|spec| spec.route != unavailable));
+}
+
+#[test]
+fn matrix_card_query_schema_requires_exact_revision_and_selected_full_card() {
+    let route = routes()
+        .iter()
+        .find(|route| route.route == "scope.advisory.card")
+        .unwrap();
+    assert_eq!(route.tool, "query");
+    assert_eq!(route.schema["additionalProperties"], false);
+    assert_eq!(
+        route.schema["properties"]["expected_task_revision"]["minimum"],
+        1
+    );
+    let id = uuid::Uuid::new_v4();
+    for params in [
+        json!({"task_id":id,"expected_task_revision":1}),
+        json!({"task_id":id,"expected_task_revision":1,"detail":"full","card_id":"EM02-SCOPE@0.1"}),
+    ] {
+        assert!(decode_public_call("query", json!({"route":route.route,"params":params})).is_ok());
+    }
+    for params in [
+        json!({"task_id":id,"expected_task_revision":0}),
+        json!({"task_id":id,"expected_task_revision":1,"detail":"full"}),
+        json!({"task_id":id,"expected_task_revision":1,"detail":"all"}),
+        json!({"task_id":id,"expected_task_revision":1,"card_id":"EM02-SCOPE"}),
+        json!({"task_id":id,"expected_task_revision":1,"actor_id":id}),
+    ] {
+        assert!(decode_public_call("query", json!({"route":route.route,"params":params})).is_err());
     }
 }
 

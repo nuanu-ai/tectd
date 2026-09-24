@@ -65,3 +65,30 @@ fn old_daemon_shape_rejects_new_bridge_request_before_operation_decode() {
     let encoded = serde_json::to_value(current).unwrap();
     assert!(serde_json::from_value::<LegacyWireRequest>(encoded).is_err());
 }
+
+#[test]
+fn matrix_card_query_crosses_versioned_wire_as_strict_read_invocation() {
+    let task_id = Uuid::new_v4();
+    let public = crate::api::decode_public_call(
+        "query",
+        json!({"route":"scope.advisory.card","params":{"task_id":task_id,"expected_task_revision":2,"detail":"full","card_id":"EM02-SCOPE@0.1"}}),
+    ).unwrap();
+    let request = WireRequest {
+        api_version: Some(crate::api::WIRE_API_VERSION),
+        context: context(),
+        tool_name: public.name.into(),
+        arguments: public.arguments,
+        output_capacity: MAX_FRAME_BYTES,
+    };
+    let decoded: WireRequest = serde_json::from_slice(&encode_line(&request).unwrap()).unwrap();
+    assert_eq!(validate_wire_version(&decoded), Ok(()));
+    assert!(matches!(
+        parse_invocation(&decoded.tool_name, decoded.arguments),
+        Ok(Invocation::Advisory(crate::advisory_tools::AdvisoryInvocation::MatrixCard {
+            task_id: parsed_id,
+            expected_task_revision: 2,
+            detail: crate::advisory_tools::MatrixCardDetail::Full,
+            ..
+        })) if parsed_id == task_id
+    ));
+}

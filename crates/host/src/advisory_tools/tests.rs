@@ -146,6 +146,43 @@ fn advisory_routes_decode_only_their_strict_shapes() {
 }
 
 #[test]
+fn matrix_card_parser_rejects_unknown_and_forged_inputs() {
+    let id = uuid::Uuid::new_v4();
+    assert!(matches!(
+        parse(
+            "scope_advisory_card",
+            json!({"task_id":id,"expected_task_revision":1})
+        ),
+        Ok(AdvisoryInvocation::MatrixCard {
+            detail: MatrixCardDetail::Summary,
+            card_id: None,
+            ..
+        })
+    ));
+    assert!(matches!(
+        parse(
+            "scope_advisory_card",
+            json!({"task_id":id,"expected_task_revision":1,"detail":"full","card_id":"EM02-SCOPE@0.1"})
+        ),
+        Ok(AdvisoryInvocation::MatrixCard {
+            detail: MatrixCardDetail::Full,
+            ..
+        })
+    ));
+    for params in [
+        json!({"task_id":id,"expected_task_revision":0}),
+        json!({"task_id":uuid::Uuid::nil(),"expected_task_revision":1}),
+        json!({"task_id":id,"expected_task_revision":1,"detail":"full"}),
+        json!({"task_id":id,"expected_task_revision":1,"detail":null}),
+        json!({"task_id":id,"expected_task_revision":1,"card_id":null}),
+        json!({"task_id":id,"expected_task_revision":1,"card_id":"EM02-SCOPE"}),
+        json!({"task_id":id,"expected_task_revision":1,"actor_id":id}),
+    ] {
+        assert!(parse("scope_advisory_card", params).is_err());
+    }
+}
+
+#[test]
 fn disposition_route_accepts_only_explicit_stored_identity_shape() {
     let id = uuid::Uuid::new_v4();
     let digest = "a".repeat(64);

@@ -77,6 +77,33 @@ struct ScopeGetArguments {
     opportunity_id: uuid::Uuid,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MatrixCardDetail {
+    #[default]
+    Summary,
+    Full,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MatrixCardArguments {
+    task_id: uuid::Uuid,
+    expected_task_revision: i64,
+    #[serde(default)]
+    card_id: Option<String>,
+    #[serde(default)]
+    detail: MatrixCardDetail,
+}
+
+pub(crate) const MATRIX_CARD_IDS: [&str; 5] = [
+    "EM02-SCOPE@0.1",
+    "EM02-PROTECT@0.1",
+    "EM02-OPERATE@0.1",
+    "EM02-CAPACITY@0.1",
+    "EM02-HOTFIX@0.1",
+];
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CandidateAuditArguments {
@@ -152,6 +179,12 @@ struct ScopeAdvisoryDispositionArguments {
 }
 
 pub(crate) enum AdvisoryInvocation {
+    MatrixCard {
+        task_id: uuid::Uuid,
+        expected_task_revision: i64,
+        card_id: Option<String>,
+        detail: MatrixCardDetail,
+    },
     VerifySelectedSave(VerifySelectedSave),
     ScopeRequest(RunScopeAdvisory),
     ScopeDisposition {
@@ -199,6 +232,32 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<AdvisoryInvocation> 
         return Err(Error::InvalidArguments);
     }
     match name {
+        "scope_advisory_card" => {
+            if ["card_id", "detail"]
+                .iter()
+                .any(|field| arguments.get(*field).is_some_and(Value::is_null))
+            {
+                return Err(Error::InvalidArguments);
+            }
+            let arguments: MatrixCardArguments =
+                serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
+            if arguments.task_id.is_nil()
+                || arguments.expected_task_revision < 1
+                || arguments.detail == MatrixCardDetail::Full && arguments.card_id.is_none()
+                || arguments
+                    .card_id
+                    .as_deref()
+                    .is_some_and(|id| !MATRIX_CARD_IDS.contains(&id))
+            {
+                return Err(Error::InvalidArguments);
+            }
+            Ok(AdvisoryInvocation::MatrixCard {
+                task_id: arguments.task_id,
+                expected_task_revision: arguments.expected_task_revision,
+                card_id: arguments.card_id,
+                detail: arguments.detail,
+            })
+        }
         "candidate_advisory_verify" => {
             let arguments: CandidateVerifyArguments =
                 serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;

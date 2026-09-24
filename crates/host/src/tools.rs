@@ -88,6 +88,7 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
                 | "configure_advisory"
                 | "workspace_advisory_audit"
                 | "scope_advisory_get"
+                | "scope_advisory_card"
                 | "scope_advisory_audit"
                 | "candidate_advisory_get"
                 | "candidate_advisory_audit"
