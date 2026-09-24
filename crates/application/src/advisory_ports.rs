@@ -6,8 +6,8 @@ use tect_domain::{
     AdvisoryDispatchStart, AdvisoryModelConfiguration, AdvisoryOpportunity,
     AdvisoryOpportunityDetail, AdvisoryOpportunityInput, AdvisoryProviderProfileRef,
     AdvisoryReconciliationEvidence, AdvisorySendCertainty, ConfigureWorkspaceAdvisory,
-    EngineeringMatrixComposition, Error, MatrixAdviceEligibility, MatrixRanking, Result,
-    WorkspaceAdvisoryConfig, matrix_evaluation_digest,
+    EngineeringMatrixComposition, Error, MatrixAdviceEligibility, MatrixRanking,
+    MatrixSourceVerificationStatus, Result, WorkspaceAdvisoryConfig, matrix_evaluation_digest,
 };
 use uuid::Uuid;
 
@@ -229,6 +229,7 @@ impl MatrixProviderRequest {
         if revision.task_id.is_nil() || revision.revision < 1 {
             return Err(Error::InvalidArguments);
         }
+        validate_saved_revision_source_provenance(&composition)?;
         let choice_set = revision
             .choice_set
             .as_ref()
@@ -297,6 +298,49 @@ impl MatrixProviderRequest {
 
     pub fn eligibility(&self) -> &MatrixAdviceEligibility {
         &self.eligibility
+    }
+}
+
+fn validate_saved_revision_source_provenance(
+    composition: &EngineeringMatrixComposition,
+) -> Result<()> {
+    if composition.source_verification_status
+        != MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification
+    {
+        return Err(Error::InvalidArguments);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod matrix_provider_request_tests {
+    use super::*;
+
+    fn composition(status: MatrixSourceVerificationStatus) -> EngineeringMatrixComposition {
+        EngineeringMatrixComposition {
+            catalogue_version: "EM02-INITIAL@0.1",
+            task_id: "task-1".into(),
+            task_revision: "1".into(),
+            source_verification_status: status,
+            mandatory_cards: Vec::new(),
+            unresolved_evidence: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn saved_revision_rejects_caller_verified_composition() {
+        assert_eq!(
+            validate_saved_revision_source_provenance(&composition(
+                MatrixSourceVerificationStatus::VerifiedByCaller,
+            )),
+            Err(Error::InvalidArguments)
+        );
+        assert_eq!(
+            validate_saved_revision_source_provenance(&composition(
+                MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification,
+            )),
+            Ok(())
+        );
     }
 }
 
