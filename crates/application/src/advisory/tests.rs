@@ -309,7 +309,7 @@ async fn uncertain_transport_failure_is_never_hidden_by_a_retry() {
 
 #[test]
 fn dispatch_orchestration_has_no_product_mutation_authority() {
-    let source = include_str!("../advisory.rs");
+    let source = include_str!("controlled_dispatch.rs");
     for forbidden in [
         ["ensure_", "candidate_set("].concat(),
         ["update_", "program("].concat(),
@@ -325,15 +325,17 @@ fn dispatch_orchestration_has_no_product_mutation_authority() {
 #[test]
 fn slice_zero_has_no_public_rust_dispatch_entrypoint() {
     let application = include_str!("../advisory.rs");
+    let controlled_dispatch = include_str!("controlled_dispatch.rs");
     let exports = include_str!("../lib.rs");
     let service = include_str!("../service.rs");
     assert!(
-        application.contains(
+        controlled_dispatch.contains(
             "#[cfg(test)]\n    #[allow(dead_code)]\n    pub(crate) async fn controlled_advisory_dispatch"
         )
     );
     let public_entrypoint = ["pub async fn controlled_", "advisory_dispatch"].concat();
     assert!(!application.contains(&public_entrypoint));
+    assert!(!controlled_dispatch.contains(&public_entrypoint));
     assert!(!exports.contains("pub use advisory_ports::AdvisoryProvider"));
     assert!(!exports.contains("pub use advisory_ports::DisabledAdvisoryProvider"));
     assert!(service.contains(
@@ -369,7 +371,7 @@ fn scope_audit_and_get_authorize_the_exact_scope_before_storage_reads() {
         ),
         (
             "pub async fn scope_advisory_get",
-            "/// Controlled Slice-00 fixture boundary",
+            "\n}\n\n#[cfg(test)]\n#[allow(dead_code)]\nfn sha256",
             ".advisory_opportunity_detail(workspace.id, scope_id, opportunity_id)",
         ),
     ] {

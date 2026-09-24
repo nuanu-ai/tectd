@@ -93,6 +93,7 @@ mod advisory_architecture_tests {
         let domain_manifest = include_str!("../../domain/Cargo.toml");
         let application_manifest = include_str!("../Cargo.toml");
         let application_advisory = include_str!("advisory.rs");
+        let application_controlled_dispatch = include_str!("advisory/controlled_dispatch.rs");
         let application_ports = include_str!("advisory_ports.rs");
         let application_scope_ports = include_str!("scope_advisory_ports.rs");
         let application_scope_runtime = include_str!("scope_advisory_runtime.rs");
@@ -113,6 +114,10 @@ mod advisory_architecture_tests {
         }
         for (name, source) in [
             ("application advisory", application_advisory),
+            (
+                "application controlled dispatch",
+                application_controlled_dispatch,
+            ),
             ("application advisory ports", application_ports),
             ("application scope advisory ports", application_scope_ports),
             (
