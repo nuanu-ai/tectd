@@ -77,8 +77,33 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<MatrixPlanningEffect
 }
 
 pub(crate) fn read(read: MatrixPlanningEffectRead) -> Value {
+    let material = read.material;
     json!({
-        "material": read.material,
+        "material": {
+            "workspace_id": material.workspace_id,
+            "candidate_set_id": material.candidate_set_id,
+            "caller_request_id": material.caller_request_id,
+            "scope_id": material.scope_id,
+            "result_revision": material.result_revision,
+            "task_id": material.task_id,
+            "task_revision": material.task_revision,
+            "disposition_id": material.disposition_id,
+            "input_digest": material.input_digest,
+            "choice_set_digest": material.choice_set_digest,
+            "verification_digest": material.verification_digest,
+            "evaluation_digest": material.evaluation_digest,
+            "catalogue_version": material.catalogue_version,
+            "caller_principal_id": material.caller_principal_id,
+            "caller_session_id": material.caller_session_id,
+            "matrix_owner_principal_id": material.matrix_owner_principal_id,
+            "selected_choice": material.selected_choice,
+            "nodes": material.nodes.iter().map(|node| json!({
+                "draft_index": node.draft_index,
+                "node_id": node.node_id,
+                "node_revision": node.node_revision,
+                "body": node.body,
+            })).collect::<Vec<_>>(),
+        },
         "effect_digest": read.effect_digest,
         "verifier_principal_id": read.verifier_principal_id,
         "verifier_session_id": read.verifier_session_id,
@@ -131,6 +156,76 @@ pub(crate) fn guard_verify_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tect_domain::{
+        EngineeringCandidate, MatrixPlanningEffectMaterial, MatrixPlanningEffectNode,
+        SliceCandidateNode,
+    };
+
+    #[test]
+    fn get_response_preserves_selected_choice_and_saved_node_body() {
+        let node_id = Uuid::new_v4();
+        let body = SliceCandidateNode::Decision {
+            id: node_id,
+            revision: 2,
+            title: "Choose storage".into(),
+            question: "Which store?".into(),
+            resolution_criteria: vec!["Latency".into()],
+            dependencies: vec![],
+            source_result_ids: vec![],
+        };
+        let material = MatrixPlanningEffectMaterial {
+            workspace_id: Uuid::new_v4(),
+            candidate_set_id: Uuid::new_v4(),
+            caller_request_id: Uuid::new_v4(),
+            scope_id: Uuid::new_v4(),
+            result_revision: 3,
+            task_id: Uuid::new_v4(),
+            task_revision: 1,
+            disposition_id: Uuid::new_v4(),
+            input_digest: "a".repeat(64),
+            choice_set_digest: "b".repeat(64),
+            verification_digest: "c".repeat(64),
+            evaluation_digest: "d".repeat(64),
+            catalogue_version: "v1".into(),
+            caller_principal_id: Uuid::new_v4(),
+            caller_session_id: Uuid::new_v4(),
+            matrix_owner_principal_id: Uuid::new_v4(),
+            selected_choice: EngineeringCandidate {
+                candidate_id: "choice-a".into(),
+                title: "Postgres".into(),
+                approach: "Store atomically".into(),
+                assumption_fact_ids: vec!["scale".into()],
+            },
+            nodes: vec![MatrixPlanningEffectNode {
+                draft_index: 0,
+                node_id,
+                node_revision: 2,
+                body,
+            }],
+        };
+        let digest = material.canonical_digest().unwrap();
+        let result = read(MatrixPlanningEffectRead {
+            material,
+            effect_digest: digest.clone(),
+            verifier_principal_id: Uuid::new_v4(),
+            verifier_session_id: Uuid::new_v4(),
+        });
+        assert_eq!(result["effect_digest"], digest);
+        assert_eq!(
+            result["material"]["selected_choice"]["candidate_id"],
+            "choice-a"
+        );
+        assert_eq!(result["material"]["nodes"][0]["body"]["kind"], "decision");
+        assert_eq!(
+            result["material"]["nodes"][0]["body"]["question"],
+            "Which store?"
+        );
+        assert_eq!(
+            result["material"]["nodes"][0]["node_id"],
+            node_id.to_string()
+        );
+        assert_eq!(result["material"]["result_revision"], 3);
+    }
 
     #[test]
     fn strict_get_and_verify_arguments() {
