@@ -149,6 +149,47 @@ fn matrix_recovery_window(
 }
 
 impl WorkspaceService {
+    async fn cancel_stale_authorized_matrix_dispatch(
+        &self,
+        context: &RequestContext,
+        workspace_id: Uuid,
+        opportunity_id: Uuid,
+        dispatch_id: Uuid,
+    ) -> Result<AdvisoryOpportunity> {
+        let (mut tx, identity) = self
+            .authenticated(context, TransactionMode::ReadWrite)
+            .await?;
+        let session = tx
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        if Self::validate_binding(&mut *tx, context, &identity, &session)
+            .await?
+            .id
+            != workspace_id
+        {
+            return Err(Error::InputConflict);
+        }
+        // The store rechecks the dispatch, configuration, and task under its
+        // write locks; false can only cancel an Authorized, not-sent attempt.
+        let started = tx
+            .start_verified_matrix_dispatch(
+                &AdvisoryLifecycleCapability::internal(),
+                workspace_id,
+                dispatch_id,
+                false,
+            )
+            .await?;
+        if started.should_send || started.dispatch.opportunity_id != opportunity_id {
+            return Err(Error::InputConflict);
+        }
+        let terminal = tx
+            .advisory_opportunity_for_dispatch(workspace_id, opportunity_id)
+            .await?;
+        tx.commit().await?;
+        Ok(terminal)
+    }
+
     async fn current_saved_matrix_request(
         &self,
         context: &RequestContext,
@@ -251,20 +292,38 @@ impl WorkspaceService {
                 }
                 let request = self
                     .current_saved_matrix_request(context, workspace_id, &saved)
-                    .await?
-                    .ok_or(Error::StaleContext)?;
+                    .await?;
+                let Some(request) = request else {
+                    return self
+                        .cancel_stale_authorized_matrix_dispatch(
+                            context,
+                            workspace_id,
+                            opportunity.id,
+                            dispatch.id,
+                        )
+                        .await;
+                };
                 let (mut read, identity) = self
                     .authenticated(context, TransactionMode::ReadOnly)
                     .await?;
                 let config = read.advisory_config(workspace_id).await?;
                 read.commit().await?;
-                if identity.principal_id != opportunity.authorized_actor_id
-                    || config.revision != opportunity.config_revision
+                if identity.principal_id != opportunity.authorized_actor_id {
+                    return Err(Error::InputConflict);
+                }
+                if config.revision != opportunity.config_revision
                     || config.mode == WorkspaceAdvisoryMode::Disabled
                     || config.provider_profile_ref.as_ref() != Some(&saved.provider_profile_ref)
                     || config.model_configuration.as_ref() != Some(&saved.model_configuration)
                 {
-                    return Err(Error::InputConflict);
+                    return self
+                        .cancel_stale_authorized_matrix_dispatch(
+                            context,
+                            workspace_id,
+                            opportunity.id,
+                            dispatch.id,
+                        )
+                        .await;
                 }
                 let identity = MatrixProviderIdentity {
                     provider_profile_ref: saved.provider_profile_ref.clone(),
@@ -273,7 +332,14 @@ impl WorkspaceService {
                     wire_version: saved.wire_version.clone(),
                 };
                 if self.matrix_advice_provider.identity().as_ref() != Some(&identity) {
-                    return Err(Error::TransportUnavailable);
+                    return self
+                        .cancel_stale_authorized_matrix_dispatch(
+                            context,
+                            workspace_id,
+                            opportunity.id,
+                            dispatch.id,
+                        )
+                        .await;
                 }
                 let prepared = PreparedMatrixAdviceAttempt::new(
                     &request,
@@ -282,8 +348,15 @@ impl WorkspaceService {
                 )?;
                 // Preparation and budget evaluation are pure ports. Both must still
                 // agree with the original authorization before the one-use start.
-                if self.matrix_advice_provider.prepare(&request).ok().as_ref() != Some(&prepared) {
-                    return Err(Error::InputConflict);
+                if self.matrix_advice_provider.prepare(&request)? != prepared {
+                    return self
+                        .cancel_stale_authorized_matrix_dispatch(
+                            context,
+                            workspace_id,
+                            opportunity.id,
+                            dispatch.id,
+                        )
+                        .await;
                 }
                 let policy_id = saved
                     .configuration_snapshot
@@ -304,7 +377,14 @@ impl WorkspaceService {
                         policy_id: policy_id.to_owned(),
                     })
                 {
-                    return Err(Error::InputConflict);
+                    return self
+                        .cancel_stale_authorized_matrix_dispatch(
+                            context,
+                            workspace_id,
+                            opportunity.id,
+                            dispatch.id,
+                        )
+                        .await;
                 }
                 let expected = authorize_prepared_matrix(
                     opportunity.id,
