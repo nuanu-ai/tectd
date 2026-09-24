@@ -161,12 +161,14 @@ impl Daemon {
         socket: PathBuf,
         maintenance_contexts: Option<&Path>,
     ) -> Self {
+        let stderr_path = socket.with_extension("stderr");
         let log = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .mode(0o600)
-            .open(socket.with_extension("stderr"))
+            .open(&stderr_path)
             .unwrap();
+        let stderr_start = log.metadata().unwrap().len() as usize;
         let mut command = Command::new(binary);
         command
             .env("TECT_DATABASE_URL", url)
@@ -183,10 +185,27 @@ impl Daemon {
         let mut child = command.spawn().unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                assert!(
-                    child.try_wait().unwrap().is_none(),
-                    "owned daemon exited during startup"
-                );
+                if let Some(status) = child.try_wait().unwrap() {
+                    let stderr = fs::read(&stderr_path).unwrap_or_default();
+                    let stderr = String::from_utf8_lossy(
+                        stderr.get(stderr_start..).unwrap_or_default(),
+                    );
+                    // tectd prints a stable error code. Keep arbitrary stderr out of
+                    // test failures so a future diagnostic cannot expose secrets.
+                    let error_code = stderr
+                        .lines()
+                        .rev()
+                        .map(str::trim)
+                        .find(|line| {
+                            !line.is_empty()
+                                && line.len() <= 64
+                                && line.bytes().all(|byte| {
+                                    byte.is_ascii_lowercase() || byte == b'_'
+                                })
+                        })
+                        .unwrap_or("unavailable");
+                    panic!("owned daemon exited during startup: status={status}, error_code={error_code}");
+                }
                 if fs::symlink_metadata(&socket).is_ok_and(|m| {
                     m.file_type().is_socket() && m.permissions().mode() & 0o777 == 0o600
                 }) {

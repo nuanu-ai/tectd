@@ -76,6 +76,42 @@ fn write_private(path: &Path, bytes: &[u8]) {
     fs::File::open(parent).unwrap().sync_all().unwrap();
 }
 
+#[test]
+fn canonical_temp_socket_passes_daemon_startup_validation() {
+    let temp = private_temp();
+    let socket = temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("startup-probe.sock");
+    assert!(socket.is_absolute());
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_tectd"))
+        .env("TECT_SOCKET", &socket)
+        .env("TECT_DATABASE_URL", "not-a-postgres-url")
+        .env_remove("TECT_DATABASE_MAX_CONNECTIONS")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr).trim(),
+        "storage_unavailable",
+        "daemon should pass socket validation and fail only at invalid storage"
+    );
+    assert!(!socket.exists());
+}
+
+#[tokio::test]
+#[should_panic(expected = "error_code=storage_unavailable")]
+async fn daemon_startup_failure_reports_error_code() {
+    let temp = private_temp();
+    let socket = temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("failed-startup.sock");
+    let _daemon = Daemon::start("not-a-postgres-url", socket).await;
+}
+
 async fn assert_database_identity(pool: &PgPool, system: &str, database_oid: i64) {
     let version: String = sqlx::query_scalar("SHOW server_version_num")
         .fetch_one(pool)
@@ -244,7 +280,13 @@ async fn persisted_live_advice_through_public_mcp() {
     assert_eq!(prior_effects, (0, 0, 0), "opportunity already continued");
 
     let temp = private_temp();
-    let socket = temp.path().join("jev-followthrough.sock");
+    // macOS tempfile paths can start at /var, a symlink to /private/var.
+    // tectd requires every socket parent component to be symlink-free.
+    let socket = temp
+        .path()
+        .canonicalize()
+        .unwrap()
+        .join("jev-followthrough.sock");
     let runtime = tagged_url(
         &runtime_url,
         &format!("jev-followthrough-{}", Uuid::new_v4()),
