@@ -9,8 +9,9 @@ mod audit_projection_tests {
             .split("async fn opportunity_by_request_key(")
             .nth(1)
             .expect("request lookup exists");
-        assert!(query.contains("WHERE tenant_id=$1 AND workspace_id=$2 AND request_key=$3"));
-        assert!(query.contains("matrix_task_revision,matrix_choice_set_digest"));
+        assert!(query.contains("WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.request_key=$3"));
+        assert!(query.contains("d.send_certainty='sent') AS provider_called"));
+        assert!(query.contains("o.matrix_task_revision,o.matrix_choice_set_digest"));
         assert!(query.contains(".bind(tenant)"));
         assert!(query.contains(".bind(workspace)"));
         assert!(query.contains(".bind(request_key)"));
@@ -42,6 +43,7 @@ mod audit_projection_tests {
                 material_digest: "b".repeat(64),
                 state: "no_call".into(),
                 primary_reason: "capability_unavailable".into(),
+                provider_called: false,
             },
         )
         .unwrap();
@@ -57,6 +59,36 @@ mod audit_projection_tests {
             AdvisoryReason::CapabilityUnavailable
         );
         assert!(!opportunity.provider_called);
+    }
+
+    #[test]
+    fn confirmed_dispatch_send_survives_opportunity_row_projection() {
+        let opportunity = opportunity_from_row(
+            Uuid::new_v4(),
+            OpportunityRow {
+                id: Uuid::new_v4(),
+                session_id: Uuid::new_v4(),
+                authorized_actor_id: Uuid::new_v4(),
+                work_item_kind: "matrix_task".into(),
+                work_item_id: Some(Uuid::new_v4()),
+                source_revision: Some("1".into()),
+                matrix_task_revision: Some(1),
+                matrix_choice_set_digest: Some("a".repeat(64)),
+                matrix_verification_digest: Some("b".repeat(64)),
+                capability: "engineering_profile".into(),
+                decision_point: ENGINEERING_PROFILE_DECISION_POINT.into(),
+                config_revision: 1,
+                session_preference: "use_workspace".into(),
+                request_preference: "use_workspace".into(),
+                request_key: "request".into(),
+                material_digest: "c".repeat(64),
+                state: "advised".into(),
+                primary_reason: "provider_response".into(),
+                provider_called: true,
+            },
+        )
+        .unwrap();
+        assert!(opportunity.provider_called);
     }
 
     #[test]
@@ -394,6 +426,7 @@ mod budget_reason_persistence_tests {
         assert_eq!(loaded.id, captured.id);
         assert_eq!(loaded.state, AdvisoryOpportunityState::NoCall);
         assert_eq!(loaded.primary_reason, AdvisoryReason::BudgetPolicyInvalid);
+        assert!(!loaded.provider_called);
         let audit = read
             .candidate_advisory_audit(
                 workspace,

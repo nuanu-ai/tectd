@@ -147,7 +147,7 @@ fn opportunity_from_row(workspace: Uuid, row: OpportunityRow) -> Result<Advisory
         material_digest: row.material_digest,
         state: opportunity_state(&row.state)?,
         primary_reason: reason(&row.primary_reason)?,
-        provider_called: false,
+        provider_called: row.provider_called,
     })
 }
 
@@ -191,7 +191,7 @@ async fn capture_opportunity(
     }
     sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,session_id,authorized_actor_id,source_revision,matrix_task_revision,matrix_choice_set_digest,matrix_verification_digest,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) ON CONFLICT(tenant_id,workspace_id,request_key) DO NOTHING")
         .bind(Uuid::new_v4()).bind(tenant).bind(workspace).bind(&input.target_kind).bind(input.target_id).bind(input.session_id).bind(input.authorized_actor_id).bind(input.work_revision.map(|value| value.to_string())).bind(input.matrix_task_revision).bind(&input.matrix_choice_set_digest).bind(&input.matrix_verification_digest).bind(input.capability.as_str()).bind(input.decision_point.as_str()).bind(input.config_revision).bind(input.session_preference.as_str()).bind(input.request_preference.as_str()).bind(ADVISORY_POLICY_VERSION).bind(&input.workflow_occurrence_key).bind(&input.material_digest).bind(input.state.as_str()).bind(input.primary_reason.as_str()).execute(&mut **tx).await.map_err(storage_error)?;
-    let row: OpportunityRow = sqlx::query_as("SELECT id,session_id,authorized_actor_id,work_item_kind,work_item_id,source_revision,matrix_task_revision,matrix_choice_set_digest,matrix_verification_digest,capability,decision_point,config_revision,session_preference,request_preference,request_key,material_digest,state,primary_reason FROM advisory_opportunity WHERE tenant_id=$1 AND workspace_id=$2 AND request_key=$3 FOR UPDATE")
+    let row: OpportunityRow = sqlx::query_as("SELECT o.id,o.session_id,o.authorized_actor_id,o.work_item_kind,o.work_item_id,o.source_revision,o.matrix_task_revision,o.matrix_choice_set_digest,o.matrix_verification_digest,o.capability,o.decision_point,o.config_revision,o.session_preference,o.request_preference,o.request_key,o.material_digest,o.state,o.primary_reason,EXISTS(SELECT 1 FROM advisory_dispatch d WHERE d.tenant_id=o.tenant_id AND d.workspace_id=o.workspace_id AND d.opportunity_id=o.id AND d.send_certainty='sent') AS provider_called FROM advisory_opportunity o WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.request_key=$3 FOR UPDATE OF o")
         .bind(tenant).bind(workspace).bind(&input.workflow_occurrence_key).fetch_one(&mut **tx).await.map_err(storage_error)?;
     if row.material_digest != input.material_digest
         || row.session_id != input.session_id
@@ -214,9 +214,9 @@ async fn opportunity_by_id(
     opportunity_id: Uuid,
     for_update: bool,
 ) -> Result<AdvisoryOpportunity> {
-    let suffix = if for_update { " FOR UPDATE" } else { "" };
+    let suffix = if for_update { " FOR UPDATE OF o" } else { "" };
     let sql = format!(
-        "SELECT id,session_id,authorized_actor_id,work_item_kind,work_item_id,source_revision,matrix_task_revision,matrix_choice_set_digest,matrix_verification_digest,capability,decision_point,config_revision,session_preference,request_preference,request_key,material_digest,state,primary_reason FROM advisory_opportunity WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3{suffix}"
+        "SELECT o.id,o.session_id,o.authorized_actor_id,o.work_item_kind,o.work_item_id,o.source_revision,o.matrix_task_revision,o.matrix_choice_set_digest,o.matrix_verification_digest,o.capability,o.decision_point,o.config_revision,o.session_preference,o.request_preference,o.request_key,o.material_digest,o.state,o.primary_reason,EXISTS(SELECT 1 FROM advisory_dispatch d WHERE d.tenant_id=o.tenant_id AND d.workspace_id=o.workspace_id AND d.opportunity_id=o.id AND d.send_certainty='sent') AS provider_called FROM advisory_opportunity o WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.id=$3{suffix}"
     );
     let row: OpportunityRow = sqlx::query_as(&sql)
         .bind(tenant)
@@ -236,7 +236,7 @@ async fn opportunity_by_request_key(
     request_key: &str,
 ) -> Result<Option<AdvisoryOpportunity>> {
     let row: Option<OpportunityRow> = sqlx::query_as(
-        "SELECT id,session_id,authorized_actor_id,work_item_kind,work_item_id,source_revision,matrix_task_revision,matrix_choice_set_digest,matrix_verification_digest,capability,decision_point,config_revision,session_preference,request_preference,request_key,material_digest,state,primary_reason FROM advisory_opportunity WHERE tenant_id=$1 AND workspace_id=$2 AND request_key=$3",
+        "SELECT o.id,o.session_id,o.authorized_actor_id,o.work_item_kind,o.work_item_id,o.source_revision,o.matrix_task_revision,o.matrix_choice_set_digest,o.matrix_verification_digest,o.capability,o.decision_point,o.config_revision,o.session_preference,o.request_preference,o.request_key,o.material_digest,o.state,o.primary_reason,EXISTS(SELECT 1 FROM advisory_dispatch d WHERE d.tenant_id=o.tenant_id AND d.workspace_id=o.workspace_id AND d.opportunity_id=o.id AND d.send_certainty='sent') AS provider_called FROM advisory_opportunity o WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.request_key=$3",
     )
     .bind(tenant)
     .bind(workspace)

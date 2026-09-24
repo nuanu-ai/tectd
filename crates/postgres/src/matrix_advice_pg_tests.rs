@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 use sqlx::{PgPool, Row, postgres::PgConnectOptions};
 use std::str::FromStr;
 use tect_application::{
-    GuardedMatrixAdviceOutcome, GuardedMatrixAdviceRecord, MatrixAdviceStore,
+    AdvisoryStore, GuardedMatrixAdviceOutcome, GuardedMatrixAdviceRecord, MatrixAdviceStore,
     MatrixProviderBinding, UnitOfWork, canonical_matrix_advice_digest,
     canonical_matrix_input_digest,
 };
@@ -129,6 +129,7 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
     let verifier_session = Uuid::new_v4();
     let task_id = Uuid::new_v4();
     let opportunity_id = Uuid::new_v4();
+    let opportunity_request_key = format!("matrix-advice-{}", Uuid::new_v4());
     let dispatch_id = Uuid::new_v4();
     let input: EngineeringMatrixInput = serde_json::from_value(serde_json::json!({
         "mode":{"state":"known","value":"demo","provenance":"synthetic owner"},
@@ -344,8 +345,25 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
     sqlx::query("INSERT INTO advisory_opportunity (id,tenant_id,workspace_id,work_item_kind,work_item_id,session_id,authorized_actor_id,source_revision,capability,decision_point,matrix_task_revision,matrix_choice_set_digest,matrix_verification_digest,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES ($1,$2,$3,'matrix_task',$4,$5,$6,'1','engineering_profile','engineering.profile.before_selection',1,$7,$8,0,'use_workspace','use_workspace','test-policy',$9,$10,'prepared','dispatch_authorized')")
         .bind(opportunity_id).bind(tenant_id).bind(workspace_id).bind(task_id)
         .bind(session_id).bind(owner.principal_id).bind(&choice_digest).bind(&verification_digest)
-        .bind(format!("matrix-advice-{}", Uuid::new_v4())).bind(&evaluation_digest)
+        .bind(&opportunity_request_key).bind(&evaluation_digest)
         .execute(&admin_pool).await.unwrap();
+    let mut unit = PgUnitOfWork::test_begin(&runtime_pool, tenant_id).await;
+    assert!(
+        !unit
+            .advisory_opportunity_for_dispatch(workspace_id, opportunity_id)
+            .await
+            .unwrap()
+            .provider_called
+    );
+    assert!(
+        !unit
+            .advisory_opportunity_by_request(workspace_id, &opportunity_request_key)
+            .await
+            .unwrap()
+            .unwrap()
+            .provider_called
+    );
+    Box::new(unit).commit().await.unwrap();
     sqlx::query("INSERT INTO advisory_dispatch (id,tenant_id,workspace_id,opportunity_id,attempt_number,provider,model,configuration_snapshot,configuration_digest,material_digest,payload_digest,request_payload,response_payload,state,send_certainty,outcome,retry_basis,send_started_at,sealed_at) VALUES ($1,$2,$3,$4,1,$5,$6,$7,$8,$9,$10,$11,$12,'sealed','sent','provider_response','initial',clock_timestamp(),clock_timestamp())")
         .bind(dispatch_id).bind(tenant_id).bind(workspace_id).bind(opportunity_id)
         .bind(&profile.id).bind(&model.model).bind(&snapshot).bind(&configuration_digest)
@@ -353,6 +371,22 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
         .execute(&admin_pool).await.unwrap();
     sqlx::query("UPDATE advisory_opportunity SET state='advised',primary_reason='provider_response' WHERE id=$1")
         .bind(opportunity_id).execute(&admin_pool).await.unwrap();
+
+    let mut unit = PgUnitOfWork::test_begin(&runtime_pool, tenant_id).await;
+    let by_id = unit
+        .advisory_opportunity_for_dispatch(workspace_id, opportunity_id)
+        .await
+        .unwrap();
+    let by_key = unit
+        .advisory_opportunity_by_request(workspace_id, &opportunity_request_key)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(by_id.id, opportunity_id);
+    assert!(by_id.provider_called);
+    assert_eq!(by_key.id, opportunity_id);
+    assert!(by_key.provider_called);
+    Box::new(unit).commit().await.unwrap();
 
     let mut recovery_tx = runtime_pool.begin().await.unwrap();
     sqlx::query("SELECT pg_catalog.set_config('tect.tenant_id',$1,true)")

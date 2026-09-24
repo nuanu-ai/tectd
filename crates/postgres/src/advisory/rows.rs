@@ -25,6 +25,7 @@ struct OpportunityRow {
     material_digest: String,
     state: String,
     primary_reason: String,
+    provider_called: bool,
 }
 
 #[derive(sqlx::FromRow)]
