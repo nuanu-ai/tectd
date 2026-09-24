@@ -531,6 +531,55 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM advisory_matrix_advice WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3")
         .bind(tenant_id).bind(workspace_id).bind(opportunity_id).fetch_one(&admin_pool).await.unwrap();
     assert_eq!(count, 1);
+    // A separate no-call Matrix opportunity can carry a blocked disposition
+    // without fabricating advice, caller, or verifier evidence.
+    let no_call_id = Uuid::new_v4();
+    let mut no_call = runtime_pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_catalog.set_config('tect.tenant_id',$1,true)")
+        .bind(tenant_id.to_string())
+        .execute(&mut *no_call)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO advisory_opportunity (id,tenant_id,workspace_id,work_item_kind,work_item_id,session_id,authorized_actor_id,source_revision,capability,decision_point,matrix_task_revision,matrix_choice_set_digest,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES ($1,$2,$3,'matrix_task',$4,$5,$6,'1','engineering_profile','engineering.profile.before_selection',1,$7,0,'use_workspace','skip','test-policy',$8,$9,'no_call','request_skip')")
+        .bind(no_call_id).bind(tenant_id).bind(workspace_id).bind(task_id)
+        .bind(session_id).bind(owner.principal_id).bind(&choice_digest)
+        .bind(format!("matrix-no-call-{}", Uuid::new_v4())).bind(&evaluation_digest)
+        .execute(&mut *no_call).await.unwrap();
+    let blocked_disposition_id: Uuid = sqlx::query_scalar("INSERT INTO advisory_matrix_disposition (tenant_id,workspace_id,opportunity_id,task_id,matrix_task_revision,matrix_choice_set_digest,request_id,actor_id,session_id,basis,outcome,blocked_reason) VALUES ($1,$2,$3,$4,1,$5,$6,$7,$8,'no_call','blocked','synthetic owner block') RETURNING disposition_id")
+        .bind(tenant_id).bind(workspace_id).bind(no_call_id).bind(task_id)
+        .bind(&choice_digest).bind(Uuid::new_v4()).bind(owner.principal_id)
+        .bind(session_id).fetch_one(&mut *no_call).await.unwrap();
+    no_call.commit().await.unwrap();
+
+    let mut audit_unit = PgUnitOfWork::test_begin(&runtime_pool, tenant_id).await;
+    let audit = audit_unit
+        .advisory_audit(
+            workspace_id,
+            None,
+            &AdvisoryAuditQuery {
+                limit: 2,
+                scope_id: None,
+                after: None,
+                capability: Some(AdvisoryCapability::EngineeringProfile),
+                decision_point: None,
+                reason: None,
+                state: None,
+            },
+        )
+        .await
+        .unwrap();
+    Box::new(audit_unit).commit().await.unwrap();
+    assert_eq!(audit.opportunities.len(), 2);
+    let blocked = audit
+        .opportunities
+        .iter()
+        .find(|item| item.id == no_call_id)
+        .unwrap();
+    assert_eq!(blocked.guarded_advice_id, None);
+    assert_eq!(blocked.guarded_advice_digest, None);
+    assert_eq!(blocked.disposition_id, Some(blocked_disposition_id));
+    assert_eq!(blocked.caller_receipt_id, None);
+    assert_eq!(blocked.verifier_receipt_id, None);
     let dispatch_raw: Vec<u8> =
         sqlx::query("SELECT response_payload FROM advisory_dispatch WHERE id=$1")
             .bind(dispatch_id)
