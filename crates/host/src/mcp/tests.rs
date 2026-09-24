@@ -35,6 +35,43 @@ fn matrix_verification_is_one_of_five_public_tool_routes() {
 }
 
 #[test]
+fn planning_effect_routes_are_distinct_and_strict() {
+    let read = crate::api::decode_public_call(
+        "query",
+        json!({
+            "route":"engineering.matrix.planning_effect.get",
+            "params":{"candidate_set_id":Uuid::new_v4(),"caller_request_id":Uuid::new_v4()}
+        }),
+    )
+    .unwrap();
+    assert_eq!(read.name, "get_matrix_planning_effect");
+    let verify = crate::api::decode_public_call(
+        "command",
+        json!({
+            "route":"engineering.matrix.planning_effect.verify",
+            "params":{"request_id":Uuid::new_v4(),"candidate_set_id":Uuid::new_v4(),
+                "caller_request_id":Uuid::new_v4(),"expected_result_revision":1,
+                "expected_effect_digest":"a".repeat(64),"verdict":"matches","summary":"Checked"}
+        }),
+    )
+    .unwrap();
+    assert_eq!(verify.name, "verify_matrix_planning_effect");
+    assert!(
+        crate::api::decode_public_call(
+            "command",
+            json!({
+                "route":"engineering.matrix.planning_effect.get","params":{}
+            })
+        )
+        .is_err()
+    );
+    assert_eq!(
+        crate::api::definitions()["tools"].as_array().unwrap().len(),
+        5
+    );
+}
+
+#[test]
 fn matrix_disposition_routes_stay_within_five_public_tools() {
     let record = crate::api::decode_public_call(
         "command",

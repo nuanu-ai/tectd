@@ -183,6 +183,48 @@ fn build_routes() -> Vec<RouteSpec> {
             json!({"task_id":example_id,"expected_revision":1,"input_digest":"0".repeat(64),"evidence":[{"fact_path":"/mode","evidence_ref":"urn:evidence:example"}]}),
         ),
         route!(
+            "query",
+            "engineering.matrix.planning_effect.get",
+            "get_matrix_planning_effect",
+            "Read the exact selected Matrix choice and saved planning nodes for independent review.",
+            "Requires an authenticated verifier native session, the selected candidate set ID, and the caller receipt request ID.",
+            "Reads saved choice and mapped node bodies with a canonical effect digest; no planning state changes.",
+            "Safe to repeat. Use the returned revision and digest for a separate attestation.",
+            object_schema(
+                json!({"candidate_set_id":uuid(),"caller_request_id":uuid()}),
+                json!(["candidate_set_id", "caller_request_id"])
+            ),
+            json!({"candidate_set_id":example_id,"caller_request_id":"00000000-0000-4000-8000-000000000002"}),
+        ),
+        route!(
+            "command",
+            "engineering.matrix.planning_effect.verify",
+            "verify_matrix_planning_effect",
+            "Append an independent attestation of one saved Matrix planning effect.",
+            "Requires an authenticated verifier native session separate from the Matrix owner and caller, exact current result revision and effect digest, and a bounded summary.",
+            "Appends a match or rejection attestation; it does not mutate planning readiness or call Jev.",
+            "Retry only with the same request_id and identical fields.",
+            object_schema(
+                json!({
+                    "request_id":uuid(),"candidate_set_id":uuid(),"caller_request_id":uuid(),
+                    "expected_result_revision":{"type":"integer","minimum":1},
+                    "expected_effect_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                    "verdict":{"type":"string","enum":["matches","rejects"]},
+                    "summary":{"type":"string","minLength":1,"maxLength":4096}
+                }),
+                json!([
+                    "request_id",
+                    "candidate_set_id",
+                    "caller_request_id",
+                    "expected_result_revision",
+                    "expected_effect_digest",
+                    "verdict",
+                    "summary"
+                ])
+            ),
+            json!({"request_id":"00000000-0000-4000-8000-000000000003","candidate_set_id":example_id,"caller_request_id":"00000000-0000-4000-8000-000000000002","expected_result_revision":1,"expected_effect_digest":"0".repeat(64),"verdict":"matches","summary":"Saved choice and mapped nodes match the intended plan"}),
+        ),
+        route!(
             "command",
             "engineering.matrix.disposition.record",
             "record_matrix_disposition",

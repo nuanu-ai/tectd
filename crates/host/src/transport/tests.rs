@@ -21,6 +21,15 @@ fn malformed_matrix_verification_authenticates_as_verifier_route() {
         invalid_request_auth("verify_matrix_task"),
         InvalidRequestAuth::MatrixVerifier
     );
+    for name in [
+        "get_matrix_planning_effect",
+        "verify_matrix_planning_effect",
+    ] {
+        assert_eq!(
+            invalid_request_auth(name),
+            InvalidRequestAuth::MatrixVerifier
+        );
+    }
     assert_eq!(
         invalid_request_auth("candidate_advisory_verify"),
         InvalidRequestAuth::CandidateAdvisory
@@ -29,6 +38,37 @@ fn malformed_matrix_verification_authenticates_as_verifier_route() {
     assert!(!allows_verifier_invalid_request(
         crate::api::INVALID_PUBLIC_CALL
     ));
+}
+
+#[tokio::test]
+async fn malformed_planning_effect_routes_deny_owner_before_decode_error() {
+    for name in [
+        "get_matrix_planning_effect",
+        "verify_matrix_planning_effect",
+    ] {
+        let owner = authenticate_invalid_request_with(name, |kind| async move {
+            assert_eq!(kind, InvalidRequestAuth::MatrixVerifier);
+            Err(Error::Forbidden)
+        })
+        .await;
+        assert!(matches!(
+            owner,
+            WireResponse::Error {
+                error: Error::Forbidden
+            }
+        ));
+        let verifier = authenticate_invalid_request_with(name, |kind| async move {
+            assert_eq!(kind, InvalidRequestAuth::MatrixVerifier);
+            Ok(())
+        })
+        .await;
+        assert!(matches!(
+            verifier,
+            WireResponse::Error {
+                error: Error::InvalidArguments
+            }
+        ));
+    }
 }
 
 #[tokio::test]

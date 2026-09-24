@@ -272,6 +272,42 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                     None,
                 ))
             }
+            Invocation::MatrixPlanningEffect(invocation) => {
+                service
+                    .authenticate_matrix_verifier_session(context)
+                    .await?;
+                let output = match invocation {
+                    crate::matrix_planning_effect_tools::MatrixPlanningEffectInvocation::Get {
+                        candidate_set_id,
+                        caller_request_id,
+                    } => crate::matrix_planning_effect_tools::read(
+                        service
+                            .get_matrix_planning_effect(
+                                context,
+                                candidate_set_id,
+                                caller_request_id,
+                            )
+                            .await?,
+                    ),
+                    crate::matrix_planning_effect_tools::MatrixPlanningEffectInvocation::Verify(
+                        request,
+                    ) => {
+                        crate::matrix_planning_effect_tools::guard_verify_output(
+                            &request, capacity,
+                        )?;
+                        crate::matrix_planning_effect_tools::receipt(
+                            service
+                                .verify_matrix_planning_effect(context, &request)
+                                .await?,
+                        )
+                    }
+                };
+                let response = responses::with_actions(output, Vec::new(), None);
+                if responses::encoded_len(&response)? > capacity {
+                    return Err(Error::RequestTooLarge);
+                }
+                Ok(response)
+            }
             Invocation::MatrixAdvisory(invocation) => {
                 let receipt = match invocation {
                     crate::matrix_advisory_tools::MatrixAdvisoryInvocation::Request(request) => {
@@ -409,7 +445,10 @@ enum InvalidRequestAuth {
 }
 
 fn invalid_request_auth(tool_name: &str) -> InvalidRequestAuth {
-    if tool_name == "verify_matrix_task" {
+    if matches!(
+        tool_name,
+        "verify_matrix_task" | "get_matrix_planning_effect" | "verify_matrix_planning_effect"
+    ) {
         InvalidRequestAuth::MatrixVerifier
     } else if allows_verifier_invalid_request(tool_name) {
         InvalidRequestAuth::CandidateAdvisory
