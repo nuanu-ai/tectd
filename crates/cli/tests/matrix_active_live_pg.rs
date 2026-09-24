@@ -413,9 +413,9 @@ async fn case(pool: &PgPool, runtime_url: &str, abstain: bool, advance_during_se
         ),
         (1, "sealed", "sent", "provider_response")
     );
-    let advice: Option<(Uuid, Uuid, Uuid, i64, String, Option<serde_json::Value>)> =
+    let advice: Option<(Uuid, Uuid, Uuid, i64, String, Option<serde_json::Value>, String)> =
         sqlx::query_as(
-            "SELECT opportunity_id,dispatch_id,task_id,matrix_task_revision,kind,ranked_choice_ids \
+            "SELECT opportunity_id,dispatch_id,task_id,matrix_task_revision,kind,ranked_choice_ids,response_payload_sha256 \
          FROM advisory_matrix_advice WHERE opportunity_id=$1",
         )
         .bind(first.id)
@@ -442,6 +442,8 @@ async fn case(pool: &PgPool, runtime_url: &str, abstain: bool, advance_during_se
                 Some(serde_json::json!(["b", "a"]))
             }
         );
+        let sealed_raw = rows[0].5.as_ref().expect("sealed response bytes");
+        assert_eq!(advice.6, format!("{:x}", Sha256::digest(sealed_raw)));
     }
     assert_eq!(
         rows[0].5.as_deref(),
