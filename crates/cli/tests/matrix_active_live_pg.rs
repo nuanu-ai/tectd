@@ -267,8 +267,8 @@ async fn no_call_case(pool: &PgPool, runtime_url: &str, complete: bool) {
         .get_engineering_advisory(&context, task_id, &request.request_key)
         .await
         .unwrap();
-    assert_eq!(saved.id, receipt.id);
-    assert_eq!(saved.primary_reason, expected);
+    assert_eq!(saved.opportunity.id, receipt.id);
+    assert_eq!(saved.opportunity.primary_reason, expected);
     assert_eq!(provider_entries.load(Ordering::SeqCst), 0);
     assert_eq!(budget_entries.load(Ordering::SeqCst), 0);
     let persisted: (String, String, Uuid, Uuid) = sqlx::query_as(
