@@ -643,6 +643,31 @@ async fn persisted_live_advice_through_public_mcp() {
     );
     assert_eq!(verified["establishes_independent_approval"], false);
     assert_eq!(verified["establishes_current_acceptance"], false);
+    let observation_id = id(&verified["observation"]["id"]);
+    let observation_binding: (Uuid, Uuid, Uuid, i64, Uuid, String, String) = sqlx::query_as(
+        "SELECT opportunity_id,candidate_set_id,caller_link_id,target_revision,actor_id,status,qualification \
+         FROM advisory_scope_selected_save_observation WHERE tenant_id=$1 AND workspace_id=$2 \
+         AND observation_id=$3 AND caller_receipt_request_id=$4",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(observation_id)
+    .bind(save_request)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        observation_binding,
+        (
+            opportunity,
+            candidate,
+            link_id,
+            target_revision,
+            verifier_actor,
+            "passed".into(),
+            "independently_observed".into()
+        )
+    );
     let audit = route(
         &mut verifier,
         "query",
@@ -659,17 +684,20 @@ async fn persisted_live_advice_through_public_mcp() {
         "downstream MCP must not dispatch again"
     );
     if mode == FollowthroughMode::ResumeDisposition {
-        let final_effects: (i64, i64, i64, i64) = sqlx::query_as(
+        let final_effects: (i64, i64, i64, i64, i64) = sqlx::query_as(
             "SELECT (SELECT count(*) FROM advisory_scope_disposition WHERE opportunity_id=$1), \
                     (SELECT count(*) FROM advisory_scope_caller_link WHERE opportunity_id=$1), \
                     (SELECT count(*) FROM advisory_scope_preservation_receipt WHERE opportunity_id=$1), \
+                    (SELECT count(*) FROM advisory_scope_selected_save_observation \
+                     WHERE opportunity_id=$1 AND status='passed' AND qualification='independently_observed' AND actor_id=$2), \
                     (SELECT count(*) FROM advisory_scope_verifier_receipt WHERE opportunity_id=$1)",
         )
         .bind(opportunity)
+        .bind(verifier_actor)
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(final_effects, (1, 1, 1, 1));
+        assert_eq!(final_effects, (1, 1, 1, 1, 0));
     }
     println!(
         "followthrough opportunity={opportunity} candidate_set={candidate} \
@@ -680,6 +708,228 @@ async fn persisted_live_advice_through_public_mcp() {
     owner.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();
+}
+
+/// Inspect the already completed followthrough. This entry point issues only
+/// public MCP query routes and SQL SELECTs; it never retries a write route.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "explicit JEV_FOLLOWTHROUGH_MODE=audit-complete with exact retained IDs/auth/DB fingerprint; read-only"]
+async fn audit_completed_followthrough_read_only() {
+    assert_eq!(required("JEV_FOLLOWTHROUGH_MODE"), "audit-complete");
+    let opportunity = Uuid::parse_str(&required("JEV_FOLLOWTHROUGH_OPPORTUNITY_ID")).unwrap();
+    let disposition = Uuid::parse_str(&required("JEV_FOLLOWTHROUGH_DISPOSITION_ID")).unwrap();
+    let caller_link = Uuid::parse_str(&required("JEV_FOLLOWTHROUGH_CALLER_LINK_ID")).unwrap();
+    let observation = Uuid::parse_str(&required("JEV_FOLLOWTHROUGH_OBSERVATION_ID")).unwrap();
+    let tenant = Uuid::parse_str(&required("JEV_FOLLOWTHROUGH_TENANT_ID")).unwrap();
+    let workspace = Uuid::parse_str(&required("JEV_FOLLOWTHROUGH_WORKSPACE_ID")).unwrap();
+    assert_eq!(disposition.to_string(), RETAINED_DISPOSITION_ID);
+    for exact in [opportunity, caller_link, observation, tenant, workspace] {
+        assert!(!exact.is_nil(), "an exact non-nil ID is required");
+    }
+    let (owner_path, owner_auth) = private_auth("JEV_FOLLOWTHROUGH_OWNER_AUTH_FILE");
+    let (verifier_path, verifier_auth) = private_auth("JEV_FOLLOWTHROUGH_VERIFIER_AUTH_FILE");
+    assert_ne!(owner_auth.host_id, verifier_auth.host_id);
+    let expected_system = required("JEV_FOLLOWTHROUGH_SYSTEM_IDENTIFIER");
+    let expected_database_oid = required("JEV_FOLLOWTHROUGH_DATABASE_OID")
+        .parse::<i64>()
+        .unwrap();
+    let admin_url = required("JEV_FOLLOWTHROUGH_ADMIN_URL");
+    let runtime_url = required("JEV_FOLLOWTHROUGH_RUNTIME_URL");
+    let pool = PgPool::connect(&admin_url).await.unwrap();
+    assert_database_identity(&pool, &expected_system, expected_database_oid).await;
+    let runtime_pool = PgPool::connect(&runtime_url).await.unwrap();
+    assert_database_identity(&runtime_pool, &expected_system, expected_database_oid).await;
+    let owner_actor = assert_host(&pool, &owner_auth, tenant, "owner").await;
+    let verifier_actor = assert_host(&pool, &verifier_auth, tenant, "verifier").await;
+    assert_ne!(owner_actor, verifier_actor);
+
+    let (candidate, owner_session, state, reason): (Uuid, Uuid, String, String) = sqlx::query_as(
+        "SELECT work_item_id,session_id,state,primary_reason FROM advisory_opportunity \
+         WHERE id=$1 AND tenant_id=$2 AND workspace_id=$3 AND work_item_kind='scope_candidate_set'",
+    )
+    .bind(opportunity)
+    .bind(tenant)
+    .bind(workspace)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (state.as_str(), reason.as_str()),
+        ("advised", "provider_response")
+    );
+    let (revision, status): (i64, String) = sqlx::query_as(
+        "SELECT revision,status FROM scope_candidate_sets WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(candidate)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!((revision, status.as_str()), (4, "review_required"));
+
+    let (owner_native, owner_host, workspace_key): (String, Uuid, String) = sqlx::query_as(
+        "SELECT s.native_session_id,s.host_id,w.key FROM agent_sessions s JOIN workspaces w \
+         ON (w.tenant_id,w.id)=(s.tenant_id,s.workspace_id) \
+         WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.id=$3 AND NOT s.revoked",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(owner_session)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(owner_host, owner_auth.host_id);
+    let (verifier_session, verifier_native, verifier_host): (Uuid, String, Uuid) = sqlx::query_as(
+        "SELECT s.id,s.native_session_id,s.host_id FROM advisory_scope_selected_save_observation o \
+         JOIN agent_sessions s ON (s.tenant_id,s.workspace_id,s.id)=(o.tenant_id,o.workspace_id,o.session_id) \
+         WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.observation_id=$3 AND NOT s.revoked",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(observation)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(verifier_host, verifier_auth.host_id);
+    assert_ne!(verifier_session, owner_session);
+
+    let binding: (Uuid, Uuid, Uuid, Uuid, Uuid, Uuid, i64, Uuid, Uuid, String, String) = sqlx::query_as(
+        "SELECT d.opportunity_id,d.candidate_set_id,d.actor_id,l.disposition_id, \
+                l.link_id,l.caller_request_id,l.caller_result_revision,o.actor_id,o.session_id,o.status,o.qualification \
+         FROM advisory_scope_disposition d \
+         JOIN advisory_scope_caller_link l ON (l.tenant_id,l.workspace_id,l.opportunity_id,l.candidate_set_id,l.disposition_id)= \
+             (d.tenant_id,d.workspace_id,d.opportunity_id,d.candidate_set_id,d.disposition_id) \
+         JOIN advisory_scope_selected_save_observation o ON (o.tenant_id,o.workspace_id,o.opportunity_id,o.candidate_set_id,o.caller_link_id,o.caller_receipt_request_id,o.target_revision)= \
+             (l.tenant_id,l.workspace_id,l.opportunity_id,l.candidate_set_id,l.link_id,l.caller_request_id,l.caller_result_revision) \
+         WHERE d.tenant_id=$1 AND d.workspace_id=$2 AND d.opportunity_id=$3 AND d.disposition_id=$4 \
+           AND l.link_id=$5 AND o.observation_id=$6 AND d.session_id=$7 AND l.session_id=$7 \
+           AND l.caller_operation='save_draft'",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(opportunity)
+    .bind(disposition)
+    .bind(caller_link)
+    .bind(observation)
+    .bind(owner_session)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(!binding.5.is_nil(), "caller save request must be exact");
+    assert_eq!(
+        binding,
+        (
+            opportunity,
+            candidate,
+            owner_actor,
+            disposition,
+            caller_link,
+            binding.5,
+            revision,
+            verifier_actor,
+            verifier_session,
+            "passed".into(),
+            "independently_observed".into()
+        )
+    );
+    let counts: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
+                (SELECT count(*) FROM advisory_scope_disposition WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
+                (SELECT count(*) FROM advisory_scope_caller_link WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
+                (SELECT count(*) FROM advisory_scope_preservation_receipt WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3 AND status='passed'), \
+                (SELECT count(*) FROM advisory_scope_selected_save_observation WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
+                (SELECT count(*) FROM advisory_scope_verifier_receipt WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3)",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(opportunity)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(counts, (1, 1, 1, 1, 1, 0));
+
+    let temp = private_temp();
+    let socket = temp.path().canonicalize().unwrap().join("jev-audit.sock");
+    let runtime = tagged_url(&runtime_url, &format!("jev-audit-{}", Uuid::new_v4()));
+    let mut daemon = Daemon::start(&runtime, socket.clone()).await;
+    let mut owner = Mcp::start(
+        &socket,
+        Path::new(&owner_path),
+        &owner_native,
+        &workspace_key,
+    )
+    .await;
+    let mut verifier = Mcp::start(
+        &socket,
+        Path::new(&verifier_path),
+        &verifier_native,
+        &workspace_key,
+    )
+    .await;
+    for client in [&mut owner, &mut verifier] {
+        let detail = route(
+            client,
+            "query",
+            "candidate.advisory.get",
+            json!({"candidate_set_id":candidate,"opportunity_id":opportunity}),
+        )
+        .await;
+        let observed = &detail["opportunity"]["selected_save_observation"];
+        assert_eq!(detail["opportunity"]["id"], opportunity.to_string());
+        assert_eq!(
+            detail["opportunity"]["disposition_id"],
+            disposition.to_string()
+        );
+        assert_eq!(
+            detail["opportunity"]["caller_link_id"],
+            caller_link.to_string()
+        );
+        assert_eq!(observed["id"], observation.to_string());
+        assert_eq!(observed["target_revision"], revision);
+        assert_eq!(observed["status"], "passed");
+        assert_eq!(observed["qualification"], "independently_observed");
+        assert_eq!(observed["establishes_independent_approval"], false);
+        assert_eq!(observed["establishes_current_acceptance"], false);
+        let audit = route(
+            client,
+            "query",
+            "candidate.advisory.audit",
+            json!({"candidate_set_id":candidate,"limit":50}),
+        )
+        .await;
+        let rows = audit["opportunities"]
+            .as_array()
+            .expect("audit opportunities");
+        let matches = rows
+            .iter()
+            .filter(|row| row["id"] == opportunity.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1, "exact opportunity in audit page");
+        assert_eq!(matches[0]["selected_save_observation"], *observed);
+    }
+    let after_counts: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
+                (SELECT count(*) FROM advisory_scope_disposition WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
+                (SELECT count(*) FROM advisory_scope_caller_link WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
+                (SELECT count(*) FROM advisory_scope_preservation_receipt WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3 AND status='passed'), \
+                (SELECT count(*) FROM advisory_scope_selected_save_observation WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3), \
+                (SELECT count(*) FROM advisory_scope_verifier_receipt WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3)",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(opportunity)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(after_counts, counts, "audit must not add advisory effects");
+    owner.finish().await;
+    verifier.finish().await;
+    daemon.crash().await;
+    daemon.remove_owned_stale_socket();
+    println!(
+        "read-only audit complete: opportunity={opportunity} disposition={disposition} caller_link={caller_link} observation={observation}"
+    );
 }
 
 #[test]
