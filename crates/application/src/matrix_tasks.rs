@@ -38,14 +38,16 @@ impl WorkspaceService {
         tx.lock_native_session(identity.host_id, &context.native_session_id)
             .await?;
         let (workspace, session) = Self::bound_session(&mut *tx, context, &identity).await?;
-        let encoded = serde_json::to_vec(&request.input).map_err(|_| Error::InvalidArguments)?;
-        let input_digest = format!("{:x}", Sha256::digest(encoded));
+        let canonical_input =
+            serde_json::to_value(&request.input).map_err(|_| Error::InvalidArguments)?;
+        let input_digest = canonical_matrix_input_digest(&canonical_input)?;
         let revision = tx
             .record_matrix_task(
                 workspace.id,
                 identity.principal_id,
                 session.id,
                 request,
+                &canonical_input,
                 &input_digest,
             )
             .await?;
@@ -78,6 +80,12 @@ impl WorkspaceService {
     }
 }
 
+/// Hash the same canonical JSON representation that the store persists.
+pub fn canonical_matrix_input_digest(input: &serde_json::Value) -> Result<String> {
+    let encoded = serde_json::to_vec(input).map_err(|_| Error::InternalInvariant)?;
+    Ok(format!("{:x}", Sha256::digest(encoded)))
+}
+
 fn validate_request(request: &RecordMatrixTask) -> Result<()> {
     if request.task_id.is_nil()
         || request.request_id.is_nil()
@@ -87,4 +95,22 @@ fn validate_request(request: &RecordMatrixTask) -> Result<()> {
         return Err(Error::InvalidArguments);
     }
     request.input.validate()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_digest_is_independent_of_json_object_key_order() {
+        let left = serde_json::json!({"mode": {"known": {"value": "production", "provenance": "source"}}, "envelope": {"scale": "one"}});
+        let right = serde_json::from_str::<serde_json::Value>(
+            r#"{"envelope":{"scale":"one"},"mode":{"known":{"provenance":"source","value":"production"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            canonical_matrix_input_digest(&left).unwrap(),
+            canonical_matrix_input_digest(&right).unwrap()
+        );
+    }
 }

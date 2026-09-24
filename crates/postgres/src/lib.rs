@@ -14,11 +14,11 @@ mod knowledge_recovery;
 mod knowledge_search;
 mod knowledge_search_admin;
 mod knowledge_search_store;
-mod matrix_task_store;
 #[cfg(test)]
 mod matrix_task_migration_tests;
 #[cfg(test)]
 mod matrix_task_pg_tests;
+mod matrix_task_store;
 mod native_planning;
 mod native_planning_store;
 mod pipeline_execution;

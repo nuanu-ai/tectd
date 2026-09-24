@@ -2,6 +2,8 @@
 mod advisory;
 pub use advisory::{Sha256ScopeDigest, VerifySelectedSave};
 mod advisory_ports;
+mod matrix_task_ports;
+mod matrix_tasks;
 mod planning_knowledge_ports;
 mod ports;
 mod programs;
@@ -9,13 +11,15 @@ mod scope_advisory_orchestration;
 mod scope_advisory_ports;
 mod scope_advisory_runtime;
 mod service;
-mod matrix_task_ports;
-mod matrix_tasks;
 
 #[doc(hidden)]
 pub use advisory_ports::AdvisoryLifecycleCapability;
 pub use advisory_ports::AdvisoryStore;
 pub(crate) use advisory_ports::{AdvisoryProvider, DisabledAdvisoryProvider};
+pub use matrix_task_ports::MatrixTaskStore;
+pub use matrix_tasks::{
+    MATRIX_INPUT_SCHEMA, MatrixTaskRevision, RecordMatrixTask, canonical_matrix_input_digest,
+};
 pub use planning_knowledge_ports::PlanningKnowledgeStore;
 pub use ports::{
     ProgramGuidance, ProgramOutputGuard, SourceInspector, Store, TransactionMode, UnitOfWork,
@@ -39,8 +43,6 @@ pub use scope_advisory_runtime::{
     ScopeBudgetPolicy, ScopeBudgetPolicyEvaluation, ScopeBudgetRequest, ScopeManifestSupplier,
 };
 pub use service::WorkspaceService;
-pub use matrix_task_ports::MatrixTaskStore;
-pub use matrix_tasks::{MATRIX_INPUT_SCHEMA, MatrixTaskRevision, RecordMatrixTask};
 
 mod sources;
 

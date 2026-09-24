@@ -12,6 +12,7 @@ pub trait MatrixTaskStore: Send {
         principal_id: Uuid,
         session_id: Uuid,
         request: &RecordMatrixTask,
+        canonical_input: &serde_json::Value,
         input_digest: &str,
     ) -> Result<MatrixTaskRevision>;
 
