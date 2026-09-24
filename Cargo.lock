@@ -1852,6 +1852,7 @@ dependencies = [
 name = "tect-cli"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "clap",
  "percent-encoding",
  "rustix",
