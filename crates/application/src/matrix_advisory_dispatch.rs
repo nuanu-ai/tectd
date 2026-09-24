@@ -5,7 +5,7 @@ use crate::{
 use sha2::{Digest, Sha256};
 use tect_domain::{
     AdvisoryDispatchAuthorization, AdvisoryDispatchOutcome, AdvisoryDispatchSeal,
-    AdvisoryOpportunity, AdvisoryOpportunityState, AdvisoryRetryBasis, AdvisorySendCertainty,
+    AdvisoryOpportunity, AdvisoryRetryBasis, AdvisorySendCertainty,
     Error, RequestContext, Result,
 };
 use uuid::Uuid;
@@ -198,21 +198,15 @@ impl WorkspaceService {
             .authenticated(context, TransactionMode::ReadWrite)
             .await?;
         let result = finalize
-            .finalize_advisory_opportunity(
+            .finalize_guarded_matrix_advice(
                 &lifecycle,
                 workspace_id,
                 opportunity.id,
                 config_revision,
                 &dispatch,
+                guarded.as_ref(),
             )
             .await?;
-        if result.state == AdvisoryOpportunityState::Advised {
-            if let Some(guarded) = guarded {
-                finalize
-                    .persist_guarded_matrix_advice(workspace_id, &guarded)
-                    .await?;
-            }
-        }
         finalize.commit().await?;
         Ok(result)
     }

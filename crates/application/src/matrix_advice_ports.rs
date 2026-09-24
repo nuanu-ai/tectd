@@ -1,12 +1,15 @@
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tect_domain::{
-    AdvisoryModelConfiguration, AdvisoryProviderProfileRef, Error, MatrixAdviceEligibility,
-    MatrixRanking, Result,
+    AdvisoryDispatch, AdvisoryModelConfiguration, AdvisoryOpportunity, AdvisoryProviderProfileRef,
+    Error, MatrixAdviceEligibility, MatrixRanking, Result,
 };
 use uuid::Uuid;
 
-use crate::{MatrixProviderBinding, MatrixProviderRequest, MatrixProviderResponse};
+use crate::{
+    AdvisoryLifecycleCapability, MatrixProviderBinding, MatrixProviderRequest,
+    MatrixProviderResponse,
+};
 
 const ADVICE_DIGEST_DOMAIN: &[u8] = b"tect.guarded-matrix-advice/1\0";
 
@@ -251,6 +254,19 @@ pub trait MatrixAdviceStore: Send {
         workspace_id: Uuid,
         record: &GuardedMatrixAdviceRecord,
     ) -> Result<StoredGuardedMatrixAdviceRecord>;
+
+    /// Finalize a sealed Matrix dispatch and persist its advice using the
+    /// same locked verification decision. A direct persistence call still
+    /// checks evidence freshness at the time of that separate call.
+    async fn finalize_guarded_matrix_advice(
+        &mut self,
+        capability: &AdvisoryLifecycleCapability,
+        workspace_id: Uuid,
+        opportunity_id: Uuid,
+        expected_config_revision: i64,
+        dispatch: &AdvisoryDispatch,
+        record: Option<&GuardedMatrixAdviceRecord>,
+    ) -> Result<AdvisoryOpportunity>;
 }
 
 #[cfg(test)]

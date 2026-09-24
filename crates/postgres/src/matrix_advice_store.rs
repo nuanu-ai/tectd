@@ -2,14 +2,15 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, postgres::PgRow};
 use tect_application::{
-    GuardedMatrixAdviceOutcome, GuardedMatrixAdviceRecord, MatrixAdviceStore,
-    MatrixProviderBinding, MatrixTaskStore, StoredGuardedMatrixAdviceRecord,
-    canonical_matrix_advice_digest, canonical_matrix_input_digest,
+    AdvisoryLifecycleCapability, AdvisoryStore, GuardedMatrixAdviceOutcome,
+    GuardedMatrixAdviceRecord, MatrixAdviceStore, MatrixProviderBinding, MatrixTaskStore,
+    StoredGuardedMatrixAdviceRecord, canonical_matrix_advice_digest, canonical_matrix_input_digest,
 };
 use tect_domain::{
-    AdvisoryModelConfiguration, AdvisoryProviderProfileRef, EngineeringChoiceSet,
-    EngineeringMatrixInput, Error, OwnerReportedEngineeringMatrixFacts, Result,
-    compose_owner_reported_engineering_matrix, matrix_evaluation_digest,
+    AdvisoryDispatch, AdvisoryModelConfiguration, AdvisoryOpportunity, AdvisoryOpportunityState,
+    AdvisoryProviderProfileRef, EngineeringChoiceSet, EngineeringMatrixInput, Error,
+    OwnerReportedEngineeringMatrixFacts, Result, compose_owner_reported_engineering_matrix,
+    matrix_evaluation_digest,
 };
 use uuid::Uuid;
 
@@ -165,6 +166,66 @@ impl MatrixAdviceStore for PgUnitOfWork {
         &mut self,
         workspace_id: Uuid,
         record: &GuardedMatrixAdviceRecord,
+    ) -> Result<StoredGuardedMatrixAdviceRecord> {
+        self.persist_matrix_advice(workspace_id, record, false)
+            .await
+    }
+
+    async fn finalize_guarded_matrix_advice(
+        &mut self,
+        capability: &AdvisoryLifecycleCapability,
+        workspace_id: Uuid,
+        opportunity_id: Uuid,
+        expected_config_revision: i64,
+        dispatch: &AdvisoryDispatch,
+        record: Option<&GuardedMatrixAdviceRecord>,
+    ) -> Result<AdvisoryOpportunity> {
+        let tenant = self.tenant_id()?;
+        let previous: String = sqlx::query_scalar(
+            "SELECT state FROM advisory_opportunity WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE",
+        )
+        .bind(tenant)
+        .bind(workspace_id)
+        .bind(opportunity_id)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?
+        .ok_or(Error::NotFound)?;
+        let result = AdvisoryStore::finalize_advisory_opportunity(
+            self,
+            capability,
+            workspace_id,
+            opportunity_id,
+            expected_config_revision,
+            dispatch,
+        )
+        .await?;
+        if result.state == AdvisoryOpportunityState::Advised {
+            let record = record.ok_or(Error::InternalInvariant)?;
+            if record.opportunity_id != opportunity_id || record.dispatch_id != dispatch.id {
+                return Err(Error::InputConflict);
+            }
+            // Only a newly terminalized opportunity can reuse the freshness
+            // decision made by finalize under this transaction's task lock.
+            // A replay of an already Advised row takes the current-time path.
+            self.persist_matrix_advice(
+                workspace_id,
+                record,
+                previous == AdvisoryOpportunityState::AwaitingResponse.as_str()
+                    || previous == AdvisoryOpportunityState::Unresolved.as_str(),
+            )
+            .await?;
+        }
+        Ok(result)
+    }
+}
+
+impl PgUnitOfWork {
+    async fn persist_matrix_advice(
+        &mut self,
+        workspace_id: Uuid,
+        record: &GuardedMatrixAdviceRecord,
+        verified_fresh_under_lock: bool,
     ) -> Result<StoredGuardedMatrixAdviceRecord> {
         let tenant = self.tenant_id()?;
         // Lock the occurrence and dispatch before configuration and the Matrix head.
@@ -360,12 +421,13 @@ impl MatrixAdviceStore for PgUnitOfWork {
                WHERE tenant_id=$1 AND workspace_id=$2 AND verification_id=$3) \
              AND NOT EXISTS (SELECT 1 FROM matrix_verification_bindings \
                WHERE tenant_id=$1 AND workspace_id=$2 AND verification_id=$3 \
-                 AND (validation_outcome <> 'accepted' OR expires_at <= \
-                   EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())))",
+                 AND (validation_outcome <> 'accepted' OR \
+                   (NOT $4 AND expires_at <= EXTRACT(EPOCH FROM pg_catalog.clock_timestamp()))))",
         )
         .bind(tenant)
         .bind(workspace_id)
         .bind(verification_id)
+        .bind(verified_fresh_under_lock)
         .fetch_one(&mut **self.transaction()?)
         .await
         .map_err(storage_error)?;
