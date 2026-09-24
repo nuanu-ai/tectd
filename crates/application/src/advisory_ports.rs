@@ -368,7 +368,20 @@ impl MatrixProviderResponse {
 
 #[async_trait]
 pub trait MatrixAdviceProvider: Send + Sync {
-    async fn attempt(&self, request: &MatrixProviderRequest) -> Result<MatrixProviderResponse>;
+    /// A disabled or unconfigured provider has no identity and cannot prepare a send.
+    fn identity(&self) -> Option<crate::MatrixProviderIdentity>;
+
+    /// Pure serialization and target binding. No transport or budget mutation.
+    fn prepare(
+        &self,
+        request: &MatrixProviderRequest,
+    ) -> Result<crate::PreparedMatrixAdviceAttempt>;
+
+    /// Transport consumes the exact bytes that were prepared before authorization.
+    async fn attempt_prepared(
+        &self,
+        prepared: crate::PreparedMatrixAdviceAttempt,
+    ) -> Result<MatrixProviderResponse>;
 }
 
 #[derive(Debug, Default)]
@@ -376,7 +389,18 @@ pub struct DisabledMatrixAdviceProvider;
 
 #[async_trait]
 impl MatrixAdviceProvider for DisabledMatrixAdviceProvider {
-    async fn attempt(&self, _: &MatrixProviderRequest) -> Result<MatrixProviderResponse> {
+    fn identity(&self) -> Option<crate::MatrixProviderIdentity> {
+        None
+    }
+
+    fn prepare(&self, _: &MatrixProviderRequest) -> Result<crate::PreparedMatrixAdviceAttempt> {
+        Err(Error::TransportUnavailable)
+    }
+
+    async fn attempt_prepared(
+        &self,
+        _: crate::PreparedMatrixAdviceAttempt,
+    ) -> Result<MatrixProviderResponse> {
         Err(Error::TransportUnavailable)
     }
 }

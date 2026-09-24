@@ -13,6 +13,8 @@ pub struct WorkspaceService {
     pub(crate) advisory_provider: Arc<dyn crate::AdvisoryProvider>,
     #[allow(dead_code)]
     pub(crate) matrix_advice_provider: Arc<dyn crate::MatrixAdviceProvider>,
+    #[allow(dead_code)]
+    pub(crate) matrix_budget: Arc<dyn crate::MatrixBudgetPolicy>,
     pub(crate) scope_authority: Arc<dyn crate::ScopeAuthorityObserver>,
     pub(crate) scope_manifest_supplier: Arc<dyn crate::ScopeManifestSupplier>,
     pub(crate) scope_budget: Arc<dyn crate::ScopeBudgetPolicy>,
@@ -101,6 +103,7 @@ impl WorkspaceService {
             setup_files,
             advisory_provider: Arc::new(crate::DisabledAdvisoryProvider),
             matrix_advice_provider: Arc::new(crate::DisabledMatrixAdviceProvider),
+            matrix_budget: Arc::new(crate::DenyMatrixBudget),
             scope_authority: Arc::new(crate::UnavailableScopeAuthorityObserver),
             scope_manifest_supplier: Arc::new(crate::UnavailableScopeManifestSupplier),
             scope_budget: Arc::new(crate::DenyScopeBudget),
@@ -150,8 +153,19 @@ impl WorkspaceService {
         self
     }
 
-    /// Explicit Matrix provider composition seam. Existing constructors keep
-    /// the transport disabled; no Matrix use case invokes it yet.
+    /// Explicit Matrix composition seam. Both decisions are selected by the
+    /// embedding host; the normal constructor remains disabled and deny-all.
+    pub fn with_matrix_advisory_adapters(
+        mut self,
+        provider: Arc<dyn crate::MatrixAdviceProvider>,
+        budget: Arc<dyn crate::MatrixBudgetPolicy>,
+    ) -> Self {
+        self.matrix_advice_provider = provider;
+        self.matrix_budget = budget;
+        self
+    }
+
+    /// Provider-only composition keeps the independent budget deny-all.
     pub fn with_matrix_advice_provider(
         mut self,
         provider: Arc<dyn crate::MatrixAdviceProvider>,
