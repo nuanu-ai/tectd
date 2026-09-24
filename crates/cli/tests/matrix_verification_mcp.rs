@@ -10,7 +10,11 @@ use recovery_support::{Mcp, host_file, private_temp};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use sqlx::{PgPool, postgres::PgConnectOptions};
-use std::{os::unix::fs::PermissionsExt, str::FromStr, sync::Arc};
+use std::{
+    os::unix::fs::PermissionsExt,
+    str::FromStr,
+    sync::{Arc, Mutex},
+};
 use support::{route, route_error};
 use tect_application::{MatrixEvidenceValidator, WorkspaceService};
 use tect_domain::{
@@ -27,7 +31,9 @@ use uuid::Uuid;
 const SYSTEM_ID: &str = "7689109430044371904";
 const DATABASE_OID: i64 = 16384;
 
-struct DeterministicEvidence;
+struct DeterministicEvidence {
+    accepted: Mutex<Vec<MatrixEvidenceBinding>>,
+}
 
 #[async_trait]
 impl MatrixEvidenceValidator for DeterministicEvidence {
@@ -44,7 +50,7 @@ impl MatrixEvidenceValidator for DeterministicEvidence {
         evidence_ref: &str,
         now: i64,
     ) -> Result<MatrixEvidenceBinding> {
-        Ok(MatrixEvidenceBinding {
+        let binding = MatrixEvidenceBinding {
             fact_path: fact.path.clone(),
             value_digest: fact.value_digest.clone(),
             evidence_ref: evidence_ref.into(),
@@ -54,7 +60,9 @@ impl MatrixEvidenceValidator for DeterministicEvidence {
             observed_at: now - 10,
             expires_at: now + 3600,
             validation_outcome: EvidenceValidationOutcome::Accepted,
-        })
+        };
+        self.accepted.lock().unwrap().push(binding.clone());
+        Ok(binding)
     }
 }
 
@@ -165,13 +173,16 @@ async fn public_mcp_matrix_verify_seals_independent_receipt() {
     let root = temp.path().canonicalize().unwrap();
     let socket = root.join("matrix-verify.sock");
     let store = PgStore::connect(&runtime_url, 4).await.unwrap();
+    let validator = Arc::new(DeterministicEvidence {
+        accepted: Mutex::new(Vec::new()),
+    });
     let service = Arc::new(
         WorkspaceService::new(
             Arc::new(store),
             Arc::new(tect_host::GitSourceInspector),
             Arc::new(tect_host::LocalSetupFiles),
         )
-        .with_matrix_evidence_validator(Arc::new(DeterministicEvidence)),
+        .with_matrix_evidence_validator(validator.clone()),
     );
     let listener = UnixListener::bind(&socket).unwrap();
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -240,7 +251,9 @@ async fn public_mcp_matrix_verify_seals_independent_receipt() {
     let verifier_native = Uuid::new_v4().to_string();
     let mut independent =
         Mcp::start(&socket, &verifier_config, &verifier_native, &workspace_key).await;
-    independent.call("open_workspace", json!({})).await;
+    let verifier_opened = independent.call("open_workspace", json!({})).await;
+    let verifier_session_id =
+        Uuid::parse_str(verifier_opened["session"]["id"].as_str().unwrap()).unwrap();
     let mut malformed = params.clone();
     malformed["evidence"][0]["validation_outcome"] = json!("accepted");
     let invalid = route_error(
@@ -290,17 +303,29 @@ async fn public_mcp_matrix_verify_seals_independent_receipt() {
             .iter()
             .all(|fact| fact["status"] == "accepted")
     );
-    let row: (String, String, Uuid, Uuid) = sqlx::query_as(
-        "SELECT record_digest,input_digest,owner_principal_id,verifier_principal_id FROM matrix_verifications WHERE task_id=$1")
+    let row: (String, String, Uuid, Uuid, Uuid) = sqlx::query_as(
+        "SELECT record_digest,input_digest,owner_principal_id,verifier_principal_id,verifier_session_id FROM matrix_verifications WHERE task_id=$1")
         .bind(task_id).fetch_one(&pool).await.unwrap();
     assert_eq!((row.0.as_str(), row.1.as_str()), (sealed, digest.as_str()));
     assert_eq!(
         (row.2, row.3),
         (enrolled.principal_id, verifier.principal_id)
     );
+    assert_eq!(row.4, verifier_session_id);
     assert_eq!(verification_count(&pool, task_id).await, 1);
-    let stored_facts: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT fact_path,value_digest,content_digest FROM matrix_verification_bindings \
+    let stored_facts: Vec<(
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        i64,
+        i64,
+        String,
+    )> = sqlx::query_as(
+        "SELECT fact_path,value_digest,content_digest,evidence_ref,source,subject,\
+         observed_at,expires_at,validation_outcome FROM matrix_verification_bindings \
          WHERE verification_id=(SELECT id FROM matrix_verifications WHERE task_id=$1) \
          ORDER BY fact_path",
     )
@@ -309,13 +334,29 @@ async fn public_mcp_matrix_verify_seals_independent_receipt() {
     .await
     .unwrap();
     assert_eq!(stored_facts.len(), evidence.len());
-    for (saved, returned) in stored_facts
+    let accepted = validator.accepted.lock().unwrap().clone();
+    assert_eq!(accepted.len(), evidence.len());
+    for ((saved, returned), expected) in stored_facts
         .iter()
         .zip(receipt["facts"].as_array().unwrap())
+        .zip(accepted.iter())
     {
         assert_eq!(returned["fact_path"], saved.0);
         assert_eq!(returned["value_digest"], saved.1);
         assert_eq!(returned["content_digest"], saved.2);
+        assert_eq!(saved.0, expected.fact_path);
+        assert_eq!(saved.1, expected.value_digest);
+        assert_eq!(saved.2, expected.content_digest);
+        assert_eq!(saved.3, expected.evidence_ref);
+        assert_eq!(saved.4, expected.source);
+        assert_eq!(saved.5, expected.subject);
+        assert_eq!(saved.6, expected.observed_at);
+        assert_eq!(saved.7, expected.expires_at);
+        assert_eq!(saved.8, "accepted");
+        assert_eq!(
+            expected.validation_outcome,
+            EvidenceValidationOutcome::Accepted
+        );
     }
     let readback = route(
         &mut independent,
