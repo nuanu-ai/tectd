@@ -198,8 +198,12 @@ fn stored_matrix_dispatch(
         .response_payload
         .as_ref()
         .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
-    if dispatch.state == AdvisoryDispatchState::Authorized && row.response_payload.is_some()
-        || dispatch.state == AdvisoryDispatchState::Sending && row.response_payload.is_some()
+    if matches!(
+        dispatch.state,
+        AdvisoryDispatchState::Authorized
+            | AdvisoryDispatchState::Sending
+            | AdvisoryDispatchState::Cancelled
+    ) && row.response_payload.is_some()
         || dispatch.outcome == Some(AdvisoryDispatchOutcome::ProviderResponse)
             && row.response_payload.is_none()
     {
@@ -296,6 +300,7 @@ mod matrix_dispatch_read_tests {
             ("authorized", "not_sent", None),
             ("sending", "sent_unknown", None),
             ("sealed", "sent", Some("provider_response")),
+            ("cancelled", "not_sent", None),
         ] {
             let (row, binding) = fixture(state, certainty, outcome);
             let exact_request = row.request_payload.clone();
@@ -323,6 +328,18 @@ mod matrix_dispatch_read_tests {
         ));
         let (mut row, binding) = fixture("sealed", "sent", Some("provider_response"));
         row.response_payload = Some(vec![0; MAX_RECOVERED_RESPONSE_BYTES + 1]);
+        assert!(matches!(
+            stored_matrix_dispatch(row, binding),
+            Err(Error::StorageUnavailable)
+        ));
+    }
+
+    #[test]
+    fn recovery_rejects_cancelled_dispatch_with_response_bytes() {
+        // The migration's lifecycle check does not prohibit these bytes, but
+        // they cannot be trusted as evidence of a cancelled, unsent attempt.
+        let (mut row, binding) = fixture("cancelled", "not_sent", None);
+        row.response_payload = Some(b"unexpected provider response".to_vec());
         assert!(matches!(
             stored_matrix_dispatch(row, binding),
             Err(Error::StorageUnavailable)
