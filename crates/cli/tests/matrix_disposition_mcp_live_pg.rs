@@ -211,7 +211,7 @@ async fn disposable_pair() -> (PgPool, String) {
             "postgres".into(),
             DATABASE_OID,
             SYSTEM_ID.into(),
-            57
+            58
         )
     );
     let runtime_pool = PgPool::connect_with(runtime).await.unwrap();
