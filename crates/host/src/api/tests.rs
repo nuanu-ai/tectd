@@ -103,6 +103,13 @@ fn matrix_task_routes_are_discoverable_and_strict() {
             .len(),
         7
     );
+    let entries = &spec.schema["properties"]["input"]["properties"]["envelope"]["properties"]["operational_facts"]
+        ["oneOf"][2]["properties"]["entries"];
+    assert_eq!(entries["maxItems"], 1024);
+    let criticality_text = &spec.schema["properties"]["input"]["properties"]["criticality"]["oneOf"]
+        [6]["properties"]["value"];
+    assert_eq!(criticality_text["x-maxUtf8Bytes"], 256);
+    assert_eq!(criticality_text["pattern"], "\\S");
     for (path, value) in [
         ("revision", json!(0)),
         ("expected_current_revision", json!(1)),

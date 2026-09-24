@@ -131,7 +131,7 @@ fn build_routes() -> Vec<RouteSpec> {
             "task.source.record",
             "record_matrix_task",
             "Record one exact Engineering Matrix factual input revision for a task.",
-            "Requires an authenticated open native session, non-nil task and request IDs, revision 1 or the immediate successor of the expected current revision, and valid tagged factual input.",
+            "Requires an authenticated open native session, non-nil task and request IDs, revision 1 or the immediate successor of the expected current revision, and valid tagged factual input capped at 1 MiB of JSON and 1024 reported facts. Text is nonblank and at most 256 UTF-8 bytes.",
             "Atomically stores the immutable revision and digest in this workspace; source authority remains bound to the native session.",
             "Repeat the same request_id with identical revision and input. On uncertainty, read task.source.get before another write.",
             object_schema(

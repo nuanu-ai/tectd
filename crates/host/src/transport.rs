@@ -243,6 +243,7 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
             Invocation::MatrixTask(invocation) => {
                 let revision = match invocation {
                     crate::matrix_task_tools::MatrixTaskInvocation::Record(request) => {
+                        crate::matrix_task_tools::guard_record_output(&request, capacity)?;
                         service.record_matrix_task(context, &request).await?
                     }
                     crate::matrix_task_tools::MatrixTaskInvocation::Get(task_id) => {

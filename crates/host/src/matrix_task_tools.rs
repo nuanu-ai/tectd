@@ -4,6 +4,9 @@ use tect_application::{MatrixTaskRevision, RecordMatrixTask};
 use tect_domain::{Error, Result};
 use uuid::Uuid;
 
+const MAX_MATRIX_INPUT_BYTES: usize = 1024 * 1024;
+const MAX_OPERATIONAL_FACTS: usize = 1024;
+
 pub(crate) enum MatrixTaskInvocation {
     Record(RecordMatrixTask),
     Get(Uuid),
@@ -28,6 +31,13 @@ struct GetArguments {
 pub(crate) fn parse(name: &str, arguments: Value) -> Result<MatrixTaskInvocation> {
     match name {
         "record_matrix_task" => {
+            if serde_json::to_vec(&arguments["input"])
+                .map_err(|_| Error::InvalidArguments)?
+                .len()
+                > MAX_MATRIX_INPUT_BYTES
+            {
+                return Err(Error::InvalidArguments);
+            }
             reject_unknown_input_fields(&arguments["input"])?;
             let args: RecordArguments =
                 serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
@@ -99,7 +109,11 @@ fn operational_facts(value: &Value) -> Result<()> {
         Some("known_empty") => fields(value, &["state", "provenance"]),
         Some("reported") => {
             fields(value, &["state", "entries"])?;
-            for entry in value["entries"].as_array().ok_or(Error::InvalidArguments)? {
+            let entries = value["entries"].as_array().ok_or(Error::InvalidArguments)?;
+            if entries.len() > MAX_OPERATIONAL_FACTS {
+                return Err(Error::InvalidArguments);
+            }
+            for entry in entries {
                 fields(entry, &["name", "fact"])?;
                 fact(&entry["fact"], None)?;
             }
@@ -107,6 +121,26 @@ fn operational_facts(value: &Value) -> Result<()> {
         }
         _ => Err(Error::InvalidArguments),
     }
+}
+
+pub(crate) fn guard_record_output(request: &RecordMatrixTask, capacity: usize) -> Result<()> {
+    // This projection has the same JSON width as a committed revision: UUIDs
+    // are fixed-width and the digest is always 64 lowercase hex characters.
+    // Check the complete MCP tool response before making the durable write.
+    let projected = revision(MatrixTaskRevision {
+        task_id: request.task_id,
+        revision: request.revision,
+        request_id: request.request_id,
+        input: request.input.clone(),
+        input_digest: "0".repeat(64),
+        recorded_by_principal_id: Uuid::nil(),
+        recorded_by_session_id: Uuid::nil(),
+    });
+    let response = crate::responses::with_actions(projected, Vec::new(), None);
+    if crate::responses::encoded_len(&response)? > capacity {
+        return Err(Error::RequestTooLarge);
+    }
+    Ok(())
 }
 
 fn reject_unknown_input_fields(input: &Value) -> Result<()> {
@@ -162,6 +196,84 @@ pub(crate) fn revision(revision: MatrixTaskRevision) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn example_params() -> Value {
+        crate::api::route_contract("command", "task.source.record").unwrap()["example"]["arguments"]
+            ["params"]
+            .clone()
+    }
+
+    #[test]
+    fn source_text_uses_domain_utf8_byte_and_trim_rules() {
+        for value in [" \t ".to_owned(), "🦀".repeat(65)] {
+            let mut params = example_params();
+            params["input"]["criticality"] =
+                json!({"state":"known","value":value,"provenance":"source"});
+            assert!(parse("record_matrix_task", params).is_err());
+        }
+        let mut params = example_params();
+        params["input"]["criticality"] =
+            json!({"state":"known","value":"🦀".repeat(64),"provenance":"source"});
+        assert!(parse("record_matrix_task", params).is_ok());
+        let mut params = example_params();
+        params["input"]["mode"] = json!({"state":"unknown","provenance":" \t "});
+        assert!(parse("record_matrix_task", params).is_err());
+    }
+
+    #[test]
+    fn source_budget_and_response_capacity_fail_before_write() {
+        let params = example_params();
+        let MatrixTaskInvocation::Record(request) =
+            parse("record_matrix_task", params.clone()).unwrap()
+        else {
+            panic!("record")
+        };
+        let projected = revision(MatrixTaskRevision {
+            task_id: request.task_id,
+            revision: request.revision,
+            request_id: request.request_id,
+            input: request.input.clone(),
+            input_digest: "0".repeat(64),
+            recorded_by_principal_id: Uuid::nil(),
+            recorded_by_session_id: Uuid::nil(),
+        });
+        let size = crate::responses::encoded_len(&crate::responses::with_actions(
+            projected,
+            Vec::new(),
+            None,
+        ))
+        .unwrap();
+        assert!(guard_record_output(&request, size).is_ok());
+        assert!(matches!(
+            guard_record_output(&request, size - 1),
+            Err(Error::RequestTooLarge)
+        ));
+
+        let mut too_many = params.clone();
+        too_many["input"]["envelope"]["operational_facts"] = json!({"state":"reported","entries":(0..=MAX_OPERATIONAL_FACTS).map(|i| json!({"name":format!("fact-{i}"),"fact":{"state":"absent"}})).collect::<Vec<_>>()});
+        assert!(parse("record_matrix_task", too_many).is_err());
+
+        let mut over_bytes = params;
+        let control = "\u{0000}".repeat(256);
+        over_bytes["input"]["envelope"]["operational_facts"] = json!({"state":"reported","entries":(0..MAX_OPERATIONAL_FACTS).map(|i| json!({"name":format!("fact-{i}"),"fact":{"state":"known","value":control,"provenance":"source"}})).collect::<Vec<_>>()});
+        assert!(serde_json::to_vec(&over_bytes["input"]).unwrap().len() > MAX_MATRIX_INPUT_BYTES);
+        assert!(parse("record_matrix_task", over_bytes).is_err());
+
+        let mut within_budget = example_params();
+        let control = "\u{0000}".repeat(256);
+        within_budget["input"]["envelope"]["operational_facts"] = json!({"state":"reported","entries":(0..600).map(|i| json!({"name":format!("fact-{i}"),"fact":{"state":"known","value":control,"provenance":"source"}})).collect::<Vec<_>>()});
+        assert!(
+            serde_json::to_vec(&within_budget["input"]).unwrap().len() <= MAX_MATRIX_INPUT_BYTES
+        );
+        let MatrixTaskInvocation::Record(large_request) =
+            parse("record_matrix_task", within_budget).unwrap()
+        else {
+            panic!("record")
+        };
+        assert!(
+            guard_record_output(&large_request, crate::frame::MAX_FRAME_BYTES - 16 * 1024).is_ok()
+        );
+    }
 
     #[test]
     fn revision_projection_preserves_source_and_server_identity() {

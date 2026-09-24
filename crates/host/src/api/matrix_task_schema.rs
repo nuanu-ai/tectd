@@ -15,21 +15,28 @@ fn fact(value: Value) -> Value {
         branches.push(choice(
             "state",
             state,
-            json!({"provenance":{"type":"string","minLength":1,"maxLength":256}}),
+            json!({"provenance":text()}),
             json!(["provenance"]),
         ));
     }
     branches.push(choice(
         "state",
         "known",
-        json!({"value":value,"provenance":{"type":"string","minLength":1,"maxLength":256}}),
+        json!({"value":value,"provenance":text()}),
         json!(["value", "provenance"]),
     ));
     json!({"oneOf":branches})
 }
 
 fn text() -> Value {
-    json!({"type":"string","minLength":1,"maxLength":256})
+    json!({
+        "type":"string",
+        "minLength":1,
+        "maxLength":256,
+        "pattern":"\\S",
+        "description":"Nonblank after Unicode trimming; at most 256 UTF-8 bytes. Host validation enforces the byte limit.",
+        "x-maxUtf8Bytes":256
+    })
 }
 
 fn intent() -> Value {
@@ -43,7 +50,7 @@ fn operational_facts() -> Value {
     json!({"oneOf":[
         choice("state", "absent", json!({}), json!([])),
         choice("state", "known_empty", json!({"provenance":text()}), json!(["provenance"])),
-        choice("state", "reported", json!({"entries":{"type":"array","minItems":1,"items":object_schema(json!({"name":text(),"fact":fact(text())}), json!(["name","fact"]))}}), json!(["entries"]))
+        choice("state", "reported", json!({"entries":{"type":"array","minItems":1,"maxItems":1024,"items":object_schema(json!({"name":text(),"fact":fact(text())}), json!(["name","fact"]))}}), json!(["entries"]))
     ]})
 }
 
@@ -62,7 +69,7 @@ pub(super) fn input() -> Value {
         "latency_commitment",
         "urgent_repair",
     ];
-    object_schema(
+    let mut schema = object_schema(
         json!({
             "mode":fact(json!({"type":"string","enum":["demo","mvp","production"]})),
             "envelope":object_schema(json!({"scale":fact(text()),"operational_facts":operational_facts()}), json!(["scale","operational_facts"])),
@@ -78,7 +85,11 @@ pub(super) fn input() -> Value {
             "urgent_repair":fact(json!({"type":"boolean"}))
         }),
         json!(keys),
-    )
+    );
+    schema["description"] =
+        json!("Tagged factual input; serialized JSON is capped at 1 MiB by the host.");
+    schema["x-maxSerializedJsonBytes"] = json!(1024 * 1024);
+    schema
 }
 
 pub(super) fn example() -> Value {
