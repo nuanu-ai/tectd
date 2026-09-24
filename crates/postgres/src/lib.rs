@@ -14,6 +14,7 @@ mod knowledge_recovery;
 mod knowledge_search;
 mod knowledge_search_admin;
 mod knowledge_search_store;
+mod matrix_task_store;
 #[cfg(test)]
 mod matrix_task_migration_tests;
 #[cfg(test)]

@@ -55,7 +55,8 @@ pub(crate) async fn verify_runtime_role(pool: &PgPool) -> Result<()> {
                          'knowledge_maintenance_signals','knowledge_maintenance_tasks',
                          'knowledge_maintenance_command_receipts','knowledge_maintenance_consumers',
                          'planning_knowledge_manifests','program_knowledge_refresh_receipts',
-                         'planning_knowledge_consumptions'
+                         'planning_knowledge_consumptions',
+                         'matrix_tasks', 'matrix_task_revisions'
                      )
                      AND pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER')
                ) OR EXISTS (
