@@ -87,14 +87,16 @@ fn advisory_audit_routes_expose_choice_set_not_applicable_reason() {
             choices.contains(&json!("choice_set_not_applicable")),
             "{route}"
         );
-        let described = help(
-            parse_help(json!({"mode":"describe","tool":"query","route":route})).unwrap(),
-        )
-        .unwrap();
+        let described =
+            help(parse_help(json!({"mode":"describe","tool":"query","route":route})).unwrap())
+                .unwrap();
         let public_choices = described["params_schema"]["properties"]["reason"]["enum"]
             .as_array()
             .unwrap();
-        assert!(public_choices.contains(&json!("choice_set_not_applicable")), "{route}");
+        assert!(
+            public_choices.contains(&json!("choice_set_not_applicable")),
+            "{route}"
+        );
     }
 }
 

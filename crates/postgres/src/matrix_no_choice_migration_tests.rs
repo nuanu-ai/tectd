@@ -25,10 +25,15 @@ fn no_choice_only_extends_engineering_no_call_and_retains_revision_binding() {
     assert!(MIGRATION.contains("matrix_choice_set_digest IS NULL AND state = 'no_call'"));
     assert!(MIGRATION.contains("matrix_choice_set_digest IS NOT NULL"));
     assert!(MIGRATION.contains("matrix_choice_set_digest ~ '^[0-9a-f]{64}$'"));
-    assert!(MIGRATION
-        .contains("FOREIGN KEY (tenant_id, workspace_id, work_item_id, matrix_task_revision)"));
-    assert!(MIGRATION
-        .contains("REFERENCES matrix_task_revisions (tenant_id, workspace_id, task_id, revision)"));
+    assert!(
+        MIGRATION
+            .contains("FOREIGN KEY (tenant_id, workspace_id, work_item_id, matrix_task_revision)")
+    );
+    assert!(
+        MIGRATION.contains(
+            "REFERENCES matrix_task_revisions (tenant_id, workspace_id, task_id, revision)"
+        )
+    );
     assert!(PRIOR.contains("ADD CONSTRAINT advisory_opportunity_matrix_choice_fk"));
     assert!(!MIGRATION.contains("DROP CONSTRAINT advisory_opportunity_matrix_choice_fk"));
 }
