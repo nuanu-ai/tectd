@@ -1,7 +1,7 @@
 //! Explicitly constructed native TypeSafe Matrix adapter. Nothing in the host
 //! installs it by default; the default Matrix provider and budget deny remain.
 
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, net::IpAddr, time::Duration};
 
 use async_trait::async_trait;
 use reqwest::{
@@ -36,7 +36,18 @@ impl JevNativeMatrixConfig {
     fn validate(&self) -> Result<()> {
         self.provider_identity.provider_profile_ref.validate()?;
         self.provider_identity.model_configuration.validate()?;
-        if !matches!(self.endpoint.scheme(), "http" | "https")
+        let numeric_loopback = self
+            .endpoint
+            .host_str()
+            .and_then(|host| {
+                host.trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<IpAddr>()
+                    .ok()
+            })
+            .is_some_and(|address| address.is_loopback());
+        if !(self.endpoint.scheme() == "https"
+            || (self.endpoint.scheme() == "http" && numeric_loopback))
             || self.endpoint.cannot_be_a_base()
             || !self.endpoint.username().is_empty()
             || self.endpoint.password().is_some()
@@ -422,6 +433,31 @@ mod tests {
             provider.identity().unwrap().wire_version,
             native_wire::NATIVE_MATRIX_WIRE_VERSION
         );
+    }
+
+    #[test]
+    fn constructor_rejects_cleartext_remote_or_dns_and_url_credentials() {
+        for url in [
+            "http://192.0.2.1/v1/systemone",
+            "http://localhost/v1/systemone",
+            "http://example.test/v1/systemone",
+            "https://name:password@example.test/v1/systemone",
+            "https://example.test/v1/systemone#fragment",
+        ] {
+            let endpoint = Url::parse(url).unwrap();
+            assert!(matches!(
+                JevNativeMatrixProvider::new(config(endpoint, 1024), "secret".into()),
+                Err(Error::InvalidConfiguration)
+            ));
+        }
+        for url in [
+            "http://127.0.0.1/v1/systemone",
+            "http://[::1]/v1/systemone",
+            "https://example.test/v1/systemone",
+        ] {
+            let endpoint = Url::parse(url).unwrap();
+            assert!(JevNativeMatrixProvider::new(config(endpoint, 1024), "secret".into()).is_ok());
+        }
     }
 
     #[tokio::test]
