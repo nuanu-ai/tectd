@@ -49,8 +49,7 @@ async fn require_current_matrix_choice(
     }
     let choice_digest: Option<Option<String>> = sqlx::query_scalar(
         "SELECT choice_set_digest FROM matrix_task_revisions \
-         WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 AND revision=$4 \
-         FOR SHARE",
+         WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 AND revision=$4",
     )
     .bind(tenant)
     .bind(workspace)
