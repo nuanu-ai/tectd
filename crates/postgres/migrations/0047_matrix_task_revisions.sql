@@ -59,6 +59,50 @@ CREATE TABLE matrix_task_revisions (
         REFERENCES agent_sessions (tenant_id, workspace_id, id)
 );
 
+-- The owner identity must still be active when the accepted fact is recorded.
+-- Row locks hold that decision against concurrent session or host revocation,
+-- principal role changes, and membership removal until this write commits.
+CREATE FUNCTION matrix_task_revisions_require_active_owner() RETURNS trigger
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public
+AS $active_owner$
+DECLARE authorized boolean;
+BEGIN
+    IF NEW.tenant_id IS DISTINCT FROM
+        NULLIF(pg_catalog.current_setting('tect.tenant_id', true), '')::uuid THEN
+        RAISE EXCEPTION 'matrix task revision tenant does not match session'
+            USING ERRCODE = '42501';
+    END IF;
+
+    SELECT true INTO authorized
+    FROM public.agent_sessions AS s
+    JOIN public.hosts AS h
+        ON h.tenant_id = s.tenant_id AND h.id = s.host_id
+    JOIN public.principals AS p
+        ON p.tenant_id = h.tenant_id AND p.id = h.principal_id
+    JOIN public.memberships AS m
+        ON m.tenant_id = s.tenant_id AND m.workspace_id = s.workspace_id
+        AND m.principal_id = p.id
+    WHERE s.tenant_id = NEW.tenant_id
+        AND s.workspace_id = NEW.workspace_id
+        AND s.id = NEW.recorded_by_session_id
+        AND h.principal_id = NEW.recorded_by_principal_id
+        AND NOT s.revoked AND NOT h.revoked AND p.role = 'owner'
+    FOR SHARE OF s, h, p, m;
+
+    IF authorized IS DISTINCT FROM true THEN
+        RAISE EXCEPTION 'matrix task revision requires an active workspace owner session'
+            USING ERRCODE = '42501';
+    END IF;
+    RETURN NEW;
+END
+$active_owner$;
+
+CREATE TRIGGER matrix_task_revisions_active_owner
+    BEFORE INSERT ON matrix_task_revisions
+    FOR EACH ROW EXECUTE FUNCTION matrix_task_revisions_require_active_owner();
+
+REVOKE ALL PRIVILEGES ON FUNCTION matrix_task_revisions_require_active_owner() FROM PUBLIC;
+
 -- Deferred so the first accepted revision and its head can be inserted together.
 ALTER TABLE matrix_tasks
     ADD CONSTRAINT matrix_tasks_current_revision_fk

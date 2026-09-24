@@ -76,7 +76,33 @@ fn task_head_transition_is_database_guarded_without_skips_or_regressions() {
 }
 
 #[test]
-fn rls_and_runtime_grants_allow_only_append_and_head_cas() {
+fn accepted_revision_requires_locked_active_owner_provenance() {
+    for required in [
+        "CREATE FUNCTION matrix_task_revisions_require_active_owner() RETURNS trigger",
+        "LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public",
+        "NEW.tenant_id IS DISTINCT FROM",
+        "pg_catalog.current_setting('tect.tenant_id', true)",
+        "FROM public.agent_sessions AS s",
+        "JOIN public.hosts AS h",
+        "JOIN public.principals AS p",
+        "JOIN public.memberships AS m",
+        "m.tenant_id = s.tenant_id AND m.workspace_id = s.workspace_id",
+        "m.principal_id = p.id",
+        "s.tenant_id = NEW.tenant_id",
+        "s.workspace_id = NEW.workspace_id",
+        "s.id = NEW.recorded_by_session_id",
+        "h.principal_id = NEW.recorded_by_principal_id",
+        "AND NOT s.revoked AND NOT h.revoked AND p.role = 'owner'",
+        "FOR SHARE OF s, h, p, m",
+        "BEFORE INSERT ON matrix_task_revisions",
+        "REVOKE ALL PRIVILEGES ON FUNCTION matrix_task_revisions_require_active_owner() FROM PUBLIC",
+    ] {
+        assert!(MIGRATION.contains(required), "missing {required}");
+    }
+}
+
+#[test]
+fn tenant_rls_and_runtime_grants_allow_only_append_and_head_cas() {
     for required in [
         "ENABLE ROW LEVEL SECURITY",
         "FORCE ROW LEVEL SECURITY",
