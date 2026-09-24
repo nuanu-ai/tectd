@@ -6,6 +6,8 @@ mod advisory_migration_tests;
 mod durable_knowledge;
 mod durable_knowledge_admin;
 mod durable_knowledge_store;
+#[cfg(test)]
+mod engineering_profile_opportunity_migration_tests;
 mod knowledge_lifecycle;
 mod knowledge_lifecycle_store;
 pub(crate) mod knowledge_maintenance;
