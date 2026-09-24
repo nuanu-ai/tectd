@@ -1,6 +1,7 @@
 //! Pure Matrix ranking wire contract. Preparing or parsing does not dispatch Jev,
 //! select an effective choice, or confer release authority.
 
+pub mod native_provider;
 pub mod native_wire;
 mod wire;
 
