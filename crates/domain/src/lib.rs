@@ -2,6 +2,7 @@
 mod advisory;
 mod durable_knowledge;
 mod durable_knowledge_validation;
+mod engineering_matrix_input;
 mod engineering_review;
 mod error;
 mod identity;
@@ -33,6 +34,7 @@ pub use program_page::{ProgramCursor, ProgramInput, ProgramList, ProgramPage, Pr
 
 pub use advisory::*;
 pub use durable_knowledge::*;
+pub use engineering_matrix_input::*;
 pub use error::{
     Error, MAX_PIPELINE_ARTIFACT_DIAGNOSTIC_VIOLATIONS, PipelineArtifactDiagnostic,
     PipelineArtifactViolation, Result,
