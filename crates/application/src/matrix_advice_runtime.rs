@@ -1,7 +1,10 @@
 use crate::{MatrixProviderBinding, MatrixProviderRequest};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
-use tect_domain::{AdvisoryModelConfiguration, AdvisoryProviderProfileRef, Error, Result};
+use tect_domain::{
+    AdvisoryDispatchAuthorization, AdvisoryDispatchStart, AdvisoryDispatchState,
+    AdvisoryModelConfiguration, AdvisoryProviderProfileRef, AdvisorySendCertainty, Error, Result,
+};
 use uuid::Uuid;
 
 /// Application ceiling for a prepared Matrix request body. A host may impose
@@ -119,6 +122,83 @@ impl PreparedMatrixAdviceAttempt {
     }
 }
 
+/// One-use capability for an exact Matrix transport attempt. Only application
+/// orchestration can mint it after the dispatch-start transaction commits.
+pub struct MatrixStartedDispatchPermit {
+    opportunity_id: Uuid,
+    dispatch_id: Uuid,
+    configuration_digest: String,
+    binding: MatrixProviderBinding,
+    identity: MatrixProviderIdentity,
+    body_length: usize,
+    body_sha256: String,
+}
+
+impl MatrixStartedDispatchPermit {
+    pub(crate) fn after_committed_start(
+        started: &AdvisoryDispatchStart,
+        authorization: &AdvisoryDispatchAuthorization,
+        prepared: &PreparedMatrixAdviceAttempt,
+    ) -> Result<Self> {
+        let dispatch = &started.dispatch;
+        let configuration_bytes = serde_json::to_vec(&authorization.configuration_snapshot)
+            .map_err(Error::invalid_arguments_from)?;
+        let configuration_digest = format!("{:x}", Sha256::digest(&configuration_bytes));
+        let config = &authorization.configuration_snapshot;
+        if !started.should_send
+            || dispatch.state != AdvisoryDispatchState::Sending
+            || dispatch.send_certainty != AdvisorySendCertainty::SentUnknown
+            || dispatch.id != authorization.dispatch_id
+            || dispatch.opportunity_id != authorization.opportunity_id
+            || dispatch.configuration_digest != authorization.configuration_digest
+            || authorization.configuration_digest != configuration_digest
+            || dispatch.material_digest != authorization.material_digest
+            || dispatch.payload_digest != authorization.payload_digest
+            || authorization.payload_digest != prepared.body_sha256
+            || authorization.request_payload != prepared.body
+            || authorization.model != prepared.identity.model_configuration.model
+            || config.get("provider_profile_ref")
+                != Some(&serde_json::json!(prepared.identity.provider_profile_ref))
+            || config.get("model_configuration")
+                != Some(&serde_json::json!(prepared.identity.model_configuration))
+            || config.get("destination") != Some(&serde_json::json!(prepared.identity.destination))
+            || config.get("wire_version")
+                != Some(&serde_json::json!(prepared.identity.wire_version))
+            || config.get("request_body_length") != Some(&serde_json::json!(prepared.body_length()))
+            || config.get("request_body_sha256") != Some(&serde_json::json!(prepared.body_sha256))
+            || prepared.body_length() != prepared.body.len()
+            || authorization.validate().is_err()
+        {
+            return Err(Error::InputConflict);
+        }
+        Ok(Self {
+            opportunity_id: dispatch.opportunity_id,
+            dispatch_id: dispatch.id,
+            configuration_digest: dispatch.configuration_digest.clone(),
+            binding: prepared.binding.clone(),
+            identity: prepared.identity.clone(),
+            body_length: prepared.body_length(),
+            body_sha256: prepared.body_sha256.clone(),
+        })
+    }
+
+    pub fn permits(
+        &self,
+        opportunity_id: Uuid,
+        dispatch_id: Uuid,
+        configuration_digest: &str,
+        prepared: &PreparedMatrixAdviceAttempt,
+    ) -> bool {
+        self.opportunity_id == opportunity_id
+            && self.dispatch_id == dispatch_id
+            && self.configuration_digest == configuration_digest
+            && self.binding == prepared.binding
+            && self.identity == prepared.identity
+            && self.body_length == prepared.body_length()
+            && self.body_sha256 == prepared.body_sha256
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatrixBudgetRequest {
     pub workspace_id: Uuid,
@@ -126,6 +206,8 @@ pub struct MatrixBudgetRequest {
     pub binding: MatrixProviderBinding,
     pub provider_profile_ref: AdvisoryProviderProfileRef,
     pub model_configuration: AdvisoryModelConfiguration,
+    pub destination: String,
+    pub wire_version: String,
     pub body_length: usize,
     pub body_sha256: String,
 }
@@ -145,6 +227,8 @@ impl MatrixBudgetRequest {
             binding: prepared.binding.clone(),
             provider_profile_ref: prepared.identity.provider_profile_ref.clone(),
             model_configuration: prepared.identity.model_configuration.clone(),
+            destination: prepared.identity.destination.clone(),
+            wire_version: prepared.identity.wire_version.clone(),
             body_length: prepared.body_length(),
             body_sha256: prepared.body_sha256.clone(),
         })
@@ -204,6 +288,8 @@ mod tests {
             model_configuration: AdvisoryModelConfiguration {
                 model: "test".into(),
             },
+            destination: "test-target".into(),
+            wire_version: "test-wire/1".into(),
             body_length: 2,
             body_sha256: "digest".into(),
         };

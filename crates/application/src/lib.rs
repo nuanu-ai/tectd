@@ -23,7 +23,8 @@ pub use advisory_ports::{
 };
 pub use matrix_advice_runtime::{
     DenyMatrixBudget, MAX_PREPARED_MATRIX_BODY_BYTES, MatrixBudgetAuthorization,
-    MatrixBudgetPolicy, MatrixBudgetRequest, MatrixProviderIdentity, PreparedMatrixAdviceAttempt,
+    MatrixBudgetPolicy, MatrixBudgetRequest, MatrixProviderIdentity, MatrixStartedDispatchPermit,
+    PreparedMatrixAdviceAttempt,
 };
 pub use matrix_task_ports::MatrixTaskStore;
 pub use matrix_tasks::{

@@ -381,6 +381,7 @@ pub trait MatrixAdviceProvider: Send + Sync {
     async fn attempt_prepared(
         &self,
         prepared: crate::PreparedMatrixAdviceAttempt,
+        permit: crate::MatrixStartedDispatchPermit,
     ) -> Result<MatrixProviderResponse>;
 }
 
@@ -400,6 +401,7 @@ impl MatrixAdviceProvider for DisabledMatrixAdviceProvider {
     async fn attempt_prepared(
         &self,
         _: crate::PreparedMatrixAdviceAttempt,
+        _: crate::MatrixStartedDispatchPermit,
     ) -> Result<MatrixProviderResponse> {
         Err(Error::TransportUnavailable)
     }
