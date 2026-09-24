@@ -6,6 +6,7 @@ mod engineering_choice_set;
 mod engineering_matrix_composer;
 mod engineering_matrix_disposition;
 mod engineering_matrix_input;
+mod engineering_matrix_native_ranking;
 mod engineering_matrix_verification;
 mod engineering_review;
 mod error;
@@ -42,6 +43,7 @@ pub use engineering_choice_set::*;
 pub use engineering_matrix_composer::*;
 pub use engineering_matrix_disposition::*;
 pub use engineering_matrix_input::*;
+pub use engineering_matrix_native_ranking::*;
 pub use engineering_matrix_verification::*;
 pub use error::{
     Error, MAX_PIPELINE_ARTIFACT_DIAGNOSTIC_VIOLATIONS, PipelineArtifactDiagnostic,
