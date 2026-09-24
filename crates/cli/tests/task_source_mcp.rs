@@ -190,6 +190,80 @@ async fn task_source_revisions_replay_conflict_staleness_and_workspace_isolation
     .await;
     assert_eq!(current2, rev2, "current read must advance to revision 2");
 
+    let card_summary = route(
+        &mut owner,
+        "query",
+        "scope.advisory.card",
+        json!({"task_id":task_id,"expected_task_revision":2}),
+    )
+    .await;
+    assert_eq!(card_summary["task_id"], task_id.to_string());
+    assert_eq!(card_summary["task_revision"], "2");
+    assert_eq!(card_summary["catalogue_version"], "EM02-INITIAL@0.1");
+    assert_eq!(
+        card_summary["source_verification_status"],
+        "owner_reported_pending_independent_verification"
+    );
+    assert_eq!(card_summary["resolved"], false);
+    assert!(card_summary["selected_card"].is_null());
+    let scope_summary = card_summary["mandatory_cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|card| card["id"] == "EM02-SCOPE@0.1")
+        .expect("scope card in summary catalogue");
+    assert!(
+        scope_summary["summary"]
+            .as_str()
+            .is_some_and(|text| !text.is_empty())
+    );
+    assert!(scope_summary.get("body").is_none());
+
+    let card_full = route(
+        &mut owner,
+        "query",
+        "scope.advisory.card",
+        json!({
+            "task_id":task_id,"expected_task_revision":2,
+            "detail":"full","card_id":"EM02-SCOPE@0.1"
+        }),
+    )
+    .await;
+    for field in [
+        "catalogue_version",
+        "task_id",
+        "task_revision",
+        "source_verification_status",
+        "resolved",
+        "mandatory_cards",
+        "unresolved_evidence",
+    ] {
+        assert_eq!(
+            card_full[field], card_summary[field],
+            "full detail changed {field}"
+        );
+    }
+    assert_eq!(card_full["selected_card"]["id"], "EM02-SCOPE@0.1");
+    assert_eq!(
+        card_full["selected_card"]["summary"],
+        scope_summary["summary"]
+    );
+    assert!(
+        card_full["selected_card"]["body"]
+            .as_str()
+            .is_some_and(|body| !body.is_empty())
+    );
+
+    let stale_card = owner
+        .call_error(
+            "query",
+            json!({"route":"scope.advisory.card","params":{
+                "task_id":task_id,"expected_task_revision":1
+            }}),
+        )
+        .await;
+    assert_eq!(stale_card["error"]["code"], "stale_revision");
+
     let replay = route(
         &mut owner,
         "command",
