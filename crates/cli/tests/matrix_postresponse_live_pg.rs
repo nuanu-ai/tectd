@@ -455,7 +455,11 @@ async fn run_case(pool: &PgPool, runtime_url: &str, scenario: Scenario) {
         .await
         .unwrap();
     assert_eq!(
-        (saved.id, saved.state, saved.primary_reason),
+        (
+            saved.opportunity.id,
+            saved.opportunity.state,
+            saved.opportunity.primary_reason,
+        ),
         (receipt.id, expected_state, expected_reason)
     );
     let replay = service
