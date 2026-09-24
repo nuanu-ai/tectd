@@ -7,7 +7,6 @@ mod capture;
 mod decisions;
 mod helpers;
 use helpers::*;
-use serde::{Deserialize, Serialize};
 use tect_domain::{
     AdvisoryDispatchAuthorization, AdvisoryDispatchOutcome, AdvisoryDispatchSeal,
     AdvisoryDispatchStart, AdvisoryDispatchState, AdvisoryOpportunity, AdvisoryOpportunityState,
@@ -20,14 +19,12 @@ use uuid::Uuid;
 #[cfg(test)]
 mod tests;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunScopeAdvisory {
     pub request_id: Uuid,
     pub candidate_set_id: Uuid,
     pub session_preference: AdvisoryRequestPreference,
     pub request_preference: AdvisoryRequestPreference,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub authored_scope_set: Option<AuthoredScopeSet>,
 }
 

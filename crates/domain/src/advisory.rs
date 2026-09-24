@@ -5,6 +5,7 @@
 //! no-call decision; a dispatch is evidence of one authorized provider-send
 
 mod audit;
+mod authored_scope;
 mod config;
 mod disposition;
 mod lifecycle;
@@ -14,6 +15,7 @@ mod selected_save_observation;
 mod system_one;
 
 pub use audit::*;
+pub use authored_scope::*;
 pub use config::*;
 pub use disposition::*;
 pub use lifecycle::*;

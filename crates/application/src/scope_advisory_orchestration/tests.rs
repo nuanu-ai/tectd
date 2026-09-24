@@ -692,6 +692,24 @@ fn authored_contract_rejects_missing_baseline_duplicate_keys_and_unsorted_covera
 
 #[test]
 fn authored_request_digest_changes_no_call_material_and_rejects_unknown_fields() {
+    const GOLDEN_BYTES: &str = concat!(
+        "{\"expected_candidate_set_revision\":7,\"baseline_key\":\"baseline\",\"alternatives\":[",
+        "{\"key\":\"baseline\",\"kind\":\"cohesive\",\"draft\":{\"boundary\":\"ongoing\",",
+        "\"goals\":[],\"evidence\":[],\"candidates\":[],\"blockers\":[],",
+        "\"empty_disposition\":{\"kind\":\"out_of_boundary\",\"reason\":\"No in-boundary work\",",
+        "\"source_ref_id\":\"00000000-0000-0000-0000-00000000000a\"},",
+        "\"protected_changes\":[],\"supersessions\":[]},",
+        "\"covered_source_ref_ids\":[\"00000000-0000-0000-0000-00000000000a\",",
+        "\"00000000-0000-0000-0000-00000000000b\"]}]}"
+    );
+    assert_eq!(
+        serde_json::to_string(&authored_set()).unwrap(),
+        GOLDEN_BYTES
+    );
+    assert_eq!(
+        authored_request_digest(&authored_set()).unwrap(),
+        "1e477bb0163f710583f7c1948da8f27829f1104c63b1534904ffb7be148f29cd"
+    );
     let mut request = RunScopeAdvisory {
         request_id: Uuid::from_u128(1),
         candidate_set_id: Uuid::from_u128(3),
