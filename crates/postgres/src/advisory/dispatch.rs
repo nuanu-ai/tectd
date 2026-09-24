@@ -58,7 +58,7 @@ async fn require_current_matrix_choice(
     .fetch_optional(&mut **tx)
     .await
     .map_err(storage_error)?;
-    if choice_digest.as_deref().flatten() != Some(expected_digest) {
+    if choice_digest.flatten().as_deref() != Some(expected_digest) {
         return Err(Error::StaleContext);
     }
     Ok(())
