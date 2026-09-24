@@ -14,6 +14,8 @@ mod knowledge_recovery;
 mod knowledge_search;
 mod knowledge_search_admin;
 mod knowledge_search_store;
+#[cfg(test)]
+mod matrix_task_migration_tests;
 mod native_planning;
 mod native_planning_store;
 mod pipeline_execution;
