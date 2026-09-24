@@ -47,8 +47,8 @@ async fn require_current_matrix_choice(
     if current_revision != opportunity.matrix_task_revision {
         return Err(Error::StaleContext);
     }
-    let choice_digest: Option<Option<String>> = sqlx::query_scalar(
-        "SELECT choice_set_digest FROM matrix_task_revisions \
+    let revision_binding: Option<(Option<String>, String)> = sqlx::query_as(
+        "SELECT choice_set_digest,input_digest FROM matrix_task_revisions \
          WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 AND revision=$4",
     )
     .bind(tenant)
@@ -58,7 +58,51 @@ async fn require_current_matrix_choice(
     .fetch_optional(&mut **tx)
     .await
     .map_err(storage_error)?;
-    if choice_digest.flatten().as_deref() != Some(expected_digest) {
+    let Some((choice_digest, input_digest)) = revision_binding else {
+        return Err(Error::StaleContext);
+    };
+    if choice_digest.as_deref() != Some(expected_digest) {
+        return Err(Error::StaleContext);
+    }
+    let expected_verification = opportunity
+        .matrix_verification_digest
+        .as_deref()
+        .ok_or(Error::StaleContext)?;
+    // The newest exact-revision verification is authoritative. Never fall back
+    // to an older header if its replacement is stale or its evidence expired.
+    let latest: Option<(Uuid, String, String)> = sqlx::query_as(
+        "SELECT id,record_digest,input_digest FROM matrix_verifications \
+         WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 AND task_revision=$4 \
+         ORDER BY verified_at DESC,id DESC LIMIT 1",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(task_id)
+    .bind(current_revision.ok_or(Error::StaleContext)?)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    let Some((verification_id, verification_digest, verified_input_digest)) = latest else {
+        return Err(Error::StaleContext);
+    };
+    if verification_digest != expected_verification || verified_input_digest != input_digest {
+        return Err(Error::StaleContext);
+    }
+    let bindings_valid: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM matrix_verification_bindings \
+          WHERE tenant_id=$1 AND workspace_id=$2 AND verification_id=$3) \
+         AND NOT EXISTS (SELECT 1 FROM matrix_verification_bindings \
+          WHERE tenant_id=$1 AND workspace_id=$2 AND verification_id=$3 \
+            AND (validation_outcome <> 'accepted' OR expires_at <= \
+              EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())))",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(verification_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    if !bindings_valid {
         return Err(Error::StaleContext);
     }
     Ok(())
@@ -231,6 +275,24 @@ async fn authorize_dispatch(
     if let Some(existing) = existing {
         if !dispatch_matches_authorization(&existing, input)? {
             return Err(Error::InputConflict);
+        }
+        if opportunity.capability == AdvisoryCapability::EngineeringProfile {
+            let current: (i64, String) = sqlx::query_as(
+                "SELECT revision,mode FROM advisory_workspace_config \
+                 WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE",
+            )
+            .bind(tenant)
+            .bind(workspace)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(storage_error)?;
+            if current.0 != expected_config_revision || current.0 != opportunity.config_revision {
+                return Err(Error::StaleRevision);
+            }
+            if current.1 != "optional" {
+                return Err(Error::InvalidConfiguration);
+            }
+            require_current_matrix_choice(tx, tenant, workspace, &opportunity).await?;
         }
         return dispatch_from_row(&existing);
     }

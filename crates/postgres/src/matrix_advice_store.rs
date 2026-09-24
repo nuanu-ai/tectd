@@ -96,7 +96,7 @@ impl MatrixAdviceStore for PgUnitOfWork {
             "SELECT a.advice_id,a.opportunity_id,a.dispatch_id,a.task_id,a.matrix_task_revision, \
                     a.matrix_choice_set_digest,a.kind,a.ranked_choice_ids,a.reason,a.advice_digest, \
                     a.provider_profile_ref,a.model_configuration,a.response_payload_sha256, \
-                    o.material_digest,r.input_digest,r.canonical_input,r.choice_set,d.response_payload \
+                    o.material_digest,o.matrix_verification_digest,r.input_digest,r.canonical_input,r.choice_set,d.response_payload \
              FROM advisory_matrix_advice a \
              JOIN advisory_opportunity o ON (o.tenant_id,o.workspace_id,o.id)=(a.tenant_id,a.workspace_id,a.opportunity_id) \
              JOIN matrix_task_revisions r ON (r.tenant_id,r.workspace_id,r.task_id,r.revision)=(a.tenant_id,a.workspace_id,a.task_id,a.matrix_task_revision) \
@@ -132,7 +132,9 @@ impl MatrixAdviceStore for PgUnitOfWork {
                     .try_get("matrix_choice_set_digest")
                     .map_err(storage_error)?,
                 evaluation_digest: row.try_get("material_digest").map_err(storage_error)?,
-                verification_digest: None,
+                verification_digest: row
+                    .try_get("matrix_verification_digest")
+                    .map_err(storage_error)?,
             };
             if canonical_matrix_input_digest(&input_json)? != binding.input_digest
                 || choice.canonical_digest(&input)? != binding.choice_set_digest
@@ -167,7 +169,7 @@ impl MatrixAdviceStore for PgUnitOfWork {
         let tenant = self.tenant_id()?;
         // Lock the occurrence and dispatch before configuration and the Matrix head.
         let opportunity = sqlx::query(
-            "SELECT work_item_id,matrix_task_revision,matrix_choice_set_digest,material_digest,config_revision,capability,decision_point,state,primary_reason \
+            "SELECT work_item_id,matrix_task_revision,matrix_choice_set_digest,matrix_verification_digest,material_digest,config_revision,capability,decision_point,state,primary_reason \
              FROM advisory_opportunity WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE"
         ).bind(tenant).bind(workspace_id).bind(record.opportunity_id)
             .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?
@@ -195,6 +197,9 @@ impl MatrixAdviceStore for PgUnitOfWork {
         let digest: Option<String> = opportunity
             .try_get("matrix_choice_set_digest")
             .map_err(storage_error)?;
+        let verification_digest: Option<String> = opportunity
+            .try_get("matrix_verification_digest")
+            .map_err(storage_error)?;
         let material: String = opportunity
             .try_get("material_digest")
             .map_err(storage_error)?;
@@ -217,6 +222,7 @@ impl MatrixAdviceStore for PgUnitOfWork {
         if task_id != Some(record.binding.task_id)
             || revision != Some(record.binding.task_revision)
             || digest.as_deref() != Some(record.binding.choice_set_digest.as_str())
+            || verification_digest != record.binding.verification_digest
             || material != record.binding.evaluation_digest
             || material != record.opportunity_material_digest
             || opportunity

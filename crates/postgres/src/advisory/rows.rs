@@ -15,6 +15,7 @@ struct OpportunityRow {
     source_revision: Option<String>,
     matrix_task_revision: Option<i64>,
     matrix_choice_set_digest: Option<String>,
+    matrix_verification_digest: Option<String>,
     capability: String,
     decision_point: String,
     config_revision: i64,

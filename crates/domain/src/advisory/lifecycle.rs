@@ -237,6 +237,7 @@ pub struct AdvisoryOpportunityInput {
     /// Exact stored Matrix revision; present only for engineering-profile opportunities.
     pub matrix_task_revision: Option<i64>,
     pub matrix_choice_set_digest: Option<String>,
+    pub matrix_verification_digest: Option<String>,
     pub source_ref: Option<String>,
     pub session_preference: AdvisoryRequestPreference,
     pub request_preference: AdvisoryRequestPreference,
@@ -272,10 +273,24 @@ impl AdvisoryOpportunityInput {
                             .matrix_choice_set_digest
                             .as_ref()
                             .is_some_and(|digest| !valid_sha256(digest))
+                        || self
+                            .matrix_verification_digest
+                            .as_ref()
+                            .is_some_and(|digest| !valid_sha256(digest))
                         || (self.matrix_choice_set_digest.is_none()
                             && self.state != AdvisoryOpportunityState::NoCall)
+                        || (matches!(
+                            self.state,
+                            AdvisoryOpportunityState::Prepared
+                                | AdvisoryOpportunityState::AwaitingResponse
+                                | AdvisoryOpportunityState::Advised
+                        ) && self.matrix_verification_digest.is_none())
                 }
-                _ => self.matrix_task_revision.is_some() || self.matrix_choice_set_digest.is_some(),
+                _ => {
+                    self.matrix_task_revision.is_some()
+                        || self.matrix_choice_set_digest.is_some()
+                        || self.matrix_verification_digest.is_some()
+                }
             }
         {
             return Err(Error::InvalidArguments);
@@ -313,6 +328,7 @@ pub struct AdvisoryOpportunity {
     pub work_revision: Option<i64>,
     pub matrix_task_revision: Option<i64>,
     pub matrix_choice_set_digest: Option<String>,
+    pub matrix_verification_digest: Option<String>,
     pub source_ref: Option<String>,
     pub session_preference: AdvisoryRequestPreference,
     pub request_preference: AdvisoryRequestPreference,

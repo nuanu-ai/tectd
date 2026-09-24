@@ -1,6 +1,33 @@
 const MIGRATION: &str = include_str!("../migrations/0055_matrix_verification.sql");
 const GRANTS: &str = include_str!("admin/migration.rs");
 const STORE: &str = include_str!("matrix_verification_store.rs");
+const ADVICE_LINK: &str =
+    include_str!("../migrations/0056_matrix_advisory_verification_binding.sql");
+const ADVICE_DISPATCH: &str = include_str!("advisory/dispatch.rs");
+const ADVICE_STORE: &str = include_str!("matrix_advice_store.rs");
+
+#[test]
+fn positive_matrix_advice_requires_exact_immutable_verification() {
+    for required in [
+        "ADD COLUMN matrix_verification_digest text",
+        "matrix_verification_digest IS NOT NULL))) NOT VALID",
+        "(tenant_id, workspace_id, work_item_id,",
+        "matrix_task_revision, matrix_verification_digest)",
+        "(tenant_id, workspace_id, task_id, task_revision, record_digest)",
+    ] {
+        assert!(ADVICE_LINK.contains(required), "missing {required}");
+    }
+    for required in [
+        "ORDER BY verified_at DESC,id DESC LIMIT 1",
+        "verification_digest != expected_verification",
+        "verified_input_digest != input_digest",
+        "expires_at <=",
+    ] {
+        assert!(ADVICE_DISPATCH.contains(required), "missing {required}");
+    }
+    assert!(ADVICE_STORE.contains("verification_digest != record.binding.verification_digest"));
+    assert!(ADVICE_STORE.contains("o.matrix_verification_digest"));
+}
 
 #[test]
 fn verification_and_bindings_are_exactly_revision_bound_and_immutable() {

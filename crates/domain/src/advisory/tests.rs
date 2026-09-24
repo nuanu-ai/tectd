@@ -16,6 +16,7 @@ fn opportunity(preference: AdvisoryRequestPreference) -> AdvisoryOpportunityInpu
         work_revision: Some(1),
         matrix_task_revision: None,
         matrix_choice_set_digest: None,
+        matrix_verification_digest: None,
         source_ref: None,
         session_preference: AdvisoryRequestPreference::UseWorkspace,
         request_preference: preference,
@@ -94,6 +95,12 @@ fn engineering_profile_requires_exact_typed_matrix_binding() {
     input.state = AdvisoryOpportunityState::Prepared;
     input.primary_reason = AdvisoryReason::DispatchAuthorized;
     assert_eq!(input.validate(), Err(Error::InvalidArguments));
+    input.matrix_choice_set_digest = Some("a".repeat(64));
+    assert_eq!(input.validate(), Err(Error::InvalidArguments));
+    input.matrix_verification_digest = Some("not-a-sha".into());
+    assert_eq!(input.validate(), Err(Error::InvalidArguments));
+    input.matrix_verification_digest = Some("b".repeat(64));
+    assert!(input.validate().is_ok());
 }
 
 #[test]

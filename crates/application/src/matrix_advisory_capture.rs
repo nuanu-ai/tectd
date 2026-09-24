@@ -34,6 +34,11 @@ pub(crate) async fn prepare_eligible_matrix_opportunity(
     if input.primary_reason != AdvisoryReason::CapabilityUnavailable {
         return Ok(PreparedMatrixOpportunity::NoCall);
     }
+    // Positive capture cannot persist until an exact, validated Matrix
+    // verification has been attached to this opportunity.
+    if input.matrix_verification_digest.is_none() {
+        return Ok(PreparedMatrixOpportunity::NoCall);
+    }
     let composition =
         super::matrix_tasks::compose_current_revision(revision.clone(), revision.revision)?;
     if !composition.unresolved_evidence.is_empty() {

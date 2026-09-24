@@ -324,6 +324,7 @@ mod tests {
             work_revision: Some(binding.task_revision),
             matrix_task_revision: Some(binding.task_revision),
             matrix_choice_set_digest: Some(binding.choice_set_digest.clone()),
+            matrix_verification_digest: binding.verification_digest.clone(),
             source_ref: None,
             session_preference: AdvisoryRequestPreference::UseWorkspace,
             request_preference: AdvisoryRequestPreference::UseWorkspace,
