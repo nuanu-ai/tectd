@@ -15,6 +15,7 @@ pub struct WorkspaceService {
     pub(crate) matrix_advice_provider: Arc<dyn crate::MatrixAdviceProvider>,
     #[allow(dead_code)]
     pub(crate) matrix_budget: Arc<dyn crate::MatrixBudgetPolicy>,
+    pub(crate) matrix_evidence_validator: Arc<dyn crate::MatrixEvidenceValidator>,
     pub(crate) scope_authority: Arc<dyn crate::ScopeAuthorityObserver>,
     pub(crate) scope_manifest_supplier: Arc<dyn crate::ScopeManifestSupplier>,
     pub(crate) scope_budget: Arc<dyn crate::ScopeBudgetPolicy>,
@@ -104,6 +105,7 @@ impl WorkspaceService {
             advisory_provider: Arc::new(crate::DisabledAdvisoryProvider),
             matrix_advice_provider: Arc::new(crate::DisabledMatrixAdviceProvider),
             matrix_budget: Arc::new(crate::DenyMatrixBudget),
+            matrix_evidence_validator: Arc::new(crate::DisabledMatrixEvidenceValidator),
             scope_authority: Arc::new(crate::UnavailableScopeAuthorityObserver),
             scope_manifest_supplier: Arc::new(crate::UnavailableScopeManifestSupplier),
             scope_budget: Arc::new(crate::DenyScopeBudget),
@@ -171,6 +173,15 @@ impl WorkspaceService {
         provider: Arc<dyn crate::MatrixAdviceProvider>,
     ) -> Self {
         self.matrix_advice_provider = provider;
+        self
+    }
+
+    /// Explicit host composition; normal construction remains deny by default.
+    pub fn with_matrix_evidence_validator(
+        mut self,
+        validator: Arc<dyn crate::MatrixEvidenceValidator>,
+    ) -> Self {
+        self.matrix_evidence_validator = validator;
         self
     }
 

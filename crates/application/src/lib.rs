@@ -8,6 +8,8 @@ mod matrix_advisory_capture;
 mod matrix_advisory_dispatch;
 mod matrix_task_ports;
 mod matrix_tasks;
+mod matrix_verification;
+mod matrix_verification_ports;
 mod planning_knowledge_ports;
 mod ports;
 mod programs;
@@ -39,6 +41,10 @@ pub use matrix_task_ports::MatrixTaskStore;
 pub use matrix_tasks::{
     MATRIX_INPUT_SCHEMA, MatrixTaskRevision, RecordMatrixTask, RequestEngineeringAdvisory,
     canonical_matrix_input_digest,
+};
+pub use matrix_verification::{MatrixEvidenceReference, VerifyMatrixTask};
+pub use matrix_verification_ports::{
+    DisabledMatrixEvidenceValidator, MatrixEvidenceValidator, MatrixVerificationStore,
 };
 pub use planning_knowledge_ports::PlanningKnowledgeStore;
 pub use ports::{

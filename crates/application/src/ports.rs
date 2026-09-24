@@ -36,6 +36,10 @@ pub trait UnitOfWork:
     + crate::MatrixTaskStore
     + crate::MatrixAdviceStore
 {
+    /// Optional append-only persistence seam. Unconfigured adapters deny use.
+    fn matrix_verification_store(&mut self) -> Option<&mut dyn crate::MatrixVerificationStore> {
+        None
+    }
     async fn authenticate(&mut self, auth: &HostAuth) -> Result<HostIdentity>;
     async fn set_tenant(&mut self, tenant_id: Uuid) -> Result<()>;
     async fn lock_native_session(&mut self, host_id: Uuid, native_id: &str) -> Result<()>;
