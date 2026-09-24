@@ -49,6 +49,36 @@ pub struct RequestEngineeringAdvisory {
 }
 
 impl WorkspaceService {
+    /// Read a saved Matrix advisory receipt, including historical no-call
+    /// decisions, for an authenticated member of the receipt's workspace.
+    pub async fn get_engineering_advisory(
+        &self,
+        context: &RequestContext,
+        task_id: Uuid,
+        request_key: &str,
+    ) -> Result<AdvisoryOpportunity> {
+        if task_id.is_nil() || !valid_advisory_request_key(request_key) {
+            return Err(Error::InvalidArguments);
+        }
+        let (mut tx, identity) = self
+            .authenticated(context, TransactionMode::ReadOnly)
+            .await?;
+        let session = tx
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
+        let receipt = tx
+            .advisory_opportunity_by_request(workspace.id, request_key)
+            .await?
+            .ok_or(Error::NotFound)?;
+        if !matrix_advisory_receipt_matches(&receipt, workspace.id, task_id, request_key) {
+            return Err(Error::NotFound);
+        }
+        tx.commit().await?;
+        Ok(receipt)
+    }
+
     pub async fn request_engineering_advisory(
         &self,
         context: &RequestContext,
@@ -56,10 +86,7 @@ impl WorkspaceService {
     ) -> Result<AdvisoryOpportunity> {
         if request.task_id.is_nil()
             || request.expected_task_revision < 1
-            || request.request_key.is_empty()
-            || request.request_key.len() > 256
-            || request.request_key.contains('\0')
-            || request.request_key.trim() != request.request_key
+            || !valid_advisory_request_key(&request.request_key)
         {
             return Err(Error::InvalidArguments);
         }
@@ -170,6 +197,28 @@ impl WorkspaceService {
         let revision = self.get_matrix_task(context, task_id).await?;
         compose_current_revision(revision, expected_task_revision)
     }
+}
+
+fn valid_advisory_request_key(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 256 && !value.contains('\0') && value.trim() == value
+}
+
+fn matrix_advisory_receipt_matches(
+    receipt: &AdvisoryOpportunity,
+    workspace_id: Uuid,
+    task_id: Uuid,
+    request_key: &str,
+) -> bool {
+    receipt.workspace_id == workspace_id
+        && receipt.capability == AdvisoryCapability::EngineeringProfile
+        && receipt.decision_point == AdvisoryDecisionPoint::EngineeringProfileBeforeSelection
+        && receipt.target_kind == "matrix_task"
+        && receipt.target_id == Some(task_id)
+        && receipt
+            .matrix_task_revision
+            .is_some_and(|revision| revision > 0)
+        && receipt.matrix_task_revision == receipt.work_revision
+        && receipt.workflow_occurrence_key == request_key
 }
 
 fn matrix_advisory_replay_matches(
@@ -482,6 +531,46 @@ mod tests {
             primary_reason: input.primary_reason,
             provider_called: false,
         };
+        assert!(matrix_advisory_receipt_matches(
+            &receipt,
+            config.workspace_id,
+            request.task_id,
+            &request.request_key,
+        ));
+        assert!(!matrix_advisory_receipt_matches(
+            &receipt,
+            Uuid::new_v4(),
+            request.task_id,
+            &request.request_key,
+        ));
+        assert!(!matrix_advisory_receipt_matches(
+            &receipt,
+            config.workspace_id,
+            Uuid::new_v4(),
+            &request.request_key,
+        ));
+        assert!(!matrix_advisory_receipt_matches(
+            &receipt,
+            config.workspace_id,
+            request.task_id,
+            "different-key",
+        ));
+        let mut wrong_kind = receipt.clone();
+        wrong_kind.capability = AdvisoryCapability::ScopeDecomposition;
+        assert!(!matrix_advisory_receipt_matches(
+            &wrong_kind,
+            config.workspace_id,
+            request.task_id,
+            &request.request_key,
+        ));
+        let mut wrong_revision = receipt.clone();
+        wrong_revision.matrix_task_revision = Some(3);
+        assert!(!matrix_advisory_receipt_matches(
+            &wrong_revision,
+            config.workspace_id,
+            request.task_id,
+            &request.request_key,
+        ));
         assert!(matrix_advisory_replay_matches(
             &receipt, &request, session, actor
         ));

@@ -3,6 +3,20 @@ mod audit_projection_tests {
     use super::*;
 
     #[test]
+    fn request_lookup_is_tenant_and_workspace_scoped_and_selects_matrix_binding() {
+        let source = include_str!("config_opportunity.rs");
+        let query = source
+            .split("async fn opportunity_by_request_key(")
+            .nth(1)
+            .expect("request lookup exists");
+        assert!(query.contains("WHERE tenant_id=$1 AND workspace_id=$2 AND request_key=$3"));
+        assert!(query.contains("matrix_task_revision,matrix_choice_set_digest"));
+        assert!(query.contains(".bind(tenant)"));
+        assert!(query.contains(".bind(workspace)"));
+        assert!(query.contains(".bind(request_key)"));
+    }
+
+    #[test]
     fn matrix_binding_survives_opportunity_row_projection() {
         let workspace = Uuid::new_v4();
         let task = Uuid::new_v4();
