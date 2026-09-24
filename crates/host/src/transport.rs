@@ -7,6 +7,7 @@ use crate::{program_output, responses};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
+use std::future::Future;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -257,7 +258,14 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 ))
             }
             Invocation::MatrixVerification(request) => {
-                let receipt = service.verify_matrix_task(context, &request).await?;
+                service
+                    .authenticate_matrix_verifier_session(context)
+                    .await?;
+                let receipt =
+                    crate::matrix_verification_tools::guarded_verify(&request, capacity, || {
+                        service.verify_matrix_task(context, &request)
+                    })
+                    .await?;
                 Ok(responses::with_actions(
                     crate::matrix_verification_tools::receipt(receipt),
                     Vec::new(),
@@ -345,15 +353,48 @@ async fn authenticate_invalid_request(
     context: &RequestContext,
     tool_name: &str,
 ) -> WireResponse {
-    let authorization = timeout(OPERATION_TIMEOUT, async {
-        if allows_verifier_invalid_request(tool_name) {
-            service
-                .authenticate_candidate_advisory_session(context)
-                .await
-        } else {
-            service.get_state(context).await.map(|_| ())
+    authenticate_invalid_request_with(tool_name, |kind| async move {
+        match kind {
+            InvalidRequestAuth::MatrixVerifier => {
+                service.authenticate_matrix_verifier_session(context).await
+            }
+            InvalidRequestAuth::CandidateAdvisory => {
+                service
+                    .authenticate_candidate_advisory_session(context)
+                    .await
+            }
+            InvalidRequestAuth::State => service.get_state(context).await.map(|_| ()),
         }
     })
+    .await
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InvalidRequestAuth {
+    MatrixVerifier,
+    CandidateAdvisory,
+    State,
+}
+
+fn invalid_request_auth(tool_name: &str) -> InvalidRequestAuth {
+    if tool_name == "verify_matrix_task" {
+        InvalidRequestAuth::MatrixVerifier
+    } else if allows_verifier_invalid_request(tool_name) {
+        InvalidRequestAuth::CandidateAdvisory
+    } else {
+        InvalidRequestAuth::State
+    }
+}
+
+async fn authenticate_invalid_request_with<F, Fut>(tool_name: &str, authenticate: F) -> WireResponse
+where
+    F: FnOnce(InvalidRequestAuth) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    let authorization = timeout(
+        OPERATION_TIMEOUT,
+        authenticate(invalid_request_auth(tool_name)),
+    )
     .await;
     match authorization {
         Ok(Ok(_)) => WireResponse::Error {
@@ -369,10 +410,7 @@ async fn authenticate_invalid_request(
 fn allows_verifier_invalid_request(tool_name: &str) -> bool {
     matches!(
         tool_name,
-        "candidate_advisory_verify"
-            | "candidate_advisory_get"
-            | "candidate_advisory_audit"
-            | "verify_matrix_task"
+        "candidate_advisory_verify" | "candidate_advisory_get" | "candidate_advisory_audit"
     )
 }
 

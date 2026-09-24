@@ -29,6 +29,26 @@ pub struct VerifyMatrixTask {
 }
 
 impl WorkspaceService {
+    /// Authorize a malformed verifier call against the same active, bound
+    /// session required by a valid verification, without opening task data.
+    pub async fn authenticate_matrix_verifier_session(
+        &self,
+        context: &RequestContext,
+    ) -> Result<()> {
+        let (mut tx, identity) = self
+            .authenticated(context, TransactionMode::ReadOnly)
+            .await?;
+        if identity.role != PrincipalRole::Verifier {
+            return Err(Error::Forbidden);
+        }
+        let session = tx
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        Self::validate_binding(&mut *tx, context, &identity, &session).await?;
+        tx.commit().await
+    }
+
     /// Verifies a saved owner revision. No JEV or advisory call is made.
     pub async fn verify_matrix_task(
         &self,

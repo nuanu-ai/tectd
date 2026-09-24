@@ -17,10 +17,44 @@ fn context() -> RequestContext {
 
 #[test]
 fn malformed_matrix_verification_authenticates_as_verifier_route() {
-    assert!(allows_verifier_invalid_request("verify_matrix_task"));
+    assert_eq!(
+        invalid_request_auth("verify_matrix_task"),
+        InvalidRequestAuth::MatrixVerifier
+    );
+    assert_eq!(
+        invalid_request_auth("candidate_advisory_verify"),
+        InvalidRequestAuth::CandidateAdvisory
+    );
     assert!(!allows_verifier_invalid_request("record_matrix_task"));
     assert!(!allows_verifier_invalid_request(
         crate::api::INVALID_PUBLIC_CALL
+    ));
+}
+
+#[tokio::test]
+async fn malformed_matrix_verification_denies_owner_and_reaches_decode_error_for_verifier() {
+    let owner = authenticate_invalid_request_with("verify_matrix_task", |kind| async move {
+        assert_eq!(kind, InvalidRequestAuth::MatrixVerifier);
+        Err(Error::Forbidden)
+    })
+    .await;
+    assert!(matches!(
+        owner,
+        WireResponse::Error {
+            error: Error::Forbidden
+        }
+    ));
+
+    let verifier = authenticate_invalid_request_with("verify_matrix_task", |kind| async move {
+        assert_eq!(kind, InvalidRequestAuth::MatrixVerifier);
+        Ok(())
+    })
+    .await;
+    assert!(matches!(
+        verifier,
+        WireResponse::Error {
+            error: Error::InvalidArguments
+        }
     ));
 }
 
