@@ -514,6 +514,17 @@ pub trait MatrixAdviceProvider: Send + Sync {
         request: &MatrixProviderRequest,
     ) -> Result<crate::PreparedMatrixAdviceAttempt>;
 
+    /// Interpret an already sealed, persisted response against the exact
+    /// prepared request. This is pure: it cannot start or repeat a send.
+    /// Providers without an explicit saved-response parser fail closed.
+    fn parse_sealed_response(
+        &self,
+        _request: &MatrixProviderRequest,
+        _saved: &StoredMatrixDispatch,
+    ) -> Result<MatrixProviderResponse> {
+        Err(Error::TransportUnavailable)
+    }
+
     /// Transport consumes the exact bytes that were prepared before authorization.
     async fn attempt_prepared(
         &self,

@@ -211,6 +211,62 @@ fn verified_wire_binds_record_digest_and_v2_contract() {
 }
 
 #[test]
+fn saved_v2_response_parser_accepts_rank_and_abstention_and_rejects_tampering() {
+    let (revision, mut composition) = fixture();
+    composition.source_verification_status =
+        MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported;
+    let prepared = prepare_request_inner(
+        MODEL,
+        &revision,
+        &composition,
+        Some((&"d".repeat(64), &"e".repeat(64))),
+        32_768,
+    )
+    .unwrap();
+    for ranking in [
+        json!({"status":"ranked","ranked_candidate_ids":["c","a","b"],"recommended_candidate_id":"c"}),
+        json!({"status":"abstained","ranked_candidate_ids":[],"recommended_candidate_id":null}),
+    ] {
+        let response = json!({
+            "contract": MATRIX_VERIFIED_EVALUATION_CONTRACT_VERSION,
+            "model": MODEL,
+            "binding": prepared.binding,
+            "ranking": ranking,
+            "usage": null
+        });
+        let bytes = serde_json::to_vec(&response).unwrap();
+        let saved_hash = format!("{:x}", sha2::Sha256::digest(&bytes));
+        let parsed =
+            super::super::parse_saved_wire_response(&bytes, &saved_hash, &prepared, 16_384)
+                .unwrap();
+        assert_eq!(serde_json::to_value(parsed.ranking).unwrap(), ranking);
+        assert_eq!(
+            super::super::parse_saved_wire_response(&bytes, &"0".repeat(64), &prepared, 16_384),
+            Err(Error::InvalidArguments)
+        );
+        let mut mismatched = response.clone();
+        mismatched["binding"]["verification_digest"] = json!("f".repeat(64));
+        let mismatched_bytes = serde_json::to_vec(&mismatched).unwrap();
+        let mismatched_hash = format!("{:x}", sha2::Sha256::digest(&mismatched_bytes));
+        assert_eq!(
+            super::super::parse_saved_wire_response(
+                &mismatched_bytes,
+                &mismatched_hash,
+                &prepared,
+                16_384
+            ),
+            Err(Error::InvalidArguments)
+        );
+    }
+    let malformed = b"{not-json";
+    let hash = format!("{:x}", sha2::Sha256::digest(malformed));
+    assert_eq!(
+        super::super::parse_saved_wire_response(malformed, &hash, &prepared, 16_384),
+        Err(Error::InvalidArguments)
+    );
+}
+
+#[test]
 fn preparation_rejects_stale_or_unaccepted_material_and_bounds() {
     let (revision, composition) = fixture();
     assert_eq!(

@@ -627,6 +627,41 @@ mod tests {
             destination: "fake".into(),
             wire_version: "fake/1".into(),
         });
+        let saved = crate::StoredMatrixDispatch {
+            dispatch: tect_domain::AdvisoryDispatch {
+                id: Uuid::new_v4(),
+                opportunity_id: Uuid::new_v4(),
+                predecessor_dispatch_id: None,
+                attempt_number: 1,
+                provider: "provider".into(),
+                model: "model".into(),
+                configuration_digest: "a".repeat(64),
+                material_digest: provider.binding().evaluation_digest.clone(),
+                payload_digest: "b".repeat(64),
+                input_tokens: None,
+                output_tokens: None,
+                latency_ms: None,
+                state: tect_domain::AdvisoryDispatchState::Sealed,
+                send_certainty: tect_domain::AdvisorySendCertainty::Sent,
+                outcome: Some(tect_domain::AdvisoryDispatchOutcome::ProviderResponse),
+                retry_basis: tect_domain::AdvisoryRetryBasis::Initial,
+                raw_response_ref: None,
+            },
+            binding: provider.binding().clone(),
+            provider_profile_ref: provider.provider_profile_ref().clone(),
+            model_configuration: provider.model_configuration().clone(),
+            configuration_snapshot: serde_json::json!({}),
+            destination: "fake".into(),
+            wire_version: "fake/1".into(),
+            request_payload: b"verified-body".to_vec(),
+            request_payload_sha256: "b".repeat(64),
+            response_payload: Some(b"opaque".to_vec()),
+            response_payload_sha256: Some("c".repeat(64)),
+        };
+        assert_eq!(
+            fake_provider.parse_sealed_response(&provider, &saved),
+            Err(Error::TransportUnavailable)
+        );
         let prepared = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
             &mut opportunity,
             Some(&provider),
