@@ -11,9 +11,11 @@ use tect_application::{
 };
 use tect_domain::{
     AdvisoryModelConfiguration, AdvisoryProviderProfileRef, EngineeringCandidate,
-    EngineeringChoiceSet, EngineeringMatrixInput, Error, MATRIX_CHOICE_SET_SCHEMA,
-    OwnerReportedEngineeringMatrixFacts, compose_owner_reported_engineering_matrix,
-    matrix_evaluation_digest,
+    EngineeringChoiceSet, EngineeringMatrixInput, Error, EvidenceValidationOutcome,
+    MATRIX_CHOICE_SET_SCHEMA, MATRIX_VERIFICATION_SCHEMA, MatrixEvidenceBinding,
+    MatrixVerificationRecord, OwnerReportedEngineeringMatrixFacts,
+    compose_independently_verified_owner_matrix, evaluate_matrix_verification,
+    matrix_verified_evaluation_digest, required_matrix_facts,
 };
 use uuid::Uuid;
 
@@ -129,13 +131,19 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
     let opportunity_id = Uuid::new_v4();
     let dispatch_id = Uuid::new_v4();
     let input: EngineeringMatrixInput = serde_json::from_value(serde_json::json!({
-        "mode": {"state":"absent"},
-        "envelope": {"scale":{"state":"absent"},"operational_facts":{"state":"absent"}},
-        "criticality":{"state":"absent"}, "intent":{"state":"absent"},
-        "urgency":{"state":"absent"}, "promised_behavior":{"state":"absent"},
-        "promised_proof":{"state":"absent"}, "affected_guarantees":{"state":"absent"},
-        "actual_exposure":{"state":"absent"}, "demand_commitment":{"state":"absent"},
-        "latency_commitment":{"state":"absent"}, "urgent_repair":{"state":"absent"}
+        "mode":{"state":"known","value":"demo","provenance":"synthetic owner"},
+        "envelope":{"scale":{"state":"known","value":"one request","provenance":"synthetic owner"},
+          "operational_facts":{"state":"known_empty","provenance":"synthetic owner"}},
+        "criticality":{"state":"known","value":"low","provenance":"synthetic owner"},
+        "intent":{"state":"known","value":{"kind":"other","description":"demo"},"provenance":"synthetic owner"},
+        "urgency":{"state":"known","value":"ordinary","provenance":"synthetic owner"},
+        "promised_behavior":{"state":"known","value":"demo","provenance":"synthetic owner"},
+        "promised_proof":{"state":"known","value":"check","provenance":"synthetic owner"},
+        "affected_guarantees":{"state":"known_empty","provenance":"synthetic owner"},
+        "actual_exposure":{"state":"known","value":false,"provenance":"synthetic owner"},
+        "demand_commitment":{"state":"known","value":"no_commitment","provenance":"synthetic owner"},
+        "latency_commitment":{"state":"known","value":"no_commitment","provenance":"synthetic owner"},
+        "urgent_repair":{"state":"known","value":false,"provenance":"synthetic owner"}
     }))
     .unwrap();
     let choice = EngineeringChoiceSet {
@@ -164,11 +172,43 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
         input.clone(),
     )
     .unwrap();
-    let composition = compose_owner_reported_engineering_matrix(&reported);
-    let evaluation_digest = matrix_evaluation_digest(&input, &composition, &choice)
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .unwrap();
-    let verification_digest = sha(format!("verification-{task_id}").as_bytes());
+        .as_secs() as i64;
+    let mut verification = MatrixVerificationRecord {
+        schema: MATRIX_VERIFICATION_SCHEMA.into(),
+        task_id: task_id.to_string(),
+        task_revision: "1".into(),
+        input_digest: input_digest.clone(),
+        owner_principal: owner.principal_id.to_string(),
+        verifier_principal: verifier_id.to_string(),
+        policy_version: "synthetic-policy/1".into(),
+        bindings: required_matrix_facts(&input)
+            .unwrap()
+            .into_iter()
+            .map(|fact| MatrixEvidenceBinding {
+                fact_path: fact.path,
+                value_digest: fact.value_digest,
+                evidence_ref: "synthetic-ref".into(),
+                content_digest: sha(b"synthetic-ref"),
+                source: "synthetic".into(),
+                subject: "matrix-task".into(),
+                observed_at: now - 1,
+                expires_at: now + 3600,
+                validation_outcome: EvidenceValidationOutcome::Accepted,
+            })
+            .collect(),
+        digest: String::new(),
+    };
+    verification.digest = verification.canonical_digest().unwrap();
+    let validated =
+        evaluate_matrix_verification(&task_id.to_string(), "1", &input, &verification, now)
+            .unwrap();
+    let composition = compose_independently_verified_owner_matrix(&reported, &validated).unwrap();
+    let evaluation_digest =
+        matrix_verified_evaluation_digest(&input, &composition, &choice, &validated).unwrap();
+    let verification_digest = verification.digest.clone();
     let binding = MatrixProviderBinding {
         task_id,
         task_revision: 1,
@@ -272,15 +312,14 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
         .bind(tenant_id).bind(workspace_id).bind(task_id).bind(&input_digest)
         .bind(owner.principal_id).bind(verifier_id).bind(verifier_session)
         .bind(&verification_digest).fetch_one(&mut *fixture).await.unwrap();
-    let now: i64 =
-        sqlx::query_scalar("SELECT EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())::bigint")
-            .fetch_one(&mut *fixture)
-            .await
-            .unwrap();
-    sqlx::query("INSERT INTO matrix_verification_bindings (tenant_id,workspace_id,verification_id,fact_path,value_digest,evidence_ref,content_digest,source,subject,observed_at,expires_at,validation_outcome) VALUES ($1,$2,$3,'mode',$4,'synthetic-ref',$5,'synthetic','matrix-task',$6,$7,'accepted')")
-        .bind(tenant_id).bind(workspace_id).bind(verification_id).bind(&input_digest)
-        .bind(sha(b"synthetic-ref")).bind(now - 1).bind(now + 3600)
-        .execute(&mut *fixture).await.unwrap();
+    for binding in &verification.bindings {
+        sqlx::query("INSERT INTO matrix_verification_bindings (tenant_id,workspace_id,verification_id,fact_path,value_digest,evidence_ref,content_digest,source,subject,observed_at,expires_at,validation_outcome) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'accepted')")
+            .bind(tenant_id).bind(workspace_id).bind(verification_id)
+            .bind(&binding.fact_path).bind(&binding.value_digest).bind(&binding.evidence_ref)
+            .bind(&binding.content_digest).bind(&binding.source).bind(&binding.subject)
+            .bind(binding.observed_at).bind(binding.expires_at)
+            .execute(&mut *fixture).await.unwrap();
+    }
     fixture.commit().await.unwrap();
     sqlx::query("INSERT INTO advisory_workspace_config_history (tenant_id,workspace_id,revision,mode,provider_profile_ref,model_configuration,changed_by_principal_id,changed_by_session_id) VALUES ($1,$2,0,'optional',$3,$4,$5,$6)")
         .bind(tenant_id).bind(workspace_id).bind(&profile.id).bind(serde_json::json!(model))

@@ -9,8 +9,8 @@ use tect_application::{
 use tect_domain::{
     AdvisoryDispatch, AdvisoryModelConfiguration, AdvisoryOpportunity, AdvisoryOpportunityState,
     AdvisoryProviderProfileRef, EngineeringChoiceSet, EngineeringMatrixInput, Error,
-    OwnerReportedEngineeringMatrixFacts, Result, compose_owner_reported_engineering_matrix,
-    matrix_evaluation_digest,
+    OwnerReportedEngineeringMatrixFacts, Result, compose_independently_verified_owner_matrix,
+    evaluate_matrix_verification, matrix_verified_evaluation_digest,
 };
 use uuid::Uuid;
 
@@ -110,7 +110,10 @@ impl MatrixAdviceStore for PgUnitOfWork {
             .fetch_optional(&mut **self.transaction()?)
             .await
             .map_err(storage_error)?;
-        row.map(|row| {
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let (advice, input, choice) = {
             let choice_json: serde_json::Value =
                 row.try_get("choice_set").map_err(storage_error)?;
             let choice: EngineeringChoiceSet =
@@ -157,9 +160,62 @@ impl MatrixAdviceStore for PgUnitOfWork {
                     &eligibility,
                 )
                 .map_err(|_| Error::InternalInvariant)?;
-            Ok(advice)
-        })
-        .transpose()
+            (advice, input, choice)
+        };
+        if let Some(verification_digest) = advice.record.binding.verification_digest.as_deref() {
+            // Read historical advice against its immutable verification at the
+            // instant it was recorded. Expiration after advice was saved must
+            // not make an otherwise intact receipt unreadable.
+            let verification_row = sqlx::query(
+                "SELECT id,input_digest,schema,owner_principal_id,verifier_principal_id,policy_version,record_digest,verification_reason, \
+                        FLOOR(EXTRACT(EPOCH FROM verified_at))::bigint AS verified_epoch \
+                 FROM matrix_verifications WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 \
+                   AND task_revision=$4 AND record_digest=$5",
+            )
+            .bind(tenant)
+            .bind(workspace_id)
+            .bind(advice.record.binding.task_id)
+            .bind(advice.record.binding.task_revision)
+            .bind(verification_digest)
+            .fetch_optional(&mut **self.transaction()?)
+            .await
+            .map_err(storage_error)?
+            .ok_or(Error::InternalInvariant)?;
+            let verified_epoch: i64 = verification_row
+                .try_get("verified_epoch")
+                .map_err(storage_error)?;
+            let verification = self
+                .decode_verification(
+                    workspace_id,
+                    advice.record.binding.task_id,
+                    advice.record.binding.task_revision,
+                    verification_row,
+                )
+                .await?;
+            let validated = evaluate_matrix_verification(
+                &advice.record.binding.task_id.to_string(),
+                &advice.record.binding.task_revision.to_string(),
+                &input,
+                &verification,
+                verified_epoch,
+            )
+            .map_err(|_| Error::InternalInvariant)?;
+            let reported = OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
+                advice.record.binding.task_id.to_string(),
+                advice.record.binding.task_revision.to_string(),
+                input.clone(),
+            )
+            .map_err(|_| Error::InternalInvariant)?;
+            let composition = compose_independently_verified_owner_matrix(&reported, &validated)
+                .map_err(|_| Error::InternalInvariant)?;
+            if matrix_verified_evaluation_digest(&input, &composition, &choice, &validated)
+                .map_err(|_| Error::InternalInvariant)?
+                != advice.record.binding.evaluation_digest
+            {
+                return Err(Error::InternalInvariant);
+            }
+        }
+        Ok(Some(advice))
     }
 
     async fn persist_guarded_matrix_advice(
@@ -398,8 +454,8 @@ impl PgUnitOfWork {
         }
         // The head lock also serializes verifier inserts. A replacement header,
         // changed input, or expired evidence must reject direct store callers.
-        let latest: Option<(Uuid, String, String)> = sqlx::query_as(
-            "SELECT id,record_digest,input_digest FROM matrix_verifications \
+        let latest = sqlx::query(
+            "SELECT id,input_digest,schema,owner_principal_id,verifier_principal_id,policy_version,record_digest,verification_reason FROM matrix_verifications \
              WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 AND task_revision=$4 \
              ORDER BY verified_at DESC,id DESC LIMIT 1",
         )
@@ -410,9 +466,13 @@ impl PgUnitOfWork {
         .fetch_optional(&mut **self.transaction()?)
         .await
         .map_err(storage_error)?;
-        let Some((verification_id, latest_digest, verified_input_digest)) = latest else {
+        let Some(latest) = latest else {
             return Err(Error::StaleRevision);
         };
+        let verification_id: Uuid = latest.try_get("id").map_err(storage_error)?;
+        let latest_digest: String = latest.try_get("record_digest").map_err(storage_error)?;
+        let verified_input_digest: String =
+            latest.try_get("input_digest").map_err(storage_error)?;
         if record.binding.verification_digest.as_deref() != Some(latest_digest.as_str())
             || verification_digest.as_deref() != Some(latest_digest.as_str())
             || verified_input_digest != current.input_digest
@@ -457,14 +517,30 @@ impl PgUnitOfWork {
         {
             return Err(Error::InputConflict);
         }
+        let verification = self
+            .decode_verification(workspace_id, current.task_id, current.revision, latest)
+            .await?;
+        let now: i64 =
+            sqlx::query_scalar("SELECT EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())::bigint")
+                .fetch_one(&mut **self.transaction()?)
+                .await
+                .map_err(storage_error)?;
+        let validated = evaluate_matrix_verification(
+            &current.task_id.to_string(),
+            &current.revision.to_string(),
+            &current.input,
+            &verification,
+            now,
+        )
+        .map_err(|_| Error::StaleRevision)?;
         let reported = OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
             current.task_id.to_string(),
             current.revision.to_string(),
             current.input.clone(),
         )?;
-        let composition = compose_owner_reported_engineering_matrix(&reported);
-        if matrix_evaluation_digest(&current.input, &composition, choice)?.as_deref()
-            != Some(record.binding.evaluation_digest.as_str())
+        let composition = compose_independently_verified_owner_matrix(&reported, &validated)?;
+        if matrix_verified_evaluation_digest(&current.input, &composition, choice, &validated)?
+            != record.binding.evaluation_digest
         {
             return Err(Error::InputConflict);
         }

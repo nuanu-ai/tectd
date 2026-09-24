@@ -63,7 +63,7 @@ impl PgUnitOfWork {
         }
     }
 
-    async fn decode_verification(
+    pub(crate) async fn decode_verification(
         &mut self,
         workspace_id: Uuid,
         task_id: Uuid,
