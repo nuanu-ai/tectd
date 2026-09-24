@@ -2,7 +2,7 @@ pub(crate) use super::catalog_support::RouteSpec;
 use super::catalog_support::{nullable_text, page_limit, text, uuid};
 use super::{
     candidate_schema, knowledge_lifecycle_schema, knowledge_maintenance_schema, knowledge_schema,
-    knowledge_search_schema, slice_schema,
+    knowledge_search_schema, matrix_task_schema, slice_schema,
 };
 use crate::tools::object_schema;
 use serde_json::json;
@@ -78,6 +78,17 @@ fn build_routes() -> Vec<RouteSpec> {
         ),
         route!(
             "query",
+            "task.source.get",
+            "get_matrix_task",
+            "Read the current immutable Engineering Matrix source revision for one task.",
+            "Requires an authenticated native session bound to the task's workspace.",
+            "Reads the current task source revision and its recorded identity and digest.",
+            "Safe to repeat; a missing task returns not_found.",
+            object_schema(json!({"task_id":uuid()}), json!(["task_id"])),
+            json!({"task_id":example_id}),
+        ),
+        route!(
+            "query",
             "setup.get",
             "get_setup",
             "Read a setup draft, exact input page, and current file observation.",
@@ -114,6 +125,26 @@ fn build_routes() -> Vec<RouteSpec> {
                 json!(["path"]),
             ),
             json!({"path":"/absolute/source/worktree"}),
+        ),
+        route!(
+            "command",
+            "task.source.record",
+            "record_matrix_task",
+            "Record one exact Engineering Matrix factual input revision for a task.",
+            "Requires an authenticated open native session, non-nil task and request IDs, revision 1 or the immediate successor of the expected current revision, and valid tagged factual input.",
+            "Atomically stores the immutable revision and digest in this workspace; source authority remains bound to the native session.",
+            "Repeat the same request_id with identical revision and input. On uncertainty, read task.source.get before another write.",
+            object_schema(
+                json!({"task_id":uuid(),"revision":{"type":"integer","minimum":1},"expected_current_revision":{"type":"integer","minimum":0},"request_id":uuid(),"input":matrix_task_schema::input()}),
+                json!([
+                    "task_id",
+                    "revision",
+                    "expected_current_revision",
+                    "request_id",
+                    "input"
+                ])
+            ),
+            json!({"task_id":example_id,"revision":1,"expected_current_revision":0,"request_id":"00000000-0000-4000-8000-000000000002","input":matrix_task_schema::example()}),
         ),
         route!(
             "command",

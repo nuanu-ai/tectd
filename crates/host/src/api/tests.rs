@@ -73,6 +73,67 @@ fn routed_envelopes_and_optional_nulls_fail_closed() {
 }
 
 #[test]
+fn matrix_task_routes_are_discoverable_and_strict() {
+    let definitions = definitions();
+    assert_eq!(definitions["tools"].as_array().unwrap().len(), 5);
+    for (tool, route) in [
+        ("command", "task.source.record"),
+        ("query", "task.source.get"),
+    ] {
+        let described =
+            help(parse_help(json!({"mode":"describe","tool":tool,"route":route})).unwrap())
+                .unwrap();
+        assert_eq!(described["route"], route);
+        assert!(decode_public_call(tool, described["example"]["arguments"].clone()).is_ok());
+        let listed = help(parse_help(json!({"mode":"describe","tool":tool})).unwrap()).unwrap();
+        assert!(listed["routes"].as_array().unwrap().contains(&json!(route)));
+    }
+    let spec = routes()
+        .iter()
+        .find(|spec| spec.route == "task.source.record")
+        .unwrap();
+    assert_eq!(
+        spec.schema["properties"]["input"]["additionalProperties"],
+        false
+    );
+    assert_eq!(
+        spec.schema["properties"]["input"]["properties"]["mode"]["oneOf"]
+            .as_array()
+            .unwrap()
+            .len(),
+        7
+    );
+    for (path, value) in [
+        ("revision", json!(0)),
+        ("expected_current_revision", json!(1)),
+        ("task_id", json!("00000000-0000-0000-0000-000000000000")),
+        ("request_id", json!("00000000-0000-0000-0000-000000000000")),
+    ] {
+        let mut params = spec.example.clone();
+        params[path] = value;
+        assert!(
+            decode_public_call("command", json!({"route":spec.route,"params":params})).is_err(),
+            "accepted bad {path}"
+        );
+    }
+    for path in ["mode", "envelope", "intent", "operational_facts"] {
+        let mut params = spec.example.clone();
+        match path {
+            "mode" => params["input"]["mode"]["forged"] = json!(true),
+            "envelope" => params["input"]["envelope"]["forged"] = json!(true),
+            "intent" => {
+                params["input"]["intent"] = json!({"state":"known","value":{"kind":"production_hotfix","forged":true},"provenance":"source"})
+            }
+            _ => params["input"]["envelope"]["operational_facts"]["forged"] = json!(true),
+        }
+        assert!(
+            decode_public_call("command", json!({"route":spec.route,"params":params})).is_err(),
+            "accepted nested {path}"
+        );
+    }
+}
+
+#[test]
 fn help_branches_are_strict_and_descriptions_come_from_registry() {
     let schema = definitions()["tools"]
         .as_array()

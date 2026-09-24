@@ -14,6 +14,7 @@ pub(crate) enum Invocation {
     KnowledgeMaintenance(crate::knowledge_maintenance_tools::KnowledgeMaintenanceInvocation),
     KnowledgeSearch(tect_domain::KnowledgeSearchQuery),
     Advisory(crate::advisory_tools::AdvisoryInvocation),
+    MatrixTask(crate::matrix_task_tools::MatrixTaskInvocation),
     Help(crate::api::HelpRequest),
     OpenWorkspace,
     GetState,
@@ -74,6 +75,9 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
         "help" => crate::api::parse_help(arguments).map(Invocation::Help),
         "knowledge_search" => {
             crate::knowledge_search_tools::parse(name, arguments).map(Invocation::KnowledgeSearch)
+        }
+        "record_matrix_task" | "get_matrix_task" => {
+            crate::matrix_task_tools::parse(name, arguments).map(Invocation::MatrixTask)
         }
         _ if matches!(
             name,
@@ -199,7 +203,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            45
+            46
         );
     }
 

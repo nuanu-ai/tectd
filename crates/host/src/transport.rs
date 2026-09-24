@@ -240,6 +240,21 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
             Invocation::KnowledgeSearch(query) => {
                 crate::knowledge_search_dispatch::execute(context, query, service, capacity).await
             }
+            Invocation::MatrixTask(invocation) => {
+                let revision = match invocation {
+                    crate::matrix_task_tools::MatrixTaskInvocation::Record(request) => {
+                        service.record_matrix_task(context, &request).await?
+                    }
+                    crate::matrix_task_tools::MatrixTaskInvocation::Get(task_id) => {
+                        service.get_matrix_task(context, task_id).await?
+                    }
+                };
+                Ok(responses::with_actions(
+                    crate::matrix_task_tools::revision(revision),
+                    Vec::new(),
+                    None,
+                ))
+            }
             Invocation::Advisory(invocation) => {
                 crate::advisory_dispatch::execute(context, invocation, service, capacity).await
             }
