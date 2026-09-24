@@ -172,6 +172,11 @@ fn input() -> Value {
 }
 
 async fn disposable_pair() -> (PgPool, String) {
+    disposable_pair_at_version(58).await
+}
+
+async fn disposable_pair_at_version(expected_version: i64) -> (PgPool, String) {
+    assert!(matches!(expected_version, 58 | 59));
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
     assert_eq!(
         std::env::var("TECT_TEST_EXPECTED_PG_SYSTEM_ID").as_deref(),
@@ -213,7 +218,7 @@ async fn disposable_pair() -> (PgPool, String) {
             "postgres".into(),
             DATABASE_OID,
             SYSTEM_ID.into(),
-            58
+            expected_version
         )
     );
     let runtime_pool = PgPool::connect_with(runtime).await.unwrap();

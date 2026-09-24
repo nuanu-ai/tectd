@@ -48,17 +48,17 @@ async fn counts(pool: &PgPool, workspace: Uuid, set: Uuid) -> (i64, i64, i64) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "writes only the pinned disposable PostgreSQL 18.6 fixture at migration 58"]
+#[ignore = "writes only the pinned disposable PostgreSQL 18.6 fixture at migration 59"]
 async fn selected_matrix_disposition_saves_native_draft_with_atomic_link() {
-    // disposable_pair checks the exact disposable cluster, users and migration 58
-    // before this test is allowed to advance the schema to migration 59.
-    let (pool, runtime_url) = disposable_pair().await;
+    // The shared guard still requires migration 58 for its original test. This
+    // selection test requires the same cluster and identities at migration 59.
+    let (pool, runtime_url) = disposable_pair_at_version(59).await;
     admin::migrate(&pool, "tect_ci").await.unwrap();
     let version: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 59);
+    assert_eq!(version, 60);
 
     let temp = private_temp();
     let root = temp.path().canonicalize().unwrap();
@@ -174,7 +174,8 @@ async fn selected_matrix_disposition_saves_native_draft_with_atomic_link() {
         "task_id":task,"task_revision":1,"disposition_id":disposition["disposition_id"],
         "selected_choice_id":"b","expected_input_digest":recorded["input_digest"],
         "expected_choice_set_digest":recorded["choice_set_digest"],
-        "expected_verification_digest":verification_digest
+        "expected_verification_digest":verification_digest,
+        "mapped_draft_node_indices":[0]
     });
 
     let opened = route(
@@ -203,6 +204,20 @@ async fn selected_matrix_disposition_saves_native_draft_with_atomic_link() {
         &["stale_context"],
     );
     assert_eq!(counts(&pool, workspace, set_id).await, baseline);
+    let mut out_of_range = save_request(planning, selection.clone());
+    out_of_range["matrix_selection"]["mapped_draft_node_indices"] = json!([1]);
+    assert_error(
+        &route_error(&mut owner, "command", "slice.candidates.save", out_of_range).await,
+        &["invalid_arguments"],
+    );
+    assert_eq!(counts(&pool, workspace, set_id).await, baseline);
+    let mut duplicate = save_request(planning, selection.clone());
+    duplicate["matrix_selection"]["mapped_draft_node_indices"] = json!([0, 0]);
+    assert_error(
+        &route_error(&mut owner, "command", "slice.candidates.save", duplicate).await,
+        &["invalid_arguments"],
+    );
+    assert_eq!(counts(&pool, workspace, set_id).await, baseline);
     let mut wrong_choice = save_request(planning, selection.clone());
     wrong_choice["matrix_selection"]["selected_choice_id"] = json!("a");
     assert_error(
@@ -224,9 +239,21 @@ async fn selected_matrix_disposition_saves_native_draft_with_atomic_link() {
         counts(&pool, workspace, set_id).await,
         (1, 1, result_revision)
     );
-    let row: (String, Uuid, Uuid, i64, Uuid, Uuid, String, Value, Value) = sqlx::query_as(
+    let row: (
+        String,
+        Uuid,
+        Uuid,
+        i64,
+        Uuid,
+        Uuid,
+        String,
+        Value,
+        Value,
+        Value,
+    ) = sqlx::query_as(
         "SELECT r.operation,r.entity_id,r.request_id,l.result_revision,l.scope_id, \
-                l.disposition_id,l.selected_choice_id,r.request_payload,r.result_payload \
+                l.disposition_id,l.selected_choice_id,l.mapped_nodes, \
+                r.request_payload,r.result_payload \
          FROM matrix_planning_selection_links l JOIN native_planning_receipts r \
            ON (r.tenant_id,r.workspace_id,r.entity_id,r.operation,r.request_id)= \
               (l.tenant_id,l.workspace_id,l.candidate_set_id,l.operation,l.caller_request_id) \
@@ -245,8 +272,33 @@ async fn selected_matrix_disposition_saves_native_draft_with_atomic_link() {
     assert_eq!(row.4, scope_id);
     assert_eq!(json!(row.5), request["matrix_selection"]["disposition_id"]);
     assert_eq!(row.6, "b");
-    assert_eq!(row.7["matrix_selection"], request["matrix_selection"]);
-    assert_eq!(row.8["candidate_set"]["revision"], json!(result_revision));
+    assert_eq!(row.8["matrix_selection"], request["matrix_selection"]);
+    assert_eq!(row.9["candidate_set"]["revision"], json!(result_revision));
+    let mapped = row.7.as_array().unwrap();
+    assert_eq!(mapped.len(), 1);
+    let receipt_node = &row.9["draft"]["nodes"][0];
+    let saved_node = &saved["draft"]["nodes"][0];
+    assert_eq!(row.8["draft"]["nodes"][0]["identity"]["local"], "choice-b");
+    assert_eq!(mapped[0]["draft_index"], 0);
+    assert_eq!(mapped[0]["node_id"], receipt_node["id"]);
+    assert_eq!(mapped[0]["node_revision"], receipt_node["revision"]);
+    assert_eq!(mapped[0]["node_id"], saved_node["id"]);
+    assert_eq!(mapped[0]["node_revision"], saved_node["revision"]);
+    let persisted_draft: Value = sqlx::query_scalar(
+        "SELECT payload FROM slice_candidate_drafts \
+         WHERE workspace_id=$1 AND candidate_set_id=$2 AND set_revision=$3",
+    )
+    .bind(workspace)
+    .bind(set_id)
+    .bind(result_revision)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(mapped[0]["node_id"], persisted_draft["nodes"][0]["id"]);
+    assert_eq!(
+        mapped[0]["node_revision"],
+        persisted_draft["nodes"][0]["revision"]
+    );
 
     let replay = route(
         &mut owner,
