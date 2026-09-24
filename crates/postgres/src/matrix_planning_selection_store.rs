@@ -1,8 +1,9 @@
 use async_trait::async_trait;
+use serde_json::Value;
 use sqlx::Row;
 use tect_application::{
-    MatrixDispositionRecord, MatrixPlanningSelectionLink, MatrixPlanningSelectionStore,
-    MatrixTaskStore, MatrixVerificationStore,
+    MatrixDispositionRecord, MatrixPlanningMappedNode, MatrixPlanningSelectionLink,
+    MatrixPlanningSelectionStore, MatrixTaskStore, MatrixVerificationStore,
 };
 use tect_domain::{
     Error, MatrixDispositionDecision, MatrixPlanningSelection, OwnerReportedEngineeringMatrixFacts,
@@ -12,6 +13,42 @@ use tect_domain::{
 use uuid::Uuid;
 
 use crate::{matrix_disposition_store::decode_disposition, storage_error, store::PgUnitOfWork};
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PersistedMappedNode {
+    draft_index: usize,
+    node_id: Uuid,
+    node_revision: i64,
+}
+
+fn mapped_nodes_json(nodes: &[MatrixPlanningMappedNode]) -> Result<Value> {
+    let persisted: Vec<_> = nodes
+        .iter()
+        .map(|node| PersistedMappedNode {
+            draft_index: node.draft_index,
+            node_id: node.node_id,
+            node_revision: node.node_revision,
+        })
+        .collect();
+    serde_json::to_value(persisted).map_err(storage_error)
+}
+
+fn decode_mapped_nodes(value: Option<Value>) -> Result<Vec<MatrixPlanningMappedNode>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let persisted: Vec<PersistedMappedNode> =
+        serde_json::from_value(value).map_err(storage_error)?;
+    Ok(persisted
+        .into_iter()
+        .map(|node| MatrixPlanningMappedNode {
+            draft_index: node.draft_index,
+            node_id: node.node_id,
+            node_revision: node.node_revision,
+        })
+        .collect())
+}
 
 fn link_write_error(error: sqlx::Error) -> Error {
     if error
@@ -23,6 +60,55 @@ fn link_write_error(error: sqlx::Error) -> Error {
     } else {
         storage_error(error)
     }
+}
+
+fn verify_mapped_nodes(
+    request: &Value,
+    result: &Value,
+    link: &MatrixPlanningSelectionLink,
+) -> Result<()> {
+    let request_nodes = request
+        .pointer("/draft/nodes")
+        .and_then(Value::as_array)
+        .ok_or(Error::InputConflict)?;
+    let resolved_nodes = result
+        .pointer("/draft/nodes")
+        .and_then(Value::as_array)
+        .ok_or(Error::InputConflict)?;
+    if request_nodes.len() != resolved_nodes.len()
+        || link.mapped_nodes.len() != link.selection.mapped_draft_node_indices.len()
+        || link.mapped_nodes.is_empty()
+    {
+        return Err(Error::InputConflict);
+    }
+    for (mapped, index) in link
+        .mapped_nodes
+        .iter()
+        .zip(&link.selection.mapped_draft_node_indices)
+    {
+        if mapped.draft_index != *index || mapped.node_id.is_nil() || mapped.node_revision < 1 {
+            return Err(Error::InputConflict);
+        }
+        let submitted = request_nodes.get(*index).ok_or(Error::InputConflict)?;
+        let resolved = resolved_nodes.get(*index).ok_or(Error::InputConflict)?;
+        if submitted.get("kind") != resolved.get("kind")
+            || submitted
+                .get("kind")
+                .and_then(Value::as_str)
+                .is_none_or(|kind| kind != "work" && kind != "decision")
+            || resolved.get("id") != Some(&serde_json::json!(mapped.node_id))
+            || resolved.get("revision") != Some(&serde_json::json!(mapped.node_revision))
+        {
+            return Err(Error::InputConflict);
+        }
+        let identity = submitted.get("identity").ok_or(Error::InputConflict)?;
+        if let Some(existing_id) = identity.get("candidate_id") {
+            if !existing_id.is_null() && existing_id != &serde_json::json!(mapped.node_id) {
+                return Err(Error::InputConflict);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -37,7 +123,7 @@ impl MatrixPlanningSelectionStore for PgUnitOfWork {
         let row = sqlx::query(
             "SELECT scope_id,disposition_id,task_id,task_revision,selected_choice_id, \
                     input_digest,choice_set_digest,verification_digest,evaluation_digest, \
-                    catalogue_version,caller_principal_id,caller_session_id,result_revision \
+                    catalogue_version,caller_principal_id,caller_session_id,result_revision,mapped_nodes \
              FROM matrix_planning_selection_links WHERE tenant_id=$1 AND workspace_id=$2 \
                AND candidate_set_id=$3 AND caller_request_id=$4",
         )
@@ -49,6 +135,8 @@ impl MatrixPlanningSelectionStore for PgUnitOfWork {
         .await
         .map_err(storage_error)?;
         row.map(|row| {
+            let mapped_json: Option<Value> = row.try_get("mapped_nodes").map_err(storage_error)?;
+            let mapped_nodes = decode_mapped_nodes(mapped_json)?;
             Ok(MatrixPlanningSelectionLink {
                 selection: MatrixPlanningSelection {
                     task_id: row.try_get("task_id").map_err(storage_error)?,
@@ -62,6 +150,10 @@ impl MatrixPlanningSelectionStore for PgUnitOfWork {
                     expected_verification_digest: row
                         .try_get("verification_digest")
                         .map_err(storage_error)?,
+                    mapped_draft_node_indices: mapped_nodes
+                        .iter()
+                        .map(|node| node.draft_index)
+                        .collect(),
                 },
                 evaluation_digest: row.try_get("evaluation_digest").map_err(storage_error)?,
                 catalogue_version: row.try_get("catalogue_version").map_err(storage_error)?,
@@ -71,6 +163,7 @@ impl MatrixPlanningSelectionStore for PgUnitOfWork {
                 candidate_set_id,
                 caller_request_id,
                 result_revision: row.try_get("result_revision").map_err(storage_error)?,
+                mapped_nodes,
             })
         })
         .transpose()
@@ -155,6 +248,22 @@ impl MatrixPlanningSelectionStore for PgUnitOfWork {
         {
             return Err(Error::InputConflict);
         }
+        let stored_draft: Option<Value> = sqlx::query_scalar(
+            "SELECT payload FROM slice_candidate_drafts \
+             WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 \
+               AND set_revision=$4 FOR SHARE",
+        )
+        .bind(tenant)
+        .bind(workspace_id)
+        .bind(link.candidate_set_id)
+        .bind(link.result_revision)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
+        if stored_draft.as_ref() != result.get("draft") {
+            return Err(Error::InputConflict);
+        }
+        verify_mapped_nodes(&request, &result, link)?;
         if let Some(prior) = self
             .matrix_planning_selection_link(
                 workspace_id,
@@ -306,8 +415,8 @@ impl MatrixPlanningSelectionStore for PgUnitOfWork {
             "INSERT INTO matrix_planning_selection_links \
               (tenant_id,workspace_id,candidate_set_id,caller_request_id,scope_id,disposition_id, \
                task_id,task_revision,selected_choice_id,input_digest,choice_set_digest, \
-               verification_digest,evaluation_digest,catalogue_version,caller_principal_id,caller_session_id,result_revision) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) \
+               verification_digest,evaluation_digest,catalogue_version,caller_principal_id,caller_session_id,result_revision,mapped_nodes) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) \
              ON CONFLICT DO NOTHING RETURNING caller_request_id",
         )
         .bind(tenant).bind(workspace_id).bind(link.candidate_set_id).bind(link.caller_request_id)
@@ -317,6 +426,7 @@ impl MatrixPlanningSelectionStore for PgUnitOfWork {
         .bind(&link.selection.expected_verification_digest).bind(&link.evaluation_digest)
         .bind(&link.catalogue_version).bind(link.caller_principal_id).bind(link.caller_session_id)
         .bind(link.result_revision)
+        .bind(mapped_nodes_json(&link.mapped_nodes)?)
         .fetch_optional(&mut **self.transaction()?).await.map_err(link_write_error)?;
         if inserted.is_some() {
             return Ok(());
@@ -332,5 +442,74 @@ impl MatrixPlanningSelectionStore for PgUnitOfWork {
             Some(prior) if prior == *link => Ok(()),
             _ => Err(Error::InputConflict),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn link(node_id: Uuid) -> MatrixPlanningSelectionLink {
+        MatrixPlanningSelectionLink {
+            selection: MatrixPlanningSelection {
+                task_id: Uuid::new_v4(),
+                task_revision: 1,
+                disposition_id: Uuid::new_v4(),
+                selected_choice_id: "chosen".into(),
+                expected_input_digest: "a".repeat(64),
+                expected_choice_set_digest: "b".repeat(64),
+                expected_verification_digest: "c".repeat(64),
+                mapped_draft_node_indices: vec![1],
+            },
+            evaluation_digest: "d".repeat(64),
+            catalogue_version: "v1".into(),
+            caller_principal_id: Uuid::new_v4(),
+            caller_session_id: Uuid::new_v4(),
+            scope_id: Uuid::new_v4(),
+            candidate_set_id: Uuid::new_v4(),
+            caller_request_id: Uuid::new_v4(),
+            result_revision: 2,
+            mapped_nodes: vec![MatrixPlanningMappedNode {
+                draft_index: 1,
+                node_id,
+                node_revision: 1,
+            }],
+        }
+    }
+
+    #[test]
+    fn mapped_node_must_match_exact_receipt_index_kind_identity_and_result() {
+        let node_id = Uuid::new_v4();
+        let binding = link(node_id);
+        let request = serde_json::json!({"draft": {"nodes": [
+            {"kind": "work", "identity": {"local": "other"}},
+            {"kind": "decision", "identity": {"local": "selected"}}
+        ]}});
+        let mut result = serde_json::json!({"draft": {"nodes": [
+            {"kind": "work", "id": Uuid::new_v4(), "revision": 1},
+            {"kind": "decision", "id": node_id, "revision": 1}
+        ]}});
+        assert_eq!(verify_mapped_nodes(&request, &result, &binding), Ok(()));
+        assert_eq!(
+            decode_mapped_nodes(Some(mapped_nodes_json(&binding.mapped_nodes).unwrap())).unwrap(),
+            binding.mapped_nodes
+        );
+        result["draft"]["nodes"][1]["id"] = serde_json::json!(Uuid::new_v4());
+        assert_eq!(
+            verify_mapped_nodes(&request, &result, &binding),
+            Err(Error::InputConflict)
+        );
+        result["draft"]["nodes"][1]["id"] = serde_json::json!(node_id);
+        result["draft"]["nodes"][1]["kind"] = serde_json::json!("work");
+        assert_eq!(
+            verify_mapped_nodes(&request, &result, &binding),
+            Err(Error::InputConflict)
+        );
+        let mut wrong_index = binding.clone();
+        wrong_index.mapped_nodes[0].draft_index = 0;
+        assert_eq!(
+            verify_mapped_nodes(&request, &result, &wrong_index),
+            Err(Error::InputConflict)
+        );
     }
 }

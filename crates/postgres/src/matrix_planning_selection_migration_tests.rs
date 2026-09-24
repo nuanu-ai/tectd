@@ -1,4 +1,5 @@
 const MIGRATION: &str = include_str!("../migrations/0059_matrix_planning_selection_link.sql");
+const MAPPING_MIGRATION: &str = include_str!("../migrations/0060_matrix_planning_mapped_nodes.sql");
 const STORE: &str = include_str!("matrix_planning_selection_store.rs");
 const GRANTS: &str = include_str!("admin/matrix_advisory.rs");
 
@@ -46,4 +47,15 @@ fn caller_guard_locks_live_identity_without_private_runtime_grants() {
     assert!(GRANTS.contains("matrix_planning_selection_active_owner"));
     assert!(!MIGRATION.contains("GRANT SELECT ON TABLE hosts"));
     assert!(!MIGRATION.contains("GRANT SELECT ON TABLE principals"));
+}
+
+#[test]
+fn new_links_require_attested_mapping_without_rewriting_legacy_links() {
+    assert!(MAPPING_MIGRATION.contains("ADD COLUMN mapped_nodes jsonb"));
+    assert!(MAPPING_MIGRATION.contains("jsonb_array_length(mapped_nodes) > 0"));
+    assert!(MAPPING_MIGRATION.contains("NOT VALID"));
+    assert!(!MIGRATION.contains("mapped_nodes"));
+    assert!(STORE.contains("stored_draft.as_ref() != result.get(\"draft\")"));
+    assert!(STORE.contains("verify_mapped_nodes(&request, &result, link)?"));
+    assert!(STORE.contains("ON CONFLICT DO NOTHING RETURNING caller_request_id"));
 }
