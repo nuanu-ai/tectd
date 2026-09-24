@@ -183,7 +183,9 @@ async fn terminalize_stale_matrix_dispatch(
 ) -> Result<()> {
     let state = match reason {
         AdvisoryReason::DeterministicInputInvalid => "no_call",
-        AdvisoryReason::ConfigurationChanged => "invalidated",
+        AdvisoryReason::ConfigurationChanged | AdvisoryReason::MatrixVerificationStale => {
+            "invalidated"
+        }
         _ => return Err(Error::InvalidArguments),
     };
     let cancelled = sqlx::query(
@@ -410,6 +412,7 @@ async fn start_dispatch(
     tenant: Uuid,
     workspace: Uuid,
     dispatch_id: Uuid,
+    verification_current: Option<bool>,
 ) -> Result<AdvisoryDispatchStart> {
     let mut row = dispatch_by_id(tx, tenant, workspace, dispatch_id, true).await?;
     let should_send = match dispatch_state(&row.state)? {
@@ -417,6 +420,11 @@ async fn start_dispatch(
             let opportunity =
                 opportunity_by_id(tx, tenant, workspace, row.opportunity_id, true).await?;
             if !supported_dispatch_opportunity(&opportunity) {
+                return Err(Error::InputConflict);
+            }
+            if verification_current.is_some()
+                && opportunity.capability != AdvisoryCapability::EngineeringProfile
+            {
                 return Err(Error::InputConflict);
             }
             if opportunity.capability == AdvisoryCapability::EngineeringProfile {
@@ -445,7 +453,9 @@ async fn start_dispatch(
                     .fetch_one(&mut **tx)
                     .await
                     .map_err(storage_error)?;
-                let stale_reason = if current_config.0 != opportunity.config_revision
+                let stale_reason = if verification_current == Some(false) {
+                    Some(AdvisoryReason::MatrixVerificationStale)
+                } else if current_config.0 != opportunity.config_revision
                     || current_config.1 != "optional"
                     || current_config.2.is_none()
                     || current_config.3.is_none()
@@ -568,7 +578,7 @@ pub(crate) async fn start_dispatch_for_test(
     workspace: Uuid,
     dispatch_id: Uuid,
 ) -> Result<AdvisoryDispatchStart> {
-    start_dispatch(tx, tenant, workspace, dispatch_id).await
+    start_dispatch(tx, tenant, workspace, dispatch_id, None).await
 }
 
 async fn seal_dispatch(
@@ -673,13 +683,14 @@ async fn reconcile_dispatch(
     dispatch_from_row(&row)
 }
 
-async fn finalize_opportunity(
+pub(crate) async fn finalize_opportunity(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     workspace: Uuid,
     opportunity_id: Uuid,
     expected_config_revision: i64,
     dispatch: &AdvisoryDispatch,
+    verification_stale: bool,
 ) -> Result<AdvisoryOpportunity> {
     if dispatch.opportunity_id != opportunity_id {
         return Err(Error::InputConflict);
@@ -737,7 +748,12 @@ async fn finalize_opportunity(
     // Finalize Matrix advice against the same locked task head that guarded
     // persistence will use below. Otherwise a post-send task edit can make
     // persistence abort this transaction and strand the sealed dispatch.
-    let matrix_stale = if opportunity.capability == AdvisoryCapability::EngineeringProfile
+    let matrix_stale = if verification_stale {
+        if opportunity.capability != AdvisoryCapability::EngineeringProfile {
+            return Err(Error::InputConflict);
+        }
+        Some(AdvisoryReason::MatrixVerificationStale)
+    } else if opportunity.capability == AdvisoryCapability::EngineeringProfile
         && current.0 == expected_config_revision
         && current.1 == "optional"
     {

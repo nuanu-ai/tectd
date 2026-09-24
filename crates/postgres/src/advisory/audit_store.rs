@@ -297,7 +297,25 @@ impl AdvisoryStore for PgUnitOfWork {
         dispatch_id: Uuid,
     ) -> Result<AdvisoryDispatchStart> {
         let tenant = self.tenant_id()?;
-        start_dispatch(self.transaction()?, tenant, workspace_id, dispatch_id).await
+        start_dispatch(self.transaction()?, tenant, workspace_id, dispatch_id, None).await
+    }
+
+    async fn start_verified_matrix_dispatch(
+        &mut self,
+        _capability: &tect_application::AdvisoryLifecycleCapability,
+        workspace_id: Uuid,
+        dispatch_id: Uuid,
+        verification_current: bool,
+    ) -> Result<AdvisoryDispatchStart> {
+        let tenant = self.tenant_id()?;
+        start_dispatch(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            dispatch_id,
+            Some(verification_current),
+        )
+        .await
     }
 
     async fn seal_advisory_dispatch(
@@ -346,6 +364,7 @@ impl AdvisoryStore for PgUnitOfWork {
             opportunity_id,
             expected_config_revision,
             dispatch,
+            false,
         )
         .await
     }

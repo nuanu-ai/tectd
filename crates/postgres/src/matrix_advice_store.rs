@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, postgres::PgRow};
 use tect_application::{
-    AdvisoryLifecycleCapability, AdvisoryStore, GuardedMatrixAdviceOutcome,
-    GuardedMatrixAdviceRecord, MatrixAdviceStore, MatrixProviderBinding, MatrixTaskStore,
-    StoredGuardedMatrixAdviceRecord, canonical_matrix_advice_digest, canonical_matrix_input_digest,
+    AdvisoryLifecycleCapability, GuardedMatrixAdviceOutcome, GuardedMatrixAdviceRecord,
+    MatrixAdviceStore, MatrixProviderBinding, MatrixTaskStore, StoredGuardedMatrixAdviceRecord,
+    canonical_matrix_advice_digest, canonical_matrix_input_digest,
 };
 use tect_domain::{
     AdvisoryDispatch, AdvisoryModelConfiguration, AdvisoryOpportunity, AdvisoryOpportunityState,
@@ -14,7 +14,7 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
-use crate::{storage_error, store::PgUnitOfWork};
+use crate::{advisory::finalize_opportunity, storage_error, store::PgUnitOfWork};
 
 fn decode_advice(
     row: PgRow,
@@ -179,6 +179,7 @@ impl MatrixAdviceStore for PgUnitOfWork {
         expected_config_revision: i64,
         dispatch: &AdvisoryDispatch,
         record: Option<&GuardedMatrixAdviceRecord>,
+        verification_stale: bool,
     ) -> Result<AdvisoryOpportunity> {
         let tenant = self.tenant_id()?;
         let previous: String = sqlx::query_scalar(
@@ -191,13 +192,15 @@ impl MatrixAdviceStore for PgUnitOfWork {
         .await
         .map_err(storage_error)?
         .ok_or(Error::NotFound)?;
-        let result = AdvisoryStore::finalize_advisory_opportunity(
-            self,
-            capability,
+        let _ = capability;
+        let result = finalize_opportunity(
+            self.transaction()?,
+            tenant,
             workspace_id,
             opportunity_id,
             expected_config_revision,
             dispatch,
+            verification_stale,
         )
         .await?;
         if result.state == AdvisoryOpportunityState::Advised {
