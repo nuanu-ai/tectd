@@ -116,6 +116,44 @@ pub(crate) fn authorize_prepared_matrix(
 }
 
 impl WorkspaceService {
+    async fn matrix_request_is_current(
+        &self,
+        context: &RequestContext,
+        workspace_id: Uuid,
+        provider_request: &MatrixProviderRequest,
+    ) -> Result<bool> {
+        // External evidence validation runs without holding write locks. The
+        // write transaction rechecks database task and verification bindings
+        // under config-then-task locks before sending or recording advice.
+        let (mut read, identity) = self
+            .authenticated(context, TransactionMode::ReadOnly)
+            .await?;
+        let session = read
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        if Self::validate_binding(&mut *read, context, &identity, &session)
+            .await?
+            .id
+            != workspace_id
+        {
+            return Err(Error::InputConflict);
+        }
+        let current = read
+            .matrix_task(workspace_id, provider_request.revision().task_id)
+            .await?;
+        let fresh = crate::matrix_tasks::matrix_request_still_current(
+            read.matrix_verification_store(),
+            self.matrix_evidence_validator.as_ref(),
+            workspace_id,
+            current,
+            provider_request,
+        )
+        .await;
+        read.commit().await?;
+        Ok(fresh)
+    }
+
     pub(crate) async fn dispatch_prepared_matrix_advisory(
         &self,
         context: &RequestContext,
@@ -127,6 +165,12 @@ impl WorkspaceService {
         prepared: PreparedMatrixAdviceAttempt,
     ) -> Result<AdvisoryOpportunity> {
         let lifecycle = AdvisoryLifecycleCapability::internal();
+        let verification_current = self
+            .matrix_request_is_current(context, workspace_id, &provider_request)
+            .await?
+            && prepared.validate_for(&provider_request).is_ok()
+            && authorization.payload_digest == prepared.body_sha256()
+            && authorization.request_payload == prepared.body();
         let (mut start, identity) = self
             .authenticated(context, TransactionMode::ReadWrite)
             .await?;
@@ -141,20 +185,6 @@ impl WorkspaceService {
         {
             return Err(Error::InputConflict);
         }
-        let current = start
-            .lock_matrix_task(workspace_id, provider_request.revision().task_id)
-            .await?;
-        let verification_current = crate::matrix_tasks::matrix_request_still_current(
-            start.matrix_verification_store(),
-            self.matrix_evidence_validator.as_ref(),
-            workspace_id,
-            current,
-            &provider_request,
-        )
-        .await
-            && prepared.validate_for(&provider_request).is_ok()
-            && authorization.payload_digest == prepared.body_sha256()
-            && authorization.request_payload == prepared.body();
         let started = start
             .start_verified_matrix_dispatch(
                 &lifecycle,
@@ -166,7 +196,7 @@ impl WorkspaceService {
         start.commit().await?;
         if !started.should_send {
             let (mut read, identity) = self
-                .authenticated(context, TransactionMode::ReadOnly)
+                .authenticated(context, TransactionMode::ReadWrite)
                 .await?;
             let session = read
                 .session(identity.host_id, &context.native_session_id)
@@ -212,25 +242,12 @@ impl WorkspaceService {
             .seal_advisory_dispatch(&lifecycle, workspace_id, &seal)
             .await?;
         seal_tx.commit().await?;
+        let verification_stale = !self
+            .matrix_request_is_current(context, workspace_id, &provider_request)
+            .await?;
         let (mut finalize, _) = self
             .authenticated(context, TransactionMode::ReadWrite)
             .await?;
-        // Lock the occurrence before the task, matching persistence's lock
-        // order. The external validator runs again after the transport result.
-        let _ = finalize
-            .advisory_opportunity_for_dispatch(workspace_id, opportunity.id)
-            .await?;
-        let current = finalize
-            .lock_matrix_task(workspace_id, provider_request.revision().task_id)
-            .await?;
-        let verification_stale = !crate::matrix_tasks::matrix_request_still_current(
-            finalize.matrix_verification_store(),
-            self.matrix_evidence_validator.as_ref(),
-            workspace_id,
-            current,
-            &provider_request,
-        )
-        .await;
         let result = finalize
             .finalize_guarded_matrix_advice(
                 &lifecycle,
