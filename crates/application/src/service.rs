@@ -16,6 +16,8 @@ pub struct WorkspaceService {
     #[allow(dead_code)]
     pub(crate) matrix_budget: Arc<dyn crate::MatrixBudgetPolicy>,
     pub(crate) matrix_evidence_validator: Arc<dyn crate::MatrixEvidenceValidator>,
+    pub(crate) pipeline_recommendation_definitions:
+        Arc<dyn crate::PipelineRecommendationDefinitionProvider>,
     pub(crate) scope_authority: Arc<dyn crate::ScopeAuthorityObserver>,
     pub(crate) scope_manifest_supplier: Arc<dyn crate::ScopeManifestSupplier>,
     pub(crate) scope_budget: Arc<dyn crate::ScopeBudgetPolicy>,
@@ -106,6 +108,9 @@ impl WorkspaceService {
             matrix_advice_provider: Arc::new(crate::DisabledMatrixAdviceProvider),
             matrix_budget: Arc::new(crate::DenyMatrixBudget),
             matrix_evidence_validator: Arc::new(crate::DisabledMatrixEvidenceValidator),
+            pipeline_recommendation_definitions: Arc::new(
+                crate::UnavailablePipelineRecommendationDefinitions,
+            ),
             scope_authority: Arc::new(crate::UnavailableScopeAuthorityObserver),
             scope_manifest_supplier: Arc::new(crate::UnavailableScopeManifestSupplier),
             scope_budget: Arc::new(crate::DenyScopeBudget),
@@ -182,6 +187,15 @@ impl WorkspaceService {
         validator: Arc<dyn crate::MatrixEvidenceValidator>,
     ) -> Self {
         self.matrix_evidence_validator = validator;
+        self
+    }
+
+    /// Install the immutable pipeline definitions for pre-open advice.
+    pub fn with_pipeline_recommendation_definitions(
+        mut self,
+        provider: Arc<dyn crate::PipelineRecommendationDefinitionProvider>,
+    ) -> Self {
+        self.pipeline_recommendation_definitions = provider;
         self
     }
 

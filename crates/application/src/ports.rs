@@ -53,6 +53,12 @@ pub trait UnitOfWork:
     ) -> Option<&mut dyn crate::MatrixPlanningEffectStore> {
         None
     }
+    /// Optional pre-open pipeline recommendation persistence.
+    fn pipeline_recommendation_store(
+        &mut self,
+    ) -> Option<&mut dyn crate::PipelineRecommendationStore> {
+        None
+    }
     async fn authenticate(&mut self, auth: &HostAuth) -> Result<HostIdentity>;
     async fn set_tenant(&mut self, tenant_id: Uuid) -> Result<()>;
     async fn lock_native_session(&mut self, host_id: Uuid, native_id: &str) -> Result<()>;

@@ -66,6 +66,7 @@ pub enum AdvisoryReason {
     ConfigurationChanged,
     MatrixTaskRevisionChanged,
     MatrixVerificationStale,
+    RecommendationPrepared,
     DispatchAuthorized,
     ProviderResponse,
     ProviderFailure,
@@ -88,6 +89,7 @@ impl AdvisoryReason {
             Self::ConfigurationChanged => "configuration_changed",
             Self::MatrixTaskRevisionChanged => "matrix_task_revision_changed",
             Self::MatrixVerificationStale => "matrix_verification_stale",
+            Self::RecommendationPrepared => "recommendation_prepared",
             Self::DispatchAuthorized => "dispatch_authorized",
             Self::ProviderResponse => "provider_response",
             Self::ProviderFailure => "provider_failure",
@@ -114,7 +116,10 @@ pub const fn advisory_reason_matches_state(
                 | AdvisoryReason::ProviderUnconfigured
                 | AdvisoryReason::BudgetPolicyInvalid
         ),
-        AdvisoryOpportunityState::Prepared => matches!(reason, AdvisoryReason::DispatchAuthorized),
+        AdvisoryOpportunityState::Prepared => matches!(
+            reason,
+            AdvisoryReason::DispatchAuthorized | AdvisoryReason::RecommendationPrepared
+        ),
         AdvisoryOpportunityState::AwaitingResponse => matches!(
             reason,
             AdvisoryReason::DispatchAuthorized | AdvisoryReason::SendUnknown
@@ -298,22 +303,9 @@ impl AdvisoryOpportunityInput {
                     self.target_kind != "slice_candidate_node"
                         || self.target_id.is_none()
                         || self.work_revision.is_none()
-                        || self.matrix_task_revision.is_none()
-                        || self
-                            .matrix_choice_set_digest
-                            .as_ref()
-                            .is_some_and(|digest| !valid_sha256(digest))
-                        || self
-                            .matrix_verification_digest
-                            .as_ref()
-                            .is_some_and(|digest| !valid_sha256(digest))
-                        || matches!(
-                            self.state,
-                            AdvisoryOpportunityState::Prepared
-                                | AdvisoryOpportunityState::AwaitingResponse
-                                | AdvisoryOpportunityState::Advised
-                        ) && (self.matrix_choice_set_digest.is_none()
-                            || self.matrix_verification_digest.is_none())
+                        || self.matrix_task_revision.is_some()
+                        || self.matrix_choice_set_digest.is_some()
+                        || self.matrix_verification_digest.is_some()
                 }
                 _ => {
                     self.matrix_task_revision.is_some()
@@ -325,6 +317,8 @@ impl AdvisoryOpportunityInput {
             return Err(Error::InvalidArguments);
         }
         if !advisory_reason_matches_state(self.state, self.primary_reason)
+            || matches!(self.primary_reason, AdvisoryReason::RecommendationPrepared)
+                && self.capability != AdvisoryCapability::PipelineRecommendation
             || matches!(
                 self.primary_reason,
                 AdvisoryReason::MatrixTaskRevisionChanged | AdvisoryReason::MatrixVerificationStale
