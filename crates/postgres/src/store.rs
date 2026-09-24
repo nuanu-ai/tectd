@@ -74,6 +74,12 @@ impl Store for PgStore {
 
 #[async_trait]
 impl UnitOfWork for PgUnitOfWork {
+    fn matrix_verification_store(
+        &mut self,
+    ) -> Option<&mut dyn tect_application::MatrixVerificationStore> {
+        Some(self)
+    }
+
     async fn authenticate(&mut self, auth: &HostAuth) -> Result<HostIdentity> {
         let digest = runtime::credential_digest(&auth.credential);
         let for_write = self.mode == TransactionMode::ReadWrite;

@@ -68,6 +68,7 @@ impl WorkspaceService {
             self.matrix_evidence_validator.as_ref(),
             workspace.id,
             identity.principal_id,
+            session.id,
             &revision,
             request,
             &current_epoch_seconds,
@@ -83,6 +84,7 @@ pub(crate) async fn verify_locked_revision(
     validator: &dyn MatrixEvidenceValidator,
     workspace_id: Uuid,
     verifier_principal_id: Uuid,
+    verifier_session_id: Uuid,
     revision: &MatrixTaskRevision,
     request: &VerifyMatrixTask,
     clock: &dyn Fn() -> Result<i64>,
@@ -164,6 +166,7 @@ pub(crate) async fn verify_locked_revision(
     store
         .append_matrix_verification(
             workspace_id,
+            verifier_session_id,
             revision.task_id,
             revision.revision,
             &revision.input_digest,
@@ -258,9 +261,29 @@ mod tests {
 
     #[async_trait]
     impl MatrixVerificationStore for FakeStore {
+        async fn matrix_verification_for_revision(
+            &mut self,
+            _workspace_id: Uuid,
+            task_id: Uuid,
+            revision: i64,
+            input_digest: &str,
+        ) -> Result<Option<MatrixVerificationRecord>> {
+            Ok(self
+                .saved
+                .iter()
+                .rev()
+                .find(|record| {
+                    record.task_id == task_id.to_string()
+                        && record.task_revision == revision.to_string()
+                        && record.input_digest == input_digest
+                })
+                .cloned())
+        }
+
         async fn append_matrix_verification(
             &mut self,
             _workspace_id: Uuid,
+            _verifier_session_id: Uuid,
             _task_id: Uuid,
             _expected_revision: i64,
             _expected_input_digest: &str,
@@ -317,6 +340,7 @@ mod tests {
             &FakeValidator { trusted: true },
             Uuid::new_v4(),
             verifier,
+            Uuid::new_v4(),
             &revision,
             &request(&revision),
             &|| Ok(100),
@@ -342,6 +366,7 @@ mod tests {
                 &FakeValidator { trusted: true },
                 Uuid::new_v4(),
                 revision.recorded_by_principal_id,
+                Uuid::new_v4(),
                 &revision,
                 &request(&revision),
                 &|| Ok(100)
@@ -364,6 +389,7 @@ mod tests {
                 &FakeValidator { trusted: true },
                 Uuid::new_v4(),
                 Uuid::new_v4(),
+                Uuid::new_v4(),
                 &revision,
                 &request,
                 &|| Ok(100)
@@ -377,6 +403,7 @@ mod tests {
             verify_locked_revision(
                 &mut store,
                 &FakeValidator { trusted: true },
+                Uuid::new_v4(),
                 Uuid::new_v4(),
                 Uuid::new_v4(),
                 &revision,
@@ -401,6 +428,7 @@ mod tests {
                 &FakeValidator { trusted: true },
                 Uuid::new_v4(),
                 Uuid::new_v4(),
+                Uuid::new_v4(),
                 &revision,
                 &request,
                 &|| Ok(100)
@@ -413,6 +441,7 @@ mod tests {
             verify_locked_revision(
                 &mut store,
                 &FakeValidator { trusted: false },
+                Uuid::new_v4(),
                 Uuid::new_v4(),
                 Uuid::new_v4(),
                 &revision,
@@ -439,6 +468,7 @@ mod tests {
             verify_locked_revision(
                 &mut store,
                 &FakeValidator { trusted: true },
+                Uuid::new_v4(),
                 Uuid::new_v4(),
                 Uuid::new_v4(),
                 &revision,

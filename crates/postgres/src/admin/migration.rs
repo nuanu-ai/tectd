@@ -48,6 +48,12 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
         ),
         format!("GRANT UPDATE(current_revision) ON TABLE matrix_tasks TO {quoted_role}"),
         format!(
+            "REVOKE ALL PRIVILEGES ON TABLE matrix_verifications, matrix_verification_bindings FROM {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT ON TABLE matrix_verifications, matrix_verification_bindings TO {quoted_role}"
+        ),
+        format!(
             "GRANT SELECT, INSERT ON TABLE source_repositories, source_worktrees \
              TO {quoted_role}"
         ),
@@ -334,6 +340,7 @@ pub async fn validate_runtime_role(pool: &PgPool, runtime_role: &str) -> Result<
                          'advisory_opportunity', 'advisory_dispatch',
                          'advisory_matrix_advice', 'advisory_matrix_disposition',
                          'matrix_tasks', 'matrix_task_revisions',
+                         'matrix_verifications', 'matrix_verification_bindings',
                          'advisory_scope_source_snapshot', 'advisory_scope_manifest',
                          'advisory_scope_advice', 'advisory_scope_disposition',
                          'advisory_scope_preservation_receipt',

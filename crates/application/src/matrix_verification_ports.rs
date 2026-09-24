@@ -45,9 +45,20 @@ impl MatrixEvidenceValidator for DisabledMatrixEvidenceValidator {
 /// Implementations must append atomically and reject a changed task head.
 #[async_trait]
 pub trait MatrixVerificationStore: Send {
+    /// Returns an exact persisted record; callers must re-evaluate time-bound
+    /// evidence at use time. None never implies verified.
+    async fn matrix_verification_for_revision(
+        &mut self,
+        workspace_id: Uuid,
+        task_id: Uuid,
+        revision: i64,
+        input_digest: &str,
+    ) -> Result<Option<MatrixVerificationRecord>>;
+
     async fn append_matrix_verification(
         &mut self,
         workspace_id: Uuid,
+        verifier_session_id: Uuid,
         task_id: Uuid,
         expected_revision: i64,
         expected_input_digest: &str,
