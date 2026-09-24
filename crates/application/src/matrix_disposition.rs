@@ -1,6 +1,6 @@
 use crate::{
-    CurrentMatrixAdvice, MatrixDispositionRecord, RecordMatrixDisposition,
-    RevalidatedMatrixVerification, TransactionMode, WorkspaceService,
+    CurrentMatrixAdvice, MatrixDispositionRecord, RecordMatrixDisposition, TransactionMode,
+    WorkspaceService,
 };
 use tect_domain::{
     AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryOpportunity, AdvisoryOpportunityState,
