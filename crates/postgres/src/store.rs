@@ -21,6 +21,22 @@ pub(crate) struct PgUnitOfWork {
 }
 
 impl PgUnitOfWork {
+    #[cfg(test)]
+    pub(crate) async fn test_begin(pool: &PgPool, tenant_id: Uuid) -> Self {
+        let mut transaction = pool.begin().await.unwrap();
+        sqlx::query("SELECT pg_catalog.set_config('tect.tenant_id', $1, true)")
+            .bind(tenant_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .unwrap();
+        Self {
+            transaction: Some(transaction),
+            mode: TransactionMode::ReadWrite,
+            identity: None,
+            tenant_id: Some(tenant_id),
+        }
+    }
+
     pub(crate) fn transaction(&mut self) -> Result<&mut Transaction<'static, Postgres>> {
         self.transaction.as_mut().ok_or(Error::StorageUnavailable)
     }
