@@ -117,9 +117,30 @@ fn complete_coverage_includes_dynamic_and_known_empty() {
     if let OperationalFacts::Reported { entries } = &mut reordered.envelope.operational_facts {
         entries.reverse();
     }
-    assert_eq!(
+    assert_ne!(
         matrix_input_digest(&input).unwrap(),
         matrix_input_digest(&reordered).unwrap()
+    );
+}
+
+#[test]
+fn input_digest_matches_persisted_matrix_task_store_json_hash() {
+    let input = input();
+    // This is the same projection and hash as
+    // application::canonical_matrix_input_digest, used by PgUnitOfWork.
+    let persisted = serde_json::to_value(&input).unwrap();
+    let expected = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&persisted).unwrap())
+    );
+    assert_eq!(
+        expected,
+        "23a00caa4c8e6212d660e388c3d4791631dca2936ba3bc5b540f97407354ff56"
+    );
+    assert_eq!(matrix_input_digest(&input).unwrap(), expected);
+    assert_ne!(
+        matrix_input_digest(&input).unwrap(),
+        digest_json(&(MATRIX_VERIFICATION_SCHEMA, input)).unwrap()
     );
 }
 
@@ -190,7 +211,7 @@ fn stale_rejected_and_tampered_bindings_fail() {
 }
 
 #[test]
-fn known_guarantees_order_has_stable_digest() {
+fn known_guarantees_order_affects_persisted_input_digest() {
     let mut input = input();
     input.affected_guarantees = known(vec![
         ProtectedGuarantee::Secret,
@@ -201,6 +222,6 @@ fn known_guarantees_order_has_stable_digest() {
     if let MatrixFact::Known { value, .. } = &mut input.affected_guarantees {
         value.reverse();
     }
-    assert_eq!(matrix_input_digest(&input).unwrap(), original);
+    assert_ne!(matrix_input_digest(&input).unwrap(), original);
     assert_eq!(required_matrix_facts(&input).unwrap(), facts);
 }

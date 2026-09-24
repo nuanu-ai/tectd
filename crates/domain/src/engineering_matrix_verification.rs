@@ -67,17 +67,12 @@ pub struct ValidatedMatrixVerification {
     pub record_digest: String,
 }
 
-/// Canonical input digest is independent of operational entry and guarantee order.
+/// The Matrix task store persists `serde_json::to_value(input)` and hashes its
+/// JSON bytes. Array order is therefore significant in the persisted digest.
 pub fn matrix_input_digest(input: &EngineeringMatrixInput) -> Result<String> {
     input.validate()?;
-    let mut canonical = input.clone();
-    if let OperationalFacts::Reported { entries } = &mut canonical.envelope.operational_facts {
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-    }
-    if let MatrixFact::Known { value, .. } = &mut canonical.affected_guarantees {
-        value.sort();
-    }
-    digest_json(&(MATRIX_VERIFICATION_SCHEMA, canonical))
+    let canonical = serde_json::to_value(input).map_err(|_| Error::InvalidArguments)?;
+    digest_json(&canonical)
 }
 
 /// Derives every required path from the complete source projection. Unknown,
