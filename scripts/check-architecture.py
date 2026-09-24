@@ -7,7 +7,8 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = {
-    "tect-domain": {"serde", "serde_json", "uuid", "oxrdf"},
+    # SHA-256 computes deterministic value identity; it performs no effect or I/O.
+    "tect-domain": {"serde", "serde_json", "sha2", "uuid", "oxrdf"},
     "tect-application": {"tect-domain", "async-trait", "uuid", "sha2", "serde_json"},
     "tect-postgres": {
         "tect-domain", "tect-application", "async-trait", "sqlx", "uuid",

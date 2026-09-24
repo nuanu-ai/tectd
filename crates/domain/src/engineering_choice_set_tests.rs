@@ -104,6 +104,10 @@ fn canonical_digest_is_order_independent_and_binding_changes_with_facts() {
         left.canonical_digest(&input()).unwrap(),
         right.canonical_digest(&input()).unwrap()
     );
+    assert_eq!(
+        left.canonical_digest(&input()).unwrap(),
+        "79cd826af4b569e246e8865ab2996bc30b515e1d5bbc19ae8f0da8c146778ff8"
+    );
     let reported = OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
         "task-1".into(),
         "7".into(),
