@@ -40,7 +40,7 @@ fn facts(mode: EngineeringMode) -> EngineeringMatrixInput {
 }
 
 fn compose(input: EngineeringMatrixInput) -> EngineeringMatrixComposition {
-    let verified = VerifiedEngineeringMatrixFacts::from_verified_task_revision(
+    let verified = VerifiedEngineeringMatrixFacts::bind_caller_verified_task_revision(
         "task-42".into(),
         "revision-7".into(),
         input,
@@ -188,6 +188,22 @@ fn contradictory_hotfix_evidence_is_unresolved() {
 }
 
 #[test]
+fn urgent_production_repair_keeps_hotfix_card_despite_other_intent() {
+    let mut input = facts(EngineeringMode::Production);
+    input.urgency = known("ordinary sequencing".into());
+    input.urgent_repair = known(true);
+    let output = compose(input);
+    assert_eq!(ids(&output), ["EM02-SCOPE@0.1", "EM02-HOTFIX@0.1"]);
+    assert!(!output.is_resolved());
+    assert!(
+        output
+            .unresolved_evidence
+            .iter()
+            .any(|issue| issue.field == "intent" && issue.state == MatrixEvidenceState::Conflict)
+    );
+}
+
+#[test]
 fn empty_operational_fact_and_missing_mode_stay_visible() {
     let mut input = facts(EngineeringMode::Demo);
     input.mode = MatrixFact::Absent;
@@ -235,7 +251,7 @@ fn invalid_contract_shape_is_rejected_before_composition() {
         ProtectedGuarantee::Payment,
     ]);
     assert_eq!(
-        VerifiedEngineeringMatrixFacts::from_verified_task_revision(
+        VerifiedEngineeringMatrixFacts::bind_caller_verified_task_revision(
             "task-42".into(),
             "revision-7".into(),
             input
@@ -244,7 +260,7 @@ fn invalid_contract_shape_is_rejected_before_composition() {
         Error::InvalidArguments
     );
     assert_eq!(
-        VerifiedEngineeringMatrixFacts::from_verified_task_revision(
+        VerifiedEngineeringMatrixFacts::bind_caller_verified_task_revision(
             " ".into(),
             "revision-7".into(),
             facts(EngineeringMode::Demo)

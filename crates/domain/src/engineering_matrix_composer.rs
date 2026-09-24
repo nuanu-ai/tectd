@@ -18,7 +18,8 @@ pub struct VerifiedEngineeringMatrixFacts {
 }
 
 impl VerifiedEngineeringMatrixFacts {
-    pub fn from_verified_task_revision(
+    /// Binds a caller-verified task revision; this constructor checks shape only.
+    pub fn bind_caller_verified_task_revision(
         task_id: String,
         task_revision: String,
         input: EngineeringMatrixInput,
@@ -180,35 +181,51 @@ pub fn compose_engineering_matrix(
     if capacity_required {
         cards.push(CAPACITY);
     }
-    if matches!(
+    let hotfix_intent = matches!(
         input.intent,
         MatrixFact::Known {
             value: EngineeringIntent::ProductionHotfix,
             ..
         }
-    ) {
-        match (&input.mode, &input.urgent_repair) {
-            (
-                MatrixFact::Known {
-                    value: EngineeringMode::Production,
-                    ..
-                },
-                MatrixFact::Known { value: true, .. },
-            ) => cards.push(HOTFIX),
-            (
-                _,
-                MatrixFact::Known {
-                    value: false,
-                    provenance,
-                },
-            ) => push_issue(
+    );
+    let urgent_production_repair = matches!(
+        (&input.mode, &input.urgent_repair),
+        (
+            MatrixFact::Known {
+                value: EngineeringMode::Production,
+                ..
+            },
+            MatrixFact::Known { value: true, .. }
+        )
+    );
+    if urgent_production_repair {
+        cards.push(HOTFIX);
+        if let MatrixFact::Known {
+            value: EngineeringIntent::Other(_),
+            provenance,
+        } = &input.intent
+        {
+            push_issue(
                 &mut unresolved,
-                "urgent_repair",
+                "intent",
                 MatrixEvidenceState::Conflict,
                 Some(provenance.clone()),
-            ),
-            (_, fact) => add_fact_issue(&mut unresolved, "urgent_repair", fact),
+            );
         }
+    } else if let (
+        true,
+        MatrixFact::Known {
+            value: false,
+            provenance,
+        },
+    ) = (hotfix_intent, &input.urgent_repair)
+    {
+        push_issue(
+            &mut unresolved,
+            "urgent_repair",
+            MatrixEvidenceState::Conflict,
+            Some(provenance.clone()),
+        );
     } else {
         add_fact_issue(&mut unresolved, "urgent_repair", &input.urgent_repair);
     }
