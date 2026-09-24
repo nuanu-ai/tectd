@@ -273,27 +273,31 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 ))
             }
             Invocation::MatrixAdvisory(invocation) => {
-                let opportunity = match invocation {
+                let receipt = match invocation {
                     crate::matrix_advisory_tools::MatrixAdvisoryInvocation::Request(request) => {
-                        crate::matrix_advisory_tools::guarded_request(&request, capacity, || {
-                            service.request_engineering_advisory(context, &request)
-                        })
-                        .await?
+                        let opportunity = crate::matrix_advisory_tools::guarded_request(
+                            &request,
+                            capacity,
+                            || service.request_engineering_advisory(context, &request),
+                        )
+                        .await?;
+                        crate::matrix_advisory_tools::receipt(opportunity)
                     }
                     crate::matrix_advisory_tools::MatrixAdvisoryInvocation::Get {
                         task_id,
                         request_key,
                     } => {
-                        service
+                        let read = service
                             .get_engineering_advisory(context, task_id, &request_key)
-                            .await?
+                            .await?;
+                        crate::matrix_advisory_tools::read(read)
                     }
                 };
-                Ok(responses::with_actions(
-                    crate::matrix_advisory_tools::receipt(opportunity),
-                    Vec::new(),
-                    None,
-                ))
+                let response = responses::with_actions(receipt, Vec::new(), None);
+                if responses::encoded_len(&response)? > capacity {
+                    return Err(Error::RequestTooLarge);
+                }
+                Ok(response)
             }
             Invocation::Advisory(invocation) => {
                 crate::advisory_dispatch::execute(context, invocation, service, capacity).await

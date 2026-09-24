@@ -11,6 +11,32 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
+/// Public projection of advice that still matches the current Matrix head.
+/// Provider transport bytes deliberately have no place in this model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentMatrixAdvice {
+    pub advice_id: Uuid,
+    pub dispatch_id: Uuid,
+    pub task_revision: i64,
+    pub input_digest: String,
+    pub choice_set_id: String,
+    pub choice_set_version: u64,
+    pub choice_set_digest: String,
+    pub evaluation_digest: String,
+    pub verification_digest: String,
+    pub provider_profile_ref: tect_domain::AdvisoryProviderProfileRef,
+    pub model_configuration: tect_domain::AdvisoryModelConfiguration,
+    pub response_payload_sha256: String,
+    pub advice_digest: String,
+    pub outcome: crate::GuardedMatrixAdviceOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EngineeringAdvisoryRead {
+    pub opportunity: AdvisoryOpportunity,
+    pub current_advice: Option<CurrentMatrixAdvice>,
+}
+
 pub const MATRIX_INPUT_SCHEMA: &str = "tect.engineering-matrix-input/1";
 
 /// The requested revision is exact: a new task starts at 1 and each edit
@@ -56,7 +82,7 @@ impl WorkspaceService {
         context: &RequestContext,
         task_id: Uuid,
         request_key: &str,
-    ) -> Result<AdvisoryOpportunity> {
+    ) -> Result<EngineeringAdvisoryRead> {
         if task_id.is_nil() || !valid_advisory_request_key(request_key) {
             return Err(Error::InvalidArguments);
         }
@@ -75,8 +101,55 @@ impl WorkspaceService {
         if !matrix_advisory_receipt_matches(&receipt, workspace.id, task_id, request_key) {
             return Err(Error::NotFound);
         }
+        let advice = if receipt.state == AdvisoryOpportunityState::Advised {
+            tx.guarded_matrix_advice(workspace.id, receipt.id).await?
+        } else {
+            None
+        };
+        let current_advice = if let Some(advice) = advice {
+            let current = tx.matrix_task(workspace.id, task_id).await?;
+            let config = tx.advisory_config(workspace.id).await?;
+            let fresh = if let Some(current) =
+                current.filter(|current| current.revision == advice.record.binding.task_revision)
+            {
+                let validated = compose_current_revision_with_validated_verification(
+                    tx.matrix_verification_store(),
+                    self.matrix_evidence_validator.as_ref(),
+                    workspace.id,
+                    current.clone(),
+                    advice.record.binding.task_revision,
+                    crate::matrix_verification::current_epoch_seconds()?,
+                )
+                .await;
+                validated.ok().and_then(|(composition, verification)| {
+                    verification.and_then(|verification| {
+                        crate::MatrixProviderRequest::new_verified(
+                            current,
+                            composition,
+                            &verification,
+                            advice.record.provider_profile_ref.clone(),
+                            advice.record.model_configuration.clone(),
+                        )
+                        .ok()
+                    })
+                })
+            } else {
+                None
+            };
+            current_public_matrix_advice(
+                &receipt,
+                &advice,
+                &config,
+                fresh.as_ref().map(|request| request.binding()),
+            )
+        } else {
+            None
+        };
         tx.commit().await?;
-        Ok(receipt)
+        Ok(EngineeringAdvisoryRead {
+            opportunity: receipt,
+            current_advice,
+        })
     }
 
     pub async fn request_engineering_advisory(
@@ -319,6 +392,55 @@ impl WorkspaceService {
         tx.commit().await?;
         Ok(composition)
     }
+}
+
+fn current_public_matrix_advice(
+    receipt: &AdvisoryOpportunity,
+    stored: &crate::StoredGuardedMatrixAdviceRecord,
+    config: &WorkspaceAdvisoryConfig,
+    fresh: Option<&crate::MatrixProviderBinding>,
+) -> Option<CurrentMatrixAdvice> {
+    let record = &stored.record;
+    let binding = &record.binding;
+    let fresh = fresh?;
+    if receipt.state != AdvisoryOpportunityState::Advised
+        || receipt.primary_reason != AdvisoryReason::ProviderResponse
+        || !receipt.provider_called
+        || receipt.id != record.opportunity_id
+        || receipt.target_id != Some(binding.task_id)
+        || receipt.matrix_task_revision != Some(binding.task_revision)
+        || receipt.matrix_choice_set_digest.as_deref() != Some(binding.choice_set_digest.as_str())
+        || receipt.matrix_verification_digest.as_deref() != binding.verification_digest.as_deref()
+        || receipt.material_digest != binding.evaluation_digest
+        || receipt.config_revision != config.revision
+        || config.mode == WorkspaceAdvisoryMode::Disabled
+        || config.provider_profile_ref.as_ref() != Some(&record.provider_profile_ref)
+        || config.model_configuration.as_ref() != Some(&record.model_configuration)
+        || fresh != binding
+        || !matches!(
+            record.outcome,
+            crate::GuardedMatrixAdviceOutcome::Ranked { .. }
+                | crate::GuardedMatrixAdviceOutcome::Abstained { .. }
+        )
+    {
+        return None;
+    }
+    Some(CurrentMatrixAdvice {
+        advice_id: stored.advice_id,
+        dispatch_id: record.dispatch_id,
+        task_revision: binding.task_revision,
+        input_digest: binding.input_digest.clone(),
+        choice_set_id: binding.choice_set_id.clone(),
+        choice_set_version: binding.choice_set_version,
+        choice_set_digest: binding.choice_set_digest.clone(),
+        evaluation_digest: binding.evaluation_digest.clone(),
+        verification_digest: binding.verification_digest.clone()?,
+        provider_profile_ref: record.provider_profile_ref.clone(),
+        model_configuration: record.model_configuration.clone(),
+        response_payload_sha256: record.response_payload_sha256.clone(),
+        advice_digest: record.advice_digest.clone(),
+        outcome: record.outcome.clone(),
+    })
 }
 
 fn valid_advisory_request_key(value: &str) -> bool {
@@ -649,9 +771,10 @@ fn validate_request(request: &RecordMatrixTask) -> Result<()> {
 mod tests {
     use super::*;
     use crate::{
-        MatrixAdviceProvider, MatrixBudgetAuthorization, MatrixBudgetPolicy, MatrixBudgetRequest,
-        MatrixProviderIdentity, MatrixProviderRequest, MatrixProviderResponse,
-        MatrixStartedDispatchPermit, PreparedMatrixAdviceAttempt,
+        GuardedMatrixAdviceRecord, MatrixAdviceProvider, MatrixBudgetAuthorization,
+        MatrixBudgetPolicy, MatrixBudgetRequest, MatrixProviderIdentity, MatrixProviderRequest,
+        MatrixProviderResponse, MatrixStartedDispatchPermit, PreparedMatrixAdviceAttempt,
+        StoredGuardedMatrixAdviceRecord,
     };
     use tect_domain::{
         CommitmentEvidence, EngineeringCandidate, EngineeringIntent, EngineeringMode,
@@ -717,6 +840,125 @@ mod tests {
             provider_profile_ref: None,
             model_configuration: None,
         }
+    }
+
+    #[test]
+    fn public_guarded_advice_requires_exact_current_bindings() {
+        let task_id = Uuid::new_v4();
+        let binding = crate::MatrixProviderBinding {
+            task_id,
+            task_revision: 2,
+            input_digest: "a".repeat(64),
+            choice_set_id: "choice".into(),
+            choice_set_version: 1,
+            choice_set_digest: "b".repeat(64),
+            evaluation_digest: "c".repeat(64),
+            verification_digest: Some("d".repeat(64)),
+        };
+        let profile = tect_domain::AdvisoryProviderProfileRef {
+            id: "provider".into(),
+        };
+        let model = tect_domain::AdvisoryModelConfiguration {
+            model: "model".into(),
+        };
+        let mut config = advisory_config(WorkspaceAdvisoryMode::Optional);
+        config.provider_profile_ref = Some(profile.clone());
+        config.model_configuration = Some(model.clone());
+        let mut receipt = AdvisoryOpportunity {
+            id: Uuid::new_v4(),
+            workspace_id: config.workspace_id,
+            session_id: Uuid::new_v4(),
+            authorized_actor_id: Uuid::new_v4(),
+            capability: AdvisoryCapability::EngineeringProfile,
+            decision_point: AdvisoryDecisionPoint::EngineeringProfileBeforeSelection,
+            decision_point_version: ADVISORY_DECISION_POINT_VERSION,
+            workflow_occurrence_key: "key".into(),
+            target_kind: "matrix_task".into(),
+            target_id: Some(task_id),
+            work_revision: Some(2),
+            matrix_task_revision: Some(2),
+            matrix_choice_set_digest: Some(binding.choice_set_digest.clone()),
+            matrix_verification_digest: binding.verification_digest.clone(),
+            source_ref: None,
+            session_preference: AdvisoryRequestPreference::UseWorkspace,
+            request_preference: AdvisoryRequestPreference::UseWorkspace,
+            config_revision: config.revision,
+            material_digest: binding.evaluation_digest.clone(),
+            state: AdvisoryOpportunityState::Advised,
+            primary_reason: AdvisoryReason::ProviderResponse,
+            provider_called: true,
+        };
+        for outcome in [
+            crate::GuardedMatrixAdviceOutcome::Ranked {
+                ranked_choice_ids: vec!["a".into(), "b".into()],
+            },
+            crate::GuardedMatrixAdviceOutcome::Abstained { reason: None },
+        ] {
+            let record = GuardedMatrixAdviceRecord {
+                opportunity_id: receipt.id,
+                dispatch_id: Uuid::new_v4(),
+                opportunity_material_digest: binding.evaluation_digest.clone(),
+                binding: binding.clone(),
+                provider_profile_ref: profile.clone(),
+                model_configuration: model.clone(),
+                raw_response_payload: Vec::new(),
+                response_payload_sha256: "e".repeat(64),
+                advice_digest: "f".repeat(64),
+                outcome: outcome.clone(),
+            };
+            let stored = StoredGuardedMatrixAdviceRecord {
+                advice_id: Uuid::new_v4(),
+                record,
+            };
+            let current =
+                current_public_matrix_advice(&receipt, &stored, &config, Some(&binding)).unwrap();
+            assert_eq!(current.outcome, outcome);
+            assert_eq!(current.advice_id, stored.advice_id);
+            assert_eq!(current.verification_digest, "d".repeat(64));
+            assert!(current_public_matrix_advice(&receipt, &stored, &config, None).is_none());
+            let mut changed_binding = binding.clone();
+            changed_binding.choice_set_digest = "0".repeat(64);
+            assert!(
+                current_public_matrix_advice(&receipt, &stored, &config, Some(&changed_binding))
+                    .is_none()
+            );
+            changed_binding = binding.clone();
+            changed_binding.verification_digest = Some("0".repeat(64));
+            assert!(
+                current_public_matrix_advice(&receipt, &stored, &config, Some(&changed_binding))
+                    .is_none()
+            );
+            let mut changed_config = config.clone();
+            changed_config.revision += 1;
+            assert!(
+                current_public_matrix_advice(&receipt, &stored, &changed_config, Some(&binding))
+                    .is_none()
+            );
+            receipt.state = AdvisoryOpportunityState::NoCall;
+            assert!(
+                current_public_matrix_advice(&receipt, &stored, &config, Some(&binding)).is_none()
+            );
+            receipt.state = AdvisoryOpportunityState::Advised;
+        }
+        let record = GuardedMatrixAdviceRecord {
+            opportunity_id: receipt.id,
+            dispatch_id: Uuid::new_v4(),
+            opportunity_material_digest: binding.evaluation_digest.clone(),
+            binding: binding.clone(),
+            provider_profile_ref: profile,
+            model_configuration: model,
+            raw_response_payload: Vec::new(),
+            response_payload_sha256: "e".repeat(64),
+            advice_digest: "f".repeat(64),
+            outcome: crate::GuardedMatrixAdviceOutcome::Rejected {
+                reason: "invalid".into(),
+            },
+        };
+        let stored = StoredGuardedMatrixAdviceRecord {
+            advice_id: Uuid::new_v4(),
+            record,
+        };
+        assert!(current_public_matrix_advice(&receipt, &stored, &config, Some(&binding)).is_none());
     }
 
     struct TestProvider(MatrixProviderIdentity);

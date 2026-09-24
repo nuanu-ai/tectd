@@ -40,8 +40,8 @@ pub use matrix_advice_runtime::{
 };
 pub use matrix_task_ports::MatrixTaskStore;
 pub use matrix_tasks::{
-    MATRIX_INPUT_SCHEMA, MatrixTaskRevision, RecordMatrixTask, RequestEngineeringAdvisory,
-    canonical_matrix_input_digest,
+    CurrentMatrixAdvice, EngineeringAdvisoryRead, MATRIX_INPUT_SCHEMA, MatrixTaskRevision,
+    RecordMatrixTask, RequestEngineeringAdvisory, canonical_matrix_input_digest,
 };
 pub use matrix_verification::{MatrixEvidenceReference, VerifyMatrixTask};
 pub use matrix_verification_ports::{

@@ -1,7 +1,9 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::future::Future;
-use tect_application::RequestEngineeringAdvisory;
+use tect_application::{
+    EngineeringAdvisoryRead, GuardedMatrixAdviceOutcome, RequestEngineeringAdvisory,
+};
 use tect_domain::{AdvisoryOpportunity, AdvisoryRequestPreference, Error, Result};
 use uuid::Uuid;
 
@@ -124,10 +126,110 @@ pub(crate) fn receipt(value: AdvisoryOpportunity) -> Value {
     })
 }
 
+pub(crate) fn read(value: EngineeringAdvisoryRead) -> Value {
+    let mut receipt = receipt(value.opportunity);
+    if let Some(advice) = value.current_advice {
+        let outcome = match advice.outcome {
+            GuardedMatrixAdviceOutcome::Ranked { ranked_choice_ids } => {
+                json!({"status":"ranked","ranked_choice_ids":ranked_choice_ids})
+            }
+            GuardedMatrixAdviceOutcome::Abstained { reason } => {
+                json!({"status":"abstained","reason":reason})
+            }
+            GuardedMatrixAdviceOutcome::Rejected { .. } => return receipt,
+        };
+        receipt["current_advice"] = json!({
+            "advice_id": advice.advice_id,
+            "dispatch_id": advice.dispatch_id,
+            "task_revision": advice.task_revision,
+            "input_digest": advice.input_digest,
+            "choice_set_id": advice.choice_set_id,
+            "choice_set_version": advice.choice_set_version,
+            "choice_set_digest": advice.choice_set_digest,
+            "evaluation_digest": advice.evaluation_digest,
+            "verification_digest": advice.verification_digest,
+            "provider_profile_ref": advice.provider_profile_ref,
+            "model_configuration": advice.model_configuration,
+            "response_payload_sha256": advice.response_payload_sha256,
+            "advice_digest": advice.advice_digest,
+            "outcome": outcome,
+        });
+    }
+    receipt
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::Cell;
+
+    #[test]
+    fn public_read_exposes_only_current_typed_advice() {
+        let task_id = Uuid::new_v4();
+        let opportunity: AdvisoryOpportunity = serde_json::from_value(json!({
+            "id":Uuid::new_v4(),"workspace_id":Uuid::new_v4(),"session_id":Uuid::new_v4(),
+            "authorized_actor_id":Uuid::new_v4(),"capability":"engineering_profile",
+            "decision_point":"engineering.profile.before_selection","decision_point_version":1,
+            "workflow_occurrence_key":"key","target_kind":"matrix_task","target_id":task_id,
+            "work_revision":2,"matrix_task_revision":2,"matrix_choice_set_digest":"b".repeat(64),
+            "matrix_verification_digest":"d".repeat(64),"source_ref":null,
+            "session_preference":"use_workspace","request_preference":"use_workspace",
+            "config_revision":1,"material_digest":"c".repeat(64),"state":"advised",
+            "primary_reason":"provider_response","provider_called":true
+        }))
+        .unwrap();
+        let base = tect_application::CurrentMatrixAdvice {
+            advice_id: Uuid::new_v4(),
+            dispatch_id: Uuid::new_v4(),
+            task_revision: 2,
+            input_digest: "a".repeat(64),
+            choice_set_id: "choice".into(),
+            choice_set_version: 1,
+            choice_set_digest: "b".repeat(64),
+            evaluation_digest: "c".repeat(64),
+            verification_digest: "d".repeat(64),
+            provider_profile_ref: tect_domain::AdvisoryProviderProfileRef {
+                id: "provider".into(),
+            },
+            model_configuration: tect_domain::AdvisoryModelConfiguration {
+                model: "model".into(),
+            },
+            response_payload_sha256: "e".repeat(64),
+            advice_digest: "f".repeat(64),
+            outcome: GuardedMatrixAdviceOutcome::Ranked {
+                ranked_choice_ids: vec!["a".into(), "b".into()],
+            },
+        };
+        let ranked = read(EngineeringAdvisoryRead {
+            opportunity: opportunity.clone(),
+            current_advice: Some(base.clone()),
+        });
+        assert_eq!(
+            ranked["current_advice"]["outcome"]["ranked_choice_ids"],
+            json!(["a", "b"])
+        );
+        assert!(ranked.to_string().find("raw_response_payload").is_none());
+        let mut abstained = base;
+        abstained.outcome = GuardedMatrixAdviceOutcome::Abstained { reason: None };
+        let abstained = read(EngineeringAdvisoryRead {
+            opportunity: opportunity.clone(),
+            current_advice: Some(abstained),
+        });
+        assert_eq!(
+            abstained["current_advice"]["outcome"]["status"],
+            "abstained"
+        );
+        let mut no_call_opportunity = opportunity;
+        no_call_opportunity.state = tect_domain::AdvisoryOpportunityState::NoCall;
+        no_call_opportunity.primary_reason = tect_domain::AdvisoryReason::RequestSkip;
+        no_call_opportunity.provider_called = false;
+        let no_call = read(EngineeringAdvisoryRead {
+            opportunity: no_call_opportunity,
+            current_advice: None,
+        });
+        assert!(no_call.get("current_advice").is_none());
+        assert_eq!(no_call["provider_called"], false);
+    }
 
     #[test]
     fn strict_matrix_advisory_arguments() {
