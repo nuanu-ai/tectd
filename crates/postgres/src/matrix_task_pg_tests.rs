@@ -294,7 +294,11 @@ async fn matrix_task_revisions_enforce_atomic_owner_accepted_lineage() {
     .bind(verifier_host)
     .bind(tenant_id)
     .bind(verifier_id)
-    .bind("b".repeat(64))
+    .bind(format!(
+        "{}{}",
+        Uuid::new_v4().simple(),
+        Uuid::new_v4().simple()
+    ))
     .execute(&admin_pool)
     .await
     .unwrap();
