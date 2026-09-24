@@ -328,8 +328,9 @@ fn registered_decision_point_is_closed_and_capability_owned() {
     assert_eq!(
         serde_json::from_value::<AdvisoryDecisionPoint>(serde_json::json!(
             ENGINEERING_PROFILE_DECISION_POINT
-        )),
-        Ok(engineering)
+        ))
+        .unwrap(),
+        engineering
     );
     assert_eq!(
         SCOPE_DECOMPOSITION_DECISION_POINT.parse::<AdvisoryDecisionPoint>(),
