@@ -37,8 +37,7 @@ pub struct MatrixTaskRevision {
     pub recorded_by_session_id: Uuid,
 }
 
-/// Records a terminal no-call decision at the current saved Matrix task
-/// revision. Active preparation remains gated until dispatch is durable.
+/// Captures a Matrix advisory decision at the current saved task revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestEngineeringAdvisory {
     pub task_id: Uuid,
@@ -130,14 +129,60 @@ impl WorkspaceService {
             session.id,
             identity.principal_id,
         )?;
-        // The public request remains terminal until prepared body and dispatch
-        // authorization can be persisted together. Pure preparation is kept
-        // separately for the future dispatch orchestration boundary.
-        let result = tx
+        let mut input = input;
+        let prepared = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
+            &mut input,
+            &revision,
+            &config,
+            workspace.id,
+            identity.principal_id,
+            self.matrix_advice_provider.as_ref(),
+            self.matrix_budget.as_ref(),
+        )
+        .await?;
+        let opportunity = tx
             .capture_advisory_opportunity(workspace.id, &input)
             .await?;
+        let crate::matrix_advisory_capture::PreparedMatrixOpportunity::Authorized {
+            prepared,
+            authorization: budget,
+        } = prepared
+        else {
+            tx.commit().await?;
+            return Ok(opportunity);
+        };
+        let provider_request = crate::MatrixProviderRequest::new(
+            revision.clone(),
+            compose_current_revision(revision, request.expected_task_revision)?,
+            config
+                .provider_profile_ref
+                .clone()
+                .ok_or(Error::InternalInvariant)?,
+            config
+                .model_configuration
+                .clone()
+                .ok_or(Error::InternalInvariant)?,
+        )?;
+        let authorization = crate::matrix_advisory_dispatch::authorize_prepared_matrix(
+            opportunity.id,
+            &opportunity,
+            &prepared,
+            &budget,
+        )?;
+        let lifecycle = crate::AdvisoryLifecycleCapability::internal();
+        tx.authorize_advisory_dispatch(&lifecycle, workspace.id, config.revision, &authorization)
+            .await?;
         tx.commit().await?;
-        Ok(result)
+        self.dispatch_prepared_matrix_advisory(
+            context,
+            workspace.id,
+            opportunity,
+            config.revision,
+            authorization,
+            provider_request,
+            prepared,
+        )
+        .await
     }
 
     pub async fn record_matrix_task(
@@ -247,8 +292,11 @@ fn matrix_advisory_replay_matches(
             existing.state,
             AdvisoryOpportunityState::NoCall
                 | AdvisoryOpportunityState::Prepared
+                | AdvisoryOpportunityState::AwaitingResponse
                 | AdvisoryOpportunityState::Advised
                 | AdvisoryOpportunityState::Failed
+                | AdvisoryOpportunityState::Invalidated
+                | AdvisoryOpportunityState::Unresolved
         )
 }
 
@@ -557,11 +605,85 @@ mod tests {
             output_tokens: None,
         };
         assert_eq!(response.validate_for(&provider_request), Ok(()));
+        let dispatch_id = Uuid::new_v4();
+        let opportunity_id = Uuid::new_v4();
+        let (ranked_seal, ranked) =
+            crate::matrix_advisory_dispatch::seal_matrix_provider_observation(
+                opportunity_id,
+                dispatch_id,
+                &provider_request,
+                Ok(response.clone()),
+            );
+        assert_eq!(
+            ranked_seal.outcome,
+            tect_domain::AdvisoryDispatchOutcome::ProviderResponse
+        );
+        assert_eq!(
+            ranked_seal.response_payload.as_deref(),
+            Some(b"opaque response".as_slice())
+        );
+        assert!(matches!(
+            ranked.unwrap().outcome,
+            crate::GuardedMatrixAdviceOutcome::Ranked { .. }
+        ));
+        let mut abstained = response.clone();
+        abstained.ranking = tect_domain::MatrixRanking::Abstained {
+            ranked_candidate_ids: vec![],
+            recommended_candidate_id: None,
+        };
+        let (abstained_seal, abstained_record) =
+            crate::matrix_advisory_dispatch::seal_matrix_provider_observation(
+                opportunity_id,
+                dispatch_id,
+                &provider_request,
+                Ok(abstained),
+            );
+        assert_eq!(
+            abstained_seal.outcome,
+            tect_domain::AdvisoryDispatchOutcome::ProviderResponse
+        );
+        assert!(matches!(
+            abstained_record.unwrap().outcome,
+            crate::GuardedMatrixAdviceOutcome::Abstained { .. }
+        ));
         response.raw_response_payload.push(b'!');
         assert_eq!(
             response.validate_for(&provider_request),
             Err(Error::InvalidArguments)
         );
+        let (malformed_seal, malformed_record) =
+            crate::matrix_advisory_dispatch::seal_matrix_provider_observation(
+                opportunity_id,
+                dispatch_id,
+                &provider_request,
+                Ok(response),
+            );
+        assert_eq!(
+            malformed_seal.outcome,
+            tect_domain::AdvisoryDispatchOutcome::ProviderFailure
+        );
+        assert_eq!(
+            malformed_seal.send_certainty,
+            tect_domain::AdvisorySendCertainty::Sent
+        );
+        assert_eq!(
+            malformed_seal.response_payload.as_deref(),
+            Some(b"opaque response!".as_slice())
+        );
+        assert!(malformed_record.is_none());
+        let (uncertain_seal, uncertain_record) =
+            crate::matrix_advisory_dispatch::seal_matrix_provider_observation(
+                opportunity_id,
+                dispatch_id,
+                &provider_request,
+                Err(Error::TransportUnavailable),
+            );
+        assert_eq!(
+            uncertain_seal.send_certainty,
+            tect_domain::AdvisorySendCertainty::SentUnknown
+        );
+        assert!(uncertain_seal.response_payload.is_none());
+        assert!(uncertain_record.is_none());
         let provider = TestProvider(identity);
         let actor_id = input.authorized_actor_id;
         let captured = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
@@ -799,8 +921,11 @@ mod tests {
         ));
         for state in [
             AdvisoryOpportunityState::Prepared,
+            AdvisoryOpportunityState::AwaitingResponse,
             AdvisoryOpportunityState::Advised,
             AdvisoryOpportunityState::Failed,
+            AdvisoryOpportunityState::Invalidated,
+            AdvisoryOpportunityState::Unresolved,
         ] {
             let mut progressed = receipt.clone();
             progressed.state = state;

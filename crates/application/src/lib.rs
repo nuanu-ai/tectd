@@ -5,6 +5,7 @@ mod advisory_ports;
 mod matrix_advice_ports;
 mod matrix_advice_runtime;
 mod matrix_advisory_capture;
+mod matrix_advisory_dispatch;
 mod matrix_task_ports;
 mod matrix_tasks;
 mod planning_knowledge_ports;
