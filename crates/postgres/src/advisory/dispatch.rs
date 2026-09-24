@@ -656,7 +656,25 @@ async fn finalize_opportunity(
     }
     let current: (i64, String) = sqlx::query_as("SELECT revision,mode FROM advisory_workspace_config WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE")
         .bind(tenant).bind(workspace).fetch_one(&mut **tx).await.map_err(storage_error)?;
-    let (state, reason) = if current.0 != expected_config_revision || current.1 != "optional" {
+    // Finalize Matrix advice against the same locked task head that guarded
+    // persistence will use below. Otherwise a post-send task edit can make
+    // persistence abort this transaction and strand the sealed dispatch.
+    let matrix_stale = if opportunity.capability == AdvisoryCapability::EngineeringProfile
+        && current.0 == expected_config_revision
+        && current.1 == "optional"
+    {
+        match require_current_matrix_choice(tx, tenant, workspace, &opportunity).await {
+            Ok(()) => false,
+            Err(Error::StaleContext) => true,
+            Err(error) => return Err(error),
+        }
+    } else {
+        false
+    };
+    let (state, reason) = if current.0 != expected_config_revision
+        || current.1 != "optional"
+        || matrix_stale
+    {
         (
             AdvisoryOpportunityState::Invalidated,
             AdvisoryReason::ConfigurationChanged,
