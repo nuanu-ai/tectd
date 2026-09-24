@@ -389,6 +389,117 @@ async fn task_source_revisions_replay_conflict_staleness_and_workspace_isolation
     .await;
     assert_eq!(after_choice_refusals, rev3);
 
+    let advisory_key = format!("matrix-advisory-{}", Uuid::new_v4());
+    let advisory_params = json!({
+        "task_id":task_id,"expected_task_revision":3,
+        "request_key":advisory_key,
+        "session_preference":"use_workspace",
+        "request_preference":"use_workspace"
+    });
+    let no_call = route(
+        &mut owner,
+        "command",
+        "engineering.advisory.request",
+        advisory_params.clone(),
+    )
+    .await;
+    assert_eq!(no_call["task_id"], task_id.to_string());
+    assert_eq!(no_call["task_revision"], 3);
+    assert_eq!(no_call["choice_set_digest"], rev3["choice_set_digest"]);
+    assert_eq!(no_call["request_key"], advisory_key);
+    assert_eq!(no_call["state"], "no_call");
+    assert_eq!(no_call["reason"], "workspace_disabled");
+    assert_eq!(no_call["config_revision"], 0);
+    assert_eq!(no_call["provider_called"], false);
+    assert_eq!(no_call["material_digest"].as_str().unwrap().len(), 64);
+    let opportunity_id = Uuid::parse_str(no_call["opportunity_id"].as_str().unwrap()).unwrap();
+    let workspace_id = Uuid::parse_str(opened["workspace"]["id"].as_str().unwrap()).unwrap();
+    let (capability, decision_point, dispatch_count): (String, String, i64) = sqlx::query_as(
+        "SELECT o.capability,o.decision_point, \
+         (SELECT count(*) FROM advisory_dispatch d \
+          WHERE d.tenant_id=o.tenant_id AND d.workspace_id=o.workspace_id AND d.opportunity_id=o.id) \
+         FROM advisory_opportunity o \
+         WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.id=$3",
+    )
+    .bind(enrollment.tenant_id)
+    .bind(workspace_id)
+    .bind(opportunity_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(capability, "engineering_profile");
+    assert_eq!(decision_point, "engineering.profile.before_selection");
+    assert_eq!(dispatch_count, 0, "terminal no-call must have no dispatch");
+
+    let saved_no_call = route(
+        &mut owner,
+        "query",
+        "engineering.advisory.get",
+        json!({"task_id":task_id,"request_key":advisory_key}),
+    )
+    .await;
+    assert_eq!(
+        saved_no_call, no_call,
+        "saved opportunity and digest must match"
+    );
+    let repeated_no_call = route(
+        &mut owner,
+        "command",
+        "engineering.advisory.request",
+        advisory_params.clone(),
+    )
+    .await;
+    assert_eq!(
+        repeated_no_call, no_call,
+        "exact request must be idempotent"
+    );
+    let mut changed_preference = advisory_params.clone();
+    changed_preference["request_preference"] = json!("skip");
+    let preference_conflict = owner
+        .call_error(
+            "command",
+            json!({"route":"engineering.advisory.request","params":changed_preference}),
+        )
+        .await;
+    assert_eq!(preference_conflict["error"]["code"], "input_conflict");
+    let mut changed_revision = advisory_params.clone();
+    changed_revision["expected_task_revision"] = json!(2);
+    let revision_conflict = owner
+        .call_error(
+            "command",
+            json!({"route":"engineering.advisory.request","params":changed_revision}),
+        )
+        .await;
+    assert_eq!(revision_conflict["error"]["code"], "input_conflict");
+    let mut changed_task = advisory_params;
+    changed_task["task_id"] = json!(Uuid::new_v4());
+    let task_conflict = owner
+        .call_error(
+            "command",
+            json!({"route":"engineering.advisory.request","params":changed_task}),
+        )
+        .await;
+    assert_eq!(task_conflict["error"]["code"], "input_conflict");
+    let stale_advisory = owner
+        .call_error(
+            "command",
+            json!({"route":"engineering.advisory.request","params":{
+                "task_id":task_id,"expected_task_revision":2,
+                "request_key":format!("matrix-stale-{}", Uuid::new_v4())
+            }}),
+        )
+        .await;
+    assert_eq!(stale_advisory["error"]["code"], "stale_revision");
+    let wrong_key = owner
+        .call_error(
+            "query",
+            json!({"route":"engineering.advisory.get","params":{
+                "task_id":task_id,"request_key":format!("matrix-missing-{}", Uuid::new_v4())
+            }}),
+        )
+        .await;
+    assert_eq!(wrong_key["error"]["code"], "not_found");
+
     let other_key = format!("matrix-other-{}", Uuid::new_v4());
     let mut other = Mcp::start(&socket, &config, &Uuid::new_v4().to_string(), &other_key).await;
     let other_open = other.call("open_workspace", json!({})).await;
@@ -400,6 +511,15 @@ async fn task_source_revisions_replay_conflict_staleness_and_workspace_isolation
         )
         .await;
     assert_eq!(hidden["error"]["code"], "not_found");
+    let hidden_advisory = other
+        .call_error(
+            "query",
+            json!({"route":"engineering.advisory.get","params":{
+                "task_id":task_id,"request_key":advisory_key
+            }}),
+        )
+        .await;
+    assert_eq!(hidden_advisory["error"]["code"], "not_found");
 
     other.finish().await;
     owner.finish().await;
