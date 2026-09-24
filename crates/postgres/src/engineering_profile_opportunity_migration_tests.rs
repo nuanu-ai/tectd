@@ -35,6 +35,8 @@ fn engineering_opportunity_has_exact_tenant_bound_choice_bearing_revision() {
         "scope_id IS NULL",
         "matrix_task_revision IS NOT NULL",
         "matrix_task_revision >= 1",
+        "source_revision IS NOT NULL",
+        "source_revision = matrix_task_revision::text",
         "matrix_choice_set_digest IS NOT NULL",
         "matrix_choice_set_digest ~ '^[0-9a-f]{64}$'",
         "matrix_task_revision IS NULL",

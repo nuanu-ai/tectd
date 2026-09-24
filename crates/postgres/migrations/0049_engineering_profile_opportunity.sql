@@ -38,6 +38,8 @@ ALTER TABLE advisory_opportunity
             AND scope_id IS NULL
             AND matrix_task_revision IS NOT NULL
             AND matrix_task_revision >= 1
+            AND source_revision IS NOT NULL
+            AND source_revision = matrix_task_revision::text
             AND matrix_choice_set_digest IS NOT NULL
             AND matrix_choice_set_digest ~ '^[0-9a-f]{64}$')
     ),
