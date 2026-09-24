@@ -153,8 +153,8 @@ fn verified_evaluation_binds_exact_record_and_keeps_legacy_digest() {
     let legacy_before = crate::matrix_evaluation_digest(&input, &pending, &choice_set)
         .unwrap()
         .unwrap();
-    let record = record(&input);
-    let validated = evaluate(&input, &record, 20).unwrap();
+    let original_record = record(&input);
+    let validated = evaluate(&input, &original_record, 20).unwrap();
     let verified =
         crate::compose_independently_verified_owner_matrix(&reported, &validated).unwrap();
     let first =
@@ -236,7 +236,7 @@ fn verified_evaluation_binds_exact_record_and_keeps_legacy_digest() {
             .unwrap()
             .unwrap()
     );
-    let mut changed_record = record;
+    let mut changed_record = original_record;
     changed_record.policy_version = "source-check/2".into();
     reseal(&mut changed_record);
     let changed = evaluate(&input, &changed_record, 20).unwrap();
