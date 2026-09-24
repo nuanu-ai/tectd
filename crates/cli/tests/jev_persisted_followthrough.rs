@@ -20,6 +20,61 @@ use support::{id, route};
 use tect_domain::{HostAuth, ScopeCandidateDraft};
 use uuid::Uuid;
 
+const RETAINED_DISPOSITION_ID: &str = "f4660f3c-2f65-42ea-b7d7-f3ce48b4dc3c";
+const RETAINED_SELECTED_ID: &str =
+    "088c0ccacf2c81a9b503912c9d2d50d4ba11711d2fa32b9f445320e062069c36";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FollowthroughMode {
+    Fresh,
+    ResumeDisposition,
+}
+
+fn followthrough_mode(value: &str) -> FollowthroughMode {
+    match value {
+        "run" => FollowthroughMode::Fresh,
+        "resume-disposition" => FollowthroughMode::ResumeDisposition,
+        _ => panic!("JEV_FOLLOWTHROUGH_MODE must be run or resume-disposition"),
+    }
+}
+
+fn assert_retained_disposition(
+    payload: &Value,
+    disposition_id: Uuid,
+    advice_id: &Value,
+    selected_id: &str,
+    rationale: &str,
+    emitted: &Value,
+) {
+    assert_eq!(payload["id"], disposition_id.to_string());
+    assert_eq!(payload["advice_id"], *advice_id);
+    assert_eq!(payload["revision"], 1);
+    assert!(payload["supersedes_id"].is_null());
+    assert_eq!(payload["action"], "supersede_with_deterministic_choice");
+    assert_eq!(payload["selected_id"], selected_id);
+    assert_eq!(payload["rationale"], rationale);
+    let alternatives = emitted.as_array().expect("manifest alternatives required");
+    let items = payload["items"]
+        .as_array()
+        .expect("disposition items required");
+    assert_eq!(items.len(), alternatives.len());
+    for alternative in alternatives {
+        let matches = items
+            .iter()
+            .filter(|item| item["alternative_id"] == alternative["id"])
+            .collect::<Vec<_>>();
+        assert_eq!(matches.len(), 1, "one disposition item per alternative");
+        assert_eq!(
+            matches[0]["state"],
+            if alternative["id"] == selected_id {
+                "selected"
+            } else {
+                "not_selected"
+            }
+        );
+    }
+}
+
 fn required(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("{name} is required"))
 }
@@ -154,9 +209,9 @@ async fn assert_host(pool: &PgPool, auth: &HostAuth, tenant: Uuid, role: &str) -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "explicit JEV_FOLLOWTHROUGH_MODE=run and exact retained opportunity/auth/draft; mutates only the retained test DB"]
+#[ignore = "explicit JEV_FOLLOWTHROUGH_MODE=run or resume-disposition and exact retained opportunity/auth/draft; mutates only the retained test DB"]
 async fn persisted_live_advice_through_public_mcp() {
-    assert_eq!(required("JEV_FOLLOWTHROUGH_MODE"), "run");
+    let mode = followthrough_mode(&required("JEV_FOLLOWTHROUGH_MODE"));
     let opportunity = Uuid::parse_str(&required("JEV_FOLLOWTHROUGH_OPPORTUNITY_ID")).unwrap();
     let tenant = Uuid::parse_str(&required("JEV_FOLLOWTHROUGH_TENANT_ID")).unwrap();
     let workspace = Uuid::parse_str(&required("JEV_FOLLOWTHROUGH_WORKSPACE_ID")).unwrap();
@@ -164,6 +219,33 @@ async fn persisted_live_advice_through_public_mcp() {
     let expected_model = required("JEV_FOLLOWTHROUGH_MODEL");
     let alternative_key = required("JEV_FOLLOWTHROUGH_ALTERNATIVE_KEY");
     let selected_id = required("JEV_FOLLOWTHROUGH_SELECTED_ID");
+    let retained_disposition_id = if mode == FollowthroughMode::ResumeDisposition {
+        assert_eq!(
+            alternative_key, "cohesive",
+            "wrong retained alternative key"
+        );
+        assert_eq!(
+            selected_id, RETAINED_SELECTED_ID,
+            "wrong retained selected ID"
+        );
+        let id = Uuid::parse_str(&required("JEV_FOLLOWTHROUGH_DISPOSITION_ID")).unwrap();
+        assert_eq!(
+            id.to_string(),
+            RETAINED_DISPOSITION_ID,
+            "wrong retained disposition"
+        );
+        Some(id)
+    } else {
+        None
+    };
+    let expected_manifest_digest = if mode == FollowthroughMode::ResumeDisposition {
+        let digest = required("JEV_FOLLOWTHROUGH_MANIFEST_DIGEST");
+        assert_eq!(digest.len(), 64);
+        assert!(digest.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        Some(digest)
+    } else {
+        None
+    };
     let rationale = required("JEV_FOLLOWTHROUGH_SELECTION_RATIONALE");
     assert!(!rationale.trim().is_empty());
     let (owner_path, owner_auth) = private_auth("JEV_FOLLOWTHROUGH_OWNER_AUTH_FILE");
@@ -277,7 +359,74 @@ async fn persisted_live_advice_through_public_mcp() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(prior_effects, (0, 0, 0), "opportunity already continued");
+    assert_eq!(
+        prior_effects,
+        match mode {
+            FollowthroughMode::Fresh => (0, 0, 0),
+            FollowthroughMode::ResumeDisposition => (1, 0, 0),
+        },
+        "opportunity is not at the selected continuation boundary"
+    );
+    let retained_candidate_revision = if mode == FollowthroughMode::ResumeDisposition {
+        let preservation_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM advisory_scope_preservation_receipt \
+             WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3",
+        )
+        .bind(tenant)
+        .bind(workspace)
+        .bind(opportunity)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(preservation_count, 0, "preservation already attempted");
+        let (revision, status): (i64, String) = sqlx::query_as(
+            "SELECT revision,status FROM scope_candidate_sets WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
+        )
+        .bind(tenant)
+        .bind(workspace)
+        .bind(candidate)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((revision, status.as_str()), (3, "ready"));
+        Some(revision)
+    } else {
+        None
+    };
+    let retained = if let Some(disposition_id) = retained_disposition_id {
+        let row: (
+            Uuid,
+            Uuid,
+            Uuid,
+            String,
+            i64,
+            Option<Uuid>,
+            String,
+            Option<String>,
+            Value,
+        ) = sqlx::query_as(
+            "SELECT d.opportunity_id,d.candidate_set_id,d.actor_id,d.advice_id,d.revision, \
+                    d.predecessor_id,d.action,d.selected_alternative_id,d.aggregate_payload \
+             FROM advisory_scope_disposition d WHERE d.tenant_id=$1 AND d.workspace_id=$2 \
+             AND d.opportunity_id=$3 AND d.disposition_id=$4 AND d.session_id=$5",
+        )
+        .bind(tenant)
+        .bind(workspace)
+        .bind(opportunity)
+        .bind(disposition_id)
+        .bind(owner_session)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((row.0, row.1, row.2), (opportunity, candidate, owner_actor));
+        assert_eq!(row.4, 1);
+        assert!(row.5.is_none());
+        assert_eq!(row.6, "supersede_with_deterministic_choice");
+        assert_eq!(row.7.as_deref(), Some(selected_id.as_str()));
+        Some((disposition_id, row.3, row.8))
+    } else {
+        None
+    };
 
     let temp = private_temp();
     // macOS tempfile paths can start at /var, a symlink to /private/var.
@@ -312,6 +461,28 @@ async fn persisted_live_advice_through_public_mcp() {
     assert_eq!(projection["version"], 1);
     let manifest = &projection["manifest"];
     let advice = &projection["advice"];
+    if let Some(expected_digest) = expected_manifest_digest.as_deref() {
+        assert_eq!(manifest["whole_set_digest"], expected_digest);
+        let (stored_manifest, stored_advice, stored_digest): (Value, Value, String) =
+            sqlx::query_as(
+                "SELECT m.aggregate_payload,a.aggregate_payload,m.whole_set_digest \
+             FROM advisory_scope_manifest m JOIN advisory_scope_advice a \
+             ON (a.tenant_id,a.workspace_id,a.opportunity_id,a.candidate_set_id)= \
+                (m.tenant_id,m.workspace_id,m.opportunity_id,m.candidate_set_id) \
+             WHERE m.tenant_id=$1 AND m.workspace_id=$2 AND m.opportunity_id=$3 \
+             AND m.candidate_set_id=$4",
+            )
+            .bind(tenant)
+            .bind(workspace)
+            .bind(opportunity)
+            .bind(candidate)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(stored_digest, expected_digest);
+        assert_eq!(*manifest, stored_manifest);
+        assert_eq!(*advice, stored_advice);
+    }
     assert_eq!(id(&manifest["source"]["candidate_set_id"]), candidate);
     assert_eq!(
         manifest["source"]["candidate_set_revision"].to_string(),
@@ -340,6 +511,17 @@ async fn persisted_live_advice_through_public_mcp() {
         selected_id, manifest["baseline_id"],
         "deterministic supersession must select the frozen baseline"
     );
+    if let Some((disposition_id, advice_id, payload)) = &retained {
+        assert_eq!(advice_id, advice["id"].as_str().unwrap());
+        assert_retained_disposition(
+            payload,
+            *disposition_id,
+            &advice["id"],
+            &selected_id,
+            &rationale,
+            &manifest["emitted"],
+        );
+    }
     let context = route(
         &mut owner,
         "query",
@@ -354,6 +536,10 @@ async fn persisted_live_advice_through_public_mcp() {
     );
     assert_eq!(context["snapshot"]["id"], manifest["source"]["snapshot_id"]);
     let revision = context["candidate_set"]["revision"].as_i64().unwrap();
+    if let Some(expected_revision) = retained_candidate_revision {
+        assert_eq!(revision, expected_revision);
+        assert_eq!(context["candidate_set"]["status"], "ready");
+    }
     let snapshot = context["snapshot"]["id"].clone();
     let input_cursor = context["candidate_set"]["input_cursor"].as_i64().unwrap();
     assert_eq!(
@@ -373,19 +559,24 @@ async fn persisted_live_advice_through_public_mcp() {
             })
         })
         .collect::<Vec<_>>();
-    let disposition = route(
-        &mut owner,
-        "command",
-        "scope.advisory.disposition",
-        json!({
-            "opportunity_id":opportunity,"candidate_set_id":candidate,"request_id":Uuid::new_v4(),
-            "advice_id":advice["id"],"expected_revision":0,
-            "action":"supersede_with_deterministic_choice",
-            "selected_id":selected_id,"items":items,
-            "rationale":rationale
-        }),
-    )
-    .await;
+    let disposition_id = if let Some((id, _, _)) = retained {
+        id
+    } else {
+        let disposition = route(
+            &mut owner,
+            "command",
+            "scope.advisory.disposition",
+            json!({
+                "opportunity_id":opportunity,"candidate_set_id":candidate,"request_id":Uuid::new_v4(),
+                "advice_id":advice["id"],"expected_revision":0,
+                "action":"supersede_with_deterministic_choice",
+                "selected_id":selected_id,"items":items,
+                "rationale":rationale
+            }),
+        )
+        .await;
+        id(&disposition["id"])
+    };
     let save_request = Uuid::new_v4();
     let saved = route(
         &mut owner,
@@ -394,7 +585,7 @@ async fn persisted_live_advice_through_public_mcp() {
         json!({
             "kind":"draft","candidate_set_id":candidate,"revision":revision,
             "snapshot_id":snapshot,"input_cursor":input_cursor,"request_id":save_request,
-            "selected_advisory":{"opportunity_id":opportunity,"disposition_id":disposition["id"],
+            "selected_advisory":{"opportunity_id":opportunity,"disposition_id":disposition_id,
                 "selected_id":selected_id,"alternative_key":alternative_key},
             "draft":draft
         }),
@@ -467,15 +658,66 @@ async fn persisted_live_advice_through_public_mcp() {
         after_dispatches, 1,
         "downstream MCP must not dispatch again"
     );
+    if mode == FollowthroughMode::ResumeDisposition {
+        let final_effects: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM advisory_scope_disposition WHERE opportunity_id=$1), \
+                    (SELECT count(*) FROM advisory_scope_caller_link WHERE opportunity_id=$1), \
+                    (SELECT count(*) FROM advisory_scope_preservation_receipt WHERE opportunity_id=$1), \
+                    (SELECT count(*) FROM advisory_scope_verifier_receipt WHERE opportunity_id=$1)",
+        )
+        .bind(opportunity)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(final_effects, (1, 1, 1, 1));
+    }
     println!(
         "followthrough opportunity={opportunity} candidate_set={candidate} \
         disposition={} caller_link={link_id} preservation={receipt_id} verification=passed dispatches=1",
-        disposition["id"]
+        disposition_id
     );
     verifier.finish().await;
     owner.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();
+}
+
+#[test]
+fn followthrough_mode_is_explicit() {
+    assert_eq!(followthrough_mode("run"), FollowthroughMode::Fresh);
+    assert_eq!(
+        followthrough_mode("resume-disposition"),
+        FollowthroughMode::ResumeDisposition
+    );
+    assert!(std::panic::catch_unwind(|| followthrough_mode("recover")).is_err());
+}
+
+#[test]
+fn retained_disposition_rejects_changed_selection() {
+    let id = Uuid::parse_str(RETAINED_DISPOSITION_ID).unwrap();
+    let emitted = json!([{"id":"selected"},{"id":"other"}]);
+    let payload = json!({
+        "id":id,"advice_id":"advice","revision":1,"supersedes_id":null,
+        "action":"supersede_with_deterministic_choice","selected_id":"selected",
+        "rationale":"reason","items":[
+            {"alternative_id":"selected","state":"selected"},
+            {"alternative_id":"other","state":"not_selected"}
+        ]
+    });
+    assert_retained_disposition(
+        &payload,
+        id,
+        &json!("advice"),
+        "selected",
+        "reason",
+        &emitted,
+    );
+    assert!(
+        std::panic::catch_unwind(|| {
+            assert_retained_disposition(&payload, id, &json!("advice"), "other", "reason", &emitted)
+        })
+        .is_err()
+    );
 }
 
 /// Separate, explicit recovery of the original fixture host after the one-shot
