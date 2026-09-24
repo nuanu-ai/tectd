@@ -75,7 +75,16 @@ impl<T> MatrixFact<T> {
 #[serde(deny_unknown_fields)]
 pub struct OperatingEnvelope {
     pub scale: MatrixFact<String>,
-    pub operational_facts: Vec<OperatingFact>,
+    pub operational_facts: OperationalFacts,
+}
+
+/// An uncollected set and a source-confirmed empty set have different meaning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum OperationalFacts {
+    Absent,
+    KnownEmpty { provenance: FactProvenance },
+    Reported { entries: Vec<OperatingFact> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -88,8 +97,16 @@ pub struct OperatingFact {
 impl OperatingEnvelope {
     pub fn validate(&self) -> Result<()> {
         self.scale.validate(|value| validate_text(value))?;
+        let facts = match &self.operational_facts {
+            OperationalFacts::Absent => return Ok(()),
+            OperationalFacts::KnownEmpty { provenance } => return provenance.validate(),
+            OperationalFacts::Reported { entries } if entries.is_empty() => {
+                return Err(Error::InvalidArguments);
+            }
+            OperationalFacts::Reported { entries } => entries,
+        };
         let mut names = BTreeSet::new();
-        for fact in &self.operational_facts {
+        for fact in facts {
             validate_text(&fact.name)?;
             if !names.insert(&fact.name) {
                 return Err(Error::InvalidArguments);
@@ -137,6 +154,21 @@ impl EngineeringMatrixInput {
         self.criticality.validate(|value| validate_text(value))?;
         self.intent.validate(EngineeringIntent::validate)?;
         self.urgency.validate(|value| validate_text(value))?;
+        if matches!(
+            (&self.mode, &self.intent),
+            (
+                MatrixFact::Known {
+                    value: EngineeringMode::Demo | EngineeringMode::Mvp,
+                    ..
+                },
+                MatrixFact::Known {
+                    value: EngineeringIntent::ProductionHotfix,
+                    ..
+                }
+            )
+        ) {
+            return Err(Error::InvalidArguments);
+        }
         Ok(())
     }
 }
@@ -169,10 +201,12 @@ mod tests {
             mode: known(EngineeringMode::Production),
             envelope: OperatingEnvelope {
                 scale: known("observed demand and provider capacity".into()),
-                operational_facts: vec![OperatingFact {
-                    name: "users".into(),
-                    fact: known("active users".into()),
-                }],
+                operational_facts: OperationalFacts::Reported {
+                    entries: vec![OperatingFact {
+                        name: "users".into(),
+                        fact: known("active users".into()),
+                    }],
+                },
             },
             criticality: known("payments affected".into()),
             intent: known(EngineeringIntent::ProductionHotfix),
@@ -189,6 +223,9 @@ mod tests {
         ] {
             let mut value = input();
             value.mode = known(mode);
+            if mode != EngineeringMode::Production {
+                value.intent = known(EngineeringIntent::Other("new booking flow".into()));
+            }
             value.validate().unwrap();
             let encoded = serde_json::to_string(&value).unwrap();
             let decoded: EngineeringMatrixInput = serde_json::from_str(&encoded).unwrap();
@@ -237,11 +274,54 @@ mod tests {
         value.criticality = known(" ".into());
         assert_eq!(value.validate(), Err(Error::InvalidArguments));
         let mut value = input();
-        value
-            .envelope
-            .operational_facts
-            .push(value.envelope.operational_facts[0].clone());
+        if let OperationalFacts::Reported { entries } = &mut value.envelope.operational_facts {
+            entries.push(entries[0].clone());
+        }
         assert_eq!(value.validate(), Err(Error::InvalidArguments));
+    }
+
+    #[test]
+    fn absent_and_evidenced_empty_operating_facts_remain_distinct() {
+        let mut value = input();
+        value.envelope.operational_facts = OperationalFacts::Absent;
+        value.validate().unwrap();
+        let absent = serde_json::to_value(&value).unwrap();
+        value.envelope.operational_facts = OperationalFacts::KnownEmpty {
+            provenance: source(),
+        };
+        value.validate().unwrap();
+        let empty = serde_json::to_value(&value).unwrap();
+        assert_ne!(absent, empty);
+        assert_eq!(
+            serde_json::from_value::<EngineeringMatrixInput>(absent)
+                .unwrap()
+                .envelope
+                .operational_facts,
+            OperationalFacts::Absent
+        );
+        assert!(matches!(
+            serde_json::from_value::<EngineeringMatrixInput>(empty)
+                .unwrap()
+                .envelope
+                .operational_facts,
+            OperationalFacts::KnownEmpty { .. }
+        ));
+        value.envelope.operational_facts = OperationalFacts::Reported { entries: vec![] };
+        assert_eq!(value.validate(), Err(Error::InvalidArguments));
+    }
+
+    #[test]
+    fn production_hotfix_cannot_be_demo_or_mvp() {
+        for mode in [EngineeringMode::Demo, EngineeringMode::Mvp] {
+            let mut value = input();
+            value.mode = known(mode);
+            assert_eq!(value.validate(), Err(Error::InvalidArguments));
+        }
+        let mut value = input();
+        value.mode = MatrixFact::Unknown {
+            provenance: source(),
+        };
+        value.validate().unwrap();
     }
 
     #[test]
