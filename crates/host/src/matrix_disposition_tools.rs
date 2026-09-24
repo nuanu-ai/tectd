@@ -14,6 +14,38 @@ struct GetArguments {
     request_id: Uuid,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordArguments {
+    request_id: Uuid,
+    task_id: Uuid,
+    expected_task_revision: i64,
+    expected_input_digest: String,
+    expected_choice_set_digest: Option<String>,
+    opportunity_id: Uuid,
+    basis: MatrixDispositionBasis,
+    advice_id: Option<Uuid>,
+    advice_digest: Option<String>,
+    decision: MatrixDispositionDecision,
+}
+
+impl From<RecordArguments> for RecordMatrixDisposition {
+    fn from(arguments: RecordArguments) -> Self {
+        Self {
+            request_id: arguments.request_id,
+            task_id: arguments.task_id,
+            expected_task_revision: arguments.expected_task_revision,
+            expected_input_digest: arguments.expected_input_digest,
+            expected_choice_set_digest: arguments.expected_choice_set_digest,
+            opportunity_id: arguments.opportunity_id,
+            basis: arguments.basis,
+            advice_id: arguments.advice_id,
+            advice_digest: arguments.advice_digest,
+            decision: arguments.decision,
+        }
+    }
+}
+
 pub(crate) enum MatrixDispositionInvocation {
     Record(RecordMatrixDisposition),
     Get { task_id: Uuid, request_id: Uuid },
@@ -29,8 +61,9 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<MatrixDispositionInv
             {
                 return Err(Error::RequestTooLarge);
             }
-            let request: RecordMatrixDisposition =
+            let arguments: RecordArguments =
                 serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
+            let request = RecordMatrixDisposition::from(arguments);
             request.validate()?;
             Ok(MatrixDispositionInvocation::Record(request))
         }
@@ -158,6 +191,9 @@ mod tests {
         }
         let mut invalid = valid();
         invalid["decision"] = json!({"outcome":"selected","selected_choice_id":""});
+        assert!(parse("record_matrix_disposition", invalid).is_err());
+        let mut invalid = valid();
+        invalid["decision"]["unexpected"] = json!(true);
         assert!(parse("record_matrix_disposition", invalid).is_err());
         let mut invalid = valid();
         invalid["request_id"] = json!(Uuid::nil());
