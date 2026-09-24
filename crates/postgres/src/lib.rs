@@ -19,6 +19,8 @@ mod knowledge_search_store;
 #[cfg(test)]
 mod matrix_choice_set_migration_tests;
 #[cfg(test)]
+mod matrix_no_choice_migration_tests;
+#[cfg(test)]
 mod matrix_task_migration_tests;
 #[cfg(test)]
 mod matrix_task_pg_tests;
