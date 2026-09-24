@@ -1,4 +1,4 @@
-//! Ignored, disposable-PostgreSQL integration harness. See `jev_one_shot.md`.
+//! Ignored, isolated-PostgreSQL integration harness. See `jev_one_shot.md`.
 #[allow(dead_code)]
 mod recovery_support;
 #[path = "native_planning/support.rs"]
@@ -7,14 +7,23 @@ mod support;
 
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use std::{fs, io::Write, os::unix::fs::OpenOptionsExt, path::Path, sync::Arc};
+use std::{
+    fs,
+    io::{BufRead, Write},
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::Path,
+    sync::Arc,
+};
 use support::{id, ready_source_candidate, repository, route};
 use tect_application::{
     AuthoredScopeAlternative, AuthoredScopeSet, RunScopeAdvisory, ScopeAdviceProvider,
-    ScopeAdviceProviderContext, ScopeAuthoredManifestRequest, ScopeAuthorityObserver,
+    ScopeAdviceProviderContext, ScopeAdviceProviderError, ScopeAdviceProviderObservation,
+    ScopeAdviceProviderRequest, ScopeAuthoredManifestRequest, ScopeAuthorityObserver,
     ScopeAuthorityOutcome, ScopeAuthorityRequest, ScopeBudgetPolicy, ScopeBudgetPolicyEvaluation,
-    ScopeBudgetRequest, ScopeManifestSupplier, Sha256ScopeDigest, WorkspaceService,
+    ScopeBudgetRequest, ScopeManifestSupplier, Sha256ScopeDigest, StartedScopeDispatchPermit,
+    WorkspaceService,
 };
 use tect_domain::{
     AdvisoryOpportunityState, AdvisoryRequestPreference, RequestContext, ScopeAdviceRequest,
@@ -29,6 +38,7 @@ const MODEL: &str = "jev-1.13.0";
 // Outside the disposable fixture and isolated worktree so rebuilding or
 // rerunning this test cannot quietly reset its send allowance.
 const MARKER_PATH: &str = "/Users/tony/Work/Projects/nuanu-ai-lab/artifacts/jev-live-eval-20260919/tectd-jev-scope-evidence-2026-09-24-1.used";
+const REQUEST_PATH: &str = "/Users/tony/Work/Projects/nuanu-ai-lab/artifacts/jev-live-eval-20260919/tectd-jev-scope-evidence-2026-09-24-1.request.json";
 
 /// This owner approval applies to one process invocation after its marker is
 /// durably created. It does not install a reusable budget in tectd.
@@ -51,7 +61,7 @@ impl ScopeBudgetPolicy for OneUseApproval {
 }
 
 fn marker(path: &Path, digest: &str) {
-    assert!(path.is_absolute(), "JEV_ONE_SHOT_MARKER must be absolute");
+    assert!(path.is_absolute(), "one-shot marker must be absolute");
     let parent = path.parent().expect("marker parent");
     assert!(parent.is_dir(), "marker parent must already exist");
     let mut file = fs::OpenOptions::new()
@@ -63,6 +73,77 @@ fn marker(path: &Path, digest: &str) {
     writeln!(file, "call_id={CALL_ID}\nrequest_sha256={digest}").unwrap();
     file.sync_all().unwrap();
     fs::File::open(parent).unwrap().sync_all().unwrap();
+}
+
+fn review_artifact(path: &Path, body: &[u8]) {
+    assert!(path.is_absolute(), "request artifact must be absolute");
+    let parent = path.parent().expect("request artifact parent");
+    assert!(
+        parent.is_dir(),
+        "request artifact parent must already exist"
+    );
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .expect("exact request artifact already exists or cannot be created; no call sent");
+    file.write_all(body).unwrap();
+    file.sync_all().unwrap();
+    fs::File::open(parent).unwrap().sync_all().unwrap();
+    assert_eq!(fs::read(path).unwrap(), body);
+    assert_eq!(
+        fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+fn confirm_and_mark(reader: &mut impl BufRead, path: &Path, digest: &str) -> bool {
+    let mut answer = String::new();
+    if reader.read_line(&mut answer).is_err()
+        || answer.trim_end_matches(['\r', '\n']) != format!("SEND JEV {digest}")
+    {
+        return false;
+    }
+    marker(path, digest);
+    true
+}
+
+/// Pins the actual transport preparation to the bytes that were shown for
+/// review before the confirmation gate.
+struct ReviewedJevProvider {
+    inner: tect_host::JevScopeAdviceProvider,
+    reviewed_body: Vec<u8>,
+}
+
+#[async_trait::async_trait]
+impl ScopeAdviceProvider for ReviewedJevProvider {
+    fn identity(&self) -> Option<(&'static str, &'static str)> {
+        self.inner.identity()
+    }
+
+    fn prepare_context(
+        &self,
+        context: &ScopeAdviceProviderContext,
+    ) -> Result<tect_application::PreparedScopeAdviceAttempt, ScopeAdviceProviderError> {
+        let prepared = self.inner.prepare_context(context)?;
+        if prepared.body() != self.reviewed_body {
+            return Err(ScopeAdviceProviderError::ProvenNotSent);
+        }
+        Ok(prepared)
+    }
+
+    async fn attempt_prepared(
+        &self,
+        request: &ScopeAdviceProviderRequest,
+        prepared: tect_application::PreparedScopeAdviceAttempt,
+        permit: StartedScopeDispatchPermit,
+    ) -> Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
+        if prepared.body() != self.reviewed_body {
+            return Err(ScopeAdviceProviderError::ProvenNotSent);
+        }
+        self.inner.attempt_prepared(request, prepared, permit).await
+    }
 }
 
 fn draft(previous: &Value, source_ref: Uuid, title: &str) -> tect_domain::ScopeCandidateDraft {
@@ -106,7 +187,7 @@ fn provider(credential: String) -> tect_host::JevScopeAdviceProvider {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "explicit JEV_ONE_SHOT_MODE=preflight or send; requires disposable PostgreSQL 18 and TECT_TEST_*"]
+#[ignore = "explicit JEV_ONE_SHOT_MODE=preflight or send; requires isolated PostgreSQL 18 and TECT_TEST_*"]
 async fn one_shot_real_jev_evidence() {
     let mode = std::env::var("JEV_ONE_SHOT_MODE").expect("set preflight or send");
     assert!(matches!(mode.as_str(), "preflight" | "send"));
@@ -114,6 +195,10 @@ async fn one_shot_real_jev_evidence() {
     let marker_path = if mode == "send" {
         let path = std::path::PathBuf::from(MARKER_PATH);
         assert!(path.is_absolute() && !path.exists());
+        assert!(
+            !Path::new(REQUEST_PATH).exists(),
+            "review artifact already exists"
+        );
         Some(path)
     } else {
         None
@@ -255,15 +340,40 @@ async fn one_shot_real_jev_evidence() {
     assert!(prepared.body_length() > 0 && prepared.body_length() <= 262_144);
     let body: Value = serde_json::from_slice(prepared.body()).unwrap();
     assert_eq!(body["model"], MODEL);
-    assert_eq!(body["state"]["emitted"].as_array().unwrap().len(), 2);
     assert_eq!(
-        body["state"]["request"]["alternatives"]
-            .as_array()
-            .unwrap()
-            .len(),
-        2
+        body["state"]["emitted"],
+        serde_json::to_value(&manifest.emitted).unwrap()
     );
+    assert_eq!(
+        body["state"]["request"],
+        serde_json::to_value(&request).unwrap()
+    );
+    assert_eq!(manifest.emitted.len(), 2);
+    assert_eq!(request.alternatives.len(), 2);
+    let expected_coverage = manifest
+        .obligations
+        .iter()
+        .map(|o| o.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for emitted in &manifest.emitted {
+        assert!(!emitted.material.candidates.is_empty());
+        let covered = emitted
+            .coverage
+            .iter()
+            .map(|c| c.obligation_id.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(covered, expected_coverage);
+        println!(
+            "material id={:?} kind={:?} title={} material_digest={} covered_obligations={:?}",
+            emitted.id,
+            emitted.kind,
+            emitted.material.candidates[0].title,
+            emitted.material_digest,
+            covered
+        );
+    }
     let digest = prepared.body_sha256().to_owned();
+    assert_eq!(digest, format!("{:x}", Sha256::digest(prepared.body())));
 
     let request_context = RequestContext {
         auth: enrollment.auth.clone(),
@@ -310,12 +420,33 @@ async fn one_shot_real_jev_evidence() {
         return;
     }
 
+    // Freeze the exact bytes on disk before prompting. Neither the marker nor
+    // an external request exists while this process waits for review.
+    let request_path = Path::new(REQUEST_PATH);
+    review_artifact(request_path, prepared.body());
+    let reviewed_body = fs::read(request_path).unwrap();
+    assert_eq!(reviewed_body.len(), prepared.body_length());
+    assert_eq!(format!("{:x}", Sha256::digest(&reviewed_body)), digest);
     // Read only process environment; never parse a .env file or print the key.
     let key = std::env::var("TYPESAFE_API_KEY").expect("TYPESAFE_API_KEY process env required");
     assert!(!key.trim().is_empty(), "TYPESAFE_API_KEY must be nonempty");
-    let live_provider = provider(key);
+    println!(
+        "review exact request at {} ({} bytes, sha256={digest})",
+        request_path.display(),
+        prepared.body_length()
+    );
+    println!("to authorize this one call, enter exactly: SEND JEV {digest}");
+    std::io::stdout().flush().unwrap();
     let marker_path = marker_path.unwrap();
-    marker(&marker_path, &digest);
+    assert!(
+        confirm_and_mark(&mut std::io::stdin().lock(), &marker_path, &digest),
+        "confirmation absent or mismatched; no marker or external call"
+    );
+    let live_provider = ReviewedJevProvider {
+        inner: provider(key),
+        reviewed_body,
+    };
+    assert_eq!(live_provider.reviewed_body, prepared.body());
     let service = WorkspaceService::new_with_scope_advisory_adapters(
         Arc::new(store),
         Arc::new(tect_host::GitSourceInspector),
@@ -338,16 +469,20 @@ async fn one_shot_real_jev_evidence() {
         )
         .await
         .unwrap();
-    let attempts: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM advisory_dispatch WHERE opportunity_id=$1")
-            .bind(outcome.opportunity.id)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert!(
-        attempts <= 1,
-        "one-shot harness created multiple dispatches"
+    let audit: Vec<(String, Vec<u8>, i64)> = sqlx::query_as(
+        "SELECT payload_digest,request_payload,attempt_number::bigint FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3 ORDER BY attempt_number"
+    )
+    .bind(enrollment.tenant_id).bind(workspace_id).bind(outcome.opportunity.id)
+    .fetch_all(&pool).await.unwrap();
+    assert_eq!(
+        audit.len(),
+        1,
+        "one-shot harness requires exactly one dispatch"
     );
+    assert_eq!(audit[0].2, 1);
+    assert_eq!(audit[0].0, digest);
+    assert_eq!(audit[0].1, fs::read(request_path).unwrap());
+    let attempts = audit.len();
     println!(
         "live call_id={CALL_ID} opportunity={} state={:?} reason={:?} dispatches={attempts} advice_present={} marker={}",
         outcome.opportunity.id,
@@ -371,4 +506,40 @@ fn marker_is_exclusive_and_retained() {
             .unwrap()
             .contains("request_sha256=abc")
     );
+}
+
+#[test]
+fn confirmation_requires_exact_line_before_marker() {
+    let dir = private_temp();
+    let path = dir.path().join("one-shot.used");
+    for input in [
+        "",
+        "SEND JEV wrong\n",
+        "send jev abc\n",
+        "SEND JEV abc extra\n",
+    ] {
+        assert!(!confirm_and_mark(
+            &mut std::io::Cursor::new(input),
+            &path,
+            "abc"
+        ));
+        assert!(!path.exists());
+    }
+    assert!(confirm_and_mark(
+        &mut std::io::Cursor::new("SEND JEV abc\n"),
+        &path,
+        "abc"
+    ));
+    assert!(path.exists());
+}
+
+#[test]
+fn reviewed_request_is_private_exclusive_and_retained() {
+    let dir = private_temp();
+    let path = dir.path().join("request.json");
+    review_artifact(&path, br#"{"model":"fixture"}"#);
+    assert_eq!(fs::read(&path).unwrap(), br#"{"model":"fixture"}"#);
+    let second = std::panic::catch_unwind(|| review_artifact(&path, b"replacement"));
+    assert!(second.is_err());
+    assert_eq!(fs::read(&path).unwrap(), br#"{"model":"fixture"}"#);
 }
