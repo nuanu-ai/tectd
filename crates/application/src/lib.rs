@@ -23,6 +23,8 @@ pub use advisory_ports::{
     DisabledMatrixAdviceProvider, MatrixAdviceProvider, MatrixProviderBinding,
     MatrixProviderRequest, MatrixProviderResponse,
 };
+#[doc(hidden)]
+pub use matrix_advice_ports::canonical_matrix_advice_digest;
 pub use matrix_advice_ports::{
     GuardedMatrixAdviceOutcome, GuardedMatrixAdviceRecord, MatrixAdviceStore,
     StoredGuardedMatrixAdviceRecord,

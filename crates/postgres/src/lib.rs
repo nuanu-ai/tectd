@@ -16,6 +16,7 @@ mod knowledge_recovery;
 mod knowledge_search;
 mod knowledge_search_admin;
 mod knowledge_search_store;
+mod matrix_advice_store;
 #[cfg(test)]
 mod matrix_choice_set_migration_tests;
 #[cfg(test)]
