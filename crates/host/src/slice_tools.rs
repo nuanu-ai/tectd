@@ -151,7 +151,8 @@ mod tests {
         let id = "00000000-0000-4000-8000-000000000001";
         let digest = "a".repeat(64);
         json!({"task_id":id,"task_revision":1,"disposition_id":id,
-            "selected_choice_id":"choice-a","expected_input_digest":digest,
+            "selected_choice_id":"choice-a","mapped_draft_node_indices":[0],
+            "expected_input_digest":digest,
             "expected_choice_set_digest":digest,"expected_verification_digest":digest})
     }
 
@@ -185,6 +186,11 @@ mod tests {
         for (key, invalid) in [
             ("task_id", json!("not-a-uuid")),
             ("task_revision", json!(0)),
+            ("mapped_draft_node_indices", json!([-1])),
+            ("mapped_draft_node_indices", json!([0.5])),
+            ("mapped_draft_node_indices", json!([])),
+            ("mapped_draft_node_indices", json!([0, 0])),
+            ("mapped_draft_node_indices", json!([2, 0])),
             ("expected_input_digest", json!("not-a-digest")),
             ("expected_choice_set_digest", json!("A".repeat(64))),
             ("expected_verification_digest", json!("0".repeat(63))),

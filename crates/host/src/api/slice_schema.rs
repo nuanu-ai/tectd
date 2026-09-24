@@ -405,6 +405,7 @@ pub(super) fn save() -> Value {
             "task_id":uuid(),"task_revision":{"type":"integer","minimum":1},
             "disposition_id":uuid(),
             "selected_choice_id":{"type":"string","minLength":1,"maxLength":4096},
+            "mapped_draft_node_indices":{"type":"array","items":{"type":"integer","minimum":0},"minItems":1,"maxItems":100,"uniqueItems":true,"description":"Nonempty, strictly increasing zero-based positions in the submitted draft.nodes array."},
             "expected_input_digest":matrix_digest(),
             "expected_choice_set_digest":matrix_digest(),
             "expected_verification_digest":matrix_digest()
@@ -414,6 +415,7 @@ pub(super) fn save() -> Value {
             "task_revision",
             "disposition_id",
             "selected_choice_id",
+            "mapped_draft_node_indices",
             "expected_input_digest",
             "expected_choice_set_digest",
             "expected_verification_digest"
@@ -459,6 +461,7 @@ pub(super) fn save_matrix_selection_example() -> Value {
     example["matrix_selection"] = json!({
         "task_id":id,"task_revision":1,"disposition_id":id,
         "selected_choice_id":"choice-a",
+        "mapped_draft_node_indices":[0],
         "expected_input_digest":digest,
         "expected_choice_set_digest":digest,
         "expected_verification_digest":digest
@@ -606,7 +609,19 @@ mod tests {
             binding["properties"]["expected_input_digest"]["pattern"],
             "^[0-9a-f]{64}$"
         );
-        assert_eq!(binding["required"].as_array().unwrap().len(), 7);
+        assert_eq!(
+            binding["properties"]["mapped_draft_node_indices"]["minItems"],
+            1
+        );
+        assert_eq!(
+            binding["properties"]["mapped_draft_node_indices"]["uniqueItems"],
+            true
+        );
+        assert_eq!(
+            binding["properties"]["mapped_draft_node_indices"]["description"],
+            "Nonempty, strictly increasing zero-based positions in the submitted draft.nodes array."
+        );
+        assert_eq!(binding["required"].as_array().unwrap().len(), 8);
         assert!(
             !draft["required"]
                 .as_array()
@@ -618,6 +633,10 @@ mod tests {
         assert_eq!(
             save_matrix_selection_example()["matrix_selection"]["selected_choice_id"],
             "choice-a"
+        );
+        assert_eq!(
+            save_matrix_selection_example()["matrix_selection"]["mapped_draft_node_indices"],
+            json!([0])
         );
     }
 }

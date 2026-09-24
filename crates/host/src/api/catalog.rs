@@ -481,7 +481,7 @@ fn build_routes() -> Vec<RouteSpec> {
             "slice.candidates.save",
             "save_slice_candidate_set",
             "Persist either a complete Slice-candidate graph draft or its critical review.",
-            "Requires exact Scope, candidate-set, snapshot, cursor, revision, and request identity. Full requires both exceptional-choice explanations. A draft may include an exact Matrix task, disposition, choice and digest binding.",
+            "Requires exact Scope, candidate-set, snapshot, cursor, revision, and request identity. Full requires both exceptional-choice explanations. A draft may include an exact Matrix task, disposition, choice, draft-node mapping, and digest binding.",
             "Draft save assigns stable IDs and validates dependencies. An optional Matrix binding records provenance only after the native save succeeds. Review may make a plan ready while retaining intentional Decision nodes.",
             "Replay the same payload only; reload context after uncertainty or stale rejection.",
             slice_schema::save(),
