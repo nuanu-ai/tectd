@@ -1,7 +1,7 @@
 use crate::{TransactionMode, WorkspaceService};
 use sha2::{Digest, Sha256};
 use tect_domain::{
-    EngineeringMatrixComposition, EngineeringMatrixInput, Error,
+    EngineeringChoiceSet, EngineeringMatrixComposition, EngineeringMatrixInput, Error,
     OwnerReportedEngineeringMatrixFacts, RequestContext, Result,
     compose_owner_reported_engineering_matrix,
 };
@@ -18,6 +18,7 @@ pub struct RecordMatrixTask {
     pub expected_current_revision: i64,
     pub request_id: Uuid,
     pub input: EngineeringMatrixInput,
+    pub choice_set: Option<EngineeringChoiceSet>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +28,8 @@ pub struct MatrixTaskRevision {
     pub request_id: Uuid,
     pub input: EngineeringMatrixInput,
     pub input_digest: String,
+    pub choice_set: Option<EngineeringChoiceSet>,
+    pub choice_set_digest: Option<String>,
     pub recorded_by_principal_id: Uuid,
     pub recorded_by_session_id: Uuid,
 }
@@ -128,15 +131,25 @@ fn validate_request(request: &RecordMatrixTask) -> Result<()> {
     {
         return Err(Error::InvalidArguments);
     }
-    request.input.validate()
+    request.input.validate()?;
+    if let Some(choice_set) = &request.choice_set {
+        if choice_set.task_id != request.task_id.to_string()
+            || choice_set.task_revision != request.revision.to_string()
+        {
+            return Err(Error::InvalidArguments);
+        }
+        choice_set.validate(&request.input)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use tect_domain::{
-        CommitmentEvidence, EngineeringIntent, EngineeringMode, FactProvenance, MatrixFact,
-        MatrixSourceVerificationStatus, OperatingEnvelope, OperatingFact, OperationalFacts,
+        CommitmentEvidence, EngineeringCandidate, EngineeringIntent, EngineeringMode,
+        FactProvenance, MATRIX_CHOICE_SET_SCHEMA, MatrixFact, MatrixSourceVerificationStatus,
+        OperatingEnvelope, OperatingFact, OperationalFacts,
     };
 
     fn known<T>(value: T) -> MatrixFact<T> {
@@ -171,6 +184,8 @@ mod tests {
             request_id: Uuid::new_v4(),
             input,
             input_digest: "stored-digest".into(),
+            choice_set: None,
+            choice_set_digest: None,
             recorded_by_principal_id: Uuid::new_v4(),
             recorded_by_session_id: Uuid::new_v4(),
         }
@@ -246,5 +261,53 @@ mod tests {
             canonical_matrix_input_digest(&left).unwrap(),
             canonical_matrix_input_digest(&right).unwrap()
         );
+    }
+
+    #[test]
+    fn choice_set_must_bind_to_exact_revision_and_input() {
+        let stored = stored_revision();
+        let mut request = RecordMatrixTask {
+            task_id: stored.task_id,
+            revision: 2,
+            expected_current_revision: 1,
+            request_id: stored.request_id,
+            input: stored.input,
+            choice_set: None,
+        };
+        assert_eq!(validate_request(&request), Ok(()));
+        let choice = EngineeringChoiceSet {
+            schema: MATRIX_CHOICE_SET_SCHEMA.into(),
+            choice_set_id: "choice-1".into(),
+            version: 1,
+            task_id: request.task_id.to_string(),
+            task_revision: "2".into(),
+            decision_question: "Which approach?".into(),
+            candidates: vec![EngineeringCandidate {
+                candidate_id: "a".into(),
+                title: "A".into(),
+                approach: "Use A".into(),
+                assumption_fact_ids: vec!["criticality".into()],
+            }],
+        };
+        for count in 0..=1 {
+            let mut choice = choice.clone();
+            choice.candidates.truncate(count);
+            request.choice_set = Some(choice);
+            assert_eq!(validate_request(&request), Ok(()));
+        }
+        let mut choice = choice.clone();
+        choice.task_revision = "1".into();
+        request.choice_set = Some(choice.clone());
+        assert_eq!(validate_request(&request), Err(Error::InvalidArguments));
+        let mut choice = choice.clone();
+        choice.task_revision = "2".into();
+        choice.task_id = Uuid::new_v4().to_string();
+        request.choice_set = Some(choice.clone());
+        assert_eq!(validate_request(&request), Err(Error::InvalidArguments));
+        let mut choice = choice;
+        choice.task_id = request.task_id.to_string();
+        choice.candidates[0].assumption_fact_ids = vec!["unknown.fact".into()];
+        request.choice_set = Some(choice);
+        assert_eq!(validate_request(&request), Err(Error::InvalidArguments));
     }
 }
