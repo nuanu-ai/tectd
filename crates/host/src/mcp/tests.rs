@@ -18,6 +18,23 @@ fn synthetic_session() -> McpSession {
 }
 
 #[test]
+fn matrix_verification_is_one_of_five_public_tool_routes() {
+    let routed = crate::api::decode_public_call(
+        "command",
+        json!({"route":"engineering.matrix.verify","params":{
+            "task_id":Uuid::new_v4(),"expected_revision":1,
+            "input_digest":"a".repeat(64),"evidence":[]
+        }}),
+    )
+    .unwrap();
+    assert_eq!(routed.name, "verify_matrix_task");
+    assert_eq!(
+        crate::api::definitions()["tools"].as_array().unwrap().len(),
+        5
+    );
+}
+
+#[test]
 fn tool_errors_have_one_json_content_and_a_short_intro() {
     let result = failed_tool_result(Error::Unauthorized);
     assert_eq!(result["isError"], true);

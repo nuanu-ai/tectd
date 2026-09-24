@@ -25,6 +25,7 @@ mod knowledge_search_tools;
 mod knowledge_tools;
 mod matrix_advisory_tools;
 mod matrix_task_tools;
+mod matrix_verification_tools;
 mod mcp;
 mod pipeline_definitions;
 mod pipeline_dispatch;

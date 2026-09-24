@@ -256,6 +256,14 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                     None,
                 ))
             }
+            Invocation::MatrixVerification(request) => {
+                let receipt = service.verify_matrix_task(context, &request).await?;
+                Ok(responses::with_actions(
+                    crate::matrix_verification_tools::receipt(receipt),
+                    Vec::new(),
+                    None,
+                ))
+            }
             Invocation::MatrixAdvisory(invocation) => {
                 let opportunity = match invocation {
                     crate::matrix_advisory_tools::MatrixAdvisoryInvocation::Request(request) => {
@@ -338,10 +346,7 @@ async fn authenticate_invalid_request(
     tool_name: &str,
 ) -> WireResponse {
     let authorization = timeout(OPERATION_TIMEOUT, async {
-        if matches!(
-            tool_name,
-            "candidate_advisory_verify" | "candidate_advisory_get" | "candidate_advisory_audit"
-        ) {
+        if allows_verifier_invalid_request(tool_name) {
             service
                 .authenticate_candidate_advisory_session(context)
                 .await
@@ -359,6 +364,16 @@ async fn authenticate_invalid_request(
             error: Error::TransportUnavailable,
         },
     }
+}
+
+fn allows_verifier_invalid_request(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "candidate_advisory_verify"
+            | "candidate_advisory_get"
+            | "candidate_advisory_audit"
+            | "verify_matrix_task"
+    )
 }
 
 fn serialize<T: Serialize>(result: Result<T>) -> Result<Value> {

@@ -15,6 +15,15 @@ fn context() -> RequestContext {
     }
 }
 
+#[test]
+fn malformed_matrix_verification_authenticates_as_verifier_route() {
+    assert!(allows_verifier_invalid_request("verify_matrix_task"));
+    assert!(!allows_verifier_invalid_request("record_matrix_task"));
+    assert!(!allows_verifier_invalid_request(
+        crate::api::INVALID_PUBLIC_CALL
+    ));
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LegacyWireRequest {

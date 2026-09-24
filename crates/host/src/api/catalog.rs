@@ -148,6 +148,28 @@ fn build_routes() -> Vec<RouteSpec> {
         ),
         route!(
             "command",
+            "engineering.matrix.verify",
+            "verify_matrix_task",
+            "Verify the saved Engineering Matrix facts against immutable evidence references.",
+            "Requires an authenticated verifier native session bound to the workspace, an exact saved task revision and input digest, and one evidence reference per required fact. The verifier must differ from the owner who recorded the revision. Evidence validation is disabled by default.",
+            "On successful evidence validation, appends a sealed verification record. The response is a bounded digest and per-fact status receipt without raw evidence content.",
+            "On uncertainty, inspect the saved task revision; avoid retrying with changed evidence. Verification remains unavailable until a trusted evidence validator is configured.",
+            object_schema(
+                json!({
+                    "task_id":uuid(),
+                    "expected_revision":{"type":"integer","minimum":1},
+                    "input_digest":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"},
+                    "evidence":{"type":"array","maxItems":1040,"items":object_schema(
+                        json!({"fact_path":{"type":"string","minLength":1,"maxLength":512,"pattern":"^/"},"evidence_ref":{"type":"string","minLength":1,"maxLength":4096,"pattern":"\\S"}}),
+                        json!(["fact_path","evidence_ref"])
+                    )}
+                }),
+                json!(["task_id", "expected_revision", "input_digest", "evidence"])
+            ),
+            json!({"task_id":example_id,"expected_revision":1,"input_digest":"0".repeat(64),"evidence":[{"fact_path":"/mode","evidence_ref":"urn:evidence:example"}]}),
+        ),
+        route!(
+            "command",
             "session.select_worktrees",
             "select_worktrees",
             "Replace this native session's complete selected worktree set.",

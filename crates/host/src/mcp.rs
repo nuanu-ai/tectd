@@ -219,6 +219,7 @@ impl McpSession {
                     ("command", Some("candidate.advisory.verify")) => {
                         Some("candidate_advisory_verify")
                     }
+                    ("command", Some("engineering.matrix.verify")) => Some("verify_matrix_task"),
                     ("query", Some("candidate.advisory.get")) => Some("candidate_advisory_get"),
                     ("query", Some("candidate.advisory.audit")) => Some("candidate_advisory_audit"),
                     _ => None,
