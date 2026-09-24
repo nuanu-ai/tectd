@@ -340,6 +340,7 @@ pub async fn validate_runtime_role(pool: &PgPool, runtime_role: &str) -> Result<
                          'advisory_opportunity', 'advisory_dispatch',
                          'advisory_matrix_advice', 'advisory_matrix_disposition',
                          'matrix_planning_selection_links',
+                         'matrix_planning_effect_attestations',
                          'matrix_tasks', 'matrix_task_revisions',
                          'matrix_verifications', 'matrix_verification_bindings',
                          'advisory_scope_source_snapshot', 'advisory_scope_manifest',

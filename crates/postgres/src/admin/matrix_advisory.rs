@@ -1,9 +1,10 @@
 use super::*;
 
-const MATRIX_ADVISORY_TABLES: [&str; 3] = [
+const MATRIX_ADVISORY_TABLES: [&str; 4] = [
     "advisory_matrix_advice",
     "advisory_matrix_disposition",
     "matrix_planning_selection_links",
+    "matrix_planning_effect_attestations",
 ];
 
 pub(super) async fn grant_matrix_advisory_runtime(
@@ -28,7 +29,7 @@ pub(super) async fn validate_matrix_advisory_schema(
     runtime_role: &str,
 ) -> Result<()> {
     let tables_ready: bool = sqlx::query_scalar(
-        "SELECT pg_catalog.count(*)=3 AND pg_catalog.bool_and( \
+        "SELECT pg_catalog.count(*)=4 AND pg_catalog.bool_and( \
              c.relrowsecurity AND c.relforcerowsecurity \
              AND NOT pg_catalog.pg_has_role(r.oid,c.relowner,'MEMBER')) \
          FROM pg_catalog.pg_class c \
@@ -42,7 +43,7 @@ pub(super) async fn validate_matrix_advisory_schema(
     .await
     .map_err(storage_error)?;
     let policies_ready: bool = sqlx::query_scalar(
-        "SELECT pg_catalog.count(*)=3 AND pg_catalog.bool_and(COALESCE( \
+        "SELECT pg_catalog.count(*)=4 AND pg_catalog.bool_and(COALESCE( \
              p.policyname=p.tablename||'_tenant_scope' \
              AND p.permissive='PERMISSIVE' AND p.roles='{public}'::name[] \
              AND p.cmd='ALL' AND p.qual=p.with_check \
@@ -119,12 +120,30 @@ pub(super) async fn validate_matrix_advisory_schema(
     .fetch_one(&mut **transaction)
     .await
     .map_err(storage_error)?;
+    let effect_guard_ready: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_trigger t \
+         JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid \
+         JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace \
+         JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid \
+         JOIN pg_catalog.pg_roles r ON r.rolname=$1 \
+         WHERE n.nspname='public' AND c.relname='matrix_planning_effect_attestations' \
+           AND t.tgname='matrix_planning_effect_active_verifier' \
+           AND t.tgenabled='O' AND NOT t.tgisinternal \
+           AND p.proname='matrix_planning_effect_require_active_verifier' \
+           AND p.prosecdef AND NOT pg_catalog.pg_has_role(r.oid,p.proowner,'MEMBER') \
+           AND NOT pg_catalog.has_function_privilege($1,p.oid,'EXECUTE'))",
+    )
+    .bind(runtime_role)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(storage_error)?;
     if !tables_ready
         || !policies_ready
         || !public_revoked
         || !runtime_ready
         || !disposition_guard_ready
         || !selection_guard_ready
+        || !effect_guard_ready
     {
         return Err(Error::InvalidConfiguration);
     }
