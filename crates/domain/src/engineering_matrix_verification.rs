@@ -61,10 +61,27 @@ pub struct MatrixVerificationRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedMatrixVerification {
-    pub task_id: String,
-    pub task_revision: String,
-    pub input_digest: String,
-    pub record_digest: String,
+    task_id: String,
+    task_revision: String,
+    input_digest: String,
+    record_digest: String,
+}
+
+impl ValidatedMatrixVerification {
+    pub fn record_digest(&self) -> &str {
+        &self.record_digest
+    }
+
+    pub(crate) fn matches_input(
+        &self,
+        task_id: &str,
+        task_revision: &str,
+        input: &EngineeringMatrixInput,
+    ) -> Result<bool> {
+        Ok(self.task_id == task_id
+            && self.task_revision == task_revision
+            && self.input_digest == matrix_input_digest(input)?)
+    }
 }
 
 /// The Matrix task store persists `serde_json::to_value(input)` and hashes its

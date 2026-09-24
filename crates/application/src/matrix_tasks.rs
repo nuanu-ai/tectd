@@ -1,4 +1,4 @@
-use crate::{TransactionMode, WorkspaceService};
+use crate::{MatrixEvidenceValidator, MatrixVerificationStore, TransactionMode, WorkspaceService};
 use sha2::{Digest, Sha256};
 use tect_domain::{
     ADVISORY_DECISION_POINT_VERSION, ADVISORY_POLICY_VERSION, AdvisoryCapability,
@@ -6,7 +6,8 @@ use tect_domain::{
     AdvisoryReason, AdvisoryRequestPreference, EngineeringChoiceSet, EngineeringMatrixComposition,
     EngineeringMatrixInput, Error, MatrixAdviceEligibility, MatrixSourceVerificationStatus,
     OwnerReportedEngineeringMatrixFacts, RequestContext, Result, WorkspaceAdvisoryConfig,
-    WorkspaceAdvisoryMode, compose_owner_reported_engineering_matrix,
+    WorkspaceAdvisoryMode, compose_independently_verified_owner_matrix,
+    compose_owner_reported_engineering_matrix, evaluate_matrix_verification, required_matrix_facts,
 };
 use uuid::Uuid;
 
@@ -244,8 +245,32 @@ impl WorkspaceService {
         task_id: Uuid,
         expected_task_revision: i64,
     ) -> Result<EngineeringMatrixComposition> {
-        let revision = self.get_matrix_task(context, task_id).await?;
-        compose_current_revision(revision, expected_task_revision)
+        if task_id.is_nil() || expected_task_revision < 1 {
+            return Err(Error::InvalidArguments);
+        }
+        let (mut tx, identity) = self
+            .authenticated(context, TransactionMode::ReadOnly)
+            .await?;
+        let session = tx
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
+        let revision = tx
+            .matrix_task(workspace.id, task_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        let (composition, _) = compose_current_revision_with_verification(
+            tx.matrix_verification_store(),
+            self.matrix_evidence_validator.as_ref(),
+            workspace.id,
+            revision,
+            expected_task_revision,
+            crate::matrix_verification::current_epoch_seconds()?,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(composition)
     }
 }
 
@@ -398,6 +423,84 @@ pub(crate) fn compose_current_revision(
         revision.input,
     )?;
     Ok(compose_owner_reported_engineering_matrix(&reported))
+}
+
+/// Read only the newest immutable record for the exact current revision. An
+/// expired or revoked latest record does not fall back to an older one.
+pub(crate) async fn compose_current_revision_with_verification(
+    store: Option<&mut dyn MatrixVerificationStore>,
+    validator: &dyn MatrixEvidenceValidator,
+    workspace_id: Uuid,
+    revision: MatrixTaskRevision,
+    expected_task_revision: i64,
+    now: i64,
+) -> Result<(EngineeringMatrixComposition, Option<String>)> {
+    let provisional = compose_current_revision(revision.clone(), expected_task_revision)?;
+    let Some(store) = store else {
+        return Ok((provisional, None));
+    };
+    let Some(record) = store
+        .matrix_verification_for_revision(
+            workspace_id,
+            revision.task_id,
+            revision.revision,
+            &revision.input_digest,
+        )
+        .await?
+    else {
+        return Ok((provisional, None));
+    };
+    if record.owner_principal != revision.recorded_by_principal_id.to_string()
+        || record.verifier_principal == record.owner_principal
+        || record.policy_version != validator.policy_version()
+        || record.input_digest != revision.input_digest
+    {
+        return Ok((provisional, None));
+    }
+    let Ok(validated) = evaluate_matrix_verification(
+        &revision.task_id.to_string(),
+        &revision.revision.to_string(),
+        &revision.input,
+        &record,
+        now,
+    ) else {
+        return Ok((provisional, None));
+    };
+    let Ok(required) = required_matrix_facts(&revision.input) else {
+        return Ok((provisional, None));
+    };
+    for fact in &required {
+        let Some(binding) = record
+            .bindings
+            .iter()
+            .find(|binding| binding.fact_path == fact.path)
+        else {
+            return Ok((provisional, None));
+        };
+        if validator
+            .revalidate(
+                workspace_id,
+                revision.task_id,
+                revision.revision,
+                fact,
+                binding,
+                now,
+            )
+            .await
+            .is_err()
+        {
+            return Ok((provisional, None));
+        }
+    }
+    let reported = OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
+        revision.task_id.to_string(),
+        revision.revision.to_string(),
+        revision.input,
+    )?;
+    Ok((
+        compose_independently_verified_owner_matrix(&reported, &validated)?,
+        Some(validated.record_digest().to_owned()),
+    ))
 }
 
 /// Hash the same canonical JSON representation that the store persists.

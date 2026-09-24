@@ -2,7 +2,7 @@
 
 use crate::{
     CommitmentEvidence, EngineeringIntent, EngineeringMatrixInput, EngineeringMode, Error,
-    FactProvenance, MatrixFact, OperationalFacts, Result,
+    FactProvenance, MatrixFact, OperationalFacts, Result, ValidatedMatrixVerification,
 };
 use serde::{Deserialize, Serialize};
 
@@ -75,6 +75,7 @@ fn validate_bound_input(
 #[serde(rename_all = "snake_case")]
 pub enum MatrixSourceVerificationStatus {
     VerifiedByCaller,
+    IndependentlyVerifiedOwnerReported,
     OwnerReportedPendingIndependentVerification,
 }
 
@@ -116,8 +117,11 @@ pub struct EngineeringMatrixComposition {
 
 impl EngineeringMatrixComposition {
     pub fn is_resolved(&self) -> bool {
-        self.source_verification_status == MatrixSourceVerificationStatus::VerifiedByCaller
-            && self.unresolved_evidence.is_empty()
+        matches!(
+            self.source_verification_status,
+            MatrixSourceVerificationStatus::VerifiedByCaller
+                | MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported
+        ) && self.unresolved_evidence.is_empty()
     }
 }
 
@@ -176,6 +180,23 @@ pub fn compose_owner_reported_engineering_matrix(
         &reported.input,
         MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification,
     )
+}
+
+/// Preserve each owner's fact provenance while marking the exact saved input
+/// independently verified. Only the domain evaluator can mint the token.
+pub fn compose_independently_verified_owner_matrix(
+    reported: &OwnerReportedEngineeringMatrixFacts,
+    validated: &ValidatedMatrixVerification,
+) -> Result<EngineeringMatrixComposition> {
+    if !validated.matches_input(&reported.task_id, &reported.task_revision, &reported.input)? {
+        return Err(Error::StaleRevision);
+    }
+    Ok(compose_bound_input(
+        &reported.task_id,
+        &reported.task_revision,
+        &reported.input,
+        MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported,
+    ))
 }
 
 fn compose_bound_input(

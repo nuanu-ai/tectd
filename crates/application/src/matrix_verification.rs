@@ -87,7 +87,7 @@ pub(crate) async fn verify_locked_revision(
     verifier_session_id: Uuid,
     revision: &MatrixTaskRevision,
     request: &VerifyMatrixTask,
-    clock: &dyn Fn() -> Result<i64>,
+    clock: &(dyn Fn() -> Result<i64> + Sync),
 ) -> Result<MatrixVerificationRecord> {
     if revision.task_id != request.task_id {
         return Err(Error::NotFound);
@@ -176,7 +176,7 @@ pub(crate) async fn verify_locked_revision(
     Ok(record)
 }
 
-fn current_epoch_seconds() -> Result<i64> {
+pub(crate) fn current_epoch_seconds() -> Result<i64> {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| Error::InternalInvariant)?
@@ -328,6 +328,135 @@ mod tests {
                 },
             })
         }
+
+        async fn revalidate(
+            &self,
+            _workspace_id: Uuid,
+            _task_id: Uuid,
+            _revision: i64,
+            fact: &RequiredMatrixFact,
+            binding: &MatrixEvidenceBinding,
+            now: i64,
+        ) -> Result<()> {
+            if !self.trusted
+                || binding.fact_path != fact.path
+                || binding.value_digest != fact.value_digest
+                || binding.expires_at <= now
+            {
+                return Err(Error::Forbidden);
+            }
+            Ok(())
+        }
+    }
+
+    async fn composed(
+        store: &mut FakeStore,
+        validator: &FakeValidator,
+        workspace: Uuid,
+        revision: MatrixTaskRevision,
+        now: i64,
+    ) -> (tect_domain::EngineeringMatrixComposition, Option<String>) {
+        crate::matrix_tasks::compose_current_revision_with_verification(
+            Some(store),
+            validator,
+            workspace,
+            revision.clone(),
+            revision.revision,
+            now,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn latest_current_verification_controls_owner_composition() {
+        let revision = revision();
+        let workspace = Uuid::new_v4();
+        let mut store = FakeStore::default();
+        let record = verify_locked_revision(
+            &mut store,
+            &FakeValidator { trusted: true },
+            workspace,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            &revision,
+            &request(&revision),
+            &|| Ok(100),
+        )
+        .await
+        .unwrap();
+        let (verified, digest) = composed(
+            &mut store,
+            &FakeValidator { trusted: true },
+            workspace,
+            revision.clone(),
+            100,
+        )
+        .await;
+        assert!(verified.is_resolved());
+        assert_eq!(
+            verified.source_verification_status,
+            tect_domain::MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported
+        );
+        assert_eq!(digest.as_deref(), Some(record.digest.as_str()));
+        let (revoked, digest) = composed(
+            &mut store,
+            &FakeValidator { trusted: false },
+            workspace,
+            revision.clone(),
+            100,
+        )
+        .await;
+        assert!(!revoked.is_resolved());
+        assert_eq!(digest, None);
+        let (expired, digest) = composed(
+            &mut store,
+            &FakeValidator { trusted: true },
+            workspace,
+            revision.clone(),
+            111,
+        )
+        .await;
+        assert!(!expired.is_resolved());
+        assert_eq!(digest, None);
+        let mut advanced = revision.clone();
+        advanced.revision += 1;
+        let (stale, digest) = composed(
+            &mut store,
+            &FakeValidator { trusted: true },
+            workspace,
+            advanced,
+            100,
+        )
+        .await;
+        assert!(!stale.is_resolved());
+        assert_eq!(digest, None);
+        let mut wrong_policy = record.clone();
+        wrong_policy.policy_version = "obsolete-policy".into();
+        wrong_policy.digest = wrong_policy.canonical_digest().unwrap();
+        store.saved.push(wrong_policy);
+        let (policy_changed, digest) = composed(
+            &mut store,
+            &FakeValidator { trusted: true },
+            workspace,
+            revision.clone(),
+            100,
+        )
+        .await;
+        assert!(!policy_changed.is_resolved());
+        assert_eq!(digest, None);
+        let (no_store, digest) = crate::matrix_tasks::compose_current_revision_with_verification(
+            None,
+            &FakeValidator { trusted: true },
+            workspace,
+            revision.clone(),
+            revision.revision,
+            100,
+        )
+        .await
+        .unwrap();
+        assert!(!no_store.is_resolved());
+        assert_eq!(digest, None);
     }
 
     #[tokio::test]
@@ -458,10 +587,9 @@ mod tests {
     async fn evidence_expiring_during_validation_never_persists() {
         let revision = revision();
         let mut store = FakeStore::default();
-        let calls = std::cell::Cell::new(0);
+        let calls = std::sync::atomic::AtomicI32::new(0);
         let clock = || {
-            let count = calls.get();
-            calls.set(count + 1);
+            let count = calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Ok(if count == 0 { 100 } else { 111 })
         };
         assert_eq!(

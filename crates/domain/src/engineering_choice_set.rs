@@ -111,7 +111,8 @@ pub fn matrix_evaluation_digest(
     {
         return Err(Error::StaleRevision);
     }
-    let expected = match composition.source_verification_status {
+    let composition_status = composition.source_verification_status;
+    let expected = match composition_status {
         MatrixSourceVerificationStatus::VerifiedByCaller => compose_engineering_matrix(
             &VerifiedEngineeringMatrixFacts::bind_caller_verified_task_revision(
                 choice_set.task_id.clone(),
@@ -119,14 +120,17 @@ pub fn matrix_evaluation_digest(
                 input.clone(),
             )?,
         ),
-        MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification => {
-            compose_owner_reported_engineering_matrix(
+        MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported
+        | MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification => {
+            let mut composition = compose_owner_reported_engineering_matrix(
                 &OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
                     choice_set.task_id.clone(),
                     choice_set.task_revision.clone(),
                     input.clone(),
                 )?,
-            )
+            );
+            composition.source_verification_status = composition_status;
+            composition
         }
     };
     if *composition != expected {

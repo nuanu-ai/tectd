@@ -18,6 +18,20 @@ pub trait MatrixEvidenceValidator: Send + Sync {
         evidence_ref: &str,
         now: i64,
     ) -> Result<MatrixEvidenceBinding>;
+
+    /// Check that a previously accepted binding remains trusted under the
+    /// current policy and source state. Unconfigured validators deny by default.
+    async fn revalidate(
+        &self,
+        _workspace_id: Uuid,
+        _task_id: Uuid,
+        _revision: i64,
+        _fact: &RequiredMatrixFact,
+        _binding: &MatrixEvidenceBinding,
+        _now: i64,
+    ) -> Result<()> {
+        Err(tect_domain::Error::Forbidden)
+    }
 }
 
 pub struct DisabledMatrixEvidenceValidator;
