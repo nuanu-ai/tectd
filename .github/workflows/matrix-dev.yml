@@ -1,0 +1,65 @@
+name: Matrix dev contracts
+
+on:
+  push:
+    branches: [codex/tectd-jev-dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: matrix-dev-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  matrix-contracts:
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tect_test
+        ports:
+          - 5432/tcp
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      TECT_TEST_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:${{ job.services.postgres.ports[5432] }}/tect_test
+      TECT_TEST_RUNTIME_URL: postgres://tect_ci:ci-fixture-only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/tect_test
+      TECT_TEST_RUNTIME_ROLE: tect_ci
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.93.0
+        with:
+          components: rustfmt
+      - name: Provision isolated CI runtime role
+        env:
+          PGPASSWORD: postgres
+        run: psql -h 127.0.0.1 -p "${{ job.services.postgres.ports[5432] }}" -U postgres -d tect_test -v ON_ERROR_STOP=1 -c "CREATE ROLE tect_ci LOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT PASSWORD 'ci-fixture-only'"
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Domain Matrix contracts
+        run: |
+          cargo test -p tect-domain --lib engineering_matrix_composer_tests
+          cargo test -p tect-domain --lib engineering_choice_set_tests
+      - name: Application Matrix contracts
+        run: cargo test -p tect-application --lib matrix_tasks::tests
+      - name: PostgreSQL Matrix migration contracts
+        run: cargo test -p tect-postgres --lib matrix_
+      - name: Host Matrix contracts
+        run: |
+          cargo test -p tect-host --lib matrix_task_tools::tests
+          cargo test -p tect-host --lib matrix_advisory_tools::tests
+          cargo test -p tect-host --lib jev_matrix_advice::tests
+      - name: PostgreSQL Matrix live lineage
+        run: cargo test -p tect-postgres --lib matrix_task_revisions_enforce_atomic_owner_accepted_lineage -- --ignored
+      - name: MCP task source end to end
+        env:
+          TECT_TEST_DISPOSABLE_PG: "1"
+        run: cargo test -p tect-cli --test task_source_mcp -- --ignored
