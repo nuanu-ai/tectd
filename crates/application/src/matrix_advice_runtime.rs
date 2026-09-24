@@ -2,8 +2,9 @@ use crate::{MatrixProviderBinding, MatrixProviderRequest};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tect_domain::{
-    AdvisoryDispatchAuthorization, AdvisoryDispatchStart, AdvisoryDispatchState,
-    AdvisoryModelConfiguration, AdvisoryProviderProfileRef, AdvisorySendCertainty, Error, Result,
+    AdvisoryCapability, AdvisoryDispatchAuthorization, AdvisoryDispatchStart,
+    AdvisoryDispatchState, AdvisoryModelConfiguration, AdvisoryOpportunity,
+    AdvisoryProviderProfileRef, AdvisorySendCertainty, Error, Result,
 };
 use uuid::Uuid;
 
@@ -135,9 +136,13 @@ pub struct MatrixStartedDispatchPermit {
 }
 
 impl MatrixStartedDispatchPermit {
+    /// `opportunity` and `request` must come from the accepted saved Matrix
+    /// revision used to prepare the body, after dispatch-start commits.
     pub(crate) fn after_committed_start(
         started: &AdvisoryDispatchStart,
         authorization: &AdvisoryDispatchAuthorization,
+        opportunity: &AdvisoryOpportunity,
+        request: &MatrixProviderRequest,
         prepared: &PreparedMatrixAdviceAttempt,
     ) -> Result<Self> {
         let dispatch = &started.dispatch;
@@ -150,13 +155,22 @@ impl MatrixStartedDispatchPermit {
             || dispatch.send_certainty != AdvisorySendCertainty::SentUnknown
             || dispatch.id != authorization.dispatch_id
             || dispatch.opportunity_id != authorization.opportunity_id
+            || dispatch.opportunity_id != opportunity.id
+            || dispatch.provider != authorization.provider
+            || dispatch.model != authorization.model
+            || dispatch.predecessor_dispatch_id != authorization.predecessor_dispatch_id
+            || dispatch.attempt_number != authorization.attempt_number
+            || dispatch.retry_basis != authorization.retry_basis
             || dispatch.configuration_digest != authorization.configuration_digest
             || authorization.configuration_digest != configuration_digest
             || dispatch.material_digest != authorization.material_digest
+            || opportunity.material_digest != authorization.material_digest
             || dispatch.payload_digest != authorization.payload_digest
             || authorization.payload_digest != prepared.body_sha256
             || authorization.request_payload != prepared.body
             || authorization.model != prepared.identity.model_configuration.model
+            || !binding_matches_opportunity(request.binding(), opportunity)
+            || prepared.validate_for(request).is_err()
             || config.get("provider_profile_ref")
                 != Some(&serde_json::json!(prepared.identity.provider_profile_ref))
             || config.get("model_configuration")
@@ -183,7 +197,7 @@ impl MatrixStartedDispatchPermit {
     }
 
     pub fn permits(
-        &self,
+        self,
         opportunity_id: Uuid,
         dispatch_id: Uuid,
         configuration_digest: &str,
@@ -197,6 +211,19 @@ impl MatrixStartedDispatchPermit {
             && self.body_length == prepared.body_length()
             && self.body_sha256 == prepared.body_sha256
     }
+}
+
+fn binding_matches_opportunity(
+    binding: &MatrixProviderBinding,
+    opportunity: &AdvisoryOpportunity,
+) -> bool {
+    opportunity.capability == AdvisoryCapability::EngineeringProfile
+        && opportunity.target_kind == "matrix_task"
+        && opportunity.target_id == Some(binding.task_id)
+        && opportunity.work_revision == Some(binding.task_revision)
+        && opportunity.matrix_task_revision == Some(binding.task_revision)
+        && opportunity.matrix_choice_set_digest.as_deref()
+            == Some(binding.choice_set_digest.as_str())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
