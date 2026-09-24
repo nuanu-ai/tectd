@@ -2,15 +2,30 @@ use crate::{scope_candidates, store::PgUnitOfWork};
 use async_trait::async_trait;
 use tect_application::{CandidateDeltaStore, ScopeCandidateStore};
 use tect_domain::{
-    BeginCandidateSet, BeginCandidateSetOutcome, CandidateHistoryEntry, CandidateInputSummary,
-    CandidateReceiptRequest, CandidateSetSummary, CandidateSnapshotMaterial, CandidateTextFragment,
-    RecordCandidateInput, RefreshCandidateSet, Result, ReviewCandidateSet, SaveCandidateDraft,
-    StoredCandidateContext, StoredHistoricalCandidateDraft,
+    AdvisoryOpportunity, BeginCandidateSet, BeginCandidateSetOutcome, CandidateHistoryEntry,
+    CandidateInputSummary, CandidateReceiptRequest, CandidateSetSummary, CandidateSnapshotMaterial,
+    CandidateTextFragment, RecordCandidateInput, RefreshCandidateSet, Result, ReviewCandidateSet,
+    SaveCandidateDraft, StoredCandidateContext, StoredHistoricalCandidateDraft,
 };
 use uuid::Uuid;
 
 #[async_trait]
 impl ScopeCandidateStore for PgUnitOfWork {
+    async fn matrix_decomposition_parent(
+        &mut self,
+        workspace_id: Uuid,
+        opportunity_id: Uuid,
+    ) -> Result<Option<AdvisoryOpportunity>> {
+        let tenant_id = self.tenant_id()?;
+        crate::advisory::matrix_decomposition_parent(
+            self.transaction()?,
+            tenant_id,
+            workspace_id,
+            opportunity_id,
+        )
+        .await
+    }
+
     async fn candidate_begin_replay(
         &mut self,
         workspace_id: Uuid,

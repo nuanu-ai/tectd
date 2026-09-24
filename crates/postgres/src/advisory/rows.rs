@@ -25,6 +25,7 @@ struct OpportunityRow {
     material_digest: String,
     state: String,
     primary_reason: String,
+    parent_opportunity_id: Option<Uuid>,
     provider_called: bool,
 }
 

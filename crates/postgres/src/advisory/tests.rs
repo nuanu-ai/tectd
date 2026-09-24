@@ -18,6 +18,32 @@ mod audit_projection_tests {
     }
 
     #[test]
+    fn matrix_parent_query_and_capture_keep_workspace_boundary_and_parent_identity() {
+        let source = include_str!("config_opportunity.rs");
+        let lookup = source
+            .split("pub(crate) async fn matrix_decomposition_parent(")
+            .nth(1)
+            .expect("matrix parent lookup exists");
+        assert!(lookup.contains("o.tenant_id=$1 AND o.workspace_id=$2 AND o.id=$3"));
+        assert!(lookup.contains("o.capability='engineering_profile'"));
+        assert!(lookup.contains("o.work_item_kind='matrix_task'"));
+        assert!(lookup.contains(".bind(tenant)"));
+        assert!(lookup.contains(".bind(workspace)"));
+        assert!(lookup.contains(".bind(opportunity_id)"));
+
+        let capture = source
+            .split("async fn capture_opportunity(")
+            .nth(1)
+            .unwrap()
+            .split("async fn opportunity_by_id(")
+            .next()
+            .unwrap();
+        assert!(capture.contains("primary_reason,parent_opportunity_id) VALUES"));
+        assert!(capture.contains(".bind(input.parent_opportunity_id)"));
+        assert!(capture.contains("row.parent_opportunity_id != input.parent_opportunity_id"));
+    }
+
+    #[test]
     fn matrix_binding_survives_opportunity_row_projection() {
         let workspace = Uuid::new_v4();
         let task = Uuid::new_v4();
@@ -43,6 +69,7 @@ mod audit_projection_tests {
                 material_digest: "b".repeat(64),
                 state: "no_call".into(),
                 primary_reason: "capability_unavailable".into(),
+                parent_opportunity_id: None,
                 provider_called: false,
             },
         )
@@ -84,6 +111,7 @@ mod audit_projection_tests {
                 material_digest: "c".repeat(64),
                 state: "advised".into(),
                 primary_reason: "provider_response".into(),
+                parent_opportunity_id: None,
                 provider_called: true,
             },
         )
@@ -147,6 +175,7 @@ mod audit_projection_tests {
                     material_digest: "a".repeat(64),
                     state: "awaiting_response".into(),
                     primary_reason: "dispatch_authorized".into(),
+                    parent_opportunity_id: None,
                     provider_called,
                 },
             )
@@ -482,6 +511,7 @@ mod budget_reason_persistence_tests {
                     material_digest: "a".repeat(64),
                     state: AdvisoryOpportunityState::NoCall,
                     primary_reason: AdvisoryReason::BudgetPolicyInvalid,
+                    parent_opportunity_id: None,
                 },
             )
             .await

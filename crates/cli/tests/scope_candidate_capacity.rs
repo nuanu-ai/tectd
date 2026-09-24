@@ -237,6 +237,7 @@ async fn baseline_large_program_and_input_are_exactly_fragmented_and_failed_outp
                     .into(),
                 task_context: Default::default(),
                 advisory_preference: Default::default(),
+                parent_matrix: None,
             },
             &FixtureGuidance,
             &guard,
@@ -293,6 +294,7 @@ async fn baseline_large_program_and_input_are_exactly_fragmented_and_failed_outp
                     ..Default::default()
                 },
                 advisory_preference: Default::default(),
+                parent_matrix: None,
             },
             &FixtureGuidance,
             &large_manifest_guard,
