@@ -30,8 +30,8 @@ Run the zero-send preflight:
 JEV_ONE_SHOT_MODE=preflight cargo test -p tect-cli --test jev_one_shot one_shot_real_jev_evidence -- --ignored --exact --nocapture
 ```
 
-The preflight validates PostgreSQL version/migrations, workspace optional
-configuration, session and authority binding, authored manifest supplier,
+The preflight checks PostgreSQL 18 before applying migrations, then validates
+workspace optional configuration, session and authority binding, authored manifest supplier,
 serialized JEV body and size, and a durable `no_call` opportunity with zero
 dispatch rows under DenyScopeBudget. It prints the call ID, fixture workspace
 and candidate IDs, body byte count and SHA-256, and no-call opportunity ID.
@@ -49,10 +49,12 @@ The live invocation repeats all preflight checks on its own fresh fixture. It
 creates the exact serialized JSON request at
 `/Users/tony/Work/Projects/nuanu-ai-lab/artifacts/jev-live-eval-20260919/tectd-jev-scope-evidence-2026-09-24-1.request.json`
 with exclusive create, owner-only `0600` permissions, and file and parent
-directory sync. Review that file and its printed byte count and SHA-256. The
-process then waits on stdin for the exact line `SEND JEV <printed-sha256>`.
-EOF or any different line fails without creating the marker or making a JEV
-request. Once that line is entered, the harness atomically creates and fsyncs
+directory sync. The provider and bearer header are constructed and validated
+before the marker; this does not send a request. Review the file and its printed
+byte count and SHA-256. The process then waits on stdin for the exact
+newline-terminated line `SEND JEV <printed-sha256>` (LF or CRLF).
+EOF, a line without a newline, or any different line fails without creating
+the marker or making a JEV request. Once that line is entered, the harness atomically creates and fsyncs
 the fixed one-use marker
 `/Users/tony/Work/Projects/nuanu-ai-lab/artifacts/jev-live-eval-20260919/tectd-jev-scope-evidence-2026-09-24-1.used`.
 The marker contains only the fixed call ID and the prepared body SHA-256. It

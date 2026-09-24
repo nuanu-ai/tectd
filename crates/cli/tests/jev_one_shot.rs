@@ -100,9 +100,14 @@ fn review_artifact(path: &Path, body: &[u8]) {
 
 fn confirm_and_mark(reader: &mut impl BufRead, path: &Path, digest: &str) -> bool {
     let mut answer = String::new();
-    if reader.read_line(&mut answer).is_err()
-        || answer.trim_end_matches(['\r', '\n']) != format!("SEND JEV {digest}")
-    {
+    if reader.read_line(&mut answer).is_err() {
+        return false;
+    }
+    let expected = format!("SEND JEV {digest}");
+    let exact_line = answer
+        .strip_suffix('\n')
+        .is_some_and(|line| line.strip_suffix('\r').unwrap_or(line) == expected);
+    if !exact_line {
         return false;
     }
     marker(path, digest);
@@ -207,12 +212,12 @@ async fn one_shot_real_jev_evidence() {
     let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").expect("runtime URL required");
     let role = std::env::var("TECT_TEST_RUNTIME_ROLE").expect("runtime role required");
     let pool = PgPool::connect(&admin_url).await.unwrap();
-    admin::migrate(&pool, &role).await.unwrap();
     let version: String = sqlx::query_scalar("SHOW server_version_num")
         .fetch_one(&pool)
         .await
         .unwrap();
     assert_eq!(version.parse::<i32>().unwrap() / 10_000, 18);
+    admin::migrate(&pool, &role).await.unwrap();
 
     let temp = private_temp();
     let root = temp.path().canonicalize().unwrap();
@@ -430,6 +435,13 @@ async fn one_shot_real_jev_evidence() {
     // Read only process environment; never parse a .env file or print the key.
     let key = std::env::var("TYPESAFE_API_KEY").expect("TYPESAFE_API_KEY process env required");
     assert!(!key.trim().is_empty(), "TYPESAFE_API_KEY must be nonempty");
+    let live_provider = ReviewedJevProvider {
+        inner: provider(key),
+        reviewed_body,
+    };
+    let live_prepared = live_provider.prepare_context(&provider_context).unwrap();
+    assert_eq!(live_prepared.body(), prepared.body());
+    assert_eq!(live_prepared.body_sha256(), digest);
     println!(
         "review exact request at {} ({} bytes, sha256={digest})",
         request_path.display(),
@@ -442,11 +454,6 @@ async fn one_shot_real_jev_evidence() {
         confirm_and_mark(&mut std::io::stdin().lock(), &marker_path, &digest),
         "confirmation absent or mismatched; no marker or external call"
     );
-    let live_provider = ReviewedJevProvider {
-        inner: provider(key),
-        reviewed_body,
-    };
-    assert_eq!(live_provider.reviewed_body, prepared.body());
     let service = WorkspaceService::new_with_scope_advisory_adapters(
         Arc::new(store),
         Arc::new(tect_host::GitSourceInspector),
@@ -514,6 +521,7 @@ fn confirmation_requires_exact_line_before_marker() {
     let path = dir.path().join("one-shot.used");
     for input in [
         "",
+        "SEND JEV abc",
         "SEND JEV wrong\n",
         "send jev abc\n",
         "SEND JEV abc extra\n",
