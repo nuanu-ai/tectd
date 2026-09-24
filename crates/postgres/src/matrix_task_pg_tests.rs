@@ -65,6 +65,7 @@ fn sqlstate(error: &sqlx::Error) -> String {
 }
 
 #[tokio::test]
+#[ignore = "requires disposable PostgreSQL 18 test database; migrates schema and writes fixtures"]
 async fn matrix_task_revisions_enforce_atomic_owner_accepted_lineage() {
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").expect("TECT_TEST_ADMIN_URL required");
     let runtime_url =
@@ -368,6 +369,16 @@ async fn matrix_task_revisions_enforce_atomic_owner_accepted_lineage() {
     .await
     .unwrap();
     assert_eq!(visible, 0);
+    let visible_revisions: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM matrix_task_revisions WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3",
+    )
+    .bind(tenant_id)
+    .bind(workspace_id)
+    .bind(task_id)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(visible_revisions, 0);
     assert_eq!(
         sqlstate(
             &revision(
