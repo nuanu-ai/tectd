@@ -265,12 +265,17 @@ impl MatrixBudgetRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatrixBudgetAuthorization {
+    /// Immutable identity of the complete effective budget decision, including
+    /// limits. A policy must change this ID whenever those limits change so a
+    /// crash recovery can compare a fresh pure decision with the saved grant.
     pub policy_id: String,
 }
 
 #[async_trait]
 pub trait MatrixBudgetPolicy: Send + Sync {
     /// Pure decision; implementations must not reserve or charge. `None` denies.
+    /// Re-evaluation of the exact request must return the same policy ID only
+    /// while all effective limits remain identical.
     async fn authorize(
         &self,
         request: &MatrixBudgetRequest,

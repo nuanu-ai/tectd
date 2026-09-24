@@ -112,8 +112,31 @@ impl WorkspaceService {
             ) {
                 return Err(Error::InputConflict);
             }
+            let saved = if matches!(
+                existing.state,
+                AdvisoryOpportunityState::Prepared | AdvisoryOpportunityState::AwaitingResponse
+            ) {
+                Some(
+                    tx.matrix_dispatch_for_recovery(
+                        &crate::AdvisoryLifecycleCapability::internal(),
+                        workspace.id,
+                        identity.principal_id,
+                        existing.id,
+                        None,
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
             tx.commit().await?;
-            return Ok(existing);
+            return match saved {
+                Some(saved) => {
+                    self.recover_matrix_advisory(context, workspace.id, existing, saved)
+                        .await
+                }
+                None => Ok(existing),
+            };
         }
         let revision = tx
             .lock_matrix_task(workspace.id, request.task_id)
