@@ -138,11 +138,12 @@ pub(super) fn validate_observation(
 
 pub(super) fn prepare_scope_advice_attempt(
     provider: &dyn ScopeAdviceProvider,
-    request: &tect_domain::ScopeAdviceRequest,
+    context: &crate::ScopeAdviceProviderContext,
     config: &WorkspaceAdvisoryConfig,
 ) -> std::result::Result<PreparedScopeAdviceAttempt, AdvisoryReason> {
+    let request = context.request();
     let prepared = provider
-        .prepare(request)
+        .prepare_context(context)
         .map_err(|_| AdvisoryReason::DeterministicInputInvalid)?;
     if prepared.request() != request
         || prepared.body_length() != prepared.body().len()

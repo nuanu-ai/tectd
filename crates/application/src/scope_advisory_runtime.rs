@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use tect_domain::{
     AdvisoryDispatchOutcome, AdvisorySendCertainty, FrozenScopeSource,
     NormalizedScopeAdviceAnswers, Result, ScopeAdviceRequest, ScopeConstructorManifest,
-    SourceObligation,
+    ScopeDecompositionAlternative, SourceObligation,
 };
 use uuid::Uuid;
 
@@ -158,6 +158,57 @@ pub struct ScopeAdviceProviderRequest {
     pub dispatch_id: Uuid,
     pub request: ScopeAdviceRequest,
     pub(crate) budget_policy: ScopeBudgetPolicyEvaluation,
+}
+
+/// Provider-only eligible source material. This is derived from the validated
+/// manifest after the advice request has been bound; it is not persisted as a
+/// different advice request and never includes rejected alternatives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeAdviceProviderContext {
+    request: ScopeAdviceRequest,
+    emitted: Vec<ScopeDecompositionAlternative>,
+}
+
+impl ScopeAdviceProviderContext {
+    pub fn from_manifest(
+        request: &ScopeAdviceRequest,
+        manifest: &ScopeConstructorManifest,
+    ) -> Result<Self> {
+        request.validate(&crate::Sha256ScopeDigest, manifest)?;
+        if request.alternatives.len() != manifest.emitted.len()
+            || request
+                .alternatives
+                .iter()
+                .zip(&manifest.emitted)
+                .any(|(bound, emitted)| {
+                    bound.id != emitted.id
+                        || bound.kind != emitted.kind
+                        || bound.material_digest != emitted.material_digest
+                })
+        {
+            return Err(tect_domain::Error::InputConflict);
+        }
+        Ok(Self {
+            request: request.clone(),
+            emitted: manifest.emitted.clone(),
+        })
+    }
+
+    pub fn request(&self) -> &ScopeAdviceRequest {
+        &self.request
+    }
+
+    pub fn emitted(&self) -> &[ScopeDecompositionAlternative] {
+        &self.emitted
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(request: ScopeAdviceRequest) -> Self {
+        Self {
+            request,
+            emitted: Vec::new(),
+        }
+    }
 }
 
 impl ScopeAdviceProviderRequest {
@@ -319,9 +370,9 @@ pub trait ScopeAdviceProvider: Send + Sync {
     fn identity(&self) -> Option<(&'static str, &'static str)>;
     /// Pure, no-I/O serialization and provider-target binding. Rejections are
     /// proven not sent and must be recorded as a no-call before authorization.
-    fn prepare(
+    fn prepare_context(
         &self,
-        request: &ScopeAdviceRequest,
+        context: &ScopeAdviceProviderContext,
     ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError>;
     /// `Ok` is reserved for a transport result proven sent, including typed
     /// provider/body failures. Pre-response uncertainty uses the error variant.
@@ -382,9 +433,9 @@ impl ScopeAdviceProvider for DisabledScopeAdviceProvider {
     fn identity(&self) -> Option<(&'static str, &'static str)> {
         None
     }
-    fn prepare(
+    fn prepare_context(
         &self,
-        _: &ScopeAdviceRequest,
+        _: &ScopeAdviceProviderContext,
     ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError> {
         Err(ScopeAdviceProviderError::ProvenNotSent)
     }

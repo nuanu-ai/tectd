@@ -405,6 +405,8 @@ impl WorkspaceService {
         };
 
         let typed_request = ScopeAdviceRequest::from_manifest(&Sha256ScopeDigest, &manifest)?;
+        let provider_context =
+            crate::ScopeAdviceProviderContext::from_manifest(&typed_request, &manifest)?;
         let (mut prepare, fresh_identity) =
             self.authorized(context, TransactionMode::ReadWrite).await?;
         prepare
@@ -478,7 +480,7 @@ impl WorkspaceService {
 
         let prepared_attempt = match prepare_scope_advice_attempt(
             self.scope_advice_provider.as_ref(),
-            &typed_request,
+            &provider_context,
             &config,
         ) {
             Ok(value) => value,

@@ -59,7 +59,7 @@ fn valid_response() -> Value {
 #[test]
 fn request_has_exact_model_state_questions_shape() {
     let request = request();
-    let bytes = serialize_request("jev-1.13.0", &request).unwrap();
+    let bytes = serialize_request("jev-1.13.0", &request, &[]).unwrap();
     let body: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
         body.as_object()
@@ -70,7 +70,11 @@ fn request_has_exact_model_state_questions_shape() {
         ["model", "questions", "state"]
     );
     assert_eq!(body["model"], "jev-1.13.0");
-    assert_eq!(body["state"], serde_json::to_value(&request).unwrap());
+    assert_eq!(
+        body["state"]["request"],
+        serde_json::to_value(&request).unwrap()
+    );
+    assert_eq!(body["state"]["emitted"], json!([]));
     assert_eq!(body["questions"].as_object().unwrap().len(), 2);
     assert_eq!(body["questions"][format!("choice_{ID}")]["type"], "choice");
     assert_eq!(body["questions"][format!("score_{ID}")]["type"], "score");

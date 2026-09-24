@@ -326,6 +326,23 @@ fn authored_manifest(source: FrozenScopeSource) -> tect_domain::ScopeConstructor
     .unwrap()
 }
 
+#[test]
+fn provider_context_preserves_bound_request_and_only_emitted_material() {
+    let manifest = authored_manifest(authored_source(Uuid::from_u128(9), 7));
+    let request =
+        tect_domain::ScopeAdviceRequest::from_manifest(&Sha256ScopeDigest, &manifest).unwrap();
+    let before = serde_json::to_vec(&request).unwrap();
+    let context = crate::ScopeAdviceProviderContext::from_manifest(&request, &manifest).unwrap();
+    assert_eq!(context.emitted(), manifest.emitted.as_slice());
+    assert_eq!(context.request(), &request);
+    assert_eq!(serde_json::to_vec(context.request()).unwrap(), before);
+    assert_eq!(context.request().digest, request.digest);
+
+    let mut changed_request = request.clone();
+    changed_request.alternatives[0].material_digest = "f".repeat(64);
+    assert!(crate::ScopeAdviceProviderContext::from_manifest(&changed_request, &manifest).is_err());
+}
+
 fn opportunity_for_authored_manifest(
     request: &RunScopeAdvisory,
     config: &WorkspaceAdvisoryConfig,
@@ -775,10 +792,11 @@ impl ScopeAdviceProvider for FixtureProvider {
     fn identity(&self) -> Option<(&'static str, &'static str)> {
         Some(("fixture", "v1"))
     }
-    fn prepare(
+    fn prepare_context(
         &self,
-        request: &tect_domain::ScopeAdviceRequest,
+        context: &crate::ScopeAdviceProviderContext,
     ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError> {
+        let request = context.request();
         PreparedScopeAdviceAttempt::new(
             request.clone(),
             serde_json::to_vec(request).unwrap(),
@@ -840,7 +858,11 @@ async fn fixture_provider_returns_normalized_answers_once() {
             policy_id: "owner:fixture".into(),
         },
     };
-    let prepared = provider.prepare(&request.request).unwrap();
+    let prepared = provider
+        .prepare_context(&crate::ScopeAdviceProviderContext::for_test(
+            request.request.clone(),
+        ))
+        .unwrap();
     let expected_body = prepared.body().to_vec();
     let mut config = no_call_config(WorkspaceAdvisoryMode::Optional);
     config.provider_profile_ref = Some(AdvisoryProviderProfileRef {
@@ -985,10 +1007,11 @@ impl ScopeAdviceProvider for PreflightFixtureProvider {
         Some(("fixture", "v1"))
     }
 
-    fn prepare(
+    fn prepare_context(
         &self,
-        request: &tect_domain::ScopeAdviceRequest,
+        context: &crate::ScopeAdviceProviderContext,
     ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError> {
+        let request = context.request();
         self.prepare_calls.fetch_add(1, Ordering::SeqCst);
         let body = serde_json::to_vec(request).unwrap();
         if body.len() > self.maximum_body_bytes {
@@ -1031,6 +1054,7 @@ fn fixture_scope_request() -> tect_domain::ScopeAdviceRequest {
 #[test]
 fn preflight_mismatch_and_oversize_are_auditable_no_call_reasons() {
     let request = fixture_scope_request();
+    let context = crate::ScopeAdviceProviderContext::for_test(request);
     let mut config = no_call_config(WorkspaceAdvisoryMode::Optional);
     config.provider_profile_ref = Some(AdvisoryProviderProfileRef {
         id: "selected-profile".into(),
@@ -1047,7 +1071,7 @@ fn preflight_mismatch_and_oversize_are_auditable_no_call_reasons() {
         attempt_calls: Arc::new(AtomicUsize::new(0)),
     };
     assert_eq!(
-        prepare_scope_advice_attempt(&mismatched, &request, &config),
+        prepare_scope_advice_attempt(&mismatched, &context, &config),
         Err(AdvisoryReason::ProviderUnconfigured)
     );
     assert_eq!(mismatched.prepare_calls.load(Ordering::SeqCst), 1);
@@ -1061,7 +1085,7 @@ fn preflight_mismatch_and_oversize_are_auditable_no_call_reasons() {
         attempt_calls: Arc::new(AtomicUsize::new(0)),
     };
     assert_eq!(
-        prepare_scope_advice_attempt(&mismatched_model, &request, &config),
+        prepare_scope_advice_attempt(&mismatched_model, &context, &config),
         Err(AdvisoryReason::ProviderUnconfigured)
     );
     assert_eq!(mismatched_model.attempt_calls.load(Ordering::SeqCst), 0);
@@ -1074,7 +1098,7 @@ fn preflight_mismatch_and_oversize_are_auditable_no_call_reasons() {
         attempt_calls: Arc::new(AtomicUsize::new(0)),
     };
     assert_eq!(
-        prepare_scope_advice_attempt(&oversized, &request, &config),
+        prepare_scope_advice_attempt(&oversized, &context, &config),
         Err(AdvisoryReason::DeterministicInputInvalid)
     );
     assert_eq!(oversized.attempt_calls.load(Ordering::SeqCst), 0);

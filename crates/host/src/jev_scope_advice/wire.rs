@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use tect_domain::{
     ConfidenceBasisPoints, NormalizedScopeAdviceAnswer, NormalizedScopeAdviceAnswers,
-    ScopeAdviceChoice, ScopeAdviceRequest, ScopeAdviceScoreBand,
+    ScopeAdviceChoice, ScopeAdviceRequest, ScopeAdviceScoreBand, ScopeDecompositionAlternative,
 };
 
 const SCORE_LEGEND: [&str; 4] = ["conflict", "weak_fit", "fit", "strong_fit"];
@@ -13,8 +13,14 @@ const SCORE_LEGEND: [&str; 4] = ["conflict", "weak_fit", "fit", "strong_fit"];
 #[derive(Serialize)]
 struct RequestBody<'a> {
     model: &'a str,
-    state: &'a ScopeAdviceRequest,
+    state: ProviderState<'a>,
     questions: BTreeMap<String, Question>,
+}
+
+#[derive(Serialize)]
+struct ProviderState<'a> {
+    request: &'a ScopeAdviceRequest,
+    emitted: &'a [ScopeDecompositionAlternative],
 }
 
 #[derive(Serialize)]
@@ -33,7 +39,22 @@ enum Question {
 pub(super) fn serialize_request(
     model: &str,
     request: &ScopeAdviceRequest,
+    emitted: &[ScopeDecompositionAlternative],
 ) -> std::result::Result<Vec<u8>, ()> {
+    if !emitted.is_empty()
+        && (request.alternatives.len() != emitted.len()
+            || request
+                .alternatives
+                .iter()
+                .zip(emitted)
+                .any(|(bound, material)| {
+                    bound.id != material.id
+                        || bound.kind != material.kind
+                        || bound.material_digest != material.material_digest
+                }))
+    {
+        return Err(());
+    }
     let expected = request
         .alternatives
         .iter()
@@ -58,7 +79,7 @@ pub(super) fn serialize_request(
         questions.insert(
             format!("choice_{}", alternative.id.0),
             Question::Choice {
-                instructions: "Choose whether this alternative is preferred for the supplied scope.",
+                instructions: "Choose whether this eligible alternative is preferred using its matching ID and emitted material in state.",
                 criteria: BTreeMap::from([
                     ("PREFERRED", "preferred for the supplied scope"),
                     ("NON_PREFERRED", "not preferred for the supplied scope"),
@@ -68,14 +89,14 @@ pub(super) fn serialize_request(
         questions.insert(
             format!("score_{}", alternative.id.0),
             Question::Score {
-                instructions: "Score this alternative against the supplied scope.",
+                instructions: "Score this eligible alternative using its matching ID and emitted material in state.",
                 criteria: SCORE_LEGEND,
             },
         );
     }
     serde_json::to_vec(&RequestBody {
         model,
-        state: request,
+        state: ProviderState { request, emitted },
         questions,
     })
     .map_err(|_| ())

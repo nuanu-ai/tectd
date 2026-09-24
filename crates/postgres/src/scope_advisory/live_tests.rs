@@ -64,7 +64,10 @@ async fn fake_jev_once() -> (
         let body = request[header_end..].to_vec();
         let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let mut answers = serde_json::Map::new();
-        for alternative in parsed["state"]["alternatives"].as_array().unwrap() {
+        for alternative in parsed["state"]["request"]["alternatives"]
+            .as_array()
+            .unwrap()
+        {
             let id = alternative["id"].as_str().unwrap();
             answers.insert(
                 format!("choice_{id}"),
@@ -111,10 +114,11 @@ impl ScopeAdviceProvider for CountingCapableProvider {
         Some(("test-only", "fixture"))
     }
 
-    fn prepare(
+    fn prepare_context(
         &self,
-        request: &tect_domain::ScopeAdviceRequest,
+        context: &tect_application::ScopeAdviceProviderContext,
     ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError> {
+        let request = context.request();
         self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         PreparedScopeAdviceAttempt::new(
             request.clone(),
@@ -552,6 +556,27 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     fake_done.send(()).unwrap();
     let (received_body, second_call) = fake_server.await.unwrap();
     assert!(!second_call, "replay sent a second HTTP request");
+    let sent: serde_json::Value = serde_json::from_slice(&received_body).unwrap();
+    assert_eq!(
+        sent.as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        ["model", "questions", "state"]
+    );
+    let emitted = sent["state"]["emitted"].as_array().unwrap();
+    let bound = sent["state"]["request"]["alternatives"].as_array().unwrap();
+    assert!(!emitted.is_empty());
+    assert_eq!(emitted.len(), bound.len());
+    assert!(sent["state"].get("rejected").is_none());
+    for (material, alternative) in emitted.iter().zip(bound) {
+        assert_eq!(material["id"], alternative["id"]);
+        assert_eq!(material["material_digest"], alternative["material_digest"]);
+        assert_eq!(material["kind"], alternative["kind"]);
+        assert_eq!(material["material"]["boundary"], "finite");
+        assert_eq!(material["material"]["candidates"][0]["title"], "Cohesive");
+    }
     let dispatch_rows: Vec<(i32, String, String, String, String, String, String, serde_json::Value, Vec<u8>, String, String, Option<String>, bool, bool)> = sqlx::query_as(
         "SELECT attempt_number,provider,model,state,send_certainty,outcome,retry_basis,configuration_snapshot,request_payload,payload_digest,material_digest,raw_response_ref,send_started_at IS NOT NULL,sealed_at IS NOT NULL FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3 ORDER BY attempt_number",
     )

@@ -112,7 +112,7 @@ fn provider_with_caps(
 #[tokio::test]
 async fn serialized_request_at_cap_is_sent_once() {
     let request = request();
-    let payload = serialize_request("jev-1.13.0", &request).unwrap();
+    let payload = serialize_request("jev-1.13.0", &request, &[]).unwrap();
     let (endpoint, calls, captured, server) = fixture(FixtureResponse {
         status: 200,
         content_type: "application/json",
@@ -227,7 +227,7 @@ async fn serialized_request_one_byte_over_cap_is_proven_not_sent() {
     request.alternatives[0]
         .covered_obligation_ids
         .push("private-request-marker".into());
-    let payload = serialize_request("jev-1.13.0", &request).unwrap();
+    let payload = serialize_request("jev-1.13.0", &request, &[]).unwrap();
     let provider = provider_with_caps(endpoint, Duration::from_secs(1), payload.len() - 1, 16_384);
     assert!(matches!(
         provider.prepare(&request),
@@ -275,7 +275,7 @@ async fn http_success_sends_exact_body_once_and_does_not_leak_credential() {
     );
     assert_eq!(
         &captured[split..],
-        serialize_request("jev-1.13.0", &request).unwrap()
+        serialize_request("jev-1.13.0", &request, &[]).unwrap()
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(

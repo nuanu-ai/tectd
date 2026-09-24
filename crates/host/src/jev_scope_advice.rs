@@ -6,9 +6,9 @@ use reqwest::{
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tect_application::{
-    PreparedScopeAdviceAttempt, ScopeAdviceProvider, ScopeAdviceProviderError,
-    ScopeAdviceProviderFailureReason, ScopeAdviceProviderObservation, ScopeAdviceProviderRequest,
-    StartedScopeDispatchPermit,
+    PreparedScopeAdviceAttempt, ScopeAdviceProvider, ScopeAdviceProviderContext,
+    ScopeAdviceProviderError, ScopeAdviceProviderFailureReason, ScopeAdviceProviderObservation,
+    ScopeAdviceProviderRequest, StartedScopeDispatchPermit,
 };
 use tect_domain::{
     AdvisoryDispatchOutcome, AdvisorySendCertainty, Error, Result, ScopeAdviceRequest,
@@ -84,11 +84,12 @@ impl JevScopeAdviceProvider {
         })
     }
 
-    pub fn prepare(
+    fn prepare_with_emitted(
         &self,
         request: &ScopeAdviceRequest,
+        emitted: &[tect_domain::ScopeDecompositionAlternative],
     ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError> {
-        let body = wire::serialize_request(&self.config.model, request)
+        let body = wire::serialize_request(&self.config.model, request, emitted)
             .map_err(|_| ScopeAdviceProviderError::ProvenNotSent)?;
         if body.len() > self.config.maximum_request_bytes {
             return Err(ScopeAdviceProviderError::ProvenNotSent);
@@ -101,6 +102,14 @@ impl JevScopeAdviceProvider {
             self.config.endpoint.as_str().to_owned(),
             WIRE_FORMAT.to_owned(),
         )
+    }
+
+    #[cfg(test)]
+    fn prepare(
+        &self,
+        request: &ScopeAdviceRequest,
+    ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError> {
+        self.prepare_with_emitted(request, &[])
     }
 
     async fn response_bytes(&self, mut response: reqwest::Response) -> BodyRead {
@@ -312,11 +321,11 @@ impl ScopeAdviceProvider for JevScopeAdviceProvider {
         Some(("jev-system-one", "1"))
     }
 
-    fn prepare(
+    fn prepare_context(
         &self,
-        request: &ScopeAdviceRequest,
+        context: &ScopeAdviceProviderContext,
     ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError> {
-        JevScopeAdviceProvider::prepare(self, request)
+        self.prepare_with_emitted(context.request(), context.emitted())
     }
 
     async fn attempt_prepared(
