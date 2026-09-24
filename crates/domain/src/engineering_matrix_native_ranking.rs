@@ -7,15 +7,15 @@ use std::collections::BTreeSet;
 pub const MATRIX_NATIVE_RANKING_POLICY_VERSION: &str =
     "tect.matrix-native-ranking-policy/provisional-v1";
 pub const MATRIX_NATIVE_RANKING_MIN_CONFIDENCE: f64 = 0.70;
+pub const MATRIX_NATIVE_RANKING_MIN_SCORE_GAP: f64 = 0.10;
 
 /// Already parsed and validated signal for one fixed ten-level suitability Score.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeMatrixCandidateScore {
     pub candidate_id: String,
-    /// Suitability level 0..=9; larger is more suitable.
-    pub score: u8,
+    /// Probability-weighted mean in 0..=9; larger is more suitable.
+    pub score: f64,
     pub answer_confidence: f64,
-    pub selected_answer_probability: f64,
 }
 
 /// Already parsed selection from the single Choice question.
@@ -34,7 +34,8 @@ pub struct NativeMatrixRankingSignals {
     pub choice_selected_answer_probability: f64,
 }
 
-/// Produces a complete descending ranking only when every native signal agrees.
+/// Produces a complete descending ranking only when every native signal agrees
+/// and every adjacent mean-score gap is strictly greater than 0.10.
 /// Any signal-level failure yields typed abstention; invalid eligibility is an error.
 pub fn compose_native_matrix_ranking(
     eligibility: &MatrixAdviceEligibility,
@@ -63,16 +64,17 @@ pub fn compose_native_matrix_ranking(
         && score_ids == eligible_ids
         && confident(signals.choice_confidence)
         && confident(signals.choice_selected_answer_probability)
-        && signals.candidate_scores.iter().all(|score| {
-            score.score <= 9
-                && confident(score.answer_confidence)
-                && confident(score.selected_answer_probability)
-        })
+        && signals
+            .candidate_scores
+            .iter()
+            .all(|score| (0.0..=9.0).contains(&score.score) && confident(score.answer_confidence))
     {
         let mut sorted = signals.candidate_scores.iter().collect::<Vec<_>>();
-        sorted.sort_by(|a, b| b.score.cmp(&a.score));
-        let distinct_scores = sorted.windows(2).all(|pair| pair[0].score != pair[1].score);
-        if distinct_scores {
+        sorted.sort_by(|a, b| b.score.total_cmp(&a.score));
+        let separated_scores = sorted
+            .windows(2)
+            .all(|pair| pair[0].score - pair[1].score > MATRIX_NATIVE_RANKING_MIN_SCORE_GAP);
+        if separated_scores {
             if let NativeMatrixChoice::Candidate(winner) = &signals.choice {
                 if winner == &sorted[0].candidate_id {
                     ranking = MatrixRanking::Ranked {

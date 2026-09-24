@@ -6,18 +6,17 @@ fn eligible() -> MatrixAdviceEligibility {
     }
 }
 
-fn score(id: &str, level: u8) -> NativeMatrixCandidateScore {
+fn score(id: &str, mean: f64) -> NativeMatrixCandidateScore {
     NativeMatrixCandidateScore {
         candidate_id: id.into(),
-        score: level,
+        score: mean,
         answer_confidence: 0.8,
-        selected_answer_probability: 0.8,
     }
 }
 
 fn signals() -> NativeMatrixRankingSignals {
     NativeMatrixRankingSignals {
-        candidate_scores: vec![score("a", 3), score("b", 9), score("c", 6)],
+        candidate_scores: vec![score("a", 3.25), score("b", 8.75), score("c", 6.5)],
         choice: NativeMatrixChoice::Candidate("b".into()),
         choice_confidence: 0.8,
         choice_selected_answer_probability: 0.8,
@@ -49,7 +48,7 @@ fn complete_distinct_scores_and_matching_choice_rank() {
 #[test]
 fn tied_score_contradictory_choice_or_abstain_never_rank() {
     let mut input = signals();
-    input.candidate_scores[2].score = 9;
+    input.candidate_scores[2].score = 8.75;
     assert_eq!(
         compose_native_matrix_ranking(&eligible(), &input),
         Ok(abstained())
@@ -71,11 +70,10 @@ fn tied_score_contradictory_choice_or_abstain_never_rank() {
 }
 
 #[test]
-fn threshold_is_inclusive_and_applies_to_each_confidence_and_probability() {
+fn threshold_is_inclusive_for_score_and_choice_confidence_and_choice_mass() {
     let mut edge = signals();
     for score in &mut edge.candidate_scores {
         score.answer_confidence = 0.70;
-        score.selected_answer_probability = 0.70;
     }
     edge.choice_confidence = 0.70;
     edge.choice_selected_answer_probability = 0.70;
@@ -87,12 +85,6 @@ fn threshold_is_inclusive_and_applies_to_each_confidence_and_probability() {
     for index in 0..edge.candidate_scores.len() {
         let mut low = edge.clone();
         low.candidate_scores[index].answer_confidence = 0.699;
-        assert_eq!(
-            compose_native_matrix_ranking(&eligible(), &low),
-            Ok(abstained())
-        );
-        let mut low = edge.clone();
-        low.candidate_scores[index].selected_answer_probability = 0.699;
         assert_eq!(
             compose_native_matrix_ranking(&eligible(), &low),
             Ok(abstained())
@@ -136,7 +128,34 @@ fn duplicate_missing_extra_or_out_of_range_scores_abstain() {
     );
 
     let mut input = signals();
-    input.candidate_scores[2].score = 10;
+    input.candidate_scores[2].score = 9.001;
+    assert_eq!(
+        compose_native_matrix_ranking(&eligible(), &input),
+        Ok(abstained())
+    );
+
+    let mut input = signals();
+    input.candidate_scores[2].score = f64::NAN;
+    assert_eq!(
+        compose_native_matrix_ranking(&eligible(), &input),
+        Ok(abstained())
+    );
+}
+
+#[test]
+fn adjacent_mean_gap_must_be_strictly_greater_than_tenth() {
+    let mut input = signals();
+    input.candidate_scores[2].score = 8.65;
+    assert_eq!(
+        compose_native_matrix_ranking(&eligible(), &input),
+        Ok(abstained())
+    );
+    input.candidate_scores[2].score = 8.64;
+    assert_eq!(
+        compose_native_matrix_ranking(&eligible(), &input),
+        Ok(ranked())
+    );
+    input.candidate_scores[2].score = 8.70;
     assert_eq!(
         compose_native_matrix_ranking(&eligible(), &input),
         Ok(abstained())
