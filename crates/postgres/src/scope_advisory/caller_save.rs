@@ -9,9 +9,15 @@ pub(crate) async fn selected_candidate_receipt(
     session: Uuid,
     request: &SaveCandidateDraft,
 ) -> Result<Option<StoredCandidateContext>> {
-    let selected = request.selected_advisory.as_ref().ok_or(Error::InvalidArguments)?;
+    let selected = request
+        .selected_advisory
+        .as_ref()
+        .ok_or(Error::InvalidArguments)?;
     let Some(stored) = crate::scope_candidates::replay(
-        tx, tenant, workspace, &CandidateReceiptRequest::SaveDraft(request.clone()),
+        tx,
+        tenant,
+        workspace,
+        &CandidateReceiptRequest::SaveDraft(request.clone()),
     )
     .await?
     else {
@@ -29,7 +35,13 @@ pub(crate) async fn selected_candidate_receipt(
     .fetch_optional(&mut **tx)
     .await
     .map_err(storage_error)?;
-    if identity != Some((selected.opportunity_id, selected.disposition_id, actor, session))
+    if identity
+        != Some((
+            selected.opportunity_id,
+            selected.disposition_id,
+            actor,
+            session,
+        ))
         || !actor_session_exists(tx, tenant, workspace, actor, session).await?
     {
         return Err(Error::InputConflict);
@@ -45,7 +57,10 @@ pub(crate) async fn save_selected_candidate_draft(
     session: Uuid,
     request: &SaveCandidateDraft,
 ) -> Result<StoredCandidateContext> {
-    let selected = request.selected_advisory.as_ref().ok_or(Error::InvalidArguments)?;
+    let selected = request
+        .selected_advisory
+        .as_ref()
+        .ok_or(Error::InvalidArguments)?;
     if selected.opportunity_id.is_nil()
         || selected.disposition_id.is_nil()
         || selected.alternative_key.is_empty()
@@ -57,13 +72,17 @@ pub(crate) async fn save_selected_candidate_draft(
     {
         return Err(Error::InvalidArguments);
     }
-    if let Some(stored) = selected_candidate_receipt(
-        tx, tenant, workspace, actor, session, request,
-    ).await? {
+    if let Some(stored) =
+        selected_candidate_receipt(tx, tenant, workspace, actor, session, request).await?
+    {
         return Ok(stored);
     }
     let manifest = load_manifest(
-        tx, tenant, workspace, selected.opportunity_id, Some(request.candidate_set_id),
+        tx,
+        tenant,
+        workspace,
+        selected.opportunity_id,
+        Some(request.candidate_set_id),
     )
     .await?
     .ok_or(Error::NotFound)?;
@@ -71,7 +90,11 @@ pub(crate) async fn save_selected_candidate_draft(
         return Err(Error::InputConflict);
     }
     let (advice_header, advice) = load_advice(
-        tx, tenant, workspace, selected.opportunity_id, Some(request.candidate_set_id),
+        tx,
+        tenant,
+        workspace,
+        selected.opportunity_id,
+        Some(request.candidate_set_id),
     )
     .await?
     .ok_or(Error::NotFound)?;
@@ -81,7 +104,9 @@ pub(crate) async fn save_selected_candidate_draft(
     // A concurrent identical save may have committed while this transaction
     // waited on the disposition lock. Recheck its exact authenticated receipt
     // before evaluating freshness against the now-advanced candidate revision.
-    if let Some(stored) = selected_candidate_receipt(tx, tenant, workspace, actor, session, request).await? {
+    if let Some(stored) =
+        selected_candidate_receipt(tx, tenant, workspace, actor, session, request).await?
+    {
         return Ok(stored);
     }
     let row: DispositionRow = sqlx::query_as(
@@ -122,8 +147,17 @@ pub(crate) async fn save_selected_candidate_draft(
     }
     // The persistence adapters take these locks before config/source checks.
     // Acquire them in that order to avoid reversing another writer's lock order.
-    lock_scope_key(tx, tenant, workspace, "preservation", selected.disposition_id).await?;
-    let alternative = manifest.eligible(&selected.selected_id).ok_or(Error::InputConflict)?;
+    lock_scope_key(
+        tx,
+        tenant,
+        workspace,
+        "preservation",
+        selected.disposition_id,
+    )
+    .await?;
+    let alternative = manifest
+        .eligible(&selected.selected_id)
+        .ok_or(Error::InputConflict)?;
     if manifest.source.candidate_set_revision != request.revision
         || manifest.source.snapshot_id != request.snapshot_id
         || manifest.source.input_cursor != request.input_cursor
@@ -131,7 +165,11 @@ pub(crate) async fn save_selected_candidate_draft(
         return Err(Error::StaleRevision);
     }
     require_current_opportunity_config(
-        tx, tenant, workspace, selected.opportunity_id, request.candidate_set_id,
+        tx,
+        tenant,
+        workspace,
+        selected.opportunity_id,
+        request.candidate_set_id,
         advice_header.config_revision,
     )
     .await?;
@@ -146,13 +184,15 @@ pub(crate) async fn save_selected_candidate_draft(
         .map(|input| Uuid::parse_str(&input.id).map_err(|_| Error::InvalidSource))
         .collect::<Result<std::collections::BTreeSet<_>>>()?;
     let seed = authored_seed(
-        tenant, workspace, &manifest.source, &manifest.constructor, &selected.alternative_key,
+        tenant,
+        workspace,
+        &manifest.source,
+        &manifest.constructor,
+        &selected.alternative_key,
     )?;
-    let prior = crate::scope_candidates::load(
-        tx, tenant, workspace, request.candidate_set_id,
-    )
-    .await?
-    .ok_or(Error::NotFound)?;
+    let prior = crate::scope_candidates::load(tx, tenant, workspace, request.candidate_set_id)
+        .await?
+        .ok_or(Error::NotFound)?;
     let resolved = crate::scope_candidates::resolve::resolve_authored(
         tx,
         &crate::scope_candidates::resolve::ResolveContext {
@@ -178,14 +218,20 @@ pub(crate) async fn save_selected_candidate_draft(
         advice_id: advice.id.clone(),
     };
     let preservation = evaluate_scope_preservation(
-        &Sha256ScopeDigest, &manifest, &advice, &disposition, &observation,
+        &Sha256ScopeDigest,
+        &manifest,
+        &advice,
+        &disposition,
+        &observation,
     )?;
     if !matches!(preservation.status, ScopePreservationStatus::Passed) {
         return Err(Error::StaleRevision);
     }
     let preservation_id = Uuid::new_v4();
     persist_preservation(
-        tx, tenant, workspace,
+        tx,
+        tenant,
+        workspace,
         &ScopePreservationReceiptInput {
             receipt_id: preservation_id,
             request_id: request.request_id,
@@ -197,12 +243,13 @@ pub(crate) async fn save_selected_candidate_draft(
         },
     )
     .await?;
-    let stored = crate::scope_candidates::save_draft_with_material(
-        tx, tenant, workspace, request, Some(&resolved),
-    )
-    .await?;
+    let stored =
+        crate::scope_candidates::save_selected_draft(tx, tenant, workspace, request, &resolved)
+            .await?;
     persist_caller_link(
-        tx, tenant, workspace,
+        tx,
+        tenant,
+        workspace,
         &ScopeCallerLinkInput {
             link_id: Uuid::new_v4(),
             request_id: request.request_id,

@@ -42,19 +42,51 @@ pub(crate) async fn save_draft(
     workspace_id: Uuid,
     request: &SaveCandidateDraft,
 ) -> Result<StoredCandidateContext> {
-    save_draft_with_material(transaction, tenant_id, workspace_id, request, None).await
+    if request.selected_advisory.is_some() {
+        return Err(Error::InvalidArguments);
+    }
+    save_draft_inner(
+        transaction,
+        tenant_id,
+        workspace_id,
+        request,
+        DraftSaveMode::Ordinary,
+    )
+    .await
 }
 
-pub(crate) async fn save_draft_with_material(
+pub(crate) async fn save_selected_draft(
     transaction: &mut Transaction<'_, Postgres>,
     tenant_id: Uuid,
     workspace_id: Uuid,
     request: &SaveCandidateDraft,
-    selected_material: Option<&tect_domain::ResolvedCandidateDraft>,
+    selected_material: &tect_domain::ResolvedCandidateDraft,
 ) -> Result<StoredCandidateContext> {
-    if request.selected_advisory.is_some() != selected_material.is_some() {
+    if request.selected_advisory.is_none() {
         return Err(Error::InvalidArguments);
     }
+    save_draft_inner(
+        transaction,
+        tenant_id,
+        workspace_id,
+        request,
+        DraftSaveMode::Selected(selected_material),
+    )
+    .await
+}
+
+enum DraftSaveMode<'a> {
+    Ordinary,
+    Selected(&'a tect_domain::ResolvedCandidateDraft),
+}
+
+async fn save_draft_inner(
+    transaction: &mut Transaction<'_, Postgres>,
+    tenant_id: Uuid,
+    workspace_id: Uuid,
+    request: &SaveCandidateDraft,
+    mode: DraftSaveMode<'_>,
+) -> Result<StoredCandidateContext> {
     let request_payload = serde_json::to_value(request).map_err(storage_error)?;
     if let Some(result) = receipt(
         transaction,
@@ -96,8 +128,11 @@ pub(crate) async fn save_draft_with_material(
         request.input_cursor,
     )?;
     if matches!(
-        locked.status,
-        CandidateSetStatus::Ready | CandidateSetStatus::Blocked
+        (&mode, locked.status),
+        (
+            DraftSaveMode::Ordinary,
+            CandidateSetStatus::Ready | CandidateSetStatus::Blocked
+        ) | (DraftSaveMode::Selected(_), CandidateSetStatus::Blocked)
     ) {
         return Err(Error::Forbidden);
     }
@@ -111,22 +146,23 @@ pub(crate) async fn save_draft_with_material(
     if request.draft.boundary != previous.context.candidate_set.boundary {
         return Err(Error::InvalidArguments);
     }
-    let resolved = if let Some(material) = selected_material {
-        material.clone()
-    } else {
-        resolve::resolve(
-            transaction,
-            &resolve::ResolveContext {
-                tenant_id,
-                workspace_id,
-                candidate_set_id: request.candidate_set_id,
-                snapshot_id: request.snapshot_id,
-                latest_input: locked.latest_input,
-            },
-            &request.draft,
-            previous.draft.as_ref(),
-        )
-        .await?
+    let resolved = match mode {
+        DraftSaveMode::Selected(material) => material.clone(),
+        DraftSaveMode::Ordinary => {
+            resolve::resolve(
+                transaction,
+                &resolve::ResolveContext {
+                    tenant_id,
+                    workspace_id,
+                    candidate_set_id: request.candidate_set_id,
+                    snapshot_id: request.snapshot_id,
+                    latest_input: locked.latest_input,
+                },
+                &request.draft,
+                previous.draft.as_ref(),
+            )
+            .await?
+        }
     };
     let next_revision = locked
         .revision

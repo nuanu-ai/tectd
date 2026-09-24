@@ -170,7 +170,19 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
         }),
     )
     .await;
-    let context = &initial["context"];
+    let initial_context = &initial["context"];
+    let reviewed = route(&mut author, "command", "scope.candidates.save", json!({
+        "kind":"review","candidate_set_id":candidate_set,
+        "revision":initial_context["candidate_set"]["revision"],
+        "snapshot_id":initial_context["snapshot"]["id"],
+        "input_cursor":initial_context["candidate_set"]["input_cursor"],
+        "request_id":Uuid::new_v4(),
+        "review":{"verdict":"ready","summary":"The initial diagnosis is bounded and traceable.",
+            "findings":[],"candidate_decisions":[{"candidate_id":initial["draft"]["candidates"][0]["id"],
+                "decision":"accept","rationale":"Bounded diagnosis"}]}
+    })).await;
+    assert_eq!(reviewed["context"]["candidate_set"]["status"], "ready");
+    let context = &reviewed["context"];
     let goal = &initial["draft"]["goals"][0];
     let prior_candidate = &initial["draft"]["candidates"][0];
     draft["goals"][0]["identity"] = json!({"id":goal["id"],"revision":goal["revision"]});
@@ -328,6 +340,15 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
             "selected_id":selected.id,"alternative_key":"baseline"},
         "draft":draft
     });
+    let mut ordinary = save.clone();
+    ordinary["request_id"] = json!(Uuid::new_v4());
+    ordinary
+        .as_object_mut()
+        .unwrap()
+        .remove("selected_advisory");
+    let ordinary_refused =
+        route_error(&mut author, "command", "scope.candidates.save", ordinary).await;
+    assert_eq!(ordinary_refused["error"]["code"], "forbidden");
     let mut changed = save.clone();
     changed["request_id"] = json!(Uuid::new_v4());
     changed["draft"]["candidates"][0]["title"] = json!("Changed material");
@@ -342,6 +363,11 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
     .await;
     assert_eq!(wrong_session["error"]["code"], "input_conflict");
     let saved = route(&mut author, "command", "scope.candidates.save", save).await;
+    assert_eq!(
+        saved["context"]["candidate_set"]["status"],
+        "review_required"
+    );
+    assert_eq!(saved["context"]["candidate_set"]["revision"], revision + 1);
     assert_eq!(
         saved["draft"]["candidates"][0]["title"],
         "Selected preview diagnosis"

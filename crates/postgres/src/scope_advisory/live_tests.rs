@@ -1778,7 +1778,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     // The selected source-authored material, preservation and caller receipt
     // commit together. A changed draft rolls all of them back.
     set_config(&pool, tenant, workspace, true).await;
-    sqlx::query("UPDATE scope_candidate_sets SET status='draft' WHERE id=$1")
+    sqlx::query("UPDATE scope_candidate_sets SET status='ready' WHERE id=$1")
         .bind(candidate)
         .execute(&pool)
         .await
@@ -1983,6 +1983,17 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
                 (SELECT count(*) FROM advisory_scope_caller_link WHERE candidate_set_id=$1 AND request_id=$2)"
     ).bind(candidate).bind(save.request_id).fetch_one(&pool).await.unwrap();
     assert_eq!(bypass_effects, (0, 0, 0));
+    let mut ordinary = save.clone();
+    ordinary.request_id = Uuid::new_v4();
+    ordinary.selected_advisory = None;
+    let mut ordinary_unit = rw(&store, &enrollment.auth, tenant).await;
+    assert_eq!(
+        ordinary_unit
+            .save_candidate_draft(workspace, &ordinary)
+            .await,
+        Err(Error::Forbidden),
+    );
+    drop(ordinary_unit);
     let mut altered = save.clone();
     altered.request_id = Uuid::new_v4();
     altered.draft.candidates[0].title = "Altered".into();
@@ -2011,6 +2022,24 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         Err(Error::InputConflict)
     );
     drop(failed);
+    sqlx::query("UPDATE scope_candidate_sets SET status='blocked' WHERE id=$1")
+        .bind(candidate)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut blocked = rw(&store, &enrollment.auth, tenant).await;
+    assert_eq!(
+        blocked
+            .save_selected_candidate_draft(workspace, actor, session, &save)
+            .await,
+        Err(Error::Forbidden),
+    );
+    drop(blocked);
+    sqlx::query("UPDATE scope_candidate_sets SET status='ready' WHERE id=$1")
+        .bind(candidate)
+        .execute(&pool)
+        .await
+        .unwrap();
     let mut successful = rw(&store, &enrollment.auth, tenant).await;
     let stored = successful
         .save_selected_candidate_draft(workspace, actor, session, &save)
