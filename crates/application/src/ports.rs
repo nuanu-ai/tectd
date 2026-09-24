@@ -47,6 +47,12 @@ pub trait UnitOfWork:
     ) -> Option<&mut dyn crate::MatrixPlanningSelectionStore> {
         None
     }
+    /// Optional independent post-save planning-effect attestation seam.
+    fn matrix_planning_effect_store(
+        &mut self,
+    ) -> Option<&mut dyn crate::MatrixPlanningEffectStore> {
+        None
+    }
     async fn authenticate(&mut self, auth: &HostAuth) -> Result<HostIdentity>;
     async fn set_tenant(&mut self, tenant_id: Uuid) -> Result<()>;
     async fn lock_native_session(&mut self, host_id: Uuid, native_id: &str) -> Result<()>;

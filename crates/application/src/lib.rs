@@ -4,10 +4,12 @@ pub use advisory::{Sha256ScopeDigest, VerifySelectedSave};
 mod advisory_ports;
 mod matrix_advice_ports;
 mod matrix_advice_runtime;
-mod matrix_disposition;
-mod matrix_disposition_ports;
 mod matrix_advisory_capture;
 mod matrix_advisory_dispatch;
+mod matrix_disposition;
+mod matrix_disposition_ports;
+mod matrix_planning_effect;
+mod matrix_planning_effect_ports;
 mod matrix_planning_selection_ports;
 mod matrix_task_ports;
 mod matrix_tasks;
@@ -43,6 +45,11 @@ pub use matrix_advice_runtime::{
 };
 pub use matrix_disposition_ports::{
     MatrixDispositionRecord, MatrixDispositionStore, RecordMatrixDisposition,
+};
+pub use matrix_planning_effect::{MatrixPlanningEffectRead, VerifyMatrixPlanningEffect};
+pub use matrix_planning_effect_ports::{
+    MatrixPlanningEffectAttestation, MatrixPlanningEffectSnapshot, MatrixPlanningEffectStore,
+    MatrixPlanningEffectVerdict,
 };
 pub use matrix_planning_selection_ports::{
     MatrixPlanningMappedNode, MatrixPlanningSelectionLink, MatrixPlanningSelectionStore,
