@@ -285,6 +285,20 @@ impl RevalidatedMatrixVerification {
     pub fn record_digest(&self) -> &str {
         self.validated.record_digest()
     }
+
+    pub fn disposition_digest(
+        &self,
+        input: &tect_domain::EngineeringMatrixInput,
+        composition: &EngineeringMatrixComposition,
+        choice_set: &tect_domain::EngineeringChoiceSet,
+    ) -> Result<String> {
+        tect_domain::matrix_verified_disposition_digest(
+            input,
+            composition,
+            choice_set,
+            &self.validated,
+        )
+    }
 }
 
 impl MatrixProviderRequest {

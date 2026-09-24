@@ -160,6 +160,23 @@ fn verified_evaluation_binds_exact_record_and_keeps_legacy_digest() {
     let first =
         crate::matrix_verified_evaluation_digest(&input, &verified, &choice_set, &validated)
             .unwrap();
+    assert_eq!(
+        crate::matrix_verified_disposition_digest(&input, &verified, &choice_set, &validated)
+            .unwrap(),
+        first
+    );
+    let mut singleton = choice_set.clone();
+    singleton.candidates.pop();
+    let singleton_digest =
+        crate::matrix_verified_disposition_digest(&input, &verified, &singleton, &validated)
+            .unwrap();
+    assert_eq!(singleton_digest.len(), 64);
+    assert_ne!(singleton_digest, first);
+    assert_eq!(
+        singleton_digest,
+        crate::matrix_verified_disposition_digest(&input, &verified, &singleton, &validated)
+            .unwrap()
+    );
     assert_eq!(first.len(), 64);
     assert_ne!(first, legacy_before);
     assert_eq!(

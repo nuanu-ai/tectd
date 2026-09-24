@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use tect_domain::{Error, MatrixDispositionBasis, MatrixDispositionDecision, Result};
 use uuid::Uuid;
 
-use crate::CurrentMatrixAdvice;
+use crate::{CurrentMatrixAdvice, RevalidatedMatrixVerification};
 
 /// Agent-authored decision over an exact saved Matrix task and opportunity.
 /// Actor identity is deliberately absent; it comes from the authenticated session.
@@ -105,6 +105,7 @@ pub trait MatrixDispositionStore: Send {
         session_id: Uuid,
         request: &RecordMatrixDisposition,
         current_advice: Option<&CurrentMatrixAdvice>,
+        current_verification: Option<&RevalidatedMatrixVerification>,
     ) -> Result<MatrixDispositionRecord>;
 }
 
@@ -123,8 +124,8 @@ mod tests {
             basis: MatrixDispositionBasis::NoCall,
             advice_id: None,
             advice_digest: None,
-            decision: MatrixDispositionDecision::Selected {
-                selected_choice_id: "choice-b".into(),
+            decision: MatrixDispositionDecision::Blocked {
+                blocked_reason: "Await independent evidence".into(),
             },
         }
     }
@@ -154,9 +155,17 @@ mod tests {
             session_id: Uuid,
             request: &RecordMatrixDisposition,
             current_advice: Option<&CurrentMatrixAdvice>,
+            current_verification: Option<&RevalidatedMatrixVerification>,
         ) -> Result<MatrixDispositionRecord> {
             request.validate()?;
             if request.basis == MatrixDispositionBasis::AfterAdvice && current_advice.is_none() {
+                return Err(Error::StaleContext);
+            }
+            if matches!(
+                &request.decision,
+                MatrixDispositionDecision::Selected { .. }
+            ) && current_verification.is_none()
+            {
                 return Err(Error::StaleContext);
             }
             if let Some(saved) = &self.0 {
@@ -189,7 +198,7 @@ mod tests {
         let session = Uuid::new_v4();
         let request = request();
         let first = store
-            .record_matrix_disposition(workspace, actor, session, &request, None)
+            .record_matrix_disposition(workspace, actor, session, &request, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -201,24 +210,24 @@ mod tests {
         );
         assert_eq!(
             store
-                .record_matrix_disposition(workspace, actor, session, &request, None)
+                .record_matrix_disposition(workspace, actor, session, &request, None, None)
                 .await
                 .unwrap(),
             first
         );
         let mut changed = request.clone();
         changed.decision = MatrixDispositionDecision::Blocked {
-            blocked_reason: "No safe choice".into(),
+            blocked_reason: "Different blocker".into(),
         };
         assert_eq!(
             store
-                .record_matrix_disposition(workspace, actor, session, &changed, None)
+                .record_matrix_disposition(workspace, actor, session, &changed, None, None)
                 .await,
             Err(Error::InputConflict)
         );
         assert_eq!(
             store
-                .record_matrix_disposition(workspace, Uuid::new_v4(), session, &request, None)
+                .record_matrix_disposition(workspace, Uuid::new_v4(), session, &request, None, None)
                 .await,
             Err(Error::InputConflict)
         );
@@ -237,6 +246,7 @@ mod tests {
                     Uuid::new_v4(),
                     Uuid::new_v4(),
                     &request,
+                    None,
                     None
                 )
                 .await,
@@ -250,5 +260,22 @@ mod tests {
             blocked_reason: " ".into(),
         };
         assert_eq!(request.validate(), Err(Error::InvalidArguments));
+
+        request.decision = MatrixDispositionDecision::Selected {
+            selected_choice_id: "choice-b".into(),
+        };
+        assert_eq!(
+            FakeDispositionStore::default()
+                .record_matrix_disposition(
+                    Uuid::new_v4(),
+                    Uuid::new_v4(),
+                    Uuid::new_v4(),
+                    &request,
+                    None,
+                    None,
+                )
+                .await,
+            Err(Error::StaleContext)
+        );
     }
 }

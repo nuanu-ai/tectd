@@ -235,6 +235,18 @@ impl WorkspaceService {
             session.id,
             identity.principal_id,
         )?;
+        // A verified no-call (for example, explicit optional-JEV skip) must retain
+        // the exact evidence and mandatory-card snapshot. Historical v1 no-call
+        // receipts are immutable and retain their original material digest.
+        if let (Some(verification), Some(choice_set)) = (
+            verification.as_ref().filter(|_| composition.is_resolved()),
+            revision.choice_set.as_ref(),
+        ) {
+            input.material_digest =
+                verification.disposition_digest(&revision.input, &composition, choice_set)?;
+            input.matrix_verification_digest = Some(verification.record_digest().to_owned());
+            input.validate()?;
+        }
         let mut provider_request = None;
         if matches!(
             input.primary_reason,

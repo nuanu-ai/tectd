@@ -180,6 +180,42 @@ pub fn matrix_verified_evaluation_digest(
     ))
 }
 
+/// Exact saved material for an explicit selection, including a single
+/// owner-authored choice for which optional ranking is inapplicable.
+/// For two or more choices this is identical to the guarded-ranking digest.
+pub fn matrix_verified_disposition_digest(
+    input: &EngineeringMatrixInput,
+    composition: &EngineeringMatrixComposition,
+    choice_set: &EngineeringChoiceSet,
+    verification: &crate::ValidatedMatrixVerification,
+) -> Result<String> {
+    if composition.source_verification_status
+        != MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported
+        || !composition.is_resolved()
+        || !verification.matches_input(&choice_set.task_id, &choice_set.task_revision, input)?
+    {
+        return Err(Error::InvalidArguments);
+    }
+    if matrix_evaluation_digest(input, composition, choice_set)?.is_some() {
+        return matrix_verified_evaluation_digest(input, composition, choice_set, verification);
+    }
+    if choice_set.candidates.len() != 1 {
+        return Err(Error::InvalidArguments);
+    }
+    sha256_json(&(
+        "tect.matrix-verified-disposition/1",
+        &composition.task_id,
+        &composition.task_revision,
+        composition.catalogue_version,
+        input,
+        &composition.source_verification_status,
+        &composition.mandatory_cards,
+        &composition.unresolved_evidence,
+        choice_set.canonical_digest(input)?,
+        verification.record_digest(),
+    ))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MatrixRanking {
