@@ -55,8 +55,9 @@ impl MatrixPlanningEffectStore for PgUnitOfWork {
         for_update: bool,
     ) -> Result<Option<MatrixPlanningEffectSnapshot>> {
         let tenant = self.tenant_id()?;
-        // Lock the exact link, current set, accepted task revision, receipt,
-        // and saved draft through the INSERT when used by the write path.
+        // Lock every mutable source of effect content through the INSERT.
+        // The link and task revision are immutable, and the attestation trigger
+        // locks and rechecks them with owner privileges at INSERT.
         let mut query = String::from(
             "SELECT l.scope_id,l.disposition_id,l.task_id,l.task_revision, \
                 l.selected_choice_id,l.input_digest,l.choice_set_digest, \
@@ -91,7 +92,7 @@ impl MatrixPlanningEffectStore for PgUnitOfWork {
                 "LEFT JOIN slice_candidate_drafts",
                 "JOIN slice_candidate_drafts",
             );
-            query.push_str(" FOR SHARE OF l,c,r,receipt,draft");
+            query.push_str(" FOR SHARE OF c,receipt,draft");
         }
         let row = sqlx::query(&query)
             .bind(tenant)
@@ -294,5 +295,19 @@ impl MatrixPlanningEffectStore for PgUnitOfWork {
         .bind(attestation.request_id)
         .execute(&mut **self.transaction()?).await.map_err(write_error)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_unmapped_link_cannot_supply_effect_material() {
+        assert!(decode_mapped_nodes(None).unwrap().is_empty());
+        assert!(matches!(
+            decode_mapped_nodes(Some(serde_json::json!({"node_id": Uuid::new_v4()}))),
+            Err(Error::StaleContext)
+        ));
     }
 }
