@@ -578,6 +578,7 @@ pub(crate) fn matrix_advisory_opportunity_input(
         matrix_choice_set_digest: revision.choice_set_digest.clone(),
         matrix_verification_digest: None,
         source_ref: None,
+        parent_opportunity_id: None,
         session_preference: request.session_preference,
         request_preference: request.request_preference,
         config_revision: config.revision,

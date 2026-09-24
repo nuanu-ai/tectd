@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use tect_domain::{
-    BeginCandidateSet, BeginCandidateSetOutcome, CandidateHistoryEntry, CandidateInputSummary,
-    CandidateReceiptRequest, CandidateSetSummary, CandidateSnapshotMaterial, CandidateTextFragment,
-    Program, RecordCandidateInput, RefreshCandidateSet, ResolvedCandidateDraft, Result,
-    ReviewCandidateSet, SaveCandidateDraft, StoredCandidateContext, StoredHistoricalCandidateDraft,
-    WorktreeSummary,
+    AdvisoryOpportunity, BeginCandidateSet, BeginCandidateSetOutcome, CandidateHistoryEntry,
+    CandidateInputSummary, CandidateReceiptRequest, CandidateSetSummary, CandidateSnapshotMaterial,
+    CandidateTextFragment, Program, RecordCandidateInput, RefreshCandidateSet,
+    ResolvedCandidateDraft, Result, ReviewCandidateSet, SaveCandidateDraft, StoredCandidateContext,
+    StoredHistoricalCandidateDraft, WorktreeSummary,
 };
 use uuid::Uuid;
 
@@ -26,6 +26,13 @@ pub trait CandidateOutputGuard: Send + Sync {
 
 #[async_trait]
 pub trait ScopeCandidateStore: Send {
+    /// Read one Matrix parent by exact ID within the bound workspace. Missing
+    /// or cross-workspace parents are indistinguishable to the caller.
+    async fn matrix_decomposition_parent(
+        &mut self,
+        workspace_id: Uuid,
+        opportunity_id: Uuid,
+    ) -> Result<Option<AdvisoryOpportunity>>;
     async fn candidate_begin_replay(
         &mut self,
         workspace_id: Uuid,

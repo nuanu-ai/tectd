@@ -367,6 +367,10 @@ pub(crate) fn scope_decomposition_opportunity(
         matrix_choice_set_digest: None,
         matrix_verification_digest: None,
         source_ref: None,
+        parent_opportunity_id: request
+            .parent_matrix
+            .as_ref()
+            .map(|parent| parent.opportunity_id),
         session_preference,
         request_preference: request.advisory_preference,
         config_revision: config.revision,

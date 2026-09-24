@@ -173,6 +173,51 @@ pub struct BeginCandidateSet {
     pub task_context: crate::PlanningTaskContext,
     #[serde(default)]
     pub advisory_preference: crate::AdvisoryRequestPreference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_matrix: Option<MatrixDecompositionParent>,
+}
+
+/// An explicit request to decompose a mismatch found at one exact Matrix
+/// opportunity. The referenced task and opportunity are checked by the
+/// application against the authenticated workspace before capture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MatrixDecompositionParent {
+    pub opportunity_id: Uuid,
+    pub task_id: Uuid,
+    pub task_revision: i64,
+    pub input_digest: String,
+    pub choice_set_digest: Option<String>,
+    pub verification_digest: Option<String>,
+    pub opportunity_material_digest: String,
+    pub mismatch_rationale: String,
+}
+
+impl MatrixDecompositionParent {
+    pub fn validate(&self) -> crate::Result<()> {
+        let digest =
+            |value: &str| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit());
+        if self.opportunity_id.is_nil()
+            || self.task_id.is_nil()
+            || self.task_revision < 1
+            || !digest(&self.input_digest)
+            || !digest(&self.opportunity_material_digest)
+            || self
+                .choice_set_digest
+                .as_deref()
+                .is_some_and(|value| !digest(value))
+            || self
+                .verification_digest
+                .as_deref()
+                .is_some_and(|value| !digest(value))
+            || self.mismatch_rationale.trim().is_empty()
+            || self.mismatch_rationale.len() > 4096
+            || self.mismatch_rationale.contains('\0')
+        {
+            return Err(crate::Error::InvalidArguments);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

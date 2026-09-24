@@ -140,6 +140,6 @@ pub use scope_candidates::{
     CandidateProgramSummary, CandidateReceiptRequest, CandidateRuleSnapshot, CandidateSet,
     CandidateSetStatus, CandidateSetSummary, CandidateSnapshot, CandidateSnapshotMaterial,
     CandidateSourceKind, CandidateSourceRef, CandidateTextFragment, HistoricalCandidateDraft,
-    ProtectedObjectRef, RecordCandidateInput, RefreshCandidateSet, ScopeCandidatePageItem,
-    StoredCandidateContext, StoredHistoricalCandidateDraft,
+    MatrixDecompositionParent, ProtectedObjectRef, RecordCandidateInput, RefreshCandidateSet,
+    ScopeCandidatePageItem, StoredCandidateContext, StoredHistoricalCandidateDraft,
 };

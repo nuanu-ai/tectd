@@ -243,6 +243,7 @@ pub struct AdvisoryOpportunityInput {
     pub matrix_choice_set_digest: Option<String>,
     pub matrix_verification_digest: Option<String>,
     pub source_ref: Option<String>,
+    pub parent_opportunity_id: Option<Uuid>,
     pub session_preference: AdvisoryRequestPreference,
     pub request_preference: AdvisoryRequestPreference,
     pub config_revision: i64,
@@ -266,6 +267,9 @@ impl AdvisoryOpportunityInput {
             || self.config_revision < 0
             || !valid_sha256(&self.material_digest)
             || self.work_revision.is_some_and(|revision| revision < 1)
+            || self.parent_opportunity_id.is_some_and(|id| id.is_nil())
+            || self.parent_opportunity_id.is_some()
+                && self.capability != AdvisoryCapability::ScopeDecomposition
             || !self.decision_point.supports(self.capability)
             || match self.capability {
                 AdvisoryCapability::EngineeringProfile => {

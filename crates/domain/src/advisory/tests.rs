@@ -18,6 +18,7 @@ fn opportunity(preference: AdvisoryRequestPreference) -> AdvisoryOpportunityInpu
         matrix_choice_set_digest: None,
         matrix_verification_digest: None,
         source_ref: None,
+        parent_opportunity_id: None,
         session_preference: AdvisoryRequestPreference::UseWorkspace,
         request_preference: preference,
         config_revision: 1,

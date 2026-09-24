@@ -17,6 +17,7 @@ fn request(preference: AdvisoryRequestPreference) -> BeginCandidateSet {
         input: "decompose this scope".into(),
         task_context: PlanningTaskContext::default(),
         advisory_preference: preference,
+        parent_matrix: None,
     }
 }
 

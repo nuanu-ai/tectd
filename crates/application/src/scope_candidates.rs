@@ -2,11 +2,14 @@ use crate::{
     CandidateGuidance, CandidateOutputGuard, TransactionMode, UnitOfWork, WorkspaceService,
 };
 use tect_domain::{
-    BeginCandidateSet, BeginCandidateSetOutcome, CandidateContext, CandidateContextPage,
-    CandidateContextQuery, Error, RecordCandidateInput, RefreshCandidateSet, Result,
+    AdvisoryCapability, AdvisoryOpportunity, BeginCandidateSet, BeginCandidateSetOutcome,
+    CandidateContext, CandidateContextPage, CandidateContextQuery, Error,
+    MatrixDecompositionParent, RecordCandidateInput, RefreshCandidateSet, Result,
     ReviewCandidateSet, SaveCandidateDraft, StoredCandidateContext, validate_program_input,
 };
 
+#[cfg(test)]
+mod parent_tests;
 mod write;
 
 impl WorkspaceService {
@@ -82,6 +85,29 @@ impl WorkspaceService {
             .await?;
         if request.program_id.is_nil() {
             return Err(Error::InvalidArguments);
+        }
+        if let Some(parent) = &request.parent_matrix {
+            parent.validate()?;
+            // An exact committed retry survives later changes to the Matrix
+            // task. The stored origin payload compares parent and rationale.
+            if let Some(BeginCandidateSetOutcome::Replay(outcome)) = opportunity_tx
+                .candidate_begin_replay(workspace.id, request)
+                .await?
+            {
+                let replay = BeginCandidateSetOutcome::Replay(outcome);
+                guard.check_begin(&replay)?;
+                opportunity_tx.commit().await?;
+                return Ok(replay);
+            }
+            let task = opportunity_tx
+                .lock_matrix_task(workspace.id, parent.task_id)
+                .await?
+                .ok_or(Error::NotFound)?;
+            let opportunity = opportunity_tx
+                .matrix_decomposition_parent(workspace.id, parent.opportunity_id)
+                .await?
+                .ok_or(Error::NotFound)?;
+            validate_matrix_decomposition_parent(parent, &task, &opportunity, workspace.id)?;
         }
         let program = opportunity_tx
             .program(workspace.id, request.program_id, false)
@@ -379,6 +405,35 @@ impl WorkspaceService {
         tx.commit().await?;
         Ok(stored)
     }
+}
+
+fn validate_matrix_decomposition_parent(
+    parent: &MatrixDecompositionParent,
+    task: &crate::MatrixTaskRevision,
+    opportunity: &AdvisoryOpportunity,
+    workspace_id: uuid::Uuid,
+) -> Result<()> {
+    if task.task_id != parent.task_id
+        || task.revision != parent.task_revision
+        || task.input_digest != parent.input_digest
+        || task.choice_set_digest != parent.choice_set_digest
+    {
+        return Err(Error::StaleRevision);
+    }
+    if opportunity.id != parent.opportunity_id
+        || opportunity.workspace_id != workspace_id
+        || opportunity.capability != AdvisoryCapability::EngineeringProfile
+        || opportunity.target_kind != "matrix_task"
+        || opportunity.target_id != Some(parent.task_id)
+        || opportunity.work_revision != Some(parent.task_revision)
+        || opportunity.matrix_task_revision != Some(parent.task_revision)
+        || opportunity.matrix_choice_set_digest != parent.choice_set_digest
+        || opportunity.matrix_verification_digest != parent.verification_digest
+        || opportunity.material_digest != parent.opportunity_material_digest
+    {
+        return Err(Error::InputConflict);
+    }
+    Ok(())
 }
 
 fn candidate_outcome_context_mut(outcome: &mut BeginCandidateSetOutcome) -> &mut CandidateContext {
