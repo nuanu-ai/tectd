@@ -1,5 +1,6 @@
 use crate::{MatrixTaskRevision, canonical_matrix_input_digest};
 use async_trait::async_trait;
+use sha2::Digest;
 use tect_domain::{
     AdvisoryAuditPage, AdvisoryAuditQuery, AdvisoryDispatch, AdvisoryDispatchAuthorization,
     AdvisoryDispatchCancellation, AdvisoryDispatchOutcome, AdvisoryDispatchSeal,
@@ -349,6 +350,11 @@ pub struct MatrixProviderResponse {
     pub binding: MatrixProviderBinding,
     pub provider_profile_ref: AdvisoryProviderProfileRef,
     pub model_configuration: AdvisoryModelConfiguration,
+    /// Original opaque bytes received from the provider, before parsing or
+    /// normalization. Persist these same bytes with the guarded advice and
+    /// use this allocation for any later response seal.
+    pub raw_response_payload: Vec<u8>,
+    pub response_payload_sha256: String,
     pub ranking: MatrixRanking,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
@@ -359,6 +365,9 @@ impl MatrixProviderResponse {
         if self.binding != request.binding
             || self.provider_profile_ref != request.provider_profile_ref
             || self.model_configuration != request.model_configuration
+            || self.raw_response_payload.is_empty()
+            || self.response_payload_sha256
+                != format!("{:x}", sha2::Sha256::digest(&self.raw_response_payload))
         {
             return Err(Error::InvalidArguments);
         }

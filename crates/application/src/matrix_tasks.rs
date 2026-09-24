@@ -535,6 +535,32 @@ mod tests {
         )
         .unwrap()
         .unwrap();
+        let provider_request = MatrixProviderRequest::new(
+            revision.clone(),
+            compose_current_revision(revision.clone(), revision.revision).unwrap(),
+            identity.provider_profile_ref.clone(),
+            identity.model_configuration.clone(),
+        )
+        .unwrap();
+        let mut response = MatrixProviderResponse {
+            binding: provider_request.binding().clone(),
+            provider_profile_ref: identity.provider_profile_ref.clone(),
+            model_configuration: identity.model_configuration.clone(),
+            raw_response_payload: b"opaque response".to_vec(),
+            response_payload_sha256: format!("{:x}", Sha256::digest(b"opaque response")),
+            ranking: tect_domain::MatrixRanking::Ranked {
+                ranked_candidate_ids: vec!["a".into(), "b".into()],
+                recommended_candidate_id: "a".into(),
+            },
+            input_tokens: None,
+            output_tokens: None,
+        };
+        assert_eq!(response.validate_for(&provider_request), Ok(()));
+        response.raw_response_payload.push(b'!');
+        assert_eq!(
+            response.validate_for(&provider_request),
+            Err(Error::InvalidArguments)
+        );
         let provider = TestProvider(identity);
         let actor_id = input.authorized_actor_id;
         crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
