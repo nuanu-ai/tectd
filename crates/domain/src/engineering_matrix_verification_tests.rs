@@ -124,6 +124,70 @@ fn complete_coverage_includes_dynamic_and_known_empty() {
 }
 
 #[test]
+fn verified_evaluation_binds_exact_record_and_keeps_legacy_digest() {
+    let input = input();
+    let choice_set = crate::EngineeringChoiceSet {
+        schema: crate::MATRIX_CHOICE_SET_SCHEMA.into(),
+        choice_set_id: "choices".into(),
+        version: 1,
+        task_id: "task-42".into(),
+        task_revision: "7".into(),
+        decision_question: "Which approach?".into(),
+        candidates: ["a", "b"]
+            .into_iter()
+            .map(|id| crate::EngineeringCandidate {
+                candidate_id: id.into(),
+                title: id.into(),
+                approach: id.into(),
+                assumption_fact_ids: vec![],
+            })
+            .collect(),
+    };
+    let reported = OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
+        "task-42".into(),
+        "7".into(),
+        input.clone(),
+    )
+    .unwrap();
+    let pending = compose_owner_reported_engineering_matrix(&reported);
+    let legacy_before = crate::matrix_evaluation_digest(&input, &pending, &choice_set)
+        .unwrap()
+        .unwrap();
+    let record = record(&input);
+    let validated = evaluate(&input, &record, 20).unwrap();
+    let verified =
+        crate::compose_independently_verified_owner_matrix(&reported, &validated).unwrap();
+    let first =
+        crate::matrix_verified_evaluation_digest(&input, &verified, &choice_set, &validated)
+            .unwrap();
+    assert_eq!(first.len(), 64);
+    assert_ne!(first, legacy_before);
+    assert_eq!(
+        legacy_before,
+        crate::matrix_evaluation_digest(&input, &pending, &choice_set)
+            .unwrap()
+            .unwrap()
+    );
+    let mut changed_record = record;
+    changed_record.policy_version = "source-check/2".into();
+    reseal(&mut changed_record);
+    let changed = evaluate(&input, &changed_record, 20).unwrap();
+    assert_ne!(
+        first,
+        crate::matrix_verified_evaluation_digest(&input, &verified, &choice_set, &changed).unwrap()
+    );
+    assert!(
+        crate::matrix_verified_evaluation_digest(&input, &pending, &choice_set, &validated)
+            .is_err()
+    );
+    let mut stale = choice_set;
+    stale.task_revision = "8".into();
+    assert!(
+        crate::matrix_verified_evaluation_digest(&input, &verified, &stale, &validated).is_err()
+    );
+}
+
+#[test]
 fn input_digest_matches_persisted_matrix_task_store_json_hash() {
     let input = input();
     // This is the same projection and hash as

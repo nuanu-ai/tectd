@@ -435,6 +435,34 @@ pub(crate) async fn compose_current_revision_with_verification(
     expected_task_revision: i64,
     now: i64,
 ) -> Result<(EngineeringMatrixComposition, Option<String>)> {
+    let (composition, verification) = compose_current_revision_with_validated_verification(
+        store,
+        validator,
+        workspace_id,
+        revision,
+        expected_task_revision,
+        now,
+    )
+    .await?;
+    Ok((
+        composition,
+        verification.map(|v| v.record_digest().to_owned()),
+    ))
+}
+
+/// The positive request seam retains the validated token only after the
+/// latest saved record and every evidence binding pass current revalidation.
+pub(crate) async fn compose_current_revision_with_validated_verification(
+    store: Option<&mut dyn MatrixVerificationStore>,
+    validator: &dyn MatrixEvidenceValidator,
+    workspace_id: Uuid,
+    revision: MatrixTaskRevision,
+    expected_task_revision: i64,
+    now: i64,
+) -> Result<(
+    EngineeringMatrixComposition,
+    Option<crate::RevalidatedMatrixVerification>,
+)> {
     let provisional = compose_current_revision(revision.clone(), expected_task_revision)?;
     let Some(store) = store else {
         return Ok((provisional, None));
@@ -499,7 +527,9 @@ pub(crate) async fn compose_current_revision_with_verification(
     )?;
     Ok((
         compose_independently_verified_owner_matrix(&reported, &validated)?,
-        Some(validated.record_digest().to_owned()),
+        Some(crate::RevalidatedMatrixVerification::from_revalidated(
+            validated,
+        )),
     ))
 }
 

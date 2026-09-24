@@ -132,6 +132,7 @@ impl MatrixAdviceStore for PgUnitOfWork {
                     .try_get("matrix_choice_set_digest")
                     .map_err(storage_error)?,
                 evaluation_digest: row.try_get("material_digest").map_err(storage_error)?,
+                verification_digest: None,
             };
             if canonical_matrix_input_digest(&input_json)? != binding.input_digest
                 || choice.canonical_digest(&input)? != binding.choice_set_digest

@@ -308,6 +308,7 @@ mod tests {
             choice_set_version: 1,
             choice_set_digest: "b".repeat(64),
             evaluation_digest: "c".repeat(64),
+            verification_digest: None,
         };
         let mut opportunity = AdvisoryOpportunity {
             id: Uuid::new_v4(),
@@ -353,6 +354,7 @@ mod tests {
                 choice_set_version: 1,
                 choice_set_digest: "choice-digest".into(),
                 evaluation_digest: "evaluation".into(),
+                verification_digest: None,
             },
             provider_profile_ref: AdvisoryProviderProfileRef { id: "test".into() },
             model_configuration: AdvisoryModelConfiguration {

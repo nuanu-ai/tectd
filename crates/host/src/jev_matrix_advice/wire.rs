@@ -1,8 +1,9 @@
 use serde::{Deserialize, Deserializer, Serialize};
-use tect_application::{MatrixTaskRevision, canonical_matrix_input_digest};
+use tect_application::{MatrixProviderRequest, MatrixTaskRevision, canonical_matrix_input_digest};
 use tect_domain::{
     EngineeringChoiceSet, EngineeringMatrixComposition, EngineeringMatrixInput, Error,
-    MATRIX_EVALUATION_CONTRACT_VERSION, MatrixAdviceEligibility, MatrixRanking, Result,
+    MATRIX_EVALUATION_CONTRACT_VERSION, MATRIX_VERIFIED_EVALUATION_CONTRACT_VERSION,
+    MatrixAdviceEligibility, MatrixRanking, MatrixSourceVerificationStatus, Result,
     matrix_evaluation_digest,
 };
 
@@ -17,6 +18,8 @@ pub struct MatrixRankingBinding {
     pub choice_set_version: u64,
     pub choice_set_digest: String,
     pub evaluation_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_digest: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +28,7 @@ pub struct PreparedMatrixRankingRequest {
     pub model: String,
     pub binding: MatrixRankingBinding,
     pub eligibility: MatrixAdviceEligibility,
+    pub contract: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +102,57 @@ pub fn prepare_request(
     composition: &EngineeringMatrixComposition,
     maximum_request_bytes: usize,
 ) -> Result<PreparedMatrixRankingRequest> {
+    prepare_request_inner(model, revision, composition, None, maximum_request_bytes)
+}
+
+/// Pure v2 wire preparation. Only the application's verified request can
+/// supply the record digest and matching evaluation digest.
+pub fn prepare_verified_request(
+    model: &str,
+    request: &MatrixProviderRequest,
+    maximum_request_bytes: usize,
+) -> Result<PreparedMatrixRankingRequest> {
+    let binding = request.binding();
+    let digest = binding
+        .verification_digest
+        .as_deref()
+        .ok_or(Error::InvalidArguments)?;
+    if digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        || request.composition().source_verification_status
+            != MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported
+    {
+        return Err(Error::InvalidArguments);
+    }
+    let prepared = prepare_request_inner(
+        model,
+        request.revision(),
+        request.composition(),
+        Some((digest, binding.evaluation_digest.as_str())),
+        maximum_request_bytes,
+    )?;
+    if prepared.binding.task_id != binding.task_id.to_string()
+        || prepared.binding.task_revision != binding.task_revision.to_string()
+        || prepared.binding.input_digest != binding.input_digest
+        || prepared.binding.choice_set_id != binding.choice_set_id
+        || prepared.binding.choice_set_version != binding.choice_set_version
+        || prepared.binding.choice_set_digest != binding.choice_set_digest
+        || prepared.binding.evaluation_digest != binding.evaluation_digest
+    {
+        return Err(Error::InputConflict);
+    }
+    Ok(prepared)
+}
+
+fn prepare_request_inner(
+    model: &str,
+    revision: &MatrixTaskRevision,
+    composition: &EngineeringMatrixComposition,
+    verified: Option<(&str, &str)>,
+    maximum_request_bytes: usize,
+) -> Result<PreparedMatrixRankingRequest> {
     if model.trim().is_empty()
         || model.len() > 128
         || model.chars().any(char::is_control)
@@ -128,8 +183,16 @@ pub fn prepare_request(
     let MatrixAdviceEligibility::EligibleForAdvice { candidate_ids } = &eligibility else {
         return Err(Error::InvalidArguments);
     };
-    let evaluation_digest = matrix_evaluation_digest(&revision.input, composition, choice_set)?
-        .ok_or(Error::InvalidArguments)?;
+    let evaluation_digest = match verified {
+        Some((_, evaluation_digest)) => evaluation_digest.to_owned(),
+        None => matrix_evaluation_digest(&revision.input, composition, choice_set)?
+            .ok_or(Error::InvalidArguments)?,
+    };
+    let contract = if verified.is_some() {
+        MATRIX_VERIFIED_EVALUATION_CONTRACT_VERSION
+    } else {
+        MATRIX_EVALUATION_CONTRACT_VERSION
+    };
     let binding = MatrixRankingBinding {
         task_id: choice_set.task_id.clone(),
         task_revision: choice_set.task_revision.clone(),
@@ -138,11 +201,12 @@ pub fn prepare_request(
         choice_set_version: choice_set.version,
         choice_set_digest,
         evaluation_digest,
+        verification_digest: verified.map(|(digest, _)| digest.to_owned()),
     };
     let body = serde_json::to_vec(&RequestBody {
         model,
         state: RequestState {
-            contract: MATRIX_EVALUATION_CONTRACT_VERSION,
+            contract,
             binding: &binding,
             input: &revision.input,
             composition,
@@ -165,6 +229,7 @@ pub fn prepare_request(
         model: model.to_owned(),
         binding,
         eligibility,
+        contract,
     })
 }
 
@@ -182,7 +247,7 @@ pub fn parse_response(
     }
     let response: ResponseBody =
         serde_json::from_slice(bytes).map_err(|_| Error::InvalidArguments)?;
-    if response.contract != MATRIX_EVALUATION_CONTRACT_VERSION
+    if response.contract != prepared.contract
         || response.model != model
         || response.model != prepared.model
         || response.binding != prepared.binding

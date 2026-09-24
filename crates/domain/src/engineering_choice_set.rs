@@ -12,6 +12,7 @@ use std::collections::BTreeSet;
 
 pub const MATRIX_CHOICE_SET_SCHEMA: &str = "tect.matrix-choice-set/1";
 pub const MATRIX_EVALUATION_CONTRACT_VERSION: &str = "tect.matrix-ranking/1";
+pub const MATRIX_VERIFIED_EVALUATION_CONTRACT_VERSION: &str = "tect.matrix-ranking/2";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -153,6 +154,30 @@ pub fn matrix_evaluation_digest(
         choice_set.canonical_digest(input)?,
     ))
     .map(Some)
+}
+
+/// Positive ranking material is bound to the exact independently validated
+/// verification record. The legacy digest above remains unchanged for no-call
+/// receipts and replay.
+pub fn matrix_verified_evaluation_digest(
+    input: &EngineeringMatrixInput,
+    composition: &EngineeringMatrixComposition,
+    choice_set: &EngineeringChoiceSet,
+    verification: &crate::ValidatedMatrixVerification,
+) -> Result<String> {
+    if composition.source_verification_status
+        != MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported
+        || !verification.matches_input(&choice_set.task_id, &choice_set.task_revision, input)?
+    {
+        return Err(Error::InvalidArguments);
+    }
+    let legacy_digest =
+        matrix_evaluation_digest(input, composition, choice_set)?.ok_or(Error::InvalidArguments)?;
+    sha256_json(&(
+        MATRIX_VERIFIED_EVALUATION_CONTRACT_VERSION,
+        legacy_digest,
+        verification.record_digest(),
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

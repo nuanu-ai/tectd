@@ -5,5 +5,5 @@ mod wire;
 
 pub use wire::{
     MatrixRankingBinding, ParsedMatrixRankingResponse, PreparedMatrixRankingRequest,
-    parse_response, prepare_request,
+    parse_response, prepare_request, prepare_verified_request,
 };

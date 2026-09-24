@@ -24,7 +24,7 @@ pub use advisory_ports::AdvisoryStore;
 pub(crate) use advisory_ports::{AdvisoryProvider, DisabledAdvisoryProvider};
 pub use advisory_ports::{
     DisabledMatrixAdviceProvider, MatrixAdviceProvider, MatrixProviderBinding,
-    MatrixProviderRequest, MatrixProviderResponse,
+    MatrixProviderRequest, MatrixProviderResponse, RevalidatedMatrixVerification,
 };
 #[doc(hidden)]
 pub use matrix_advice_ports::canonical_matrix_advice_digest;

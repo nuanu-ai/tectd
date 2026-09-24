@@ -203,6 +203,8 @@ pub struct MatrixProviderBinding {
     pub choice_set_version: u64,
     pub choice_set_digest: String,
     pub evaluation_digest: String,
+    /// Present only for a v2 positive request built from revalidated evidence.
+    pub verification_digest: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -214,6 +216,23 @@ pub struct MatrixProviderRequest {
     provider_profile_ref: AdvisoryProviderProfileRef,
     model_configuration: AdvisoryModelConfiguration,
     eligibility: MatrixAdviceEligibility,
+}
+
+/// Minted only by the application after the latest stored verification and
+/// every bound evidence item are revalidated for the saved revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevalidatedMatrixVerification {
+    validated: tect_domain::ValidatedMatrixVerification,
+}
+
+impl RevalidatedMatrixVerification {
+    pub(crate) fn from_revalidated(validated: tect_domain::ValidatedMatrixVerification) -> Self {
+        Self { validated }
+    }
+
+    pub fn record_digest(&self) -> &str {
+        self.validated.record_digest()
+    }
 }
 
 impl MatrixProviderRequest {
@@ -266,6 +285,7 @@ impl MatrixProviderRequest {
             choice_set_version: choice_set.version,
             choice_set_digest,
             evaluation_digest,
+            verification_digest: None,
         };
         Ok(Self {
             binding,
@@ -275,6 +295,62 @@ impl MatrixProviderRequest {
             model_configuration,
             eligibility,
         })
+    }
+
+    /// Construct the v2 positive binding from the application's validated
+    /// verification token. The token is tied to the exact input and revision.
+    pub fn new_verified(
+        revision: MatrixTaskRevision,
+        composition: EngineeringMatrixComposition,
+        verification: &RevalidatedMatrixVerification,
+        provider_profile_ref: AdvisoryProviderProfileRef,
+        model_configuration: AdvisoryModelConfiguration,
+    ) -> Result<Self> {
+        let mut request = Self::new_for_verified_composition(
+            revision,
+            composition,
+            provider_profile_ref,
+            model_configuration,
+        )?;
+        let choice_set = request
+            .revision
+            .choice_set
+            .as_ref()
+            .ok_or(Error::InvalidArguments)?;
+        request.binding.evaluation_digest = tect_domain::matrix_verified_evaluation_digest(
+            &request.revision.input,
+            &request.composition,
+            choice_set,
+            &verification.validated,
+        )?;
+        request.binding.verification_digest = Some(verification.record_digest().to_owned());
+        Ok(request)
+    }
+
+    fn new_for_verified_composition(
+        revision: MatrixTaskRevision,
+        composition: EngineeringMatrixComposition,
+        provider_profile_ref: AdvisoryProviderProfileRef,
+        model_configuration: AdvisoryModelConfiguration,
+    ) -> Result<Self> {
+        // Reuse all revision, choice-set, digest and eligibility guards while
+        // changing only the provenance status accepted by this constructor.
+        if composition.source_verification_status
+            != MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported
+        {
+            return Err(Error::InvalidArguments);
+        }
+        let mut provisional = composition.clone();
+        provisional.source_verification_status =
+            MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification;
+        let mut request = Self::new(
+            revision,
+            provisional,
+            provider_profile_ref,
+            model_configuration,
+        )?;
+        request.composition = composition;
+        Ok(request)
     }
 
     pub fn binding(&self) -> &MatrixProviderBinding {

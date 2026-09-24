@@ -164,6 +164,7 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
         choice_set_version: 1,
         choice_set_digest: choice_digest.clone(),
         evaluation_digest: evaluation_digest.clone(),
+        verification_digest: None,
     };
     let profile = AdvisoryProviderProfileRef {
         id: "synthetic-provider".into(),

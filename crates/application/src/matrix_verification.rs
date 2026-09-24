@@ -480,6 +480,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn positive_binding_requires_revalidated_exact_record() {
+        use tect_domain::{
+            AdvisoryModelConfiguration, AdvisoryProviderProfileRef, EngineeringCandidate,
+            EngineeringChoiceSet, MATRIX_CHOICE_SET_SCHEMA,
+        };
+        let mut revision = revision();
+        let choice_set = EngineeringChoiceSet {
+            schema: MATRIX_CHOICE_SET_SCHEMA.into(),
+            choice_set_id: "set-1".into(),
+            version: 1,
+            task_id: revision.task_id.to_string(),
+            task_revision: revision.revision.to_string(),
+            decision_question: "Which approach?".into(),
+            candidates: ["a", "b"]
+                .into_iter()
+                .map(|id| EngineeringCandidate {
+                    candidate_id: id.into(),
+                    title: id.into(),
+                    approach: id.into(),
+                    assumption_fact_ids: vec![],
+                })
+                .collect(),
+        };
+        revision.choice_set_digest = Some(choice_set.canonical_digest(&revision.input).unwrap());
+        revision.choice_set = Some(choice_set);
+        let workspace = Uuid::new_v4();
+        let mut store = FakeStore::default();
+        let record = verify_locked_revision(
+            &mut store,
+            &FakeValidator { trusted: true },
+            workspace,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            &revision,
+            &request(&revision),
+            &|| Ok(100),
+        )
+        .await
+        .unwrap();
+        let (composition, verification) =
+            crate::matrix_tasks::compose_current_revision_with_validated_verification(
+                Some(&mut store),
+                &FakeValidator { trusted: true },
+                workspace,
+                revision.clone(),
+                revision.revision,
+                100,
+            )
+            .await
+            .unwrap();
+        let verification = verification.unwrap();
+        let provider = crate::MatrixProviderRequest::new_verified(
+            revision.clone(),
+            composition.clone(),
+            &verification,
+            AdvisoryProviderProfileRef {
+                id: "provider".into(),
+            },
+            AdvisoryModelConfiguration {
+                model: "model".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            provider.binding().verification_digest.as_deref(),
+            Some(record.digest.as_str())
+        );
+        assert_ne!(
+            provider.binding().evaluation_digest,
+            tect_domain::matrix_evaluation_digest(
+                &revision.input,
+                &composition,
+                revision.choice_set.as_ref().unwrap()
+            )
+            .unwrap()
+            .unwrap()
+        );
+        let (revoked, token) =
+            crate::matrix_tasks::compose_current_revision_with_validated_verification(
+                Some(&mut store),
+                &FakeValidator { trusted: false },
+                workspace,
+                revision.clone(),
+                revision.revision,
+                100,
+            )
+            .await
+            .unwrap();
+        assert!(token.is_none());
+        assert!(
+            crate::MatrixProviderRequest::new_verified(
+                revision.clone(),
+                revoked,
+                &verification,
+                AdvisoryProviderProfileRef {
+                    id: "provider".into()
+                },
+                AdvisoryModelConfiguration {
+                    model: "model".into()
+                },
+            )
+            .is_err()
+        );
+        let mut advanced = revision;
+        advanced.revision += 1;
+        assert!(
+            crate::MatrixProviderRequest::new_verified(
+                advanced,
+                composition,
+                &verification,
+                AdvisoryProviderProfileRef {
+                    id: "provider".into()
+                },
+                AdvisoryModelConfiguration {
+                    model: "model".into()
+                },
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn complete_verification_is_saved_with_exact_owner_and_digest() {
         let revision = revision();
         let verifier = Uuid::new_v4();

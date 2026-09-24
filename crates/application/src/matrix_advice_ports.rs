@@ -116,6 +116,10 @@ impl GuardedMatrixAdviceRecord {
             || !is_digest(&binding.input_digest)
             || !is_digest(&binding.choice_set_digest)
             || !is_digest(&binding.evaluation_digest)
+            || binding
+                .verification_digest
+                .as_deref()
+                .is_some_and(|digest| !is_digest(digest))
             || self.response_payload_sha256
                 != format!("{:x}", Sha256::digest(&self.raw_response_payload))
             || self.advice_digest != canonical_matrix_advice_digest(binding, &self.outcome)?
@@ -172,8 +176,8 @@ pub fn canonical_matrix_advice_digest(
             serde_json::json!({"status": "rejected", "reason": reason})
         }
     };
-    let material = serde_json::json!({
-        "schema_version": 1,
+    let mut material = serde_json::json!({
+        "schema_version": if binding.verification_digest.is_some() { 2 } else { 1 },
         "binding": {
             "task_id": binding.task_id,
             "task_revision": binding.task_revision,
@@ -185,6 +189,12 @@ pub fn canonical_matrix_advice_digest(
         },
         "outcome": outcome,
     });
+    if let Some(digest) = &binding.verification_digest {
+        if !is_digest(digest) {
+            return Err(Error::InvalidArguments);
+        }
+        material["binding"]["verification_digest"] = serde_json::json!(digest);
+    }
     let encoded = serde_json::to_vec(&material).map_err(|_| Error::InternalInvariant)?;
     let mut hasher = Sha256::new();
     hasher.update(ADVICE_DIGEST_DOMAIN);
@@ -256,6 +266,7 @@ mod tests {
             choice_set_version: 1,
             choice_set_digest: "b".repeat(64),
             evaluation_digest: "c".repeat(64),
+            verification_digest: None,
         }
     }
 
@@ -391,6 +402,20 @@ mod tests {
         second.opportunity_id = Uuid::new_v4();
         second.dispatch_id = Uuid::new_v4();
         assert_eq!(first.advice_digest, second.advice_digest);
+        let mut verified_binding = binding.clone();
+        verified_binding.verification_digest = Some("d".repeat(64));
+        let verified = canonical_matrix_advice_digest(&verified_binding, &ranked).unwrap();
+        assert_ne!(same, verified);
+        verified_binding.verification_digest = Some("e".repeat(64));
+        assert_ne!(
+            verified,
+            canonical_matrix_advice_digest(&verified_binding, &ranked).unwrap()
+        );
+        verified_binding.verification_digest = Some("not-a-digest".into());
+        assert_eq!(
+            canonical_matrix_advice_digest(&verified_binding, &ranked),
+            Err(Error::InvalidArguments)
+        );
     }
 
     #[test]

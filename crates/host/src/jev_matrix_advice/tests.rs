@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::{Value, json};
+use sha2::Digest;
 use tect_domain::{
     EngineeringCandidate, FactProvenance, MATRIX_CHOICE_SET_SCHEMA, MatrixFact,
     MatrixSourceVerificationStatus, OperatingEnvelope, OperationalFacts,
@@ -148,6 +149,64 @@ fn request_carries_complete_unredacted_accepted_material_and_pending_status() {
     assert_eq!(
         composition.source_verification_status,
         MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification
+    );
+}
+
+#[test]
+fn verified_wire_binds_record_digest_and_v2_contract() {
+    let (revision, mut composition) = fixture();
+    composition.source_verification_status =
+        MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported;
+    let prepared = prepare_request_inner(
+        MODEL,
+        &revision,
+        &composition,
+        Some((&"d".repeat(64), &"e".repeat(64))),
+        32_768,
+    )
+    .unwrap();
+    let body: Value = serde_json::from_slice(&prepared.body).unwrap();
+    assert_eq!(
+        prepared.contract,
+        MATRIX_VERIFIED_EVALUATION_CONTRACT_VERSION
+    );
+    assert_eq!(
+        body["state"]["contract"],
+        MATRIX_VERIFIED_EVALUATION_CONTRACT_VERSION
+    );
+    assert_eq!(
+        body["state"]["binding"]["verification_digest"],
+        "d".repeat(64)
+    );
+    assert_eq!(
+        body["state"]["binding"]["evaluation_digest"],
+        "e".repeat(64)
+    );
+    let changed_record = prepare_request_inner(
+        MODEL,
+        &revision,
+        &composition,
+        Some((&"f".repeat(64), &"e".repeat(64))),
+        32_768,
+    )
+    .unwrap();
+    assert_ne!(
+        sha2::Sha256::digest(&prepared.body),
+        sha2::Sha256::digest(&changed_record.body)
+    );
+    let ranked = json!({
+        "contract": MATRIX_VERIFIED_EVALUATION_CONTRACT_VERSION,
+        "model": MODEL,
+        "binding": prepared.binding,
+        "ranking": {"status":"abstained", "ranked_candidate_ids":[], "recommended_candidate_id":null},
+        "usage": null
+    });
+    assert!(parsed(&ranked, &prepared).is_ok());
+    let mut old_contract = ranked;
+    old_contract["contract"] = json!(MATRIX_EVALUATION_CONTRACT_VERSION);
+    assert_eq!(
+        parsed(&old_contract, &prepared),
+        Err(Error::InvalidArguments)
     );
 }
 
