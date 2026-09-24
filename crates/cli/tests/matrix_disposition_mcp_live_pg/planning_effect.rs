@@ -2,7 +2,7 @@ use super::*;
 use crate::support::{ready_source_candidate, repository};
 
 // Kept separate from the migration-58/59 guards used by the older tests.
-async fn disposable_pair_at_60() -> (PgPool, String) {
+async fn disposable_pair_for_effect() -> (PgPool, String) {
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
     assert_eq!(
         std::env::var("TECT_TEST_EXPECTED_PG_SYSTEM_ID").as_deref(),
@@ -36,17 +36,12 @@ async fn disposable_pair_at_60() -> (PgPool, String) {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(
-        identity,
-        (
-            180006,
-            "tect_test".into(),
-            "postgres".into(),
-            DATABASE_OID,
-            SYSTEM_ID.into(),
-            60
-        )
-    );
+    assert_eq!(identity.0, 180006);
+    assert_eq!(identity.1, "tect_test");
+    assert_eq!(identity.2, "postgres");
+    assert_eq!(identity.3, DATABASE_OID);
+    assert_eq!(identity.4, SYSTEM_ID);
+    assert!(matches!(identity.5, 60 | 61));
     let runtime = PgPool::connect_with(runtime_options).await.unwrap();
     let runtime_identity: (String, String, i64) = sqlx::query_as(
         "SELECT current_database(),current_user,(SELECT oid::bigint FROM pg_database WHERE datname=current_database())",
@@ -93,9 +88,9 @@ async fn attestation_count(pool: &PgPool, workspace: Uuid, set: Uuid) -> i64 {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "writes only pinned disposable PostgreSQL 18.6 fixture at migration 60"]
+#[ignore = "writes only pinned disposable PostgreSQL 18.6 fixture at migration 60 or 61"]
 async fn independent_verifier_attests_exact_saved_matrix_effect() {
-    let (pool, runtime_url) = disposable_pair_at_60().await;
+    let (pool, runtime_url) = disposable_pair_for_effect().await;
     admin::migrate(&pool, "tect_ci").await.unwrap();
     let version: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
         .fetch_one(&pool)
