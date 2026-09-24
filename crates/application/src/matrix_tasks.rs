@@ -277,12 +277,26 @@ fn matrix_advisory_opportunity_input(
     } else {
         AdvisoryReason::CapabilityUnavailable
     };
+    // Keep the original no-call material shape: saved receipts from earlier
+    // releases include this nested Option even when no evaluation exists.
+    let evaluation_digest = revision
+        .choice_set
+        .as_ref()
+        .filter(|_| {
+            matches!(
+                eligibility,
+                MatrixAdviceEligibility::EligibleForAdvice { .. }
+            )
+        })
+        .map(|choice| tect_domain::matrix_evaluation_digest(&revision.input, &composition, choice))
+        .transpose()?;
     let material = serde_json::to_vec(&(
         "tect.matrix-advisory-opportunity/1",
         revision.task_id,
         revision.revision,
         &revision.input_digest,
         &revision.choice_set_digest,
+        &evaluation_digest,
         &composition,
         config,
         request.session_preference,
@@ -653,23 +667,6 @@ mod tests {
         let actor = Uuid::new_v4();
         let input = matrix_advisory_opportunity_input(&revision, &request, &config, session, actor)
             .unwrap();
-        let legacy_material = serde_json::to_vec(&(
-            "tect.matrix-advisory-opportunity/1",
-            revision.task_id,
-            revision.revision,
-            &revision.input_digest,
-            &revision.choice_set_digest,
-            &compose_current_revision(revision.clone(), revision.revision).unwrap(),
-            &config,
-            request.session_preference,
-            request.request_preference,
-            ADVISORY_POLICY_VERSION,
-        ))
-        .unwrap();
-        assert_eq!(
-            input.material_digest,
-            format!("{:x}", Sha256::digest(legacy_material))
-        );
         let receipt = AdvisoryOpportunity {
             id: Uuid::new_v4(),
             workspace_id: config.workspace_id,
@@ -789,6 +786,69 @@ mod tests {
         assert!(!matrix_advisory_replay_matches(
             &receipt, &changed, session, actor
         ));
+    }
+
+    #[test]
+    fn matrix_no_call_digest_matches_legacy_vectors() {
+        // These fixed vectors use the pre-dispatch tuple serialized by 3288740.
+        // A missing nested evaluation Option changes both historical digests.
+        let mut revision = stored_revision();
+        revision.task_id = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
+        let request = advisory_request(revision.task_id);
+        let mut config = advisory_config(WorkspaceAdvisoryMode::Optional);
+        config.workspace_id = Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap();
+        let session = Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap();
+        let actor = Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap();
+
+        let absent =
+            matrix_advisory_opportunity_input(&revision, &request, &config, session, actor)
+                .unwrap();
+        assert_eq!(absent.state, AdvisoryOpportunityState::NoCall);
+        assert_eq!(
+            absent.material_digest,
+            "2f4a37aa09e7a02717aa8f5e6209ca9b70827f0af9cedbdc7a43a5ddda963804"
+        );
+
+        let choice = EngineeringChoiceSet {
+            schema: MATRIX_CHOICE_SET_SCHEMA.into(),
+            choice_set_id: "choice-1".into(),
+            version: 1,
+            task_id: revision.task_id.to_string(),
+            task_revision: revision.revision.to_string(),
+            decision_question: "Which approach?".into(),
+            candidates: ["a", "b"]
+                .into_iter()
+                .map(|id| EngineeringCandidate {
+                    candidate_id: id.into(),
+                    title: id.into(),
+                    approach: id.into(),
+                    assumption_fact_ids: vec![],
+                })
+                .collect(),
+        };
+        revision.choice_set_digest = Some(choice.canonical_digest(&revision.input).unwrap());
+        revision.choice_set = Some(choice);
+        assert!(
+            tect_domain::matrix_evaluation_digest(
+                &revision.input,
+                &compose_current_revision(revision.clone(), revision.revision).unwrap(),
+                revision.choice_set.as_ref().unwrap(),
+            )
+            .unwrap()
+            .is_some()
+        );
+        let eligible =
+            matrix_advisory_opportunity_input(&revision, &request, &config, session, actor)
+                .unwrap();
+        assert_eq!(eligible.state, AdvisoryOpportunityState::NoCall);
+        assert_eq!(
+            eligible.primary_reason,
+            AdvisoryReason::CapabilityUnavailable
+        );
+        assert_eq!(
+            eligible.material_digest,
+            "801ac7f646b95763fe74bcef09764f14ef8e1d9f96067c73c2390fe3f12a77dd"
+        );
     }
 
     #[test]
