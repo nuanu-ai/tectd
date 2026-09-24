@@ -81,7 +81,29 @@ pub(super) async fn validate_matrix_advisory_schema(
     .fetch_one(&mut **transaction)
     .await
     .map_err(storage_error)?;
-    if !tables_ready || !policies_ready || !public_revoked || !runtime_ready {
+    let disposition_guard_ready: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM pg_catalog.pg_trigger t \
+         JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid \
+         JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace \
+         JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid \
+         JOIN pg_catalog.pg_roles r ON r.rolname=$1 \
+         WHERE n.nspname='public' AND c.relname='advisory_matrix_disposition' \
+           AND t.tgname='advisory_matrix_disposition_active_owner' \
+           AND t.tgenabled='O' AND NOT t.tgisinternal \
+           AND p.proname='matrix_disposition_require_active_owner' \
+           AND p.prosecdef AND NOT pg_catalog.pg_has_role(r.oid,p.proowner,'MEMBER') \
+           AND NOT pg_catalog.has_function_privilege($1,p.oid,'EXECUTE'))",
+    )
+    .bind(runtime_role)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(storage_error)?;
+    if !tables_ready
+        || !policies_ready
+        || !public_revoked
+        || !runtime_ready
+        || !disposition_guard_ready
+    {
         return Err(Error::InvalidConfiguration);
     }
     Ok(())

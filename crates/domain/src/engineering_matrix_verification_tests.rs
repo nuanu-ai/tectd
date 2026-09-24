@@ -160,22 +160,73 @@ fn verified_evaluation_binds_exact_record_and_keeps_legacy_digest() {
     let first =
         crate::matrix_verified_evaluation_digest(&input, &verified, &choice_set, &validated)
             .unwrap();
+    assert!(!verified.is_resolved());
     assert_eq!(
-        crate::matrix_verified_disposition_digest(&input, &verified, &choice_set, &validated)
-            .unwrap(),
-        first
+        crate::matrix_verified_disposition_digest(&input, &verified, &choice_set, &validated),
+        Err(Error::InvalidArguments)
+    );
+
+    // The legacy ranking digest above still records unresolved input. A
+    // selection requires complete facts, including a concrete users value.
+    let mut resolved_input = input.clone();
+    if let OperationalFacts::Reported { entries } = &mut resolved_input.envelope.operational_facts {
+        entries
+            .iter_mut()
+            .find(|entry| entry.name == "users")
+            .unwrap()
+            .fact = known("no exposed users".into());
+    }
+    let resolved_record = record(&resolved_input);
+    let resolved_validation = evaluate(&resolved_input, &resolved_record, 20).unwrap();
+    let resolved_reported = OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
+        "task-42".into(),
+        "7".into(),
+        resolved_input.clone(),
+    )
+    .unwrap();
+    let resolved = crate::compose_independently_verified_owner_matrix(
+        &resolved_reported,
+        &resolved_validation,
+    )
+    .unwrap();
+    assert!(resolved.is_resolved());
+    let ranked_digest = crate::matrix_verified_evaluation_digest(
+        &resolved_input,
+        &resolved,
+        &choice_set,
+        &resolved_validation,
+    )
+    .unwrap();
+    assert_eq!(
+        crate::matrix_verified_disposition_digest(
+            &resolved_input,
+            &resolved,
+            &choice_set,
+            &resolved_validation
+        )
+        .unwrap(),
+        ranked_digest
     );
     let mut singleton = choice_set.clone();
     singleton.candidates.pop();
-    let singleton_digest =
-        crate::matrix_verified_disposition_digest(&input, &verified, &singleton, &validated)
-            .unwrap();
+    let singleton_digest = crate::matrix_verified_disposition_digest(
+        &resolved_input,
+        &resolved,
+        &singleton,
+        &resolved_validation,
+    )
+    .unwrap();
     assert_eq!(singleton_digest.len(), 64);
-    assert_ne!(singleton_digest, first);
+    assert_ne!(singleton_digest, ranked_digest);
     assert_eq!(
         singleton_digest,
-        crate::matrix_verified_disposition_digest(&input, &verified, &singleton, &validated)
-            .unwrap()
+        crate::matrix_verified_disposition_digest(
+            &resolved_input,
+            &resolved,
+            &singleton,
+            &resolved_validation
+        )
+        .unwrap()
     );
     assert_eq!(first.len(), 64);
     assert_ne!(first, legacy_before);

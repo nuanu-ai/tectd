@@ -15,6 +15,18 @@ use uuid::Uuid;
 
 use crate::{storage_error, store::PgUnitOfWork};
 
+fn disposition_write_error(error: sqlx::Error) -> Error {
+    if error
+        .as_database_error()
+        .and_then(|database| database.code())
+        .is_some_and(|code| code.as_ref() == "42501")
+    {
+        Error::Forbidden
+    } else {
+        storage_error(error)
+    }
+}
+
 fn decode_disposition(row: PgRow) -> Result<MatrixDispositionRecord> {
     let basis = match row
         .try_get::<String, _>("basis")
@@ -161,25 +173,23 @@ impl MatrixDispositionStore for PgUnitOfWork {
             return Err(Error::Forbidden);
         }
         let tenant = self.tenant_id()?;
-        // Hold identity and membership against revocation while the decision is written.
-        let active: Option<bool> = sqlx::query_scalar(
-            "SELECT true FROM agent_sessions s \
-             JOIN hosts h ON (h.tenant_id,h.id)=(s.tenant_id,s.host_id) \
-             JOIN principals p ON (p.tenant_id,p.id)=(h.tenant_id,h.principal_id) \
-             JOIN memberships m ON (m.tenant_id,m.workspace_id,m.principal_id)= \
-               (s.tenant_id,s.workspace_id,p.id) \
-             WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.id=$3 \
-               AND p.id=$4 AND p.role='owner' AND NOT s.revoked AND NOT h.revoked \
-             FOR SHARE OF s,h,p,m",
+        // The runtime role cannot lock private host/principal rows. These
+        // existing security-definer reads provide preflight; the INSERT trigger
+        // repeats the full check with row locks until transaction commit.
+        let active: bool = sqlx::query_scalar(
+            "SELECT COALESCE(public.tect_dk_session_principal($1)=$2,false) \
+                    AND public.tect_dk_is_owner($2) \
+                    AND EXISTS(SELECT 1 FROM memberships m \
+                      WHERE m.tenant_id=$3 AND m.workspace_id=$4 AND m.principal_id=$2)",
         )
-        .bind(tenant)
-        .bind(workspace_id)
         .bind(session_id)
         .bind(actor_id)
-        .fetch_optional(&mut **self.transaction()?)
+        .bind(tenant)
+        .bind(workspace_id)
+        .fetch_one(&mut **self.transaction()?)
         .await
         .map_err(storage_error)?;
-        if active != Some(true) {
+        if !active {
             return Err(Error::Forbidden);
         }
         if let Some(prior) = self
@@ -352,7 +362,7 @@ impl MatrixDispositionStore for PgUnitOfWork {
                  JOIN advisory_workspace_config c ON (c.tenant_id,c.workspace_id)= \
                    (a.tenant_id,a.workspace_id) \
                  WHERE a.tenant_id=$1 AND a.workspace_id=$2 AND a.opportunity_id=$3 \
-                 FOR SHARE OF a,d,c",
+                 FOR SHARE OF d,c",
             )
             .bind(tenant).bind(workspace_id).bind(request.opportunity_id)
             .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?
@@ -557,7 +567,7 @@ impl MatrixDispositionStore for PgUnitOfWork {
         .bind(blocked)
         .fetch_optional(&mut **self.transaction()?)
         .await
-        .map_err(storage_error)?;
+        .map_err(disposition_write_error)?;
         match inserted {
             Some(disposition_id) => Ok(MatrixDispositionRecord {
                 disposition_id,

@@ -23,6 +23,8 @@ mod matrix_advice_store;
 mod matrix_choice_set_migration_tests;
 mod matrix_disposition_store;
 #[cfg(test)]
+mod matrix_disposition_migration_tests;
+#[cfg(test)]
 mod matrix_no_choice_migration_tests;
 #[cfg(test)]
 mod matrix_task_migration_tests;
