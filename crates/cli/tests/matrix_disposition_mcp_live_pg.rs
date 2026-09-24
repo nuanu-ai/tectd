@@ -2,6 +2,8 @@
 //! The test is ignored until the exact pinned cluster and explicit guard are supplied.
 #[allow(dead_code)]
 mod recovery_support;
+#[path = "matrix_disposition_mcp_live_pg/selection.rs"]
+mod selection;
 #[path = "native_planning/support.rs"]
 #[allow(dead_code)]
 mod support;
