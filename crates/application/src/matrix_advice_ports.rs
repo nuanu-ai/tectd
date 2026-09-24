@@ -212,16 +212,22 @@ pub struct StoredGuardedMatrixAdviceRecord {
     pub record: GuardedMatrixAdviceRecord,
 }
 
-/// The adapter must lock the opportunity and dispatch, revalidate the sealed
-/// persisted dispatch request bytes, digest, provider identity, configuration,
-/// lifecycle state and exact saved revision/evaluation, then validate the
-/// response evidence and outcome against the owner choice set. Caller-supplied
-/// record fields alone never prove a provider call or a permitted dispatch.
+/// The adapter must lock the opportunity and dispatch, then revalidate the
+/// sealed persisted dispatch request bytes, digest, provider identity,
+/// configuration, lifecycle state and exact saved revision/evaluation. For a
+/// ranked or abstained outcome, the dispatch must be sealed and sent, have a
+/// `ProviderResponse` outcome and non-null `response_payload`, and its
+/// persisted payload must byte-for-byte equal `record.raw_response_payload`;
+/// the payload hash is checked as an adjunct, not a substitute. Then validate
+/// the response evidence and outcome against the owner choice set.
+/// Caller-supplied record fields alone never prove a provider call or a
+/// permitted dispatch.
 /// Exact replay of the same complete record for the same occurrence returns the
 /// stored row; a changed record, duplicate occurrence under another advice ID,
 /// or reused advice ID for another occurrence returns `Error::InputConflict`.
-/// Rejected means the guard failed and must never yield a usable ranking or
-/// disposition. The store must not derive a disposition here.
+/// `Rejected` maps to the failed guard outcome and must never yield usable
+/// advice, a ranking or a disposition. The store must not derive a disposition
+/// here.
 #[async_trait]
 pub trait MatrixAdviceStore: Send {
     async fn guarded_matrix_advice(

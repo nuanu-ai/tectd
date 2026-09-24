@@ -351,8 +351,8 @@ pub struct MatrixProviderResponse {
     pub provider_profile_ref: AdvisoryProviderProfileRef,
     pub model_configuration: AdvisoryModelConfiguration,
     /// Original opaque bytes received from the provider, before parsing or
-    /// normalization. Persist these same bytes with the guarded advice and
-    /// use this allocation for any later response seal.
+    /// normalization. Generic dispatch persistence stores these bytes in the
+    /// dispatch row; guarded advice binds to that row by dispatch ID and hash.
     pub raw_response_payload: Vec<u8>,
     pub response_payload_sha256: String,
     pub ranking: MatrixRanking,
