@@ -128,6 +128,8 @@ fn matrix_card_response(
         "catalogue_version": composition.catalogue_version,
         "task_id": composition.task_id,
         "task_revision": composition.task_revision,
+        "source_verification_status": composition.source_verification_status,
+        "resolved": composition.is_resolved(),
         "mandatory_cards": cards,
         "unresolved_evidence": composition.unresolved_evidence,
         "selected_card": selected_card,
@@ -139,7 +141,7 @@ mod matrix_card_tests {
     use super::*;
     use tect_domain::{
         EngineeringMatrixComposition, MandatoryMatrixCard, MatrixEvidenceState,
-        UnresolvedMatrixEvidence,
+        MatrixSourceVerificationStatus, UnresolvedMatrixEvidence,
     };
 
     fn composition() -> EngineeringMatrixComposition {
@@ -147,6 +149,8 @@ mod matrix_card_tests {
             catalogue_version: "EM02-INITIAL@0.1",
             task_id: uuid::Uuid::new_v4().to_string(),
             task_revision: "3".into(),
+            source_verification_status:
+                MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification,
             mandatory_cards: vec![MandatoryMatrixCard {
                 id: "EM02-SCOPE@0.1",
                 catalogue_version: "EM02-INITIAL@0.1",
@@ -166,6 +170,11 @@ mod matrix_card_tests {
         let summary = matrix_card_response(composition(), None, MatrixCardDetail::Summary).unwrap();
         assert_eq!(summary["catalogue_version"], "EM02-INITIAL@0.1");
         assert_eq!(summary["task_revision"], "3");
+        assert_eq!(
+            summary["source_verification_status"],
+            "owner_reported_pending_independent_verification"
+        );
+        assert_eq!(summary["resolved"], false);
         assert_eq!(summary["mandatory_cards"][0]["id"], "EM02-SCOPE@0.1");
         assert_eq!(summary["mandatory_cards"][0]["summary"], "Scope summary");
         assert!(summary["mandatory_cards"][0].get("body").is_none());
@@ -179,6 +188,12 @@ mod matrix_card_tests {
         .unwrap();
         assert_eq!(full["selected_card"]["body"], "Complete scope body");
         assert_eq!(summary["mandatory_cards"], full["mandatory_cards"]);
+        assert_eq!(
+            summary["source_verification_status"],
+            full["source_verification_status"]
+        );
+        assert_eq!(summary["catalogue_version"], full["catalogue_version"]);
+        assert_eq!(full["resolved"], false);
         assert!(
             crate::responses::encoded_len(&crate::responses::with_actions(full, Vec::new(), None))
                 .unwrap()
@@ -196,5 +211,29 @@ mod matrix_card_tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn fully_reported_owner_cards_never_claim_resolution_in_either_detail() {
+        let mut reported = composition();
+        reported.unresolved_evidence.clear();
+        let summary =
+            matrix_card_response(reported.clone(), None, MatrixCardDetail::Summary).unwrap();
+        let full =
+            matrix_card_response(reported, Some("EM02-SCOPE@0.1"), MatrixCardDetail::Full).unwrap();
+        for response in [&summary, &full] {
+            assert_eq!(response["resolved"], false);
+            assert_eq!(
+                response["source_verification_status"],
+                "owner_reported_pending_independent_verification"
+            );
+            assert_eq!(response["catalogue_version"], "EM02-INITIAL@0.1");
+            assert!(
+                response["unresolved_evidence"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+            );
+        }
     }
 }

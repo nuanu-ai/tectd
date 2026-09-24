@@ -49,6 +49,16 @@ fn compose(input: EngineeringMatrixInput) -> EngineeringMatrixComposition {
     compose_engineering_matrix(&verified)
 }
 
+fn compose_reported(input: EngineeringMatrixInput) -> EngineeringMatrixComposition {
+    let reported = OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
+        "task-42".into(),
+        "revision-7".into(),
+        input,
+    )
+    .unwrap();
+    compose_owner_reported_engineering_matrix(&reported)
+}
+
 fn ids(output: &EngineeringMatrixComposition) -> Vec<&str> {
     output.mandatory_cards.iter().map(|card| card.id).collect()
 }
@@ -63,6 +73,41 @@ fn demo_scope_only_is_resolved_and_does_not_infer_scale() {
             .body
             .contains("fake external behavior requires explicit operator approval")
     );
+}
+
+#[test]
+fn fully_reported_demo_is_provisional_even_with_no_field_gaps() {
+    let output = compose_reported(facts(EngineeringMode::Demo));
+    assert_eq!(ids(&output), ["EM02-SCOPE@0.1"]);
+    assert!(output.unresolved_evidence.is_empty());
+    assert_eq!(
+        output.source_verification_status,
+        MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification
+    );
+    assert!(!output.is_resolved());
+}
+
+#[test]
+fn reported_production_triggers_keep_all_mandatory_cards_while_pending() {
+    let mut input = facts(EngineeringMode::Production);
+    input.intent = known(EngineeringIntent::ProductionHotfix);
+    input.urgency = known("urgent".into());
+    input.urgent_repair = known(true);
+    input.affected_guarantees = known(vec![ProtectedGuarantee::Payment]);
+    input.actual_exposure = known(true);
+    input.demand_commitment = known(CommitmentEvidence::LacksEvidence);
+    let output = compose_reported(input);
+    assert_eq!(
+        ids(&output),
+        [
+            "EM02-SCOPE@0.1",
+            "EM02-PROTECT@0.1",
+            "EM02-OPERATE@0.1",
+            "EM02-CAPACITY@0.1",
+            "EM02-HOTFIX@0.1"
+        ]
+    );
+    assert!(!output.is_resolved());
 }
 
 #[test]

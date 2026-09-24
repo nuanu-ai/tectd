@@ -24,20 +24,58 @@ impl VerifiedEngineeringMatrixFacts {
         task_revision: String,
         input: EngineeringMatrixInput,
     ) -> Result<Self> {
-        if task_id.trim().is_empty()
-            || task_revision.trim().is_empty()
-            || task_id.len() > 256
-            || task_revision.len() > 256
-        {
-            return Err(Error::InvalidArguments);
-        }
-        input.validate()?;
+        validate_bound_input(&task_id, &task_revision, &input)?;
         Ok(Self {
             task_id,
             task_revision,
             input,
         })
     }
+}
+
+/// A stored task revision contains owner claims, without independent source verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnerReportedEngineeringMatrixFacts {
+    task_id: String,
+    task_revision: String,
+    input: EngineeringMatrixInput,
+}
+
+impl OwnerReportedEngineeringMatrixFacts {
+    pub fn bind_recorded_task_revision(
+        task_id: String,
+        task_revision: String,
+        input: EngineeringMatrixInput,
+    ) -> Result<Self> {
+        validate_bound_input(&task_id, &task_revision, &input)?;
+        Ok(Self {
+            task_id,
+            task_revision,
+            input,
+        })
+    }
+}
+
+fn validate_bound_input(
+    task_id: &str,
+    task_revision: &str,
+    input: &EngineeringMatrixInput,
+) -> Result<()> {
+    if task_id.trim().is_empty()
+        || task_revision.trim().is_empty()
+        || task_id.len() > 256
+        || task_revision.len() > 256
+    {
+        return Err(Error::InvalidArguments);
+    }
+    input.validate()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatrixSourceVerificationStatus {
+    VerifiedByCaller,
+    OwnerReportedPendingIndependentVerification,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,13 +109,15 @@ pub struct EngineeringMatrixComposition {
     pub catalogue_version: &'static str,
     pub task_id: String,
     pub task_revision: String,
+    pub source_verification_status: MatrixSourceVerificationStatus,
     pub mandatory_cards: Vec<MandatoryMatrixCard>,
     pub unresolved_evidence: Vec<UnresolvedMatrixEvidence>,
 }
 
 impl EngineeringMatrixComposition {
     pub fn is_resolved(&self) -> bool {
-        self.unresolved_evidence.is_empty()
+        self.source_verification_status == MatrixSourceVerificationStatus::VerifiedByCaller
+            && self.unresolved_evidence.is_empty()
     }
 }
 
@@ -117,7 +157,33 @@ const HOTFIX: MandatoryMatrixCard = MandatoryMatrixCard {
 pub fn compose_engineering_matrix(
     verified: &VerifiedEngineeringMatrixFacts,
 ) -> EngineeringMatrixComposition {
-    let input = &verified.input;
+    compose_bound_input(
+        &verified.task_id,
+        &verified.task_revision,
+        &verified.input,
+        MatrixSourceVerificationStatus::VerifiedByCaller,
+    )
+}
+
+/// Compose provisional duties from an owner-recorded revision. Positive claims
+/// still trigger cards, but completeness cannot be asserted until independently verified.
+pub fn compose_owner_reported_engineering_matrix(
+    reported: &OwnerReportedEngineeringMatrixFacts,
+) -> EngineeringMatrixComposition {
+    compose_bound_input(
+        &reported.task_id,
+        &reported.task_revision,
+        &reported.input,
+        MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification,
+    )
+}
+
+fn compose_bound_input(
+    task_id: &str,
+    task_revision: &str,
+    input: &EngineeringMatrixInput,
+    source_verification_status: MatrixSourceVerificationStatus,
+) -> EngineeringMatrixComposition {
     let mut unresolved = Vec::new();
     for (field, fact) in [
         ("mode", fact_state(&input.mode)),
@@ -231,8 +297,9 @@ pub fn compose_engineering_matrix(
     }
     EngineeringMatrixComposition {
         catalogue_version: ENGINEERING_MATRIX_CATALOGUE_VERSION,
-        task_id: verified.task_id.clone(),
-        task_revision: verified.task_revision.clone(),
+        task_id: task_id.to_owned(),
+        task_revision: task_revision.to_owned(),
+        source_verification_status,
         mandatory_cards: cards,
         unresolved_evidence: unresolved,
     }

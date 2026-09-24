@@ -1,8 +1,9 @@
 use crate::{TransactionMode, WorkspaceService};
 use sha2::{Digest, Sha256};
 use tect_domain::{
-    EngineeringMatrixComposition, EngineeringMatrixInput, Error, RequestContext, Result,
-    VerifiedEngineeringMatrixFacts, compose_engineering_matrix,
+    EngineeringMatrixComposition, EngineeringMatrixInput, Error,
+    OwnerReportedEngineeringMatrixFacts, RequestContext, Result,
+    compose_owner_reported_engineering_matrix,
 };
 use uuid::Uuid;
 
@@ -105,12 +106,12 @@ fn compose_current_revision(
     if revision.revision != expected_task_revision {
         return Err(Error::StaleRevision);
     }
-    let verified = VerifiedEngineeringMatrixFacts::bind_caller_verified_task_revision(
+    let reported = OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
         revision.task_id.to_string(),
         revision.revision.to_string(),
         revision.input,
     )?;
-    Ok(compose_engineering_matrix(&verified))
+    Ok(compose_owner_reported_engineering_matrix(&reported))
 }
 
 /// Hash the same canonical JSON representation that the store persists.
@@ -133,7 +134,17 @@ fn validate_request(request: &RecordMatrixTask) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tect_domain::{MatrixFact, OperatingEnvelope, OperationalFacts};
+    use tect_domain::{
+        CommitmentEvidence, EngineeringIntent, EngineeringMode, FactProvenance, MatrixFact,
+        MatrixSourceVerificationStatus, OperatingEnvelope, OperatingFact, OperationalFacts,
+    };
+
+    fn known<T>(value: T) -> MatrixFact<T> {
+        MatrixFact::Known {
+            value,
+            provenance: FactProvenance("owner report".into()),
+        }
+    }
 
     fn stored_revision() -> MatrixTaskRevision {
         let task_id = Uuid::new_v4();
@@ -172,6 +183,42 @@ mod tests {
         assert_eq!(output.task_id, stored.task_id.to_string());
         assert_eq!(output.task_revision, "2");
         assert_eq!(output.mandatory_cards[0].id, "EM02-SCOPE@0.1");
+        assert!(!output.is_resolved());
+    }
+
+    #[test]
+    fn complete_stored_demo_remains_pending_independent_verification() {
+        let mut stored = stored_revision();
+        stored.input = EngineeringMatrixInput {
+            mode: known(EngineeringMode::Demo),
+            envelope: OperatingEnvelope {
+                scale: known("one synthetic request".into()),
+                operational_facts: OperationalFacts::Reported {
+                    entries: vec![OperatingFact {
+                        name: "environment".into(),
+                        fact: known("synthetic".into()),
+                    }],
+                },
+            },
+            criticality: known("no protected guarantee".into()),
+            intent: known(EngineeringIntent::Other("demo".into())),
+            urgency: known("ordinary".into()),
+            promised_behavior: known("real demo".into()),
+            promised_proof: known("demo check".into()),
+            affected_guarantees: MatrixFact::KnownEmpty {
+                provenance: FactProvenance("owner report".into()),
+            },
+            actual_exposure: known(false),
+            demand_commitment: known(CommitmentEvidence::NoCommitment),
+            latency_commitment: known(CommitmentEvidence::NoCommitment),
+            urgent_repair: known(false),
+        };
+        let output = compose_current_revision(stored, 2).unwrap();
+        assert!(output.unresolved_evidence.is_empty());
+        assert_eq!(
+            output.source_verification_status,
+            MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification
+        );
         assert!(!output.is_resolved());
     }
 
