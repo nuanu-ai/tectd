@@ -330,6 +330,7 @@ pub async fn validate_runtime_role(pool: &PgPool, runtime_role: &str) -> Result<
                          'session_worktrees', 'workspace_events', 'programs', 'program_inputs',
                          'advisory_workspace_config', 'advisory_workspace_config_history',
                          'advisory_opportunity', 'advisory_dispatch',
+                         'advisory_matrix_advice', 'advisory_matrix_disposition',
                          'matrix_tasks', 'matrix_task_revisions',
                          'advisory_scope_source_snapshot', 'advisory_scope_manifest',
                          'advisory_scope_advice', 'advisory_scope_disposition',

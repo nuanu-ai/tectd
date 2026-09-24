@@ -31,6 +31,9 @@ CREATE TABLE advisory_matrix_advice (
     CONSTRAINT advisory_matrix_advice_binding_unique UNIQUE
         (tenant_id, workspace_id, opportunity_id, task_id,
          matrix_task_revision, matrix_choice_set_digest, advice_id),
+    CONSTRAINT advisory_matrix_advice_disposition_binding_unique UNIQUE
+        (tenant_id, workspace_id, opportunity_id, task_id,
+         matrix_task_revision, advice_id),
     CONSTRAINT advisory_matrix_advice_digest_check CHECK (
         matrix_choice_set_digest ~ '^[0-9a-f]{64}$'
         AND advice_digest ~ '^[0-9a-f]{64}$'),
@@ -106,10 +109,10 @@ CREATE TABLE advisory_matrix_disposition (
          matrix_task_revision, matrix_choice_binding_key),
     CONSTRAINT advisory_matrix_disposition_advice_fk FOREIGN KEY
         (tenant_id, workspace_id, opportunity_id, task_id,
-         matrix_task_revision, matrix_choice_set_digest, advice_id)
+         matrix_task_revision, advice_id)
         REFERENCES advisory_matrix_advice
         (tenant_id, workspace_id, opportunity_id, task_id,
-         matrix_task_revision, matrix_choice_set_digest, advice_id),
+         matrix_task_revision, advice_id),
     CONSTRAINT advisory_matrix_disposition_revision_fk FOREIGN KEY
         (tenant_id, workspace_id, task_id, matrix_task_revision)
         REFERENCES matrix_task_revisions
