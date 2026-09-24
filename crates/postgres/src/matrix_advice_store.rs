@@ -164,7 +164,7 @@ impl MatrixAdviceStore for PgUnitOfWork {
         record: &GuardedMatrixAdviceRecord,
     ) -> Result<StoredGuardedMatrixAdviceRecord> {
         let tenant = self.tenant_id()?;
-        // Lock the occurrence before its dispatch, then the Matrix head and configuration.
+        // Lock the occurrence and dispatch before configuration and the Matrix head.
         let opportunity = sqlx::query(
             "SELECT work_item_id,matrix_task_revision,matrix_choice_set_digest,material_digest,config_revision,capability,decision_point,state,primary_reason \
              FROM advisory_opportunity WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE"
@@ -307,12 +307,12 @@ impl MatrixAdviceStore for PgUnitOfWork {
             return Err(Error::InputConflict);
         }
 
+        let config = sqlx::query("SELECT revision,mode,provider_profile_ref,model_configuration FROM advisory_workspace_config WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE")
+            .bind(tenant).bind(workspace_id).fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?
+            .ok_or(Error::StaleRevision)?;
         let current = self
             .lock_matrix_task(workspace_id, record.binding.task_id)
             .await?
-            .ok_or(Error::StaleRevision)?;
-        let config = sqlx::query("SELECT revision,mode,provider_profile_ref,model_configuration FROM advisory_workspace_config WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE")
-            .bind(tenant).bind(workspace_id).fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?
             .ok_or(Error::StaleRevision)?;
         if current.revision != record.binding.task_revision
             || current.input_digest != record.binding.input_digest
