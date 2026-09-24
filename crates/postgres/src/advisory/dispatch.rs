@@ -113,6 +113,18 @@ async fn require_current_matrix_choice(
     Ok(MatrixChoiceStatus::Current)
 }
 
+fn finalized_opportunity(
+    opportunity: AdvisoryOpportunity,
+    state: AdvisoryOpportunityState,
+    reason: AdvisoryReason,
+) -> AdvisoryOpportunity {
+    AdvisoryOpportunity {
+        state,
+        primary_reason: reason,
+        ..opportunity
+    }
+}
+
 async fn terminalize_stale_authored_dispatch(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -774,10 +786,7 @@ pub(crate) async fn finalize_opportunity(
             AdvisoryReason::ConfigurationChanged,
         )
     } else if let Some(reason) = matrix_stale {
-        (
-            AdvisoryOpportunityState::Invalidated,
-            reason,
-        )
+        (AdvisoryOpportunityState::Invalidated, reason)
     } else if persisted_outcome == Some(AdvisoryDispatchOutcome::ProviderResponse) {
         (
             AdvisoryOpportunityState::Advised,
@@ -795,10 +804,7 @@ pub(crate) async fn finalize_opportunity(
         )
     };
     if opportunity.state == state && opportunity.primary_reason == reason {
-        return Ok(AdvisoryOpportunity {
-            provider_called: true,
-            ..opportunity
-        });
+        return Ok(finalized_opportunity(opportunity, state, reason));
     }
     if !matches!(
         opportunity.state,
@@ -814,10 +820,5 @@ pub(crate) async fn finalize_opportunity(
     if updated.rows_affected() != 1 {
         return Err(Error::InputConflict);
     }
-    Ok(AdvisoryOpportunity {
-        state,
-        primary_reason: reason,
-        provider_called: true,
-        ..opportunity
-    })
+    Ok(finalized_opportunity(opportunity, state, reason))
 }

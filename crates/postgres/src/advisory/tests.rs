@@ -92,6 +92,73 @@ mod audit_projection_tests {
     }
 
     #[test]
+    fn finalization_preserves_confirmed_send_readback_for_every_certainty() {
+        let source = include_str!("config_opportunity.rs");
+        for lookup in [
+            "async fn opportunity_by_id(",
+            "async fn opportunity_by_request_key(",
+        ] {
+            let query = source
+                .split(lookup)
+                .nth(1)
+                .expect("opportunity lookup exists");
+            assert!(query.contains("d.send_certainty='sent') AS provider_called"));
+        }
+
+        for (latest_certainty, earlier_sent, provider_called) in [
+            (AdvisorySendCertainty::Sent, false, true),
+            (AdvisorySendCertainty::NotSent, false, false),
+            (AdvisorySendCertainty::SentUnknown, false, false),
+            (AdvisorySendCertainty::SentUnknown, true, true),
+        ] {
+            assert_eq!(
+                provider_called,
+                latest_certainty == AdvisorySendCertainty::Sent || earlier_sent
+            );
+            let (state, reason) = if latest_certainty == AdvisorySendCertainty::SentUnknown {
+                (
+                    AdvisoryOpportunityState::Unresolved,
+                    AdvisoryReason::SendUnknown,
+                )
+            } else {
+                (
+                    AdvisoryOpportunityState::Failed,
+                    AdvisoryReason::ProviderFailure,
+                )
+            };
+            let opportunity = opportunity_from_row(
+                Uuid::new_v4(),
+                OpportunityRow {
+                    id: Uuid::new_v4(),
+                    session_id: Uuid::new_v4(),
+                    authorized_actor_id: Uuid::new_v4(),
+                    work_item_kind: "scope".into(),
+                    work_item_id: Some(Uuid::new_v4()),
+                    source_revision: None,
+                    matrix_task_revision: None,
+                    matrix_choice_set_digest: None,
+                    matrix_verification_digest: None,
+                    capability: "scope_decomposition".into(),
+                    decision_point: SCOPE_DECOMPOSITION_DECISION_POINT.into(),
+                    config_revision: 1,
+                    session_preference: "use_workspace".into(),
+                    request_preference: "use_workspace".into(),
+                    request_key: "request".into(),
+                    material_digest: "a".repeat(64),
+                    state: "awaiting_response".into(),
+                    primary_reason: "dispatch_authorized".into(),
+                    provider_called,
+                },
+            )
+            .unwrap();
+            let finalized = finalized_opportunity(opportunity, state, reason);
+            assert_eq!(finalized.provider_called, provider_called);
+            let replay = finalized_opportunity(finalized, state, reason);
+            assert_eq!(replay.provider_called, provider_called);
+        }
+    }
+
+    #[test]
     fn engineering_profile_decision_point_decodes_without_changing_scope_or_unknown_rows() {
         assert_eq!(
             decision_point(ENGINEERING_PROFILE_DECISION_POINT),
@@ -109,8 +176,14 @@ mod audit_projection_tests {
 
     #[test]
     fn choice_set_not_applicable_reason_parses_and_survives_audit_projection() {
-        assert_eq!(reason("matrix_evidence_unresolved").unwrap(), AdvisoryReason::MatrixEvidenceUnresolved);
-        assert_eq!(reason("matrix_source_unverified").unwrap(), AdvisoryReason::MatrixSourceUnverified);
+        assert_eq!(
+            reason("matrix_evidence_unresolved").unwrap(),
+            AdvisoryReason::MatrixEvidenceUnresolved
+        );
+        assert_eq!(
+            reason("matrix_source_unverified").unwrap(),
+            AdvisoryReason::MatrixSourceUnverified
+        );
         assert_eq!(
             reason("choice_set_not_applicable").unwrap(),
             AdvisoryReason::ChoiceSetNotApplicable
