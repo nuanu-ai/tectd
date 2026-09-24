@@ -27,7 +27,7 @@ fn disposition_write_error(error: sqlx::Error) -> Error {
     }
 }
 
-fn decode_disposition(row: PgRow) -> Result<MatrixDispositionRecord> {
+pub(crate) fn decode_disposition(row: PgRow) -> Result<MatrixDispositionRecord> {
     let basis = match row
         .try_get::<String, _>("basis")
         .map_err(storage_error)?

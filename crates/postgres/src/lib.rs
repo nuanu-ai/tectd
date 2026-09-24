@@ -21,11 +21,14 @@ mod matrix_advice_pg_tests;
 mod matrix_advice_store;
 #[cfg(test)]
 mod matrix_choice_set_migration_tests;
-mod matrix_disposition_store;
 #[cfg(test)]
 mod matrix_disposition_migration_tests;
+mod matrix_disposition_store;
 #[cfg(test)]
 mod matrix_no_choice_migration_tests;
+#[cfg(test)]
+mod matrix_planning_selection_migration_tests;
+mod matrix_planning_selection_store;
 #[cfg(test)]
 mod matrix_task_migration_tests;
 #[cfg(test)]

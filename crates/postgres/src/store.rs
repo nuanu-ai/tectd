@@ -74,6 +74,12 @@ impl Store for PgStore {
 
 #[async_trait]
 impl UnitOfWork for PgUnitOfWork {
+    fn matrix_planning_selection_store(
+        &mut self,
+    ) -> Option<&mut dyn tect_application::MatrixPlanningSelectionStore> {
+        Some(self)
+    }
+
     fn matrix_verification_store(
         &mut self,
     ) -> Option<&mut dyn tect_application::MatrixVerificationStore> {

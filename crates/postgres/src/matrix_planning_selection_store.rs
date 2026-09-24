@@ -1,0 +1,336 @@
+use async_trait::async_trait;
+use sqlx::Row;
+use tect_application::{
+    MatrixDispositionRecord, MatrixPlanningSelectionLink, MatrixPlanningSelectionStore,
+    MatrixTaskStore, MatrixVerificationStore,
+};
+use tect_domain::{
+    Error, MatrixDispositionDecision, MatrixPlanningSelection, OwnerReportedEngineeringMatrixFacts,
+    Result, compose_independently_verified_owner_matrix, evaluate_matrix_verification,
+    matrix_verified_disposition_digest,
+};
+use uuid::Uuid;
+
+use crate::{matrix_disposition_store::decode_disposition, storage_error, store::PgUnitOfWork};
+
+fn link_write_error(error: sqlx::Error) -> Error {
+    if error
+        .as_database_error()
+        .and_then(|e| e.code())
+        .is_some_and(|c| c == "42501")
+    {
+        Error::Forbidden
+    } else {
+        storage_error(error)
+    }
+}
+
+#[async_trait]
+impl MatrixPlanningSelectionStore for PgUnitOfWork {
+    async fn matrix_planning_selection_link(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+        caller_request_id: Uuid,
+    ) -> Result<Option<MatrixPlanningSelectionLink>> {
+        let tenant = self.tenant_id()?;
+        let row = sqlx::query(
+            "SELECT scope_id,disposition_id,task_id,task_revision,selected_choice_id, \
+                    input_digest,choice_set_digest,verification_digest,evaluation_digest, \
+                    catalogue_version,caller_principal_id,caller_session_id,result_revision \
+             FROM matrix_planning_selection_links WHERE tenant_id=$1 AND workspace_id=$2 \
+               AND candidate_set_id=$3 AND caller_request_id=$4",
+        )
+        .bind(tenant)
+        .bind(workspace_id)
+        .bind(candidate_set_id)
+        .bind(caller_request_id)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
+        row.map(|row| {
+            Ok(MatrixPlanningSelectionLink {
+                selection: MatrixPlanningSelection {
+                    task_id: row.try_get("task_id").map_err(storage_error)?,
+                    task_revision: row.try_get("task_revision").map_err(storage_error)?,
+                    disposition_id: row.try_get("disposition_id").map_err(storage_error)?,
+                    selected_choice_id: row.try_get("selected_choice_id").map_err(storage_error)?,
+                    expected_input_digest: row.try_get("input_digest").map_err(storage_error)?,
+                    expected_choice_set_digest: row
+                        .try_get("choice_set_digest")
+                        .map_err(storage_error)?,
+                    expected_verification_digest: row
+                        .try_get("verification_digest")
+                        .map_err(storage_error)?,
+                },
+                evaluation_digest: row.try_get("evaluation_digest").map_err(storage_error)?,
+                catalogue_version: row.try_get("catalogue_version").map_err(storage_error)?,
+                caller_principal_id: row.try_get("caller_principal_id").map_err(storage_error)?,
+                caller_session_id: row.try_get("caller_session_id").map_err(storage_error)?,
+                scope_id: row.try_get("scope_id").map_err(storage_error)?,
+                candidate_set_id,
+                caller_request_id,
+                result_revision: row.try_get("result_revision").map_err(storage_error)?,
+            })
+        })
+        .transpose()
+    }
+
+    async fn matrix_disposition_by_id(
+        &mut self,
+        workspace_id: Uuid,
+        disposition_id: Uuid,
+    ) -> Result<Option<MatrixDispositionRecord>> {
+        let tenant = self.tenant_id()?;
+        let row = sqlx::query(
+            "SELECT d.disposition_id,d.request_id,d.actor_id,d.session_id,d.opportunity_id, \
+                    d.task_id,d.matrix_task_revision,d.matrix_choice_set_digest,d.basis, \
+                    d.advice_id,d.outcome,d.selected_choice_id,d.blocked_reason, \
+                    r.input_digest,a.advice_digest \
+             FROM advisory_matrix_disposition d \
+             JOIN matrix_task_revisions r ON (r.tenant_id,r.workspace_id,r.task_id,r.revision)= \
+               (d.tenant_id,d.workspace_id,d.task_id,d.matrix_task_revision) \
+             LEFT JOIN advisory_matrix_advice a ON (a.tenant_id,a.workspace_id,a.advice_id)= \
+               (d.tenant_id,d.workspace_id,d.advice_id) \
+             WHERE d.tenant_id=$1 AND d.workspace_id=$2 AND d.disposition_id=$3",
+        )
+        .bind(tenant)
+        .bind(workspace_id)
+        .bind(disposition_id)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
+        row.map(decode_disposition).transpose()
+    }
+
+    async fn link_matrix_planning_selection(
+        &mut self,
+        workspace_id: Uuid,
+        link: &MatrixPlanningSelectionLink,
+    ) -> Result<()> {
+        link.selection.validate()?;
+        if workspace_id.is_nil()
+            || link.scope_id.is_nil()
+            || link.candidate_set_id.is_nil()
+            || link.caller_request_id.is_nil()
+            || link.caller_session_id.is_nil()
+            || link.caller_principal_id != self.principal_id()?
+            || link.result_revision < 1
+        {
+            return Err(Error::Forbidden);
+        }
+        let tenant = self.tenant_id()?;
+        // This receipt is written by the existing native save before the link.
+        // Lock it so erasure cannot change the payload before transaction commit.
+        let receipt = sqlx::query(
+            "SELECT request_payload,result_payload,payload_erased FROM native_planning_receipts \
+             WHERE tenant_id=$1 AND workspace_id=$2 AND entity_id=$3 \
+               AND operation='save_slice_draft' AND request_id=$4 FOR SHARE",
+        )
+        .bind(tenant)
+        .bind(workspace_id)
+        .bind(link.candidate_set_id)
+        .bind(link.caller_request_id)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?
+        .ok_or(Error::NotFound)?;
+        let request: Option<serde_json::Value> =
+            receipt.try_get("request_payload").map_err(storage_error)?;
+        let result: Option<serde_json::Value> =
+            receipt.try_get("result_payload").map_err(storage_error)?;
+        let erased: bool = receipt.try_get("payload_erased").map_err(storage_error)?;
+        if erased {
+            return Err(Error::KnowledgePayloadErased);
+        }
+        let request = request.ok_or(Error::InternalInvariant)?;
+        let result = result.ok_or(Error::InternalInvariant)?;
+        let expected_selection = serde_json::to_value(&link.selection).map_err(storage_error)?;
+        if request.get("matrix_selection") != Some(&expected_selection)
+            || request.get("request_id") != Some(&serde_json::json!(link.caller_request_id))
+            || request.get("candidate_set_id") != Some(&serde_json::json!(link.candidate_set_id))
+            || request.get("scope_id") != Some(&serde_json::json!(link.scope_id))
+            || result.pointer("/candidate_set/revision")
+                != Some(&serde_json::json!(link.result_revision))
+        {
+            return Err(Error::InputConflict);
+        }
+        if let Some(prior) = self
+            .matrix_planning_selection_link(
+                workspace_id,
+                link.candidate_set_id,
+                link.caller_request_id,
+            )
+            .await?
+        {
+            return if prior == *link {
+                Ok(())
+            } else {
+                Err(Error::InputConflict)
+            };
+        }
+        let set_scope: Option<Uuid> = sqlx::query_scalar(
+            "SELECT scope_id FROM slice_candidate_sets WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR SHARE",
+        )
+        .bind(tenant).bind(workspace_id).bind(link.candidate_set_id)
+        .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?;
+        if set_scope != Some(link.scope_id) {
+            return Err(Error::StaleContext);
+        }
+        let disposition = self
+            .matrix_disposition_by_id(workspace_id, link.selection.disposition_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        if disposition.request.task_id != link.selection.task_id
+            || disposition.request.expected_task_revision != link.selection.task_revision
+            || disposition.request.expected_input_digest != link.selection.expected_input_digest
+            || disposition.request.expected_choice_set_digest.as_deref()
+                != Some(link.selection.expected_choice_set_digest.as_str())
+            || !matches!(&disposition.request.decision,
+                MatrixDispositionDecision::Selected { selected_choice_id } if selected_choice_id == &link.selection.selected_choice_id)
+        {
+            return Err(Error::InputConflict);
+        }
+        let current = self
+            .lock_matrix_task(workspace_id, link.selection.task_id)
+            .await?
+            .ok_or(Error::StaleRevision)?;
+        if current.revision != link.selection.task_revision
+            || current.input_digest != link.selection.expected_input_digest
+            || current.choice_set_digest.as_deref()
+                != Some(link.selection.expected_choice_set_digest.as_str())
+        {
+            return Err(Error::StaleRevision);
+        }
+        let set = current.choice_set.as_ref().ok_or(Error::StaleContext)?;
+        set.validate(&current.input)
+            .map_err(|_| Error::StaleContext)?;
+        if !set
+            .candidates
+            .iter()
+            .any(|c| c.candidate_id == link.selection.selected_choice_id)
+        {
+            return Err(Error::StaleContext);
+        }
+        let verified = self
+            .matrix_verification_for_revision(
+                workspace_id,
+                link.selection.task_id,
+                link.selection.task_revision,
+                &link.selection.expected_input_digest,
+            )
+            .await?
+            .ok_or(Error::StaleContext)?;
+        if verified.digest != link.selection.expected_verification_digest
+            || verified.owner_principal != current.recorded_by_principal_id.to_string()
+            || verified.verifier_principal == verified.owner_principal
+        {
+            return Err(Error::StaleContext);
+        }
+        let now: i64 = sqlx::query_scalar(
+            "SELECT FLOOR(EXTRACT(EPOCH FROM pg_catalog.clock_timestamp()))::bigint",
+        )
+        .fetch_one(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
+        let validated = evaluate_matrix_verification(
+            &link.selection.task_id.to_string(),
+            &link.selection.task_revision.to_string(),
+            &current.input,
+            &verified,
+            now,
+        )
+        .map_err(|_| Error::StaleContext)?;
+        let reported = OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
+            link.selection.task_id.to_string(),
+            link.selection.task_revision.to_string(),
+            current.input.clone(),
+        )
+        .map_err(|_| Error::StaleContext)?;
+        let composition = compose_independently_verified_owner_matrix(&reported, &validated)
+            .map_err(|_| Error::StaleContext)?;
+        let evaluation =
+            matrix_verified_disposition_digest(&current.input, &composition, set, &validated)
+                .map_err(|_| Error::StaleContext)?;
+        if evaluation != link.evaluation_digest
+            || composition.catalogue_version != link.catalogue_version
+        {
+            return Err(Error::StaleContext);
+        }
+        let opportunity = sqlx::query(
+            "SELECT o.work_item_kind,o.work_item_id,o.matrix_task_revision,o.matrix_choice_set_digest, \
+                    o.matrix_verification_digest,o.material_digest,o.authorized_actor_id,o.session_id \
+             FROM advisory_opportunity o WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.id=$3 FOR SHARE",
+        )
+        .bind(tenant).bind(workspace_id).bind(disposition.request.opportunity_id)
+        .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?
+        .ok_or(Error::StaleContext)?;
+        if opportunity
+            .try_get::<String, _>("work_item_kind")
+            .map_err(storage_error)?
+            != "matrix_task"
+            || opportunity
+                .try_get::<Option<Uuid>, _>("work_item_id")
+                .map_err(storage_error)?
+                != Some(link.selection.task_id)
+            || opportunity
+                .try_get::<Option<i64>, _>("matrix_task_revision")
+                .map_err(storage_error)?
+                != Some(link.selection.task_revision)
+            || opportunity
+                .try_get::<Option<String>, _>("matrix_choice_set_digest")
+                .map_err(storage_error)?
+                .as_deref()
+                != Some(link.selection.expected_choice_set_digest.as_str())
+            || opportunity
+                .try_get::<Option<String>, _>("matrix_verification_digest")
+                .map_err(storage_error)?
+                .as_deref()
+                != Some(link.selection.expected_verification_digest.as_str())
+            || opportunity
+                .try_get::<String, _>("material_digest")
+                .map_err(storage_error)?
+                != evaluation
+            || opportunity
+                .try_get::<Uuid, _>("authorized_actor_id")
+                .map_err(storage_error)?
+                != disposition.recorded_by_principal_id
+            || opportunity
+                .try_get::<Uuid, _>("session_id")
+                .map_err(storage_error)?
+                != disposition.recorded_by_session_id
+        {
+            return Err(Error::StaleContext);
+        }
+        let inserted: Option<Uuid> = sqlx::query_scalar(
+            "INSERT INTO matrix_planning_selection_links \
+              (tenant_id,workspace_id,candidate_set_id,caller_request_id,scope_id,disposition_id, \
+               task_id,task_revision,selected_choice_id,input_digest,choice_set_digest, \
+               verification_digest,evaluation_digest,catalogue_version,caller_principal_id,caller_session_id,result_revision) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) \
+             ON CONFLICT DO NOTHING RETURNING caller_request_id",
+        )
+        .bind(tenant).bind(workspace_id).bind(link.candidate_set_id).bind(link.caller_request_id)
+        .bind(link.scope_id).bind(link.selection.disposition_id).bind(link.selection.task_id)
+        .bind(link.selection.task_revision).bind(&link.selection.selected_choice_id)
+        .bind(&link.selection.expected_input_digest).bind(&link.selection.expected_choice_set_digest)
+        .bind(&link.selection.expected_verification_digest).bind(&link.evaluation_digest)
+        .bind(&link.catalogue_version).bind(link.caller_principal_id).bind(link.caller_session_id)
+        .bind(link.result_revision)
+        .fetch_optional(&mut **self.transaction()?).await.map_err(link_write_error)?;
+        if inserted.is_some() {
+            return Ok(());
+        }
+        match self
+            .matrix_planning_selection_link(
+                workspace_id,
+                link.candidate_set_id,
+                link.caller_request_id,
+            )
+            .await?
+        {
+            Some(prior) if prior == *link => Ok(()),
+            _ => Err(Error::InputConflict),
+        }
+    }
+}
