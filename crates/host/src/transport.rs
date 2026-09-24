@@ -299,6 +299,34 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 }
                 Ok(response)
             }
+            Invocation::MatrixDisposition(invocation) => {
+                let record = match invocation {
+                    crate::matrix_disposition_tools::MatrixDispositionInvocation::Record(
+                        request,
+                    ) => {
+                        crate::matrix_disposition_tools::guarded_record(&request, capacity, || {
+                            service.record_matrix_disposition(context, &request)
+                        })
+                        .await?
+                    }
+                    crate::matrix_disposition_tools::MatrixDispositionInvocation::Get {
+                        task_id,
+                        request_id,
+                    } => service
+                        .get_matrix_disposition_by_request(context, task_id, request_id)
+                        .await?
+                        .ok_or(Error::NotFound)?,
+                };
+                let response = responses::with_actions(
+                    crate::matrix_disposition_tools::receipt(record),
+                    Vec::new(),
+                    None,
+                );
+                if responses::encoded_len(&response)? > capacity {
+                    return Err(Error::RequestTooLarge);
+                }
+                Ok(response)
+            }
             Invocation::Advisory(invocation) => {
                 crate::advisory_dispatch::execute(context, invocation, service, capacity).await
             }

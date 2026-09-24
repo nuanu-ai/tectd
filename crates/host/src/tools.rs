@@ -17,6 +17,7 @@ pub(crate) enum Invocation {
     MatrixTask(crate::matrix_task_tools::MatrixTaskInvocation),
     MatrixVerification(tect_application::VerifyMatrixTask),
     MatrixAdvisory(crate::matrix_advisory_tools::MatrixAdvisoryInvocation),
+    MatrixDisposition(crate::matrix_disposition_tools::MatrixDispositionInvocation),
     Help(crate::api::HelpRequest),
     OpenWorkspace,
     GetState,
@@ -86,6 +87,10 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
         }
         "request_engineering_advisory" | "get_engineering_advisory" => {
             crate::matrix_advisory_tools::parse(name, arguments).map(Invocation::MatrixAdvisory)
+        }
+        "record_matrix_disposition" | "get_matrix_disposition" => {
+            crate::matrix_disposition_tools::parse(name, arguments)
+                .map(Invocation::MatrixDisposition)
         }
         _ if matches!(
             name,

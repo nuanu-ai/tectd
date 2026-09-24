@@ -35,6 +35,34 @@ fn matrix_verification_is_one_of_five_public_tool_routes() {
 }
 
 #[test]
+fn matrix_disposition_routes_stay_within_five_public_tools() {
+    let record = crate::api::decode_public_call(
+        "command",
+        json!({"route":"engineering.matrix.disposition.record","params":{
+            "request_id":Uuid::new_v4(),"task_id":Uuid::new_v4(),
+            "expected_task_revision":1,"expected_input_digest":"a".repeat(64),
+            "expected_choice_set_digest":null,"opportunity_id":Uuid::new_v4(),
+            "basis":"no_call","advice_id":null,"advice_digest":null,
+            "decision":{"outcome":"blocked","blocked_reason":"Required facts unresolved"}
+        }}),
+    )
+    .unwrap();
+    assert_eq!(record.name, "record_matrix_disposition");
+    let read = crate::api::decode_public_call(
+        "query",
+        json!({"route":"engineering.matrix.disposition.get","params":{
+            "task_id":Uuid::new_v4(),"request_id":Uuid::new_v4()
+        }}),
+    )
+    .unwrap();
+    assert_eq!(read.name, "get_matrix_disposition");
+    assert_eq!(
+        crate::api::definitions()["tools"].as_array().unwrap().len(),
+        5
+    );
+}
+
+#[test]
 fn tool_errors_have_one_json_content_and_a_short_intro() {
     let result = failed_tool_result(Error::Unauthorized);
     assert_eq!(result["isError"], true);

@@ -89,6 +89,20 @@ fn build_routes() -> Vec<RouteSpec> {
         ),
         route!(
             "query",
+            "engineering.matrix.disposition.get",
+            "get_matrix_disposition",
+            "Read one saved explicit Matrix disposition by task and request ID.",
+            "Requires an authenticated native session bound to the task workspace; both IDs must be non-nil.",
+            "Reads the immutable typed decision, actor/session provenance, and binding digests without raw Jev content.",
+            "Safe to repeat; an absent request returns not_found.",
+            object_schema(
+                json!({"task_id":uuid(),"request_id":uuid()}),
+                json!(["task_id", "request_id"])
+            ),
+            json!({"task_id":example_id,"request_id":"00000000-0000-4000-8000-000000000002"}),
+        ),
+        route!(
+            "query",
             "setup.get",
             "get_setup",
             "Read a setup draft, exact input page, and current file observation.",
@@ -167,6 +181,42 @@ fn build_routes() -> Vec<RouteSpec> {
                 json!(["task_id", "expected_revision", "input_digest", "evidence"])
             ),
             json!({"task_id":example_id,"expected_revision":1,"input_digest":"0".repeat(64),"evidence":[{"fact_path":"/mode","evidence_ref":"urn:evidence:example"}]}),
+        ),
+        route!(
+            "command",
+            "engineering.matrix.disposition.record",
+            "record_matrix_disposition",
+            "Record the agent's explicit selected or blocked decision for an exact Matrix task revision and opportunity.",
+            "Requires an authenticated native session, exact task/input/choice-set digests, current opportunity, matching basis and current advice token when basis is after_advice. The actor is derived from the session. A selected choice must be in the saved set; no automatic selection occurs.",
+            "Appends an immutable typed disposition and returns its binding, digest and actor/session provenance without raw Jev content.",
+            "Retry only with the same request_id and identical fields; use engineering.matrix.disposition.get to resolve an uncertain result.",
+            object_schema(
+                json!({
+                    "request_id":uuid(),
+                    "task_id":uuid(),
+                    "expected_task_revision":{"type":"integer","minimum":1},
+                    "expected_input_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                    "expected_choice_set_digest":{"type":["string","null"],"pattern":"^[0-9a-f]{64}$"},
+                    "opportunity_id":uuid(),
+                    "basis":{"type":"string","enum":["after_advice","no_call","manual"]},
+                    "advice_id":{"type":["string","null"],"format":"uuid"},
+                    "advice_digest":{"type":["string","null"],"pattern":"^[0-9a-f]{64}$"},
+                    "decision":{"oneOf":[
+                        object_schema(json!({"outcome":{"const":"selected"},"selected_choice_id":{"type":"string","minLength":1,"maxLength":4096}}),json!(["outcome","selected_choice_id"])),
+                        object_schema(json!({"outcome":{"const":"blocked"},"blocked_reason":{"type":"string","minLength":1,"maxLength":4096}}),json!(["outcome","blocked_reason"]))
+                    ]}
+                }),
+                json!([
+                    "request_id",
+                    "task_id",
+                    "expected_task_revision",
+                    "expected_input_digest",
+                    "opportunity_id",
+                    "basis",
+                    "decision"
+                ])
+            ),
+            json!({"request_id":"00000000-0000-4000-8000-000000000002","task_id":example_id,"expected_task_revision":1,"expected_input_digest":"0".repeat(64),"expected_choice_set_digest":null,"opportunity_id":"00000000-0000-4000-8000-000000000003","basis":"no_call","advice_id":null,"advice_digest":null,"decision":{"outcome":"blocked","blocked_reason":"Required facts remain unresolved"}}),
         ),
         route!(
             "command",
