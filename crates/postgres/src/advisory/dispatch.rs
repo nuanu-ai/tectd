@@ -603,11 +603,14 @@ async fn finalize_opportunity(
     expected_config_revision: i64,
     dispatch: &AdvisoryDispatch,
 ) -> Result<AdvisoryOpportunity> {
-    let persisted = dispatch_by_id(tx, tenant, workspace, dispatch.id, true).await?;
-    if dispatch.opportunity_id != opportunity_id || persisted.opportunity_id != opportunity_id {
+    if dispatch.opportunity_id != opportunity_id {
         return Err(Error::InputConflict);
     }
     let opportunity = opportunity_by_id(tx, tenant, workspace, opportunity_id, true).await?;
+    let persisted = dispatch_by_id(tx, tenant, workspace, dispatch.id, true).await?;
+    if persisted.opportunity_id != opportunity_id {
+        return Err(Error::InputConflict);
+    }
     if !supported_dispatch_opportunity(&opportunity)
         || expected_config_revision != opportunity.config_revision
         || persisted.material_digest != opportunity.material_digest
