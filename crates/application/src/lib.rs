@@ -16,6 +16,10 @@ mod service;
 pub use advisory_ports::AdvisoryLifecycleCapability;
 pub use advisory_ports::AdvisoryStore;
 pub(crate) use advisory_ports::{AdvisoryProvider, DisabledAdvisoryProvider};
+pub use advisory_ports::{
+    DisabledMatrixAdviceProvider, MatrixAdviceProvider, MatrixProviderBinding,
+    MatrixProviderRequest, MatrixProviderResponse,
+};
 pub use matrix_task_ports::MatrixTaskStore;
 pub use matrix_tasks::{
     MATRIX_INPUT_SCHEMA, MatrixTaskRevision, RecordMatrixTask, RequestEngineeringAdvisory,

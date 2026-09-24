@@ -11,6 +11,8 @@ pub struct WorkspaceService {
     pub(crate) setup_files: Arc<dyn SetupFiles>,
     #[allow(dead_code)]
     pub(crate) advisory_provider: Arc<dyn crate::AdvisoryProvider>,
+    #[allow(dead_code)]
+    pub(crate) matrix_advice_provider: Arc<dyn crate::MatrixAdviceProvider>,
     pub(crate) scope_authority: Arc<dyn crate::ScopeAuthorityObserver>,
     pub(crate) scope_manifest_supplier: Arc<dyn crate::ScopeManifestSupplier>,
     pub(crate) scope_budget: Arc<dyn crate::ScopeBudgetPolicy>,
@@ -98,6 +100,7 @@ impl WorkspaceService {
             inspector,
             setup_files,
             advisory_provider: Arc::new(crate::DisabledAdvisoryProvider),
+            matrix_advice_provider: Arc::new(crate::DisabledMatrixAdviceProvider),
             scope_authority: Arc::new(crate::UnavailableScopeAuthorityObserver),
             scope_manifest_supplier: Arc::new(crate::UnavailableScopeManifestSupplier),
             scope_budget: Arc::new(crate::DenyScopeBudget),
@@ -144,6 +147,16 @@ impl WorkspaceService {
         provider: Arc<dyn crate::KnowledgeEmbeddingProvider>,
     ) -> Self {
         self.knowledge_embedding_provider = provider;
+        self
+    }
+
+    /// Explicit Matrix provider composition seam. Existing constructors keep
+    /// the transport disabled; no Matrix use case invokes it yet.
+    pub fn with_matrix_advice_provider(
+        mut self,
+        provider: Arc<dyn crate::MatrixAdviceProvider>,
+    ) -> Self {
+        self.matrix_advice_provider = provider;
         self
     }
 

@@ -1,11 +1,13 @@
+use crate::{MatrixTaskRevision, canonical_matrix_input_digest};
 use async_trait::async_trait;
 use tect_domain::{
     AdvisoryAuditPage, AdvisoryAuditQuery, AdvisoryDispatch, AdvisoryDispatchAuthorization,
     AdvisoryDispatchCancellation, AdvisoryDispatchOutcome, AdvisoryDispatchSeal,
     AdvisoryDispatchStart, AdvisoryModelConfiguration, AdvisoryOpportunity,
     AdvisoryOpportunityDetail, AdvisoryOpportunityInput, AdvisoryProviderProfileRef,
-    AdvisoryReconciliationEvidence, AdvisorySendCertainty, ConfigureWorkspaceAdvisory, Result,
-    WorkspaceAdvisoryConfig,
+    AdvisoryReconciliationEvidence, AdvisorySendCertainty, ConfigureWorkspaceAdvisory,
+    EngineeringMatrixComposition, Error, MatrixAdviceEligibility, MatrixRanking, Result,
+    WorkspaceAdvisoryConfig, matrix_evaluation_digest,
 };
 use uuid::Uuid;
 
@@ -186,5 +188,151 @@ impl AdvisoryProvider for DisabledAdvisoryProvider {
 
     async fn attempt(&self, _: &AdvisoryProviderRequest) -> Result<AdvisoryProviderObservation> {
         Err(tect_domain::Error::TransportUnavailable)
+    }
+}
+
+/// Exact, immutable material offered to a Matrix ranking provider. This is a
+/// separate port from the Scope advisory dispatch protocol.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatrixProviderBinding {
+    pub task_id: Uuid,
+    pub task_revision: i64,
+    pub input_digest: String,
+    pub choice_set_id: String,
+    pub choice_set_version: u64,
+    pub choice_set_digest: String,
+    pub evaluation_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatrixProviderRequest {
+    binding: MatrixProviderBinding,
+    revision: MatrixTaskRevision,
+    /// Includes mandatory cards, unresolved evidence, and source provenance.
+    composition: EngineeringMatrixComposition,
+    provider_profile_ref: AdvisoryProviderProfileRef,
+    model_configuration: AdvisoryModelConfiguration,
+    eligibility: MatrixAdviceEligibility,
+}
+
+impl MatrixProviderRequest {
+    /// Build only from the accepted revision and its complete composition.
+    /// Domain contracts remain the authority for eligibility and evaluation.
+    pub fn new(
+        revision: MatrixTaskRevision,
+        composition: EngineeringMatrixComposition,
+        provider_profile_ref: AdvisoryProviderProfileRef,
+        model_configuration: AdvisoryModelConfiguration,
+    ) -> Result<Self> {
+        provider_profile_ref.validate()?;
+        model_configuration.validate()?;
+        if revision.task_id.is_nil() || revision.revision < 1 {
+            return Err(Error::InvalidArguments);
+        }
+        let choice_set = revision
+            .choice_set
+            .as_ref()
+            .ok_or(Error::InvalidArguments)?;
+        if choice_set.task_id != revision.task_id.to_string()
+            || choice_set.task_revision != revision.revision.to_string()
+        {
+            return Err(Error::StaleRevision);
+        }
+        let input = serde_json::to_value(&revision.input).map_err(|_| Error::InvalidArguments)?;
+        let input_digest = canonical_matrix_input_digest(&input)?;
+        let choice_set_digest = choice_set.canonical_digest(&revision.input)?;
+        if revision.input_digest != input_digest
+            || revision.choice_set_digest.as_deref() != Some(choice_set_digest.as_str())
+        {
+            return Err(Error::InvalidArguments);
+        }
+        let eligibility = choice_set.validate(&revision.input)?;
+        if !matches!(
+            &eligibility,
+            MatrixAdviceEligibility::EligibleForAdvice { .. }
+        ) {
+            return Err(Error::InvalidArguments);
+        }
+        let evaluation_digest =
+            matrix_evaluation_digest(&revision.input, &composition, choice_set)?
+                .ok_or(Error::InvalidArguments)?;
+        let binding = MatrixProviderBinding {
+            task_id: revision.task_id,
+            task_revision: revision.revision,
+            input_digest,
+            choice_set_id: choice_set.choice_set_id.clone(),
+            choice_set_version: choice_set.version,
+            choice_set_digest,
+            evaluation_digest,
+        };
+        Ok(Self {
+            binding,
+            revision,
+            composition,
+            provider_profile_ref,
+            model_configuration,
+            eligibility,
+        })
+    }
+
+    pub fn binding(&self) -> &MatrixProviderBinding {
+        &self.binding
+    }
+
+    pub fn revision(&self) -> &MatrixTaskRevision {
+        &self.revision
+    }
+
+    pub fn composition(&self) -> &EngineeringMatrixComposition {
+        &self.composition
+    }
+
+    pub fn provider_profile_ref(&self) -> &AdvisoryProviderProfileRef {
+        &self.provider_profile_ref
+    }
+
+    pub fn model_configuration(&self) -> &AdvisoryModelConfiguration {
+        &self.model_configuration
+    }
+
+    pub fn eligibility(&self) -> &MatrixAdviceEligibility {
+        &self.eligibility
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatrixProviderResponse {
+    pub binding: MatrixProviderBinding,
+    pub provider_profile_ref: AdvisoryProviderProfileRef,
+    pub model_configuration: AdvisoryModelConfiguration,
+    pub ranking: MatrixRanking,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+}
+
+impl MatrixProviderResponse {
+    pub fn validate_for(&self, request: &MatrixProviderRequest) -> Result<()> {
+        if self.binding != request.binding
+            || self.provider_profile_ref != request.provider_profile_ref
+            || self.model_configuration != request.model_configuration
+        {
+            return Err(Error::InvalidArguments);
+        }
+        self.ranking.validate(&request.eligibility)
+    }
+}
+
+#[async_trait]
+pub trait MatrixAdviceProvider: Send + Sync {
+    async fn attempt(&self, request: &MatrixProviderRequest) -> Result<MatrixProviderResponse>;
+}
+
+#[derive(Debug, Default)]
+pub struct DisabledMatrixAdviceProvider;
+
+#[async_trait]
+impl MatrixAdviceProvider for DisabledMatrixAdviceProvider {
+    async fn attempt(&self, _: &MatrixProviderRequest) -> Result<MatrixProviderResponse> {
+        Err(Error::TransportUnavailable)
     }
 }
