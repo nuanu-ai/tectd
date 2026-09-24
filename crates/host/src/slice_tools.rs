@@ -66,7 +66,12 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<SliceInvocation> {
         }
         "scope_open" => decode(arguments).map(SliceInvocation::OpenScope),
         "save_slice_candidate_set" => match decode(arguments)? {
-            SaveArguments::Draft { request } => Ok(SliceInvocation::SaveDraft(request)),
+            SaveArguments::Draft { request } => {
+                if let Some(selection) = &request.matrix_selection {
+                    selection.validate()?;
+                }
+                Ok(SliceInvocation::SaveDraft(request))
+            }
             SaveArguments::Review { request } => Ok(SliceInvocation::Review(request)),
         },
         "record_slice_candidate_input" => decode(arguments).map(SliceInvocation::RecordInput),
@@ -103,6 +108,7 @@ fn reject_optional_nulls(value: &Value) -> Result<()> {
         "why_further_vertical_split_not_viable",
         "consumed_knowledge",
         "task_context",
+        "matrix_selection",
     ];
     match value {
         Value::Object(object) => {
@@ -130,6 +136,78 @@ fn reject_optional_nulls(value: &Value) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn draft_arguments() -> Value {
+        let id = "00000000-0000-4000-8000-000000000001";
+        json!({"kind":"draft","scope_id":id,"candidate_set_id":id,
+            "revision":1,"snapshot_id":id,"input_cursor":1,"request_id":id,
+            "draft":{"coverage_summary":"Complete coverage","nodes":[{"kind":"work",
+                "identity":{"local":"first"},"title":"Bounded outcome","outcome":"Delivered",
+                "proof":["Direct evidence"],"pipeline":"slice.lightweight-tdd-development",
+                "pipeline_reason":"Bounded development"}]}})
+    }
+
+    fn matrix_selection() -> Value {
+        let id = "00000000-0000-4000-8000-000000000001";
+        let digest = "a".repeat(64);
+        json!({"task_id":id,"task_revision":1,"disposition_id":id,
+            "selected_choice_id":"choice-a","expected_input_digest":digest,
+            "expected_choice_set_digest":digest,"expected_verification_digest":digest})
+    }
+
+    #[test]
+    fn save_draft_accepts_plain_and_explicit_matrix_provenance() {
+        let plain = draft_arguments();
+        let SliceInvocation::SaveDraft(request) =
+            parse("save_slice_candidate_set", plain.clone()).unwrap()
+        else {
+            panic!("expected draft")
+        };
+        assert!(request.matrix_selection.is_none());
+
+        let mut with_selection = plain;
+        with_selection["matrix_selection"] = matrix_selection();
+        let SliceInvocation::SaveDraft(request) =
+            parse("save_slice_candidate_set", with_selection).unwrap()
+        else {
+            panic!("expected draft")
+        };
+        assert_eq!(
+            request.matrix_selection.unwrap().selected_choice_id,
+            "choice-a"
+        );
+    }
+
+    #[test]
+    fn save_draft_rejects_invalid_matrix_provenance() {
+        let mut request = draft_arguments();
+        request["matrix_selection"] = matrix_selection();
+        for (key, invalid) in [
+            ("task_id", json!("not-a-uuid")),
+            ("task_revision", json!(0)),
+            ("expected_input_digest", json!("not-a-digest")),
+            ("expected_choice_set_digest", json!("A".repeat(64))),
+            ("expected_verification_digest", json!("0".repeat(63))),
+            ("unknown", json!(true)),
+        ] {
+            let mut invalid_request = request.clone();
+            invalid_request["matrix_selection"][key] = invalid;
+            assert!(
+                parse("save_slice_candidate_set", invalid_request).is_err(),
+                "accepted invalid matrix field {key}"
+            );
+        }
+        request["matrix_selection"] = Value::Null;
+        assert!(parse("save_slice_candidate_set", request).is_err());
+
+        let mut missing_native_target = draft_arguments();
+        missing_native_target["matrix_selection"] = matrix_selection();
+        missing_native_target
+            .as_object_mut()
+            .unwrap()
+            .remove("scope_id");
+        assert!(parse("save_slice_candidate_set", missing_native_target).is_err());
+    }
 
     #[test]
     fn slice_routes_use_strict_known_shapes() {

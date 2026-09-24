@@ -400,14 +400,37 @@ pub(super) fn save() -> Value {
         }),
         json!(["verdict", "summary"]),
     );
+    let matrix_selection = object_schema(
+        json!({
+            "task_id":uuid(),"task_revision":{"type":"integer","minimum":1},
+            "disposition_id":uuid(),
+            "selected_choice_id":{"type":"string","minLength":1,"maxLength":4096},
+            "expected_input_digest":matrix_digest(),
+            "expected_choice_set_digest":matrix_digest(),
+            "expected_verification_digest":matrix_digest()
+        }),
+        json!([
+            "task_id",
+            "task_revision",
+            "disposition_id",
+            "selected_choice_id",
+            "expected_input_digest",
+            "expected_choice_set_digest",
+            "expected_verification_digest"
+        ]),
+    );
     let envelope = |kind: &str, payload: (&str, Value)| {
+        let mut properties = json!({
+            "kind":{"const":kind},"scope_id":uuid(),"candidate_set_id":uuid(),
+            "revision":{"type":"integer","minimum":1},"snapshot_id":uuid(),
+            "input_cursor":{"type":"integer","minimum":0},"request_id":uuid(),
+            "consumed_knowledge":super::planning_manifest_guard(),payload.0:payload.1
+        });
+        if kind == "draft" {
+            properties["matrix_selection"] = matrix_selection.clone();
+        }
         object_schema(
-            json!({
-                "kind":{"const":kind},"scope_id":uuid(),"candidate_set_id":uuid(),
-                "revision":{"type":"integer","minimum":1},"snapshot_id":uuid(),
-                "input_cursor":{"type":"integer","minimum":0},"request_id":uuid(),
-                "consumed_knowledge":super::planning_manifest_guard(),payload.0:payload.1
-            }),
+            properties,
             json!([
                 "kind",
                 "scope_id",
@@ -427,6 +450,20 @@ pub(super) fn save_example() -> Value {
     let id = "00000000-0000-4000-8000-000000000001";
     json!({"kind":"draft","scope_id":id,"candidate_set_id":id,"revision":1,"snapshot_id":id,"input_cursor":1,"request_id":id,
         "draft":{"coverage_summary":"The complete Scope is represented.","nodes":[{"kind":"work","identity":{"local":"first"},"title":"Deliver bounded behavior","outcome":"The behavior is observable.","proof":["Direct acceptance evidence"],"pipeline":"slice.lightweight-tdd-development","pipeline_reason":"Bounded development is sufficient."}]}})
+}
+
+pub(super) fn save_matrix_selection_example() -> Value {
+    let mut example = save_example();
+    let id = "00000000-0000-4000-8000-000000000001";
+    let digest = "a".repeat(64);
+    example["matrix_selection"] = json!({
+        "task_id":id,"task_revision":1,"disposition_id":id,
+        "selected_choice_id":"choice-a",
+        "expected_input_digest":digest,
+        "expected_choice_set_digest":digest,
+        "expected_verification_digest":digest
+    });
+    example
 }
 
 pub(super) fn record_input() -> Value {
@@ -535,6 +572,9 @@ fn inquiry() -> Value {
 fn uuid() -> Value {
     json!({"type":"string","format":"uuid"})
 }
+fn matrix_digest() -> Value {
+    json!({"type":"string","minLength":64,"maxLength":64,"pattern":"^[0-9a-f]{64}$"})
+}
 fn text() -> Value {
     json!({"type":"string","minLength":1})
 }
@@ -549,4 +589,35 @@ fn merge(mut left: Value, right: Value) -> Value {
         .unwrap()
         .extend(right.as_object().unwrap().clone());
     left
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn draft_matrix_binding_is_optional_and_review_excludes_it() {
+        let schema = save();
+        let draft = &schema["oneOf"][0];
+        let review = &schema["oneOf"][1];
+        let binding = &draft["properties"]["matrix_selection"];
+        assert_eq!(binding["additionalProperties"], false);
+        assert_eq!(
+            binding["properties"]["expected_input_digest"]["pattern"],
+            "^[0-9a-f]{64}$"
+        );
+        assert_eq!(binding["required"].as_array().unwrap().len(), 7);
+        assert!(
+            !draft["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("matrix_selection"))
+        );
+        assert!(review["properties"].get("matrix_selection").is_none());
+        assert!(save_example().get("matrix_selection").is_none());
+        assert_eq!(
+            save_matrix_selection_example()["matrix_selection"]["selected_choice_id"],
+            "choice-a"
+        );
+    }
 }
