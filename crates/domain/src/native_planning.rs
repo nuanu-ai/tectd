@@ -370,6 +370,10 @@ pub struct SaveSliceCandidateDraft {
     pub draft: SliceCandidateDraft,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_knowledge: Option<crate::PlanningManifestGuard>,
+    /// Explicit provenance for a caller-authored save after a Matrix selection.
+    /// A Matrix disposition alone never creates this draft or its receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix_selection: Option<crate::MatrixPlanningSelection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

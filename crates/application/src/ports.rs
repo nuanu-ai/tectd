@@ -41,6 +41,12 @@ pub trait UnitOfWork:
     fn matrix_verification_store(&mut self) -> Option<&mut dyn crate::MatrixVerificationStore> {
         None
     }
+    /// Optional atomic link seam for an explicit Matrix-selected planning save.
+    fn matrix_planning_selection_store(
+        &mut self,
+    ) -> Option<&mut dyn crate::MatrixPlanningSelectionStore> {
+        None
+    }
     async fn authenticate(&mut self, auth: &HostAuth) -> Result<HostIdentity>;
     async fn set_tenant(&mut self, tenant_id: Uuid) -> Result<()>;
     async fn lock_native_session(&mut self, host_id: Uuid, native_id: &str) -> Result<()>;

@@ -11,6 +11,7 @@ use tect_domain::{
 
 mod candidate;
 mod lifecycle;
+mod matrix_selection;
 mod validation;
 
 use validation::*;

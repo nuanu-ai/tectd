@@ -8,6 +8,7 @@ mod matrix_disposition;
 mod matrix_disposition_ports;
 mod matrix_advisory_capture;
 mod matrix_advisory_dispatch;
+mod matrix_planning_selection_ports;
 mod matrix_task_ports;
 mod matrix_tasks;
 mod matrix_verification;
@@ -42,6 +43,9 @@ pub use matrix_advice_runtime::{
 };
 pub use matrix_disposition_ports::{
     MatrixDispositionRecord, MatrixDispositionStore, RecordMatrixDisposition,
+};
+pub use matrix_planning_selection_ports::{
+    MatrixPlanningSelectionLink, MatrixPlanningSelectionStore,
 };
 pub use matrix_task_ports::MatrixTaskStore;
 pub use matrix_tasks::{

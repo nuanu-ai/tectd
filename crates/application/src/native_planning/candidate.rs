@@ -60,6 +60,9 @@ impl WorkspaceService {
         guard: &dyn NativePlanningOutputGuard,
     ) -> Result<SliceCandidateContext> {
         request.draft.validate()?;
+        if let Some(selection) = &request.matrix_selection {
+            selection.validate()?;
+        }
         validate_slice_write(
             request.scope_id,
             request.candidate_set_id,
@@ -77,6 +80,34 @@ impl WorkspaceService {
                 .await?
                 .ok_or(Error::NotFound)?;
             let principal = tx.session_principal(session.id).await?;
+            if let Some(selection) = &request.matrix_selection {
+                let caller = tx.authenticate(&context.auth).await?;
+                if caller.role != tect_domain::PrincipalRole::Owner
+                    || caller.principal_id != principal
+                {
+                    return Err(Error::Forbidden);
+                }
+                let link = tx
+                    .matrix_planning_selection_store()
+                    .ok_or(Error::StorageUnavailable)?
+                    .matrix_planning_selection_link(
+                        workspace.id,
+                        request.candidate_set_id,
+                        request.request_id,
+                    )
+                    .await?
+                    .ok_or(Error::InternalInvariant)?;
+                if link.selection != *selection
+                    || link.caller_principal_id != principal
+                    || link.caller_session_id != session.id
+                    || link.scope_id != request.scope_id
+                    || link.candidate_set_id != request.candidate_set_id
+                    || link.caller_request_id != request.request_id
+                    || link.result_revision != value.candidate_set.revision
+                {
+                    return Err(Error::InputConflict);
+                }
+            }
             value.planning_knowledge = tx
                 .planning_consumption_status(
                     workspace.id,
@@ -90,8 +121,27 @@ impl WorkspaceService {
             tx.commit().await?;
             return Ok(value);
         }
-        ensure_slice_fresh(&mut *tx, workspace.id, request.scope_id, guidance).await?;
         let principal = tx.session_principal(session.id).await?;
+        let matrix_binding = if let Some(selection) = &request.matrix_selection {
+            let caller = tx.authenticate(&context.auth).await?;
+            if caller.role != tect_domain::PrincipalRole::Owner || caller.principal_id != principal
+            {
+                return Err(Error::Forbidden);
+            }
+            Some(
+                super::matrix_selection::validate_selected_matrix_plan(
+                    self,
+                    &mut *tx,
+                    workspace.id,
+                    principal,
+                    selection,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        ensure_slice_fresh(&mut *tx, workspace.id, request.scope_id, guidance).await?;
         let consumed = tx
             .require_planning_knowledge(
                 workspace.id,
@@ -102,6 +152,27 @@ impl WorkspaceService {
             )
             .await?;
         let mut value = tx.save_slice_candidate_draft(workspace.id, request).await?;
+        if let (Some(selection), Some((evaluation_digest, catalogue_version))) =
+            (&request.matrix_selection, matrix_binding)
+        {
+            tx.matrix_planning_selection_store()
+                .ok_or(Error::StorageUnavailable)?
+                .link_matrix_planning_selection(
+                    workspace.id,
+                    &crate::MatrixPlanningSelectionLink {
+                        selection: selection.clone(),
+                        evaluation_digest,
+                        catalogue_version,
+                        caller_principal_id: principal,
+                        caller_session_id: session.id,
+                        scope_id: request.scope_id,
+                        candidate_set_id: request.candidate_set_id,
+                        caller_request_id: request.request_id,
+                        result_revision: value.candidate_set.revision,
+                    },
+                )
+                .await?;
+        }
         if let Some(manifest) = &consumed {
             tx.register_planning_consumption(
                 workspace.id,
