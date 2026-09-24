@@ -22,6 +22,10 @@ use tect_domain::{
     WorkspaceAdvisoryConfig, WorkspaceAdvisoryMode,
 };
 
+fn orchestration_source() -> String {
+    [include_str!("run.rs"), include_str!("dispatch.rs")].concat()
+}
+
 fn no_call_config(mode: WorkspaceAdvisoryMode) -> WorkspaceAdvisoryConfig {
     WorkspaceAdvisoryConfig {
         workspace_id: Uuid::from_u128(1),
@@ -128,7 +132,7 @@ fn early_no_call_gate_preserves_disabled_session_request_precedence() {
 
 #[test]
 fn early_no_call_branch_precedes_all_external_advisory_ports() {
-    let source = include_str!("../scope_advisory_orchestration.rs");
+    let source = orchestration_source();
     let branch = source.find("if let Some((reason, revision))").unwrap();
     let return_from_branch = source[branch..]
         .find("let authority_request = ScopeAuthorityRequest")
@@ -760,7 +764,7 @@ async fn production_defaults_fail_closed_without_supplier_budget_or_provider() {
         None
     );
     assert!(crate::ScopeAdviceProvider::identity(&DisabledScopeAdviceProvider).is_none());
-    let source = include_str!("../scope_advisory_orchestration.rs");
+    let source = orchestration_source();
     let budget = source.find(".scope_budget").unwrap();
     let no_call = source[budget..]
         .find("AdvisoryReason::BudgetPolicyInvalid")
@@ -999,7 +1003,7 @@ fn invalid_utf8_is_rejected_before_transport() {
 
 #[test]
 fn permit_is_minted_only_after_successful_start_commit_in_runtime_path() {
-    let source = include_str!("../scope_advisory_orchestration.rs");
+    let source = orchestration_source();
     let start = source.find(".start_advisory_dispatch(&lifecycle").unwrap();
     let commit = source[start..].find("start.commit().await?").unwrap() + start;
     let no_send = source[commit..].find("if !started.should_send").unwrap() + commit;
@@ -1129,7 +1133,7 @@ fn preflight_mismatch_and_oversize_are_auditable_no_call_reasons() {
         AdvisoryReason::DeterministicInputInvalid
     ));
 
-    let source = include_str!("../scope_advisory_orchestration.rs");
+    let source = orchestration_source();
     let preflight = source
         .find("let prepared_attempt = match prepare_scope_advice_attempt")
         .unwrap();
@@ -1146,7 +1150,7 @@ fn preflight_mismatch_and_oversize_are_auditable_no_call_reasons() {
 
 #[test]
 fn request_key_replay_gate_precedes_wire_preparation() {
-    let source = include_str!("../scope_advisory_orchestration.rs");
+    let source = orchestration_source();
     let locked_gate = source.find("Recheck under the session lock").unwrap();
     let request_lookup = source[locked_gate..]
         .find("scope_advisory_manifest_by_request_key")
@@ -1234,7 +1238,7 @@ fn score_contract_is_discrete_and_has_no_product_effect_authority() {
     assert_eq!(ScopeAdviceScoreBand::Conflict.ordinal(), 0);
     assert_eq!(ScopeAdviceScoreBand::StrongFit.ordinal(), 3);
     let _normalized_only = (ScopeAdviceChoice::Preferred, ConfidenceBasisPoints(10_000));
-    let source = include_str!("../scope_advisory_orchestration.rs");
+    let source = orchestration_source();
     assert!(!source.contains("scope_caller.call"));
     assert!(!source.contains("scope_verifier.verify"));
     assert_eq!(source.matches(".attempt_prepared(").count(), 1);
@@ -1326,7 +1330,7 @@ async fn unauthorized_observer_error_has_no_registered_decision_point() {
         UnauthorizedObserver.observe(&request).await,
         Err(tect_domain::Error::Unauthorized)
     );
-    let orchestration = include_str!("../scope_advisory_orchestration.rs");
+    let orchestration = orchestration_source();
     assert!(orchestration.contains("scope_authority.observe(&authority_request).await?"));
 }
 
@@ -1346,7 +1350,7 @@ fn authorized_invalid_observation_routes_to_durable_invalid_capture_before_polic
         candidate_set_id: request.candidate_set_id,
     };
     assert!(validate_invalid_observation(&request, &invalid).is_ok());
-    let orchestration = include_str!("../scope_advisory_orchestration.rs");
+    let orchestration = orchestration_source();
     let invalid_arm = orchestration.find("AuthorizedInvalid(value)").unwrap();
     let capture = orchestration[invalid_arm..]
         .find("capture_invalid_scope_input")
@@ -1373,7 +1377,7 @@ fn authorized_invalid_observation_routes_to_durable_invalid_capture_before_polic
 
 #[test]
 fn replay_precedes_policy_and_provider_and_success_is_rechecked_atomically() {
-    let source = include_str!("../scope_advisory_orchestration.rs");
+    let source = orchestration_source();
     let replay = source.find("advisory_opportunity_by_request").unwrap();
     let policy = source.find(".scope_budget").unwrap();
     let provider = source.find(".attempt_prepared(").unwrap();
@@ -1388,7 +1392,7 @@ fn replay_precedes_policy_and_provider_and_success_is_rechecked_atomically() {
 
 #[test]
 fn authored_lookup_replay_and_failure_paths_precede_external_attempts() {
-    let source = include_str!("../scope_advisory_orchestration.rs");
+    let source = orchestration_source();
     let digest = source.find(".map(authored_request_digest)").unwrap();
     let request_lookup = source
         .find("read.scope_advisory_manifest_by_request_key")
@@ -1431,7 +1435,7 @@ fn authored_lookup_replay_and_failure_paths_precede_external_attempts() {
 
 #[test]
 fn authorize_staleness_and_cancelled_start_terminalize_before_provider_attempt() {
-    let source = include_str!("../scope_advisory_orchestration.rs");
+    let source = orchestration_source();
     let authorize = source
         .find(".authorize_advisory_dispatch(&lifecycle")
         .unwrap();
@@ -1450,7 +1454,7 @@ fn authorize_staleness_and_cancelled_start_terminalize_before_provider_attempt()
         .unwrap()
         + start;
     let terminal_load = source[cancelled..]
-        .find("advisory_opportunity_for_dispatch(workspace.id, opportunity.id)")
+        .find("advisory_opportunity_for_dispatch(workspace_id, opportunity.id)")
         .unwrap()
         + cancelled;
     let provider = source.find(".attempt_prepared(").unwrap();
@@ -1471,7 +1475,7 @@ fn authorize_staleness_and_cancelled_start_terminalize_before_provider_attempt()
 
 #[test]
 fn authored_supplier_failure_is_captured_as_no_call_before_budget_or_provider() {
-    let source = include_str!("../scope_advisory_orchestration.rs");
+    let source = orchestration_source();
     let supplied = source
         .find("let manifest = match supply_scope_manifest(")
         .unwrap();
@@ -1490,7 +1494,7 @@ fn authored_supplier_failure_is_captured_as_no_call_before_budget_or_provider() 
 fn authored_request_entry_and_explicit_adapter_constructor_are_public_without_effects() {
     let root = include_str!("../lib.rs");
     let service = include_str!("../service.rs");
-    let orchestration = include_str!("../scope_advisory_orchestration.rs");
+    let orchestration = orchestration_source();
     assert!(root.contains("ScopeAdviceProviderRequest"));
     assert!(!root.contains("pub use scope_advisory_runtime::*;"));
     assert!(service.contains("pub fn new_with_scope_advisory_adapters("));
