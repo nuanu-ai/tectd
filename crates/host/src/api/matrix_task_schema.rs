@@ -39,6 +39,57 @@ fn text() -> Value {
     })
 }
 
+fn bounded_text(max_bytes: usize) -> Value {
+    json!({
+        "type":"string", "minLength":1, "maxLength":max_bytes,
+        "pattern":"\\S", "x-maxUtf8Bytes":max_bytes,
+        "description":format!("Nonblank, no control characters, at most {max_bytes} UTF-8 bytes; host validation enforces byte and control limits.")
+    })
+}
+
+fn opaque_id() -> Value {
+    json!({
+        "type":"string", "minLength":1, "maxLength":256,
+        "pattern":"^\\S+$", "x-maxUtf8Bytes":256,
+        "description":"Opaque nonblank ID without whitespace or control characters; host validation enforces the 256 UTF-8 byte limit."
+    })
+}
+
+pub(super) fn choice_set() -> Value {
+    let mut schema = object_schema(
+        json!({
+            "schema":{"const":"tect.matrix-choice-set/1"},
+            "choice_set_id":opaque_id(),
+            "version":{"type":"integer","minimum":1},
+            "task_id":opaque_id(),
+            "task_revision":opaque_id(),
+            "decision_question":bounded_text(1024),
+            "candidates":{
+                "type":"array", "maxItems":5,
+                "items":object_schema(json!({
+                    "candidate_id":opaque_id(),
+                    "title":bounded_text(256),
+                    "approach":bounded_text(4096),
+                    "assumption_fact_ids":{"type":"array","uniqueItems":true,"items":opaque_id()}
+                }),json!(["candidate_id","title","approach","assumption_fact_ids"]))
+            }
+        }),
+        json!([
+            "schema",
+            "choice_set_id",
+            "version",
+            "task_id",
+            "task_revision",
+            "decision_question",
+            "candidates"
+        ]),
+    );
+    schema["description"] = json!(
+        "Optional owner-authored alternatives. Zero or one candidate remains stored but is ineligible for ranking. Assumption IDs must reference facts in the same Matrix input. The combined input and choice-set JSON is limited to 1 MiB."
+    );
+    schema
+}
+
 fn intent() -> Value {
     json!({"oneOf":[
         choice("kind", "production_hotfix", json!({}), json!([])),
@@ -86,8 +137,9 @@ pub(super) fn input() -> Value {
         }),
         json!(keys),
     );
-    schema["description"] =
-        json!("Tagged factual input; serialized JSON is capped at 1 MiB by the host.");
+    schema["description"] = json!(
+        "Tagged factual input; combined input and optional choice-set serialized JSON is capped at 1 MiB by the host."
+    );
     schema["x-maxSerializedJsonBytes"] = json!(1024 * 1024);
     schema
 }
@@ -100,5 +152,20 @@ pub(super) fn example() -> Value {
         "promised_behavior":absent,"promised_proof":absent,"affected_guarantees":absent,
         "actual_exposure":absent,"demand_commitment":absent,"latency_commitment":absent,
         "urgent_repair":absent
+    })
+}
+
+pub(super) fn example_choice_set(task_id: &str) -> Value {
+    json!({
+        "schema":"tect.matrix-choice-set/1",
+        "choice_set_id":"implementation-options",
+        "version":1,
+        "task_id":task_id,
+        "task_revision":"1",
+        "decision_question":"Which implementation approach should we evaluate?",
+        "candidates":[
+            {"candidate_id":"approach-a","title":"First approach","approach":"Use the first approach.","assumption_fact_ids":["mode"]},
+            {"candidate_id":"approach-b","title":"Second approach","approach":"Use the second approach.","assumption_fact_ids":["envelope.scale"]}
+        ]
     })
 }

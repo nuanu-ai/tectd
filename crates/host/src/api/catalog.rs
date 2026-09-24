@@ -130,12 +130,12 @@ fn build_routes() -> Vec<RouteSpec> {
             "command",
             "task.source.record",
             "record_matrix_task",
-            "Record one exact Engineering Matrix factual input revision for a task.",
-            "Requires an authenticated open native session, non-nil task and request IDs, revision 1 or the immediate successor of the expected current revision, and valid tagged factual input capped at 1 MiB of JSON and 1024 reported facts. Text is nonblank and at most 256 UTF-8 bytes.",
-            "Atomically stores the immutable revision and digest in this workspace; source authority remains bound to the native session.",
-            "Repeat the same request_id with identical revision and input. On uncertainty, read task.source.get before another write.",
+            "Record one exact Engineering Matrix factual input revision and optional owner-authored engineering alternatives for a task.",
+            "Requires an authenticated open native session, non-nil task and request IDs, revision 1 or the immediate successor of the expected current revision, valid tagged factual input and an optional choice set bound to the exact task/revision. Combined input and choice-set JSON is capped at 1 MiB; at most 1024 reported facts and five candidates. Zero or one candidate is recorded but not eligible for ranking. Choice-set assumptions must reference Matrix fact IDs in this input.",
+            "Atomically stores the immutable revision, input digest, and optional choice-set digest in this workspace; source authority remains bound to the native session.",
+            "Repeat the same request_id with identical revision, input, and choice set. On uncertainty, read task.source.get before another write.",
             object_schema(
-                json!({"task_id":uuid(),"revision":{"type":"integer","minimum":1},"expected_current_revision":{"type":"integer","minimum":0},"request_id":uuid(),"input":matrix_task_schema::input()}),
+                json!({"task_id":uuid(),"revision":{"type":"integer","minimum":1},"expected_current_revision":{"type":"integer","minimum":0},"request_id":uuid(),"input":matrix_task_schema::input(),"choice_set":matrix_task_schema::choice_set()}),
                 json!([
                     "task_id",
                     "revision",
@@ -144,7 +144,7 @@ fn build_routes() -> Vec<RouteSpec> {
                     "input"
                 ])
             ),
-            json!({"task_id":example_id,"revision":1,"expected_current_revision":0,"request_id":"00000000-0000-4000-8000-000000000002","input":matrix_task_schema::example()}),
+            json!({"task_id":example_id,"revision":1,"expected_current_revision":0,"request_id":"00000000-0000-4000-8000-000000000002","input":matrix_task_schema::example(),"choice_set":matrix_task_schema::example_choice_set(example_id)}),
         ),
         route!(
             "command",

@@ -106,6 +106,20 @@ fn matrix_task_routes_are_discoverable_and_strict() {
     let entries = &spec.schema["properties"]["input"]["properties"]["envelope"]["properties"]["operational_facts"]
         ["oneOf"][2]["properties"]["entries"];
     assert_eq!(entries["maxItems"], 1024);
+    let choice_set = &spec.schema["properties"]["choice_set"];
+    assert_eq!(choice_set["additionalProperties"], false);
+    assert_eq!(choice_set["properties"]["candidates"]["maxItems"], 5);
+    assert_eq!(
+        choice_set["properties"]["candidates"]["items"]["additionalProperties"],
+        false
+    );
+    assert_eq!(
+        spec.example["choice_set"]["candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
     let criticality_text = &spec.schema["properties"]["input"]["properties"]["criticality"]["oneOf"]
         [6]["properties"]["value"];
     assert_eq!(criticality_text["x-maxUtf8Bytes"], 256);
