@@ -75,6 +75,29 @@ fn assert_retained_disposition(
     }
 }
 
+fn assert_frozen_source_aggregate(
+    aggregate: &Value,
+    manifest: &Value,
+    candidate: Uuid,
+    revision: i64,
+    snapshot: Uuid,
+    digest: &str,
+) {
+    let frozen = &aggregate["source"];
+    assert_eq!(frozen["candidate_set_id"], candidate.to_string());
+    assert_eq!(frozen["candidate_set_revision"], revision);
+    assert_eq!(frozen["snapshot_id"], snapshot.to_string());
+    assert_eq!(frozen["digest"], digest);
+    assert!(
+        aggregate["obligations"].is_array(),
+        "frozen obligations required"
+    );
+    assert_eq!(
+        *aggregate,
+        json!({"source": manifest["source"], "obligations": manifest["obligations"]})
+    );
+}
+
 fn required(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| panic!("{name} is required"))
 }
@@ -786,11 +809,9 @@ async fn audit_completed_followthrough_read_only() {
     .unwrap();
     assert_eq!((source.0, source.5.as_str()), (3, "3"));
     assert!(!source.1.is_nil(), "frozen source snapshot required");
-    assert_eq!(source.3["candidate_set_id"], candidate.to_string());
-    assert_eq!(source.3["candidate_set_revision"], source.0);
-    assert_eq!(source.3["snapshot_id"], source.1.to_string());
-    assert_eq!(source.3["digest"], source.2);
-    assert_eq!(source.4["source"], source.3);
+    assert_frozen_source_aggregate(
+        &source.3, &source.4, candidate, source.0, source.1, &source.2,
+    );
 
     let (owner_native, owner_host, workspace_key): (String, Uuid, String) = sqlx::query_as(
         "SELECT s.native_session_id,s.host_id,w.key FROM agent_sessions s JOIN workspaces w \
@@ -944,7 +965,7 @@ async fn audit_completed_followthrough_read_only() {
             assert_eq!(detail["scope_decomposition"]["manifest"], source.4);
             assert_eq!(
                 detail["scope_decomposition"]["manifest"]["source"],
-                source.3
+                source.3["source"]
             );
         } else {
             assert!(detail.get("scope_decomposition").is_none());
@@ -1023,6 +1044,45 @@ fn retained_disposition_rejects_changed_selection() {
     assert!(
         std::panic::catch_unwind(|| {
             assert_retained_disposition(&payload, id, &json!("advice"), "other", "reason", &emitted)
+        })
+        .is_err()
+    );
+}
+
+#[test]
+fn frozen_source_aggregate_preserves_source_and_obligations() {
+    let candidate = Uuid::new_v4();
+    let snapshot = Uuid::new_v4();
+    let frozen = json!({
+        "candidate_set_id": candidate,
+        "candidate_set_revision": 3,
+        "snapshot_id": snapshot,
+        "digest": "source-digest",
+        "inputs": []
+    });
+    let obligations = json!([{"id": "source-ref", "source_input_id": "source-ref"}]);
+    let manifest = json!({"source": frozen, "obligations": obligations});
+    let aggregate = json!({"source": frozen, "obligations": obligations});
+    assert_frozen_source_aggregate(
+        &aggregate,
+        &manifest,
+        candidate,
+        3,
+        snapshot,
+        "source-digest",
+    );
+
+    let changed = json!({"source": frozen, "obligations": []});
+    assert!(
+        std::panic::catch_unwind(|| {
+            assert_frozen_source_aggregate(
+                &changed,
+                &manifest,
+                candidate,
+                3,
+                snapshot,
+                "source-digest",
+            )
         })
         .is_err()
     );
