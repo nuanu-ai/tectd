@@ -1,6 +1,8 @@
 const MIGRATION: &str = include_str!("../migrations/0050_matrix_no_choice_no_call.sql");
 const PRIOR: &str = include_str!("../migrations/0049_engineering_profile_opportunity.sql");
 const PRIOR_REASON: &str = include_str!("../migrations/0044_advisory_budget_no_call_reason.sql");
+const REVISION_REASON: &str =
+    include_str!("../migrations/0053_matrix_task_revision_changed_reason.sql");
 
 fn check_expression<'a>(migration: &'a str, constraint: &str) -> &'a str {
     let start = migration
@@ -58,4 +60,31 @@ fn new_reason_is_no_call_only_and_dispatch_requires_choice() {
     assert!(MIGRATION.contains("o.matrix_choice_set_digest IS NULL"));
     assert!(MIGRATION.contains("FOR SHARE"));
     assert!(MIGRATION.contains("IF NOT FOUND THEN"));
+}
+
+#[test]
+fn revision_reason_only_extends_matrix_invalidation_constraints() {
+    let reason_before = normalized(check_expression(
+        MIGRATION,
+        "ADD CONSTRAINT advisory_opportunity_reason_check CHECK (",
+    ));
+    let reason_after = normalized(check_expression(
+        REVISION_REASON,
+        "ADD CONSTRAINT advisory_opportunity_reason_check CHECK (",
+    ));
+    assert_eq!(
+        reason_after.replace("'matrix_task_revision_changed', ", ""),
+        reason_before
+    );
+
+    let state_before = normalized(check_expression(
+        MIGRATION,
+        "ADD CONSTRAINT advisory_opportunity_state_reason_check CHECK (",
+    ));
+    let state_after = normalized(check_expression(
+        REVISION_REASON,
+        "ADD CONSTRAINT advisory_opportunity_state_reason_check CHECK (",
+    ));
+    let matrix_only = "OR (state = 'invalidated' AND primary_reason = 'matrix_task_revision_changed' AND capability = 'engineering_profile' AND work_item_kind = 'matrix_task') ";
+    assert_eq!(state_after.replace(matrix_only, ""), state_before);
 }

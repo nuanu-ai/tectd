@@ -106,6 +106,18 @@ mod audit_projection_tests {
     }
 
     #[test]
+    fn matrix_revision_change_reason_decodes_for_audit() {
+        assert_eq!(
+            reason("matrix_task_revision_changed"),
+            Ok(AdvisoryReason::MatrixTaskRevisionChanged)
+        );
+        assert_eq!(
+            AdvisoryReason::MatrixTaskRevisionChanged.as_str(),
+            "matrix_task_revision_changed"
+        );
+    }
+
+    #[test]
     fn budget_policy_invalid_reason_survives_audit_projection() {
         let aggregate = audit_aggregate_from_rows(
             AuditAggregateRow {

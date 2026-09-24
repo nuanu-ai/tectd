@@ -207,6 +207,7 @@ fn reason(value: &str) -> Result<AdvisoryReason> {
         "provider_unconfigured" => Ok(AdvisoryReason::ProviderUnconfigured),
         "budget_policy_invalid" => Ok(AdvisoryReason::BudgetPolicyInvalid),
         "configuration_changed" => Ok(AdvisoryReason::ConfigurationChanged),
+        "matrix_task_revision_changed" => Ok(AdvisoryReason::MatrixTaskRevisionChanged),
         "dispatch_authorized" => Ok(AdvisoryReason::DispatchAuthorized),
         "provider_response" => Ok(AdvisoryReason::ProviderResponse),
         "provider_failure" => Ok(AdvisoryReason::ProviderFailure),

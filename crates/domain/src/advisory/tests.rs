@@ -141,6 +141,39 @@ fn choice_set_not_applicable_is_a_typed_no_call_reason() {
 }
 
 #[test]
+fn matrix_revision_change_is_matrix_only_invalidation() {
+    let reason = AdvisoryReason::MatrixTaskRevisionChanged;
+    assert_eq!(reason.as_str(), "matrix_task_revision_changed");
+    assert_eq!(
+        serde_json::to_value(reason).unwrap(),
+        "matrix_task_revision_changed"
+    );
+    assert_eq!(
+        serde_json::from_str::<AdvisoryReason>("\"matrix_task_revision_changed\"").unwrap(),
+        reason
+    );
+    assert!(advisory_reason_matches_state(
+        AdvisoryOpportunityState::Invalidated,
+        reason
+    ));
+    assert!(!advisory_reason_matches_state(
+        AdvisoryOpportunityState::NoCall,
+        reason
+    ));
+
+    let mut input = opportunity(AdvisoryRequestPreference::UseWorkspace);
+    input.state = AdvisoryOpportunityState::Invalidated;
+    input.primary_reason = reason;
+    assert_eq!(input.validate(), Err(Error::InvalidArguments));
+    input.capability = AdvisoryCapability::EngineeringProfile;
+    input.decision_point = AdvisoryDecisionPoint::EngineeringProfileBeforeSelection;
+    input.target_kind = "matrix_task".into();
+    input.matrix_task_revision = Some(1);
+    input.matrix_choice_set_digest = Some("b".repeat(64));
+    assert!(input.validate().is_ok());
+}
+
+#[test]
 fn reason_precedence_is_deterministic() {
     let base = AdvisoryPolicyInput {
         workspace_mode: WorkspaceAdvisoryMode::Optional,

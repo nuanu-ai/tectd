@@ -671,13 +671,15 @@ async fn finalize_opportunity(
     } else {
         false
     };
-    let (state, reason) = if current.0 != expected_config_revision
-        || current.1 != "optional"
-        || matrix_stale
-    {
+    let (state, reason) = if current.0 != expected_config_revision || current.1 != "optional" {
         (
             AdvisoryOpportunityState::Invalidated,
             AdvisoryReason::ConfigurationChanged,
+        )
+    } else if matrix_stale {
+        (
+            AdvisoryOpportunityState::Invalidated,
+            AdvisoryReason::MatrixTaskRevisionChanged,
         )
     } else if persisted_outcome == Some(AdvisoryDispatchOutcome::ProviderResponse) {
         (

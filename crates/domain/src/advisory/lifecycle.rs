@@ -62,6 +62,7 @@ pub enum AdvisoryReason {
     ProviderUnconfigured,
     BudgetPolicyInvalid,
     ConfigurationChanged,
+    MatrixTaskRevisionChanged,
     DispatchAuthorized,
     ProviderResponse,
     ProviderFailure,
@@ -80,6 +81,7 @@ impl AdvisoryReason {
             Self::ProviderUnconfigured => "provider_unconfigured",
             Self::BudgetPolicyInvalid => "budget_policy_invalid",
             Self::ConfigurationChanged => "configuration_changed",
+            Self::MatrixTaskRevisionChanged => "matrix_task_revision_changed",
             Self::DispatchAuthorized => "dispatch_authorized",
             Self::ProviderResponse => "provider_response",
             Self::ProviderFailure => "provider_failure",
@@ -111,7 +113,10 @@ pub const fn advisory_reason_matches_state(
         ),
         AdvisoryOpportunityState::Advised => matches!(reason, AdvisoryReason::ProviderResponse),
         AdvisoryOpportunityState::Invalidated => {
-            matches!(reason, AdvisoryReason::ConfigurationChanged)
+            matches!(
+                reason,
+                AdvisoryReason::ConfigurationChanged | AdvisoryReason::MatrixTaskRevisionChanged
+            )
         }
         AdvisoryOpportunityState::Failed => matches!(reason, AdvisoryReason::ProviderFailure),
         AdvisoryOpportunityState::Unresolved => matches!(reason, AdvisoryReason::SendUnknown),
@@ -270,6 +275,8 @@ impl AdvisoryOpportunityInput {
             return Err(Error::InvalidArguments);
         }
         if !advisory_reason_matches_state(self.state, self.primary_reason)
+            || self.primary_reason == AdvisoryReason::MatrixTaskRevisionChanged
+                && self.capability != AdvisoryCapability::EngineeringProfile
             || matches!(self.primary_reason, AdvisoryReason::SessionSkip)
                 && self.session_preference != AdvisoryRequestPreference::Skip
             || matches!(self.primary_reason, AdvisoryReason::RequestSkip)
