@@ -302,7 +302,7 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
     let manifest = supplier
         .supply_authored(&ScopeAuthoredManifestRequest {
             tenant_id: enrollment.tenant_id,
-            observation: observed,
+            observation: *observed,
             authored_scope_set: authored,
         })
         .await

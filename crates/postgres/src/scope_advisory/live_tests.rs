@@ -380,7 +380,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     service_supplier
         .supply_authored(&tect_application::ScopeAuthoredManifestRequest {
             tenant_id: tenant,
-            observation: observed.clone(),
+            observation: (*observed).clone(),
             authored_scope_set: authored_scope_set.clone(),
         })
         .await
@@ -1804,7 +1804,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     )
     .supply_authored(&tect_application::ScopeAuthoredManifestRequest {
         tenant_id: tenant,
-        observation: current,
+        observation: *current,
         authored_scope_set: authored_for_save.clone(),
     })
     .await

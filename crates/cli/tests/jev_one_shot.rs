@@ -328,7 +328,7 @@ async fn one_shot_real_jev_evidence() {
     let manifest = supplier
         .supply_authored(&ScopeAuthoredManifestRequest {
             tenant_id: enrollment.tenant_id,
-            observation,
+            observation: *observation,
             authored_scope_set: authored.clone(),
         })
         .await
