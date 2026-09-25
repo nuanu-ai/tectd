@@ -1,6 +1,12 @@
 -- Slice 04: immutable source/plan binding and one-use review dispatch ledger.
 -- An authoritative caller must supply an explicit obligation graph. A missing
 -- binding is a refusal to prepare, never an inferred empty obligation set.
+-- The manifest opportunity primary key already makes this source identity
+-- unique; expose the exact five-column key to the binding foreign key.
+ALTER TABLE advisory_scope_manifest
+    ADD CONSTRAINT advisory_scope_manifest_anti_bloat_source_unique UNIQUE
+    (tenant_id,workspace_id,opportunity_id,candidate_set_id,source_digest);
+
 CREATE TABLE scope_anti_bloat_bindings (
     tenant_id uuid NOT NULL,
     workspace_id uuid NOT NULL,

@@ -1,6 +1,19 @@
 const MIGRATION: &str = include_str!("../migrations/0076_scope_anti_bloat_review.sql");
 
 #[test]
+fn binding_foreign_key_targets_exact_source_identity() {
+    assert!(
+        MIGRATION
+            .contains("ADD CONSTRAINT advisory_scope_manifest_anti_bloat_source_unique UNIQUE")
+    );
+    assert!(
+        MIGRATION
+            .contains("(tenant_id,workspace_id,opportunity_id,candidate_set_id,source_digest)")
+    );
+    assert!(MIGRATION.contains("CONSTRAINT scope_anti_bloat_binding_manifest_fk FOREIGN KEY"));
+}
+
+#[test]
 fn dispatch_and_response_are_one_use_audit_transitions() {
     assert!(MIGRATION.contains("OLD.state='prepared' AND NEW.state='sending'"));
     assert!(MIGRATION.contains("OLD.request_bytes IS NULL AND NEW.request_bytes IS NOT NULL"));
