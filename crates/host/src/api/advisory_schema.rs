@@ -1,3 +1,4 @@
+use super::candidate_schema;
 use super::catalog_support::{RouteSpec, uuid};
 use crate::tools::object_schema;
 use serde_json::{Value, json};
@@ -131,6 +132,56 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
             "Repeat only with the same request_id and identical authored material; changed material conflicts. Inspect candidate.advisory.get/audit after uncertainty.",
             scope_advisory_request_schema(),
             json!({"request_id":example_id,"candidate_set_id":example_id,"request_preference":"skip"}),
+        ),
+        route!(
+            "command",
+            "scope.anti_bloat.prepare",
+            "anti_bloat_prepare",
+            "Prepare an auditable source-bound anti-bloat review for one exact candidate-set revision.",
+            "Requires the owning open native session, authoritative frozen source binding, and current candidate-set revision.",
+            "Saves a deterministic local review; disabled, skip, and no-eligible states never call a provider.",
+            "One-shot prepare creates a new review ID on each call; retain the returned ID for recovery.",
+            object_schema(
+                json!({"candidate_set_id":uuid(),"expected_revision":{"type":"integer","minimum":1},"request_preference":{"type":"string","enum":["use_workspace","skip"]}}),
+                json!(["candidate_set_id", "expected_revision"])
+            ),
+            json!({"candidate_set_id":example_id,"expected_revision":3,"request_preference":"skip"}),
+        ),
+        route!(
+            "query",
+            "scope.anti_bloat.get",
+            "anti_bloat_get",
+            "Read one saved anti-bloat review and its send state.",
+            "Requires the original owner in the review workspace and the review ID.",
+            "Returns graph digests, findings, state and ranked IDs without raw transport bytes.",
+            "Safe to repeat by review ID.",
+            object_schema(json!({"review_id":uuid()}), json!(["review_id"])),
+            json!({"review_id":example_id}),
+        ),
+        route!(
+            "command",
+            "scope.anti_bloat.run",
+            "anti_bloat_run",
+            "Run the one-use ranking attempt for a prepared anti-bloat review.",
+            "Requires the original owner, prepared state and current frozen source/plan binding. Provider transport is disabled by default.",
+            "Commits request bytes and send fence before transport; commits raw response before interpretation. Failure remains send_unknown.",
+            "Repeat by review ID to read terminal state; sending and send_unknown are never resent.",
+            object_schema(json!({"review_id":uuid()}), json!(["review_id"])),
+            json!({"review_id":example_id}),
+        ),
+        route!(
+            "command",
+            "scope.anti_bloat.apply",
+            "anti_bloat_apply",
+            "Apply one explicit candidate removal after source-bound preservation checking.",
+            "Requires original owner, exact review/finding, narrow disposition, and caller-authored candidate delta with CAS revision and idempotency key.",
+            "Checks preservation and applies the caller delta atomically; provider output never authors a mutation.",
+            "Repeat only with the same review, finding and exact delta idempotency key; changed input conflicts.",
+            object_schema(
+                json!({"review_id":uuid(),"finding_id":{"type":"string","pattern":"^[0-9a-f]{64}$"},"disposition":{"type":"string","enum":["narrow"]},"delta":candidate_schema::delta_apply()}),
+                json!(["review_id", "finding_id", "disposition", "delta"])
+            ),
+            json!({"review_id":example_id,"finding_id":"a".repeat(64),"disposition":"narrow","delta":{"candidate_set_id":example_id,"expected_revision":3,"idempotency_key":"narrow-1","operations":[{"operation":"candidate.remove","candidate_id":example_id,"expected_revision":1}]}}),
         ),
         route!(
             "command",

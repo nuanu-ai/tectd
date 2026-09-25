@@ -45,6 +45,10 @@ fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
         ("query", "scope.advisory.audit"),
         ("command", "workspace.advisory.configure"),
         ("command", "scope.advisory.request"),
+        ("command", "scope.anti_bloat.prepare"),
+        ("query", "scope.anti_bloat.get"),
+        ("command", "scope.anti_bloat.run"),
+        ("command", "scope.anti_bloat.apply"),
         ("command", "scope.advisory.disposition"),
         ("command", "engineering.advisory.request"),
         ("command", "pipeline.recommendation.prepare"),
@@ -59,6 +63,13 @@ fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
             "missing intentional route {tool}:{route}"
         );
     }
+    assert_eq!(
+        routes()
+            .iter()
+            .filter(|route| route.route.starts_with("scope.anti_bloat."))
+            .count(),
+        4,
+    );
     assert!(
         definitions["tools"]
             .as_array()

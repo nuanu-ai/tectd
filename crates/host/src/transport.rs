@@ -272,6 +272,27 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                     None,
                 ))
             }
+            Invocation::AntiBloat(invocation) => {
+                use crate::anti_bloat_tools::AntiBloatInvocation;
+                let value = match invocation {
+                    AntiBloatInvocation::Prepare { candidate_set_id, expected_revision, preference } =>
+                        crate::anti_bloat_tools::review(service.prepare_anti_bloat(
+                            context, candidate_set_id, expected_revision, preference,
+                        ).await?),
+                    AntiBloatInvocation::Run { review_id } => serde_json::json!({
+                        "review_id": review_id,
+                        "state": crate::anti_bloat_tools::state(&service.run_anti_bloat_once(context, review_id).await?),
+                    }),
+                    AntiBloatInvocation::Get { review_id } =>
+                        crate::anti_bloat_tools::review(service.get_anti_bloat(context, review_id).await?),
+                    AntiBloatInvocation::Apply(authored) => serde_json::to_value(
+                        service.apply_anti_bloat(context, &authored).await?,
+                    ).map_err(Error::invalid_arguments_from)?,
+                };
+                let response = responses::with_actions(value, Vec::new(), None);
+                if responses::encoded_len(&response)? > capacity { return Err(Error::RequestTooLarge); }
+                Ok(response)
+            }
             Invocation::MatrixPlanningEffect(invocation) => {
                 service
                     .authenticate_matrix_verifier_session(context)

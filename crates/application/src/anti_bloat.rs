@@ -28,44 +28,15 @@ impl<S: AntiBloatStore, P: AntiBloatRankingProvider> AntiBloatApplication<S, P> 
         expected_revision: i64,
         preference: AdvisoryRequestPreference,
     ) -> Result<StoredAntiBloatReview> {
-        if workspace_id.is_nil()
-            || actor_id.is_nil()
-            || candidate_set_id.is_nil()
-            || expected_revision < 1
-        {
-            return Err(Error::InvalidArguments);
-        }
-        let mode = self.store.advisory_mode(workspace_id).await?;
-        let input = self
-            .store
-            .authoritative_input(workspace_id, candidate_set_id, expected_revision)
-            .await?
-            .ok_or(Error::NotFound)?;
-        if input.manifest.source.candidate_set_id != candidate_set_id
-            || input.manifest.source.candidate_set_revision != expected_revision
-        {
-            return Err(Error::InputConflict);
-        }
-        let review = review_anti_bloat(&Sha256ScopeDigest, &input)?;
-        let state = if mode == WorkspaceAdvisoryMode::Disabled {
-            AntiBloatAttemptState::NoCall(AntiBloatNoCall::Disabled)
-        } else if preference == AdvisoryRequestPreference::Skip {
-            AntiBloatAttemptState::NoCall(AntiBloatNoCall::Skipped)
-        } else if !review.findings.iter().any(|finding| finding.rankable) {
-            AntiBloatAttemptState::NoCall(AntiBloatNoCall::NoEligibleFindings)
-        } else {
-            AntiBloatAttemptState::Prepared
-        };
-        self.store
-            .save_review(StoredAntiBloatReview {
-                review_id: Uuid::new_v4(),
-                workspace_id,
-                actor_id,
-                input,
-                review,
-                state,
-            })
-            .await
+        prepare_anti_bloat_review(
+            &mut self.store,
+            workspace_id,
+            actor_id,
+            candidate_set_id,
+            expected_revision,
+            preference,
+        )
+        .await
     }
 
     /// The caller must commit this unit of work before giving the permit to a provider.
@@ -86,45 +57,98 @@ impl<S: AntiBloatStore, P: AntiBloatRankingProvider> AntiBloatApplication<S, P> 
         finalize_anti_bloat_response(&mut self.store, permit, raw).await
     }
 
-    /// Derives the complete post-delta graph from the frozen review. The store
-    /// returns an exact prior receipt or rechecks current source and CAS in its
-    /// transaction before applying a new decision.
     pub async fn disposition_and_apply(
         &mut self,
         authored: &AntiBloatAuthoredDelta,
     ) -> Result<CandidateDeltaReceipt> {
-        let saved = self
-            .store
-            .review(authored.review_id)
-            .await?
-            .ok_or(Error::NotFound)?;
-        if saved.review_id != authored.review_id {
-            return Err(Error::InputConflict);
-        }
-        let (preservation, after) = derive_anti_bloat_delta(
-            &Sha256ScopeDigest,
+        apply_anti_bloat_delta(&mut self.store, authored).await
+    }
+}
+
+pub async fn prepare_anti_bloat_review(
+    store: &mut dyn AntiBloatStore,
+    workspace_id: Uuid,
+    actor_id: Uuid,
+    candidate_set_id: Uuid,
+    expected_revision: i64,
+    preference: AdvisoryRequestPreference,
+) -> Result<StoredAntiBloatReview> {
+    if workspace_id.is_nil()
+        || actor_id.is_nil()
+        || candidate_set_id.is_nil()
+        || expected_revision < 1
+    {
+        return Err(Error::InvalidArguments);
+    }
+    let mode = store.advisory_mode(workspace_id).await?;
+    let input = store
+        .authoritative_input(workspace_id, candidate_set_id, expected_revision)
+        .await?
+        .ok_or(Error::NotFound)?;
+    if input.manifest.source.candidate_set_id != candidate_set_id
+        || input.manifest.source.candidate_set_revision != expected_revision
+    {
+        return Err(Error::InputConflict);
+    }
+    let review = review_anti_bloat(&Sha256ScopeDigest, &input)?;
+    let state = if mode == WorkspaceAdvisoryMode::Disabled {
+        AntiBloatAttemptState::NoCall(AntiBloatNoCall::Disabled)
+    } else if preference == AdvisoryRequestPreference::Skip {
+        AntiBloatAttemptState::NoCall(AntiBloatNoCall::Skipped)
+    } else if !review.findings.iter().any(|finding| finding.rankable) {
+        AntiBloatAttemptState::NoCall(AntiBloatNoCall::NoEligibleFindings)
+    } else {
+        AntiBloatAttemptState::Prepared
+    };
+    store
+        .save_review(StoredAntiBloatReview {
+            review_id: Uuid::new_v4(),
+            workspace_id,
+            actor_id,
+            input,
+            review,
+            state,
+        })
+        .await
+}
+
+/// Derives the complete post-delta graph from the frozen review. The store
+/// returns an exact prior receipt or rechecks current source and CAS in its
+/// transaction before applying a new decision.
+pub async fn apply_anti_bloat_delta(
+    store: &mut dyn AntiBloatStore,
+    authored: &AntiBloatAuthoredDelta,
+) -> Result<CandidateDeltaReceipt> {
+    let saved = store
+        .review(authored.review_id)
+        .await?
+        .ok_or(Error::NotFound)?;
+    if saved.review_id != authored.review_id {
+        return Err(Error::InputConflict);
+    }
+    let (preservation, after) = derive_anti_bloat_delta(
+        &Sha256ScopeDigest,
+        &saved.input,
+        &saved.review,
+        &authored.finding_id,
+        authored.disposition,
+        &authored.delta,
+    )
+    .map_err(|_| Error::InputConflict)?;
+    if authored.disposition != AntiBloatDisposition::Narrow {
+        return Err(Error::InputConflict);
+    }
+    store
+        .apply_preserved_delta(
+            authored.review_id,
             &saved.input,
-            &saved.review,
             &authored.finding_id,
             authored.disposition,
+            &preservation,
             &authored.delta,
+            &after,
         )
-        .map_err(|_| Error::InputConflict)?;
-        if authored.disposition != AntiBloatDisposition::Narrow {
-            return Err(Error::InputConflict);
-        }
-        self.store
-            .apply_preserved_delta(
-                authored.review_id,
-                &saved.input,
-                &authored.finding_id,
-                authored.disposition,
-                &preservation,
-                &authored.delta,
-                &after,
-            )
-            .await
-    }
+        .await
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,12 +284,83 @@ impl WorkspaceService {
     async fn anti_bloat_transaction(
         &self,
         context: &RequestContext,
-    ) -> Result<(Box<dyn UnitOfWork>, Uuid)> {
-        let (mut tx, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
-        tx.lock_native_session(identity.host_id, &context.native_session_id)
-            .await?;
+        mode: TransactionMode,
+    ) -> Result<(Box<dyn UnitOfWork>, Uuid, Uuid)> {
+        let (mut tx, identity) = self.authorized(context, mode).await?;
+        if mode == TransactionMode::ReadWrite {
+            tx.lock_native_session(identity.host_id, &context.native_session_id)
+                .await?;
+        }
         let (workspace, _) = Self::bound_session(&mut *tx, context, &identity).await?;
-        Ok((tx, workspace.id))
+        Ok((tx, workspace.id, identity.principal_id))
+    }
+
+    pub async fn prepare_anti_bloat(
+        &self,
+        context: &RequestContext,
+        candidate_set_id: Uuid,
+        expected_revision: i64,
+        preference: AdvisoryRequestPreference,
+    ) -> Result<StoredAntiBloatReview> {
+        let (mut tx, workspace, actor) = self
+            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+            .await?;
+        let review = prepare_anti_bloat_review(
+            tx.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
+            workspace,
+            actor,
+            candidate_set_id,
+            expected_revision,
+            preference,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(review)
+    }
+
+    pub async fn get_anti_bloat(
+        &self,
+        context: &RequestContext,
+        review_id: Uuid,
+    ) -> Result<StoredAntiBloatReview> {
+        if review_id.is_nil() {
+            return Err(Error::InvalidArguments);
+        }
+        let (mut tx, workspace, _) = self
+            .anti_bloat_transaction(context, TransactionMode::ReadOnly)
+            .await?;
+        let review = tx
+            .anti_bloat_store()
+            .ok_or(Error::StorageUnavailable)?
+            .review(review_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        if review.workspace_id != workspace {
+            return Err(Error::Forbidden);
+        }
+        tx.commit().await?;
+        Ok(review)
+    }
+
+    pub async fn apply_anti_bloat(
+        &self,
+        context: &RequestContext,
+        authored: &AntiBloatAuthoredDelta,
+    ) -> Result<CandidateDeltaReceipt> {
+        let (mut tx, workspace, _) = self
+            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+            .await?;
+        let store = tx.anti_bloat_store().ok_or(Error::StorageUnavailable)?;
+        let saved = store
+            .review(authored.review_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        if saved.workspace_id != workspace {
+            return Err(Error::Forbidden);
+        }
+        let receipt = apply_anti_bloat_delta(store, authored).await?;
+        tx.commit().await?;
+        Ok(receipt)
     }
 
     /// The one-use send fence is committed before the provider sees a permit.
@@ -278,7 +373,18 @@ impl WorkspaceService {
         if review_id.is_nil() {
             return Err(Error::InvalidArguments);
         }
-        let (mut fence, _) = self.anti_bloat_transaction(context).await?;
+        let (mut fence, workspace, _) = self
+            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+            .await?;
+        let saved = fence
+            .anti_bloat_store()
+            .ok_or(Error::StorageUnavailable)?
+            .review(review_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        if saved.workspace_id != workspace {
+            return Err(Error::Forbidden);
+        }
         let prepared = prepare_anti_bloat_send(
             fence.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
             review_id,
@@ -298,7 +404,9 @@ impl WorkspaceService {
         {
             Ok(raw) => raw,
             Err(_) => {
-                let (mut uncertain, _) = self.anti_bloat_transaction(context).await?;
+                let (mut uncertain, _, _) = self
+                    .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+                    .await?;
                 uncertain
                     .anti_bloat_store()
                     .ok_or(Error::StorageUnavailable)?
@@ -308,7 +416,9 @@ impl WorkspaceService {
                 return Ok(AntiBloatAttemptState::SendUnknown);
             }
         };
-        let (mut seal, _) = self.anti_bloat_transaction(context).await?;
+        let (mut seal, _, _) = self
+            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+            .await?;
         seal_anti_bloat_response(
             seal.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
             &permit,
@@ -317,7 +427,9 @@ impl WorkspaceService {
         .await?;
         seal.commit().await?;
 
-        let (mut finish, _) = self.anti_bloat_transaction(context).await?;
+        let (mut finish, _, _) = self
+            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+            .await?;
         let outcome = finalize_anti_bloat_response(
             finish.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
             &permit,

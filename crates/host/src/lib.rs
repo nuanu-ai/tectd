@@ -2,6 +2,7 @@
 
 mod advisory_dispatch;
 mod advisory_tools;
+mod anti_bloat_tools;
 mod api;
 mod context;
 mod frame;

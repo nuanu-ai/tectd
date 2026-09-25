@@ -14,6 +14,7 @@ pub(crate) enum Invocation {
     KnowledgeMaintenance(crate::knowledge_maintenance_tools::KnowledgeMaintenanceInvocation),
     KnowledgeSearch(tect_domain::KnowledgeSearchQuery),
     Advisory(crate::advisory_tools::AdvisoryInvocation),
+    AntiBloat(crate::anti_bloat_tools::AntiBloatInvocation),
     PipelineRecommendationPrepare(tect_application::PreparePipelineRecommendation),
     PipelineRecommendationRun(tect_application::RunPipelineRecommendation),
     PipelineRecommendationDisposition(tect_domain::PipelineDispositionRequest),
@@ -82,6 +83,9 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
             })
         }
         "help" => crate::api::parse_help(arguments).map(Invocation::Help),
+        "anti_bloat_prepare" | "anti_bloat_run" | "anti_bloat_get" | "anti_bloat_apply" => {
+            crate::anti_bloat_tools::parse(name, arguments).map(Invocation::AntiBloat)
+        }
         "pipeline_recommendation_prepare" => crate::pipeline_recommendation_tools::parse(arguments)
             .map(Invocation::PipelineRecommendationPrepare),
         "pipeline_recommendation_run" => crate::pipeline_recommendation_tools::parse_run(arguments)
@@ -104,10 +108,12 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
                 .map(Invocation::MatrixPlanningEffect)
         }
         "get_pipeline_open_effect" | "verify_pipeline_open_effect" => {
-            crate::pipeline_open_effect_tools::parse(name, arguments).map(Invocation::PipelineOpenEffect)
+            crate::pipeline_open_effect_tools::parse(name, arguments)
+                .map(Invocation::PipelineOpenEffect)
         }
         "get_pipeline_phase_effect" | "verify_pipeline_phase_effect" => {
-            crate::pipeline_phase_effect_tools::parse(name, arguments).map(Invocation::PipelinePhaseEffect)
+            crate::pipeline_phase_effect_tools::parse(name, arguments)
+                .map(Invocation::PipelinePhaseEffect)
         }
         "request_engineering_advisory" | "get_engineering_advisory" => {
             crate::matrix_advisory_tools::parse(name, arguments).map(Invocation::MatrixAdvisory)
