@@ -34,6 +34,7 @@ pub enum ModelRoutePreparation {
     SessionSkip,
     RequestSkip,
     CapabilityUnavailable,
+    UnknownWorkFacts,
     NoEligibleRoutes,
 }
 

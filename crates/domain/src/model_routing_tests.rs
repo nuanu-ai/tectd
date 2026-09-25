@@ -38,12 +38,35 @@ fn work() -> ModelRouteWorkContext {
             expected_verification_digest: "c".repeat(64),
             mapped_draft_node_indices: vec![0],
         },
-        role: "agent".into(),
-        tool: "code".into(),
-        data_class: "internal".into(),
-        host_capabilities: vec!["model-api".into()],
-        remaining_budget_units: 10,
-        available_latency_ms: 50,
+        selection_link: ModelRouteSelectionLink {
+            candidate_set_id: Uuid::new_v4(),
+            caller_request_id: Uuid::new_v4(),
+            mapped_draft_node_index: 0,
+            mapped_work_node_id: Uuid::from_u128(1),
+            mapped_work_node_revision: 1,
+        },
+        role: caller("agent".into()),
+        tool: caller("code".into()),
+        data_class: caller("internal".into()),
+        host_capabilities: ModelRouteFact::Known {
+            value: vec!["model-api".into()],
+            provenance: ModelRouteFactProvenance::Host {
+                evidence_ref: "host/capabilities/1".into(),
+            },
+        },
+        remaining_budget_units: caller(10),
+        available_latency_ms: caller(50),
+    }
+}
+
+fn caller<T>(value: T) -> ModelRouteFact<T> {
+    ModelRouteFact::Known {
+        value,
+        provenance: ModelRouteFactProvenance::Caller {
+            source_ref: "work/node/1".into(),
+            work_node_id: Uuid::from_u128(1),
+            work_node_revision: 1,
+        },
     }
 }
 
@@ -149,7 +172,7 @@ fn exact_matrix_and_work_facts_change_binding() {
     changed.approved_matrix_selection.task_revision += 1;
     assert_ne!(changed.digest().unwrap(), digest);
     changed = original.clone();
-    changed.remaining_budget_units += 1;
+    changed.remaining_budget_units = caller(11);
     assert_ne!(changed.digest().unwrap(), digest);
     changed = original;
     changed
@@ -178,7 +201,7 @@ fn exact_approved_matrix_choice_gates_eligibility() {
 #[test]
 fn no_route_is_abstention_and_has_no_execution_action() {
     let mut no_budget = work();
-    no_budget.remaining_budget_units = 0;
+    no_budget.remaining_budget_units = caller(0);
     let eligible = catalogue().eligible(&no_budget).unwrap();
     assert!(eligible.route_ids.is_empty());
     let ranking = ModelRouteRanking {
@@ -200,6 +223,42 @@ fn no_route_is_abstention_and_has_no_execution_action() {
             .as_deref(),
         Some("route-a")
     );
+}
+
+#[test]
+fn unknown_facts_fail_closed_and_have_distinct_digest() {
+    let base = work();
+    let mut unknown = base.clone();
+    unknown.remaining_budget_units = ModelRouteFact::Unknown;
+    assert!(unknown.has_unknown_facts());
+    assert!(catalogue().eligible(&unknown).unwrap().route_ids.is_empty());
+    assert_ne!(unknown.digest().unwrap(), base.digest().unwrap());
+    let mut bad = base.clone();
+    bad.host_capabilities = caller(vec!["model-api".into()]);
+    assert_eq!(bad.digest(), Err(Error::InvalidArguments));
+    bad = base;
+    bad.role = ModelRouteFact::Known {
+        value: "agent".into(),
+        provenance: ModelRouteFactProvenance::Caller {
+            source_ref: "work/node/other".into(),
+            work_node_id: Uuid::new_v4(),
+            work_node_revision: 1,
+        },
+    };
+    assert_eq!(bad.digest(), Err(Error::InvalidArguments));
+}
+
+#[test]
+fn mapped_work_node_and_receipt_are_required_and_bound() {
+    let base = work();
+    let mut changed = base.clone();
+    changed.selection_link.caller_request_id = Uuid::new_v4();
+    assert_ne!(changed.digest().unwrap(), base.digest().unwrap());
+    changed = base.clone();
+    changed.selection_link.mapped_work_node_revision += 1;
+    assert_eq!(changed.digest(), Err(Error::InvalidArguments));
+    changed.selection_link.mapped_draft_node_index = 1;
+    assert_eq!(changed.digest(), Err(Error::InvalidArguments));
 }
 
 #[test]

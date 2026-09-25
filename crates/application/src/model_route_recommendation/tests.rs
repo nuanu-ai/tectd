@@ -5,8 +5,9 @@ use crate::{
 };
 use async_trait::async_trait;
 use tect_domain::{
-    MODEL_ROUTE_CATALOGUE_SCHEMA, MatrixPlanningSelection, ModelRoute, ModelRouteCatalogue,
-    ModelRouteWorkContext, ObservedModelRoute,
+    MatrixPlanningSelection, ModelRoute, ModelRouteCatalogue, ModelRouteFact,
+    ModelRouteFactProvenance, ModelRouteSelectionLink, ModelRouteWorkContext, ObservedModelRoute,
+    MODEL_ROUTE_CATALOGUE_SCHEMA,
 };
 
 struct Catalogue(Option<ModelRouteCatalogue>);
@@ -68,6 +69,10 @@ fn fixture() -> (PrepareModelRouteRecommendation, Store, Catalogue) {
         disposition_id: selection.disposition_id,
         expected_task_id: selection.task_id,
         expected_task_revision: selection.task_revision,
+        expected_candidate_set_id: Uuid::new_v4(),
+        expected_caller_request_id: Uuid::new_v4(),
+        expected_mapped_work_node_id: Uuid::from_u128(2),
+        expected_mapped_work_node_revision: 2,
         request_key: "request-1".into(),
         requested_route_id: Some("route-disabled".into()),
         session_preference: AdvisoryRequestPreference::UseWorkspace,
@@ -76,12 +81,24 @@ fn fixture() -> (PrepareModelRouteRecommendation, Store, Catalogue) {
     let basis = ModelRouteRecommendationBasis {
         work: ModelRouteWorkContext {
             approved_matrix_selection: selection,
-            role: "agent".into(),
-            tool: "code".into(),
-            data_class: "internal".into(),
-            host_capabilities: vec!["model-api".into()],
-            remaining_budget_units: 20,
-            available_latency_ms: 100,
+            selection_link: ModelRouteSelectionLink {
+                candidate_set_id: request.expected_candidate_set_id,
+                caller_request_id: request.expected_caller_request_id,
+                mapped_draft_node_index: 0,
+                mapped_work_node_id: request.expected_mapped_work_node_id,
+                mapped_work_node_revision: request.expected_mapped_work_node_revision,
+            },
+            role: caller("agent".into()),
+            tool: caller("code".into()),
+            data_class: caller("internal".into()),
+            host_capabilities: ModelRouteFact::Known {
+                value: vec!["model-api".into()],
+                provenance: ModelRouteFactProvenance::Host {
+                    evidence_ref: "host/caps/1".into(),
+                },
+            },
+            remaining_budget_units: caller(20),
+            available_latency_ms: caller(100),
         },
         advisory_mode: WorkspaceAdvisoryMode::Optional,
         observed_actual: None,
@@ -116,6 +133,17 @@ fn fixture() -> (PrepareModelRouteRecommendation, Store, Catalogue) {
         },
         catalogue,
     )
+}
+
+fn caller<T>(value: T) -> ModelRouteFact<T> {
+    ModelRouteFact::Known {
+        value,
+        provenance: ModelRouteFactProvenance::Caller {
+            source_ref: "work/node/2".into(),
+            work_node_id: Uuid::from_u128(2),
+            work_node_revision: 2,
+        },
+    }
 }
 
 #[tokio::test]
@@ -191,7 +219,7 @@ async fn no_call_outcomes_are_durable_and_never_dispatch() {
             1 => request.session_preference = AdvisoryRequestPreference::Skip,
             2 => request.request_preference = AdvisoryRequestPreference::Skip,
             3 => catalogue.0 = None,
-            _ => store.basis.as_mut().unwrap().work.remaining_budget_units = 0,
+            _ => store.basis.as_mut().unwrap().work.remaining_budget_units = caller(0),
         }
         let prepared = request.prepare(&mut store, &catalogue).await.unwrap();
         assert_eq!(prepared.preparation, expected);
@@ -199,4 +227,29 @@ async fn no_call_outcomes_are_durable_and_never_dispatch() {
         assert_eq!(prepared.routes.observed_actual, None);
         assert_eq!(store.captures, 1);
     }
+}
+
+#[tokio::test]
+async fn exact_saved_link_and_unknown_facts_gate_preparation() {
+    let (mut request, mut store, catalogue) = fixture();
+    request.expected_caller_request_id = Uuid::new_v4();
+    assert_eq!(
+        request.prepare(&mut store, &catalogue).await,
+        Err(Error::StaleContext)
+    );
+    assert_eq!(store.captures, 0);
+    request.expected_caller_request_id = store
+        .basis
+        .as_ref()
+        .unwrap()
+        .work
+        .selection_link
+        .caller_request_id;
+    store.basis.as_mut().unwrap().work.role = ModelRouteFact::Unknown;
+    let prepared = request.prepare(&mut store, &catalogue).await.unwrap();
+    assert_eq!(
+        prepared.preparation,
+        ModelRoutePreparation::UnknownWorkFacts
+    );
+    assert!(prepared.eligible.unwrap().route_ids.is_empty());
 }

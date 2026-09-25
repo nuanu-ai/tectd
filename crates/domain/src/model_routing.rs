@@ -3,6 +3,7 @@ use crate::{Error, MatrixPlanningSelection, Result};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
+use uuid::Uuid;
 
 pub const MODEL_ROUTE_CATALOGUE_SCHEMA: &str = "tect.model-routes/1";
 
@@ -37,14 +38,46 @@ pub struct ModelRouteCatalogue {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRouteWorkContext {
-    /// The caller supplies an already approved, exact Matrix disposition.
+    /// The store supplies the approved Matrix disposition from persisted state.
     pub approved_matrix_selection: MatrixPlanningSelection,
-    pub role: String,
-    pub tool: String,
-    pub data_class: String,
-    pub host_capabilities: Vec<String>,
-    pub remaining_budget_units: u64,
-    pub available_latency_ms: u64,
+    /// Persisted native save receipt and one mapped Work node, never inferred from prose.
+    pub selection_link: ModelRouteSelectionLink,
+    pub role: ModelRouteFact<String>,
+    pub tool: ModelRouteFact<String>,
+    pub data_class: ModelRouteFact<String>,
+    pub host_capabilities: ModelRouteFact<Vec<String>>,
+    pub remaining_budget_units: ModelRouteFact<u64>,
+    pub available_latency_ms: ModelRouteFact<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelRouteSelectionLink {
+    pub candidate_set_id: Uuid,
+    pub caller_request_id: Uuid,
+    pub mapped_draft_node_index: usize,
+    pub mapped_work_node_id: Uuid,
+    pub mapped_work_node_revision: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelRouteFact<T> {
+    Known {
+        value: T,
+        provenance: ModelRouteFactProvenance,
+    },
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelRouteFactProvenance {
+    /// Explicit caller-authored fact attached to the exact saved Work node.
+    Caller {
+        source_ref: String,
+        work_node_id: Uuid,
+        work_node_revision: i64,
+    },
+    /// Host-owned capability discovery; caller assertions are insufficient.
+    Host { evidence_ref: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,7 +184,41 @@ impl ModelRouteCatalogue {
     pub fn eligible(&self, work: &ModelRouteWorkContext) -> Result<EligibleModelRoutes> {
         let catalogue_digest = self.digest()?;
         let work_context_digest = work.digest()?;
-        let capabilities: BTreeSet<_> = work.host_capabilities.iter().collect();
+        let (role, tool, data_class, capabilities, budget, latency) = match (
+            &work.role,
+            &work.tool,
+            &work.data_class,
+            &work.host_capabilities,
+            &work.remaining_budget_units,
+            &work.available_latency_ms,
+        ) {
+            (
+                ModelRouteFact::Known { value: role, .. },
+                ModelRouteFact::Known { value: tool, .. },
+                ModelRouteFact::Known {
+                    value: data_class, ..
+                },
+                ModelRouteFact::Known {
+                    value: capabilities,
+                    ..
+                },
+                ModelRouteFact::Known { value: budget, .. },
+                ModelRouteFact::Known { value: latency, .. },
+            ) => (role, tool, data_class, capabilities, budget, latency),
+            _ => {
+                let mut configured_route_ids: Vec<_> =
+                    self.routes.iter().map(|route| route.id.clone()).collect();
+                configured_route_ids.sort();
+                return Ok(EligibleModelRoutes {
+                    catalogue_version: self.version,
+                    catalogue_digest,
+                    work_context_digest,
+                    configured_route_ids,
+                    route_ids: Vec::new(),
+                });
+            }
+        };
+        let capabilities: BTreeSet<_> = capabilities.iter().collect();
         let mut configured_route_ids: Vec<_> =
             self.routes.iter().map(|route| route.id.clone()).collect();
         configured_route_ids.sort();
@@ -163,15 +230,15 @@ impl ModelRouteCatalogue {
                     && route
                         .allowed_matrix_choice_ids
                         .contains(&work.approved_matrix_selection.selected_choice_id)
-                    && route.allowed_roles.contains(&work.role)
-                    && route.allowed_tools.contains(&work.tool)
-                    && route.allowed_data_classes.contains(&work.data_class)
+                    && route.allowed_roles.contains(role)
+                    && route.allowed_tools.contains(tool)
+                    && route.allowed_data_classes.contains(data_class)
                     && route
                         .required_host_capabilities
                         .iter()
                         .all(|capability| capabilities.contains(capability))
-                    && work.remaining_budget_units >= route.minimum_budget_units
-                    && work.available_latency_ms >= route.minimum_latency_ms
+                    && *budget >= route.minimum_budget_units
+                    && *latency >= route.minimum_latency_ms
             })
             .map(|route| route.id.clone())
             .collect();
@@ -189,14 +256,54 @@ impl ModelRouteCatalogue {
 impl ModelRouteWorkContext {
     pub fn digest(&self) -> Result<String> {
         self.approved_matrix_selection.validate()?;
-        for id in [&self.role, &self.tool, &self.data_class] {
-            if !valid_id(id) {
-                return Err(Error::InvalidArguments);
+        let link = &self.selection_link;
+        if link.candidate_set_id.is_nil()
+            || link.caller_request_id.is_nil()
+            || link.mapped_work_node_id.is_nil()
+            || link.mapped_work_node_revision < 1
+            || !self
+                .approved_matrix_selection
+                .mapped_draft_node_indices
+                .contains(&link.mapped_draft_node_index)
+        {
+            return Err(Error::InvalidArguments);
+        }
+        for fact in [&self.role, &self.tool, &self.data_class] {
+            validate_fact(fact, false)?;
+            if let ModelRouteFact::Known { value, .. } = fact {
+                if !valid_id(value) {
+                    return Err(Error::InvalidArguments);
+                }
             }
         }
-        valid_set(&self.host_capabilities, true)?;
+        validate_fact(&self.host_capabilities, true)?;
+        if let ModelRouteFact::Known { value, .. } = &self.host_capabilities {
+            valid_set(value, true)?;
+        }
+        validate_fact(&self.remaining_budget_units, false)?;
+        validate_fact(&self.available_latency_ms, false)?;
+        for provenance in [
+            self.role.provenance(),
+            self.tool.provenance(),
+            self.data_class.provenance(),
+            self.remaining_budget_units.provenance(),
+            self.available_latency_ms.provenance(),
+        ] {
+            if let Some(ModelRouteFactProvenance::Caller {
+                work_node_id,
+                work_node_revision,
+                ..
+            }) = provenance
+            {
+                if *work_node_id != link.mapped_work_node_id
+                    || *work_node_revision != link.mapped_work_node_revision
+                {
+                    return Err(Error::InvalidArguments);
+                }
+            }
+        }
         let mut hash = Sha256::new();
-        part(&mut hash, "tect.model-route-work/1");
+        part(&mut hash, "tect.model-route-work/2");
         let selection = &self.approved_matrix_selection;
         part(&mut hash, &selection.task_id.to_string());
         number(&mut hash, selection.task_revision as u64);
@@ -213,18 +320,103 @@ impl ModelRouteWorkContext {
         for index in &selection.mapped_draft_node_indices {
             number(&mut hash, *index as u64);
         }
-        for id in [&self.role, &self.tool, &self.data_class] {
-            part(&mut hash, id);
+        part(&mut hash, &link.candidate_set_id.to_string());
+        part(&mut hash, &link.caller_request_id.to_string());
+        number(&mut hash, link.mapped_draft_node_index as u64);
+        part(&mut hash, &link.mapped_work_node_id.to_string());
+        number(&mut hash, link.mapped_work_node_revision as u64);
+        for fact in [&self.role, &self.tool, &self.data_class] {
+            hash_fact(&mut hash, fact, |hash, value| part(hash, value));
         }
-        let mut capabilities = self.host_capabilities.clone();
-        capabilities.sort();
-        number(&mut hash, capabilities.len() as u64);
-        for capability in capabilities {
-            part(&mut hash, &capability);
-        }
-        number(&mut hash, self.remaining_budget_units);
-        number(&mut hash, self.available_latency_ms);
+        hash_fact(&mut hash, &self.host_capabilities, |hash, values| {
+            let mut sorted = values.clone();
+            sorted.sort();
+            number(hash, sorted.len() as u64);
+            for value in sorted {
+                part(hash, &value);
+            }
+        });
+        hash_fact(&mut hash, &self.remaining_budget_units, |hash, value| {
+            number(hash, *value)
+        });
+        hash_fact(&mut hash, &self.available_latency_ms, |hash, value| {
+            number(hash, *value)
+        });
         Ok(format!("{:x}", hash.finalize()))
+    }
+
+    pub fn has_unknown_facts(&self) -> bool {
+        matches!(self.role, ModelRouteFact::Unknown)
+            || matches!(self.tool, ModelRouteFact::Unknown)
+            || matches!(self.data_class, ModelRouteFact::Unknown)
+            || matches!(self.host_capabilities, ModelRouteFact::Unknown)
+            || matches!(self.remaining_budget_units, ModelRouteFact::Unknown)
+            || matches!(self.available_latency_ms, ModelRouteFact::Unknown)
+    }
+}
+
+impl<T> ModelRouteFact<T> {
+    fn provenance(&self) -> Option<&ModelRouteFactProvenance> {
+        match self {
+            Self::Known { provenance, .. } => Some(provenance),
+            Self::Unknown => None,
+        }
+    }
+}
+
+fn validate_fact<T>(fact: &ModelRouteFact<T>, host_owned: bool) -> Result<()> {
+    match fact {
+        ModelRouteFact::Unknown => Ok(()),
+        ModelRouteFact::Known {
+            provenance: ModelRouteFactProvenance::Host { evidence_ref },
+            ..
+        } if host_owned && valid_ref(evidence_ref) => Ok(()),
+        ModelRouteFact::Known {
+            provenance:
+                ModelRouteFactProvenance::Caller {
+                    source_ref,
+                    work_node_id,
+                    work_node_revision,
+                },
+            ..
+        } if !host_owned
+            && valid_ref(source_ref)
+            && !work_node_id.is_nil()
+            && *work_node_revision >= 1 =>
+        {
+            Ok(())
+        }
+        _ => Err(Error::InvalidArguments),
+    }
+}
+
+fn hash_fact<T>(
+    hash: &mut Sha256,
+    fact: &ModelRouteFact<T>,
+    value_hash: impl FnOnce(&mut Sha256, &T),
+) {
+    match fact {
+        ModelRouteFact::Unknown => part(hash, "unknown"),
+        ModelRouteFact::Known { value, provenance } => {
+            part(hash, "known");
+            match provenance {
+                ModelRouteFactProvenance::Caller {
+                    source_ref,
+                    work_node_id,
+                    work_node_revision,
+                } => {
+                    part(hash, "caller");
+                    part(hash, source_ref);
+                    part(hash, &work_node_id.to_string());
+                    number(hash, *work_node_revision as u64);
+                }
+                ModelRouteFactProvenance::Host { evidence_ref } => {
+                    part(hash, "host");
+                    part(hash, evidence_ref);
+                }
+            }
+            value_hash(hash, value);
+        }
     }
 }
 

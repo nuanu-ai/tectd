@@ -14,6 +14,10 @@ pub struct PrepareModelRouteRecommendation {
     pub disposition_id: Uuid,
     pub expected_task_id: Uuid,
     pub expected_task_revision: i64,
+    pub expected_candidate_set_id: Uuid,
+    pub expected_caller_request_id: Uuid,
+    pub expected_mapped_work_node_id: Uuid,
+    pub expected_mapped_work_node_revision: i64,
     pub request_key: String,
     pub requested_route_id: Option<String>,
     pub session_preference: AdvisoryRequestPreference,
@@ -26,6 +30,10 @@ impl PrepareModelRouteRecommendation {
             || self.disposition_id.is_nil()
             || self.expected_task_id.is_nil()
             || self.expected_task_revision < 1
+            || self.expected_candidate_set_id.is_nil()
+            || self.expected_caller_request_id.is_nil()
+            || self.expected_mapped_work_node_id.is_nil()
+            || self.expected_mapped_work_node_revision < 1
             || self.request_key.is_empty()
             || self.request_key.len() > 256
             || self.request_key.contains('\0')
@@ -49,6 +57,7 @@ impl PrepareModelRouteRecommendation {
                 || saved.work.approved_matrix_selection.disposition_id != self.disposition_id
                 || saved.work.approved_matrix_selection.task_id != self.expected_task_id
                 || saved.work.approved_matrix_selection.task_revision != self.expected_task_revision
+                || !self.matches_selection_link(&saved.work)
                 || saved.routes.requested_route_id != self.requested_route_id
                 || saved.session_preference != self.session_preference
                 || saved.request_preference != self.request_preference
@@ -66,9 +75,11 @@ impl PrepareModelRouteRecommendation {
         if selection.disposition_id != self.disposition_id
             || selection.task_id != self.expected_task_id
             || selection.task_revision != self.expected_task_revision
+            || !self.matches_selection_link(&basis.work)
         {
             return Err(Error::StaleContext);
         }
+        basis.work.digest()?;
         let catalogue = catalogue_provider.catalogue()?;
         let eligible = catalogue
             .as_ref()
@@ -95,6 +106,8 @@ impl PrepareModelRouteRecommendation {
             ModelRoutePreparation::RequestSkip
         } else if eligible.is_none() {
             ModelRoutePreparation::CapabilityUnavailable
+        } else if basis.work.has_unknown_facts() {
+            ModelRoutePreparation::UnknownWorkFacts
         } else if eligible
             .as_ref()
             .is_some_and(|set| set.route_ids.is_empty())
@@ -119,6 +132,14 @@ impl PrepareModelRouteRecommendation {
             return Err(Error::InternalInvariant);
         }
         Ok(saved)
+    }
+
+    fn matches_selection_link(&self, work: &tect_domain::ModelRouteWorkContext) -> bool {
+        let link = &work.selection_link;
+        link.candidate_set_id == self.expected_candidate_set_id
+            && link.caller_request_id == self.expected_caller_request_id
+            && link.mapped_work_node_id == self.expected_mapped_work_node_id
+            && link.mapped_work_node_revision == self.expected_mapped_work_node_revision
     }
 }
 
