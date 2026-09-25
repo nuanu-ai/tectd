@@ -26,6 +26,7 @@ mod matrix_verification;
 mod matrix_verification_ports;
 mod model_route_recommendation;
 mod model_route_recommendation_ports;
+mod model_route_decision;
 mod pipeline_open_effect;
 mod pipeline_phase_effect;
 mod pipeline_recommendation;
@@ -83,8 +84,12 @@ pub use matrix_verification_ports::{
     DisabledMatrixEvidenceValidator, MatrixEvidenceValidator, MatrixVerificationStore,
 };
 pub use model_route_recommendation::PrepareModelRouteRecommendation;
+pub use model_route_decision::{DecideModelRouteRecommendation, DispositionModelRouteRecommendation};
 pub use model_route_recommendation_ports::{
-    ModelRouteCatalogueProvider, ModelRoutePreparation, ModelRouteRecommendationBasis,
+    CapturedModelRouteDecision, CapturedModelRouteDisposition, ModelRouteAbstainReason,
+    ModelRouteCatalogueProvider, ModelRouteDecisionInput, ModelRouteDecisionOutcome,
+    ModelRouteDecisionStore, ModelRouteDispositionAction, ModelRoutePreparation,
+    ModelRouteRecommendationBasis,
     ModelRouteHostCapabilitiesProvider, ModelRouteRecommendationStore, ModelRouteSelectionRead,
     PreparedModelRouteRecommendation, UnavailableModelRouteCatalogue,
     UnavailableModelRouteHostCapabilities,

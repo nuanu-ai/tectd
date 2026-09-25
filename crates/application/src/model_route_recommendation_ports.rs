@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use tect_domain::{
     AdvisoryRequestPreference, EligibleModelRoutes, ModelRouteCatalogue, ModelRouteFact,
-    ModelRouteRecord, ModelRouteWorkContext, ObservedModelRoute, Result, WorkspaceAdvisoryMode,
+    ModelRouteRanking, ModelRouteRecord, ModelRouteWorkContext, Result, WorkspaceAdvisoryMode,
 };
 use uuid::Uuid;
 
@@ -35,9 +35,7 @@ impl ModelRouteHostCapabilitiesProvider for UnavailableModelRouteHostCapabilitie
 /// execution evidence. Caller-supplied Matrix fields must never replace it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRouteRecommendationBasis {
-    pub work: ModelRouteWorkContext,
     pub advisory_mode: WorkspaceAdvisoryMode,
-    pub observed_actual: Option<ObservedModelRoute>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,4 +99,84 @@ pub trait ModelRouteSelectionRead: Send {
         mapped_work_node_id: Uuid,
         mapped_work_node_revision: i64,
     ) -> Result<Option<ModelRouteWorkContext>>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelRouteDecisionInput {
+    Ranking(ModelRouteRanking),
+    Abstain,
+    NoCall,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelRouteAbstainReason {
+    Explicit,
+    EmptyRanking,
+    NoCall,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelRouteDecisionOutcome {
+    Recommended { route_id: String },
+    Abstained { reason: ModelRouteAbstainReason },
+    NoRoute { reason: ModelRoutePreparation },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedModelRouteDecision {
+    pub id: Uuid,
+    pub prepared: PreparedModelRouteRecommendation,
+    pub input: ModelRouteDecisionInput,
+    pub outcome: ModelRouteDecisionOutcome,
+    pub routes: ModelRouteRecord,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelRouteDispositionAction {
+    Accept,
+    Reject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedModelRouteDisposition {
+    pub id: Uuid,
+    pub decision_id: Uuid,
+    pub workspace_id: Uuid,
+    pub actor_id: Uuid,
+    pub action: ModelRouteDispositionAction,
+    pub rationale: String,
+}
+
+/// Implementations must lock/recheck the immutable preparation and exact
+/// Matrix/Work/catalogue basis before insert. Replay is exact; conflicts fail.
+#[async_trait]
+pub trait ModelRouteDecisionStore: Send {
+    async fn decision_by_id(
+        &mut self,
+        workspace_id: Uuid,
+        id: Uuid,
+    ) -> Result<Option<CapturedModelRouteDecision>>;
+    async fn decision_by_preparation(
+        &mut self,
+        workspace_id: Uuid,
+        request_key: &str,
+    ) -> Result<Option<CapturedModelRouteDecision>>;
+    async fn capture_decision(
+        &mut self,
+        value: &CapturedModelRouteDecision,
+    ) -> Result<CapturedModelRouteDecision>;
+    async fn disposition_by_id(
+        &mut self,
+        workspace_id: Uuid,
+        id: Uuid,
+    ) -> Result<Option<CapturedModelRouteDisposition>>;
+    async fn disposition_by_decision(
+        &mut self,
+        workspace_id: Uuid,
+        decision_id: Uuid,
+    ) -> Result<Option<CapturedModelRouteDisposition>>;
+    async fn capture_disposition(
+        &mut self,
+        value: &CapturedModelRouteDisposition,
+    ) -> Result<CapturedModelRouteDisposition>;
 }

@@ -1,7 +1,7 @@
 //! Prepare a durable recommendation opportunity without ranking or dispatch.
 use crate::{
-    ModelRouteCatalogueProvider, ModelRoutePreparation, ModelRouteRecommendationStore,
-    PreparedModelRouteRecommendation,
+    ModelRouteCatalogueProvider, ModelRouteHostCapabilitiesProvider, ModelRoutePreparation,
+    ModelRouteRecommendationStore, ModelRouteSelectionRead, PreparedModelRouteRecommendation,
 };
 use tect_domain::{
     AdvisoryRequestPreference, Error, ModelRouteRecord, Result, WorkspaceAdvisoryMode,
@@ -46,6 +46,8 @@ impl PrepareModelRouteRecommendation {
     pub async fn prepare(
         &self,
         store: &mut dyn ModelRouteRecommendationStore,
+        selection_reader: &mut dyn ModelRouteSelectionRead,
+        host_capabilities: &dyn ModelRouteHostCapabilitiesProvider,
         catalogue_provider: &dyn ModelRouteCatalogueProvider,
     ) -> Result<PreparedModelRouteRecommendation> {
         self.validate()?;
@@ -70,32 +72,42 @@ impl PrepareModelRouteRecommendation {
             .load_basis(self.workspace_id, self.disposition_id)
             .await?
             .ok_or(Error::NotFound)?;
-        let selection = &basis.work.approved_matrix_selection;
+        let mut work = selection_reader
+            .approved_work_context(
+                self.workspace_id,
+                self.disposition_id,
+                self.expected_candidate_set_id,
+                self.expected_caller_request_id,
+                self.expected_mapped_work_node_id,
+                self.expected_mapped_work_node_revision,
+            )
+            .await?
+            .ok_or(Error::NotFound)?;
+        let selection = &work.approved_matrix_selection;
         selection.validate()?;
         if selection.disposition_id != self.disposition_id
             || selection.task_id != self.expected_task_id
             || selection.task_revision != self.expected_task_revision
-            || !self.matches_selection_link(&basis.work)
+            || !self.matches_selection_link(&work)
         {
             return Err(Error::StaleContext);
         }
-        basis.work.digest()?;
+        work.host_capabilities = host_capabilities.host_capabilities()?;
+        work.digest()?;
         let catalogue = catalogue_provider.catalogue()?;
         let eligible = catalogue
             .as_ref()
-            .map(|snapshot| snapshot.eligible(&basis.work))
+            .map(|snapshot| snapshot.eligible(&work))
             .transpose()?;
         // Even an ineligible request is retained when it names a configured ID.
         // An unconfigured request is rejected; no catalogue cannot validate one.
         let routes = match &eligible {
-            Some(eligible) => {
-                eligible.record(self.requested_route_id.clone(), None, basis.observed_actual)?
-            }
+            Some(eligible) => eligible.record(self.requested_route_id.clone(), None, None)?,
             None if self.requested_route_id.is_some() => return Err(Error::InvalidArguments),
             None => ModelRouteRecord {
                 requested_route_id: None,
                 recommended_route_id: None,
-                observed_actual: basis.observed_actual,
+                observed_actual: None,
             },
         };
         let preparation = if basis.advisory_mode == WorkspaceAdvisoryMode::Disabled {
@@ -106,7 +118,7 @@ impl PrepareModelRouteRecommendation {
             ModelRoutePreparation::RequestSkip
         } else if eligible.is_none() {
             ModelRoutePreparation::CapabilityUnavailable
-        } else if basis.work.has_unknown_facts() {
+        } else if work.has_unknown_facts() {
             ModelRoutePreparation::UnknownWorkFacts
         } else if eligible
             .as_ref()
@@ -121,7 +133,7 @@ impl PrepareModelRouteRecommendation {
             request_key: self.request_key.clone(),
             session_preference: self.session_preference,
             request_preference: self.request_preference,
-            work: basis.work,
+            work,
             catalogue,
             eligible,
             preparation,
