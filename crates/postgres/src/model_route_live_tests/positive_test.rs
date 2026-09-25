@@ -146,6 +146,17 @@ async fn install_synthetic_policy(
     tenant: Uuid,
     owner: &crate::admin::Enrollment,
 ) -> AdvisoryBudgetPolicy {
+    install_synthetic_policy_version(store, workspace, tenant, owner, 1, 0).await
+}
+
+async fn install_synthetic_policy_version(
+    store: &PgStore,
+    workspace: Uuid,
+    tenant: Uuid,
+    owner: &crate::admin::Enrollment,
+    version: i64,
+    starts_in_ms: i64,
+) -> AdvisoryBudgetPolicy {
     let now = i64::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -162,12 +173,12 @@ async fn install_synthetic_policy(
         elapsed_monotonic_ms: 30_000,
         retry_dispatches: 1,
     };
-    let from = now - 60_000;
+    let from = now - 60_000 + starts_in_ms;
     let until = now + 600_000;
     let policy = AdvisoryBudgetPolicy::new(
         id,
-        1,
-        AdvisoryBudgetPolicy::digest_for(id, 1, from, until, ceilings),
+        version,
+        AdvisoryBudgetPolicy::digest_for(id, version, from, until, ceilings),
         from,
         until,
         ceilings,

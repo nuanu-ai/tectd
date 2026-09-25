@@ -2,7 +2,7 @@
 //! Call only after locking the route's dispatch/opportunity (or review/opportunity).
 use crate::storage_error;
 use sqlx::{Postgres, Transaction};
-use tect_domain::{Error, Result};
+use tect_domain::{AdvisoryBudgetPolicy, Error, Result};
 use uuid::Uuid;
 
 pub(crate) struct PolicyUsage {
@@ -93,4 +93,39 @@ pub(crate) async fn policy_usage(
         pending: totals.6,
         invalid: totals.7,
     })
+}
+
+/// Recheck the winner after the route's own lock and the policy ledger lock.
+/// A previously authorized policy may have been superseded before reservation.
+pub(crate) async fn require_current_policy(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    policy: &AdvisoryBudgetPolicy,
+) -> Result<()> {
+    let current: Option<(Uuid, i64, String, i64, i64)> = sqlx::query_as(
+        "WITH instant AS MATERIALIZED (SELECT \
+         (EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())*1000)::bigint AS now) \
+         SELECT id,version,digest,effective_from_unix_ms,effective_until_unix_ms \
+         FROM advisory_budget_policies CROSS JOIN instant \
+         WHERE tenant_id=$1 AND workspace_id=$2 \
+           AND effective_from_unix_ms <= instant.now \
+           AND effective_until_unix_ms > instant.now \
+         ORDER BY version DESC LIMIT 1",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    if current.as_ref().is_none_or(|row| {
+        row.0 != policy.id()
+            || row.1 != policy.version()
+            || row.2 != policy.digest()
+            || row.3 != policy.effective_from_unix_ms()
+            || row.4 != policy.effective_until_unix_ms()
+    }) {
+        return Err(Error::BudgetPolicyInvalid);
+    }
+    Ok(())
 }

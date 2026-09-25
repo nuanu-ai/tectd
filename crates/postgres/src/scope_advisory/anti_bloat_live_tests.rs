@@ -2,11 +2,12 @@ use super::live_support::{D, manifest, reseal_manifest, rw};
 use super::*;
 use crate::{PgStore, admin, store::PgUnitOfWork};
 use async_trait::async_trait;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tect_application::{
-    AntiBloatApplication, AntiBloatAuthoredDelta, AntiBloatStore, AntiBloatVerificationEvidence,
-    DisabledAntiBloatRankingProvider, SetupFiles, SourceInspector, UnitOfWork,
-    VerifyAntiBloatApply, WorkspaceService,
+    AntiBloatApplication, AntiBloatAuthoredDelta, AntiBloatPreparedRequest, AntiBloatStore,
+    AntiBloatVerificationEvidence, DisabledAntiBloatRankingProvider, SetupFiles, SourceInspector,
+    UnitOfWork, VerifyAntiBloatApply, WorkspaceService,
 };
 
 struct UnusedVerifierAdapters;
@@ -85,10 +86,34 @@ fn trusted_graph_links_every_goal_so_even_duplicate_candidates_are_not_rankable(
 #[tokio::test]
 #[ignore = "requires disposable migrated PG18 and TECT_TEST_ADMIN_URL/TECT_TEST_RUNTIME_URL"]
 async fn selected_save_activates_exact_source_bound_anti_bloat_review() {
+    assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
     let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
     let admin_pool = sqlx::PgPool::connect(&admin_url).await.unwrap();
     let runtime_pool = sqlx::PgPool::connect(&runtime_url).await.unwrap();
+    let identity: (String, i64, String) = sqlx::query_as(
+        "SELECT current_database(),(SELECT oid::bigint FROM pg_catalog.pg_database WHERE datname=current_database()),(SELECT system_identifier::text FROM pg_catalog.pg_control_system())"
+    ).fetch_one(&admin_pool).await.unwrap();
+    assert_eq!(
+        identity.0,
+        std::env::var("TECT_TEST_EXPECTED_DB_NAME").unwrap()
+    );
+    assert_eq!(
+        identity.1.to_string(),
+        std::env::var("TECT_TEST_EXPECTED_DB_OID").unwrap()
+    );
+    assert_eq!(
+        identity.2,
+        std::env::var("TECT_TEST_EXPECTED_PG_SYSTEM_ID").unwrap()
+    );
+    let migration: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
+        .fetch_one(&admin_pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        migration.to_string(),
+        std::env::var("TECT_TEST_EXPECTED_MIGRATION_VERSION").unwrap()
+    );
     let enrollment = admin::enroll_host(&admin_pool, None, vec![]).await.unwrap();
     let tenant = enrollment.tenant_id;
     let actor = enrollment.principal_id;
@@ -554,6 +579,88 @@ async fn selected_save_activates_exact_source_bound_anti_bloat_review() {
         },
     };
     Box::new(selected_app.store).commit().await.unwrap();
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    let ceilings = AdvisoryBudgetCeilings {
+        provider_calls: 2,
+        input_tokens: 100,
+        output_tokens: 100,
+        request_utf8_bytes: 100_000,
+        elapsed_monotonic_ms: 30_000,
+        retry_dispatches: 1,
+    };
+    let mut policies = Vec::new();
+    for version in [1, 2] {
+        let id = Uuid::new_v4();
+        let from = now - 60_000;
+        let until = now + 600_000;
+        let policy = AdvisoryBudgetPolicy::new(
+            id,
+            version,
+            AdvisoryBudgetPolicy::digest_for(id, version, from, until, ceilings),
+            from,
+            until,
+            ceilings,
+            actor,
+            "a".repeat(128),
+        )
+        .unwrap();
+        let mut install = rw(&store, &enrollment.auth, tenant).await;
+        install
+            .advisory_budget_policy_store()
+            .unwrap()
+            .install_budget_policy(workspace, &policy)
+            .await
+            .unwrap();
+        install.commit().await.unwrap();
+        policies.push(policy);
+    }
+    let eligible = prepared
+        .review
+        .findings
+        .iter()
+        .filter(|finding| finding.rankable)
+        .map(|finding| finding.id.clone())
+        .collect::<Vec<_>>();
+    let bytes = serde_json::to_vec(&serde_json::json!({
+        "review": &prepared.review, "eligible_ids": &eligible,
+    }))
+    .unwrap();
+    let request = AntiBloatPreparedRequest {
+        sha256: format!("{:x}", Sha256::digest(&bytes)),
+        bytes,
+    };
+    let mut stale = rw(&store, &enrollment.auth, tenant).await;
+    assert_eq!(
+        stale
+            .anti_bloat_store()
+            .unwrap()
+            .begin_send(&prepared, &request, &policies[0])
+            .await,
+        Err(Error::BudgetPolicyInvalid)
+    );
+    stale.commit().await.unwrap();
+    let reservation_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM scope_anti_bloat_budget_reservations WHERE tenant_id=$1 AND workspace_id=$2 AND review_id=$3"
+    ).bind(tenant).bind(workspace).bind(prepared.review_id)
+        .fetch_one(&admin_pool).await.unwrap();
+    assert_eq!(reservation_count, 0);
+    let mut active = rw(&store, &enrollment.auth, tenant).await;
+    assert!(
+        active
+            .anti_bloat_store()
+            .unwrap()
+            .begin_send(&prepared, &request, &policies[1])
+            .await
+            .unwrap()
+            .is_some()
+    );
+    drop(active); // Roll back the accepted reservation so the existing apply proof can continue.
     let mut apply_store = PgUnitOfWork::test_begin(&runtime_pool, tenant).await;
     apply_store.authenticate(&enrollment.auth).await.unwrap();
     let mut apply = AntiBloatApplication {

@@ -49,6 +49,122 @@ async fn writer(
 }
 
 #[tokio::test]
+#[ignore = "requires identity-pinned disposable PG92 and TECT_TEST_* URLs"]
+async fn superseded_model_route_policy_cannot_reserve_or_call_provider() {
+    assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
+    let admin_pool = PgPool::connect(&std::env::var("TECT_TEST_ADMIN_URL").unwrap())
+        .await
+        .unwrap();
+    let runtime_pool = PgPool::connect(&std::env::var("TECT_TEST_RUNTIME_URL").unwrap())
+        .await
+        .unwrap();
+    let identity: (String, i64, String) = sqlx::query_as(
+        "SELECT current_database(),(SELECT oid::bigint FROM pg_catalog.pg_database WHERE datname=current_database()),(SELECT system_identifier::text FROM pg_catalog.pg_control_system())"
+    )
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        identity.0,
+        std::env::var("TECT_TEST_EXPECTED_DB_NAME").unwrap()
+    );
+    assert_eq!(
+        identity.1.to_string(),
+        std::env::var("TECT_TEST_EXPECTED_DB_OID").unwrap()
+    );
+    assert_eq!(
+        identity.2,
+        std::env::var("TECT_TEST_EXPECTED_PG_SYSTEM_ID").unwrap()
+    );
+    let migration: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
+        .fetch_one(&admin_pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        migration.to_string(),
+        std::env::var("TECT_TEST_EXPECTED_MIGRATION_VERSION").unwrap()
+    );
+    let created = fixture(&admin_pool, &runtime_pool).await;
+    let store = PgStore::from_pool(runtime_pool.clone());
+    let prepared = prepare_case(&store, &runtime_pool, &created, "rotation").await;
+    let old =
+        install_synthetic_policy(&store, created.workspace, created.tenant, &created.owner).await;
+    // The newer policy is already installed while v1 is still active.
+    let current = install_synthetic_policy_version(
+        &store,
+        created.workspace,
+        created.tenant,
+        &created.owner,
+        2,
+        60_250,
+    )
+    .await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let ranker = FakeJevRanker {
+        pool: runtime_pool.clone(),
+        tenant: created.tenant,
+        calls: calls.clone(),
+        malformed: false,
+    };
+    let invocation = ModelRouteInvocation {
+        session_id: created.invocation_session,
+    };
+    let attempted = ranker.prepare(&prepared).unwrap();
+    let mut stale = writer(&store, &created).await;
+    assert_eq!(
+        stale
+            .model_route_attempt_store()
+            .unwrap()
+            .begin_send(&prepared, invocation, &attempted, &old)
+            .await,
+        Err(Error::BudgetPolicyInvalid)
+    );
+    stale.commit().await.unwrap();
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM model_route_budget_reservations WHERE tenant_id=$1 AND workspace_id=$2"
+    )
+    .bind(created.tenant)
+    .bind(created.workspace)
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 0);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    let mut active = writer(&store, &created).await;
+    let permit = active
+        .model_route_attempt_store()
+        .unwrap()
+        .begin_send(&prepared, invocation, &attempted, &current)
+        .await
+        .unwrap()
+        .unwrap();
+    active.commit().await.unwrap();
+    let mut replay = writer(&store, &created).await;
+    assert_eq!(
+        replay
+            .model_route_attempt_store()
+            .unwrap()
+            .begin_send(&prepared, invocation, &attempted, &current)
+            .await,
+        Ok(None)
+    );
+    replay.commit().await.unwrap();
+    let saved: (Uuid, i64) = sqlx::query_as(
+        "SELECT policy_id,policy_version FROM model_route_budget_reservations WHERE tenant_id=$1 AND workspace_id=$2 AND attempt_id=$3"
+    )
+    .bind(created.tenant)
+    .bind(created.workspace)
+    .bind(permit.attempt_id)
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(saved, (current.id(), 2));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
 #[ignore = "requires identity-pinned disposable PG18 and TECT_TEST_* URLs"]
 async fn optional_ranker_no_call_unknown_send_and_malformed_raw_are_audited_live() {
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));

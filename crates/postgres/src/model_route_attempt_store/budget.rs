@@ -63,6 +63,13 @@ pub(super) async fn begin_send(
         policy.digest(),
     )
     .await?;
+    crate::budget_policy_usage::require_current_policy(
+        uow.transaction()?,
+        tenant,
+        prepared.workspace_id,
+        policy,
+    )
+    .await?;
     if usage.pending != 0 || usage.invalid != 0 {
         return Err(Error::BudgetPolicyInvalid);
     }
