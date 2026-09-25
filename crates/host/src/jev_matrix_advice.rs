@@ -21,7 +21,7 @@ const MAX_MATRIX_CONFIGURATION_TEXT_BYTES: usize = 256;
 // The exact seven-key snapshot shape below bounds every serialized string to
 // 256 bytes (or 64 hex digits), keeping JSON escaping below this cap.
 const MAX_MATRIX_CONFIGURATION_BYTES: usize = 8 * 1024;
-const MAX_MATRIX_RESPONSE_BYTES: usize = crate::frame::MAX_FRAME_BYTES;
+pub const MAX_MATRIX_RESPONSE_BYTES: usize = crate::frame::MAX_FRAME_BYTES;
 
 /// Read-only TypeSafe Matrix v2 adapter. It has no HTTP client or credential.
 /// Installing a sending provider requires a separate transport implementation.

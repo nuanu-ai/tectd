@@ -182,7 +182,8 @@ impl WorkspaceService {
     }
 
     /// Explicit Matrix composition seam. Both decisions are selected by the
-    /// embedding host; the normal constructor remains disabled and deny-all.
+    /// embedding host; the normal constructor keeps the provider disabled and
+    /// the signed-policy preflight fail-closed.
     pub fn with_matrix_advisory_adapters(
         mut self,
         provider: Arc<dyn crate::MatrixAdviceProvider>,
@@ -193,7 +194,7 @@ impl WorkspaceService {
         self
     }
 
-    /// Provider-only composition keeps the independent budget deny-all.
+    /// Provider-only composition keeps the independent signed-policy preflight.
     pub fn with_matrix_advice_provider(
         mut self,
         provider: Arc<dyn crate::MatrixAdviceProvider>,
@@ -202,7 +203,8 @@ impl WorkspaceService {
         self
     }
 
-    /// Explicit host composition; normal construction remains deny by default.
+    /// Explicit host composition; normal construction keeps evidence validation
+    /// disabled by default.
     pub fn with_matrix_evidence_validator(
         mut self,
         validator: Arc<dyn crate::MatrixEvidenceValidator>,
