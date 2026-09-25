@@ -24,6 +24,17 @@ fn exact_policy_serialization_and_cross_route_ledger_are_required() {
     assert!(MIGRATION.contains("u.pending<>0 OR u.invalid<>0"));
     assert!(USAGE.contains("FOR UPDATE"));
     assert!(ANTI_BLOAT.contains("crate::budget_policy_usage::policy_usage("));
+    let begin = ANTI_BLOAT.find("pub(super) async fn begin_send").unwrap();
+    let opportunity_lock = ANTI_BLOAT[begin..]
+        .find("SELECT id FROM advisory_opportunity")
+        .unwrap()
+        + begin;
+    let policy_lock = ANTI_BLOAT[begin..]
+        .find("crate::budget_policy_usage::policy_usage(")
+        .unwrap()
+        + begin;
+    assert!(opportunity_lock < policy_lock);
+    assert!(!ANTI_BLOAT[begin..policy_lock].contains("FROM advisory_budget_policies"));
     assert!(TWO_OPPORTUNITIES.contains("second opportunity improperly passed one-call policy"));
     assert!(TWO_OPPORTUNITIES.contains("two-call policy did not admit two opportunities"));
     assert!(TWO_OPPORTUNITIES.contains("shared dispatch ignored Anti-Bloat call"));

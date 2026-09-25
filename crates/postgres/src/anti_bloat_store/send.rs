@@ -74,19 +74,8 @@ pub(super) async fn begin_send(
     if !policy.is_effective_at(now) {
         return Err(Error::BudgetPolicyInvalid);
     }
-    let installed: Option<(i64, String)> = sqlx::query_as(
-        "SELECT version,digest FROM advisory_budget_policies WHERE tenant_id=$1 \
-         AND workspace_id=$2 AND id=$3 FOR SHARE",
-    )
-    .bind(tenant)
-    .bind(saved.workspace_id)
-    .bind(policy.id())
-    .fetch_optional(&mut **uow.transaction()?)
-    .await
-    .map_err(storage_error)?;
-    if installed != Some((policy.version(), policy.digest().to_owned())) {
-        return Err(Error::BudgetPolicyInvalid);
-    }
+    // Exact installed identity is checked by policy_usage after the
+    // opportunity lock. A policy row lock here would invert that order.
     let opportunity_id: Uuid = sqlx::query_scalar(
         "SELECT b.opportunity_id FROM scope_anti_bloat_bindings b WHERE \
          b.tenant_id=$1 AND b.workspace_id=$2 AND b.candidate_set_id=$3 \
