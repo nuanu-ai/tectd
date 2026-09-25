@@ -3,6 +3,27 @@ const ADMIN: &str = include_str!("admin/pipeline_advice.rs");
 const COMPATIBILITY: &str =
     include_str!("../migrations/0070_pipeline_compatibility_policy_binding.sql");
 const SINGLE_OPTION: &str = include_str!("../migrations/0071_pipeline_single_option_no_call.sql");
+const NO_CALL_REPAIR: &str =
+    include_str!("../migrations/0067_pipeline_disposition_all_no_call.sql");
+const PLAN_BINDING: &str =
+    include_str!("../migrations/0072_pipeline_verification_plan_binding.sql");
+
+#[test]
+fn plan_binding_accepts_the_migration_67_disposition_guard_shape() {
+    assert!(NO_CALL_REPAIR.contains(
+        "old_clause constant text := 'AND pg_catalog.cardinality(context.eligible_kind_ids)=0'"
+    ));
+    assert!(PLAN_BINDING.contains("IF name = 'pipeline_advice_disposition_guard' THEN"));
+    for required in [
+        "pg_catalog.strpos(definition,'eligible_kind_ids') <> 0",
+        "pg_catalog.strpos(definition,'eligible_option_ids') <> 0",
+        "NEW.advice_kind=''no_call'' AND o.state=''no_call''",
+        "AND NOT EXISTS (SELECT 1 FROM public.advisory_dispatch AS d",
+        "CONTINUE;",
+    ] {
+        assert!(PLAN_BINDING.contains(required), "missing {required}");
+    }
+}
 
 #[test]
 fn single_eligible_option_is_durable_no_call_and_cannot_dispatch() {

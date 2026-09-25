@@ -60,6 +60,20 @@ BEGIN
     ] LOOP
         definition := pg_catalog.pg_get_functiondef(
             ('public.' || name || '()')::pg_catalog.regprocedure);
+        -- Migration 0067 removed the disposition guard's sole reference to
+        -- eligible_kind_ids. Its no-call branch must still be present, but
+        -- there is no column reference to rename in that function.
+        IF name = 'pipeline_advice_disposition_guard' THEN
+            IF pg_catalog.strpos(definition,'eligible_kind_ids') <> 0
+               OR pg_catalog.strpos(definition,'eligible_option_ids') <> 0
+               OR pg_catalog.strpos(definition,
+                   'NEW.advice_kind=''no_call'' AND o.state=''no_call''') = 0
+               OR pg_catalog.strpos(definition,
+                   'AND NOT EXISTS (SELECT 1 FROM public.advisory_dispatch AS d') = 0 THEN
+                RAISE EXCEPTION 'pipeline function drifted: %', name USING ERRCODE='23514';
+            END IF;
+            CONTINUE;
+        END IF;
         IF pg_catalog.strpos(definition,'eligible_kind_ids') = 0 THEN
             RAISE EXCEPTION 'pipeline function drifted: %', name USING ERRCODE='23514';
         END IF;
