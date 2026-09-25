@@ -1,11 +1,159 @@
 use super::*;
 use sha2::{Digest, Sha256};
+use std::time::Duration;
 use tect_domain::{
     PIPELINE_RECOMMENDATION_SCHEMA, PipelineDefinitionSnapshot, PipelineDeliveryMode,
     PipelineInstructionSnapshot, PipelineKind, PipelinePhaseDefinition, PipelinePhaseRetryPolicy,
     PipelineRecommendationOption, PipelineVerificationPlan,
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use uuid::Uuid;
+
+async fn http_fixture(
+    status: u16,
+    body: Vec<u8>,
+    delay: Duration,
+) -> (
+    Url,
+    tokio::sync::oneshot::Receiver<Vec<u8>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = Url::parse(&format!(
+        "http://{}/v1/systemone",
+        listener.local_addr().unwrap()
+    ))
+    .unwrap();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        let head_end = loop {
+            let count = socket.read(&mut buffer).await.unwrap();
+            request.extend_from_slice(&buffer[..count]);
+            if let Some(index) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                break index + 4;
+            }
+        };
+        let headers = String::from_utf8_lossy(&request[..head_end]);
+        let length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap_or(0);
+        while request.len() < head_end + length {
+            let count = socket.read(&mut buffer).await.unwrap();
+            request.extend_from_slice(&buffer[..count]);
+        }
+        let _ = sender.send(request);
+        tokio::time::sleep(delay).await;
+        let header = format!(
+            "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = socket.write_all(header.as_bytes()).await;
+        let _ = socket.write_all(&body).await;
+    });
+    (endpoint, receiver, task)
+}
+
+fn http_provider(endpoint: Url, timeout: Duration, cap: usize) -> JevPipelineProvider {
+    JevPipelineProvider::new(
+        JevPipelineConfig {
+            identity: PipelineProviderIdentity {
+                provider: "fixture".into(),
+                model: "jev-1.13.0".into(),
+                destination: endpoint.as_str().into(),
+                wire_version: WIRE_VERSION.into(),
+            },
+            endpoint,
+            timeout,
+            maximum_request_bytes: MAX_REQUEST_BYTES,
+            maximum_response_bytes: cap,
+        },
+        "fixture-secret".into(),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn http_exact_frozen_body_raw_bytes_and_usage() {
+    let native = prepared(2);
+    let raw = serde_json::to_vec(&response(&native)).unwrap();
+    let (endpoint, captured, server) = http_fixture(200, raw.clone(), Duration::ZERO).await;
+    let provider = http_provider(endpoint, Duration::from_secs(2), MAX_RESPONSE_BYTES);
+    let observed = provider.send_once(native.body.clone()).await.unwrap();
+    let request = captured.await.unwrap();
+    server.await.unwrap();
+    let split = request
+        .windows(4)
+        .position(|part| part == b"\r\n\r\n")
+        .unwrap()
+        + 4;
+    let headers = String::from_utf8_lossy(&request[..split]);
+    assert!(headers.contains("Bearer fixture-secret"));
+    assert_eq!(&request[split..], native.body);
+    assert_eq!(observed.raw_response, raw);
+    assert_eq!(
+        (observed.input_tokens, observed.output_tokens),
+        (Some(20), Some(30))
+    );
+}
+
+#[tokio::test]
+async fn http_unknown_usage_stays_unknown_and_errors_are_not_retried() {
+    let body = br#"{"usage":{"input_tokens":0},"invalid":true}"#.to_vec();
+    let (endpoint, captured, server) = http_fixture(200, body.clone(), Duration::ZERO).await;
+    let observed = http_provider(endpoint, Duration::from_secs(1), MAX_RESPONSE_BYTES)
+        .send_once(vec![1])
+        .await
+        .unwrap();
+    captured.await.unwrap();
+    server.await.unwrap();
+    assert_eq!(observed.raw_response, body);
+    assert_eq!(observed.input_tokens, Some(0));
+    assert_eq!(observed.output_tokens, None);
+
+    for (status, response, delay, timeout, cap) in [
+        (
+            503,
+            b"{}".to_vec(),
+            Duration::ZERO,
+            Duration::from_secs(1),
+            32,
+        ),
+        (
+            200,
+            vec![b'x'; 33],
+            Duration::ZERO,
+            Duration::from_secs(1),
+            32,
+        ),
+        (
+            200,
+            b"{}".to_vec(),
+            Duration::from_millis(100),
+            Duration::from_millis(20),
+            32,
+        ),
+    ] {
+        let (endpoint, captured, server) = http_fixture(status, response, delay).await;
+        let result = http_provider(endpoint, timeout, cap)
+            .send_once(vec![1])
+            .await;
+        captured.await.unwrap();
+        server.await.unwrap();
+        assert!(matches!(
+            result,
+            Err(Error::TransportUnavailable | Error::RequestTooLarge)
+        ));
+    }
+}
 
 fn manifest(count: usize) -> PipelineRecommendationManifest {
     let options = PipelineKind::CURRENT_SLICE_RUN_KINDS[..count]
