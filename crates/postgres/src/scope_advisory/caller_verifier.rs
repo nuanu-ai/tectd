@@ -1,3 +1,18 @@
+type CallerLinkRow = (
+    Uuid,
+    Uuid,
+    Uuid,
+    Uuid,
+    Uuid,
+    Uuid,
+    String,
+    Uuid,
+    i64,
+    Uuid,
+    Uuid,
+);
+type VerifierReceiptRow = (Uuid, Uuid, Uuid, Uuid, Uuid, Uuid, Uuid, i64, String);
+
 async fn persist_caller_link(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -56,7 +71,7 @@ async fn persist_caller_link(
     {
         return Err(Error::InputConflict);
     }
-    let existing: Option<(Uuid,Uuid,Uuid,Uuid,Uuid,Uuid,String,Uuid,i64,Uuid,Uuid)> = sqlx::query_as(
+    let existing: Option<CallerLinkRow> = sqlx::query_as(
         "SELECT link_id,request_id,opportunity_id,candidate_set_id,disposition_id,preservation_receipt_id,caller_operation,\
                 caller_request_id,caller_result_revision,actor_id,session_id FROM advisory_scope_caller_link \
          WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3",
@@ -123,7 +138,7 @@ async fn persist_verifier(
     {
         return Err(Error::InputConflict);
     }
-    let existing: Option<(Uuid,Uuid,Uuid,Uuid,Uuid,Uuid,Uuid,i64,String)> = sqlx::query_as(
+    let existing: Option<VerifierReceiptRow> = sqlx::query_as(
         "SELECT receipt_id,request_id,opportunity_id,candidate_set_id,caller_link_id,actor_id,session_id,verified_revision,verifier_digest \
          FROM advisory_scope_verifier_receipt WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3",
     ).bind(tenant).bind(workspace).bind(input.request_id)

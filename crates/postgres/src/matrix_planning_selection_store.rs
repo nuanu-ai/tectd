@@ -102,10 +102,11 @@ fn verify_mapped_nodes(
             return Err(Error::InputConflict);
         }
         let identity = submitted.get("identity").ok_or(Error::InputConflict)?;
-        if let Some(existing_id) = identity.get("candidate_id") {
-            if !existing_id.is_null() && existing_id != &serde_json::json!(mapped.node_id) {
-                return Err(Error::InputConflict);
-            }
+        if let Some(existing_id) = identity.get("candidate_id")
+            && !existing_id.is_null()
+            && existing_id != &serde_json::json!(mapped.node_id)
+        {
+            return Err(Error::InputConflict);
         }
     }
     Ok(())

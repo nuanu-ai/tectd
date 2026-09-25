@@ -114,17 +114,26 @@ pub(crate) fn authored_graph_binding_for(
     Ok((links, dependency_digest, provenance))
 }
 
+struct SelectedGraphDraft<'a> {
+    opportunity_id: Uuid,
+    selected_id: &'a ScopeAlternativeId,
+    revision: i64,
+}
+
 async fn insert_selected_graph_binding(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     workspace: Uuid,
     manifest: &ScopeConstructorManifest,
-    opportunity_id: Uuid,
-    selected_id: &ScopeAlternativeId,
-    selected_revision: i64,
+    draft: SelectedGraphDraft<'_>,
     caller_link_id: Uuid,
     caller_request_id: Uuid,
 ) -> Result<()> {
+    let SelectedGraphDraft {
+        opportunity_id,
+        selected_id,
+        revision: selected_revision,
+    } = draft;
     let selected = manifest.eligible(selected_id).ok_or(Error::InvalidSource)?;
     let non_goal = trusted_non_goal_source_obligation_ids(
         tx,

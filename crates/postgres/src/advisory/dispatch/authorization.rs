@@ -342,12 +342,11 @@ async fn authorize_dispatch(
     if current.1 != "optional" || current.2.is_none() || current.3.is_none() {
         return Err(Error::InvalidConfiguration);
     }
-    if opportunity.capability == AdvisoryCapability::EngineeringProfile {
-        if require_current_matrix_choice(tx, tenant, workspace, &opportunity).await?
+    if opportunity.capability == AdvisoryCapability::EngineeringProfile
+        && require_current_matrix_choice(tx, tenant, workspace, &opportunity).await?
             != MatrixChoiceStatus::Current
-        {
-            return Err(Error::StaleContext);
-        }
+    {
+        return Err(Error::StaleContext);
     }
     if let Some(predecessor) = input.predecessor_dispatch_id {
         let previous = dispatch_by_id(tx, tenant, workspace, predecessor, true).await?;

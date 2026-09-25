@@ -39,7 +39,11 @@ async fn observe_selected_save(
             return Err(Error::Forbidden);
         }
     }
-    let qualification = if independently_observed { "independently_observed" } else { "unresolved" };
+    let qualification = if independently_observed {
+        "independently_observed"
+    } else {
+        "unresolved"
+    };
     let fingerprint = observation_digest(
         "tect.selected-save-observation-request/1",
         &serde_json::json!({
@@ -199,9 +203,9 @@ async fn observe_selected_save(
     let preservation_ok =
         preservation_row.is_some_and(|(disposition_id, status, observed, result)| {
             if status != "passed"
-                || !caller
+                || caller
                     .as_ref()
-                    .is_some_and(|caller| caller.0 == disposition_id)
+                    .is_none_or(|caller| caller.0 != disposition_id)
             {
                 return false;
             }

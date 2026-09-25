@@ -1,5 +1,22 @@
 use super::live_support::{D, manifest, reseal_manifest, rw, set_config};
 use super::*;
+
+type DispatchAuditRow = (
+    i32,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    serde_json::Value,
+    Vec<u8>,
+    String,
+    String,
+    Option<String>,
+    bool,
+    bool,
+);
 use crate::{PgStore, admin};
 use tect_application::{
     DenyScopeBudget, PreparedScopeAdviceAttempt, ScopeAdviceProvider, ScopeAdviceProviderError,
@@ -577,7 +594,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         assert_eq!(material["material"]["boundary"], "finite");
         assert_eq!(material["material"]["candidates"][0]["title"], "Cohesive");
     }
-    let dispatch_rows: Vec<(i32, String, String, String, String, String, String, serde_json::Value, Vec<u8>, String, String, Option<String>, bool, bool)> = sqlx::query_as(
+    let dispatch_rows: Vec<DispatchAuditRow> = sqlx::query_as(
         "SELECT attempt_number,provider,model,state,send_certainty,outcome,retry_basis,configuration_snapshot,request_payload,payload_digest,material_digest,raw_response_ref,send_started_at IS NOT NULL,sealed_at IS NOT NULL FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3 ORDER BY attempt_number",
     )
     .bind(tenant).bind(workspace).bind(positive.opportunity.id)

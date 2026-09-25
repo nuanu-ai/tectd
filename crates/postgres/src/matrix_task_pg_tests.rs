@@ -22,11 +22,16 @@ async fn tenant(tx: &mut Transaction<'_, Postgres>, id: Uuid) {
         .unwrap();
 }
 
-async fn revision(
-    tx: &mut Transaction<'_, Postgres>,
+#[derive(Clone, Copy)]
+struct MatrixTaskScope {
     tenant_id: Uuid,
     workspace_id: Uuid,
     task_id: Uuid,
+}
+
+async fn revision(
+    tx: &mut Transaction<'_, Postgres>,
+    scope: MatrixTaskScope,
     revision: i64,
     request_id: Uuid,
     principal_id: Uuid,
@@ -40,9 +45,9 @@ async fn revision(
           recorded_by_session_id)
          VALUES ($1,$2,$3,$4,$5,$6,'tect.engineering-matrix-input/1',$7,$8,$9,$10)",
     )
-    .bind(tenant_id)
-    .bind(workspace_id)
-    .bind(task_id)
+    .bind(scope.tenant_id)
+    .bind(scope.workspace_id)
+    .bind(scope.task_id)
     .bind(revision)
     .bind((revision > 1).then_some(revision - 1))
     .bind(request_id)
@@ -124,6 +129,11 @@ async fn matrix_task_revisions_enforce_atomic_owner_accepted_lineage() {
     }
 
     let task_id = Uuid::new_v4();
+    let task_scope = MatrixTaskScope {
+        tenant_id,
+        workspace_id,
+        task_id,
+    };
     let first_request = Uuid::new_v4();
     let first_input = input("first");
     let mut unpaired = runtime_pool.begin().await.unwrap();
@@ -152,9 +162,7 @@ async fn matrix_task_revisions_enforce_atomic_owner_accepted_lineage() {
     .unwrap();
     revision(
         &mut tx,
-        tenant_id,
-        workspace_id,
-        task_id,
+        task_scope,
         1,
         first_request,
         owner.principal_id,
@@ -170,9 +178,7 @@ async fn matrix_task_revisions_enforce_atomic_owner_accepted_lineage() {
     tenant(&mut tx, tenant_id).await;
     revision(
         &mut tx,
-        tenant_id,
-        workspace_id,
-        task_id,
+        task_scope,
         2,
         second_request,
         owner.principal_id,
@@ -198,9 +204,7 @@ async fn matrix_task_revisions_enforce_atomic_owner_accepted_lineage() {
     tenant(&mut tx, tenant_id).await;
     revision(
         &mut tx,
-        tenant_id,
-        workspace_id,
-        task_id,
+        task_scope,
         3,
         Uuid::new_v4(),
         owner.principal_id,
@@ -223,9 +227,7 @@ async fn matrix_task_revisions_enforce_atomic_owner_accepted_lineage() {
         sqlstate(
             &revision(
                 &mut tx,
-                tenant_id,
-                workspace_id,
-                task_id,
+                task_scope,
                 2,
                 second_request,
                 owner.principal_id,
@@ -263,9 +265,7 @@ async fn matrix_task_revisions_enforce_atomic_owner_accepted_lineage() {
         sqlstate(
             &revision(
                 &mut tx,
-                tenant_id,
-                workspace_id,
-                task_id,
+                task_scope,
                 3,
                 Uuid::new_v4(),
                 owner.principal_id,
@@ -320,9 +320,7 @@ async fn matrix_task_revisions_enforce_atomic_owner_accepted_lineage() {
         sqlstate(
             &revision(
                 &mut tx,
-                tenant_id,
-                workspace_id,
-                task_id,
+                task_scope,
                 3,
                 Uuid::new_v4(),
                 verifier_id,
@@ -345,9 +343,7 @@ async fn matrix_task_revisions_enforce_atomic_owner_accepted_lineage() {
         sqlstate(
             &revision(
                 &mut tx,
-                tenant_id,
-                workspace_id,
-                task_id,
+                task_scope,
                 3,
                 Uuid::new_v4(),
                 owner.principal_id,
@@ -387,9 +383,7 @@ async fn matrix_task_revisions_enforce_atomic_owner_accepted_lineage() {
         sqlstate(
             &revision(
                 &mut tx,
-                tenant_id,
-                workspace_id,
-                task_id,
+                task_scope,
                 3,
                 Uuid::new_v4(),
                 owner.principal_id,

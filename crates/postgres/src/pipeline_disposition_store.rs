@@ -444,15 +444,13 @@ pub(crate) async fn capture(
         .map_err(storage_error)?;
         if let Some(saved) = by_request
             .and_then(|value| serde_json::from_value::<PipelineDispositionResult>(value).ok())
+            && saved.request == result.request
+            && saved.work_id == result.work_id
+            && saved.advice == result.advice
+            && saved.selected_kind == result.selected_kind
+            && saved.selected_option_id == result.selected_option_id
         {
-            if saved.request == result.request
-                && saved.work_id == result.work_id
-                && saved.advice == result.advice
-                && saved.selected_kind == result.selected_kind
-                && saved.selected_option_id == result.selected_option_id
-            {
-                return Ok(saved);
-            }
+            return Ok(saved);
         }
         return Err(Error::InputConflict);
     }

@@ -271,9 +271,11 @@ pub(crate) async fn save_selected_candidate_draft(
         tenant,
         workspace,
         &manifest,
-        selected.opportunity_id,
-        &selected.selected_id,
-        stored.context.candidate_set.revision,
+        SelectedGraphDraft {
+            opportunity_id: selected.opportunity_id,
+            selected_id: &selected.selected_id,
+            revision: stored.context.candidate_set.revision,
+        },
         caller_link_id,
         request.request_id,
     )
