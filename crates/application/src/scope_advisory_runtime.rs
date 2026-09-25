@@ -38,7 +38,7 @@ pub struct ScopeAuthorizedInvalidObservation {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScopeAuthorityOutcome {
-    Authorized(ScopeAuthorityObservation),
+    Authorized(Box<ScopeAuthorityObservation>),
     AuthorizedInvalid(ScopeAuthorizedInvalidObservation),
 }
 

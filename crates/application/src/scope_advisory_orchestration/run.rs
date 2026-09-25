@@ -1,4 +1,4 @@
-use super::capture::{ScopeCaptureIdentity, ScopeCaptureStatus};
+use super::capture::{ScopeCaptureIdentity, ScopeCaptureStatus, ScopeEarlyNoCall};
 use super::*;
 
 impl WorkspaceService {
@@ -76,8 +76,7 @@ impl WorkspaceService {
                         session: session.id,
                     },
                     digest,
-                    reason,
-                    revision,
+                    ScopeEarlyNoCall { reason, revision },
                 )
                 .await?;
             return Ok(ScopeAdvisoryOutcome {
@@ -399,8 +398,10 @@ impl WorkspaceService {
                         &scope_opportunity_input(
                             request,
                             &config,
-                            identity.principal_id,
-                            session.id,
+                            ScopeCaptureIdentity {
+                                actor: identity.principal_id,
+                                session: session.id,
+                            },
                             material_digest,
                             AdvisoryOpportunityState::NoCall,
                             reason,
@@ -419,8 +420,10 @@ impl WorkspaceService {
         let input = scope_opportunity_input(
             request,
             &config,
-            identity.principal_id,
-            session.id,
+            ScopeCaptureIdentity {
+                actor: identity.principal_id,
+                session: session.id,
+            },
             manifest.whole_set_digest.clone(),
             AdvisoryOpportunityState::Prepared,
             AdvisoryReason::DispatchAuthorized,

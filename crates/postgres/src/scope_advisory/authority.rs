@@ -212,7 +212,7 @@ impl ScopeAuthorityObserver for PgScopeAuthorityObserver {
             return Ok(invalid_source(request));
         }
         tx.commit().await.map_err(storage_error)?;
-        Ok(ScopeAuthorityOutcome::Authorized(
+        Ok(ScopeAuthorityOutcome::Authorized(Box::new(
             ScopeAuthorityObservation {
                 workspace_id: request.workspace_id,
                 actor_id: request.actor_id,
@@ -221,7 +221,7 @@ impl ScopeAuthorityObserver for PgScopeAuthorityObserver {
                 source,
                 obligations,
             },
-        ))
+        )))
     }
 }
 

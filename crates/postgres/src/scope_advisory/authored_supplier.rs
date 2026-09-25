@@ -128,7 +128,7 @@ impl ScopeManifestSupplier for PgScopeAuthoredManifestSupplier {
             candidate_set_id: observation.candidate_set_id,
         };
         let fresh = self.authority.observe(&authority_request).await?;
-        if fresh != ScopeAuthorityOutcome::Authorized(observation.clone()) {
+        if fresh != ScopeAuthorityOutcome::Authorized(Box::new(observation.clone())) {
             return Err(Error::StaleRevision);
         }
 

@@ -1,4 +1,4 @@
-use super::RunScopeAdvisory;
+use super::{RunScopeAdvisory, capture::ScopeCaptureIdentity};
 use crate::{
     PreparedScopeAdviceAttempt, ScopeAdviceProvider, ScopeAdviceProviderError,
     ScopeAdviceProviderObservation, ScopeAuthoredManifestRequest, ScopeAuthorityObservation,
@@ -68,16 +68,15 @@ pub(super) fn early_no_call_reason(
 pub(super) fn scope_opportunity_input(
     request: &RunScopeAdvisory,
     config: &WorkspaceAdvisoryConfig,
-    actor: Uuid,
-    session: Uuid,
+    identity: ScopeCaptureIdentity,
     material_digest: String,
     state: AdvisoryOpportunityState,
     reason: AdvisoryReason,
     revision: Option<i64>,
 ) -> AdvisoryOpportunityInput {
     AdvisoryOpportunityInput {
-        session_id: session,
-        authorized_actor_id: actor,
+        session_id: identity.session,
+        authorized_actor_id: identity.actor,
         capability: AdvisoryCapability::ScopeDecomposition,
         decision_point: AdvisoryDecisionPoint::ScopeDecompositionBeforeSelection,
         decision_point_version: tect_domain::ADVISORY_DECISION_POINT_VERSION,
@@ -169,12 +168,16 @@ pub(super) fn prepare_scope_advice_attempt(
     Ok(prepared)
 }
 
+pub(super) struct ScopeDispatchProvider<'a> {
+    pub name: &'a str,
+    pub adapter_version: &'a str,
+}
+
 pub(super) fn scope_dispatch_authorization(
     prepared: &PreparedScopeAdviceAttempt,
     dispatch_id: Uuid,
     opportunity_id: Uuid,
-    provider: &str,
-    adapter_version: &str,
+    provider: ScopeDispatchProvider<'_>,
     config: &WorkspaceAdvisoryConfig,
     material_digest: String,
     budget_policy_id: &str,
@@ -190,7 +193,7 @@ pub(super) fn scope_dispatch_authorization(
     let configuration_snapshot = serde_json::json!({
         "provider_profile_ref": profile,
         "model_configuration": model,
-        "adapter_version": adapter_version,
+        "adapter_version": provider.adapter_version,
         "budget_policy_id": budget_policy_id,
         "destination": prepared.destination(),
         "wire_version": prepared.wire_version(),
@@ -205,7 +208,7 @@ pub(super) fn scope_dispatch_authorization(
         predecessor_dispatch_id: None,
         attempt_number: 1,
         retry_basis: AdvisoryRetryBasis::Initial,
-        provider: provider.into(),
+        provider: provider.name.into(),
         model: model.model,
         configuration_snapshot,
         configuration_digest: sha256(&configuration_bytes),

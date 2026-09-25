@@ -17,6 +17,11 @@ pub(super) struct ScopeCaptureStatus {
     pub revision: Option<i64>,
 }
 
+pub(super) struct ScopeEarlyNoCall {
+    pub reason: AdvisoryReason,
+    pub revision: i64,
+}
+
 impl WorkspaceService {
     pub(super) async fn capture_early_scope_no_call(
         &self,
@@ -25,8 +30,7 @@ impl WorkspaceService {
         config: &WorkspaceAdvisoryConfig,
         identity: ScopeCaptureIdentity,
         material_digest: String,
-        reason: AdvisoryReason,
-        revision: i64,
+        no_call: ScopeEarlyNoCall,
     ) -> Result<tect_domain::AdvisoryOpportunity> {
         let (mut tx, workspace, fresh_session) = self
             .scope_transaction(context, crate::TransactionMode::ReadWrite)
@@ -37,7 +41,7 @@ impl WorkspaceService {
                 .lock_candidate_revision(workspace.id, request.candidate_set_id)
                 .await?
                 .ok_or(tect_domain::Error::NotFound)?
-                != revision
+                != no_call.revision
         {
             return Err(tect_domain::Error::StaleRevision);
         }
@@ -47,12 +51,11 @@ impl WorkspaceService {
                 &super::scope_opportunity_input(
                     request,
                     config,
-                    identity.actor,
-                    identity.session,
+                    identity,
                     material_digest,
                     AdvisoryOpportunityState::NoCall,
-                    reason,
-                    Some(revision),
+                    no_call.reason,
+                    Some(no_call.revision),
                 ),
             )
             .await?;
@@ -81,8 +84,7 @@ impl WorkspaceService {
                 &super::scope_opportunity_input(
                     request,
                     config,
-                    identity.actor,
-                    identity.session,
+                    identity,
                     material_digest,
                     status.state,
                     status.reason,
