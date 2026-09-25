@@ -4,8 +4,9 @@ use crate::{PgStore, admin, store::PgUnitOfWork};
 use async_trait::async_trait;
 use std::sync::Arc;
 use tect_application::{
-    AntiBloatApplication, AntiBloatAuthoredDelta, AntiBloatStore, DisabledAntiBloatRankingProvider,
-    SetupFiles, SourceInspector, UnitOfWork, VerifyAntiBloatApply, WorkspaceService,
+    AntiBloatApplication, AntiBloatAuthoredDelta, AntiBloatStore, AntiBloatVerificationEvidence,
+    DisabledAntiBloatRankingProvider, SetupFiles, SourceInspector, UnitOfWork,
+    VerifyAntiBloatApply, WorkspaceService,
 };
 
 struct UnusedVerifierAdapters;

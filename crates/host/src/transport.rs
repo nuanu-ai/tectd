@@ -12,7 +12,7 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tect_application::WorkspaceService;
+use tect_application::{AntiBloatVerificationEvidence, WorkspaceService};
 use tect_domain::{Error, RequestContext, WorkspaceState};
 use tokio::io::{AsyncWriteExt, WriteHalf};
 use tokio::net::{UnixListener, UnixStream};

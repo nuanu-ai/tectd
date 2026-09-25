@@ -1,7 +1,9 @@
 use crate::{storage_error, store::PgUnitOfWork};
 use async_trait::async_trait;
 use sqlx::Row;
-use tect_application::{AntiBloatVerificationMaterial, AntiBloatVerificationStore};
+use tect_application::{
+    AntiBloatVerificationEvidence, AntiBloatVerificationMaterial, AntiBloatVerificationStore,
+};
 use tect_domain::{
     AntiBloatDisposition, AntiBloatInput, AntiBloatPreservationAttestation,
     AntiBloatVerificationReason, AntiBloatVerificationVerdict, Error, Result,

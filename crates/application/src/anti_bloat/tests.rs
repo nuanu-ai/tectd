@@ -1,4 +1,5 @@
 use super::*;
+use crate::AntiBloatVerificationEvidence;
 use crate::{AntiBloatSendPermit, StoredAntiBloatReview};
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -627,9 +628,40 @@ fn independent_verifier_rederives_full_graph_not_receipt_claim() {
         current_revision: delta.expected_revision + 1,
         source_fragments_match: true,
     };
+    let golden = include_str!("verification_material_golden.json").trim_end();
+    assert_eq!(serde_json::to_string(&material).unwrap(), golden);
+    assert_eq!(
+        material.digest().unwrap(),
+        "d554eeed3caffa9ea36a4271ba0b8b28b14e02a19f937a7d3edee6616f42c92f"
+    );
+    let round_trip: crate::AntiBloatVerificationMaterial = serde_json::from_str(golden).unwrap();
+    assert_eq!(round_trip, material);
     assert_eq!(material.verdict().0, AntiBloatVerificationVerdict::Pass);
     material.after_saved.candidates[0].title.push_str(" forged");
     assert_eq!(material.verdict().0, AntiBloatVerificationVerdict::Fail);
     material.source_fragments_match = false;
     assert_eq!(material.verdict().0, AntiBloatVerificationVerdict::Unknown);
+}
+
+#[test]
+fn verification_request_json_shape_remains_stable() {
+    let request = crate::VerifyAntiBloatApply {
+        request_id: Uuid::from_u128(1),
+        review_id: Uuid::from_u128(2),
+        expected_evidence_digest: D.into(),
+    };
+    let golden = format!(
+        "{{\"request_id\":\"00000000-0000-0000-0000-000000000001\",\"review_id\":\"00000000-0000-0000-0000-000000000002\",\"expected_evidence_digest\":\"{D}\"}}"
+    );
+    assert_eq!(serde_json::to_string(&request).unwrap(), golden);
+    assert_eq!(
+        serde_json::from_str::<crate::VerifyAntiBloatApply>(&golden).unwrap(),
+        request
+    );
+    assert!(
+        serde_json::from_str::<crate::VerifyAntiBloatApply>(
+            &golden.replace("}", ",\"extra\":true}")
+        )
+        .is_err()
+    );
 }

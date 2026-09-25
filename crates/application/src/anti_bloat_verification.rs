@@ -1,6 +1,5 @@
 //! Independent readback of the native anti-bloat draft mutation.
 use crate::{AntiBloatVerificationMaterial, Sha256ScopeDigest, TransactionMode, WorkspaceService};
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tect_domain::{
     AntiBloatPreservationAttestation, AntiBloatVerificationReason, AntiBloatVerificationVerdict,
@@ -9,21 +8,23 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct VerifyAntiBloatApply {
-    pub request_id: Uuid,
-    pub review_id: Uuid,
-    pub expected_evidence_digest: String,
+pub use tect_domain::VerifyAntiBloatApply;
+
+/// Application-owned canonicalization and verdict policy over domain evidence.
+/// The concrete SHA-256 adapter stays outside the pure domain.
+pub trait AntiBloatVerificationEvidence {
+    fn digest(&self) -> Result<String>;
+    fn verdict(&self) -> (AntiBloatVerificationVerdict, AntiBloatVerificationReason);
+    fn independent_of(&self, principal_id: Uuid, session_id: Uuid) -> bool;
 }
 
-impl AntiBloatVerificationMaterial {
-    pub fn digest(&self) -> Result<String> {
+impl AntiBloatVerificationEvidence for AntiBloatVerificationMaterial {
+    fn digest(&self) -> Result<String> {
         let bytes = serde_json::to_vec(self).map_err(|_| Error::InternalInvariant)?;
         Ok(format!("{:x}", Sha256::digest(bytes)))
     }
 
-    pub fn verdict(&self) -> (AntiBloatVerificationVerdict, AntiBloatVerificationReason) {
+    fn verdict(&self) -> (AntiBloatVerificationVerdict, AntiBloatVerificationReason) {
         if !self.source_fragments_match {
             return (
                 AntiBloatVerificationVerdict::Unknown,

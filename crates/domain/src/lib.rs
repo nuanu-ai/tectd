@@ -1,5 +1,6 @@
 //! Pure identities, values and invariants. No environment, transport or persistence.
 mod advisory;
+mod anti_bloat_verification_material;
 mod durable_knowledge;
 mod durable_knowledge_validation;
 mod engineering_choice_set;
@@ -42,6 +43,7 @@ pub use program::{
 pub use program_page::{ProgramCursor, ProgramInput, ProgramList, ProgramPage, ProgramSummary};
 
 pub use advisory::*;
+pub use anti_bloat_verification_material::{AntiBloatVerificationMaterial, VerifyAntiBloatApply};
 pub use durable_knowledge::*;
 pub use engineering_choice_set::*;
 pub use engineering_matrix_composer::*;

@@ -11,6 +11,7 @@ pub use anti_bloat_ports::{
     DisabledAntiBloatRankingProvider, StoredAntiBloatReview,
 };
 pub use anti_bloat_ports::{AntiBloatVerificationMaterial, AntiBloatVerificationStore};
+pub use anti_bloat_verification::AntiBloatVerificationEvidence;
 pub use anti_bloat_verification::VerifyAntiBloatApply;
 mod advisory_ports;
 mod matrix_advice_ports;
