@@ -89,9 +89,9 @@ BEGIN
        OR NEW.retry_dispatches <> reservation.reserved_retry_dispatches
        OR NEW.send_certainty <> dispatch.send_certainty
        OR NEW.outcome <> dispatch.outcome
-       OR NEW.response_sha256 IS DISTINCT FROM
-          CASE WHEN dispatch.response_payload IS NULL THEN NULL ELSE
-            pg_catalog.encode(pg_catalog.sha256(dispatch.response_payload),'hex') END
+       OR (dispatch.response_payload IS NULL AND NEW.response_sha256 IS NOT NULL)
+       OR (dispatch.response_payload IS NOT NULL AND NEW.response_sha256 IS DISTINCT FROM
+           pg_catalog.encode(pg_catalog.sha256(dispatch.response_payload),'hex'))
        OR NEW.raw_response_ref IS DISTINCT FROM dispatch.raw_response_ref
        OR NEW.input_tokens IS DISTINCT FROM dispatch.input_tokens
        OR NEW.output_tokens IS DISTINCT FROM dispatch.output_tokens
@@ -100,7 +100,7 @@ BEGIN
         RAISE EXCEPTION 'budget consumption seal mismatch' USING ERRCODE='23514';
     END IF;
     RETURN NEW;
-END $guard$;
+END; $guard$;
 CREATE TRIGGER advisory_budget_consumption_guard_trigger
     BEFORE INSERT OR UPDATE OR DELETE ON advisory_budget_consumptions
     FOR EACH ROW EXECUTE FUNCTION advisory_budget_consumption_guard();
