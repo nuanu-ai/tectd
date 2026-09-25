@@ -64,6 +64,15 @@ pub(crate) async fn policy_usage(
          LEFT JOIN scope_anti_bloat_budget_consumptions c
            ON (c.tenant_id,c.workspace_id,c.review_id)=(r.tenant_id,r.workspace_id,r.review_id)
          WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.policy_id=$3
+           AND r.policy_version=$4 AND r.policy_digest=$5
+         UNION ALL
+         SELECT r.request_utf8_bytes,0,c.input_tokens,c.output_tokens,c.elapsed_monotonic_ms,
+           c.attempt_id IS NOT NULL,COALESCE(c.unknown_usage,false),
+           COALESCE(c.exhausted_after_response,false)
+         FROM model_route_budget_reservations r
+         LEFT JOIN model_route_budget_consumptions c
+           ON (c.tenant_id,c.workspace_id,c.attempt_id)=(r.tenant_id,r.workspace_id,r.attempt_id)
+         WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.policy_id=$3
            AND r.policy_version=$4 AND r.policy_digest=$5) attempts"#,
     )
     .bind(tenant)

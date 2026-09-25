@@ -2,8 +2,8 @@
 //! The caller commits the start before transport and the raw seal before parse.
 use crate::{
     ModelRouteAttemptStore, ModelRouteInvocation, ModelRoutePreparation, ModelRoutePreparedAttempt,
-    ModelRouteRankingProvider, ModelRouteRunNoCall, ModelRouteSealedRankingEvidence,
-    ModelRouteSendPermit, PreparedModelRouteRecommendation,
+    ModelRouteProviderObservation, ModelRouteRankingProvider, ModelRouteRunNoCall,
+    ModelRouteSealedRankingEvidence, ModelRouteSendPermit, PreparedModelRouteRecommendation,
 };
 use std::future::Future;
 use tect_domain::{
@@ -40,11 +40,42 @@ pub async fn prepare_model_route_send(
     }
     let attempted = provider.prepare(prepared)?;
     attempted.verify(prepared)?;
-    match store.begin_send(prepared, invocation, &attempted).await? {
+    if let Some(existing) = store
+        .by_preparation(prepared.workspace_id, &prepared.request_key, invocation)
+        .await?
+    {
+        return if existing.request_sha256.as_deref() == Some(attempted.request_sha256.as_str()) {
+            Ok(ModelRouteSendStart::Replay)
+        } else {
+            Err(Error::InputConflict)
+        };
+    }
+    let now_unix_ms = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| Error::BudgetPolicyInvalid)?
+            .as_millis(),
+    )
+    .map_err(|_| Error::BudgetPolicyInvalid)?;
+    let policy = store
+        .authorized_budget_policy(prepared.workspace_id, now_unix_ms)
+        .await?
+        .ok_or(Error::BudgetPolicyInvalid)?;
+    policy.validate().map_err(|_| Error::BudgetPolicyInvalid)?;
+    if !policy.is_effective_at(now_unix_ms) {
+        return Err(Error::BudgetPolicyInvalid);
+    }
+    match store
+        .begin_send(prepared, invocation, &attempted, &policy)
+        .await?
+    {
         Some(permit)
             if permit.workspace_id == prepared.workspace_id
                 && permit.preparation_request_key == prepared.request_key
                 && permit.request_sha256 == attempted.request_sha256
+                && permit.policy_id == policy.id()
+                && permit.policy_version == policy.version()
+                && permit.policy_digest == policy.digest()
                 && !permit.attempt_id.is_nil() =>
         {
             Ok(ModelRouteSendStart::Started {
@@ -55,6 +86,16 @@ pub async fn prepare_model_route_send(
         None => Ok(ModelRouteSendStart::Replay),
         _ => Err(Error::InputConflict),
     }
+}
+
+pub async fn attempt_model_route_observed_after_commit<F: Future<Output = Result<()>>>(
+    commit: F,
+    provider: &dyn ModelRouteRankingProvider,
+    attempted: ModelRoutePreparedAttempt,
+    permit: ModelRouteSendPermit,
+) -> Result<Result<ModelRouteProviderObservation>> {
+    commit.await?;
+    Ok(provider.attempt_prepared_observed(attempted, permit).await)
 }
 
 /// The Future must commit the one-use start transaction. A failed commit

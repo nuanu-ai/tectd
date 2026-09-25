@@ -12,6 +12,7 @@ pub enum ModelRouteAttemptState {
     NoCall,
     SendUnknown,
     RawSealed,
+    BudgetExhausted,
     Parsed,
 }
 

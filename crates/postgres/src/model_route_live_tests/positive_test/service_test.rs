@@ -497,6 +497,9 @@ async fn revoked_session_after_send_still_seals_raw_without_decision() {
         workspace_id: created.workspace,
         preparation_request_key: prepared.request_key.clone(),
         request_sha256: "0".repeat(64),
+        policy_id: Uuid::from_u128(201),
+        policy_version: 1,
+        policy_digest: "a".repeat(64),
     };
     tx.rollback().await.unwrap();
     assert!(matches!(

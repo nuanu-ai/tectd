@@ -7,7 +7,7 @@ use crate::{
     DispositionModelRouteRecommendation, ModelRouteDecisionInput, ModelRouteDispositionAction,
     ModelRouteInvocation, ModelRouteSendStart, PrepareModelRouteRecommendation,
     PreparedModelRouteRecommendation, TransactionMode, WorkspaceService,
-    attempt_model_route_after_commit, finalize_model_route_sealed_response,
+    attempt_model_route_observed_after_commit, finalize_model_route_sealed_response,
     prepare_model_route_send,
 };
 
@@ -193,21 +193,44 @@ impl WorkspaceService {
                                     },
                                 )
                                 .await?;
-                            if let Some((attempted, permit)) = recovered
-                                && finalize_model_route_sealed_response(
-                                    recovery
-                                        .model_route_attempt_store()
-                                        .ok_or(Error::Forbidden)?,
-                                    &prepared,
-                                    &attempted,
-                                    &permit,
-                                )
-                                .await
-                                .is_ok()
-                            {
-                                recovery.commit().await?;
-                                self.finish_from_sealed(context, preparation_request_key)
-                                    .await?;
+                            if let Some((attempted, permit)) = recovered {
+                                let store = recovery
+                                    .model_route_attempt_store()
+                                    .ok_or(Error::Forbidden)?;
+                                let healthy = match store.consumption_healthy(&permit).await? {
+                                    Some(value) => value,
+                                    None => {
+                                        let raw = store
+                                            .sealed_response(&permit)
+                                            .await?
+                                            .ok_or(Error::StaleContext)?;
+                                        store
+                                            .consume_budget(
+                                                &permit,
+                                                &crate::ModelRouteProviderObservation {
+                                                    raw,
+                                                    input_tokens: None,
+                                                    output_tokens: None,
+                                                    elapsed_monotonic_ms: None,
+                                                },
+                                            )
+                                            .await?;
+                                        false
+                                    }
+                                };
+                                if healthy
+                                    && finalize_model_route_sealed_response(
+                                        store, &prepared, &attempted, &permit,
+                                    )
+                                    .await
+                                    .is_ok()
+                                {
+                                    recovery.commit().await?;
+                                    self.finish_from_sealed(context, preparation_request_key)
+                                        .await?;
+                                } else {
+                                    recovery.commit().await?;
+                                }
                             }
                         }
                         _ => {}
@@ -215,7 +238,7 @@ impl WorkspaceService {
                 }
             }
             ModelRouteSendStart::Started { attempted, permit } => {
-                let raw = match attempt_model_route_after_commit(
+                let observation = match attempt_model_route_observed_after_commit(
                     start.commit(),
                     &*self.model_route_ranking_provider,
                     *attempted.clone(),
@@ -223,14 +246,28 @@ impl WorkspaceService {
                 )
                 .await?
                 {
-                    Ok(raw) => raw,
-                    Err(_) => return self.get_model_route(context, preparation_request_key).await,
+                    Ok(observation) => observation,
+                    Err(_) => {
+                        self.record_committed_model_route_failure(identity.tenant_id, &permit)
+                            .await?;
+                        return self.get_model_route(context, preparation_request_key).await;
+                    }
                 };
                 // The provider may return after the invoking session is
                 // revoked. Preserve its raw response under the committed,
                 // exact one-use permit before attempting any new user auth.
-                self.seal_committed_model_route_response(identity.tenant_id, &permit, &raw)
+                self.seal_committed_model_route_response(
+                    identity.tenant_id,
+                    &permit,
+                    &observation.raw,
+                )
+                .await?;
+                let exhausted = self
+                    .consume_committed_model_route_budget(identity.tenant_id, &permit, &observation)
                     .await?;
+                if exhausted {
+                    return self.get_model_route(context, preparation_request_key).await;
+                }
                 let (mut parse, parse_identity) =
                     self.authorized(context, TransactionMode::ReadWrite).await?;
                 parse

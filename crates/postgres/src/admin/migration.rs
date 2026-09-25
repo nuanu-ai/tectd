@@ -123,6 +123,8 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
         format!("GRANT UPDATE(id) ON TABLE advisory_budget_policies TO {quoted_role}"),
         format!("GRANT SELECT, INSERT ON TABLE advisory_budget_reservations TO {quoted_role}"),
         format!("GRANT SELECT, INSERT ON TABLE advisory_budget_consumptions TO {quoted_role}"),
+        format!("GRANT SELECT, INSERT ON TABLE model_route_budget_reservations TO {quoted_role}"),
+        format!("GRANT SELECT, INSERT ON TABLE model_route_budget_consumptions TO {quoted_role}"),
         format!(
             "GRANT SELECT, INSERT ON TABLE scope_anti_bloat_budget_reservations TO {quoted_role}"
         ),

@@ -95,14 +95,15 @@ pub use model_route_decision::{
     DecideModelRouteRecommendation, DispositionModelRouteRecommendation,
 };
 pub use model_route_provider::{
-    ModelRouteSendStart, attempt_model_route_after_commit, finalize_model_route_sealed_response,
+    ModelRouteSendStart, attempt_model_route_after_commit,
+    attempt_model_route_observed_after_commit, finalize_model_route_sealed_response,
     prepare_model_route_send, seal_model_route_raw_response,
 };
 pub use model_route_provider_ports::{
     DisabledModelRouteRankingProvider, ModelRouteAttemptSnapshot, ModelRouteAttemptState,
     ModelRouteAttemptStore, ModelRouteInvocation, ModelRoutePreparedAttempt,
-    ModelRouteRankingProvider, ModelRouteRunNoCall, ModelRouteSealedRankingEvidence,
-    ModelRouteSendPermit,
+    ModelRouteProviderObservation, ModelRouteRankingProvider, ModelRouteRunNoCall,
+    ModelRouteSealedRankingEvidence, ModelRouteSendPermit,
 };
 pub use model_route_recommendation::PrepareModelRouteRecommendation;
 pub use model_route_recommendation_ports::{

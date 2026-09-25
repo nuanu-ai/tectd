@@ -6,7 +6,8 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use tect_domain::{
-    AdvisoryRequestPreference, MODEL_ROUTE_CATALOGUE_SCHEMA, MODEL_ROUTE_HOST_CAPABILITIES_SCHEMA,
+    AdvisoryBudgetCeilings, AdvisoryBudgetPolicy, AdvisoryRequestPreference,
+    MODEL_ROUTE_CATALOGUE_SCHEMA, MODEL_ROUTE_HOST_CAPABILITIES_SCHEMA,
     MODEL_ROUTE_RANKING_WIRE_SCHEMA, MatrixPlanningSelection, ModelRoute, ModelRouteCatalogue,
     ModelRouteFact, ModelRouteFactProvenance, ModelRouteHostCapabilities,
     ModelRouteRankingWireRequest, ModelRouteRecord, ModelRouteSelectionLink, ModelRouteWorkContext,
@@ -17,6 +18,29 @@ fn invocation() -> ModelRouteInvocation {
     ModelRouteInvocation {
         session_id: Uuid::new_v4(),
     }
+}
+
+fn test_policy() -> AdvisoryBudgetPolicy {
+    let id = Uuid::from_u128(201);
+    let ceilings = AdvisoryBudgetCeilings {
+        provider_calls: 2,
+        input_tokens: 100,
+        output_tokens: 100,
+        request_utf8_bytes: 1_000_000,
+        elapsed_monotonic_ms: 10_000,
+        retry_dispatches: 1,
+    };
+    AdvisoryBudgetPolicy::new(
+        id,
+        1,
+        AdvisoryBudgetPolicy::digest_for(id, 1, 0, i64::MAX, ceilings),
+        0,
+        i64::MAX,
+        ceilings,
+        Uuid::from_u128(202),
+        "a".repeat(128),
+    )
+    .unwrap()
 }
 
 fn caller<T>(value: T, node: Uuid) -> ModelRouteFact<T> {
@@ -143,19 +167,54 @@ impl ModelRouteRankingProvider for FakeProvider {
         .to_string()
         .into_bytes())
     }
+    async fn attempt_prepared_observed(
+        &self,
+        attempted: ModelRoutePreparedAttempt,
+        permit: ModelRouteSendPermit,
+    ) -> Result<ModelRouteProviderObservation> {
+        let raw = self.attempt_prepared(attempted, permit).await?;
+        Ok(ModelRouteProviderObservation {
+            raw,
+            input_tokens: Some(4),
+            output_tokens: Some(3),
+            elapsed_monotonic_ms: Some(1),
+        })
+    }
 }
 
-#[derive(Default)]
 struct Memory {
     sent: Option<ModelRouteSendPermit>,
     sealed: Option<Vec<u8>>,
     evidence: Option<ModelRouteSealedRankingEvidence>,
     unknown: bool,
     no_calls: usize,
+    policy_enabled: bool,
+    consumed: Option<(ModelRouteProviderObservation, bool)>,
+}
+
+impl Default for Memory {
+    fn default() -> Self {
+        Self {
+            sent: None,
+            sealed: None,
+            evidence: None,
+            unknown: false,
+            no_calls: 0,
+            policy_enabled: true,
+            consumed: None,
+        }
+    }
 }
 
 #[async_trait]
 impl ModelRouteAttemptStore for Memory {
+    async fn authorized_budget_policy(
+        &mut self,
+        _: Uuid,
+        _: i64,
+    ) -> Result<Option<AdvisoryBudgetPolicy>> {
+        Ok(self.policy_enabled.then(test_policy))
+    }
     async fn by_preparation(
         &mut self,
         _: Uuid,
@@ -178,6 +237,7 @@ impl ModelRouteAttemptStore for Memory {
         saved: &PreparedModelRouteRecommendation,
         _: ModelRouteInvocation,
         attempted: &ModelRoutePreparedAttempt,
+        policy: &AdvisoryBudgetPolicy,
     ) -> Result<Option<ModelRouteSendPermit>> {
         attempted.verify(saved)?;
         if self.sent.is_some() {
@@ -188,6 +248,9 @@ impl ModelRouteAttemptStore for Memory {
             workspace_id: saved.workspace_id,
             preparation_request_key: saved.request_key.clone(),
             request_sha256: attempted.request_sha256.clone(),
+            policy_id: policy.id(),
+            policy_version: policy.version(),
+            policy_digest: policy.digest().to_owned(),
         };
         self.sent = Some(permit.clone());
         Ok(Some(permit))
@@ -213,12 +276,42 @@ impl ModelRouteAttemptStore for Memory {
         }
         Ok(self.sealed.clone())
     }
+    async fn consume_budget(
+        &mut self,
+        permit: &ModelRouteSendPermit,
+        observation: &ModelRouteProviderObservation,
+    ) -> Result<bool> {
+        if self.sent.as_ref() != Some(permit) || self.sealed.as_ref() != Some(&observation.raw) {
+            return Err(Error::InputConflict);
+        }
+        if let Some((existing, exhausted)) = &self.consumed {
+            return if existing == observation {
+                Ok(*exhausted)
+            } else {
+                Err(Error::InputConflict)
+            };
+        }
+        let exhausted = observation.input_tokens.is_none_or(|n| n < 0 || n > 100)
+            || observation.output_tokens.is_none_or(|n| n < 0 || n > 100)
+            || observation
+                .elapsed_monotonic_ms
+                .is_none_or(|n| n < 0 || n > 10_000);
+        self.consumed = Some((observation.clone(), exhausted));
+        Ok(exhausted)
+    }
+    async fn consumption_healthy(&mut self, _: &ModelRouteSendPermit) -> Result<Option<bool>> {
+        Ok(self.consumed.as_ref().map(|(_, exhausted)| !exhausted))
+    }
     async fn capture_sealed_outcome(
         &mut self,
         evidence: &ModelRouteSealedRankingEvidence,
     ) -> Result<()> {
         if self.sent.as_ref() != Some(&evidence.permit)
             || self.sealed.as_ref() != Some(&evidence.raw_response)
+            || self
+                .consumed
+                .as_ref()
+                .is_none_or(|(_, exhausted)| *exhausted)
         {
             return Err(Error::InputConflict);
         }
@@ -260,7 +353,7 @@ async fn one_call_after_commit_raw_sealed_before_rank_and_replay_no_send() {
         panic!("start")
     };
     assert_eq!(calls.load(Ordering::SeqCst), 0);
-    let raw = attempt_model_route_after_commit(
+    let observation = attempt_model_route_observed_after_commit(
         async {
             committed.store(true, Ordering::SeqCst);
             Ok(())
@@ -273,9 +366,10 @@ async fn one_call_after_commit_raw_sealed_before_rank_and_replay_no_send() {
     .unwrap()
     .unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    seal_model_route_raw_response(&mut store, &permit, &raw)
+    seal_model_route_raw_response(&mut store, &permit, &observation.raw)
         .await
         .unwrap();
+    assert!(!store.consume_budget(&permit, &observation).await.unwrap());
     let outcome = finalize_model_route_sealed_response(&mut store, &saved, &attempted, &permit)
         .await
         .unwrap();
@@ -335,6 +429,59 @@ async fn disabled_and_unknown_are_no_call_without_provider_attempt() {
     );
     assert_eq!(store.no_calls, 2);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn no_trusted_policy_blocks_send_and_unknown_or_overrun_usage_blocks_ranking() {
+    let saved = prepared(ModelRoutePreparation::Prepared);
+    let provider = FakeProvider {
+        calls: Arc::new(AtomicUsize::new(0)),
+        committed: Arc::new(AtomicBool::new(true)),
+        fail: false,
+    };
+    let mut no_policy = Memory::default();
+    no_policy.policy_enabled = false;
+    assert_eq!(
+        prepare_model_route_send(&mut no_policy, &provider, &saved, invocation()).await,
+        Err(Error::BudgetPolicyInvalid)
+    );
+    assert!(no_policy.sent.is_none());
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+
+    for (input_tokens, output_tokens) in [(None, Some(3)), (Some(101), Some(3))] {
+        let mut store = Memory::default();
+        let ModelRouteSendStart::Started { attempted, permit } =
+            prepare_model_route_send(&mut store, &provider, &saved, invocation())
+                .await
+                .unwrap()
+        else {
+            panic!("start")
+        };
+        let raw = provider
+            .attempt_prepared(*attempted.clone(), permit.clone())
+            .await
+            .unwrap();
+        seal_model_route_raw_response(&mut store, &permit, &raw)
+            .await
+            .unwrap();
+        let observation = ModelRouteProviderObservation {
+            raw: raw.clone(),
+            input_tokens,
+            output_tokens,
+            elapsed_monotonic_ms: Some(1),
+        };
+        assert!(store.consume_budget(&permit, &observation).await.unwrap());
+        assert!(store.consume_budget(&permit, &observation).await.unwrap());
+        assert_eq!(
+            store.consumption_healthy(&permit).await.unwrap(),
+            Some(false)
+        );
+        assert_eq!(
+            finalize_model_route_sealed_response(&mut store, &saved, &attempted, &permit).await,
+            Err(Error::InputConflict)
+        );
+        assert!(store.evidence.is_none());
+    }
 }
 
 #[tokio::test]

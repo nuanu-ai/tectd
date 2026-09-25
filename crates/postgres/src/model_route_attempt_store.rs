@@ -4,12 +4,12 @@ use serde_json::Value;
 use sqlx::Row;
 use tect_application::{
     ModelRouteAttemptSnapshot, ModelRouteAttemptState, ModelRouteAttemptStore,
-    ModelRouteInvocation, ModelRoutePreparedAttempt, ModelRouteRecommendationStore,
-    ModelRouteRunNoCall, ModelRouteSealedRankingEvidence, ModelRouteSendPermit,
-    PreparedModelRouteRecommendation,
+    ModelRouteInvocation, ModelRoutePreparedAttempt, ModelRouteProviderObservation,
+    ModelRouteRecommendationStore, ModelRouteRunNoCall, ModelRouteSealedRankingEvidence,
+    ModelRouteSendPermit, PreparedModelRouteRecommendation,
 };
 use tect_domain::{
-    Error, ModelRouteRankingWireRequest, Result, model_route_wire_sha256,
+    AdvisoryBudgetPolicy, Error, ModelRouteRankingWireRequest, Result, model_route_wire_sha256,
     parse_model_route_ranking_response,
 };
 use uuid::Uuid;
@@ -63,10 +63,14 @@ async fn attempt_row(
 ) -> Result<Option<sqlx::postgres::PgRow>> {
     let tenant = uow.tenant_id()?;
     sqlx::query(
-        "SELECT id,invoking_session_id,invoking_principal_id,state,no_call_reason,adviser_model, \
-         request_payload,request_sha256,response_payload,response_sha256,parsed_outcome \
-         FROM model_route_advisory_attempts WHERE tenant_id=$1 AND workspace_id=$2 \
-         AND preparation_request_key=$3",
+        "SELECT a.id,a.invoking_session_id,a.invoking_principal_id,a.state,a.no_call_reason,a.adviser_model, \
+         a.request_payload,a.request_sha256,a.response_payload,a.response_sha256,a.parsed_outcome, \
+         r.policy_id,r.policy_version,r.policy_digest,c.exhausted_after_response \
+         FROM model_route_advisory_attempts a LEFT JOIN model_route_budget_reservations r \
+         ON (r.tenant_id,r.workspace_id,r.attempt_id)=(a.tenant_id,a.workspace_id,a.id) \
+         LEFT JOIN model_route_budget_consumptions c ON \
+         (c.tenant_id,c.workspace_id,c.attempt_id)=(a.tenant_id,a.workspace_id,a.id) \
+         WHERE a.tenant_id=$1 AND a.workspace_id=$2 AND a.preparation_request_key=$3",
     )
     .bind(tenant)
     .bind(workspace_id)
@@ -159,6 +163,18 @@ async fn permit_row(
             .try_get::<Option<String>, _>("request_sha256")
             .map_err(storage_error)?
             != Some(permit.request_sha256.clone())
+        || row
+            .try_get::<Option<Uuid>, _>("policy_id")
+            .map_err(storage_error)?
+            != Some(permit.policy_id)
+        || row
+            .try_get::<Option<i64>, _>("policy_version")
+            .map_err(storage_error)?
+            != Some(permit.policy_version)
+        || row
+            .try_get::<Option<String>, _>("policy_digest")
+            .map_err(storage_error)?
+            != Some(permit.policy_digest.clone())
     {
         return Err(Error::InputConflict);
     }
@@ -192,6 +208,14 @@ impl ModelRouteAttemptStore for PgUnitOfWork {
         let state = match state.as_str() {
             "no_call" => ModelRouteAttemptState::NoCall,
             "send_unknown" => ModelRouteAttemptState::SendUnknown,
+            "raw_sealed"
+                if row
+                    .try_get::<Option<bool>, _>("exhausted_after_response")
+                    .map_err(storage_error)?
+                    == Some(true) =>
+            {
+                ModelRouteAttemptState::BudgetExhausted
+            }
             "raw_sealed" => ModelRouteAttemptState::RawSealed,
             "parsed" => ModelRouteAttemptState::Parsed,
             _ => return Err(Error::StorageUnavailable),
@@ -302,6 +326,7 @@ impl ModelRouteAttemptStore for PgUnitOfWork {
         prepared: &PreparedModelRouteRecommendation,
         invocation: ModelRouteInvocation,
         attempted: &ModelRoutePreparedAttempt,
+        policy: &AdvisoryBudgetPolicy,
     ) -> Result<Option<ModelRouteSendPermit>> {
         stored_preparation(self, prepared).await?;
         if prepared.preparation != tect_application::ModelRoutePreparation::Prepared {
@@ -332,6 +357,61 @@ impl ModelRouteAttemptStore for PgUnitOfWork {
                 Err(Error::InputConflict)
             };
         }
+        policy.validate().map_err(|_| Error::BudgetPolicyInvalid)?;
+        let tenant = self.tenant_id()?;
+        let now: i64 = sqlx::query_scalar(
+            "SELECT (EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())*1000)::bigint",
+        )
+        .fetch_one(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
+        if !policy.is_effective_at(now) {
+            return Err(Error::BudgetPolicyInvalid);
+        }
+        let request_len = i64::try_from(attempted.request_bytes.len())
+            .map_err(|_| Error::BudgetExhaustedBeforeDispatch)?;
+        let ceilings = policy.ceilings();
+        if request_len == 0 || request_len > ceilings.request_utf8_bytes {
+            return Err(Error::BudgetExhaustedBeforeDispatch);
+        }
+        let usage = crate::budget_policy_usage::policy_usage(
+            self.transaction()?,
+            tenant,
+            prepared.workspace_id,
+            policy.id(),
+            policy.version(),
+            policy.digest(),
+        )
+        .await?;
+        if usage.pending != 0 || usage.invalid != 0 {
+            return Err(Error::BudgetPolicyInvalid);
+        }
+        if usage
+            .calls
+            .checked_add(1)
+            .is_none_or(|n| n > ceilings.provider_calls)
+            || usage
+                .request_bytes
+                .checked_add(request_len)
+                .is_none_or(|n| n > ceilings.request_utf8_bytes)
+        {
+            return Err(Error::BudgetExhaustedBeforeDispatch);
+        }
+        let input = ceilings
+            .input_tokens
+            .checked_sub(usage.input_tokens)
+            .ok_or(Error::BudgetExhaustedBeforeDispatch)?;
+        let output = ceilings
+            .output_tokens
+            .checked_sub(usage.output_tokens)
+            .ok_or(Error::BudgetExhaustedBeforeDispatch)?;
+        let elapsed = ceilings
+            .elapsed_monotonic_ms
+            .checked_sub(usage.elapsed_ms)
+            .ok_or(Error::BudgetExhaustedBeforeDispatch)?;
+        if input <= 0 || output <= 0 || elapsed <= 0 {
+            return Err(Error::BudgetExhaustedBeforeDispatch);
+        }
         let id = insert_attempt(
             self,
             prepared,
@@ -342,11 +422,34 @@ impl ModelRouteAttemptStore for PgUnitOfWork {
             Some(attempted),
         )
         .await?;
+        sqlx::query(
+            "INSERT INTO model_route_budget_reservations (tenant_id,workspace_id,attempt_id, \
+             policy_id,policy_version,policy_digest,request_sha256,request_utf8_bytes, \
+             reserved_input_tokens,reserved_output_tokens,reserved_elapsed_ms) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+        )
+        .bind(tenant)
+        .bind(prepared.workspace_id)
+        .bind(id)
+        .bind(policy.id())
+        .bind(policy.version())
+        .bind(policy.digest())
+        .bind(&attempted.request_sha256)
+        .bind(request_len)
+        .bind(input)
+        .bind(output)
+        .bind(elapsed)
+        .execute(&mut **self.transaction()?)
+        .await
+        .map_err(write_error)?;
         Ok(Some(ModelRouteSendPermit {
             attempt_id: id,
             workspace_id: prepared.workspace_id,
             preparation_request_key: prepared.request_key.clone(),
             request_sha256: attempted.request_sha256.clone(),
+            policy_id: policy.id(),
+            policy_version: policy.version(),
+            policy_digest: policy.digest().to_owned(),
         }))
     }
 
@@ -416,6 +519,114 @@ impl ModelRouteAttemptStore for PgUnitOfWork {
         Ok(raw)
     }
 
+    async fn consume_budget(
+        &mut self,
+        permit: &ModelRouteSendPermit,
+        observation: &ModelRouteProviderObservation,
+    ) -> Result<bool> {
+        if !self.is_read_write() {
+            return Err(Error::Forbidden);
+        }
+        let row = permit_row(self, permit).await?;
+        let state: String = row.try_get("state").map_err(storage_error)?;
+        if state != "raw_sealed" && state != "parsed" {
+            return Err(Error::InputConflict);
+        }
+        let response_digest = model_route_wire_sha256(&observation.raw);
+        if row
+            .try_get::<Option<Vec<u8>>, _>("response_payload")
+            .map_err(storage_error)?
+            != Some(observation.raw.clone())
+            || row
+                .try_get::<Option<String>, _>("response_sha256")
+                .map_err(storage_error)?
+                != Some(response_digest.clone())
+        {
+            return Err(Error::InputConflict);
+        }
+        let tenant = self.tenant_id()?;
+        let existing: Option<(Option<i64>,Option<i64>,Option<i64>,bool)> = sqlx::query_as(
+            "SELECT input_tokens,output_tokens,elapsed_monotonic_ms,exhausted_after_response \
+             FROM model_route_budget_consumptions WHERE tenant_id=$1 AND workspace_id=$2 AND attempt_id=$3",
+        ).bind(tenant).bind(permit.workspace_id).bind(permit.attempt_id)
+        .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?;
+        if let Some(existing) = existing {
+            if existing.0 != observation.input_tokens
+                || existing.1 != observation.output_tokens
+                || existing.2 != observation.elapsed_monotonic_ms
+            {
+                return Err(Error::InputConflict);
+            }
+            return Ok(existing.3);
+        }
+        let limits: Option<(i64,i64,i64)> = sqlx::query_as(
+            "SELECT reserved_input_tokens,reserved_output_tokens,reserved_elapsed_ms \
+             FROM model_route_budget_reservations WHERE tenant_id=$1 AND workspace_id=$2 AND attempt_id=$3",
+        ).bind(tenant).bind(permit.workspace_id).bind(permit.attempt_id)
+        .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?;
+        let (input_limit, output_limit, elapsed_limit) = limits.ok_or(Error::InputConflict)?;
+        let usage = crate::budget_policy_usage::policy_usage(
+            self.transaction()?,
+            tenant,
+            permit.workspace_id,
+            permit.policy_id,
+            permit.policy_version,
+            &permit.policy_digest,
+        )
+        .await?;
+        if usage.pending != 1 {
+            return Err(Error::BudgetPolicyInvalid);
+        }
+        let unknown = observation.input_tokens.is_none()
+            || observation.output_tokens.is_none()
+            || observation.elapsed_monotonic_ms.is_none();
+        let exhausted = unknown
+            || usage.invalid != 0
+            || observation
+                .input_tokens
+                .is_some_and(|n| n < 0 || n > input_limit)
+            || observation
+                .output_tokens
+                .is_some_and(|n| n < 0 || n > output_limit)
+            || observation
+                .elapsed_monotonic_ms
+                .is_some_and(|n| n < 0 || n > elapsed_limit);
+        sqlx::query(
+            "INSERT INTO model_route_budget_consumptions (tenant_id,workspace_id,attempt_id, \
+             policy_id,policy_version,policy_digest,request_sha256,response_sha256, \
+             input_tokens,output_tokens,elapsed_monotonic_ms,unknown_usage, \
+             exhausted_after_response,transport_failed) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,false)",
+        )
+        .bind(tenant)
+        .bind(permit.workspace_id)
+        .bind(permit.attempt_id)
+        .bind(permit.policy_id)
+        .bind(permit.policy_version)
+        .bind(&permit.policy_digest)
+        .bind(&permit.request_sha256)
+        .bind(response_digest)
+        .bind(observation.input_tokens)
+        .bind(observation.output_tokens)
+        .bind(observation.elapsed_monotonic_ms)
+        .bind(unknown)
+        .bind(exhausted)
+        .execute(&mut **self.transaction()?)
+        .await
+        .map_err(write_error)?;
+        Ok(exhausted)
+    }
+
+    async fn consumption_healthy(&mut self, permit: &ModelRouteSendPermit) -> Result<Option<bool>> {
+        permit_row(self, permit).await?;
+        let tenant = self.tenant_id()?;
+        sqlx::query_scalar(
+            "SELECT NOT unknown_usage AND NOT exhausted_after_response \
+             FROM model_route_budget_consumptions WHERE tenant_id=$1 AND workspace_id=$2 AND attempt_id=$3",
+        ).bind(tenant).bind(permit.workspace_id).bind(permit.attempt_id)
+        .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)
+    }
+
     async fn capture_sealed_outcome(
         &mut self,
         evidence: &ModelRouteSealedRankingEvidence,
@@ -461,6 +672,14 @@ impl ModelRouteAttemptStore for PgUnitOfWork {
             return Err(Error::InputConflict);
         }
         let tenant = self.tenant_id()?;
+        let healthy: Option<bool> = sqlx::query_scalar(
+            "SELECT NOT unknown_usage AND NOT exhausted_after_response \
+             FROM model_route_budget_consumptions WHERE tenant_id=$1 AND workspace_id=$2 AND attempt_id=$3",
+        ).bind(tenant).bind(evidence.permit.workspace_id).bind(evidence.permit.attempt_id)
+        .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?;
+        if healthy != Some(true) {
+            return Err(Error::BudgetPolicyInvalid);
+        }
         let affected = sqlx::query(
             "UPDATE model_route_advisory_attempts SET state='parsed',parsed_outcome=$4, \
              parsed_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 \
@@ -486,6 +705,25 @@ impl ModelRouteAttemptStore for PgUnitOfWork {
         if state != "send_unknown" {
             return Err(Error::InputConflict);
         }
+        let tenant = self.tenant_id()?;
+        sqlx::query(
+            "INSERT INTO model_route_budget_consumptions (tenant_id,workspace_id,attempt_id, \
+             policy_id,policy_version,policy_digest,request_sha256,response_sha256, \
+             input_tokens,output_tokens,elapsed_monotonic_ms,unknown_usage, \
+             exhausted_after_response,transport_failed) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,NULL,NULL,NULL,NULL,true,true,true) \
+             ON CONFLICT (tenant_id,workspace_id,attempt_id) DO NOTHING",
+        )
+        .bind(tenant)
+        .bind(permit.workspace_id)
+        .bind(permit.attempt_id)
+        .bind(permit.policy_id)
+        .bind(permit.policy_version)
+        .bind(&permit.policy_digest)
+        .bind(&permit.request_sha256)
+        .execute(&mut **self.transaction()?)
+        .await
+        .map_err(write_error)?;
         Ok(())
     }
 }

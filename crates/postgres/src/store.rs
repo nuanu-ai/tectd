@@ -59,6 +59,61 @@ impl PgUnitOfWork {
 
 #[async_trait]
 impl Store for PgStore {
+    async fn consume_committed_model_route_budget(
+        &self,
+        tenant_id: Uuid,
+        permit: &tect_application::ModelRouteSendPermit,
+        observation: &tect_application::ModelRouteProviderObservation,
+    ) -> Result<bool> {
+        if tenant_id.is_nil() || permit.attempt_id.is_nil() || permit.workspace_id.is_nil() {
+            return Err(Error::InputConflict);
+        }
+        let mut transaction = self.pool.begin().await.map_err(storage_error)?;
+        sqlx::query("SELECT pg_catalog.set_config('tect.tenant_id', $1, true)")
+            .bind(tenant_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+        let mut consume = PgUnitOfWork {
+            transaction: Some(transaction),
+            mode: TransactionMode::ReadWrite,
+            identity: None,
+            tenant_id: Some(tenant_id),
+        };
+        let exhausted = tect_application::ModelRouteAttemptStore::consume_budget(
+            &mut consume,
+            permit,
+            observation,
+        )
+        .await?;
+        Box::new(consume).commit().await?;
+        Ok(exhausted)
+    }
+
+    async fn record_committed_model_route_failure(
+        &self,
+        tenant_id: Uuid,
+        permit: &tect_application::ModelRouteSendPermit,
+    ) -> Result<()> {
+        if tenant_id.is_nil() || permit.attempt_id.is_nil() || permit.workspace_id.is_nil() {
+            return Err(Error::InputConflict);
+        }
+        let mut transaction = self.pool.begin().await.map_err(storage_error)?;
+        sqlx::query("SELECT pg_catalog.set_config('tect.tenant_id', $1, true)")
+            .bind(tenant_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+        let mut failed = PgUnitOfWork {
+            transaction: Some(transaction),
+            mode: TransactionMode::ReadWrite,
+            identity: None,
+            tenant_id: Some(tenant_id),
+        };
+        tect_application::ModelRouteAttemptStore::mark_send_unknown(&mut failed, permit).await?;
+        Box::new(failed).commit().await
+    }
+
     async fn seal_committed_model_route_response(
         &self,
         tenant_id: Uuid,

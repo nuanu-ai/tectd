@@ -28,6 +28,21 @@ pub trait Store: Send + Sync {
     ) -> Result<()> {
         Err(tect_domain::Error::Forbidden)
     }
+    async fn consume_committed_model_route_budget(
+        &self,
+        _tenant_id: Uuid,
+        _permit: &crate::ModelRouteSendPermit,
+        _observation: &crate::ModelRouteProviderObservation,
+    ) -> Result<bool> {
+        Err(tect_domain::Error::Forbidden)
+    }
+    async fn record_committed_model_route_failure(
+        &self,
+        _tenant_id: Uuid,
+        _permit: &crate::ModelRouteSendPermit,
+    ) -> Result<()> {
+        Err(tect_domain::Error::Forbidden)
+    }
 }
 
 /// A dropped unit of work rolls back. No database-specific types escape this port.

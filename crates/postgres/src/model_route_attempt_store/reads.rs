@@ -10,6 +10,9 @@ pub(super) fn row_permit(
         workspace_id,
         preparation_request_key: key.into(),
         request_sha256: row.try_get("request_sha256").map_err(storage_error)?,
+        policy_id: row.try_get("policy_id").map_err(storage_error)?,
+        policy_version: row.try_get("policy_version").map_err(storage_error)?,
+        policy_digest: row.try_get("policy_digest").map_err(storage_error)?,
     })
 }
 
