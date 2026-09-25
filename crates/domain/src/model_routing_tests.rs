@@ -8,6 +8,7 @@ fn route(id: &str) -> ModelRoute {
         model: "configured-model".into(),
         effort: "configured-effort".into(),
         enabled: true,
+        allowed_matrix_choice_ids: vec!["choice-a".into()],
         allowed_roles: vec!["agent".into()],
         allowed_tools: vec!["code".into()],
         allowed_data_classes: vec!["internal".into()],
@@ -55,6 +56,9 @@ fn policy_constraints_exclude_every_disallowed_route() {
     let mut wrong_role = route("wrong-role");
     wrong_role.allowed_roles = vec!["owner".into()];
     routes.push(wrong_role);
+    let mut wrong_matrix_choice = route("wrong-matrix-choice");
+    wrong_matrix_choice.allowed_matrix_choice_ids = vec!["choice-b".into()];
+    routes.push(wrong_matrix_choice);
     let mut wrong_tool = route("wrong-tool");
     wrong_tool.allowed_tools = vec!["search".into()];
     routes.push(wrong_tool);
@@ -93,6 +97,14 @@ fn catalogue_is_versioned_digested_and_rejects_duplicates() {
     assert_eq!(reordered.validate(), Err(Error::InvalidArguments));
     reordered = base.clone();
     reordered.routes[0].allowed_roles.push("agent".into());
+    assert_eq!(reordered.validate(), Err(Error::InvalidArguments));
+    reordered = base.clone();
+    reordered.routes[0].allowed_matrix_choice_ids = vec!["choice-b".into()];
+    assert_ne!(reordered.digest().unwrap(), digest);
+    reordered = base.clone();
+    reordered.routes[0]
+        .allowed_matrix_choice_ids
+        .push("choice-a".into());
     assert_eq!(reordered.validate(), Err(Error::InvalidArguments));
     reordered = base;
     reordered.routes[0].provider.clear();
@@ -148,6 +160,22 @@ fn exact_matrix_and_work_facts_change_binding() {
 }
 
 #[test]
+fn exact_approved_matrix_choice_gates_eligibility() {
+    let original = work();
+    let catalogue = catalogue();
+    assert_eq!(catalogue.eligible(&original).unwrap().route_ids.len(), 2);
+    let mut changed = original.clone();
+    changed.approved_matrix_selection.selected_choice_id = "choice-b".into();
+    assert!(catalogue.eligible(&changed).unwrap().route_ids.is_empty());
+    changed.approved_matrix_selection.selected_choice_id = "choice-a".into();
+    changed
+        .approved_matrix_selection
+        .expected_input_digest
+        .clear();
+    assert_eq!(catalogue.eligible(&changed), Err(Error::InvalidArguments));
+}
+
+#[test]
 fn no_route_is_abstention_and_has_no_execution_action() {
     let mut no_budget = work();
     no_budget.remaining_budget_units = 0;
@@ -163,9 +191,14 @@ fn no_route_is_abstention_and_has_no_execution_action() {
         eligible.record(None, None, None).unwrap().observed_actual,
         None
     );
+    assert_eq!(eligible.configured_route_ids, vec!["route-a", "route-b"]);
     assert_eq!(
-        eligible.record(Some("route-a".into()), None, None),
-        Err(Error::InvalidArguments)
+        eligible
+            .record(Some("route-a".into()), None, None)
+            .unwrap()
+            .requested_route_id
+            .as_deref(),
+        Some("route-a")
     );
 }
 
@@ -197,6 +230,10 @@ fn requested_recommended_and_observed_actual_remain_distinct() {
     );
     assert_eq!(
         eligible.record(None, Some("missing".into()), None),
+        Err(Error::InvalidArguments)
+    );
+    assert_eq!(
+        eligible.record(Some("missing".into()), None, None),
         Err(Error::InvalidArguments)
     );
 }

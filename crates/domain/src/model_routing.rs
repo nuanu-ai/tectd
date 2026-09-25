@@ -12,6 +12,8 @@ pub struct ModelRoute {
     pub model: String,
     pub effort: String,
     pub enabled: bool,
+    /// Exact approved Matrix choice IDs for which this route may be recommended.
+    pub allowed_matrix_choice_ids: Vec<String>,
     pub allowed_roles: Vec<String>,
     pub allowed_tools: Vec<String>,
     pub allowed_data_classes: Vec<String>,
@@ -47,6 +49,8 @@ pub struct EligibleModelRoutes {
     pub catalogue_version: u64,
     pub catalogue_digest: String,
     pub work_context_digest: String,
+    /// Configured IDs also retain an ineligible caller request as an audit fact.
+    pub configured_route_ids: Vec<String>,
     pub route_ids: Vec<String>,
 }
 
@@ -95,6 +99,7 @@ impl ModelRouteCatalogue {
                 return Err(Error::InvalidArguments);
             }
             valid_set(&route.allowed_roles, false)?;
+            valid_matrix_choice_set(&route.allowed_matrix_choice_ids)?;
             valid_set(&route.allowed_tools, false)?;
             valid_set(&route.allowed_data_classes, false)?;
             valid_set(&route.required_host_capabilities, true)?;
@@ -115,6 +120,12 @@ impl ModelRouteCatalogue {
                 part(&mut hash, value);
             }
             number(&mut hash, u64::from(route.enabled));
+            let mut choices = route.allowed_matrix_choice_ids.clone();
+            choices.sort();
+            number(&mut hash, choices.len() as u64);
+            for choice in choices {
+                part(&mut hash, &choice);
+            }
             for values in [
                 &route.allowed_roles,
                 &route.allowed_tools,
@@ -138,11 +149,17 @@ impl ModelRouteCatalogue {
         let catalogue_digest = self.digest()?;
         let work_context_digest = work.digest()?;
         let capabilities: BTreeSet<_> = work.host_capabilities.iter().collect();
+        let mut configured_route_ids: Vec<_> =
+            self.routes.iter().map(|route| route.id.clone()).collect();
+        configured_route_ids.sort();
         let mut route_ids: Vec<_> = self
             .routes
             .iter()
             .filter(|route| {
                 route.enabled
+                    && route
+                        .allowed_matrix_choice_ids
+                        .contains(&work.approved_matrix_selection.selected_choice_id)
                     && route.allowed_roles.contains(&work.role)
                     && route.allowed_tools.contains(&work.tool)
                     && route.allowed_data_classes.contains(&work.data_class)
@@ -160,6 +177,7 @@ impl ModelRouteCatalogue {
             catalogue_version: self.version,
             catalogue_digest,
             work_context_digest,
+            configured_route_ids,
             route_ids,
         })
     }
@@ -231,13 +249,14 @@ impl EligibleModelRoutes {
         recommended_route_id: Option<String>,
         observed_actual: Option<ObservedModelRoute>,
     ) -> Result<ModelRouteRecord> {
-        for id in [&requested_route_id, &recommended_route_id]
-            .into_iter()
-            .flatten()
+        if requested_route_id
+            .as_ref()
+            .is_some_and(|id| !self.configured_route_ids.contains(id))
+            || recommended_route_id
+                .as_ref()
+                .is_some_and(|id| !self.route_ids.contains(id))
         {
-            if !self.route_ids.contains(id) {
-                return Err(Error::InvalidArguments);
-            }
+            return Err(Error::InvalidArguments);
         }
         if let Some(actual) = &observed_actual {
             if actual.route_id.as_deref().is_some_and(|id| !valid_id(id))
@@ -276,6 +295,24 @@ fn valid_set(values: &[String], allow_empty: bool) -> Result<()> {
     let mut seen = BTreeSet::new();
     for value in values {
         if !valid_id(value) || !seen.insert(value) {
+            return Err(Error::InvalidArguments);
+        }
+    }
+    Ok(())
+}
+
+fn valid_matrix_choice_set(values: &[String]) -> Result<()> {
+    if values.is_empty() || values.len() > 32 {
+        return Err(Error::InvalidArguments);
+    }
+    let mut seen = BTreeSet::new();
+    for value in values {
+        if value.is_empty()
+            || value.len() > 4096
+            || value.trim() != value
+            || value.contains('\0')
+            || !seen.insert(value)
+        {
             return Err(Error::InvalidArguments);
         }
     }
