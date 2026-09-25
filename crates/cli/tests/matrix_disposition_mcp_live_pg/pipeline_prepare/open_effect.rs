@@ -1,21 +1,34 @@
 use super::*;
 use std::path::Path;
 
-pub(super) async fn exercise(
-    pool: &PgPool,
-    workspace: Uuid,
-    owner: &mut Mcp,
-    verifier: &mut Mcp,
-    open: &Value,
-    opened: &Value,
-    disposition: &Value,
-    matrix_disposition: &Value,
-    matrix_match: &Value,
-    work: &Value,
-    selected_pipeline: &Value,
-    root: &Path,
-    socket: &Path,
-) {
+pub(super) struct OpenEffectFixture<'a> {
+    pub(super) pool: &'a PgPool,
+    pub(super) workspace: Uuid,
+    pub(super) open: &'a Value,
+    pub(super) opened: &'a Value,
+    pub(super) disposition: &'a Value,
+    pub(super) matrix_disposition: &'a Value,
+    pub(super) matrix_match: &'a Value,
+    pub(super) work: &'a Value,
+    pub(super) selected_pipeline: &'a Value,
+    pub(super) root: &'a Path,
+    pub(super) socket: &'a Path,
+}
+
+pub(super) async fn exercise(owner: &mut Mcp, verifier: &mut Mcp, fixture: OpenEffectFixture<'_>) {
+    let OpenEffectFixture {
+        pool,
+        workspace,
+        open,
+        opened,
+        disposition,
+        matrix_disposition,
+        matrix_match,
+        work,
+        selected_pipeline,
+        root,
+        socket,
+    } = fixture;
     let slice_id = Uuid::parse_str(opened["created"]["id"].as_str().unwrap()).unwrap();
     let open_request_id = Uuid::parse_str(open["request_id"].as_str().unwrap()).unwrap();
     let effect = route(

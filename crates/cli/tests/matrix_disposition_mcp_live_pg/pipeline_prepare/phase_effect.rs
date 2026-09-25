@@ -1,16 +1,24 @@
 use super::*;
 use std::path::Path;
 
-pub(super) async fn exercise(
-    pool: &PgPool,
-    workspace: Uuid,
-    owner: &mut Mcp,
-    verifier: &mut Mcp,
-    opened: &Value,
-    begun: &Value,
-    root: &Path,
-    socket: &Path,
-) {
+pub(super) struct PhaseEffectFixture<'a> {
+    pub(super) pool: &'a PgPool,
+    pub(super) workspace: Uuid,
+    pub(super) opened: &'a Value,
+    pub(super) begun: &'a Value,
+    pub(super) root: &'a Path,
+    pub(super) socket: &'a Path,
+}
+
+pub(super) async fn exercise(owner: &mut Mcp, verifier: &mut Mcp, fixture: PhaseEffectFixture<'_>) {
+    let PhaseEffectFixture {
+        pool,
+        workspace,
+        opened,
+        begun,
+        root,
+        socket,
+    } = fixture;
     let slice = &opened["created"];
     let run = &begun["run"];
     let run_id = Uuid::parse_str(run["id"].as_str().unwrap()).unwrap();

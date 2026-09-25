@@ -27,10 +27,11 @@ impl PipelineRecommendationDefinitionProvider for MutablePinnedDefinitions {
     ) -> Result<Option<tect_domain::PipelineDefinitionSnapshot>> {
         let mut definition = tect_host::StaticPipelineRecommendationDefinitions
             .definition(catalogue_revision, kind)?;
-        if self.0.load(Ordering::SeqCst) && kind == PipelineKind::LightweightTddDevelopment {
-            if let Some(value) = &mut definition {
-                value.version.push_str(".changed-after-disposition");
-            }
+        if self.0.load(Ordering::SeqCst)
+            && kind == PipelineKind::LightweightTddDevelopment
+            && let Some(value) = &mut definition
+        {
+            value.version.push_str(".changed-after-disposition");
         }
         Ok(definition)
     }
@@ -343,44 +344,36 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
     assert_eq!(matched["verdict"], "matches");
     let ready = review(&mut owner, &saved).await;
     assert_eq!(ready["candidate_set"]["status"], "ready");
-    exercise_zero_eligible_no_call(
-        &pool,
-        &runtime_url,
-        &root,
-        &owner_config,
-        &workspace_key,
+    let no_call_fixture = NoCallFixture {
+        pool: &pool,
+        runtime_url: &runtime_url,
+        root: &root,
+        owner_config: &owner_config,
+        workspace_key: &workspace_key,
         workspace,
         set,
-        &work,
-    )
-    .await;
-    exercise_one_eligible_no_call(
-        &pool,
-        &runtime_url,
-        &root,
-        &owner_config,
-        &workspace_key,
-        workspace,
-        set,
-        &work,
-    )
-    .await;
+        work: &work,
+    };
+    exercise_zero_eligible_no_call(&no_call_fixture).await;
+    exercise_one_eligible_no_call(&no_call_fixture).await;
     assertions::exercise_prepare(
-        &pool,
-        workspace,
         &mut owner,
         &mut independent,
-        set,
-        &source,
-        &work,
-        &ready,
-        &chosen,
-        &matched,
-        task,
-        &pipeline_calls,
-        &definition_drift,
-        &root,
-        &socket,
+        assertions::PrepareFixture {
+            pool: &pool,
+            workspace,
+            set,
+            source: &source,
+            work: &work,
+            ready: &ready,
+            chosen: &chosen,
+            matched: &matched,
+            task,
+            pipeline_calls: &pipeline_calls,
+            definition_drift: &definition_drift,
+            root: &root,
+            socket: &socket,
+        },
     )
     .await;
     assert_eq!(matrix_calls.load(Ordering::SeqCst), 1);
@@ -389,16 +382,26 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
     server.abort();
 }
 
-async fn exercise_zero_eligible_no_call(
-    pool: &PgPool,
-    runtime_url: &str,
-    root: &std::path::Path,
-    owner_config: &std::path::Path,
-    workspace_key: &str,
+struct NoCallFixture<'a> {
+    pool: &'a PgPool,
+    runtime_url: &'a str,
+    root: &'a std::path::Path,
+    owner_config: &'a std::path::Path,
+    workspace_key: &'a str,
     workspace: Uuid,
     set: Uuid,
-    work: &Value,
-) {
+    work: &'a Value,
+}
+
+async fn exercise_zero_eligible_no_call(fixture: &NoCallFixture<'_>) {
+    let pool = fixture.pool;
+    let runtime_url = fixture.runtime_url;
+    let root = fixture.root;
+    let owner_config = fixture.owner_config;
+    let workspace_key = fixture.workspace_key;
+    let workspace = fixture.workspace;
+    let set = fixture.set;
+    let work = fixture.work;
     let mut policy = explicit_fixture_policy();
     policy.rules.clear();
     let calls = Arc::new(AtomicUsize::new(0));
@@ -484,16 +487,15 @@ async fn exercise_zero_eligible_no_call(
     server.abort();
 }
 
-async fn exercise_one_eligible_no_call(
-    pool: &PgPool,
-    runtime_url: &str,
-    root: &std::path::Path,
-    owner_config: &std::path::Path,
-    workspace_key: &str,
-    workspace: Uuid,
-    set: Uuid,
-    work: &Value,
-) {
+async fn exercise_one_eligible_no_call(fixture: &NoCallFixture<'_>) {
+    let pool = fixture.pool;
+    let runtime_url = fixture.runtime_url;
+    let root = fixture.root;
+    let owner_config = fixture.owner_config;
+    let workspace_key = fixture.workspace_key;
+    let workspace = fixture.workspace;
+    let set = fixture.set;
+    let work = fixture.work;
     let mut policy = explicit_fixture_policy();
     policy
         .rules

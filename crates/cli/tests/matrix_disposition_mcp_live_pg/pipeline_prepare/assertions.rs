@@ -6,23 +6,42 @@ async fn opportunity_count(pool: &PgPool, workspace: Uuid) -> i64 {
     ).bind(workspace).fetch_one(pool).await.unwrap()
 }
 
+pub(super) struct PrepareFixture<'a> {
+    pub(super) pool: &'a PgPool,
+    pub(super) workspace: Uuid,
+    pub(super) set: Uuid,
+    pub(super) source: &'a Value,
+    pub(super) work: &'a Value,
+    pub(super) ready: &'a Value,
+    pub(super) chosen: &'a Value,
+    pub(super) matched: &'a Value,
+    pub(super) task: Uuid,
+    pub(super) pipeline_calls: &'a Arc<AtomicUsize>,
+    pub(super) definition_drift: &'a Arc<AtomicBool>,
+    pub(super) root: &'a std::path::Path,
+    pub(super) socket: &'a std::path::Path,
+}
+
 pub(super) async fn exercise_prepare(
-    pool: &PgPool,
-    workspace: Uuid,
     owner: &mut Mcp,
     independent: &mut Mcp,
-    set: Uuid,
-    source: &Value,
-    work: &Value,
-    ready: &Value,
-    chosen: &Value,
-    matched: &Value,
-    task: Uuid,
-    pipeline_calls: &Arc<AtomicUsize>,
-    definition_drift: &Arc<AtomicBool>,
-    root: &std::path::Path,
-    socket: &std::path::Path,
+    fixture: PrepareFixture<'_>,
 ) {
+    let PrepareFixture {
+        pool,
+        workspace,
+        set,
+        source,
+        work,
+        ready,
+        chosen,
+        matched,
+        task,
+        pipeline_calls,
+        definition_drift,
+        root,
+        socket,
+    } = fixture;
     let scope = Uuid::parse_str(ready["scope"]["id"].as_str().unwrap()).unwrap();
     let before: (i64, String) = sqlx::query_as(
         "SELECT revision,status FROM slice_candidate_sets WHERE workspace_id=$1 AND id=$2",
@@ -623,31 +642,35 @@ pub(super) async fn exercise_prepare(
     assert_eq!(reopened["replay"]["id"], opened["created"]["id"]);
 
     super::open_effect::exercise(
-        pool,
-        workspace,
         owner,
         independent,
-        &open,
-        &opened,
-        &disposition,
-        chosen,
-        matched,
-        work,
-        &options[0]["kind"],
-        root,
-        socket,
+        super::open_effect::OpenEffectFixture {
+            pool,
+            workspace,
+            open: &open,
+            opened: &opened,
+            disposition: &disposition,
+            matrix_disposition: chosen,
+            matrix_match: matched,
+            work,
+            selected_pipeline: &options[0]["kind"],
+            root,
+            socket,
+        },
     )
     .await;
     let begun = super::run_binding::exercise(pool, workspace, owner, &opened, scope).await;
     super::phase_effect::exercise(
-        pool,
-        workspace,
         owner,
         independent,
-        &opened,
-        &begun,
-        root,
-        socket,
+        super::phase_effect::PhaseEffectFixture {
+            pool,
+            workspace,
+            opened: &opened,
+            begun: &begun,
+            root,
+            socket,
+        },
     )
     .await;
 
