@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 import sys
 import tomllib
+from architecture_sources import over_limit_sources, test_only_sources
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = {
@@ -28,20 +29,12 @@ errors = []
 observed = set()
 
 
-def is_test_fixture(source: Path) -> bool:
-    relative = source.relative_to(ROOT)
-    return (
-        source.name == "tests.rs"
-        or source.stem.endswith("_tests")
-        or "tests" in relative.parts
-    )
-
-
+test_only = test_only_sources(ROOT)
 domain_advisory_sources = [ROOT / "crates/domain/src/advisory.rs"]
 domain_advisory_sources.extend(
     source
     for source in (ROOT / "crates/domain/src/advisory").rglob("*.rs")
-    if not is_test_fixture(source)
+    if source.resolve() not in test_only
 )
 for source in sorted(domain_advisory_sources):
     text = source.read_text()
@@ -77,11 +70,8 @@ for manifest in sorted((ROOT / "crates").glob("*/Cargo.toml")):
                     errors.append(f"{source.relative_to(ROOT)}: outward grouped std import")
 if observed != set(ALLOWED):
     errors.append(f"Unexpected crate set: {sorted(observed)}")
-for source in sorted((ROOT / "crates").rglob("*")):
-    if source.is_file() and source.suffix in {".rs", ".sql"}:
-        lines = len(source.read_text().splitlines())
-        if lines > 500:
-            errors.append(f"{source.relative_to(ROOT)}: {lines} lines, limit 500")
+for source, lines in over_limit_sources(ROOT):
+    errors.append(f"{source.relative_to(ROOT)}: {lines} lines, limit 500")
 if errors:
     print("\n".join(errors), file=sys.stderr)
     raise SystemExit(1)

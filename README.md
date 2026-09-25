@@ -32,7 +32,9 @@ flowchart LR
 The application owns authorization order and transaction boundaries. SQLx stays in
 `tect-postgres`; environment, files, processes and protocol stay in `tect-host`.
 The composition binaries wire them together. Run `scripts/check-architecture.py`
-to enforce the dependency allowlist, inner-crate I/O boundary and 500-line limit.
+to enforce the dependency allowlist, inner-crate I/O boundary and 500-line limit
+for production or mixed Rust files and all SQL files. Rust files proven reachable
+only from integration tests or `#[cfg(test)]` modules are exempt from that limit.
 
 ## Local configuration
 
