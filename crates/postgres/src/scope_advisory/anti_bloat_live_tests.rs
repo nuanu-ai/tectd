@@ -57,7 +57,7 @@ fn trusted_graph_links_every_goal_so_even_duplicate_candidates_are_not_rankable(
 
 #[tokio::test]
 #[ignore = "requires disposable migrated PG18 and TECT_TEST_ADMIN_URL/TECT_TEST_RUNTIME_URL"]
-async fn authored_manifest_binding_is_inactive_before_selected_save() {
+async fn selected_save_activates_exact_source_bound_anti_bloat_review() {
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
     let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
     let admin_pool = sqlx::PgPool::connect(&admin_url).await.unwrap();
@@ -66,12 +66,14 @@ async fn authored_manifest_binding_is_inactive_before_selected_save() {
     let tenant = enrollment.tenant_id;
     let actor = enrollment.principal_id;
     let workspace = Uuid::new_v4();
+    let other_workspace = Uuid::new_v4();
     let session = Uuid::new_v4();
     let program = Uuid::new_v4();
     let candidate = Uuid::new_v4();
     let snapshot = Uuid::new_v4();
     let source_ref = Uuid::new_v4();
     let opportunity = Uuid::new_v4();
+    let source_digest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     sqlx::query("INSERT INTO workspaces(id,tenant_id,key) VALUES($1,$2,$3)")
         .bind(workspace)
@@ -87,6 +89,20 @@ async fn authored_manifest_binding_is_inactive_before_selected_save() {
         .execute(&admin_pool)
         .await
         .unwrap();
+    sqlx::query("INSERT INTO workspaces(id,tenant_id,key) VALUES($1,$2,$3)")
+        .bind(other_workspace)
+        .bind(tenant)
+        .bind(format!("anti-bloat-other-{other_workspace}"))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO memberships(tenant_id,workspace_id,principal_id) VALUES($1,$2,$3)")
+        .bind(tenant)
+        .bind(other_workspace)
+        .bind(actor)
+        .execute(&admin_pool)
+        .await
+        .unwrap();
     sqlx::query("INSERT INTO agent_sessions(id,tenant_id,host_id,workspace_id,native_session_id) VALUES($1,$2,$3,$4,$5)")
         .bind(session).bind(tenant).bind(enrollment.auth.host_id).bind(workspace)
         .bind(session.to_string()).execute(&admin_pool).await.unwrap();
@@ -95,13 +111,25 @@ async fn authored_manifest_binding_is_inactive_before_selected_save() {
     sqlx::query("INSERT INTO scope_candidate_sets(id,tenant_id,workspace_id,program_id,origin_request_id,origin_input,origin_payload,revision,status,boundary,input_cursor,latest_input,max_input_bytes) VALUES($1,$2,$3,$4,$5,'input','{}',3,'ready','finite',2,2,4096)")
         .bind(candidate).bind(tenant).bind(workspace).bind(program).bind(Uuid::new_v4())
         .execute(&admin_pool).await.unwrap();
-    sqlx::query("INSERT INTO scope_candidate_contents(tenant_id,workspace_id,digest,body) VALUES($1,$2,$3,'intent')")
-        .bind(tenant).bind(workspace).bind(D).execute(&admin_pool).await.unwrap();
+    let program_body = serde_json::json!({
+        "id": program, "workspace_id": workspace, "status": "open", "revision": 4,
+        "name": "p", "intent": "i", "basis": "b", "boundaries": "finite",
+        "constraints": "c", "success": "s", "working_notes": null,
+        "pending_question": null, "current_step": "ready", "input_cursor": 2,
+        "latest_input": 2
+    })
+    .to_string();
+    sqlx::query("INSERT INTO scope_candidate_contents(tenant_id,workspace_id,digest,body) VALUES($1,$2,$3,$4)")
+        .bind(tenant).bind(workspace).bind(D).bind(program_body)
+        .execute(&admin_pool).await.unwrap();
+    sqlx::query("INSERT INTO scope_candidate_contents(tenant_id,workspace_id,digest,body) VALUES($1,$2,$3,'s')")
+        .bind(tenant).bind(workspace).bind(source_digest)
+        .execute(&admin_pool).await.unwrap();
     sqlx::query("INSERT INTO scope_candidate_snapshots(id,tenant_id,workspace_id,candidate_set_id,sequence,program_revision,program_latest_input,planning_latest_input,program_body_digest,selected_worktree_ids,selected_sources_digest,method_id,method_revision,method_digest,method_body,method_origin_refs,registry_revision,registry_digest,rules) VALUES($1,$2,$3,$4,1,4,2,2,$5,'{}',$5,'m','4',$5,'body','[]','3',$5,'[]')")
         .bind(snapshot).bind(tenant).bind(workspace).bind(candidate).bind(D)
         .execute(&admin_pool).await.unwrap();
-    sqlx::query("INSERT INTO scope_candidate_source_refs(id,tenant_id,workspace_id,candidate_set_id,snapshot_id,kind,program_field,body_digest,label) VALUES($1,$2,$3,$4,$5,'program_field','intent',$6,'intent')")
-        .bind(source_ref).bind(tenant).bind(workspace).bind(candidate).bind(snapshot).bind(D)
+    sqlx::query("INSERT INTO scope_candidate_source_refs(id,tenant_id,workspace_id,candidate_set_id,snapshot_id,kind,body_digest,label) VALUES($1,$2,$3,$4,$5,'program_success',$6,'success')")
+        .bind(source_ref).bind(tenant).bind(workspace).bind(candidate).bind(snapshot).bind(source_digest)
         .execute(&admin_pool).await.unwrap();
     sqlx::query("UPDATE scope_candidate_sets SET current_snapshot_id=$1 WHERE id=$2")
         .bind(snapshot)
@@ -146,8 +174,56 @@ async fn authored_manifest_binding_is_inactive_before_selected_save() {
     );
     drop(before_app);
 
-    let mut authored = manifest(candidate, snapshot, program, &[(source_ref, D)]);
+    let mut authored = manifest(candidate, snapshot, program, &[(source_ref, source_digest)]);
     authored.constructor = source_authored_identity();
+    let draft: ScopeCandidateDraft = serde_json::from_value(serde_json::json!({
+        "boundary": "finite",
+        "goals": [{
+            "identity": {"local": "goal"},
+            "text": "Preserve the source result",
+            "source_ref_id": source_ref,
+            "resolution": {"kind": "candidate", "reference": {"local": "candidate"}}
+        }],
+        "candidates": [{
+            "identity": {"local": "candidate"},
+            "title": "Required result",
+            "outcome": "Required result",
+            "trigger": "Source",
+            "delivered_behavior": "Deliver the required result",
+            "proof": "Acceptance test",
+            "coverage_goals": [{"local": "goal"}]
+        }]
+    }))
+    .unwrap();
+    let seed = authored_seed(
+        tenant,
+        workspace,
+        &authored.source,
+        &authored.constructor,
+        "baseline",
+    )
+    .unwrap();
+    let mut resolver = PgUnitOfWork::test_begin(&runtime_pool, tenant).await;
+    let resolved = crate::scope_candidates::resolve::resolve_authored(
+        resolver.transaction().unwrap(),
+        &crate::scope_candidates::resolve::ResolveContext {
+            tenant_id: tenant,
+            workspace_id: workspace,
+            candidate_set_id: candidate,
+            snapshot_id: snapshot,
+            latest_input: 2,
+        },
+        &draft,
+        None,
+        &seed,
+        &std::collections::BTreeSet::from([source_ref]),
+    )
+    .await
+    .unwrap();
+    drop(resolver);
+    authored.emitted[0].material = resolved.clone();
+    authored.emitted[0].material_digest =
+        scope_candidate_material_digest(&Sha256ScopeDigest, &resolved).unwrap();
     reseal_manifest(&mut authored);
     let record = ScopeManifestRecord {
         opportunity_id: opportunity,
@@ -218,4 +294,194 @@ async fn authored_manifest_binding_is_inactive_before_selected_save() {
     .await
     .unwrap();
     assert_eq!(review_count, 0);
+
+    let dispatch_id = Uuid::new_v4();
+    sqlx::query("INSERT INTO advisory_dispatch(id,tenant_id,workspace_id,opportunity_id,attempt_number,provider,model,configuration_snapshot,configuration_digest,material_digest,payload_digest,request_payload,response_payload,state,send_certainty,outcome,retry_basis,send_started_at,sealed_at) VALUES($1,$2,$3,$4,1,'fixture','jev','{}',$5,$5,$5,'x','y','sealed','sent','provider_response','initial',clock_timestamp(),clock_timestamp())")
+        .bind(dispatch_id).bind(tenant).bind(workspace).bind(opportunity).bind(D)
+        .execute(&admin_pool).await.unwrap();
+    sqlx::query("UPDATE advisory_opportunity SET state='advised',primary_reason='provider_response' WHERE id=$1")
+        .bind(opportunity).execute(&admin_pool).await.unwrap();
+    let advice_request = ScopeAdviceRequest::from_manifest(&Sha256ScopeDigest, &authored).unwrap();
+    let advice = guard_scope_advice(
+        &Sha256ScopeDigest,
+        opportunity,
+        &authored,
+        &advice_request,
+        &NormalizedScopeAdviceAnswers {
+            answers: vec![NormalizedScopeAdviceAnswer {
+                alternative_id: authored.baseline_id.clone(),
+                choice: ScopeAdviceChoice::Preferred,
+                score: ScopeAdviceScoreBand::StrongFit,
+                choice_confidence: ConfidenceBasisPoints(9000),
+                score_confidence: ConfidenceBasisPoints(8000),
+            }],
+        },
+    )
+    .unwrap();
+    let mut advice_writer = rw(&store, &enrollment.auth, tenant).await;
+    advice_writer
+        .persist_guarded_scope_advice(
+            workspace,
+            &GuardedScopeAdviceRecord {
+                opportunity_id: opportunity,
+                candidate_set_id: candidate,
+                dispatch_id,
+                dispatch_material_digest: D.into(),
+                config_revision: 1,
+                advice: advice.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    advice_writer.commit().await.unwrap();
+    let mut decider = rw(&store, &enrollment.auth, tenant).await;
+    let disposition = decider
+        .cas_scope_advisory_disposition(
+            workspace,
+            ScopeDispositionRecord {
+                opportunity_id: opportunity,
+                candidate_set_id: candidate,
+                actor_id: actor,
+                session_id: session,
+                request: ScopeDispositionRequest {
+                    request_id: Uuid::new_v4(),
+                    advice_id: advice.id.clone(),
+                    expected_revision: 0,
+                    action: ScopeDispositionAction::Accept,
+                    selected_id: Some(authored.baseline_id.clone()),
+                    items: vec![ScopeDispositionItem {
+                        alternative_id: authored.baseline_id.clone(),
+                        state: ScopeDispositionItemState::Selected,
+                    }],
+                    rationale: "Select the source-grounded result".into(),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    decider.commit().await.unwrap();
+    let save = SaveCandidateDraft {
+        candidate_set_id: candidate,
+        revision: 3,
+        snapshot_id: snapshot,
+        input_cursor: 2,
+        request_id: Uuid::new_v4(),
+        draft,
+        consumed_knowledge: None,
+        selected_advisory: Some(SelectedScopeAdvisory {
+            opportunity_id: opportunity,
+            disposition_id: disposition.id,
+            selected_id: authored.baseline_id.clone(),
+            alternative_key: "baseline".into(),
+        }),
+    };
+    let mut saver = rw(&store, &enrollment.auth, tenant).await;
+    let stored = saver
+        .save_selected_candidate_draft(workspace, actor, session, &save)
+        .await
+        .unwrap();
+    assert_eq!(stored.context.candidate_set.revision, 4);
+    assert_eq!(stored.draft, Some(resolved));
+    saver.commit().await.unwrap();
+
+    let lineage: (i64, String, Uuid, Uuid) = sqlx::query_as(
+        "SELECT b.selected_draft_revision,b.selected_material_digest,b.selected_caller_link_id, \
+                b.selected_caller_request_id FROM scope_anti_bloat_bindings b \
+         WHERE b.tenant_id=$1 AND b.workspace_id=$2 AND b.candidate_set_id=$3 \
+           AND b.candidate_set_revision=4",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(candidate)
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(lineage.0, 4);
+    assert_eq!(lineage.1, authored.emitted[0].material_digest);
+    assert_eq!(lineage.3, save.request_id);
+    let caller_link: Uuid = sqlx::query_scalar(
+        "SELECT link_id FROM advisory_scope_caller_link WHERE tenant_id=$1 AND workspace_id=$2 \
+         AND candidate_set_id=$3 AND request_id=$4",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(candidate)
+    .bind(save.request_id)
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(lineage.2, caller_link);
+
+    let mut selected_reader = PgUnitOfWork::test_begin(&runtime_pool, tenant).await;
+    selected_reader
+        .authenticate(&enrollment.auth)
+        .await
+        .unwrap();
+    let selected =
+        AntiBloatStore::authoritative_input(&mut selected_reader, workspace, candidate, 4)
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(selected.selected_revision, 4);
+    assert_eq!(selected.selected_id, authored.baseline_id);
+    assert_eq!(selected.manifest, authored);
+    for (other_workspace, other_revision) in [(workspace, 3), (workspace, 5), (other_workspace, 4)]
+    {
+        assert!(
+            AntiBloatStore::authoritative_input(
+                &mut selected_reader,
+                other_workspace,
+                candidate,
+                other_revision
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+    }
+    let mut selected_app = AntiBloatApplication {
+        store: selected_reader,
+        provider: DisabledAntiBloatRankingProvider,
+    };
+    assert_eq!(
+        selected_app
+            .prepare(
+                workspace,
+                actor,
+                candidate,
+                3,
+                AdvisoryRequestPreference::UseWorkspace
+            )
+            .await,
+        Err(Error::NotFound)
+    );
+    assert_eq!(
+        selected_app
+            .prepare(
+                other_workspace,
+                actor,
+                candidate,
+                4,
+                AdvisoryRequestPreference::UseWorkspace
+            )
+            .await,
+        Err(Error::NotFound)
+    );
+    let prepared = selected_app
+        .prepare(
+            workspace,
+            actor,
+            candidate,
+            4,
+            AdvisoryRequestPreference::UseWorkspace,
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        prepared.state,
+        tect_application::AntiBloatAttemptState::NoCall(
+            tect_application::AntiBloatNoCall::NoEligibleFindings
+        )
+    );
+    Box::new(selected_app.store).commit().await.unwrap();
 }
