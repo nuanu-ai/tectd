@@ -1,75 +1,11 @@
 //! Independent observation of one saved, completed pipeline phase attempt.
 use crate::{TransactionMode, WorkspaceService};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tect_domain::{
-    Error, PipelineEvidenceRef, PipelineVerificationObligation, PrincipalRole, RequestContext,
-    Result,
-};
+use tect_domain::{Error, PrincipalRole, RequestContext, Result};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PipelinePhaseEffectMaterial {
-    pub workspace_id: Uuid,
-    pub slice_id: Uuid,
-    pub run_id: Uuid,
-    pub attempt_id: Uuid,
-    pub phase_id: String,
-    pub attempt_number: i64,
-    pub selected_option_id: String,
-    pub verification_plan_id: String,
-    pub verification_plan_version: String,
-    pub verification_plan_digest: String,
-    pub obligation: PipelineVerificationObligation,
-    pub obligation_digest: String,
-    pub validator_contracts_digest: String,
-    pub output_id: Uuid,
-    pub output_digest: String,
-    pub output: Value,
-    pub caller_verdict: Option<String>,
-    pub evidence_refs: Vec<PipelineEvidenceRef>,
-    pub caller_principal_id: Uuid,
-    pub caller_session_id: Uuid,
-    pub slice_opener_principal_id: Uuid,
-    pub matrix_owner_principal_id: Uuid,
-}
-
-impl PipelinePhaseEffectMaterial {
-    pub fn digest(&self) -> Result<String> {
-        digest(self)
-    }
-    pub fn validate(&self) -> Result<()> {
-        if self.workspace_id.is_nil()
-            || self.slice_id.is_nil()
-            || self.run_id.is_nil()
-            || self.attempt_id.is_nil()
-            || self.output_id.is_nil()
-            || self.attempt_number < 1
-            || self.phase_id != self.obligation.phase_id
-            || self.verification_plan_id
-                != format!("verification-plan:{}", self.verification_plan_digest)
-            || !hex_digest(&self.verification_plan_digest)
-            || !hex_digest(&self.output_digest)
-            || self.obligation_digest != digest(&self.obligation)?
-            || self.validator_contracts_digest != digest(&self.obligation.validator_contracts)?
-            || self.caller_principal_id.is_nil()
-            || self.caller_session_id.is_nil()
-            || self.slice_opener_principal_id.is_nil()
-            || self.matrix_owner_principal_id.is_nil()
-            || self.output.get("body_digest").and_then(Value::as_str) != Some(&self.output_digest)
-        {
-            return Err(Error::StaleContext);
-        }
-        Ok(())
-    }
-}
-
-fn digest<T: Serialize + ?Sized>(value: &T) -> Result<String> {
-    let bytes = serde_json::to_vec(value).map_err(|_| Error::InternalInvariant)?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
-}
+pub use tect_domain::PipelinePhaseEffectMaterial;
 fn hex_digest(value: &str) -> bool {
     value.len() == 64
         && value
@@ -306,6 +242,64 @@ fn forbidden(material: &PipelinePhaseEffectMaterial, principal: Uuid, session: U
         || principal == material.slice_opener_principal_id
         || principal == material.matrix_owner_principal_id
         || session == material.caller_session_id
+}
+
+#[cfg(test)]
+mod golden {
+    use super::*;
+    use tect_domain::PipelineVerificationObligation;
+
+    #[test]
+    fn canonical_wire_and_digest_match_pre_move_golden() {
+        let obligation = PipelineVerificationObligation {
+            phase_id: "phase-1".into(),
+            required_fields: vec!["result".into()],
+            required_artifacts: vec![],
+            validator_contracts: vec![],
+            output_constraints: vec![],
+            allowed_verdicts: vec!["pass".into()],
+            verdict_routes: vec![],
+            disposition_required: false,
+            required_dispositions: vec![],
+            fresh_reviewer_input: false,
+            output_contract: "result".into(),
+        };
+        let material = PipelinePhaseEffectMaterial {
+            workspace_id: Uuid::from_u128(1),
+            slice_id: Uuid::from_u128(2),
+            run_id: Uuid::from_u128(3),
+            attempt_id: Uuid::from_u128(4),
+            phase_id: "phase-1".into(),
+            attempt_number: 1,
+            selected_option_id: "option".into(),
+            verification_plan_id: format!("verification-plan:{}", "a".repeat(64)),
+            verification_plan_version: "v1".into(),
+            verification_plan_digest: "a".repeat(64),
+            obligation_digest: "602275499b013cf785f1a182e8ca9fceb39e683b14f4e2b18aff008d8d35852f"
+                .into(),
+            validator_contracts_digest:
+                "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945".into(),
+            obligation,
+            output_id: Uuid::from_u128(5),
+            output_digest: "b".repeat(64),
+            output: serde_json::json!({"body_digest": "b".repeat(64), "result": "ok"}),
+            caller_verdict: Some("pass".into()),
+            evidence_refs: vec![],
+            caller_principal_id: Uuid::from_u128(6),
+            caller_session_id: Uuid::from_u128(7),
+            slice_opener_principal_id: Uuid::from_u128(8),
+            matrix_owner_principal_id: Uuid::from_u128(9),
+        };
+        assert!(material.validate().is_ok());
+        assert_eq!(
+            serde_json::to_string(&material).unwrap(),
+            include_str!("../../domain/src/pipeline_effect_golden/phase.json").trim_end()
+        );
+        assert_eq!(
+            material.digest().unwrap(),
+            "70334d8dbde94018c59bedbc90f7a391b70adc4c122d875f0867e7cc8085909e"
+        );
+    }
 }
 
 #[cfg(test)]
