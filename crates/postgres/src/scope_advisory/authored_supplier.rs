@@ -2,9 +2,10 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-const SOURCE_AUTHORED_ID: &str = "source-authored-v1";
-const SOURCE_AUTHORED_VERSION: &str = "1";
-const SOURCE_AUTHORED_POLICY: &str = include_str!("source_authored_v1.policy.txt");
+const SOURCE_AUTHORED_ID: &str = "source-authored-v2";
+const SOURCE_AUTHORED_VERSION: &str = "2";
+const SOURCE_AUTHORED_POLICY: &str = include_str!("source_authored_v2.policy.txt");
+const LEGACY_SOURCE_AUTHORED_POLICY: &str = include_str!("source_authored_v1.policy.txt");
 
 pub struct PgScopeAuthoredManifestSupplier {
     store: crate::PgStore,
@@ -25,6 +26,21 @@ fn source_authored_identity() -> ScopeConstructorIdentity {
     }
 }
 
+fn legacy_source_authored_identity() -> ScopeConstructorIdentity {
+    ScopeConstructorIdentity {
+        id: "source-authored-v1".into(),
+        version: "1".into(),
+        digest: format!(
+            "{:x}",
+            Sha256::digest(LEGACY_SOURCE_AUTHORED_POLICY.as_bytes())
+        ),
+    }
+}
+
+fn is_source_authored_identity(identity: &ScopeConstructorIdentity) -> bool {
+    *identity == source_authored_identity() || *identity == legacy_source_authored_identity()
+}
+
 pub(crate) fn authored_seed(
     tenant: Uuid,
     workspace: Uuid,
@@ -43,7 +59,13 @@ pub(crate) fn authored_seed(
     ))
     .map_err(storage_error)?;
     let mut hash = Sha256::new();
-    hash.update(b"tect.scope-authored-entity-seed/source-authored-v1\0");
+    if *constructor == source_authored_identity() {
+        hash.update(b"tect.scope-authored-entity-seed/source-authored-v2\0");
+    } else if *constructor == legacy_source_authored_identity() {
+        hash.update(b"tect.scope-authored-entity-seed/source-authored-v1\0");
+    } else {
+        return Err(Error::InvalidSource);
+    }
     hash.update(payload);
     Ok(hash.finalize().into())
 }
@@ -254,7 +276,10 @@ mod authored_supplier_tests {
         let identity = source_authored_identity();
         assert_eq!(identity.id, SOURCE_AUTHORED_ID);
         assert_eq!(identity.version, SOURCE_AUTHORED_VERSION);
-        assert_eq!(identity.digest, format!("{:x}", Sha256::digest(SOURCE_AUTHORED_POLICY.as_bytes())));
+        assert_eq!(
+            identity.digest,
+            format!("{:x}", Sha256::digest(SOURCE_AUTHORED_POLICY.as_bytes()))
+        );
         identity.validate().unwrap();
     }
 
@@ -283,10 +308,19 @@ mod authored_supplier_tests {
         let tenant = Uuid::from_u128(1);
         let workspace = Uuid::from_u128(2);
         let first = authored_seed(tenant, workspace, &source, &identity, "first").unwrap();
-        assert_eq!(first, authored_seed(tenant, workspace, &source, &identity, "first").unwrap());
-        assert_ne!(first, authored_seed(tenant, workspace, &source, &identity, "second").unwrap());
+        assert_eq!(
+            first,
+            authored_seed(tenant, workspace, &source, &identity, "first").unwrap()
+        );
+        assert_ne!(
+            first,
+            authored_seed(tenant, workspace, &source, &identity, "second").unwrap()
+        );
         source.digest = "e".repeat(64);
-        assert_ne!(first, authored_seed(tenant, workspace, &source, &identity, "first").unwrap());
+        assert_ne!(
+            first,
+            authored_seed(tenant, workspace, &source, &identity, "first").unwrap()
+        );
     }
 
     #[test]
@@ -305,9 +339,22 @@ mod authored_supplier_tests {
             .collect::<Vec<_>>();
         let coverage = atomic_coverage(&[first, second], &obligations).unwrap();
         assert_eq!(coverage.len(), 2);
-        assert!(coverage.iter().all(|row| row.condition_ids.is_empty() && row.exception_ids.is_empty()));
-        assert_eq!(atomic_coverage(&[first], &obligations), Err(Error::InvalidSource));
-        assert_eq!(atomic_coverage(&[first, first], &obligations), Err(Error::InvalidSource));
-        assert_eq!(atomic_coverage(&[first, Uuid::from_u128(9)], &obligations), Err(Error::InvalidSource));
+        assert!(
+            coverage
+                .iter()
+                .all(|row| row.condition_ids.is_empty() && row.exception_ids.is_empty())
+        );
+        assert_eq!(
+            atomic_coverage(&[first], &obligations),
+            Err(Error::InvalidSource)
+        );
+        assert_eq!(
+            atomic_coverage(&[first, first], &obligations),
+            Err(Error::InvalidSource)
+        );
+        assert_eq!(
+            atomic_coverage(&[first, Uuid::from_u128(9)], &obligations),
+            Err(Error::InvalidSource)
+        );
     }
 }

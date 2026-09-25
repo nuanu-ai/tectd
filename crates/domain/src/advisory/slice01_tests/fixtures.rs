@@ -138,6 +138,7 @@ fn draft(source_ref: Uuid, title: &str) -> ResolvedCandidateDraft {
         candidates: vec![CandidateEntity {
             id: candidate_id,
             revision: 1,
+            grounding: CandidateGrounding::SourceGrounded,
             title: title.into(),
             outcome: "Exact supplied outcome".into(),
             trigger: "Exact supplied trigger".into(),

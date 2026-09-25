@@ -81,6 +81,7 @@ pub(super) fn manifest(
         candidates: vec![CandidateEntity {
             id: candidate_id,
             revision: 1,
+            grounding: CandidateGrounding::SourceGrounded,
             title: "Cohesive".into(),
             outcome: "Exact outcome".into(),
             trigger: "Exact trigger".into(),

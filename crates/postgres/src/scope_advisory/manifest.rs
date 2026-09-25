@@ -312,7 +312,23 @@ async fn prepare_manifest(
 fn authored_graph_binding(
     manifest: &ScopeConstructorManifest,
 ) -> Result<(Vec<AntiBloatObligationLink>, String, String)> {
-    if manifest.constructor != source_authored_identity() {
+    if !is_source_authored_identity(&manifest.constructor)
+        || (manifest.constructor == legacy_source_authored_identity()
+            && (manifest.emitted.iter().any(|alternative| {
+                alternative
+                    .material
+                    .candidates
+                    .iter()
+                    .any(|candidate| !candidate.grounding.is_source_grounded())
+            }) || manifest.rejected.iter().any(|rejected| {
+                rejected
+                    .alternative
+                    .material
+                    .candidates
+                    .iter()
+                    .any(|candidate| !candidate.grounding.is_source_grounded())
+            })))
+    {
         return Err(Error::InvalidSource);
     }
     let baseline = manifest
@@ -566,6 +582,7 @@ async fn load_manifest_record(
 #[cfg(test)]
 mod authored_graph_binding_tests {
     use super::*;
+    use tect_domain::{CandidateGrounding, ExploratoryProvenance};
 
     fn manifest(sources: &[Uuid]) -> ScopeConstructorManifest {
         let fragments = sources
@@ -627,6 +644,39 @@ mod authored_graph_binding_tests {
 
         value = manifest(&[source]);
         value.obligations.push(value.obligations[0].clone());
+        assert_eq!(
+            authored_graph_binding(&value).unwrap_err(),
+            Error::InvalidSource
+        );
+    }
+
+    #[test]
+    fn v2_exploratory_mechanism_preserves_source_obligations_and_v1_refuses_it() {
+        let source = Uuid::new_v4();
+        let mut value = manifest(&[source]);
+        let original = authored_graph_binding(&value).unwrap().0;
+        let mut exploratory = value.emitted[0].material.candidates[0].clone();
+        exploratory.id = Uuid::new_v4();
+        exploratory.grounding = CandidateGrounding::ExploratoryUnrequested {
+            provenance: ExploratoryProvenance::SourceAuthoredV2,
+        };
+        exploratory.coverage_goal_ids.clear();
+        value.emitted[0]
+            .material
+            .delta
+            .added
+            .push(tect_domain::CandidateAdded {
+                candidate_id: exploratory.id,
+                revision: exploratory.revision,
+            });
+        value.emitted[0].material.candidates.push(exploratory);
+        assert!(
+            value.emitted[0].material.validate().is_ok(),
+            "{:?}",
+            value.emitted[0].material.validate()
+        );
+        assert_eq!(authored_graph_binding(&value).unwrap().0, original);
+        value.constructor = legacy_source_authored_identity();
         assert_eq!(
             authored_graph_binding(&value).unwrap_err(),
             Error::InvalidSource

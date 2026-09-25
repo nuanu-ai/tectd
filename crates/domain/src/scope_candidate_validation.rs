@@ -1,6 +1,7 @@
 use crate::{
-    CandidateBoundary, CoverageResolutionKind, EmptyCandidateDispositionKind, Error, EvidenceKind,
-    ProtectedChangeDisposition, ResolvedCandidateDraft, Result, ScopeCandidateDraft,
+    CandidateBoundary, CandidateGrounding, CoverageResolutionKind, EmptyCandidateDispositionKind,
+    Error, EvidenceKind, ProtectedChangeDisposition, ResolvedCandidateDraft, Result,
+    ScopeCandidateDraft,
 };
 use std::collections::BTreeSet;
 
@@ -118,7 +119,7 @@ impl ScopeCandidateDraft {
             ] {
                 required(text, field)?;
             }
-            require_candidate_coverage(!candidate.coverage_goals.is_empty())?;
+            require_candidate_grounding(candidate.grounding, candidate.coverage_goals.is_empty())?;
             if candidate
                 .change_rationale
                 .as_ref()
@@ -276,7 +277,10 @@ impl ResolvedCandidateDraft {
             ] {
                 required(value, field)?;
             }
-            require_candidate_coverage(!candidate.coverage_goal_ids.is_empty())?;
+            require_candidate_grounding(
+                candidate.grounding,
+                candidate.coverage_goal_ids.is_empty(),
+            )?;
             if candidate.id == uuid::Uuid::nil()
                 || candidate
                     .dependencies
@@ -506,15 +510,18 @@ impl ResolvedCandidateDraft {
     }
 }
 
-fn require_candidate_coverage(has_coverage: bool) -> Result<()> {
-    if has_coverage {
-        Ok(())
-    } else {
-        Err(Error::refused(
+fn require_candidate_grounding(grounding: CandidateGrounding, no_coverage: bool) -> Result<()> {
+    match (grounding, no_coverage) {
+        (CandidateGrounding::SourceGrounded, false)
+        | (CandidateGrounding::ExploratoryUnrequested { .. }, true) => Ok(()),
+        (CandidateGrounding::SourceGrounded, true) => Err(Error::refused(
             crate::RefusalCode::CoverageIncomplete,
             "add_coverage",
             "coverage_goals",
-        ))
+        )),
+        (CandidateGrounding::ExploratoryUnrequested { .. }, false) => Err(invalid(
+            "exploratory unrequested candidates cannot claim source goal coverage",
+        )),
     }
 }
 
@@ -533,13 +540,102 @@ fn invalid(reason: impl std::fmt::Display) -> Error {
 #[cfg(test)]
 mod refusal_tests {
     use super::*;
+    use crate::{CandidateDraft, CandidateRef, DraftIdentity, ExploratoryProvenance};
+
+    fn candidate(
+        grounding: CandidateGrounding,
+        coverage_goals: Vec<CandidateRef>,
+    ) -> CandidateDraft {
+        CandidateDraft {
+            identity: DraftIdentity {
+                local: Some("candidate".into()),
+                id: None,
+                revision: None,
+            },
+            grounding,
+            change_rationale: None,
+            title: "Mechanism".into(),
+            outcome: "Outcome".into(),
+            trigger: "Trigger".into(),
+            delivered_behavior: "Behavior".into(),
+            proof: "Proof".into(),
+            includes: vec![],
+            excludes: vec![],
+            dependencies: vec![],
+            coverage_goals,
+            evidence: vec![],
+        }
+    }
+
+    fn draft(candidate: CandidateDraft) -> ScopeCandidateDraft {
+        ScopeCandidateDraft {
+            boundary: CandidateBoundary::Ongoing,
+            goals: vec![],
+            evidence: vec![],
+            candidates: vec![candidate],
+            blockers: vec![],
+            pending_question: None,
+            empty_disposition: None,
+            protected_changes: vec![],
+            supersessions: vec![],
+        }
+    }
 
     #[test]
     fn missing_candidate_coverage_has_typed_refusal() {
-        let error = require_candidate_coverage(false).unwrap_err();
+        let error =
+            require_candidate_grounding(CandidateGrounding::SourceGrounded, true).unwrap_err();
         assert_eq!(
             error.refusal().unwrap().code,
             crate::RefusalCode::CoverageIncomplete
+        );
+    }
+
+    #[test]
+    fn only_explicit_authored_exploratory_mechanism_may_have_no_goal() {
+        let ordinary = draft(candidate(CandidateGrounding::SourceGrounded, vec![]));
+        assert_eq!(
+            ordinary.validate().unwrap_err().refusal().unwrap().code,
+            crate::RefusalCode::CoverageIncomplete
+        );
+
+        let exploratory = CandidateGrounding::ExploratoryUnrequested {
+            provenance: ExploratoryProvenance::SourceAuthoredV2,
+        };
+        assert!(draft(candidate(exploratory, vec![])).validate().is_ok());
+        let goal_ref = CandidateRef {
+            local: Some("goal".into()),
+            id: None,
+        };
+        assert!(
+            draft(candidate(exploratory, vec![goal_ref]))
+                .validate()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn exploratory_provenance_is_required_and_closed() {
+        let explicit = serde_json::json!({"kind":"exploratory_unrequested", "provenance":"source_authored_v2"});
+        assert_eq!(
+            serde_json::from_value::<CandidateGrounding>(explicit).unwrap(),
+            CandidateGrounding::ExploratoryUnrequested {
+                provenance: ExploratoryProvenance::SourceAuthoredV2
+            }
+        );
+        for invalid in [
+            serde_json::json!({"kind":"exploratory_unrequested"}),
+            serde_json::json!({"kind":"exploratory_unrequested", "provenance":"source_authored_v1"}),
+            serde_json::json!({"kind":"exploratory_unrequested", "provenance":"source_authored_v2", "extra":"claim"}),
+        ] {
+            assert!(serde_json::from_value::<CandidateGrounding>(invalid).is_err());
+        }
+        let ordinary = candidate(CandidateGrounding::SourceGrounded, vec![]);
+        assert!(
+            serde_json::to_value(&ordinary)
+                .unwrap()
+                .get("grounding")
+                .is_none()
         );
     }
 }

@@ -64,6 +64,14 @@ pub(super) async fn resolve(
     draft: &ScopeCandidateDraft,
     previous: Option<&ResolvedCandidateDraft>,
 ) -> Result<ResolvedCandidateDraft> {
+    draft.validate()?;
+    if draft
+        .candidates
+        .iter()
+        .any(|candidate| !candidate.grounding.is_source_grounded())
+    {
+        return Err(Error::InvalidArguments);
+    }
     resolve_with_allocator(transaction, context, draft, previous, None, &|_, _| {
         Uuid::new_v4()
     })
@@ -80,6 +88,7 @@ pub(crate) async fn resolve_authored(
     seed: &[u8; 32],
     allowed_source_ids: &BTreeSet<Uuid>,
 ) -> Result<ResolvedCandidateDraft> {
+    draft.validate()?;
     require_authored_source_refs(draft, allowed_source_ids)?;
     resolve_with_allocator(
         transaction,
@@ -552,6 +561,7 @@ fn candidate(
     Ok(CandidateEntity {
         id,
         revision,
+        grounding: value.grounding,
         title: value.title.clone(),
         outcome: value.outcome.clone(),
         trigger: value.trigger.clone(),

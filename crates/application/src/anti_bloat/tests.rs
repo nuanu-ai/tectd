@@ -62,6 +62,7 @@ fn input(extra: bool) -> AntiBloatInput {
         candidates: vec![CandidateEntity {
             id: required,
             revision: 1,
+            grounding: CandidateGrounding::SourceGrounded,
             title: "Required".into(),
             outcome: "Required".into(),
             trigger: "Source".into(),

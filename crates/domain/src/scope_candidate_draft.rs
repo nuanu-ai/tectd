@@ -90,10 +90,39 @@ pub struct EvidenceDraft {
     pub authority_input_sequence: Option<i64>,
 }
 
+/// Source-grounded work must cover a goal. Exploratory work is explicitly
+/// unrequested and can only be resolved by the versioned authored constructor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CandidateGrounding {
+    #[default]
+    SourceGrounded,
+    ExploratoryUnrequested {
+        provenance: ExploratoryProvenance,
+    },
+}
+
+impl CandidateGrounding {
+    pub fn is_source_grounded(&self) -> bool {
+        matches!(self, Self::SourceGrounded)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExploratoryProvenance {
+    SourceAuthoredV2,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CandidateDraft {
     pub identity: DraftIdentity,
+    #[serde(
+        default,
+        skip_serializing_if = "CandidateGrounding::is_source_grounded"
+    )]
+    pub grounding: CandidateGrounding,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change_rationale: Option<String>,
     pub title: String,
@@ -334,6 +363,11 @@ pub struct EvidenceEntity {
 pub struct CandidateEntity {
     pub id: Uuid,
     pub revision: i64,
+    #[serde(
+        default,
+        skip_serializing_if = "CandidateGrounding::is_source_grounded"
+    )]
+    pub grounding: CandidateGrounding,
     pub title: String,
     pub outcome: String,
     pub trigger: String,

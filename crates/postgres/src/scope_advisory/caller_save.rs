@@ -86,7 +86,7 @@ pub(crate) async fn save_selected_candidate_draft(
     )
     .await?
     .ok_or(Error::NotFound)?;
-    if manifest.constructor != source_authored_identity() {
+    if !is_source_authored_identity(&manifest.constructor) {
         return Err(Error::InputConflict);
     }
     let (advice_header, advice) = load_advice(

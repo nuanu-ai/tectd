@@ -131,13 +131,14 @@ pub use refusal::{Refusal, RefusalCode};
 pub use scope_candidate_draft::{
     BlockerDraft, BlockerEntity, CandidateAdded, CandidateChanged, CandidateDecision,
     CandidateDecisionKind, CandidateDelta, CandidateDraft, CandidateEntity, CandidateFinding,
-    CandidateFindingSeverity, CandidateRef, CandidateReviewDraft, CandidateSuperseded,
-    CandidateSupersessionDraft, CandidateUnchanged, CoverageGoalDraft, CoverageGoalEntity,
-    CoverageResolutionDraft, CoverageResolutionEntity, CoverageResolutionKind, DraftIdentity,
-    EmptyCandidateDisposition, EmptyCandidateDispositionKind, EvidenceDraft, EvidenceEntity,
-    EvidenceKind, ProtectedChangeDisposition, ProtectedChangeDraft, ProtectedChangeEntity,
-    ProtectedChangeReview, ResolvedCandidateDraft, ReviewCandidateSet, ReviewVerdict,
-    SaveCandidateDraft, ScopeCandidateDraft, ScopeCandidateReview, SelectedScopeAdvisory,
+    CandidateFindingSeverity, CandidateGrounding, CandidateRef, CandidateReviewDraft,
+    CandidateSuperseded, CandidateSupersessionDraft, CandidateUnchanged, CoverageGoalDraft,
+    CoverageGoalEntity, CoverageResolutionDraft, CoverageResolutionEntity, CoverageResolutionKind,
+    DraftIdentity, EmptyCandidateDisposition, EmptyCandidateDispositionKind, EvidenceDraft,
+    EvidenceEntity, EvidenceKind, ExploratoryProvenance, ProtectedChangeDisposition,
+    ProtectedChangeDraft, ProtectedChangeEntity, ProtectedChangeReview, ResolvedCandidateDraft,
+    ReviewCandidateSet, ReviewVerdict, SaveCandidateDraft, ScopeCandidateDraft,
+    ScopeCandidateReview, SelectedScopeAdvisory,
 };
 pub use scope_candidates::{
     BeginCandidateSet, BeginCandidateSetOutcome, CandidateBoundary, CandidateContext,
