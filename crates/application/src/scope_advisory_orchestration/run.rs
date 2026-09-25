@@ -1,3 +1,4 @@
+use super::capture::{ScopeCaptureIdentity, ScopeCaptureStatus};
 use super::*;
 
 impl WorkspaceService {
@@ -70,8 +71,10 @@ impl WorkspaceService {
                     context,
                     request,
                     &config,
-                    identity.principal_id,
-                    session.id,
+                    ScopeCaptureIdentity {
+                        actor: identity.principal_id,
+                        session: session.id,
+                    },
                     digest,
                     reason,
                     revision,
@@ -246,12 +249,16 @@ impl WorkspaceService {
                     context,
                     request,
                     &config,
-                    identity.principal_id,
-                    session.id,
+                    ScopeCaptureIdentity {
+                        actor: identity.principal_id,
+                        session: session.id,
+                    },
                     material_digest,
-                    preliminary.state,
-                    preliminary.reason,
-                    Some(manifest.source.candidate_set_revision),
+                    ScopeCaptureStatus {
+                        state: preliminary.state,
+                        reason: preliminary.reason,
+                        revision: Some(manifest.source.candidate_set_revision),
+                    },
                 )
                 .await?;
             return Ok(ScopeAdvisoryOutcome {
@@ -284,12 +291,16 @@ impl WorkspaceService {
                     context,
                     request,
                     &config,
-                    identity.principal_id,
-                    session.id,
+                    ScopeCaptureIdentity {
+                        actor: identity.principal_id,
+                        session: session.id,
+                    },
                     material_digest,
-                    AdvisoryOpportunityState::NoCall,
-                    AdvisoryReason::BudgetPolicyInvalid,
-                    Some(manifest.source.candidate_set_revision),
+                    ScopeCaptureStatus {
+                        state: AdvisoryOpportunityState::NoCall,
+                        reason: AdvisoryReason::BudgetPolicyInvalid,
+                        revision: Some(manifest.source.candidate_set_revision),
+                    },
                 )
                 .await?;
             return Ok(ScopeAdvisoryOutcome {

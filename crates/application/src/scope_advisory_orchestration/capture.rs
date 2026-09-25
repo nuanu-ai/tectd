@@ -6,14 +6,24 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
+pub(super) struct ScopeCaptureIdentity {
+    pub actor: Uuid,
+    pub session: Uuid,
+}
+
+pub(super) struct ScopeCaptureStatus {
+    pub state: AdvisoryOpportunityState,
+    pub reason: AdvisoryReason,
+    pub revision: Option<i64>,
+}
+
 impl WorkspaceService {
     pub(super) async fn capture_early_scope_no_call(
         &self,
         context: &RequestContext,
         request: &RunScopeAdvisory,
         config: &WorkspaceAdvisoryConfig,
-        actor: Uuid,
-        session: Uuid,
+        identity: ScopeCaptureIdentity,
         material_digest: String,
         reason: AdvisoryReason,
         revision: i64,
@@ -21,7 +31,7 @@ impl WorkspaceService {
         let (mut tx, workspace, fresh_session) = self
             .scope_transaction(context, crate::TransactionMode::ReadWrite)
             .await?;
-        if fresh_session.id != session
+        if fresh_session.id != identity.session
             || tx.advisory_config(workspace.id).await? != *config
             || tx
                 .lock_candidate_revision(workspace.id, request.candidate_set_id)
@@ -37,8 +47,8 @@ impl WorkspaceService {
                 &super::scope_opportunity_input(
                     request,
                     config,
-                    actor,
-                    session,
+                    identity.actor,
+                    identity.session,
                     material_digest,
                     AdvisoryOpportunityState::NoCall,
                     reason,
@@ -55,12 +65,9 @@ impl WorkspaceService {
         context: &RequestContext,
         request: &RunScopeAdvisory,
         config: &WorkspaceAdvisoryConfig,
-        actor: Uuid,
-        session: Uuid,
+        identity: ScopeCaptureIdentity,
         material_digest: String,
-        state: AdvisoryOpportunityState,
-        reason: AdvisoryReason,
-        revision: Option<i64>,
+        status: ScopeCaptureStatus,
     ) -> Result<tect_domain::AdvisoryOpportunity> {
         let (mut tx, workspace, _) = self
             .scope_transaction(context, crate::TransactionMode::ReadWrite)
@@ -74,12 +81,12 @@ impl WorkspaceService {
                 &super::scope_opportunity_input(
                     request,
                     config,
-                    actor,
-                    session,
+                    identity.actor,
+                    identity.session,
                     material_digest,
-                    state,
-                    reason,
-                    revision,
+                    status.state,
+                    status.reason,
+                    status.revision,
                 ),
             )
             .await?;
@@ -108,12 +115,13 @@ impl WorkspaceService {
                 context,
                 request,
                 config,
-                actor,
-                session,
+                ScopeCaptureIdentity { actor, session },
                 super::no_call_digest(request, config.revision, policy.reason)?,
-                policy.state,
-                policy.reason,
-                None,
+                ScopeCaptureStatus {
+                    state: policy.state,
+                    reason: policy.reason,
+                    revision: None,
+                },
             )
             .await?;
         Ok(ScopeAdvisoryOutcome {
