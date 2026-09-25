@@ -60,6 +60,8 @@ mod model_route_selection_read;
 mod model_route_store;
 #[cfg(test)]
 mod model_route_migration_tests;
+#[cfg(test)]
+mod model_route_live_tests;
 mod native_planning;
 mod native_planning_store;
 mod pipeline_execution;
