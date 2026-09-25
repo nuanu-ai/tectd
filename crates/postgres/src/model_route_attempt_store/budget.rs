@@ -39,6 +39,12 @@ pub(super) async fn begin_send(
     }
     policy.validate().map_err(|_| Error::BudgetPolicyInvalid)?;
     let tenant = uow.tenant_id()?;
+    crate::budget_policy_usage::lock_workspace_policy(
+        uow.transaction()?,
+        tenant,
+        prepared.workspace_id,
+    )
+    .await?;
     let now: i64 = sqlx::query_scalar(
         "SELECT (EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())*1000)::bigint",
     )

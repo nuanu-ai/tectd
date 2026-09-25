@@ -127,6 +127,7 @@ async fn reserve_before_dispatch(
     {
         return Err(Error::InputConflict);
     }
+    crate::budget_policy_usage::lock_workspace_policy(tx, tenant, workspace).await?;
     let now: i64 = sqlx::query_scalar(
         "SELECT (EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())*1000)::bigint",
     )

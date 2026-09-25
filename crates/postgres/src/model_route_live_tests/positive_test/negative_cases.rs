@@ -48,6 +48,207 @@ async fn writer(
     writer
 }
 
+fn next_active_policy(
+    old: &AdvisoryBudgetPolicy,
+    owner: &crate::admin::Enrollment,
+) -> AdvisoryBudgetPolicy {
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    let id = Uuid::new_v4();
+    let version = old.version() + 1;
+    let from = now - 60_000;
+    let until = now + 600_000;
+    AdvisoryBudgetPolicy::new(
+        id,
+        version,
+        AdvisoryBudgetPolicy::digest_for(id, version, from, until, old.ceilings()),
+        from,
+        until,
+        old.ceilings(),
+        owner.principal_id,
+        "a".repeat(128),
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+#[ignore = "requires identity-pinned disposable PG92 and TECT_TEST_* URLs"]
+async fn policy_install_and_model_route_reservation_linearize_both_orders() {
+    use std::time::Duration;
+
+    assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
+    let admin_pool = PgPool::connect(&std::env::var("TECT_TEST_ADMIN_URL").unwrap())
+        .await
+        .unwrap();
+    let runtime_pool = PgPool::connect(&std::env::var("TECT_TEST_RUNTIME_URL").unwrap())
+        .await
+        .unwrap();
+    let identity: (String, i64, String) = sqlx::query_as(
+        "SELECT current_database(),(SELECT oid::bigint FROM pg_catalog.pg_database WHERE datname=current_database()),(SELECT system_identifier::text FROM pg_catalog.pg_control_system())",
+    )
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        identity.0,
+        std::env::var("TECT_TEST_EXPECTED_DB_NAME").unwrap()
+    );
+    assert_eq!(
+        identity.1.to_string(),
+        std::env::var("TECT_TEST_EXPECTED_DB_OID").unwrap()
+    );
+    assert_eq!(
+        identity.2,
+        std::env::var("TECT_TEST_EXPECTED_PG_SYSTEM_ID").unwrap()
+    );
+    let migration: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
+        .fetch_one(&admin_pool)
+        .await
+        .unwrap();
+    assert_eq!(migration, 92);
+
+    let store = PgStore::from_pool(runtime_pool.clone());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let ranker = FakeJevRanker {
+        pool: runtime_pool.clone(),
+        tenant: Uuid::nil(),
+        calls: calls.clone(),
+        malformed: false,
+    };
+
+    // Install holds the workspace lock before the competing reservation starts.
+    let first = fixture(&admin_pool, &runtime_pool).await;
+    let prepared = prepare_case(&store, &runtime_pool, &first, "install-first").await;
+    let v1 = install_synthetic_policy(&store, first.workspace, first.tenant, &first.owner).await;
+    let v2 = next_active_policy(&v1, &first.owner);
+    let attempted = ranker.prepare(&prepared).unwrap();
+    let mut installing = writer(&store, &first).await;
+    installing
+        .advisory_budget_policy_store()
+        .unwrap()
+        .install_budget_policy(first.workspace, &v2)
+        .await
+        .unwrap();
+    let reserve_pool = runtime_pool.clone();
+    let reserve_store = PgStore::from_pool(reserve_pool);
+    let reserve_auth = first.owner.auth.clone();
+    let reserve_tenant = first.tenant;
+    let reserve_session = first.invocation_session;
+    let mut reserving = tokio::spawn(async move {
+        let mut tx = reserve_store
+            .begin(TransactionMode::ReadWrite)
+            .await
+            .unwrap();
+        tx.authenticate(&reserve_auth).await.unwrap();
+        tx.set_tenant(reserve_tenant).await.unwrap();
+        let outcome = tx
+            .model_route_attempt_store()
+            .unwrap()
+            .begin_send(
+                &prepared,
+                ModelRouteInvocation {
+                    session_id: reserve_session,
+                },
+                &attempted,
+                &v1,
+            )
+            .await;
+        tx.commit().await.unwrap();
+        outcome
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), &mut reserving)
+            .await
+            .is_err()
+    );
+    installing.commit().await.unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), reserving)
+            .await
+            .unwrap()
+            .unwrap(),
+        Err(Error::BudgetPolicyInvalid)
+    );
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM model_route_budget_reservations WHERE tenant_id=$1 AND workspace_id=$2",
+    ).bind(first.tenant).bind(first.workspace).fetch_one(&admin_pool).await.unwrap();
+    assert_eq!(count, 0);
+
+    // Reservation holds the same lock; the install must wait until it commits.
+    let second = fixture(&admin_pool, &runtime_pool).await;
+    let prepared = prepare_case(&store, &runtime_pool, &second, "reserve-first").await;
+    let v1 = install_synthetic_policy(&store, second.workspace, second.tenant, &second.owner).await;
+    let v2 = next_active_policy(&v1, &second.owner);
+    let attempted = ranker.prepare(&prepared).unwrap();
+    let mut reserving = writer(&store, &second).await;
+    let permit = reserving
+        .model_route_attempt_store()
+        .unwrap()
+        .begin_send(
+            &prepared,
+            ModelRouteInvocation {
+                session_id: second.invocation_session,
+            },
+            &attempted,
+            &v1,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let install_store = PgStore::from_pool(runtime_pool.clone());
+    let install_auth = second.owner.auth.clone();
+    let install_tenant = second.tenant;
+    let install_workspace = second.workspace;
+    let mut installing = tokio::spawn(async move {
+        let mut tx = install_store
+            .begin(TransactionMode::ReadWrite)
+            .await
+            .unwrap();
+        tx.authenticate(&install_auth).await.unwrap();
+        tx.set_tenant(install_tenant).await.unwrap();
+        tx.advisory_budget_policy_store()
+            .unwrap()
+            .install_budget_policy(install_workspace, &v2)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), &mut installing)
+            .await
+            .is_err()
+    );
+    reserving.commit().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(5), installing)
+        .await
+        .unwrap()
+        .unwrap();
+    let saved: (Uuid, i64) = sqlx::query_as(
+        "SELECT policy_id,policy_version FROM model_route_budget_reservations WHERE tenant_id=$1 AND workspace_id=$2 AND attempt_id=$3",
+    ).bind(second.tenant).bind(second.workspace).bind(permit.attempt_id)
+        .fetch_one(&admin_pool).await.unwrap();
+    assert_eq!(saved, (v1.id(), 1));
+    let reservation_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM model_route_budget_reservations WHERE tenant_id=$1 AND workspace_id=$2",
+    ).bind(second.tenant).bind(second.workspace).fetch_one(&admin_pool).await.unwrap();
+    assert_eq!(reservation_count, 1);
+    let installed_version: i64 = sqlx::query_scalar(
+        "SELECT max(version) FROM advisory_budget_policies WHERE tenant_id=$1 AND workspace_id=$2",
+    )
+    .bind(second.tenant)
+    .bind(second.workspace)
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(installed_version, 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
 #[tokio::test]
 #[ignore = "requires identity-pinned disposable PG92 and TECT_TEST_* URLs"]
 async fn superseded_model_route_policy_cannot_reserve_or_call_provider() {

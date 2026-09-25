@@ -76,19 +76,8 @@ pub(super) async fn begin_send(
     {
         return Err(Error::BudgetExhaustedBeforeDispatch);
     }
-    // The authorization seam is trusted by contract; the database still binds
-    // it to the exact immutable installed row at the moment of reservation.
-    let now: i64 = sqlx::query_scalar(
-        "SELECT (EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())*1000)::bigint",
-    )
-    .fetch_one(&mut **uow.transaction()?)
-    .await
-    .map_err(storage_error)?;
-    if !policy.is_effective_at(now) {
-        return Err(Error::BudgetPolicyInvalid);
-    }
-    // Exact installed identity is checked by policy_usage after the
-    // opportunity lock. A policy row lock here would invert that order.
+    // The authorization seam is trusted by contract; reservation checks the
+    // installed row after the opportunity and workspace policy locks.
     let opportunity_id: Uuid = sqlx::query_scalar(
         "SELECT b.opportunity_id FROM scope_anti_bloat_bindings b WHERE \
          b.tenant_id=$1 AND b.workspace_id=$2 AND b.candidate_set_id=$3 \
@@ -113,6 +102,21 @@ pub(super) async fn begin_send(
     .map_err(storage_error)?;
     if locked != Some(opportunity_id) {
         return Err(Error::InputConflict);
+    }
+    crate::budget_policy_usage::lock_workspace_policy(
+        uow.transaction()?,
+        tenant,
+        saved.workspace_id,
+    )
+    .await?;
+    let now: i64 = sqlx::query_scalar(
+        "SELECT (EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())*1000)::bigint",
+    )
+    .fetch_one(&mut **uow.transaction()?)
+    .await
+    .map_err(storage_error)?;
+    if !policy.is_effective_at(now) {
+        return Err(Error::BudgetPolicyInvalid);
     }
     let usage = crate::budget_policy_usage::policy_usage(
         uow.transaction()?,

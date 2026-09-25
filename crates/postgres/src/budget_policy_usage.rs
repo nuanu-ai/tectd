@@ -1,5 +1,5 @@
 //! Exact-policy workspace ledger shared by advisory dispatches and Anti-Bloat.
-//! Call only after locking the route's dispatch/opportunity (or review/opportunity).
+//! Reservation calls acquire the workspace policy lock after their route lock.
 use crate::storage_error;
 use sqlx::{Postgres, Transaction};
 use tect_domain::{AdvisoryBudgetPolicy, Error, Result};
@@ -14,6 +14,26 @@ pub(crate) struct PolicyUsage {
     pub elapsed_ms: i64,
     pub pending: i64,
     pub invalid: i64,
+}
+
+/// Serialize installation with the active-policy choice made by reservations.
+/// The lock is held until commit and must precede both the highest-active
+/// policy SELECT and the selected policy row lock.
+pub(crate) async fn lock_workspace_policy(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+) -> Result<()> {
+    sqlx::query(
+        "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(\
+         'tect-budget-policy:' || $1::text || ':' || $2::text, 0))",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .execute(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    Ok(())
 }
 
 /// Serializes every route on the same immutable policy row. A pending attempt

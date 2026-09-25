@@ -89,6 +89,12 @@ impl AdvisoryBudgetPolicyStore for PgUnitOfWork {
         }
         let tenant = self.tenant_id()?;
         let c = policy.ceilings();
+        crate::budget_policy_usage::lock_workspace_policy(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+        )
+        .await?;
         sqlx::query(
             "INSERT INTO advisory_budget_policies \
              (tenant_id,workspace_id,id,version,digest,effective_from_unix_ms,\
