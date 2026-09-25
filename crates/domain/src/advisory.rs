@@ -7,6 +7,7 @@
 mod anti_bloat;
 mod audit;
 mod authored_scope;
+mod budget_policy;
 mod config;
 mod disposition;
 mod lifecycle;
@@ -22,6 +23,7 @@ mod system_one;
 pub use anti_bloat::*;
 pub use audit::*;
 pub use authored_scope::*;
+pub use budget_policy::*;
 pub use config::*;
 pub use disposition::*;
 pub use lifecycle::*;

@@ -2,6 +2,11 @@ use super::*;
 
 #[async_trait]
 impl UnitOfWork for PgUnitOfWork {
+    fn advisory_budget_policy_store(
+        &mut self,
+    ) -> Option<&mut dyn tect_application::AdvisoryBudgetPolicyStore> {
+        Some(self)
+    }
     fn anti_bloat_store(&mut self) -> Option<&mut dyn tect_application::AntiBloatStore> {
         Some(self)
     }

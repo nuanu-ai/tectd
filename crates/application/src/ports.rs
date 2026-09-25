@@ -81,6 +81,12 @@ pub trait UnitOfWork:
     fn model_route_attempt_store(&mut self) -> Option<&mut dyn crate::ModelRouteAttemptStore> {
         None
     }
+    /// An absent adapter denies budget policy lookup and installation.
+    fn advisory_budget_policy_store(
+        &mut self,
+    ) -> Option<&mut dyn crate::AdvisoryBudgetPolicyStore> {
+        None
+    }
     fn pipeline_open_effect_store(&mut self) -> Option<&mut dyn crate::PipelineOpenEffectStore> {
         None
     }

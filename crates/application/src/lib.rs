@@ -13,7 +13,9 @@ pub use anti_bloat_ports::{
 pub use anti_bloat_ports::{AntiBloatVerificationMaterial, AntiBloatVerificationStore};
 pub use anti_bloat_verification::AntiBloatVerificationEvidence;
 pub use anti_bloat_verification::VerifyAntiBloatApply;
+mod advisory_budget_policy_ports;
 mod advisory_ports;
+pub use advisory_budget_policy_ports::AdvisoryBudgetPolicyStore;
 mod matrix_advice_ports;
 mod matrix_advice_runtime;
 mod matrix_advisory_capture;
