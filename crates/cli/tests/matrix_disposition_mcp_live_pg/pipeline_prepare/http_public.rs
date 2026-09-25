@@ -49,7 +49,7 @@ pub(super) async fn exercise(fixture: &NoCallFixture<'_>, independent: &mut Mcp)
             tect_host::StaticPipelineRecommendationDefinitions,
         ))
         .with_pipeline_compatibility_policy(Arc::new(FixedPipelineCompatibilityPolicy(
-            explicit_fixture_policy(),
+            explicit_fixture_policy(fixture.task),
         )))
         .with_pipeline_recommendation_provider(Arc::new(provider)),
     );
@@ -282,7 +282,7 @@ pub(super) async fn exercise(fixture: &NoCallFixture<'_>, independent: &mut Mcp)
     server.abort();
 }
 
-async fn assert_no_http(listener: &TcpListener) {
+pub(super) async fn assert_no_http(listener: &TcpListener) {
     assert!(
         tokio::time::timeout(Duration::from_millis(100), listener.accept())
             .await
@@ -290,7 +290,7 @@ async fn assert_no_http(listener: &TcpListener) {
     );
 }
 
-fn native_response(body: &[u8], eligible_ids: &[String]) -> Vec<u8> {
+pub(super) fn native_response(body: &[u8], eligible_ids: &[String]) -> Vec<u8> {
     let request: Value = serde_json::from_slice(body).unwrap();
     let mut answers = serde_json::Map::new();
     for (index, _) in eligible_ids.iter().enumerate() {

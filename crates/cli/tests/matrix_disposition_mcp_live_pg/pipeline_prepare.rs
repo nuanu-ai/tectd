@@ -38,11 +38,11 @@ impl PipelineRecommendationDefinitionProvider for MutablePinnedDefinitions {
     }
 }
 
-fn explicit_fixture_policy() -> PipelineCompatibilityPolicy {
+fn explicit_fixture_policy(task: Uuid) -> PipelineCompatibilityPolicy {
     let input: EngineeringMatrixInput = serde_json::from_value(input()).unwrap();
     let composition = compose_engineering_matrix(
         &VerifiedEngineeringMatrixFacts::bind_caller_verified_task_revision(
-            "fixture".into(),
+            task.to_string(),
             "1".into(),
             input.clone(),
         )
@@ -56,7 +56,7 @@ fn explicit_fixture_policy() -> PipelineCompatibilityPolicy {
     let definitions = tect_host::StaticPipelineRecommendationDefinitions;
     PipelineCompatibilityPolicy {
         version: PIPELINE_COMPATIBILITY_POLICY_VERSION.into(),
-        task_id: "fixture".into(),
+        task_id: task.to_string(),
         task_revision: "1".into(),
         catalogue_revision: "4".into(),
         rules: PipelineKind::CURRENT_SLICE_RUN_KINDS
@@ -117,6 +117,8 @@ fn explicit_fixture_policy() -> PipelineCompatibilityPolicy {
 
 #[path = "pipeline_prepare/assertions.rs"]
 mod assertions;
+#[path = "pipeline_prepare/daemon_public.rs"]
+mod daemon_public;
 #[path = "pipeline_prepare/http_public.rs"]
 mod http_public;
 #[path = "pipeline_prepare/open_effect.rs"]
@@ -229,10 +231,10 @@ async fn signed_fixture_policy(
     let until = now + 600_000;
     let id = Uuid::new_v4();
     let ceilings = AdvisoryBudgetCeilings {
-        provider_calls: 4,
+        provider_calls: 8,
         input_tokens: 1_000,
         output_tokens: 1_000,
-        request_utf8_bytes: 1_000_000,
+        request_utf8_bytes: 2_000_000,
         elapsed_monotonic_ms: 120_000,
         retry_dispatches: 1,
     };
@@ -304,6 +306,7 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
     let workspace_key = format!("mcp-pipeline-prepare-{}", Uuid::new_v4());
     let (workspace, budget_owner_keys) =
         signed_fixture_policy(&runtime_url, &enrolled, &workspace_key).await;
+    let task = Uuid::new_v4();
     let matrix_calls = Arc::new(AtomicUsize::new(0));
     let pipeline_calls = Arc::new(AtomicUsize::new(0));
     let definition_drift = Arc::new(AtomicBool::new(false));
@@ -324,7 +327,7 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
             definition_drift.clone(),
         )))
         .with_pipeline_compatibility_policy(Arc::new(FixedPipelineCompatibilityPolicy(
-            explicit_fixture_policy(),
+            explicit_fixture_policy(task),
         )))
         .with_pipeline_recommendation_provider(Arc::new(FakePipelineProvider(
             pipeline_calls.clone(),
@@ -373,7 +376,6 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
         }),
     )
     .await;
-    let task = Uuid::new_v4();
     let recorded = record_task(&mut owner, task, &["a", "b"]).await;
     verify(&mut independent, &recorded, task).await;
     let advice_key = format!("matrix-prepare-{}", Uuid::new_v4());
@@ -475,10 +477,13 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
         budget_owner_keys: &budget_owner_keys,
         set,
         work: &work,
+        task,
+        owner_id: enrolled.principal_id,
     };
     exercise_zero_eligible_no_call(&no_call_fixture).await;
     exercise_one_eligible_no_call(&no_call_fixture).await;
     http_public::exercise(&no_call_fixture, &mut independent).await;
+    daemon_public::exercise(&no_call_fixture).await;
     assertions::exercise_prepare(
         &mut owner,
         &mut independent,
@@ -515,6 +520,8 @@ struct NoCallFixture<'a> {
     budget_owner_keys: &'a BudgetOwnerKeys,
     set: Uuid,
     work: &'a Value,
+    task: Uuid,
+    owner_id: Uuid,
 }
 
 async fn exercise_zero_eligible_no_call(fixture: &NoCallFixture<'_>) {
@@ -526,7 +533,7 @@ async fn exercise_zero_eligible_no_call(fixture: &NoCallFixture<'_>) {
     let workspace = fixture.workspace;
     let set = fixture.set;
     let work = fixture.work;
-    let mut policy = explicit_fixture_policy();
+    let mut policy = explicit_fixture_policy(fixture.task);
     policy.rules.clear();
     let calls = Arc::new(AtomicUsize::new(0));
     let socket = root.join("pipeline-zero-eligible.sock");
@@ -620,7 +627,7 @@ async fn exercise_one_eligible_no_call(fixture: &NoCallFixture<'_>) {
     let workspace = fixture.workspace;
     let set = fixture.set;
     let work = fixture.work;
-    let mut policy = explicit_fixture_policy();
+    let mut policy = explicit_fixture_policy(fixture.task);
     policy
         .rules
         .retain(|rule| rule.kind == PipelineKind::LightweightTddDevelopment);
