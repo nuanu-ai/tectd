@@ -531,23 +531,22 @@ impl PipelineRecommendationStore for PgUnitOfWork {
             return Err(Error::StaleContext);
         }
         let tenant = self.tenant_id()?;
-        let session_actor: Option<Uuid> = sqlx::query_scalar(
-            "SELECT p.id FROM agent_sessions s \
-             JOIN hosts h ON (h.tenant_id,h.id)=(s.tenant_id,s.host_id) \
-             JOIN principals p ON (p.tenant_id,p.id)=(h.tenant_id,h.principal_id) \
+        let authorized: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM agent_sessions s \
              JOIN memberships m ON (m.tenant_id,m.workspace_id,m.principal_id)= \
-                  (s.tenant_id,s.workspace_id,p.id) \
+                  (s.tenant_id,s.workspace_id,$4) \
              WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.id=$3 \
-               AND p.id=$4 AND p.role='owner' AND NOT s.revoked AND NOT h.revoked",
+               AND public.tect_dk_session_principal(s.id)=$4 \
+               AND public.tect_dk_is_owner($4))",
         )
         .bind(tenant)
         .bind(workspace_id)
         .bind(input.session_id)
         .bind(actor)
-        .fetch_optional(&mut **self.transaction()?)
+        .fetch_one(&mut **self.transaction()?)
         .await
         .map_err(storage_error)?;
-        if session_actor != Some(actor) {
+        if !authorized {
             return Err(Error::Forbidden);
         }
         sqlx::query(
