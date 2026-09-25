@@ -208,7 +208,7 @@ mod tests {
             ranked["current_advice"]["outcome"]["ranked_choice_ids"],
             json!(["a", "b"])
         );
-        assert!(ranked.to_string().find("raw_response_payload").is_none());
+        assert!(!ranked.to_string().contains("raw_response_payload"));
         let mut abstained = base;
         abstained.outcome = GuardedMatrixAdviceOutcome::Abstained { reason: None };
         let abstained = read(EngineeringAdvisoryRead {

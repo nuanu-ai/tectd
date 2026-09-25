@@ -85,7 +85,7 @@ fn duplicate_keys_are_rejected_at_every_nested_object_level() {
     let choice = format!("choice_{ID}");
     let score = format!("score_{ID}");
     let cases = [
-        format!(r#"{{"model":"jev-1.13.0","model":"jev-1.13.0","answers":{{}},"usage":null}}"#),
+        r#"{"model":"jev-1.13.0","model":"jev-1.13.0","answers":{},"usage":null}"#.to_owned(),
         format!(
             r#"{{"model":"jev-1.13.0","answers":{{"{choice}":{{"type":"choice","type":"choice"}}}},"usage":null}}"#
         ),
