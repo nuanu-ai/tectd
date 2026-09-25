@@ -26,4 +26,6 @@ fn reservation_is_bound_to_dispatch_policy_bytes_and_tenant() {
     assert!(GUARD.contains("policy.ok_or(Error::BudgetPolicyInvalid)?"));
     assert!(GUARD.contains("opportunity_id=$3"));
     assert!(GUARD.contains("foreign_policy != 0"));
+    assert!(GUARD.contains("crate::budget_policy_usage::policy_usage("));
+    assert!(GUARD.contains("usage.calls"));
 }

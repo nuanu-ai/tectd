@@ -4,6 +4,8 @@ mod advisory;
 #[cfg(test)]
 mod advisory_budget_consumption_migration_tests;
 #[cfg(test)]
+mod advisory_budget_policy_global_migration_tests;
+#[cfg(test)]
 mod advisory_budget_policy_migration_tests;
 mod advisory_budget_policy_store;
 #[cfg(test)]
@@ -14,6 +16,7 @@ mod advisory_migration_tests;
 mod anti_bloat_migration_tests;
 mod anti_bloat_store;
 mod anti_bloat_verification_store;
+mod budget_policy_usage;
 mod durable_knowledge;
 mod durable_knowledge_admin;
 mod durable_knowledge_store;

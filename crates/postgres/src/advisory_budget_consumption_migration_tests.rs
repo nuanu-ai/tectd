@@ -23,7 +23,7 @@ fn consumption_is_append_only_bound_to_seal_and_gates_finalization() {
     ] {
         assert!(MIGRATION.contains(required), "missing {required}");
     }
-    assert!(START.contains("c.dispatch_id IS NULL"));
+    assert!(START.contains("usage.pending != 0"));
     assert!(START.contains("reserved_input_tokens: remaining_input"));
     assert!(START.contains("reserved_output_tokens: remaining_output"));
     assert!(SEAL.contains("Some((_, None)) => return Err(Error::BudgetPolicyInvalid)"));
@@ -33,9 +33,8 @@ fn consumption_is_append_only_bound_to_seal_and_gates_finalization() {
     assert!(
         CONSUME.contains("opportunity_by_id(tx, tenant, workspace, dispatch.opportunity_id, true)")
     );
-    assert!(
-        CONSUME.contains("COUNT(*) FILTER (WHERE r.dispatch_id<>$4 AND c.dispatch_id IS NULL)")
-    );
+    assert!(CONSUME.contains("crate::budget_policy_usage::policy_usage("));
+    assert!(CONSUME.contains("usage.pending != 1"));
     for path in [SCOPE, MATRIX] {
         let seal_commit = path.find("seal_tx.commit().await?").unwrap();
         let consume = path.find(".consume_advisory_budget(").unwrap();

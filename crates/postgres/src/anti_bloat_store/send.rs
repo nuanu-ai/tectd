@@ -12,7 +12,7 @@ pub(super) async fn begin_send(
     let tenant = uow.tenant_id()?;
     let locked_revision: Option<i64> = sqlx::query_scalar(
         "SELECT revision FROM scope_candidate_sets WHERE tenant_id=$1 \
-         AND workspace_id=$2 AND id=$3 FOR SHARE",
+         AND workspace_id=$2 AND id=$3",
     )
     .bind(tenant)
     .bind(saved.workspace_id)
@@ -112,48 +112,24 @@ pub(super) async fn begin_send(
     if locked != Some(opportunity_id) {
         return Err(Error::InputConflict);
     }
-    let (prior_calls, prior_bytes, used_input, used_output, used_elapsed, blockers):
-        (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*)::bigint,COALESCE(SUM(request_utf8_bytes),0)::bigint,\
-         COALESCE(SUM(input_tokens),0)::bigint,COALESCE(SUM(output_tokens),0)::bigint,\
-         COALESCE(SUM(elapsed_ms),0)::bigint,\
-         COUNT(*) FILTER (WHERE consumed IS NULL OR consumed=false OR policy_id<>$4 \
-           OR policy_version<>$5 OR policy_digest<>$6)::bigint FROM ( \
-         SELECT r.request_utf8_bytes,c.input_tokens,c.output_tokens,\
-           c.monotonic_elapsed_ms AS elapsed_ms,\
-           CASE WHEN c.dispatch_id IS NULL THEN NULL ELSE \
-             NOT c.unknown_usage AND NOT c.exhausted_after_response END AS consumed,\
-           r.policy_id,r.policy_version,r.policy_digest \
-         FROM advisory_budget_reservations r LEFT JOIN advisory_budget_consumptions c \
-           ON (c.tenant_id,c.workspace_id,c.dispatch_id)=(r.tenant_id,r.workspace_id,r.dispatch_id) \
-         WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.opportunity_id=$3 \
-         UNION ALL \
-         SELECT r.request_utf8_bytes,c.input_tokens,c.output_tokens,\
-           c.elapsed_monotonic_ms AS elapsed_ms,\
-           CASE WHEN c.review_id IS NULL THEN NULL ELSE \
-             NOT c.unknown_usage AND NOT c.exhausted_after_response END AS consumed,\
-           r.policy_id,r.policy_version,r.policy_digest \
-         FROM scope_anti_bloat_budget_reservations r \
-         LEFT JOIN scope_anti_bloat_budget_consumptions c \
-           ON (c.tenant_id,c.workspace_id,c.review_id)=(r.tenant_id,r.workspace_id,r.review_id) \
-         WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.opportunity_id=$3) attempts",
+    let usage = crate::budget_policy_usage::policy_usage(
+        uow.transaction()?,
+        tenant,
+        saved.workspace_id,
+        policy.id(),
+        policy.version(),
+        policy.digest(),
     )
-    .bind(tenant)
-    .bind(saved.workspace_id)
-    .bind(opportunity_id)
-    .bind(policy.id())
-    .bind(policy.version())
-    .bind(policy.digest())
-    .fetch_one(&mut **uow.transaction()?)
-    .await
-    .map_err(storage_error)?;
-    if blockers != 0 {
+    .await?;
+    if usage.pending != 0 || usage.invalid != 0 {
         return Err(Error::BudgetPolicyInvalid);
     }
-    if prior_calls
+    if usage
+        .calls
         .checked_add(1)
         .is_none_or(|n| n > ceilings.provider_calls)
-        || prior_bytes
+        || usage
+            .request_bytes
             .checked_add(request_len)
             .is_none_or(|n| n > ceilings.request_utf8_bytes)
     {
@@ -161,15 +137,15 @@ pub(super) async fn begin_send(
     }
     let remaining_input = ceilings
         .input_tokens
-        .checked_sub(used_input)
+        .checked_sub(usage.input_tokens)
         .ok_or(Error::BudgetExhaustedBeforeDispatch)?;
     let remaining_output = ceilings
         .output_tokens
-        .checked_sub(used_output)
+        .checked_sub(usage.output_tokens)
         .ok_or(Error::BudgetExhaustedBeforeDispatch)?;
     let remaining_elapsed = ceilings
         .elapsed_monotonic_ms
-        .checked_sub(used_elapsed)
+        .checked_sub(usage.elapsed_ms)
         .ok_or(Error::BudgetExhaustedBeforeDispatch)?;
     if remaining_input <= 0 || remaining_output <= 0 || remaining_elapsed <= 0 {
         return Err(Error::BudgetExhaustedBeforeDispatch);
@@ -267,8 +243,18 @@ pub(super) async fn consume_budget(
     }
     let tenant = uow.tenant_id()?;
     let actor = uow.principal_id()?;
-    let row: Option<(Uuid, i64, String, String, i64, i64, i64, Option<String>)> = sqlx::query_as(
-        "SELECT r.policy_id,r.policy_version,r.policy_digest,r.request_sha256,\
+    let row: Option<(
+        Uuid,
+        Uuid,
+        i64,
+        String,
+        String,
+        i64,
+        i64,
+        i64,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT r.workspace_id,r.policy_id,r.policy_version,r.policy_digest,r.request_sha256,\
          r.reserved_input_tokens,r.reserved_output_tokens,r.reserved_elapsed_ms,\
          v.response_sha256 FROM scope_anti_bloat_budget_reservations r \
          JOIN scope_anti_bloat_reviews v ON \
@@ -286,6 +272,7 @@ pub(super) async fn consume_budget(
     .await
     .map_err(storage_error)?;
     let (
+        workspace_id,
         policy_id,
         version,
         policy_digest,
@@ -298,19 +285,6 @@ pub(super) async fn consume_budget(
     if response_sha256.as_deref() != Some(digest(&observation.raw).as_str()) {
         return Err(Error::InputConflict);
     }
-    let unknown = observation.input_tokens.is_none()
-        || observation.output_tokens.is_none()
-        || observation.elapsed_monotonic_ms.is_none();
-    let exhausted = unknown
-        || observation
-            .input_tokens
-            .is_some_and(|n| n < 0 || n > input_limit)
-        || observation
-            .output_tokens
-            .is_some_and(|n| n < 0 || n > output_limit)
-        || observation
-            .elapsed_monotonic_ms
-            .is_some_and(|n| n < 0 || n > elapsed_limit);
     let existing: Option<(Option<i64>, Option<i64>, Option<i64>, bool)> = sqlx::query_as(
         "SELECT input_tokens,output_tokens,elapsed_monotonic_ms,exhausted_after_response \
          FROM scope_anti_bloat_budget_consumptions WHERE tenant_id=$1 AND review_id=$2",
@@ -321,18 +295,40 @@ pub(super) async fn consume_budget(
     .await
     .map_err(storage_error)?;
     if let Some(existing) = existing {
-        if existing
-            != (
-                observation.input_tokens,
-                observation.output_tokens,
-                observation.elapsed_monotonic_ms,
-                exhausted,
-            )
+        if existing.0 != observation.input_tokens
+            || existing.1 != observation.output_tokens
+            || existing.2 != observation.elapsed_monotonic_ms
         {
             return Err(Error::InputConflict);
         }
-        return Ok(exhausted);
+        return Ok(existing.3);
     }
+    let usage = crate::budget_policy_usage::policy_usage(
+        uow.transaction()?,
+        tenant,
+        workspace_id,
+        policy_id,
+        version,
+        &policy_digest,
+    )
+    .await?;
+    if usage.pending != 1 {
+        return Err(Error::BudgetPolicyInvalid);
+    }
+    let unknown = observation.input_tokens.is_none()
+        || observation.output_tokens.is_none()
+        || observation.elapsed_monotonic_ms.is_none();
+    let exhausted = unknown
+        || usage.invalid != 0
+        || observation
+            .input_tokens
+            .is_some_and(|n| n < 0 || n > input_limit)
+        || observation
+            .output_tokens
+            .is_some_and(|n| n < 0 || n > output_limit)
+        || observation
+            .elapsed_monotonic_ms
+            .is_some_and(|n| n < 0 || n > elapsed_limit);
     sqlx::query(
         "INSERT INTO scope_anti_bloat_budget_consumptions \
          (tenant_id,workspace_id,review_id,policy_id,policy_version,policy_digest,\

@@ -63,24 +63,15 @@ async fn consume_budget(
         .bind(reservation.policy_version).bind(&reservation.policy_digest)
         .fetch_optional(&mut **tx).await.map_err(storage_error)?;
     let (input_limit,output_limit,elapsed_limit) = ceilings.ok_or(Error::BudgetPolicyInvalid)?;
-    let (previous_input,previous_output,previous_elapsed,prior_exhausted,pending):
-        (i64,i64,i64,bool,i64) = sqlx::query_as(
-        "SELECT COALESCE(SUM(c.input_tokens),0)::bigint,\
-         COALESCE(SUM(c.output_tokens),0)::bigint,\
-         COALESCE(SUM(c.monotonic_elapsed_ms),0)::bigint,\
-         COALESCE(BOOL_OR(c.exhausted_after_response),false),\
-         COUNT(*) FILTER (WHERE r.dispatch_id<>$4 AND c.dispatch_id IS NULL)::bigint \
-         FROM advisory_budget_reservations r LEFT JOIN advisory_budget_consumptions c \
-         ON (c.tenant_id,c.workspace_id,c.dispatch_id)=(r.tenant_id,r.workspace_id,r.dispatch_id) \
-         WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.opportunity_id=$3"
-    ).bind(tenant).bind(workspace).bind(dispatch.opportunity_id).bind(dispatch_id)
-        .fetch_one(&mut **tx).await.map_err(storage_error)?;
-    if pending != 0 { return Err(Error::BudgetPolicyInvalid); }
+    let usage = crate::budget_policy_usage::policy_usage(
+        tx,tenant,workspace,reservation.policy_id,reservation.policy_version,
+        &reservation.policy_digest).await?;
+    if usage.pending != 1 { return Err(Error::BudgetPolicyInvalid); }
     let (unknown, exhausted) = consumption_exhausted(
         input_limit,output_limit,elapsed_limit,
-        previous_input,previous_output,previous_elapsed,
+        usage.input_tokens,usage.output_tokens,usage.elapsed_ms,
         dispatch.input_tokens,dispatch.output_tokens,dispatch.latency_ms,
-        prior_exhausted,
+        usage.invalid != 0,
     )?;
     let inserted = sqlx::query(
         "INSERT INTO advisory_budget_consumptions \

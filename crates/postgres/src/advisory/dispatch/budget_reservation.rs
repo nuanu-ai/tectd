@@ -3,19 +3,20 @@ fn remaining_budget_envelope(
     prior_calls: i64,
     prior_bytes: i64,
     prior_retries: i64,
+    prior_elapsed: i64,
     request_bytes: i64,
     is_retry: bool,
     monotonic_elapsed_ms: Option<i64>,
 ) -> Result<i64> {
     let c = policy.ceilings();
-    if prior_calls < 0 || prior_bytes < 0 || prior_retries < 0 || request_bytes <= 0 {
+    if prior_calls < 0 || prior_bytes < 0 || prior_retries < 0 || prior_elapsed < 0 || request_bytes <= 0 {
         return Err(Error::InternalInvariant);
     }
     let consumed_elapsed = if is_retry {
         // A retry without a trusted cumulative monotonic reading is denied.
-        monotonic_elapsed_ms.ok_or(Error::BudgetPolicyInvalid)?
+        prior_elapsed.max(monotonic_elapsed_ms.ok_or(Error::BudgetPolicyInvalid)?)
     } else {
-        0
+        prior_elapsed
     };
     if consumed_elapsed < 0 {
         return Err(Error::BudgetPolicyInvalid);
@@ -84,31 +85,20 @@ async fn reserve_before_dispatch(
         || current.4 != policy.effective_until_unix_ms()) {
         return Err(Error::BudgetPolicyInvalid);
     }
-    let (prior_calls,prior_bytes,prior_retries,foreign_policy): (i64,i64,i64,i64) =
-        sqlx::query_as(
-            "SELECT COUNT(*)::bigint,COALESCE(SUM(request_utf8_bytes),0)::bigint,\
-             COALESCE(SUM(reserved_retry_dispatches),0)::bigint,\
-             COUNT(*) FILTER (WHERE policy_id<>$4 OR policy_version<>$5 OR policy_digest<>$6)::bigint \
-             FROM advisory_budget_reservations WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3"
-        ).bind(tenant).bind(workspace).bind(row.opportunity_id)
-            .bind(policy.id()).bind(policy.version()).bind(policy.digest())
-            .fetch_one(&mut **tx).await.map_err(storage_error)?;
+    let foreign_policy: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint FROM advisory_budget_reservations WHERE tenant_id=$1 \
+         AND workspace_id=$2 AND opportunity_id=$3 \
+         AND (policy_id<>$4 OR policy_version<>$5 OR policy_digest<>$6)"
+    ).bind(tenant).bind(workspace).bind(row.opportunity_id)
+        .bind(policy.id()).bind(policy.version()).bind(policy.digest())
+        .fetch_one(&mut **tx).await.map_err(storage_error)?;
     if foreign_policy != 0 { return Err(Error::BudgetPolicyInvalid); }
-    let (pending,used_input,used_output,invalid_consumption): (i64,i64,i64,i64) =
-        sqlx::query_as(
-            "SELECT COUNT(*) FILTER (WHERE c.dispatch_id IS NULL)::bigint,\
-             COALESCE(SUM(c.input_tokens),0)::bigint,\
-             COALESCE(SUM(c.output_tokens),0)::bigint,\
-             COUNT(*) FILTER (WHERE c.unknown_usage OR c.exhausted_after_response)::bigint \
-             FROM advisory_budget_reservations r LEFT JOIN advisory_budget_consumptions c \
-             ON (c.tenant_id,c.workspace_id,c.dispatch_id)=(r.tenant_id,r.workspace_id,r.dispatch_id) \
-             WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.opportunity_id=$3"
-        ).bind(tenant).bind(workspace).bind(row.opportunity_id)
-            .fetch_one(&mut **tx).await.map_err(storage_error)?;
-    if pending != 0 || invalid_consumption != 0 { return Err(Error::BudgetPolicyInvalid); }
-    let remaining_input = policy.ceilings().input_tokens.checked_sub(used_input)
+    let usage = crate::budget_policy_usage::policy_usage(
+        tx,tenant,workspace,policy.id(),policy.version(),policy.digest()).await?;
+    if usage.pending != 0 || usage.invalid != 0 { return Err(Error::BudgetPolicyInvalid); }
+    let remaining_input = policy.ceilings().input_tokens.checked_sub(usage.input_tokens)
         .ok_or(Error::BudgetExhaustedBeforeDispatch)?;
-    let remaining_output = policy.ceilings().output_tokens.checked_sub(used_output)
+    let remaining_output = policy.ceilings().output_tokens.checked_sub(usage.output_tokens)
         .ok_or(Error::BudgetExhaustedBeforeDispatch)?;
     if remaining_input <= 0 || remaining_output <= 0 {
         return Err(Error::BudgetExhaustedBeforeDispatch);
@@ -116,8 +106,8 @@ async fn reserve_before_dispatch(
     let request_bytes = i64::try_from(row.request_payload.len())
         .map_err(|_| Error::BudgetExhaustedBeforeDispatch)?;
     let is_retry = row.attempt_number > 1;
-    let remaining = remaining_budget_envelope(policy, prior_calls, prior_bytes,
-        prior_retries, request_bytes, is_retry, monotonic_elapsed_ms)?;
+    let remaining = remaining_budget_envelope(policy, usage.calls, usage.request_bytes,
+        usage.retries,usage.elapsed_ms,request_bytes,is_retry,monotonic_elapsed_ms)?;
     let reservation = AdvisoryBudgetReservation {
         dispatch_id: row.id, policy_id: policy.id(), policy_version: policy.version(),
         policy_digest: policy.digest().to_owned(),
@@ -160,17 +150,17 @@ mod budget_reservation_tests {
     #[test]
     fn exact_edges_retry_and_unknown_monotonic_elapsed() {
         let p=policy();
-        assert_eq!(remaining_budget_envelope(&p,0,0,0,10,false,None),Ok(100));
-        assert_eq!(remaining_budget_envelope(&p,0,0,0,11,false,None),
+        assert_eq!(remaining_budget_envelope(&p,0,0,0,0,10,false,None),Ok(100));
+        assert_eq!(remaining_budget_envelope(&p,0,0,0,0,11,false,None),
             Err(Error::BudgetExhaustedBeforeDispatch));
-        assert_eq!(remaining_budget_envelope(&p,1,5,0,5,true,Some(99)),Ok(1));
-        assert_eq!(remaining_budget_envelope(&p,1,5,0,5,true,Some(100)),
+        assert_eq!(remaining_budget_envelope(&p,1,5,0,0,5,true,Some(99)),Ok(1));
+        assert_eq!(remaining_budget_envelope(&p,1,5,0,0,5,true,Some(100)),
             Err(Error::BudgetExhaustedBeforeDispatch));
-        assert_eq!(remaining_budget_envelope(&p,1,5,0,5,true,None),
+        assert_eq!(remaining_budget_envelope(&p,1,5,0,0,5,true,None),
             Err(Error::BudgetPolicyInvalid));
-        assert_eq!(remaining_budget_envelope(&p,2,0,0,1,false,None),
+        assert_eq!(remaining_budget_envelope(&p,2,0,0,0,1,false,None),
             Err(Error::BudgetExhaustedBeforeDispatch));
-        assert_eq!(remaining_budget_envelope(&p,0,0,1,1,true,Some(1)),
+        assert_eq!(remaining_budget_envelope(&p,0,0,1,0,1,true,Some(1)),
             Err(Error::BudgetExhaustedBeforeDispatch));
     }
 }
