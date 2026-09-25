@@ -17,11 +17,11 @@ mod matrix_verification;
 mod matrix_verification_ports;
 mod model_route_recommendation;
 mod model_route_recommendation_ports;
-mod pipeline_recommendation;
 mod pipeline_open_effect;
+mod pipeline_recommendation;
 mod pipeline_recommendation_dispatch;
-mod pipeline_recommendation_disposition;
 mod pipeline_recommendation_dispatch_ports;
+mod pipeline_recommendation_disposition;
 mod pipeline_recommendation_ports;
 mod pipeline_recommendation_runtime;
 mod planning_knowledge_ports;
@@ -60,7 +60,6 @@ pub use matrix_planning_effect_ports::{
     MatrixPlanningEffectAttestation, MatrixPlanningEffectSnapshot, MatrixPlanningEffectStore,
     MatrixPlanningEffectVerdict,
 };
-pub use pipeline_open_effect::{PipelineOpenEffectMaterial, PipelineOpenEffectVerdict, PipelineOpenEffectAttestation, PipelineOpenEffectStore, VerifyPipelineOpenEffect};
 pub use matrix_planning_selection_ports::{
     MatrixPlanningMappedNode, MatrixPlanningSelectionLink, MatrixPlanningSelectionStore,
 };
@@ -79,6 +78,10 @@ pub use model_route_recommendation_ports::{
     ModelRouteRecommendationStore, PreparedModelRouteRecommendation,
     UnavailableModelRouteCatalogue,
 };
+pub use pipeline_open_effect::{
+    PipelineOpenEffectAttestation, PipelineOpenEffectMaterial, PipelineOpenEffectStore,
+    PipelineOpenEffectVerdict, VerifyPipelineOpenEffect,
+};
 pub use pipeline_recommendation::{
     PreparePipelineRecommendation, pipeline_recommendation_source_digest,
 };
@@ -89,9 +92,11 @@ pub use pipeline_recommendation_dispatch_ports::{
     PipelineRecommendationDispatchStore, StoredPipelineRecommendationDispatch,
 };
 pub use pipeline_recommendation_ports::{
+    FixedPipelineCompatibilityPolicy, PipelineCompatibilityPolicyProvider,
     PipelineDispositionBasis, PipelineRecommendationBasis, PipelineRecommendationContext,
     PipelineRecommendationDefinitionProvider, PipelineRecommendationStore,
-    PreparedPipelineRecommendation, UnavailablePipelineRecommendationDefinitions,
+    PreparedPipelineRecommendation, UnavailablePipelineCompatibilityPolicy,
+    UnavailablePipelineRecommendationDefinitions,
 };
 pub use pipeline_recommendation_runtime::{
     DisabledPipelineRecommendationProvider, MAX_PREPARED_PIPELINE_BODY_BYTES,

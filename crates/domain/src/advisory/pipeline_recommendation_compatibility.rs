@@ -63,6 +63,15 @@ pub struct PipelineExcludedKind {
 }
 
 impl PipelineCompatibilityPolicy {
+    /// A missing host configuration is represented as an explicit deny-all
+    /// snapshot so the captured material remains digestible and inspectable.
+    pub fn unavailable() -> Self {
+        Self {
+            version: "unavailable".into(),
+            rules: Vec::new(),
+        }
+    }
+
     pub fn digest(&self) -> Result<String> {
         // Preserve rule and coverage order: any policy edit changes the digest.
         digest_json(self)

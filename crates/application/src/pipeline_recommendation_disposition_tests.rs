@@ -122,7 +122,11 @@ fn fixture(
         selected_choice_id: "choice".into(),
         matrix_choice_set_digest: "a".repeat(64),
         matrix_verification_digest: "b".repeat(64),
+        matrix_input_digest: "c".repeat(64),
+        selected_candidate_digest: "d".repeat(64),
+        compatibility_policy_digest: "e".repeat(64),
         mandatory_card_ids: vec!["card".into()],
+        deterministic_kind: kinds[0],
         catalogue_revision: "4".into(),
         catalogue_digest: "catalogue".into(),
         options: kinds
@@ -135,6 +139,13 @@ fn fixture(
                 completion_contract: "proof".into(),
                 forbidden_claims: vec![],
                 obligations: vec![],
+            })
+            .collect(),
+        excluded: PipelineKind::CURRENT_SLICE_RUN_KINDS[2..]
+            .iter()
+            .map(|kind| tect_domain::PipelineExcludedKind {
+                kind: *kind,
+                reason: tect_domain::PipelineExclusionReason::MissingRule,
             })
             .collect(),
         evidence_refs: vec![],
@@ -207,6 +218,7 @@ fn fixture(
         match_effect_attestation_id: Uuid::new_v4(),
         catalogue_revision: "4".into(),
         catalogue_digest: "catalogue".into(),
+        compatibility_policy_digest: manifest.compatibility_policy_digest.clone(),
         eligible_kind_ids: manifest
             .options
             .iter()
@@ -251,9 +263,16 @@ async fn concurrent_identical_capture_returns_first_receipt() {
     };
     let (mut store, request, workspace, session, actor) = fixture(advice);
     store.concurrent_receipt = true;
-    let returned = dispose_in_store(&mut store, workspace, session, actor, &request)
-        .await
-        .unwrap();
+    let returned = dispose_in_store(
+        &mut store,
+        workspace,
+        session,
+        actor,
+        &request,
+        &"e".repeat(64),
+    )
+    .await
+    .unwrap();
     assert_eq!(store.saved.as_ref(), Some(&returned));
     assert_eq!(store.writes, 1);
 }
@@ -268,24 +287,46 @@ async fn ranked_accept_reject_replay_and_conflict() {
         ],
     };
     let (mut store, request, workspace, session, actor) = fixture(ranked);
-    let result = dispose_in_store(&mut store, workspace, session, actor, &request)
-        .await
-        .unwrap();
+    let result = dispose_in_store(
+        &mut store,
+        workspace,
+        session,
+        actor,
+        &request,
+        &"e".repeat(64),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         result.selected_kind,
         Some(PipelineKind::FullDesignToExecution)
     );
     assert_eq!(
-        dispose_in_store(&mut store, workspace, session, actor, &request)
-            .await
-            .unwrap(),
+        dispose_in_store(
+            &mut store,
+            workspace,
+            session,
+            actor,
+            &request,
+            &"e".repeat(64)
+        )
+        .await
+        .unwrap(),
         result
     );
     assert_eq!(store.writes, 1);
     let mut changed = request.clone();
     changed.action = PipelineRecommendationDisposition::RejectRecommendation;
     assert_eq!(
-        dispose_in_store(&mut store, workspace, session, actor, &changed).await,
+        dispose_in_store(
+            &mut store,
+            workspace,
+            session,
+            actor,
+            &changed,
+            &"e".repeat(64)
+        )
+        .await,
         Err(Error::InputConflict)
     );
     let (mut reject_store, _, _, _, _) = fixture(PipelineDispositionAdvice::Ranked {
@@ -308,7 +349,8 @@ async fn ranked_accept_reject_replay_and_conflict() {
             own_workspace,
             own_session,
             own_actor,
-            &reject
+            &reject,
+            &"e".repeat(64),
         )
         .await
         .unwrap()
@@ -327,9 +369,16 @@ async fn no_call_abstention_stale_and_unknown_never_write() {
     ] {
         let (mut store, mut request, workspace, session, actor) = fixture(advice);
         request.action = PipelineRecommendationDisposition::UseDeterministicChoice;
-        let result = dispose_in_store(&mut store, workspace, session, actor, &request)
-            .await
-            .unwrap();
+        let result = dispose_in_store(
+            &mut store,
+            workspace,
+            session,
+            actor,
+            &request,
+            &"e".repeat(64),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             result.selected_kind,
             Some(PipelineKind::LightweightTddDevelopment)
@@ -339,7 +388,15 @@ async fn no_call_abstention_stale_and_unknown_never_write() {
         fixture(PipelineDispositionAdvice::NoCall);
     stale.current = false;
     assert_eq!(
-        dispose_in_store(&mut stale, workspace, session, actor, &request).await,
+        dispose_in_store(
+            &mut stale,
+            workspace,
+            session,
+            actor,
+            &request,
+            &"e".repeat(64)
+        )
+        .await,
         Err(Error::StaleContext)
     );
     assert_eq!(stale.writes, 0);
@@ -352,7 +409,15 @@ async fn no_call_abstention_stale_and_unknown_never_write() {
             ],
         });
     assert_eq!(
-        dispose_in_store(&mut unknown, workspace, session, actor, &request).await,
+        dispose_in_store(
+            &mut unknown,
+            workspace,
+            session,
+            actor,
+            &request,
+            &"e".repeat(64)
+        )
+        .await,
         Err(Error::InvalidArguments)
     );
     assert_eq!(unknown.writes, 0);

@@ -1,5 +1,20 @@
 const MIGRATION: &str = include_str!("../migrations/0063_pipeline_advice_manifest_no_call.sql");
 const ADMIN: &str = include_str!("admin/pipeline_advice.rs");
+const COMPATIBILITY: &str =
+    include_str!("../migrations/0070_pipeline_compatibility_policy_binding.sql");
+
+#[test]
+fn schema_two_requires_saved_compatibility_policy_digest() {
+    for required in [
+        "ADD COLUMN compatibility_policy_digest text",
+        "'tect.pipeline-recommendation/2'",
+        "manifest_payload->>'compatibility_policy_digest' = compatibility_policy_digest",
+        "manifest_payload->>'matrix_input_digest'",
+        "manifest_payload->>'selected_candidate_digest'",
+    ] {
+        assert!(COMPATIBILITY.contains(required), "missing {required}");
+    }
+}
 
 #[test]
 fn empty_eligibility_is_reserved_for_durable_no_call() {

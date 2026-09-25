@@ -56,7 +56,7 @@ pub(super) async fn exercise_prepare(
     let manifest: Value = sqlx::query_scalar(
         "SELECT manifest_payload FROM pipeline_advice_contexts WHERE workspace_id=$1 AND opportunity_id=$2",
     ).bind(workspace).bind(opportunity).fetch_one(pool).await.unwrap();
-    assert_eq!(manifest["schema"], "tect.pipeline-recommendation/1");
+    assert_eq!(manifest["schema"], "tect.pipeline-recommendation/2");
     assert_eq!(manifest["work_id"], work["id"]);
     assert_eq!(manifest["work_revision"], work["revision"]);
     assert_eq!(manifest["matrix_task_id"], task.to_string());

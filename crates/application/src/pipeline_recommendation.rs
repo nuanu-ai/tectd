@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 use tect_domain::{
     ADVISORY_DECISION_POINT_VERSION, AdvisoryCapability, AdvisoryDecisionPoint,
     AdvisoryOpportunityInput, AdvisoryOpportunityState, AdvisoryReason, AdvisoryRequestPreference,
-    Error, PipelineKind, RequestContext, Result, SliceCandidateNode, WorkspaceAdvisoryMode,
-    build_pipeline_recommendation_manifest,
+    Error, PipelineCompatibilityPolicy, PipelineKind, RequestContext, Result, SliceCandidateNode,
+    WorkspaceAdvisoryMode, build_pipeline_recommendation_manifest,
 };
 use uuid::Uuid;
 
@@ -70,6 +70,9 @@ impl WorkspaceService {
             )? {
                 return Err(Error::InputConflict);
             }
+            if !self.pipeline_policy_matches(&saved.context.compatibility_policy_digest)? {
+                return Err(Error::StaleContext);
+            }
             tx.commit().await?;
             return Ok(saved);
         }
@@ -84,6 +87,10 @@ impl WorkspaceService {
             .ok_or(Error::NotFound)?;
         validate_basis(&basis, request)?;
         let mut source = basis.source.clone();
+        let configured_policy = self.pipeline_compatibility_policy.policy()?;
+        source.compatibility_policy = configured_policy
+            .clone()
+            .unwrap_or_else(PipelineCompatibilityPolicy::unavailable);
         source.definitions.clear();
         for kind in PipelineKind::CURRENT_SLICE_RUN_KINDS {
             if let Some(definition) = self
@@ -100,7 +107,8 @@ impl WorkspaceService {
             request,
             manifest.should_call(),
             self.pipeline_recommendation_definitions.available()
-                && self.pipeline_recommendation_provider.available(),
+                && self.pipeline_recommendation_provider.available()
+                && configured_policy.is_some(),
             config.provider_configured(),
         );
         let input = AdvisoryOpportunityInput {
@@ -164,6 +172,7 @@ impl PipelineRecommendationContext {
             match_effect_attestation_id: basis.match_effect_attestation_id,
             catalogue_revision: manifest.catalogue_revision.clone(),
             catalogue_digest: manifest.catalogue_digest.clone(),
+            compatibility_policy_digest: manifest.compatibility_policy_digest.clone(),
             eligible_kind_ids: manifest
                 .options
                 .iter()
@@ -252,7 +261,8 @@ fn replay_matches(
         && saved.context.candidate_set_revision == request.expected_candidate_set_revision
         && saved.context.work_node_id == request.work_node_id
         && saved.context.work_node_revision == request.expected_work_node_revision
-        && saved.context.verification_contract_digest == saved.manifest.digest)
+        && saved.context.verification_contract_digest == saved.manifest.digest
+        && saved.context.compatibility_policy_digest == saved.manifest.compatibility_policy_digest)
 }
 
 fn verify_capture(
@@ -262,6 +272,7 @@ fn verify_capture(
     manifest: &tect_domain::PipelineRecommendationManifest,
 ) -> Result<()> {
     if saved.context != *context
+        || saved.context.compatibility_policy_digest != manifest.compatibility_policy_digest
         || saved.manifest != *manifest
         || saved.opportunity.workflow_occurrence_key != input.workflow_occurrence_key
         || saved.opportunity.material_digest != input.material_digest
@@ -328,6 +339,19 @@ mod tests {
             (
                 AdvisoryOpportunityState::Prepared,
                 AdvisoryReason::RecommendationPrepared
+            )
+        );
+        assert_eq!(
+            preparation_decision(
+                WorkspaceAdvisoryMode::Optional,
+                &request,
+                false,
+                false,
+                true
+            ),
+            (
+                AdvisoryOpportunityState::NoCall,
+                AdvisoryReason::CapabilityUnavailable
             )
         );
         assert_eq!(

@@ -23,6 +23,7 @@ impl WorkspaceService {
             .await?
             .ok_or(Error::WorkspaceNotOpen)?;
         let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
+        let current_policy_digest = self.current_pipeline_policy()?.digest()?;
         let store = tx.pipeline_recommendation_store().ok_or(Error::Forbidden)?;
         let result = dispose_in_store(
             store,
@@ -30,6 +31,7 @@ impl WorkspaceService {
             session.id,
             identity.principal_id,
             request,
+            &current_policy_digest,
         )
         .await?;
         tx.commit().await?;
@@ -43,6 +45,7 @@ async fn dispose_in_store(
     session_id: Uuid,
     actor_id: Uuid,
     request: &PipelineDispositionRequest,
+    current_policy_digest: &str,
 ) -> Result<PipelineDispositionResult> {
     let prepared = store
         .pipeline_recommendation_by_opportunity(workspace_id, request.opportunity_id)
@@ -55,6 +58,12 @@ async fn dispose_in_store(
         || opportunity.authorized_actor_id != actor_id
     {
         return Err(Error::Forbidden);
+    }
+    if current_policy_digest != prepared.context.compatibility_policy_digest
+        || prepared.context.compatibility_policy_digest
+            != prepared.manifest.compatibility_policy_digest
+    {
+        return Err(Error::StaleContext);
     }
     if let Some(saved) = store
         .pipeline_disposition_by_opportunity(workspace_id, request.opportunity_id)

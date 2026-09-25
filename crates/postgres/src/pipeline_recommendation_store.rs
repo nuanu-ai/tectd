@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use sqlx::Row;
 use tect_application::{
     AdvisoryStore, MatrixPlanningEffectSnapshot, MatrixPlanningEffectStore, MatrixTaskStore,
@@ -11,10 +12,10 @@ use tect_domain::{
     ADVISORY_POLICY_VERSION, AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryOpportunityInput,
     AdvisoryOpportunityState, AdvisoryReason, AdvisoryRequestPreference, Error,
     MatrixPlanningEffectMaterial, MatrixPlanningEffectNode, OwnerReportedEngineeringMatrixFacts,
-    PipelineCatalogueSnapshot, PipelineDispositionResult, PipelineMatrixBasis,
-    PipelineRecommendationManifest, PipelineRecommendationSource, Result, SliceCandidateNode,
-    compose_independently_verified_owner_matrix, evaluate_matrix_verification,
-    matrix_verified_disposition_digest,
+    PipelineCatalogueSnapshot, PipelineCompatibilityPolicy, PipelineDispositionResult,
+    PipelineMatrixBasis, PipelineRecommendationManifest, PipelineRecommendationSource, Result,
+    SliceCandidateNode, compose_independently_verified_owner_matrix, evaluate_matrix_verification,
+    matrix_input_digest, matrix_verified_disposition_digest,
 };
 use uuid::Uuid;
 
@@ -26,6 +27,18 @@ fn write_error(error: sqlx::Error) -> Error {
         Some(code) if code == "23505" || code == "23514" => Error::InputConflict,
         _ => storage_error(error),
     }
+}
+
+fn selected_candidate_digest(source: &PipelineRecommendationSource) -> Result<String> {
+    let selected = source
+        .matrix
+        .choice_set
+        .candidates
+        .iter()
+        .find(|candidate| candidate.candidate_id == source.matrix.selected_choice_id)
+        .ok_or(Error::StaleContext)?;
+    let bytes = serde_json::to_vec(selected).map_err(|_| Error::StaleContext)?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 // A ready review advances the set revision without rewriting the exact saved
@@ -215,6 +228,8 @@ impl PipelineRecommendationStore for PgUnitOfWork {
             || saved.context.work_node_revision != saved.manifest.work_revision
             || saved.context.catalogue_revision != saved.manifest.catalogue_revision
             || saved.context.catalogue_digest != saved.manifest.catalogue_digest
+            || saved.context.compatibility_policy_digest
+                != saved.manifest.compatibility_policy_digest
             || saved.context.eligible_kind_ids
                 != saved
                     .manifest
@@ -284,6 +299,9 @@ impl PipelineRecommendationStore for PgUnitOfWork {
             && basis.match_effect_attestation_id == context.match_effect_attestation_id
             && source.catalogue.revision == context.catalogue_revision
             && source.catalogue.digest == context.catalogue_digest
+            && context.compatibility_policy_digest == manifest.compatibility_policy_digest
+            && manifest.matrix_input_digest == matrix_input_digest(&source.matrix.input)?
+            && manifest.selected_candidate_digest == selected_candidate_digest(source)?
             && manifest.matrix_task_id == source.matrix.composition.task_id
             && manifest.matrix_task_revision == source.matrix.composition.task_revision
             && manifest.selected_choice_id == source.matrix.selected_choice_id
@@ -518,6 +536,8 @@ impl PipelineRecommendationStore for PgUnitOfWork {
             work,
             current_work_revision: work_revision,
             matrix: PipelineMatrixBasis {
+                input: task.input.clone(),
+                choice_set: choice_set.clone(),
                 composition,
                 selected_choice_id: selected_choice_id.clone(),
                 current_selected_choice_id: selected_choice_id,
@@ -530,6 +550,7 @@ impl PipelineRecommendationStore for PgUnitOfWork {
             },
             catalogue,
             definitions: Vec::new(),
+            compatibility_policy: PipelineCompatibilityPolicy::unavailable(),
             evidence_refs: Vec::new(),
         };
         Ok(Some(PipelineRecommendationBasis {
@@ -571,6 +592,7 @@ impl PipelineRecommendationStore for PgUnitOfWork {
                     context.source_snapshot_digest,context.work_node_id,context.work_node_revision, \
                     context.matrix_disposition_id,context.match_effect_attestation_id, \
                     context.catalogue_revision,context.catalogue_digest,context.eligible_kind_ids, \
+                    context.compatibility_policy_digest, \
                     context.verification_contract_digest,context.manifest_payload, \
                     context.manifest_digest,o.source_revision \
              FROM pipeline_advice_contexts context \
@@ -620,6 +642,9 @@ impl PipelineRecommendationStore for PgUnitOfWork {
                 .map_err(storage_error)?,
             catalogue_revision: row.try_get("catalogue_revision").map_err(storage_error)?,
             catalogue_digest: row.try_get("catalogue_digest").map_err(storage_error)?,
+            compatibility_policy_digest: row
+                .try_get("compatibility_policy_digest")
+                .map_err(storage_error)?,
             eligible_kind_ids: row.try_get("eligible_kind_ids").map_err(storage_error)?,
             verification_contract_digest: row
                 .try_get("verification_contract_digest")
@@ -629,6 +654,7 @@ impl PipelineRecommendationStore for PgUnitOfWork {
             row.try_get("manifest_digest").map_err(storage_error)?;
         if stored_digest.as_deref() != Some(manifest.digest.as_str())
             || context.verification_contract_digest != manifest.digest
+            || context.compatibility_policy_digest != manifest.compatibility_policy_digest
             || opportunity.material_digest != manifest.digest
         {
             return Err(Error::InputConflict);
@@ -663,6 +689,7 @@ impl PipelineRecommendationStore for PgUnitOfWork {
             || manifest.work_revision != context.work_node_revision
             || manifest.catalogue_revision != context.catalogue_revision
             || manifest.catalogue_digest != context.catalogue_digest
+            || manifest.compatibility_policy_digest != context.compatibility_policy_digest
             || context.eligible_kind_ids
                 != manifest
                     .options
@@ -715,6 +742,9 @@ impl PipelineRecommendationStore for PgUnitOfWork {
             || current.match_effect_attestation_id != context.match_effect_attestation_id
             || current.source.catalogue.revision != context.catalogue_revision
             || current.source.catalogue.digest != context.catalogue_digest
+            || context.compatibility_policy_digest != manifest.compatibility_policy_digest
+            || manifest.matrix_input_digest != matrix_input_digest(&current.source.matrix.input)?
+            || manifest.selected_candidate_digest != selected_candidate_digest(&current.source)?
             || manifest.matrix_task_id != current.source.matrix.composition.task_id
             || manifest.matrix_task_revision != current.source.matrix.composition.task_revision
             || manifest.selected_choice_id != current.source.matrix.selected_choice_id
@@ -864,8 +894,9 @@ impl PipelineRecommendationStore for PgUnitOfWork {
                   work_node_id,work_node_revision,source_snapshot_digest, \
                   matrix_disposition_id,match_effect_attestation_id, \
                   catalogue_revision,catalogue_digest,eligible_kind_ids, \
+                  compatibility_policy_digest, \
                   verification_contract_digest,manifest_payload,manifest_digest) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)",
         )
         .bind(tenant)
         .bind(workspace_id)
@@ -882,6 +913,7 @@ impl PipelineRecommendationStore for PgUnitOfWork {
         .bind(&context.catalogue_revision)
         .bind(&context.catalogue_digest)
         .bind(&context.eligible_kind_ids)
+        .bind(&context.compatibility_policy_digest)
         .bind(&context.verification_contract_digest)
         .bind(serde_json::to_value(manifest).map_err(storage_error)?)
         .bind(&manifest.digest)

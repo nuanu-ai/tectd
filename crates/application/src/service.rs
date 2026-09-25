@@ -19,6 +19,7 @@ pub struct WorkspaceService {
     pub(crate) pipeline_recommendation_definitions:
         Arc<dyn crate::PipelineRecommendationDefinitionProvider>,
     pub(crate) pipeline_recommendation_provider: Arc<dyn crate::PipelineRecommendationProvider>,
+    pub(crate) pipeline_compatibility_policy: Arc<dyn crate::PipelineCompatibilityPolicyProvider>,
     pub(crate) scope_authority: Arc<dyn crate::ScopeAuthorityObserver>,
     pub(crate) scope_manifest_supplier: Arc<dyn crate::ScopeManifestSupplier>,
     pub(crate) scope_budget: Arc<dyn crate::ScopeBudgetPolicy>,
@@ -116,6 +117,7 @@ impl WorkspaceService {
             pipeline_recommendation_provider: Arc::new(
                 crate::DisabledPipelineRecommendationProvider,
             ),
+            pipeline_compatibility_policy: Arc::new(crate::UnavailablePipelineCompatibilityPolicy),
             scope_authority: Arc::new(crate::UnavailableScopeAuthorityObserver),
             scope_manifest_supplier: Arc::new(crate::UnavailableScopeManifestSupplier),
             scope_budget: Arc::new(crate::DenyScopeBudget),
@@ -226,6 +228,27 @@ impl WorkspaceService {
     ) -> Self {
         self.pipeline_recommendation_provider = provider;
         self
+    }
+
+    pub fn with_pipeline_compatibility_policy(
+        mut self,
+        provider: Arc<dyn crate::PipelineCompatibilityPolicyProvider>,
+    ) -> Self {
+        self.pipeline_compatibility_policy = provider;
+        self
+    }
+
+    pub(crate) fn pipeline_policy_matches(&self, digest: &str) -> Result<bool> {
+        Ok(self.current_pipeline_policy()?.digest()? == digest)
+    }
+
+    pub(crate) fn current_pipeline_policy(
+        &self,
+    ) -> Result<tect_domain::PipelineCompatibilityPolicy> {
+        Ok(self
+            .pipeline_compatibility_policy
+            .policy()?
+            .unwrap_or_else(tect_domain::PipelineCompatibilityPolicy::unavailable))
     }
 
     pub(crate) async fn authorized(

@@ -59,6 +59,7 @@ fn validate_saved(
         || opportunity.target_id != Some(saved.context.work_node_id)
         || opportunity.work_revision != Some(saved.context.work_node_revision)
         || saved.context.verification_contract_digest != saved.manifest.digest
+        || saved.context.compatibility_policy_digest != saved.manifest.compatibility_policy_digest
         || saved.context.eligible_kind_ids
             != saved
                 .manifest
@@ -139,6 +140,12 @@ impl WorkspaceService {
         {
             return Err(Error::Forbidden);
         }
+        if !self.pipeline_policy_matches(&saved.context.compatibility_policy_digest)? {
+            tx.commit().await?;
+            return Ok(PipelineRecommendationRun::Stale {
+                opportunity_id: saved.opportunity.id,
+            });
+        }
         if saved.opportunity.state == AdvisoryOpportunityState::NoCall {
             tx.commit().await?;
             return Ok(PipelineRecommendationRun::NoCall {
@@ -156,6 +163,7 @@ impl WorkspaceService {
             || config.mode != WorkspaceAdvisoryMode::Optional
             || !config.provider_configured()
             || !saved.manifest.should_call()
+            || !self.pipeline_policy_matches(&saved.context.compatibility_policy_digest)?
             || !tx
                 .pipeline_recommendation_store()
                 .ok_or(Error::Forbidden)?
@@ -279,7 +287,9 @@ impl WorkspaceService {
             .pipeline_recommendation_is_current(workspace.id, &saved)
             .await?;
         read_tx.commit().await?;
-        if !still_current {
+        if !still_current
+            || !self.pipeline_policy_matches(&saved.context.compatibility_policy_digest)?
+        {
             return Ok(PipelineRecommendationRun::Stale {
                 opportunity_id: saved.opportunity.id,
             });

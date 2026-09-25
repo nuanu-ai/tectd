@@ -97,6 +97,12 @@ fn all_matrix_cards_need_explicit_required_phase_coverage() {
 #[test]
 fn unknown_stale_and_single_option_policy_fail_closed() {
     let mut input = source();
+    input.compatibility_policy = PipelineCompatibilityPolicy::unavailable();
+    let unavailable = build_pipeline_recommendation_manifest(&input).unwrap();
+    assert!(unavailable.options.is_empty());
+    assert!(!unavailable.should_call());
+
+    input = source();
     input.compatibility_policy.version = "unknown".into();
     let manifest = build_pipeline_recommendation_manifest(&input).unwrap();
     assert_eq!(manifest.options.len(), 0);
@@ -131,6 +137,11 @@ fn unknown_stale_and_single_option_policy_fail_closed() {
     let one = build_pipeline_recommendation_manifest(&input).unwrap();
     assert_eq!(one.options.len(), 1);
     assert!(!one.should_call());
+    assert!(
+        one.excluded
+            .iter()
+            .all(|kind| kind.reason == PipelineExclusionReason::MissingRule)
+    );
     assert_eq!(
         PipelineRecommendationRanking::Abstained.validate(&one),
         Err(Error::InvalidArguments)

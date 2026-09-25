@@ -25,10 +25,21 @@ fn manifest(count: usize) -> PipelineRecommendationManifest {
         selected_choice_id: "matrix-choice".into(),
         matrix_choice_set_digest: "a".repeat(64),
         matrix_verification_digest: "b".repeat(64),
+        matrix_input_digest: "d".repeat(64),
+        selected_candidate_digest: "e".repeat(64),
+        compatibility_policy_digest: "f".repeat(64),
         mandatory_card_ids: vec!["card-1".into()],
+        deterministic_kind: PipelineKind::CURRENT_SLICE_RUN_KINDS[0],
         catalogue_revision: "4".into(),
         catalogue_digest: "c".repeat(64),
         options,
+        excluded: PipelineKind::CURRENT_SLICE_RUN_KINDS[count..]
+            .iter()
+            .map(|kind| tect_domain::PipelineExcludedKind {
+                kind: *kind,
+                reason: tect_domain::PipelineExclusionReason::MissingRule,
+            })
+            .collect(),
         evidence_refs: vec![],
         digest: String::new(),
     };
@@ -129,7 +140,7 @@ fn canonical_request_bytes_bind_exact_manifest_digest() {
     let digest = format!("{:x}", Sha256::digest(&first.body));
     assert_eq!(
         digest,
-        "7fbf59270a3249fb84ebebb54873b54597cc47b448c28c69ce5276492381a23f"
+        "0ef932e8b506396466bef81140f05cb7368fd4d6e8a5d4a575288dadca7039a0"
     );
     let mut changed = manifest(8);
     changed.selected_choice_id = "different-choice".into();

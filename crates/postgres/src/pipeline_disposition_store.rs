@@ -260,6 +260,7 @@ pub(crate) async fn is_current(
         || manifest.validate_digest().is_err()
         || opportunity.material_digest != manifest.digest
         || context.verification_contract_digest != manifest.digest
+        || context.compatibility_policy_digest != manifest.compatibility_policy_digest
         || context.eligible_kind_ids
             != manifest
                 .options
@@ -438,10 +439,15 @@ mod tests {
             selected_choice_id: String::new(),
             matrix_choice_set_digest: String::new(),
             matrix_verification_digest: String::new(),
+            matrix_input_digest: String::new(),
+            selected_candidate_digest: String::new(),
+            compatibility_policy_digest: String::new(),
             mandatory_card_ids: vec![],
+            deterministic_kind: PipelineKind::LightweightTddDevelopment,
             catalogue_revision: String::new(),
             catalogue_digest: String::new(),
             options: vec![],
+            excluded: vec![],
             evidence_refs: vec![],
             digest: String::new(),
         };

@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use tect_domain::{
-    AdvisoryOpportunity, AdvisoryOpportunityInput, Error, PipelineDefinitionSnapshot,
-    PipelineDispositionAdvice, PipelineDispositionResult, PipelineKind,
+    AdvisoryOpportunity, AdvisoryOpportunityInput, Error, PipelineCompatibilityPolicy,
+    PipelineDefinitionSnapshot, PipelineDispositionAdvice, PipelineDispositionResult, PipelineKind,
     PipelineRecommendationManifest, PipelineRecommendationSource, Result, SliceCandidateNode,
 };
 use uuid::Uuid;
@@ -38,6 +38,7 @@ pub struct PipelineRecommendationContext {
     pub match_effect_attestation_id: Uuid,
     pub catalogue_revision: String,
     pub catalogue_digest: String,
+    pub compatibility_policy_digest: String,
     pub eligible_kind_ids: Vec<String>,
     pub verification_contract_digest: String,
 }
@@ -70,6 +71,29 @@ pub trait PipelineRecommendationDefinitionProvider: Send + Sync {
         catalogue_revision: &str,
         kind: PipelineKind,
     ) -> Result<Option<PipelineDefinitionSnapshot>>;
+}
+
+/// Host-owned, versioned policy. None means that compatibility has not been
+/// configured; catalogue prose is never used as a substitute.
+pub trait PipelineCompatibilityPolicyProvider: Send + Sync {
+    fn policy(&self) -> Result<Option<PipelineCompatibilityPolicy>>;
+}
+
+pub struct UnavailablePipelineCompatibilityPolicy;
+
+impl PipelineCompatibilityPolicyProvider for UnavailablePipelineCompatibilityPolicy {
+    fn policy(&self) -> Result<Option<PipelineCompatibilityPolicy>> {
+        Ok(None)
+    }
+}
+
+/// An embedding host may install one reviewed, immutable policy snapshot.
+pub struct FixedPipelineCompatibilityPolicy(pub PipelineCompatibilityPolicy);
+
+impl PipelineCompatibilityPolicyProvider for FixedPipelineCompatibilityPolicy {
+    fn policy(&self) -> Result<Option<PipelineCompatibilityPolicy>> {
+        Ok(Some(self.0.clone()))
+    }
 }
 
 pub struct UnavailablePipelineRecommendationDefinitions;

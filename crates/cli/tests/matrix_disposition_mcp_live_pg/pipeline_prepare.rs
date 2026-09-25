@@ -1,11 +1,85 @@
 use super::*;
 use crate::support::{ready_source_candidate, repository, review};
 use tect_application::{
-    PipelineProviderIdentity, PipelineProviderObservation, PipelineRecommendationProvider,
+    FixedPipelineCompatibilityPolicy, PipelineProviderIdentity, PipelineProviderObservation,
+    PipelineRecommendationDefinitionProvider, PipelineRecommendationProvider,
     PipelineStartedDispatchPermit, PreparedPipelineRecommendation,
     PreparedPipelineRecommendationAttempt, SealedPipelineRecommendationResponse,
 };
-use tect_domain::{Error, PipelineRecommendationManifest, PipelineRecommendationRanking};
+use tect_domain::{
+    EngineeringMatrixInput, EngineeringMode, Error, PIPELINE_COMPATIBILITY_POLICY_VERSION,
+    PipelineCardCoverage, PipelineCompatibilityPolicy, PipelineCompatibilityRule, PipelineKind,
+    PipelineRecommendationManifest, PipelineRecommendationRanking, PipelineVerificationObligation,
+    VerifiedEngineeringMatrixFacts, compose_engineering_matrix, matrix_input_digest,
+    pipeline_obligation_digest,
+};
+
+fn explicit_fixture_policy() -> PipelineCompatibilityPolicy {
+    let input: EngineeringMatrixInput = serde_json::from_value(input()).unwrap();
+    let composition = compose_engineering_matrix(
+        &VerifiedEngineeringMatrixFacts::bind_caller_verified_task_revision(
+            "fixture".into(),
+            "1".into(),
+            input.clone(),
+        )
+        .unwrap(),
+    );
+    let cards: Vec<_> = composition
+        .mandatory_cards
+        .iter()
+        .map(|card| card.id.to_string())
+        .collect();
+    let definitions = tect_host::StaticPipelineRecommendationDefinitions;
+    PipelineCompatibilityPolicy {
+        version: PIPELINE_COMPATIBILITY_POLICY_VERSION.into(),
+        rules: PipelineKind::CURRENT_SLICE_RUN_KINDS
+            .into_iter()
+            .map(|kind| {
+                let definition = definitions.definition("4", kind).unwrap().unwrap();
+                let phase = definition
+                    .phases
+                    .iter()
+                    .find(|phase| {
+                        phase.required
+                            && (!phase.required_fields.is_empty()
+                                || !phase.required_artifacts.is_empty()
+                                || !phase.validator_contracts.is_empty()
+                                || !phase.output_constraints.is_empty()
+                                || phase.fresh_reviewer_input)
+                    })
+                    .unwrap();
+                let obligation = PipelineVerificationObligation {
+                    phase_id: phase.id.clone(),
+                    required_fields: phase.required_fields.clone(),
+                    required_artifacts: phase.required_artifacts.clone(),
+                    validator_contracts: phase.validator_contracts.clone(),
+                    output_constraints: phase.output_constraints.clone(),
+                    allowed_verdicts: phase.allowed_verdicts.clone(),
+                    verdict_routes: phase.verdict_routes.clone(),
+                    disposition_required: phase.disposition_required,
+                    required_dispositions: phase.required_dispositions.clone(),
+                    fresh_reviewer_input: phase.fresh_reviewer_input,
+                    output_contract: phase.output_contract.clone(),
+                };
+                let obligation_digest = pipeline_obligation_digest(&obligation).unwrap();
+                PipelineCompatibilityRule {
+                    kind,
+                    matrix_input_digest: matrix_input_digest(&input).unwrap(),
+                    allowed_modes: vec![EngineeringMode::Demo],
+                    selected_candidate_ids: vec!["b".into()],
+                    card_coverage: cards
+                        .iter()
+                        .map(|card_id| PipelineCardCoverage {
+                            card_id: card_id.clone(),
+                            phase_id: phase.id.clone(),
+                            obligation_digest: obligation_digest.clone(),
+                        })
+                        .collect(),
+                }
+            })
+            .collect(),
+    }
+}
 
 #[path = "pipeline_prepare/assertions.rs"]
 mod assertions;
@@ -57,7 +131,7 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 69);
+    assert_eq!(version, 70);
     let runtime = PgPool::connect_with(runtime_options).await.unwrap();
     let role: (String, String, i64) = sqlx::query_as(
         "SELECT current_database(),current_user,(SELECT oid::bigint FROM pg_database WHERE datname=current_database())",
@@ -88,6 +162,9 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
         .with_pipeline_recommendation_definitions(Arc::new(
             tect_host::StaticPipelineRecommendationDefinitions,
         ))
+        .with_pipeline_compatibility_policy(Arc::new(FixedPipelineCompatibilityPolicy(
+            explicit_fixture_policy(),
+        )))
         .with_pipeline_recommendation_provider(Arc::new(FakePipelineProvider(
             pipeline_calls.clone(),
         ))),
