@@ -132,13 +132,13 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
     assert_eq!(identity.2, "postgres");
     assert_eq!(identity.3, DATABASE_OID);
     assert_eq!(identity.4, SYSTEM_ID);
-    assert!(matches!(identity.5, 69 | 70));
+    assert!(matches!(identity.5, 69 | 70 | 71));
     admin::migrate(&pool, "tect_ci").await.unwrap();
     let version: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 70);
+    assert_eq!(version, 71);
     let runtime = PgPool::connect_with(runtime_options).await.unwrap();
     let role: (String, String, i64) = sqlx::query_as(
         "SELECT current_database(),current_user,(SELECT oid::bigint FROM pg_database WHERE datname=current_database())",
@@ -326,6 +326,17 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
         &work,
     )
     .await;
+    exercise_one_eligible_no_call(
+        &pool,
+        &runtime_url,
+        &root,
+        &owner_config,
+        &workspace_key,
+        workspace,
+        set,
+        &work,
+    )
+    .await;
     assertions::exercise_prepare(
         &pool,
         workspace,
@@ -427,6 +438,104 @@ async fn exercise_zero_eligible_no_call(
         json!({
             "opportunity_id":opportunity
         }),
+    )
+    .await;
+    assert_eq!(no_call_run["status"], "no_call");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let dispatches: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM advisory_dispatch WHERE workspace_id=$1 AND opportunity_id=$2",
+    )
+    .bind(workspace)
+    .bind(opportunity)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(dispatches, 0);
+    owner.finish().await;
+    server.abort();
+}
+
+async fn exercise_one_eligible_no_call(
+    pool: &PgPool,
+    runtime_url: &str,
+    root: &std::path::Path,
+    owner_config: &std::path::Path,
+    workspace_key: &str,
+    workspace: Uuid,
+    set: Uuid,
+    work: &Value,
+) {
+    let mut policy = explicit_fixture_policy();
+    policy
+        .rules
+        .retain(|rule| rule.kind == PipelineKind::LightweightTddDevelopment);
+    let calls = Arc::new(AtomicUsize::new(0));
+    let socket = root.join("pipeline-one-eligible.sock");
+    let service = Arc::new(
+        WorkspaceService::new(
+            Arc::new(PgStore::connect(runtime_url, 4).await.unwrap()),
+            Arc::new(tect_host::GitSourceInspector),
+            Arc::new(tect_host::LocalSetupFiles),
+        )
+        .with_pipeline_recommendation_definitions(Arc::new(
+            tect_host::StaticPipelineRecommendationDefinitions,
+        ))
+        .with_pipeline_compatibility_policy(Arc::new(FixedPipelineCompatibilityPolicy(
+            policy.clone(),
+        )))
+        .with_pipeline_recommendation_provider(Arc::new(FakePipelineProvider(calls.clone()))),
+    );
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let server = tokio::spawn(tect_host::serve(listener, service));
+    let mut owner = Mcp::start(
+        &socket,
+        owner_config,
+        &Uuid::new_v4().to_string(),
+        workspace_key,
+    )
+    .await;
+    owner.call("open_workspace", json!({})).await;
+    let revision: i64 = sqlx::query_scalar(
+        "SELECT revision FROM slice_candidate_sets WHERE workspace_id=$1 AND id=$2",
+    )
+    .bind(workspace)
+    .bind(set)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    let prepared = route(
+        &mut owner,
+        "command",
+        "pipeline.recommendation.prepare",
+        json!({
+            "candidate_set_id":set,"expected_candidate_set_revision":revision,
+            "work_node_id":work["id"],"expected_work_node_revision":work["revision"],
+            "request_key":format!("pipeline-one-eligible-{}", Uuid::new_v4())
+        }),
+    )
+    .await;
+    assert_eq!(prepared["state"], "no_call", "{prepared}");
+    assert_eq!(prepared["reason"], "choice_set_not_applicable");
+    assert_eq!(
+        prepared["eligible_kind_ids"],
+        json!([PipelineKind::LightweightTddDevelopment.as_str()])
+    );
+    let opportunity = Uuid::parse_str(prepared["opportunity_id"].as_str().unwrap()).unwrap();
+    let manifest: Value = sqlx::query_scalar(
+        "SELECT manifest_payload FROM pipeline_advice_contexts WHERE workspace_id=$1 AND opportunity_id=$2",
+    ).bind(workspace).bind(opportunity).fetch_one(pool).await.unwrap();
+    assert_eq!(manifest["options"].as_array().unwrap().len(), 1);
+    assert_eq!(manifest["excluded"].as_array().unwrap().len(), 7);
+    assert_eq!(
+        manifest["compatibility_policy_digest"],
+        policy.digest().unwrap()
+    );
+    let no_call_run = route(
+        &mut owner,
+        "command",
+        "pipeline.recommendation.run",
+        json!({"opportunity_id":opportunity}),
     )
     .await;
     assert_eq!(no_call_run["status"], "no_call");

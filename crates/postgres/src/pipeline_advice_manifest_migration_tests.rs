@@ -2,6 +2,18 @@ const MIGRATION: &str = include_str!("../migrations/0063_pipeline_advice_manifes
 const ADMIN: &str = include_str!("admin/pipeline_advice.rs");
 const COMPATIBILITY: &str =
     include_str!("../migrations/0070_pipeline_compatibility_policy_binding.sql");
+const SINGLE_OPTION: &str = include_str!("../migrations/0071_pipeline_single_option_no_call.sql");
+
+#[test]
+fn single_eligible_option_is_durable_no_call_and_cannot_dispatch() {
+    for required in [
+        "pg_catalog.cardinality(NEW.eligible_kind_ids)<2",
+        "pg_catalog.cardinality(context.eligible_kind_ids)<2",
+        "pg_catalog.cardinality(context.eligible_kind_ids)>=2",
+    ] {
+        assert!(SINGLE_OPTION.contains(required), "missing {required}");
+    }
+}
 
 #[test]
 fn schema_two_requires_saved_compatibility_policy_digest() {

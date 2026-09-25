@@ -825,7 +825,7 @@ impl PipelineRecommendationStore for PgUnitOfWork {
             && input.state == AdvisoryOpportunityState::NoCall
         {
             Some(AdvisoryReason::CapabilityUnavailable)
-        } else if manifest.options.is_empty() {
+        } else if manifest.options.len() < 2 {
             Some(AdvisoryReason::ChoiceSetNotApplicable)
         } else if provider_profile_ref.is_none() || model_configuration.is_none() {
             Some(AdvisoryReason::ProviderUnconfigured)

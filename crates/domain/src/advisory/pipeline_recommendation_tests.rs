@@ -330,6 +330,17 @@ fn invalid_definitions_are_ineligible_and_empty_set_means_no_call() {
     );
 }
 
+#[test]
+fn single_eligible_pipeline_does_not_call_provider() {
+    let mut input = source();
+    input
+        .definitions
+        .retain(|definition| definition.kind == PipelineKind::DebugRootCause);
+    let manifest = build_pipeline_recommendation_manifest(&input).unwrap();
+    assert_eq!(manifest.options.len(), 1);
+    assert!(!manifest.should_call());
+}
+
 #[path = "pipeline_recommendation_compatibility_tests.rs"]
 mod compatibility_tests;
 

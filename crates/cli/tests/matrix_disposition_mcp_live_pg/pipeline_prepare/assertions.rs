@@ -32,7 +32,7 @@ pub(super) async fn exercise_prepare(
     .await
     .unwrap();
     assert_eq!(before.1, "ready");
-    assert_eq!(opportunity_count(pool, workspace).await, 1);
+    assert_eq!(opportunity_count(pool, workspace).await, 2);
     let base = json!({
         "candidate_set_id":set,"expected_candidate_set_revision":before.0,
         "work_node_id":work["id"],"expected_work_node_revision":work["revision"],
@@ -240,7 +240,7 @@ pub(super) async fn exercise_prepare(
     )
     .await;
     assert_error(&forbidden, &["forbidden"]);
-    assert_eq!(opportunity_count(pool, workspace).await, 2);
+    assert_eq!(opportunity_count(pool, workspace).await, 3);
 
     let mut skip = base.clone();
     skip["request_key"] = json!(format!("skip-{}", Uuid::new_v4()));
@@ -283,7 +283,7 @@ pub(super) async fn exercise_prepare(
     .await
     .unwrap();
     assert_eq!(after, before);
-    assert_eq!(opportunity_count(pool, workspace).await, 3);
+    assert_eq!(opportunity_count(pool, workspace).await, 4);
 
     let run_request = json!({"opportunity_id":opportunity});
     let forbidden_run = route_error(
@@ -575,5 +575,5 @@ pub(super) async fn exercise_prepare(
         &["stale_context"],
     );
     assert_eq!(pipeline_calls.load(Ordering::SeqCst), 2);
-    assert_eq!(opportunity_count(pool, workspace).await, 4);
+    assert_eq!(opportunity_count(pool, workspace).await, 5);
 }
