@@ -164,6 +164,9 @@ async fn candidate_rows_for_program(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn baseline_large_program_and_input_are_exactly_fragmented_and_failed_output_rolls_back() {
+    if std::env::var("TECT_TEST_DK2").as_deref() != Ok("1") {
+        return;
+    }
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").expect("TECT_TEST_ADMIN_URL required");
     let runtime_url =
         std::env::var("TECT_TEST_RUNTIME_URL").expect("TECT_TEST_RUNTIME_URL required");

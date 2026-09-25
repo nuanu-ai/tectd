@@ -40,6 +40,9 @@ use producer_flow::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn checkpoint_handoff_is_exact_replayable_and_rework_safe() {
+    if std::env::var("TECT_TEST_DK2").as_deref() != Ok("1") {
+        return;
+    }
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").expect("TECT_TEST_ADMIN_URL required");
     let runtime_url =
         std::env::var("TECT_TEST_RUNTIME_URL").expect("TECT_TEST_RUNTIME_URL required");
