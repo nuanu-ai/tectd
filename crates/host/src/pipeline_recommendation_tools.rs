@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::Value;
 use tect_application::{PreparePipelineRecommendation, RunPipelineRecommendation};
-use tect_domain::{AdvisoryRequestPreference, Error, Result};
+use tect_domain::{AdvisoryRequestPreference, Error, PipelineDispositionRequest, Result};
 use uuid::Uuid;
 
 #[derive(Deserialize)]
@@ -60,6 +60,13 @@ pub(crate) fn parse_run(arguments: Value) -> Result<RunPipelineRecommendation> {
     })
 }
 
+pub(crate) fn parse_disposition(arguments: Value) -> Result<PipelineDispositionRequest> {
+    let request: PipelineDispositionRequest =
+        serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
+    request.validate()?;
+    Ok(request)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,6 +105,27 @@ mod tests {
             json!({"opportunity_id": id, "request_key": "again"}),
         ] {
             assert!(parse_run(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn strict_disposition_arguments() {
+        let id = Uuid::new_v4();
+        let valid = json!({"request_id":id,"opportunity_id":id,
+            "expected_work_revision":1,"manifest_digest":"a".repeat(64),
+            "action":"reject_recommendation","rationale":"Reviewed"});
+        assert!(parse_disposition(valid.clone()).is_ok());
+        for (field, value) in [
+            ("request_id", json!(Uuid::nil())),
+            ("expected_work_revision", json!(0)),
+            ("manifest_digest", json!("bad")),
+            ("action", json!("approve")),
+            ("rationale", json!(" ")),
+            ("actor_id", json!(id)),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[field] = value;
+            assert!(parse_disposition(invalid).is_err(), "accepted {field}");
         }
     }
 }

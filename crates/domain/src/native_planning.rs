@@ -463,6 +463,8 @@ pub struct OpenSlice {
     pub candidate_snapshot_id: Uuid,
     pub candidate_id: Uuid,
     pub candidate_revision: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition_id: Option<Uuid>,
 }
 
 mod result;

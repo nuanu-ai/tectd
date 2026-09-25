@@ -359,6 +359,116 @@ pub(super) async fn exercise_prepare(
     .await;
     assert_eq!(stale_prepared["state"], "prepared");
 
+    let rejected_rank = route(
+        owner,
+        "command",
+        "pipeline.recommendation.run",
+        json!({"opportunity_id":stale_prepared["opportunity_id"]}),
+    )
+    .await;
+    assert_eq!(rejected_rank["status"], "ranked");
+    let reject_request = json!({
+        "request_id":Uuid::new_v4(),
+        "opportunity_id":stale_prepared["opportunity_id"],
+        "expected_work_revision":work["revision"],
+        "manifest_digest":stale_prepared["manifest_digest"],
+        "action":"reject_recommendation","rationale":"Retain caller judgment"
+    });
+    let rejected = route(
+        owner,
+        "command",
+        "pipeline.recommendation.disposition",
+        reject_request,
+    )
+    .await;
+    assert!(rejected["selected_kind"].is_null());
+    let rejected_open = json!({
+        "request_id":Uuid::new_v4(),"scope_id":scope,
+        "scope_revision":ready["scope"]["revision"],
+        "candidate_set_id":set,
+        "candidate_set_revision":ready["candidate_set"]["revision"],
+        "candidate_snapshot_id":ready["snapshot"]["id"],
+        "candidate_id":work["id"],"candidate_revision":work["revision"],
+        "disposition_id":rejected["id"]
+    });
+    assert_error(
+        &route_error(owner, "command", "slice.open", rejected_open).await,
+        &["forbidden"],
+    );
+
+    let disposition_request = json!({
+        "request_id":Uuid::new_v4(),"opportunity_id":opportunity,
+        "expected_work_revision":work["revision"],
+        "manifest_digest":prepared["manifest_digest"],
+        "action":"accept_recommendation","rationale":"Use the eligible top rank"
+    });
+    let forbidden = route_error(
+        independent,
+        "command",
+        "pipeline.recommendation.disposition",
+        disposition_request.clone(),
+    )
+    .await;
+    assert_error(&forbidden, &["forbidden"]);
+    let disposition = route(
+        owner,
+        "command",
+        "pipeline.recommendation.disposition",
+        disposition_request.clone(),
+    )
+    .await;
+    assert_eq!(disposition["request"], disposition_request);
+    assert_eq!(disposition["selected_kind"], ranked["ranked_ids"][0]);
+    assert_eq!(disposition["advice"]["status"], "ranked");
+    let replay = route(
+        owner,
+        "command",
+        "pipeline.recommendation.disposition",
+        disposition_request.clone(),
+    )
+    .await;
+    assert_eq!(replay["id"], disposition["id"]);
+    let mut conflict = disposition_request.clone();
+    conflict["action"] = json!("reject_recommendation");
+    assert_error(
+        &route_error(
+            owner,
+            "command",
+            "pipeline.recommendation.disposition",
+            conflict,
+        )
+        .await,
+        &["input_conflict"],
+    );
+    let slices_before_open: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM native_slices WHERE workspace_id=$1 AND scope_id=$2",
+    )
+    .bind(workspace)
+    .bind(scope)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(slices_before_open, 0);
+    let open = json!({
+        "request_id":Uuid::new_v4(),"scope_id":scope,
+        "scope_revision":ready["scope"]["revision"],
+        "candidate_set_id":set,
+        "candidate_set_revision":ready["candidate_set"]["revision"],
+        "candidate_snapshot_id":ready["snapshot"]["id"],
+        "candidate_id":work["id"],"candidate_revision":work["revision"],
+        "disposition_id":disposition["id"]
+    });
+    let mut wrong = open.clone();
+    wrong["candidate_snapshot_id"] = json!(Uuid::new_v4());
+    assert_error(
+        &route_error(owner, "command", "slice.open", wrong).await,
+        &["stale_context", "stale_revision"],
+    );
+    let opened = route(owner, "command", "slice.open", open.clone()).await;
+    assert_eq!(opened["created"]["pipeline"], ranked["ranked_ids"][0]);
+    let reopened = route(owner, "command", "slice.open", open.clone()).await;
+    assert_eq!(reopened["replay"]["id"], opened["created"]["id"]);
+
     // A newer authoritative Matrix task revision invalidates this saved path.
     let mut revised_input = input();
     revised_input["promised_behavior"]["value"] = json!("A revised synthetic promise");
@@ -386,16 +496,14 @@ pub(super) async fn exercise_prepare(
             stale_source,
         )
         .await,
+        &["stale_context", "not_found"],
+    );
+    let mut stale_open = open;
+    stale_open["request_id"] = json!(Uuid::new_v4());
+    assert_error(
+        &route_error(owner, "command", "slice.open", stale_open).await,
         &["stale_context"],
     );
-    let stale_run = route(
-        owner,
-        "command",
-        "pipeline.recommendation.run",
-        json!({"opportunity_id":stale_prepared["opportunity_id"]}),
-    )
-    .await;
-    assert_eq!(stale_run["status"], "stale");
-    assert_eq!(pipeline_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(pipeline_calls.load(Ordering::SeqCst), 2);
     assert_eq!(opportunity_count(pool, workspace).await, 3);
 }

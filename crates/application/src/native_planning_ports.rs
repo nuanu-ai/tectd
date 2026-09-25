@@ -87,6 +87,7 @@ pub trait NativePlanningStore: Send {
     async fn open_slice(
         &mut self,
         workspace_id: Uuid,
+        session_id: Uuid,
         request: &OpenSlice,
     ) -> Result<OpenSliceOutcome>;
     async fn native_slice(

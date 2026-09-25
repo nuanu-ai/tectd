@@ -130,10 +130,38 @@ impl NativePlanningStore for PgUnitOfWork {
     async fn open_slice(
         &mut self,
         workspace_id: Uuid,
+        session_id: Uuid,
         request: &OpenSlice,
     ) -> Result<OpenSliceOutcome> {
         let tenant = self.tenant_id()?;
-        native_planning::open_slice(self.transaction()?, tenant, workspace_id, request).await
+        let selected = if request.disposition_id.is_some() {
+            // The existing receipt must remain replayable after a successful
+            // open, when the pre-open recommendation is no longer current.
+            let replay: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM native_slices WHERE tenant_id=$1 \
+                 AND workspace_id=$2 AND origin_request_id=$3)",
+            )
+            .bind(tenant)
+            .bind(workspace_id)
+            .bind(request.request_id)
+            .fetch_one(&mut **self.transaction()?)
+            .await
+            .map_err(crate::storage_error)?;
+            Some(
+                crate::pipeline_disposition_store::selection_for_open(
+                    self,
+                    workspace_id,
+                    session_id,
+                    request,
+                    replay,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        native_planning::open_slice(self.transaction()?, tenant, workspace_id, request, selected)
+            .await
     }
     async fn native_slice(
         &mut self,

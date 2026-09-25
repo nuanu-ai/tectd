@@ -62,6 +62,33 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
         ),
         route!(
             "command",
+            "pipeline.recommendation.disposition",
+            "pipeline_recommendation_disposition",
+            "Record the Owner's explicit decision on one saved pipeline recommendation.",
+            "Requires the original authenticated Owner session, exact opportunity, current Work revision and immutable manifest digest. Ranked advice can be accepted, rejected, or superseded by the deterministic choice; no-call and abstention allow only the deterministic choice.",
+            "Stores one immutable planning disposition. It does not open a Slice, execute a pipeline, transition a phase, or establish verification.",
+            "An identical request replays its receipt; changed material conflicts. A stale Work, Matrix, source, catalogue, configuration, or manifest binding fails.",
+            object_schema(
+                json!({"request_id":uuid(),"opportunity_id":uuid(),
+                    "expected_work_revision":{"type":"integer","minimum":1},
+                    "manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                    "action":{"type":"string","enum":["accept_recommendation","reject_recommendation","use_deterministic_choice"]},
+                    "rationale":{"type":"string","minLength":1,"maxLength":4096}}),
+                json!([
+                    "request_id",
+                    "opportunity_id",
+                    "expected_work_revision",
+                    "manifest_digest",
+                    "action",
+                    "rationale"
+                ]),
+            ),
+            json!({"request_id":example_id,"opportunity_id":example_id,"expected_work_revision":1,
+                "manifest_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "action":"use_deterministic_choice","rationale":"Use the saved Work choice"}),
+        ),
+        route!(
+            "command",
             "engineering.advisory.request",
             "request_engineering_advisory",
             "Record an optional Engineering Matrix advisory opportunity for one exact saved task revision.",

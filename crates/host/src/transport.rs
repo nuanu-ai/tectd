@@ -403,6 +403,18 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 }
                 Ok(result)
             }
+            Invocation::PipelineRecommendationDisposition(request) => {
+                let saved = service.dispose_pipeline_recommendation(context, &request).await?;
+                let result = crate::responses::with_actions(
+                    serde_json::to_value(saved).map_err(Error::invalid_arguments_from)?,
+                    Vec::new(),
+                    None,
+                );
+                if crate::responses::encoded_len(&result)? > capacity {
+                    return Err(Error::RequestTooLarge);
+                }
+                Ok(result)
+            }
             Invocation::KnowledgeMaintenance(invocation) => {
                 crate::knowledge_maintenance_dispatch::execute(
                     context, invocation, service, capacity,

@@ -49,6 +49,7 @@ fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
         ("command", "engineering.advisory.request"),
         ("command", "pipeline.recommendation.prepare"),
         ("command", "pipeline.recommendation.run"),
+        ("command", "pipeline.recommendation.disposition"),
         ("query", "engineering.advisory.get"),
     ] {
         assert!(
@@ -65,6 +66,28 @@ fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
             .iter()
             .all(|tool| tool["inputSchema"]["additionalProperties"] == false)
     );
+}
+
+#[test]
+fn pipeline_disposition_is_strict_planning_command() {
+    let route = routes()
+        .iter()
+        .find(|spec| spec.route == "pipeline.recommendation.disposition")
+        .unwrap();
+    assert_eq!(route.tool, "command");
+    assert_eq!(route.schema["additionalProperties"], false);
+    assert!(route.effects.contains("does not open a Slice"));
+    let params = route.example.clone();
+    assert_eq!(
+        decode_public_call(
+            "command",
+            json!({"route":route.route,"params":params.clone()})
+        )
+        .unwrap()
+        .name,
+        "pipeline_recommendation_disposition"
+    );
+    assert!(decode_public_call("execute", json!({"route":route.route,"params":params})).is_err());
 }
 
 #[test]

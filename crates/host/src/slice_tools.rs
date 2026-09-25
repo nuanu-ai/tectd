@@ -109,6 +109,7 @@ fn reject_optional_nulls(value: &Value) -> Result<()> {
         "consumed_knowledge",
         "task_context",
         "matrix_selection",
+        "disposition_id",
     ];
     match value {
         Value::Object(object) => {
