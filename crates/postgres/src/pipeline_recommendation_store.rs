@@ -107,75 +107,75 @@ impl PipelineRecommendationStore for PgUnitOfWork {
     ) -> Result<Option<PipelineRecommendationBasis>> {
         let tenant = self.tenant_id()?;
         let mut query = String::from(
-            "SELECT c.scope_id,c.revision AS set_revision,s.id AS planning_snapshot_id,\
-                    s.source_snapshot_id,s.source_candidate_set_revision,\
-                    source.selected_sources_digest,s.catalogue,\
-                    draft.set_revision AS draft_revision,\
-                    l.caller_request_id,l.disposition_id,l.task_id,l.task_revision,\
-                    l.selected_choice_id,l.input_digest,l.choice_set_digest,\
-                    l.verification_digest,l.evaluation_digest,l.catalogue_version,\
-                    a.id AS attestation_id,a.effect_digest,a.verifier_principal_id,\
-                    a.verdict\
-             FROM slice_candidate_sets c\
-             JOIN native_scopes n ON (n.tenant_id,n.workspace_id,n.id)=\
-                  (c.tenant_id,c.workspace_id,c.scope_id)\
-             JOIN slice_planning_snapshots s ON\
-                  (s.tenant_id,s.workspace_id,s.candidate_set_id,s.id)=\
-                  (c.tenant_id,c.workspace_id,c.id,c.current_snapshot_id)\
-             JOIN scope_candidate_sets source_set ON\
-                  (source_set.tenant_id,source_set.workspace_id,source_set.id)=\
-                  (n.tenant_id,n.workspace_id,n.source_candidate_set_id)\
-             JOIN scope_candidate_snapshots source ON\
-                  (source.tenant_id,source.workspace_id,source.candidate_set_id,source.id)=\
-                  (source_set.tenant_id,source_set.workspace_id,source_set.id,s.source_snapshot_id)\
-             JOIN slice_candidate_drafts draft ON\
-                  (draft.tenant_id,draft.workspace_id,draft.candidate_set_id)=\
-                  (c.tenant_id,c.workspace_id,c.id)\
-             JOIN slice_candidate_reviews review ON\
-                  (review.tenant_id,review.workspace_id,review.candidate_set_id,review.set_revision)=\
-                  (c.tenant_id,c.workspace_id,c.id,c.revision)\
-             JOIN matrix_planning_effect_attestations a ON\
-                  (a.tenant_id,a.workspace_id,a.candidate_set_id,a.result_revision)=\
-                  (draft.tenant_id,draft.workspace_id,draft.candidate_set_id,draft.set_revision)\
-             JOIN matrix_planning_selection_links l ON\
-                  (l.tenant_id,l.workspace_id,l.candidate_set_id,l.caller_request_id)=\
-                  (a.tenant_id,a.workspace_id,a.candidate_set_id,a.caller_request_id)\
-             JOIN native_planning_receipts receipt ON\
-                  (receipt.tenant_id,receipt.workspace_id,receipt.entity_id,\
-                   receipt.operation,receipt.request_id)=\
-                  (l.tenant_id,l.workspace_id,l.candidate_set_id,\
-                   l.operation,l.caller_request_id)\
-             JOIN advisory_matrix_disposition d ON\
-                  (d.tenant_id,d.workspace_id,d.disposition_id)=\
-                  (l.tenant_id,l.workspace_id,l.disposition_id)\
-             WHERE c.tenant_id=$1 AND c.workspace_id=$2 AND c.id=$3\
-               AND c.status='ready' AND c.latest_input=s.planning_latest_input\
-               AND n.revision=s.scope_revision AND NOT n.payload_erased\
-               AND n.source_snapshot_id=s.source_snapshot_id\
-               AND source_set.current_snapshot_id=source.id\
-               AND source_set.revision=s.source_candidate_set_revision\
-               AND draft.set_revision=(SELECT MAX(latest.set_revision)\
-                    FROM slice_candidate_drafts latest\
-                    WHERE latest.tenant_id=c.tenant_id\
-                      AND latest.workspace_id=c.workspace_id\
-                      AND latest.candidate_set_id=c.id)\
-               AND draft.set_revision < c.revision\
-               AND NOT draft.payload_erased AND draft.payload IS NOT NULL\
-               AND NOT review.payload_erased AND review.payload IS NOT NULL\
-               AND review.payload->>'verdict'='ready'\
-               AND review.payload->>'revision'=c.revision::text\
-               AND NOT receipt.payload_erased\
-               AND receipt.request_payload IS NOT NULL\
-               AND receipt.result_payload IS NOT NULL\
-               AND receipt.result_payload->'draft'=draft.payload\
-               AND receipt.result_payload#>>'{candidate_set,revision}'=draft.set_revision::text\
-               AND a.verdict='match' AND l.scope_id=c.scope_id\
-               AND l.result_revision=draft.set_revision\
-               AND d.outcome='selected' AND d.selected_choice_id=l.selected_choice_id\
-               AND d.task_id=l.task_id AND d.matrix_task_revision=l.task_revision\
-               AND NOT EXISTS (SELECT 1 FROM native_slices opened\
-                   WHERE opened.tenant_id=c.tenant_id AND opened.workspace_id=c.workspace_id\
-                     AND opened.scope_id=c.scope_id AND opened.candidate_id=$4)\
+            "SELECT c.scope_id,c.revision AS set_revision,s.id AS planning_snapshot_id, \
+                    s.source_snapshot_id,s.source_candidate_set_revision, \
+                    source.selected_sources_digest,s.catalogue, \
+                    draft.set_revision AS draft_revision, \
+                    l.caller_request_id,l.disposition_id,l.task_id,l.task_revision, \
+                    l.selected_choice_id,l.input_digest,l.choice_set_digest, \
+                    l.verification_digest,l.evaluation_digest,l.catalogue_version, \
+                    a.id AS attestation_id,a.effect_digest,a.verifier_principal_id, \
+                    a.verdict \
+             FROM slice_candidate_sets c \
+             JOIN native_scopes n ON (n.tenant_id,n.workspace_id,n.id)= \
+                  (c.tenant_id,c.workspace_id,c.scope_id) \
+             JOIN slice_planning_snapshots s ON \
+                  (s.tenant_id,s.workspace_id,s.candidate_set_id,s.id)= \
+                  (c.tenant_id,c.workspace_id,c.id,c.current_snapshot_id) \
+             JOIN scope_candidate_sets source_set ON \
+                  (source_set.tenant_id,source_set.workspace_id,source_set.id)= \
+                  (n.tenant_id,n.workspace_id,n.source_candidate_set_id) \
+             JOIN scope_candidate_snapshots source ON \
+                  (source.tenant_id,source.workspace_id,source.candidate_set_id,source.id)= \
+                  (source_set.tenant_id,source_set.workspace_id,source_set.id,s.source_snapshot_id) \
+             JOIN slice_candidate_drafts draft ON \
+                  (draft.tenant_id,draft.workspace_id,draft.candidate_set_id)= \
+                  (c.tenant_id,c.workspace_id,c.id) \
+             JOIN slice_candidate_reviews review ON \
+                  (review.tenant_id,review.workspace_id,review.candidate_set_id,review.set_revision)= \
+                  (c.tenant_id,c.workspace_id,c.id,c.revision) \
+             JOIN matrix_planning_effect_attestations a ON \
+                  (a.tenant_id,a.workspace_id,a.candidate_set_id,a.result_revision)= \
+                  (draft.tenant_id,draft.workspace_id,draft.candidate_set_id,draft.set_revision) \
+             JOIN matrix_planning_selection_links l ON \
+                  (l.tenant_id,l.workspace_id,l.candidate_set_id,l.caller_request_id)= \
+                  (a.tenant_id,a.workspace_id,a.candidate_set_id,a.caller_request_id) \
+             JOIN native_planning_receipts receipt ON \
+                  (receipt.tenant_id,receipt.workspace_id,receipt.entity_id, \
+                   receipt.operation,receipt.request_id)= \
+                  (l.tenant_id,l.workspace_id,l.candidate_set_id, \
+                   l.operation,l.caller_request_id) \
+             JOIN advisory_matrix_disposition d ON \
+                  (d.tenant_id,d.workspace_id,d.disposition_id)= \
+                  (l.tenant_id,l.workspace_id,l.disposition_id) \
+             WHERE c.tenant_id=$1 AND c.workspace_id=$2 AND c.id=$3 \
+               AND c.status='ready' AND c.latest_input=s.planning_latest_input \
+               AND n.revision=s.scope_revision AND NOT n.payload_erased \
+               AND n.source_snapshot_id=s.source_snapshot_id \
+               AND source_set.current_snapshot_id=source.id \
+               AND source_set.revision=s.source_candidate_set_revision \
+               AND draft.set_revision=(SELECT MAX(latest.set_revision) \
+                    FROM slice_candidate_drafts latest \
+                    WHERE latest.tenant_id=c.tenant_id \
+                      AND latest.workspace_id=c.workspace_id \
+                      AND latest.candidate_set_id=c.id) \
+               AND draft.set_revision < c.revision \
+               AND NOT draft.payload_erased AND draft.payload IS NOT NULL \
+               AND NOT review.payload_erased AND review.payload IS NOT NULL \
+               AND review.payload->>'verdict'='ready' \
+               AND review.payload->>'revision'=c.revision::text \
+               AND NOT receipt.payload_erased \
+               AND receipt.request_payload IS NOT NULL \
+               AND receipt.result_payload IS NOT NULL \
+               AND receipt.result_payload->'draft'=draft.payload \
+               AND receipt.result_payload#>>'{candidate_set,revision}'=draft.set_revision::text \
+               AND a.verdict='match' AND l.scope_id=c.scope_id \
+               AND l.result_revision=draft.set_revision \
+               AND d.outcome='selected' AND d.selected_choice_id=l.selected_choice_id \
+               AND d.task_id=l.task_id AND d.matrix_task_revision=l.task_revision \
+               AND NOT EXISTS (SELECT 1 FROM native_slices opened \
+                   WHERE opened.tenant_id=c.tenant_id AND opened.workspace_id=c.workspace_id \
+                     AND opened.scope_id=c.scope_id AND opened.candidate_id=$4) \
              ORDER BY a.verified_at DESC,a.id DESC LIMIT 1",
         );
         if for_update {
@@ -369,18 +369,18 @@ impl PipelineRecommendationStore for PgUnitOfWork {
         }
         let tenant = self.tenant_id()?;
         let row = sqlx::query(
-            "SELECT context.scope_id,context.candidate_set_id,context.candidate_set_revision,\
-                    context.planning_snapshot_id,context.source_snapshot_id,\
-                    context.source_snapshot_digest,context.work_node_id,context.work_node_revision,\
-                    context.matrix_disposition_id,context.match_effect_attestation_id,\
-                    context.catalogue_revision,context.catalogue_digest,context.eligible_kind_ids,\
-                    context.verification_contract_digest,context.manifest_payload,\
-                    context.manifest_digest,o.source_revision\
-             FROM pipeline_advice_contexts context\
-             JOIN advisory_opportunity o ON\
-                  (o.tenant_id,o.workspace_id,o.id)=\
-                  (context.tenant_id,context.workspace_id,context.opportunity_id)\
-             WHERE context.tenant_id=$1 AND context.workspace_id=$2\
+            "SELECT context.scope_id,context.candidate_set_id,context.candidate_set_revision, \
+                    context.planning_snapshot_id,context.source_snapshot_id, \
+                    context.source_snapshot_digest,context.work_node_id,context.work_node_revision, \
+                    context.matrix_disposition_id,context.match_effect_attestation_id, \
+                    context.catalogue_revision,context.catalogue_digest,context.eligible_kind_ids, \
+                    context.verification_contract_digest,context.manifest_payload, \
+                    context.manifest_digest,o.source_revision \
+             FROM pipeline_advice_contexts context \
+             JOIN advisory_opportunity o ON \
+                  (o.tenant_id,o.workspace_id,o.id)= \
+                  (context.tenant_id,context.workspace_id,context.opportunity_id) \
+             WHERE context.tenant_id=$1 AND context.workspace_id=$2 \
                AND context.opportunity_id=$3",
         )
         .bind(tenant)
@@ -529,13 +529,13 @@ impl PipelineRecommendationStore for PgUnitOfWork {
         }
         let tenant = self.tenant_id()?;
         let session_actor: Option<Uuid> = sqlx::query_scalar(
-            "SELECT p.id FROM agent_sessions s\
-             JOIN hosts h ON (h.tenant_id,h.id)=(s.tenant_id,s.host_id)\
-             JOIN principals p ON (p.tenant_id,p.id)=(h.tenant_id,h.principal_id)\
-             JOIN memberships m ON (m.tenant_id,m.workspace_id,m.principal_id)=\
-                  (s.tenant_id,s.workspace_id,p.id)\
-             WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.id=$3\
-               AND p.id=$4 AND p.role='owner' AND NOT s.revoked AND NOT h.revoked\
+            "SELECT p.id FROM agent_sessions s \
+             JOIN hosts h ON (h.tenant_id,h.id)=(s.tenant_id,s.host_id) \
+             JOIN principals p ON (p.tenant_id,p.id)=(h.tenant_id,h.principal_id) \
+             JOIN memberships m ON (m.tenant_id,m.workspace_id,m.principal_id)= \
+                  (s.tenant_id,s.workspace_id,p.id) \
+             WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.id=$3 \
+               AND p.id=$4 AND p.role='owner' AND NOT s.revoked AND NOT h.revoked \
              FOR SHARE OF s,h,p,m",
         )
         .bind(tenant)
@@ -549,10 +549,10 @@ impl PipelineRecommendationStore for PgUnitOfWork {
             return Err(Error::Forbidden);
         }
         sqlx::query(
-            "INSERT INTO advisory_workspace_config_history\
-                 (tenant_id,workspace_id,revision,previous_revision,mode,\
-                  provider_profile_ref,model_configuration,\
-                  changed_by_principal_id,changed_by_session_id)\
+            "INSERT INTO advisory_workspace_config_history \
+                 (tenant_id,workspace_id,revision,previous_revision,mode, \
+                  provider_profile_ref,model_configuration, \
+                  changed_by_principal_id,changed_by_session_id) \
              VALUES ($1,$2,0,NULL,'disabled',NULL,NULL,$3,$4) ON CONFLICT DO NOTHING",
         )
         .bind(tenant)
@@ -563,9 +563,9 @@ impl PipelineRecommendationStore for PgUnitOfWork {
         .await
         .map_err(write_error)?;
         sqlx::query(
-            "INSERT INTO advisory_workspace_config\
-                 (tenant_id,workspace_id,revision,mode,provider_profile_ref,model_configuration,\
-                  updated_by_principal_id,updated_by_session_id)\
+            "INSERT INTO advisory_workspace_config \
+                 (tenant_id,workspace_id,revision,mode,provider_profile_ref,model_configuration, \
+                  updated_by_principal_id,updated_by_session_id) \
              VALUES ($1,$2,0,'disabled',NULL,NULL,$3,$4) ON CONFLICT DO NOTHING",
         )
         .bind(tenant)
@@ -576,8 +576,8 @@ impl PipelineRecommendationStore for PgUnitOfWork {
         .await
         .map_err(write_error)?;
         let config: Option<(i64, String, Option<String>, Option<Value>)> = sqlx::query_as(
-            "SELECT revision,mode,provider_profile_ref,model_configuration\
-             FROM advisory_workspace_config\
+            "SELECT revision,mode,provider_profile_ref,model_configuration \
+             FROM advisory_workspace_config \
              WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE",
         )
         .bind(tenant)
@@ -617,12 +617,12 @@ impl PipelineRecommendationStore for PgUnitOfWork {
         }
         let opportunity_id = Uuid::new_v4();
         let inserted: Option<Uuid> = sqlx::query_scalar(
-            "INSERT INTO advisory_opportunity\
-                 (id,tenant_id,workspace_id,scope_id,work_item_kind,work_item_id,\
-                  session_id,authorized_actor_id,source_revision,capability,decision_point,\
-                  config_revision,session_preference,request_preference,policy_version,\
-                  request_key,material_digest,state,primary_reason)\
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)\
+            "INSERT INTO advisory_opportunity \
+                 (id,tenant_id,workspace_id,scope_id,work_item_kind,work_item_id, \
+                  session_id,authorized_actor_id,source_revision,capability,decision_point, \
+                  config_revision,session_preference,request_preference,policy_version, \
+                  request_key,material_digest,state,primary_reason) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) \
              ON CONFLICT(tenant_id,workspace_id,request_key) DO NOTHING RETURNING id",
         )
         .bind(opportunity_id)
@@ -663,13 +663,13 @@ impl PipelineRecommendationStore for PgUnitOfWork {
             };
         }
         sqlx::query(
-            "INSERT INTO pipeline_advice_contexts\
-                 (tenant_id,workspace_id,opportunity_id,candidate_set_id,\
-                  candidate_set_revision,planning_snapshot_id,source_snapshot_id,\
-                  work_node_id,work_node_revision,source_snapshot_digest,\
-                  matrix_disposition_id,match_effect_attestation_id,\
-                  catalogue_revision,catalogue_digest,eligible_kind_ids,\
-                  verification_contract_digest,manifest_payload,manifest_digest)\
+            "INSERT INTO pipeline_advice_contexts \
+                 (tenant_id,workspace_id,opportunity_id,candidate_set_id, \
+                  candidate_set_revision,planning_snapshot_id,source_snapshot_id, \
+                  work_node_id,work_node_revision,source_snapshot_digest, \
+                  matrix_disposition_id,match_effect_attestation_id, \
+                  catalogue_revision,catalogue_digest,eligible_kind_ids, \
+                  verification_contract_digest,manifest_payload,manifest_digest) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
         )
         .bind(tenant)
@@ -696,5 +696,24 @@ impl PipelineRecommendationStore for PgUnitOfWork {
         self.pipeline_recommendation_by_request(workspace_id, &input.workflow_occurrence_key)
             .await?
             .ok_or(Error::InternalInvariant)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn sql_line_continuations_preserve_token_boundaries() {
+        for (line_number, line) in include_str!("pipeline_recommendation_store.rs")
+            .lines()
+            .enumerate()
+        {
+            if line.ends_with('\\') {
+                assert!(
+                    line.ends_with(" \\"),
+                    "SQL line continuation needs a preceding space at line {}",
+                    line_number + 1
+                );
+            }
+        }
     }
 }
