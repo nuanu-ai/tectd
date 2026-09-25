@@ -15,6 +15,8 @@ mod matrix_task_ports;
 mod matrix_tasks;
 mod matrix_verification;
 mod matrix_verification_ports;
+mod model_route_recommendation;
+mod model_route_recommendation_ports;
 mod pipeline_recommendation;
 mod pipeline_recommendation_ports;
 mod planning_knowledge_ports;
@@ -64,6 +66,12 @@ pub use matrix_tasks::{
 pub use matrix_verification::{MatrixEvidenceReference, VerifyMatrixTask};
 pub use matrix_verification_ports::{
     DisabledMatrixEvidenceValidator, MatrixEvidenceValidator, MatrixVerificationStore,
+};
+pub use model_route_recommendation::PrepareModelRouteRecommendation;
+pub use model_route_recommendation_ports::{
+    ModelRouteCatalogueProvider, ModelRoutePreparation, ModelRouteRecommendationBasis,
+    ModelRouteRecommendationStore, PreparedModelRouteRecommendation,
+    UnavailableModelRouteCatalogue,
 };
 pub use pipeline_recommendation::{
     PreparePipelineRecommendation, pipeline_recommendation_source_digest,
