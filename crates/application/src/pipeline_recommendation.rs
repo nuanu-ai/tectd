@@ -193,16 +193,22 @@ impl WorkspaceService {
         &self,
         manifest: &PipelineRecommendationManifest,
     ) -> Result<()> {
-        let mut definitions = Vec::with_capacity(manifest.options.len());
-        for option in &manifest.options {
-            let definition = self
-                .pipeline_recommendation_definitions
-                .definition(&manifest.catalogue_revision, option.kind)?
-                .ok_or(Error::StaleContext)?;
-            definitions.push(definition);
-        }
-        manifest.validate_against_definitions(&definitions)
+        validate_pinned_definitions(self.pipeline_recommendation_definitions.as_ref(), manifest)
     }
+}
+
+pub(crate) fn validate_pinned_definitions(
+    provider: &dyn crate::PipelineRecommendationDefinitionProvider,
+    manifest: &PipelineRecommendationManifest,
+) -> Result<()> {
+    let mut definitions = Vec::with_capacity(manifest.options.len());
+    for option in &manifest.options {
+        let definition = provider
+            .definition(&manifest.catalogue_revision, option.kind)?
+            .ok_or(Error::StaleContext)?;
+        definitions.push(definition);
+    }
+    manifest.validate_against_definitions(&definitions)
 }
 
 fn validate_basis(

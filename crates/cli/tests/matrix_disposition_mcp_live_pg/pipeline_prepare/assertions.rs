@@ -19,6 +19,7 @@ pub(super) async fn exercise_prepare(
     matched: &Value,
     task: Uuid,
     pipeline_calls: &Arc<AtomicUsize>,
+    definition_drift: &Arc<AtomicBool>,
     root: &std::path::Path,
     socket: &std::path::Path,
 ) {
@@ -575,6 +576,21 @@ pub(super) async fn exercise_prepare(
         "candidate_id":work["id"],"candidate_revision":work["revision"],
         "disposition_id":disposition["id"]
     });
+    definition_drift.store(true, Ordering::SeqCst);
+    assert_error(
+        &route_error(owner, "command", "slice.open", open.clone()).await,
+        &["stale_context"],
+    );
+    let slices_after_drift: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM native_slices WHERE workspace_id=$1 AND scope_id=$2",
+    )
+    .bind(workspace)
+    .bind(scope)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(slices_after_drift, slices_before_open);
+    definition_drift.store(false, Ordering::SeqCst);
     let mut wrong = open.clone();
     wrong["candidate_snapshot_id"] = json!(Uuid::new_v4());
     assert_error(

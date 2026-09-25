@@ -2,6 +2,7 @@ use crate::{native_planning, store::PgUnitOfWork};
 use async_trait::async_trait;
 use tect_application::NativePlanningStore;
 use tect_domain::*;
+use sqlx::Row;
 use uuid::Uuid;
 
 #[async_trait]
@@ -162,6 +163,53 @@ impl NativePlanningStore for PgUnitOfWork {
         };
         native_planning::open_slice(self.transaction()?, tenant, workspace_id, request, selected)
             .await
+    }
+    async fn slice_open_manifest(
+        &mut self,
+        workspace_id: Uuid,
+        request: &OpenSlice,
+    ) -> Result<Option<PipelineRecommendationManifest>> {
+        let tenant = self.tenant_id()?;
+        let disposition_id = request.disposition_id.ok_or(Error::InvalidArguments)?;
+        let replay: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM native_slices WHERE tenant_id=$1 \
+             AND workspace_id=$2 AND origin_request_id=$3)",
+        )
+        .bind(tenant)
+        .bind(workspace_id)
+        .bind(request.request_id)
+        .fetch_one(&mut **self.transaction()?)
+        .await
+        .map_err(crate::storage_error)?;
+        if replay {
+            return Ok(None);
+        }
+        let row = sqlx::query(
+            "SELECT c.manifest_payload,c.manifest_digest \
+             FROM pipeline_advice_dispositions d \
+             JOIN pipeline_advice_contexts c ON \
+               (c.tenant_id,c.workspace_id,c.opportunity_id)= \
+               (d.tenant_id,d.workspace_id,d.opportunity_id) \
+             WHERE d.tenant_id=$1 AND d.workspace_id=$2 AND d.disposition_id=$3",
+        )
+        .bind(tenant)
+        .bind(workspace_id)
+        .bind(disposition_id)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(crate::storage_error)?
+        .ok_or(Error::NotFound)?;
+        let manifest: PipelineRecommendationManifest = serde_json::from_value(
+            row.try_get::<serde_json::Value, _>("manifest_payload")
+                .map_err(crate::storage_error)?,
+        )
+        .map_err(|_| Error::InputConflict)?;
+        if row.try_get::<Option<String>, _>("manifest_digest").map_err(crate::storage_error)?
+            .as_deref() != Some(manifest.digest.as_str())
+        {
+            return Err(Error::InputConflict);
+        }
+        Ok(Some(manifest))
     }
     async fn native_slice(
         &mut self,

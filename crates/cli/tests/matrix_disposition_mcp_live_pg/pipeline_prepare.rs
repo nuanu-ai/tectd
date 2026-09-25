@@ -18,6 +18,27 @@ const PREPARE_SOCKET: &str = "/tmp/tectd-slice03-pg18.6.6DbOhT/socket";
 const PREPARE_SYSTEM_ID: &str = "7689334194567816573";
 const PREPARE_DATABASE_OID: i64 = 16384;
 
+struct MutablePinnedDefinitions(Arc<AtomicBool>);
+
+impl PipelineRecommendationDefinitionProvider for MutablePinnedDefinitions {
+    fn definition(
+        &self,
+        catalogue_revision: &str,
+        kind: PipelineKind,
+    ) -> Result<Option<tect_domain::PipelineDefinitionSnapshot>> {
+        let mut definition = tect_host::StaticPipelineRecommendationDefinitions
+            .definition(catalogue_revision, kind)?;
+        if self.0.load(Ordering::SeqCst)
+            && kind == PipelineKind::LightweightTddDevelopment
+        {
+            if let Some(value) = &mut definition {
+                value.version.push_str(".changed-after-disposition");
+            }
+        }
+        Ok(definition)
+    }
+}
+
 fn explicit_fixture_policy() -> PipelineCompatibilityPolicy {
     let input: EngineeringMatrixInput = serde_json::from_value(input()).unwrap();
     let composition = compose_engineering_matrix(
@@ -162,6 +183,7 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
     let socket = root.join("pipeline-prepare.sock");
     let matrix_calls = Arc::new(AtomicUsize::new(0));
     let pipeline_calls = Arc::new(AtomicUsize::new(0));
+    let definition_drift = Arc::new(AtomicBool::new(false));
     let service = Arc::new(
         WorkspaceService::new(
             Arc::new(PgStore::connect(&runtime_url, 4).await.unwrap()),
@@ -170,9 +192,9 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
         )
         .with_matrix_evidence_validator(Arc::new(Evidence(Arc::new(AtomicBool::new(false)))))
         .with_matrix_advisory_adapters(Arc::new(Provider(matrix_calls.clone())), Arc::new(Budget))
-        .with_pipeline_recommendation_definitions(Arc::new(
-            tect_host::StaticPipelineRecommendationDefinitions,
-        ))
+        .with_pipeline_recommendation_definitions(Arc::new(MutablePinnedDefinitions(
+            definition_drift.clone(),
+        )))
         .with_pipeline_compatibility_policy(Arc::new(FixedPipelineCompatibilityPolicy(
             explicit_fixture_policy(),
         )))
@@ -354,6 +376,7 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
         &matched,
         task,
         &pipeline_calls,
+        &definition_drift,
         &root,
         &socket,
     )

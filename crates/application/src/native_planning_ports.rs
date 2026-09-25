@@ -90,6 +90,13 @@ pub trait NativePlanningStore: Send {
         session_id: Uuid,
         request: &OpenSlice,
     ) -> Result<OpenSliceOutcome>;
+    /// Saved recommendation for a new disposition-backed open. A replay has
+    /// already crossed the open boundary and returns None.
+    async fn slice_open_manifest(
+        &mut self,
+        workspace_id: Uuid,
+        request: &OpenSlice,
+    ) -> Result<Option<tect_domain::PipelineRecommendationManifest>>;
     async fn native_slice(
         &mut self,
         workspace_id: Uuid,

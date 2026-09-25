@@ -156,6 +156,11 @@ impl WorkspaceService {
         tx.slice_candidate_context(workspace.id, request.scope_id)
             .await?
             .ok_or(Error::NotFound)?;
+        if request.disposition_id.is_some() {
+            if let Some(manifest) = tx.slice_open_manifest(workspace.id, request).await? {
+                self.validate_pipeline_recommendation_definitions(&manifest)?;
+            }
+        }
         let value = tx.open_slice(workspace.id, session.id, request).await?;
         let opened = match &value {
             OpenSliceOutcome::Created(slice) | OpenSliceOutcome::Replay(slice) => slice,

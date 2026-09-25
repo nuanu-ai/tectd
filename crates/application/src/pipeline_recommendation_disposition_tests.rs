@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     PipelineDispositionBasis, PipelineRecommendationBasis, PipelineRecommendationContext,
-    PreparedPipelineRecommendation,
+    PipelineRecommendationDefinitionProvider, PreparedPipelineRecommendation,
 };
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
@@ -55,6 +55,48 @@ fn definition(kind: PipelineKind) -> PipelineDefinitionSnapshot {
         escalation_contract: "escalation".into(),
         forbidden_claims: vec![],
     }
+}
+
+struct OpenDefinitions {
+    drift: bool,
+}
+
+impl PipelineRecommendationDefinitionProvider for OpenDefinitions {
+    fn definition(
+        &self,
+        catalogue_revision: &str,
+        kind: PipelineKind,
+    ) -> Result<Option<PipelineDefinitionSnapshot>> {
+        if catalogue_revision != "4" {
+            return Ok(None);
+        }
+        let mut value = definition(kind);
+        if self.drift && kind == PipelineKind::LightweightTddDevelopment {
+            value.version = "2".into();
+            value.digest = "changed-definition".into();
+        }
+        Ok(Some(value))
+    }
+}
+
+#[test]
+fn open_guard_reloads_pinned_definitions_after_disposition() {
+    let (store, _, _, _, _) = fixture(PipelineDispositionAdvice::NoCall);
+    let saved = &store.basis.prepared.manifest;
+    assert_eq!(
+        crate::pipeline_recommendation::validate_pinned_definitions(
+            &OpenDefinitions { drift: false },
+            saved
+        ),
+        Ok(())
+    );
+    assert_eq!(
+        crate::pipeline_recommendation::validate_pinned_definitions(
+            &OpenDefinitions { drift: true },
+            saved
+        ),
+        Err(Error::StaleContext)
+    );
 }
 
 struct FakeStore {
