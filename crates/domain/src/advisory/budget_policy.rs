@@ -120,6 +120,21 @@ impl AdvisoryBudgetPolicy {
         Ok(())
     }
 
+    /// Canonical UTF-8 bytes signed by the workspace owner's Ed25519 key.
+    /// The version and trailing newline are part of the signing contract.
+    /// `workspace_id` is row context; it is intentionally not a policy field.
+    pub fn approval_signing_message(&self, workspace_id: Uuid) -> Result<Vec<u8>> {
+        self.validate()?;
+        if workspace_id.is_nil() {
+            return Err(Error::InvalidConfiguration);
+        }
+        Ok(format!(
+            "jev-budget-policy-approval/v1\n{workspace_id}\n{}\n{}\n",
+            self.approved_by, self.digest
+        )
+        .into_bytes())
+    }
+
     pub fn is_effective_at(&self, unix_ms: i64) -> bool {
         self.effective_from_unix_ms <= unix_ms && unix_ms < self.effective_until_unix_ms
     }
@@ -190,5 +205,33 @@ mod tests {
             }
             assert!(make(bad, digest.clone(), 100, 200, signature.clone()).is_err());
         }
+    }
+
+    #[test]
+    fn approval_message_has_exact_versioned_canonical_bytes() {
+        let workspace = Uuid::parse_str("7A4CD6A1-EA2E-4E34-A854-FA4A86AE2517").unwrap();
+        let owner = Uuid::parse_str("A7D6C875-4FB4-42BD-B972-B5A36C35618E").unwrap();
+        let id = Uuid::parse_str("7806DCAC-E14E-47B9-A18E-D0CC4CBB6BB8").unwrap();
+        let digest = AdvisoryBudgetPolicy::digest_for(id, 1, 100, 200, ceilings());
+        let policy = AdvisoryBudgetPolicy::new(
+            id,
+            1,
+            digest.clone(),
+            100,
+            200,
+            ceilings(),
+            owner,
+            "a".repeat(128),
+        )
+        .unwrap();
+        let expected = format!(
+            "jev-budget-policy-approval/v1\n7a4cd6a1-ea2e-4e34-a854-fa4a86ae2517\n\
+             a7d6c875-4fb4-42bd-b972-b5a36c35618e\n{digest}\n"
+        );
+        assert_eq!(
+            policy.approval_signing_message(workspace).unwrap(),
+            expected.into_bytes()
+        );
+        assert!(policy.approval_signing_message(Uuid::nil()).is_err());
     }
 }

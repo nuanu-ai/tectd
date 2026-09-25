@@ -3,6 +3,7 @@ pub mod admin;
 mod advisory;
 #[cfg(test)]
 mod advisory_budget_consumption_migration_tests;
+mod advisory_budget_policy_approval;
 #[cfg(test)]
 mod advisory_budget_policy_global_migration_tests;
 #[cfg(test)]
@@ -96,6 +97,7 @@ mod sources;
 mod store;
 
 pub use admin::Enrollment;
+pub use advisory_budget_policy_approval::verify_budget_policy_approval;
 pub use durable_knowledge_admin::enable_durable_knowledge;
 pub use knowledge_recovery::{
     KnowledgeAdminPool, KnowledgeDatabaseIdentity, KnowledgeRecoveryReport,
