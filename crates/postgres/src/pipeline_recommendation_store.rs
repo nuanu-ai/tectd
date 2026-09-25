@@ -2,15 +2,17 @@ use async_trait::async_trait;
 use serde_json::Value;
 use sqlx::Row;
 use tect_application::{
-    AdvisoryStore, MatrixPlanningEffectStore, MatrixTaskStore, MatrixVerificationStore,
-    PipelineRecommendationBasis, PipelineRecommendationContext, PipelineRecommendationStore,
-    PreparedPipelineRecommendation, pipeline_recommendation_source_digest,
+    AdvisoryStore, MatrixPlanningEffectSnapshot, MatrixPlanningEffectStore, MatrixTaskStore,
+    MatrixVerificationStore, PipelineRecommendationBasis, PipelineRecommendationContext,
+    PipelineRecommendationStore, PreparedPipelineRecommendation,
+    pipeline_recommendation_source_digest,
 };
 use tect_domain::{
     ADVISORY_POLICY_VERSION, AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryOpportunityInput,
     AdvisoryOpportunityState, AdvisoryReason, AdvisoryRequestPreference, Error,
-    OwnerReportedEngineeringMatrixFacts, PipelineCatalogueSnapshot, PipelineMatrixBasis,
-    PipelineRecommendationManifest, PipelineRecommendationSource, Result, SliceCandidateNode,
+    MatrixPlanningEffectMaterial, MatrixPlanningEffectNode, OwnerReportedEngineeringMatrixFacts,
+    PipelineCatalogueSnapshot, PipelineMatrixBasis, PipelineRecommendationManifest,
+    PipelineRecommendationSource, Result, SliceCandidateNode,
     compose_independently_verified_owner_matrix, evaluate_matrix_verification,
     matrix_verified_disposition_digest,
 };
@@ -26,6 +28,74 @@ fn write_error(error: sqlx::Error) -> Error {
     }
 }
 
+// A ready review advances the set revision without rewriting the exact saved
+// draft that the independent verifier attested. The SQL path below establishes
+// that this is still the latest draft and that the current ready review loaded
+// it. Rebuild the same canonical effect material without asserting that the
+// draft revision equals the (later) review revision.
+fn reviewed_effect_digest(
+    snapshot: &MatrixPlanningEffectSnapshot,
+    workspace_id: Uuid,
+    latest_draft_revision: i64,
+    ready_set_revision: i64,
+) -> Result<String> {
+    let link = &snapshot.link;
+    link.selection.validate().map_err(|_| Error::StaleContext)?;
+    if !snapshot.receipt_present
+        || snapshot.current_result_revision != ready_set_revision
+        || link.result_revision != latest_draft_revision
+        || snapshot.selected_choice.candidate_id != link.selection.selected_choice_id
+        || snapshot.saved_nodes.len() != link.mapped_nodes.len()
+        || snapshot.saved_nodes.is_empty()
+        || snapshot.matrix_owner_principal_id.is_nil()
+        || link.selection.mapped_draft_node_indices
+            != link
+                .mapped_nodes
+                .iter()
+                .map(|node| node.draft_index)
+                .collect::<Vec<_>>()
+    {
+        return Err(Error::StaleContext);
+    }
+    let nodes = link
+        .mapped_nodes
+        .iter()
+        .zip(&snapshot.saved_nodes)
+        .map(|(mapped, body)| {
+            if mapped.node_id != body.id() || mapped.node_revision != body.revision() {
+                return Err(Error::StaleContext);
+            }
+            Ok(MatrixPlanningEffectNode {
+                draft_index: mapped.draft_index,
+                node_id: mapped.node_id,
+                node_revision: mapped.node_revision,
+                body: body.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    MatrixPlanningEffectMaterial {
+        workspace_id,
+        candidate_set_id: link.candidate_set_id,
+        caller_request_id: link.caller_request_id,
+        scope_id: link.scope_id,
+        result_revision: link.result_revision,
+        task_id: link.selection.task_id,
+        task_revision: link.selection.task_revision,
+        disposition_id: link.selection.disposition_id,
+        input_digest: link.selection.expected_input_digest.clone(),
+        choice_set_digest: link.selection.expected_choice_set_digest.clone(),
+        verification_digest: link.selection.expected_verification_digest.clone(),
+        evaluation_digest: link.evaluation_digest.clone(),
+        catalogue_version: link.catalogue_version.clone(),
+        caller_principal_id: link.caller_principal_id,
+        caller_session_id: link.caller_session_id,
+        matrix_owner_principal_id: snapshot.matrix_owner_principal_id,
+        selected_choice: snapshot.selected_choice.clone(),
+        nodes,
+    }
+    .canonical_digest()
+}
+
 #[async_trait]
 impl PipelineRecommendationStore for PgUnitOfWork {
     async fn load_pipeline_recommendation_basis(
@@ -39,7 +109,8 @@ impl PipelineRecommendationStore for PgUnitOfWork {
         let mut query = String::from(
             "SELECT c.scope_id,c.revision AS set_revision,s.id AS planning_snapshot_id,\
                     s.source_snapshot_id,s.source_candidate_set_revision,\
-                    source.selected_sources_digest,s.catalogue,draft.payload AS saved_draft,\
+                    source.selected_sources_digest,s.catalogue,\
+                    draft.set_revision AS draft_revision,\
                     l.caller_request_id,l.disposition_id,l.task_id,l.task_revision,\
                     l.selected_choice_id,l.input_digest,l.choice_set_digest,\
                     l.verification_digest,l.evaluation_digest,l.catalogue_version,\
@@ -58,14 +129,22 @@ impl PipelineRecommendationStore for PgUnitOfWork {
                   (source.tenant_id,source.workspace_id,source.candidate_set_id,source.id)=\
                   (source_set.tenant_id,source_set.workspace_id,source_set.id,s.source_snapshot_id)\
              JOIN slice_candidate_drafts draft ON\
-                  (draft.tenant_id,draft.workspace_id,draft.candidate_set_id,draft.set_revision)=\
+                  (draft.tenant_id,draft.workspace_id,draft.candidate_set_id)=\
+                  (c.tenant_id,c.workspace_id,c.id)\
+             JOIN slice_candidate_reviews review ON\
+                  (review.tenant_id,review.workspace_id,review.candidate_set_id,review.set_revision)=\
                   (c.tenant_id,c.workspace_id,c.id,c.revision)\
              JOIN matrix_planning_effect_attestations a ON\
                   (a.tenant_id,a.workspace_id,a.candidate_set_id,a.result_revision)=\
-                  (c.tenant_id,c.workspace_id,c.id,c.revision)\
+                  (draft.tenant_id,draft.workspace_id,draft.candidate_set_id,draft.set_revision)\
              JOIN matrix_planning_selection_links l ON\
                   (l.tenant_id,l.workspace_id,l.candidate_set_id,l.caller_request_id)=\
                   (a.tenant_id,a.workspace_id,a.candidate_set_id,a.caller_request_id)\
+             JOIN native_planning_receipts receipt ON\
+                  (receipt.tenant_id,receipt.workspace_id,receipt.entity_id,\
+                   receipt.operation,receipt.request_id)=\
+                  (l.tenant_id,l.workspace_id,l.candidate_set_id,\
+                   l.operation,l.caller_request_id)\
              JOIN advisory_matrix_disposition d ON\
                   (d.tenant_id,d.workspace_id,d.disposition_id)=\
                   (l.tenant_id,l.workspace_id,l.disposition_id)\
@@ -75,9 +154,23 @@ impl PipelineRecommendationStore for PgUnitOfWork {
                AND n.source_snapshot_id=s.source_snapshot_id\
                AND source_set.current_snapshot_id=source.id\
                AND source_set.revision=s.source_candidate_set_revision\
+               AND draft.set_revision=(SELECT MAX(latest.set_revision)\
+                    FROM slice_candidate_drafts latest\
+                    WHERE latest.tenant_id=c.tenant_id\
+                      AND latest.workspace_id=c.workspace_id\
+                      AND latest.candidate_set_id=c.id)\
+               AND draft.set_revision < c.revision\
                AND NOT draft.payload_erased AND draft.payload IS NOT NULL\
+               AND NOT review.payload_erased AND review.payload IS NOT NULL\
+               AND review.payload->>'verdict'='ready'\
+               AND review.payload->>'revision'=c.revision::text\
+               AND NOT receipt.payload_erased\
+               AND receipt.request_payload IS NOT NULL\
+               AND receipt.result_payload IS NOT NULL\
+               AND receipt.result_payload->'draft'=draft.payload\
+               AND receipt.result_payload#>>'{candidate_set,revision}'=draft.set_revision::text\
                AND a.verdict='match' AND l.scope_id=c.scope_id\
-               AND l.result_revision=c.revision\
+               AND l.result_revision=draft.set_revision\
                AND d.outcome='selected' AND d.selected_choice_id=l.selected_choice_id\
                AND d.task_id=l.task_id AND d.matrix_task_revision=l.task_revision\
                AND NOT EXISTS (SELECT 1 FROM native_slices opened\
@@ -86,7 +179,7 @@ impl PipelineRecommendationStore for PgUnitOfWork {
              ORDER BY a.verified_at DESC,a.id DESC LIMIT 1",
         );
         if for_update {
-            query.push_str(" FOR SHARE OF c,n,s,source_set,source,draft,a,l,d");
+            query.push_str(" FOR SHARE OF c,n,s,source_set,source,draft,review,a,l,receipt,d");
         }
         let rows = sqlx::query(&query)
             .bind(tenant)
@@ -113,9 +206,10 @@ impl PipelineRecommendationStore for PgUnitOfWork {
         let attestation_verifier: Uuid = row
             .try_get("verifier_principal_id")
             .map_err(storage_error)?;
-        if !snapshot.is_current
-            || !snapshot.receipt_present
-            || snapshot.effect_digest(workspace_id)? != attestation_digest
+        let draft_revision: i64 = row.try_get("draft_revision").map_err(storage_error)?;
+        let ready_revision: i64 = row.try_get("set_revision").map_err(storage_error)?;
+        if reviewed_effect_digest(&snapshot, workspace_id, draft_revision, ready_revision)?
+            != attestation_digest
             || attestation_verifier == snapshot.link.caller_principal_id
             || attestation_verifier == snapshot.matrix_owner_principal_id
             || snapshot.link.selection.disposition_id
