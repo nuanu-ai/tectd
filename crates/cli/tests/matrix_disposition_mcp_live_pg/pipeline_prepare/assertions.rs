@@ -32,7 +32,7 @@ pub(super) async fn exercise_prepare(
     .await
     .unwrap();
     assert_eq!(before.1, "ready");
-    assert_eq!(opportunity_count(pool, workspace).await, 0);
+    assert_eq!(opportunity_count(pool, workspace).await, 1);
     let base = json!({
         "candidate_set_id":set,"expected_candidate_set_revision":before.0,
         "work_node_id":work["id"],"expected_work_node_revision":work["revision"],
@@ -49,6 +49,7 @@ pub(super) async fn exercise_prepare(
     assert_eq!(prepared["reason"], "recommendation_prepared");
     let expected: Vec<_> = tect_domain::PipelineKind::CURRENT_SLICE_RUN_KINDS
         .iter()
+        .filter(|kind| **kind != PipelineKind::DebugRootCause)
         .map(|kind| kind.as_str())
         .collect();
     assert_eq!(prepared["eligible_kind_ids"], json!(expected));
@@ -71,7 +72,22 @@ pub(super) async fn exercise_prepare(
     );
     assert_eq!(manifest["evidence_refs"], json!([]));
     let options = manifest["options"].as_array().unwrap();
-    assert_eq!(options.len(), 8);
+    assert_eq!(options.len(), 7);
+    assert_eq!(
+        manifest["excluded"],
+        json!([{
+            "kind":PipelineKind::DebugRootCause.as_str(),
+            "reason":"incompatible_candidate"
+        }])
+    );
+    assert_eq!(
+        manifest["compatibility_policy_digest"],
+        explicit_fixture_policy().digest().unwrap()
+    );
+    let saved_policy_digest: String = sqlx::query_scalar(
+        "SELECT compatibility_policy_digest FROM pipeline_advice_contexts WHERE workspace_id=$1 AND opportunity_id=$2",
+    ).bind(workspace).bind(opportunity).fetch_one(pool).await.unwrap();
+    assert_eq!(saved_policy_digest, manifest["compatibility_policy_digest"]);
     for (option, kind) in options.iter().zip(expected) {
         assert_eq!(option["id"], kind);
         assert_eq!(option["kind"], kind);
@@ -224,7 +240,7 @@ pub(super) async fn exercise_prepare(
     )
     .await;
     assert_error(&forbidden, &["forbidden"]);
-    assert_eq!(opportunity_count(pool, workspace).await, 1);
+    assert_eq!(opportunity_count(pool, workspace).await, 2);
 
     let mut skip = base.clone();
     skip["request_key"] = json!(format!("skip-{}", Uuid::new_v4()));
@@ -267,7 +283,7 @@ pub(super) async fn exercise_prepare(
     .await
     .unwrap();
     assert_eq!(after, before);
-    assert_eq!(opportunity_count(pool, workspace).await, 2);
+    assert_eq!(opportunity_count(pool, workspace).await, 3);
 
     let run_request = json!({"opportunity_id":opportunity});
     let forbidden_run = route_error(
@@ -306,6 +322,14 @@ pub(super) async fn exercise_prepare(
     );
     assert_eq!(dispatch.3, prepared["manifest_digest"]);
     assert!(!dispatch.5.is_empty());
+    let sent: Value = serde_json::from_slice(&dispatch.5).unwrap();
+    assert_eq!(sent["eligible_kind_ids"], prepared["eligible_kind_ids"]);
+    assert!(
+        !sent["eligible_kind_ids"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(PipelineKind::DebugRootCause.as_str()))
+    );
     assert_eq!(dispatch.4, format!("{:x}", Sha256::digest(&dispatch.5)));
     assert_eq!(dispatch.7, format!("{:x}", Sha256::digest(&dispatch.6)));
     let saved_rank: tect_domain::PipelineRecommendationRanking =
@@ -313,6 +337,17 @@ pub(super) async fn exercise_prepare(
     saved_rank
         .validate(&serde_json::from_value(manifest.clone()).unwrap())
         .unwrap();
+    let mut reintroduced = ranked["ranked_ids"].as_array().unwrap().clone();
+    reintroduced.push(json!(PipelineKind::DebugRootCause.as_str()));
+    let hostile_response: PipelineRecommendationRanking = serde_json::from_value(json!({
+        "status":"ranked","ranked_ids":reintroduced
+    }))
+    .unwrap();
+    assert!(
+        hostile_response
+            .validate(&serde_json::from_value(manifest.clone()).unwrap())
+            .is_err()
+    );
     assert_eq!(
         serde_json::to_value(saved_rank).unwrap()["ranked_ids"],
         ranked["ranked_ids"]
@@ -398,6 +433,22 @@ pub(super) async fn exercise_prepare(
         &["forbidden"],
     );
 
+    let excluded_baseline_request = json!({
+        "request_id":Uuid::new_v4(),"opportunity_id":opportunity,
+        "expected_work_revision":work["revision"],
+        "manifest_digest":prepared["manifest_digest"],
+        "action":"use_deterministic_choice","rationale":"Probe excluded saved Work baseline"
+    });
+    assert_error(
+        &route_error(
+            owner,
+            "command",
+            "pipeline.recommendation.disposition",
+            excluded_baseline_request,
+        )
+        .await,
+        &["invalid_arguments"],
+    );
     let disposition_request = json!({
         "request_id":Uuid::new_v4(),"opportunity_id":opportunity,
         "expected_work_revision":work["revision"],
@@ -524,5 +575,5 @@ pub(super) async fn exercise_prepare(
         &["stale_context"],
     );
     assert_eq!(pipeline_calls.load(Ordering::SeqCst), 2);
-    assert_eq!(opportunity_count(pool, workspace).await, 3);
+    assert_eq!(opportunity_count(pool, workspace).await, 4);
 }

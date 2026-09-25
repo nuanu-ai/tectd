@@ -66,7 +66,14 @@ fn explicit_fixture_policy() -> PipelineCompatibilityPolicy {
                     kind,
                     matrix_input_digest: matrix_input_digest(&input).unwrap(),
                     allowed_modes: vec![EngineeringMode::Demo],
-                    selected_candidate_ids: vec!["b".into()],
+                    selected_candidate_ids: vec![
+                        if kind == PipelineKind::DebugRootCause {
+                            "a"
+                        } else {
+                            "b"
+                        }
+                        .into(),
+                    ],
                     card_coverage: cards
                         .iter()
                         .map(|card_id| PipelineCardCoverage {
@@ -125,7 +132,7 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
     assert_eq!(identity.2, "postgres");
     assert_eq!(identity.3, DATABASE_OID);
     assert_eq!(identity.4, SYSTEM_ID);
-    assert_eq!(identity.5, 69);
+    assert!(matches!(identity.5, 69 | 70));
     admin::migrate(&pool, "tect_ci").await.unwrap();
     let version: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
         .fetch_one(&pool)
@@ -141,7 +148,7 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "writes only pinned disposable PostgreSQL 18.6 fixture at migration 69"]
+#[ignore = "writes only pinned disposable PostgreSQL 18.6 fixture at migration 69 or 70"]
 async fn public_prepare_and_run_guarded_pipeline_recommendation() {
     let (pool, runtime_url) = disposable_pair_for_prepare().await;
     let temp = private_temp();
@@ -308,6 +315,17 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
     assert_eq!(matched["verdict"], "matches");
     let ready = review(&mut owner, &saved).await;
     assert_eq!(ready["candidate_set"]["status"], "ready");
+    exercise_zero_eligible_no_call(
+        &pool,
+        &runtime_url,
+        &root,
+        &owner_config,
+        &workspace_key,
+        workspace,
+        set,
+        &work,
+    )
+    .await;
     assertions::exercise_prepare(
         &pool,
         workspace,
@@ -331,6 +349,101 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
     server.abort();
 }
 
+async fn exercise_zero_eligible_no_call(
+    pool: &PgPool,
+    runtime_url: &str,
+    root: &std::path::Path,
+    owner_config: &std::path::Path,
+    workspace_key: &str,
+    workspace: Uuid,
+    set: Uuid,
+    work: &Value,
+) {
+    let mut policy = explicit_fixture_policy();
+    policy.rules.clear();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let socket = root.join("pipeline-zero-eligible.sock");
+    let service = Arc::new(
+        WorkspaceService::new(
+            Arc::new(PgStore::connect(runtime_url, 4).await.unwrap()),
+            Arc::new(tect_host::GitSourceInspector),
+            Arc::new(tect_host::LocalSetupFiles),
+        )
+        .with_pipeline_recommendation_definitions(Arc::new(
+            tect_host::StaticPipelineRecommendationDefinitions,
+        ))
+        .with_pipeline_compatibility_policy(Arc::new(FixedPipelineCompatibilityPolicy(
+            policy.clone(),
+        )))
+        .with_pipeline_recommendation_provider(Arc::new(FakePipelineProvider(calls.clone()))),
+    );
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let server = tokio::spawn(tect_host::serve(listener, service));
+    let mut owner = Mcp::start(
+        &socket,
+        owner_config,
+        &Uuid::new_v4().to_string(),
+        workspace_key,
+    )
+    .await;
+    owner.call("open_workspace", json!({})).await;
+    let revision: i64 = sqlx::query_scalar(
+        "SELECT revision FROM slice_candidate_sets WHERE workspace_id=$1 AND id=$2",
+    )
+    .bind(workspace)
+    .bind(set)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    let prepared = route(
+        &mut owner,
+        "command",
+        "pipeline.recommendation.prepare",
+        json!({
+            "candidate_set_id":set,"expected_candidate_set_revision":revision,
+            "work_node_id":work["id"],"expected_work_node_revision":work["revision"],
+            "request_key":format!("pipeline-zero-eligible-{}", Uuid::new_v4())
+        }),
+    )
+    .await;
+    assert_eq!(prepared["state"], "no_call", "{prepared}");
+    assert_eq!(prepared["reason"], "choice_set_not_applicable");
+    assert_eq!(prepared["eligible_kind_ids"], json!([]));
+    let opportunity = Uuid::parse_str(prepared["opportunity_id"].as_str().unwrap()).unwrap();
+    let manifest: Value = sqlx::query_scalar(
+        "SELECT manifest_payload FROM pipeline_advice_contexts WHERE workspace_id=$1 AND opportunity_id=$2",
+    ).bind(workspace).bind(opportunity).fetch_one(pool).await.unwrap();
+    assert_eq!(manifest["options"].as_array().unwrap().len(), 0);
+    assert_eq!(manifest["excluded"].as_array().unwrap().len(), 8);
+    assert_eq!(
+        manifest["compatibility_policy_digest"],
+        policy.digest().unwrap()
+    );
+    let no_call_run = route(
+        &mut owner,
+        "command",
+        "pipeline.recommendation.run",
+        json!({
+            "opportunity_id":opportunity
+        }),
+    )
+    .await;
+    assert_eq!(no_call_run["status"], "no_call");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let dispatches: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM advisory_dispatch WHERE workspace_id=$1 AND opportunity_id=$2",
+    )
+    .bind(workspace)
+    .bind(opportunity)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(dispatches, 0);
+    owner.finish().await;
+    server.abort();
+}
+
 struct FakePipelineProvider(Arc<AtomicUsize>);
 
 #[async_trait]
@@ -347,7 +460,10 @@ impl PipelineRecommendationProvider for FakePipelineProvider {
                 destination: "https://synthetic.invalid/pipeline".into(),
                 wire_version: "synthetic-pipeline/1".into(),
             },
-            serde_json::to_vec(&json!({"manifest_digest":saved.manifest.digest}))
+            serde_json::to_vec(&json!({
+                "manifest_digest":saved.manifest.digest,
+                "eligible_kind_ids":saved.manifest.options.iter().map(|option| &option.id).collect::<Vec<_>>()
+            }))
                 .map_err(Error::invalid_arguments_from)?,
         )
     }
@@ -382,10 +498,8 @@ impl PipelineRecommendationProvider for FakePipelineProvider {
         if digest != prepared.manifest_digest() {
             return Err(Error::InputConflict);
         }
-        let ranked_ids = tect_domain::PipelineKind::CURRENT_SLICE_RUN_KINDS
-            .iter()
-            .map(|kind| kind.as_str().to_string())
-            .collect::<Vec<_>>();
+        let ranked_ids: Vec<String> = serde_json::from_value(request["eligible_kind_ids"].clone())
+            .map_err(Error::invalid_arguments_from)?;
         Ok(PipelineProviderObservation {
             raw_response: serde_json::to_vec(&PipelineRecommendationRanking::Ranked { ranked_ids })
                 .map_err(Error::invalid_arguments_from)?,
