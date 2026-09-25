@@ -50,7 +50,8 @@ BEGIN
        OR NEW.policy_version <> policy.version OR NEW.policy_digest <> policy.digest
        OR NEW.policy_effective_from_unix_ms <> policy.effective_from_unix_ms
        OR NEW.policy_effective_until_unix_ms <> policy.effective_until_unix_ms
-       OR NEW.reserved_retry_dispatches <> CASE WHEN dispatch.attempt_number=1 THEN 0 ELSE 1 END
+       OR (dispatch.attempt_number=1 AND NEW.reserved_retry_dispatches <> 0)
+       OR (dispatch.attempt_number<>1 AND NEW.reserved_retry_dispatches <> 1)
        OR NEW.remaining_elapsed_ms > policy.elapsed_monotonic_ms THEN
         RAISE EXCEPTION 'budget reservation binding mismatch' USING ERRCODE='23514';
     END IF;
