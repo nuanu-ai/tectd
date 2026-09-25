@@ -37,9 +37,9 @@ impl WorkspaceService {
             authored,
         } = prepared;
         if authored {
-            let current_source = match self.scope_authority.observe(&authority_request).await {
+            let current_source = match self.scope_authority.observe(authority_request).await {
                 Ok(crate::ScopeAuthorityOutcome::Authorized(value))
-                    if validate_observation(&authority_request, &value).is_ok()
+                    if validate_observation(authority_request, &value).is_ok()
                         && &value == observation =>
                 {
                     supply_scope_manifest(
@@ -105,7 +105,7 @@ impl WorkspaceService {
             opportunity.id,
             provider_name,
             adapter_version,
-            &config,
+            config,
             opportunity.material_digest.clone(),
             &policy.policy_id,
         )?;
@@ -204,7 +204,7 @@ impl WorkspaceService {
                 guard_scope_advice(
                     &Sha256ScopeDigest,
                     opportunity.id,
-                    &manifest,
+                    manifest,
                     &typed_request,
                     answers,
                 )
@@ -257,10 +257,10 @@ impl WorkspaceService {
             });
         };
 
-        let fresh = self.scope_authority.observe(&authority_request).await;
+        let fresh = self.scope_authority.observe(authority_request).await;
         let fresh_manifest = match &fresh {
             Ok(crate::ScopeAuthorityOutcome::Authorized(value))
-                if validate_observation(&authority_request, value).is_ok() =>
+                if validate_observation(authority_request, value).is_ok() =>
             {
                 supply_scope_manifest(
                     self.scope_manifest_supplier.as_ref(),

@@ -284,29 +284,28 @@ impl WorkspaceService {
         let mut detail = tx
             .candidate_advisory_opportunity_detail(workspace.id, candidate_set_id, opportunity_id)
             .await?;
-        if role == PrincipalRole::Owner {
-            if let Some(advice) = tx
+        if role == PrincipalRole::Owner
+            && let Some(advice) = tx
                 .guarded_scope_advice(workspace.id, opportunity_id)
                 .await?
+        {
+            let manifest = tx
+                .scope_advisory_manifest(workspace.id, opportunity_id)
+                .await?
+                .ok_or(Error::StorageUnavailable)?;
+            if manifest.source.candidate_set_id != candidate_set_id
+                || advice.opportunity_id.is_some_and(|id| id != opportunity_id)
+                || advice.source_digest != manifest.source.digest
+                || advice.manifest_digest != manifest.whole_set_digest
+                || advice.eligible_set_digest != manifest.eligible_set_digest
             {
-                let manifest = tx
-                    .scope_advisory_manifest(workspace.id, opportunity_id)
-                    .await?
-                    .ok_or(Error::StorageUnavailable)?;
-                if manifest.source.candidate_set_id != candidate_set_id
-                    || advice.opportunity_id.is_some_and(|id| id != opportunity_id)
-                    || advice.source_digest != manifest.source.digest
-                    || advice.manifest_digest != manifest.whole_set_digest
-                    || advice.eligible_set_digest != manifest.eligible_set_digest
-                {
-                    return Err(Error::StorageUnavailable);
-                }
-                detail.scope_decomposition = Some(CandidateScopeAdvisoryProjection {
-                    version: 1,
-                    manifest,
-                    advice,
-                });
+                return Err(Error::StorageUnavailable);
             }
+            detail.scope_decomposition = Some(CandidateScopeAdvisoryProjection {
+                version: 1,
+                manifest,
+                advice,
+            });
         }
         tx.commit().await?;
         Ok(detail)
