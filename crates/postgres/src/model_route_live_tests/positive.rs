@@ -1,5 +1,4 @@
-//! Synthetic, test-generated Matrix authority and current native Work save.
-//! The selected disposition and link use production PG APIs; no model runs.
+//! Synthetic Matrix authority and current native Work save via production APIs; no model runs.
 use super::positive_input::matrix_input;
 use super::*;
 use crate::{PgStore, admin};
@@ -142,6 +141,7 @@ pub(super) struct Fixture {
     pub(super) tenant: Uuid,
     pub(super) workspace: Uuid,
     pub(super) owner: admin::Enrollment,
+    pub(super) invocation_session: Uuid,
     pub(super) task: Uuid,
     pub(super) selection: MatrixPlanningSelection,
     pub(super) candidate_set: Uuid,
@@ -489,6 +489,7 @@ pub(super) async fn fixture(admin_pool: &PgPool, runtime_pool: &PgPool) -> Fixtu
         tenant,
         workspace,
         owner,
+        invocation_session: session,
         task,
         selection,
         candidate_set,

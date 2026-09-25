@@ -345,14 +345,18 @@ impl ModelRouteDecisionStore for PgUnitOfWork {
         }
         current_preparation(self, &stored).await?;
         let audit_state = crate::model_route_attempt_store::audit_state(
-            self, stored.workspace_id, &stored.request_key,
-        ).await?;
+            self,
+            stored.workspace_id,
+            &stored.request_key,
+        )
+        .await?;
         match &value.input {
             ModelRouteDecisionInput::NoCall if audit_state.as_deref() != Some("no_call") => {
                 return Err(Error::Forbidden);
             }
             ModelRouteDecisionInput::Abstain
-                if matches!(audit_state.as_deref(), Some("send_unknown" | "raw_sealed")) => {
+                if matches!(audit_state.as_deref(), Some("send_unknown" | "raw_sealed")) =>
+            {
                 return Err(Error::InputConflict);
             }
             ModelRouteDecisionInput::Ranking(_) if audit_state.as_deref() != Some("parsed") => {
