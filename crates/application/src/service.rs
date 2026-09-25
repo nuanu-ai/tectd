@@ -31,6 +31,7 @@ pub struct WorkspaceService {
     pub(crate) scope_verifier: Arc<dyn crate::ScopeVerifier>,
     pub(crate) knowledge_embedding_provider: Arc<dyn crate::KnowledgeEmbeddingProvider>,
     model_route_catalogue_provider: Arc<dyn crate::ModelRouteCatalogueProvider>,
+    model_route_host_capabilities_provider: Arc<dyn crate::ModelRouteHostCapabilitiesProvider>,
     pub(crate) query_embedding_cache: std::sync::Mutex<KnowledgeQueryCache>,
 }
 
@@ -137,6 +138,9 @@ impl WorkspaceService {
             scope_verifier: Arc::new(crate::DisabledScopeVerifier),
             knowledge_embedding_provider: Arc::new(crate::DisabledKnowledgeEmbeddingProvider),
             model_route_catalogue_provider: Arc::new(crate::UnavailableModelRouteCatalogue),
+            model_route_host_capabilities_provider: Arc::new(
+                crate::UnavailableModelRouteHostCapabilities,
+            ),
             query_embedding_cache: std::sync::Mutex::new(KnowledgeQueryCache::new()),
         }
     }
@@ -191,6 +195,23 @@ impl WorkspaceService {
 
     pub fn model_route_catalogue(&self) -> Result<Option<tect_domain::ModelRouteCatalogue>> {
         self.model_route_catalogue_provider.catalogue()
+    }
+
+    /// Install a host-owned capability assertion; empty known capability sets
+    /// remain distinct from absent evidence. This never dispatches a model.
+    pub fn with_model_route_host_capabilities_provider(
+        mut self,
+        provider: Arc<dyn crate::ModelRouteHostCapabilitiesProvider>,
+    ) -> Self {
+        self.model_route_host_capabilities_provider = provider;
+        self
+    }
+
+    pub fn model_route_host_capabilities(
+        &self,
+    ) -> Result<tect_domain::ModelRouteFact<Vec<String>>> {
+        self.model_route_host_capabilities_provider
+            .host_capabilities()
     }
 
     /// Explicit Matrix composition seam. Both decisions are selected by the

@@ -51,6 +51,9 @@ async fn run() -> tect_domain::Result<()> {
     if let Some(catalogue) = tect_host::StaticModelRouteCatalogue::from_env()? {
         service = service.with_model_route_catalogue_provider(Arc::new(catalogue));
     }
+    if let Some(capabilities) = tect_host::StaticModelRouteHostCapabilities::from_env()? {
+        service = service.with_model_route_host_capabilities_provider(Arc::new(capabilities));
+    }
     let embedding_enabled = match tect_host::LocalEmbeddingConfig::from_env() {
         Ok(Some(config)) => {
             service = service.with_knowledge_embedding_provider(Arc::new(

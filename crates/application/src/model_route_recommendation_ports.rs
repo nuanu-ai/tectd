@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use tect_domain::{
-    AdvisoryRequestPreference, EligibleModelRoutes, ModelRouteCatalogue, ModelRouteRecord,
-    ModelRouteWorkContext, ObservedModelRoute, Result, WorkspaceAdvisoryMode,
+    AdvisoryRequestPreference, EligibleModelRoutes, ModelRouteCatalogue, ModelRouteFact,
+    ModelRouteRecord, ModelRouteWorkContext, ObservedModelRoute, Result, WorkspaceAdvisoryMode,
 };
 use uuid::Uuid;
 
@@ -15,6 +15,19 @@ pub struct UnavailableModelRouteCatalogue;
 impl ModelRouteCatalogueProvider for UnavailableModelRouteCatalogue {
     fn catalogue(&self) -> Result<Option<ModelRouteCatalogue>> {
         Ok(None)
+    }
+}
+
+/// Host-owned discovery, independent of caller Work and the allowed-route catalogue.
+pub trait ModelRouteHostCapabilitiesProvider: Send + Sync {
+    fn host_capabilities(&self) -> Result<ModelRouteFact<Vec<String>>>;
+}
+
+pub struct UnavailableModelRouteHostCapabilities;
+
+impl ModelRouteHostCapabilitiesProvider for UnavailableModelRouteHostCapabilities {
+    fn host_capabilities(&self) -> Result<ModelRouteFact<Vec<String>>> {
+        Ok(ModelRouteFact::Unknown)
     }
 }
 

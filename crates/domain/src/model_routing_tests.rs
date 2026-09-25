@@ -1,4 +1,25 @@
 use super::*;
+
+#[test]
+fn host_capability_snapshot_digest_and_provenance_distinguish_known_empty() {
+    let mut snapshot = ModelRouteHostCapabilities {
+        schema: MODEL_ROUTE_HOST_CAPABILITIES_SCHEMA.into(),
+        version: 1,
+        capabilities: vec![],
+    };
+    let empty_digest = snapshot.digest().unwrap();
+    assert_eq!(empty_digest.len(), 64);
+    assert!(
+        matches!(snapshot.fact().unwrap(), ModelRouteFact::Known { value, provenance: ModelRouteFactProvenance::Host { .. } } if value.is_empty())
+    );
+    snapshot.capabilities = vec!["model-api".into(), "gpu".into()];
+    let digest = snapshot.digest().unwrap();
+    assert_ne!(digest, empty_digest);
+    snapshot.capabilities.reverse();
+    assert_eq!(snapshot.digest().unwrap(), digest);
+    snapshot.capabilities.push("gpu".into());
+    assert_eq!(snapshot.digest(), Err(Error::InvalidArguments));
+}
 use uuid::Uuid;
 
 fn route(id: &str) -> ModelRoute {

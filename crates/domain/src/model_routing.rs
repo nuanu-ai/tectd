@@ -6,6 +6,52 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 pub const MODEL_ROUTE_CATALOGUE_SCHEMA: &str = "tect.model-routes/1";
+pub const MODEL_ROUTE_HOST_CAPABILITIES_SCHEMA: &str = "tect.model-route-host-capabilities/1";
+
+/// A separate host assertion about capabilities available to this daemon.
+/// It is never inferred from a route catalogue or caller-authored Work prose.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelRouteHostCapabilities {
+    pub schema: String,
+    pub version: u64,
+    pub capabilities: Vec<String>,
+}
+
+impl ModelRouteHostCapabilities {
+    pub fn validate(&self) -> Result<()> {
+        if self.schema != MODEL_ROUTE_HOST_CAPABILITIES_SCHEMA || self.version == 0 {
+            return Err(Error::InvalidArguments);
+        }
+        valid_set(&self.capabilities, true)
+    }
+
+    pub fn digest(&self) -> Result<String> {
+        self.validate()?;
+        let mut hash = Sha256::new();
+        part(&mut hash, MODEL_ROUTE_HOST_CAPABILITIES_SCHEMA);
+        number(&mut hash, self.version);
+        let mut values = self.capabilities.clone();
+        values.sort();
+        number(&mut hash, values.len() as u64);
+        for value in values {
+            part(&mut hash, &value);
+        }
+        Ok(format!("{:x}", hash.finalize()))
+    }
+
+    pub fn fact(&self) -> Result<ModelRouteFact<Vec<String>>> {
+        let digest = self.digest()?;
+        Ok(ModelRouteFact::Known {
+            value: self.capabilities.clone(),
+            provenance: ModelRouteFactProvenance::Host {
+                evidence_ref: format!(
+                    "{MODEL_ROUTE_HOST_CAPABILITIES_SCHEMA}:v{}:{digest}",
+                    self.version
+                ),
+            },
+        })
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

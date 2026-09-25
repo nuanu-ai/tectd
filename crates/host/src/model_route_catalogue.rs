@@ -67,7 +67,7 @@ impl ModelRouteCatalogueProvider for StaticModelRouteCatalogue {
     }
 }
 
-fn validate_and_open(path: &Path) -> Result<File> {
+pub(crate) fn validate_and_open(path: &Path) -> Result<File> {
     if !path.is_absolute()
         || path
             .components()

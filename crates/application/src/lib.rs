@@ -85,8 +85,9 @@ pub use matrix_verification_ports::{
 pub use model_route_recommendation::PrepareModelRouteRecommendation;
 pub use model_route_recommendation_ports::{
     ModelRouteCatalogueProvider, ModelRoutePreparation, ModelRouteRecommendationBasis,
-    ModelRouteRecommendationStore, ModelRouteSelectionRead, PreparedModelRouteRecommendation,
-    UnavailableModelRouteCatalogue,
+    ModelRouteHostCapabilitiesProvider, ModelRouteRecommendationStore, ModelRouteSelectionRead,
+    PreparedModelRouteRecommendation, UnavailableModelRouteCatalogue,
+    UnavailableModelRouteHostCapabilities,
 };
 pub use pipeline_open_effect::{
     PipelineOpenEffectAttestation, PipelineOpenEffectMaterial, PipelineOpenEffectStore,
