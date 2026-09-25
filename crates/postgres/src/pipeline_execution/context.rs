@@ -12,6 +12,10 @@ struct StoredRunRow {
     definition_kind: String,
     definition_version: String,
     definition_digest: String,
+    selected_option_id: Option<String>,
+    verification_plan_id: Option<String>,
+    verification_plan_version: Option<String>,
+    verification_plan_digest: Option<String>,
     definition: serde_json::Value,
     delivery_mode: String,
     qualification_reason: Option<String>,
@@ -179,7 +183,7 @@ async fn load_context_with_delivery_receipt(
     issue_delivery_receipt: bool,
 ) -> Result<Option<PipelineRunContext>> {
     let row:Option<serde_json::Value>=sqlx::query_scalar(
-        "SELECT pg_catalog.jsonb_build_object('id',id,'scope_id',scope_id,'slice_id',slice_id,'slice_revision',slice_revision,'revision',revision,'definition_kind',definition_kind,'definition_version',definition_version,'definition_digest',definition_digest,'definition',definition,'delivery_mode',delivery_mode,'qualification_reason',qualification_reason,'status',status,'current_phase_id',current_phase_id,'current_phase_ordinal',current_phase_ordinal,'knowledge_manifest_id',knowledge_manifest_id,'payload_erased',payload_erased,'inquiry',inquiry,'source_checkpoint_id',source_checkpoint_id,'source_checkpoint_digest',source_checkpoint_digest) FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
+        "SELECT pg_catalog.jsonb_build_object('id',id,'scope_id',scope_id,'slice_id',slice_id,'slice_revision',slice_revision,'revision',revision,'definition_kind',definition_kind,'definition_version',definition_version,'definition_digest',definition_digest,'definition',definition,'selected_option_id',selected_option_id,'verification_plan_id',verification_plan_id,'verification_plan_version',verification_plan_version,'verification_plan_digest',verification_plan_digest,'delivery_mode',delivery_mode,'qualification_reason',qualification_reason,'status',status,'current_phase_id',current_phase_id,'current_phase_ordinal',current_phase_ordinal,'knowledge_manifest_id',knowledge_manifest_id,'payload_erased',payload_erased,'inquiry',inquiry,'source_checkpoint_id',source_checkpoint_id,'source_checkpoint_digest',source_checkpoint_digest) FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
         .bind(tenant).bind(workspace).bind(run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     let Some(row) = row else { return Ok(None) };
     let row: StoredRunRow = decode(row)?;
@@ -197,6 +201,10 @@ async fn load_context_with_delivery_receipt(
         definition_kind: pipeline(&row.definition_kind)?,
         definition_version: row.definition_version,
         definition_digest: row.definition_digest,
+        selected_option_id: row.selected_option_id,
+        verification_plan_id: row.verification_plan_id,
+        verification_plan_version: row.verification_plan_version,
+        verification_plan_digest: row.verification_plan_digest,
         delivery_mode: mode(&row.delivery_mode)?,
         qualification_reason: row.qualification_reason.ok_or(Error::InternalInvariant)?,
         status: run_status(&row.status)?,

@@ -355,6 +355,10 @@ mod tests {
                 definition_kind: PipelineKind::LightweightTddDevelopment,
                 definition_version: "0.6.0".into(),
                 definition_digest: "definition-digest".into(),
+                selected_option_id: None,
+                verification_plan_id: None,
+                verification_plan_version: None,
+                verification_plan_digest: None,
                 delivery_mode: PipelineDeliveryMode::Phasewise,
                 qualification_reason: "fixture".into(),
                 status: PipelineRunStatus::Active,
@@ -417,6 +421,31 @@ mod tests {
             error.refusal().unwrap().code,
             RefusalCode::DeliveryRefreshRequired
         );
+    }
+
+    #[test]
+    fn run_plan_identity_is_optional_for_historical_contexts_and_visible_when_pinned() {
+        let mut run = context().run;
+        let mut legacy = serde_json::to_value(&run).unwrap();
+        assert!(legacy.get("verification_plan_id").is_none());
+        assert_eq!(
+            serde_json::from_value::<PipelineRun>(legacy.clone()).unwrap(),
+            run
+        );
+
+        let digest = "a".repeat(64);
+        run.selected_option_id = Some(format!(
+            "{}+verification-plan:{digest}",
+            run.definition_kind.as_str()
+        ));
+        run.verification_plan_id = Some(format!("verification-plan:{digest}"));
+        run.verification_plan_version = Some(run.definition_version.clone());
+        run.verification_plan_digest = Some(digest.clone());
+        let pinned = serde_json::to_value(&run).unwrap();
+        assert_eq!(pinned["verification_plan_digest"], digest);
+        assert_eq!(serde_json::from_value::<PipelineRun>(pinned).unwrap(), run);
+        legacy["selected_option_id"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<PipelineRun>(legacy).is_ok());
     }
 
     #[test]

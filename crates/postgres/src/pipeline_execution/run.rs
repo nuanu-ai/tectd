@@ -7,7 +7,19 @@ type BeginReplayRow = (
     bool,
     bool,
 );
-type NativeSliceBeginRow = (Uuid, i64, String, String, Option<Uuid>, Option<String>);
+type NativeSliceBeginRow = (
+    Uuid,
+    i64,
+    String,
+    String,
+    Option<Uuid>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 pub(crate) async fn begin_replay(
     tx: &mut Transaction<'_, Postgres>,
@@ -78,10 +90,21 @@ pub(crate) async fn begin(
     let _ = crate::durable_knowledge::lock_state(tx, tenant, workspace).await?;
     let principal = session_principal(tx, session).await?;
     let row: Option<NativeSliceBeginRow> = sqlx::query_as(
-        "SELECT scope_id,revision,pipeline,state,source_checkpoint_id,source_checkpoint_digest FROM native_slices WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
+        "SELECT scope_id,revision,pipeline,state,source_checkpoint_id,source_checkpoint_digest,selected_option_id,verification_plan_id,verification_plan_source_definition_version,verification_plan_digest,verification_plan_source_definition_digest FROM native_slices WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
         .bind(tenant).bind(workspace).bind(request.slice_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
-    let (scope, revision, kind, state, checkpoint_id, checkpoint_digest) =
-        row.ok_or(Error::NotFound)?;
+    let (
+        scope,
+        revision,
+        kind,
+        state,
+        checkpoint_id,
+        checkpoint_digest,
+        option_id,
+        plan_id,
+        plan_version,
+        plan_digest,
+        plan_definition_digest,
+    ) = row.ok_or(Error::NotFound)?;
     if let Some(replay) = begin_replay(tx, tenant, workspace, principal, request).await? {
         return Ok(replay);
     }
@@ -90,6 +113,12 @@ pub(crate) async fn begin(
     }
     if state != "open" || pipeline(&kind)? != definition.kind {
         return Err(Error::Forbidden);
+    }
+    if plan_id.is_some()
+        && (plan_version.as_deref() != Some(definition.version.as_str())
+            || plan_definition_digest.as_deref() != Some(definition.digest.as_str()))
+    {
+        return Err(Error::StaleContext);
     }
     let expected_checkpoint = checkpoint_id
         .map(|checkpoint_id| {
@@ -107,7 +136,7 @@ pub(crate) async fn begin(
     let first = definition.phases.first().ok_or(Error::InternalInvariant)?;
     let selected_mode = request.delivery_mode.unwrap_or(definition.default_mode);
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO slice_pipeline_runs(id,tenant_id,workspace_id,scope_id,slice_id,slice_revision,definition_kind,definition_version,definition_digest,definition,delivery_mode,qualification_reason,current_phase_id,current_phase_ordinal,origin_request_id,origin_payload,inquiry,source_checkpoint_id,source_checkpoint_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)")
+    sqlx::query("INSERT INTO slice_pipeline_runs(id,tenant_id,workspace_id,scope_id,slice_id,slice_revision,definition_kind,definition_version,definition_digest,definition,delivery_mode,qualification_reason,current_phase_id,current_phase_ordinal,origin_request_id,origin_payload,inquiry,source_checkpoint_id,source_checkpoint_digest,selected_option_id,verification_plan_id,verification_plan_version,verification_plan_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)")
         .bind(id).bind(tenant).bind(workspace).bind(scope).bind(request.slice_id).bind(revision)
         .bind(definition.kind.as_str()).bind(&definition.version).bind(&definition.digest).bind(json(definition)?)
         .bind(enum_text(&selected_mode)?).bind(&request.qualification_reason).bind(&first.id).bind(first.ordinal as i32)
@@ -115,6 +144,7 @@ pub(crate) async fn begin(
         .bind(request.inquiry.as_ref().map(json).transpose()?)
         .bind(request.source_checkpoint.as_ref().map(|value| value.checkpoint_id))
         .bind(request.source_checkpoint.as_ref().map(|value| value.digest.as_str()))
+        .bind(option_id).bind(plan_id).bind(plan_version).bind(plan_digest)
         .execute(&mut **tx).await.map_err(storage_error)?;
     checkpoint::bind_consumer(
         tx,

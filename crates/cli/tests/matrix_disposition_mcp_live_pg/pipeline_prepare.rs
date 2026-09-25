@@ -28,9 +28,7 @@ impl PipelineRecommendationDefinitionProvider for MutablePinnedDefinitions {
     ) -> Result<Option<tect_domain::PipelineDefinitionSnapshot>> {
         let mut definition = tect_host::StaticPipelineRecommendationDefinitions
             .definition(catalogue_revision, kind)?;
-        if self.0.load(Ordering::SeqCst)
-            && kind == PipelineKind::LightweightTddDevelopment
-        {
+        if self.0.load(Ordering::SeqCst) && kind == PipelineKind::LightweightTddDevelopment {
             if let Some(value) = &mut definition {
                 value.version.push_str(".changed-after-disposition");
             }
@@ -117,6 +115,8 @@ fn explicit_fixture_policy() -> PipelineCompatibilityPolicy {
 mod assertions;
 #[path = "pipeline_prepare/open_effect.rs"]
 mod open_effect;
+#[path = "pipeline_prepare/run_binding.rs"]
+mod run_binding;
 
 async fn disposable_pair_for_prepare() -> (PgPool, String) {
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
@@ -160,7 +160,7 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
     assert_eq!(identity.2, "postgres");
     assert_eq!(identity.3, PREPARE_DATABASE_OID);
     assert_eq!(identity.4, PREPARE_SYSTEM_ID);
-    assert_eq!(identity.5, 72);
+    assert_eq!(identity.5, 73);
     let runtime = PgPool::connect_with(runtime_options).await.unwrap();
     let role: (String, String, i64) = sqlx::query_as(
         "SELECT current_database(),current_user,(SELECT oid::bigint FROM pg_database WHERE datname=current_database())",
@@ -173,7 +173,7 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "writes only pinned disposable PostgreSQL 18.6 fixture at migration 72"]
+#[ignore = "writes only pinned disposable PostgreSQL 18.6 fixture at migration 73"]
 async fn public_prepare_and_run_guarded_pipeline_recommendation() {
     let (pool, runtime_url) = disposable_pair_for_prepare().await;
     let temp = private_temp();

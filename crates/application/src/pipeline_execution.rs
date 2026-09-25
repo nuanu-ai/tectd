@@ -138,6 +138,15 @@ impl WorkspaceService {
             definition.validate()?;
         }
         request.validate(&definition)?;
+        slice.validate_verification_plan_binding()?;
+        if slice.verification_plan_id.is_some()
+            && (slice.verification_plan_source_definition_version.as_deref()
+                != Some(definition.version.as_str())
+                || slice.verification_plan_source_definition_digest.as_deref()
+                    != Some(definition.digest.as_str()))
+        {
+            return Err(Error::StaleContext);
+        }
         let value = tx
             .begin_pipeline_run(workspace.id, session.id, request, &definition)
             .await?;
