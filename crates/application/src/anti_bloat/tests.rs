@@ -1,7 +1,8 @@
 use super::*;
 use crate::{AntiBloatSendPermit, StoredAntiBloatReview};
 use async_trait::async_trait;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tect_domain::*;
 
 const D: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -328,6 +329,73 @@ struct FakeProvider {
     invent: bool,
 }
 
+struct CommitObservingProvider {
+    committed: Arc<AtomicBool>,
+    calls: AtomicUsize,
+    fail: bool,
+}
+
+#[async_trait]
+impl AntiBloatRankingProvider for CommitObservingProvider {
+    async fn rank(&self, _: &AntiBloatSendPermit) -> Result<Vec<u8>> {
+        assert!(self.committed.load(Ordering::SeqCst));
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail {
+            Err(Error::TransportUnavailable)
+        } else {
+            Ok(b"[]".to_vec())
+        }
+    }
+}
+
+#[tokio::test]
+async fn provider_observes_committed_fence_and_commit_failure_never_calls() {
+    let committed = Arc::new(AtomicBool::new(false));
+    let provider = CommitObservingProvider {
+        committed: committed.clone(),
+        calls: AtomicUsize::new(0),
+        fail: false,
+    };
+    let permit = AntiBloatSendPermit {
+        review_id: Uuid::new_v4(),
+        request: AntiBloatPreparedRequest {
+            bytes: b"{}".to_vec(),
+            sha256: "a".repeat(64),
+        },
+    };
+    let commit_flag = committed.clone();
+    assert_eq!(
+        rank_after_committed_fence(
+            async move {
+                commit_flag.store(true, Ordering::SeqCst);
+                Ok(())
+            },
+            &provider,
+            &permit
+        )
+        .await
+        .unwrap()
+        .unwrap(),
+        b"[]".to_vec()
+    );
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        rank_after_committed_fence(async { Err(Error::InputConflict) }, &provider, &permit).await,
+        Err(Error::InputConflict)
+    ));
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    let failing = CommitObservingProvider {
+        committed: committed.clone(),
+        calls: AtomicUsize::new(0),
+        fail: true,
+    };
+    assert!(matches!(
+        rank_after_committed_fence(async { Ok(()) }, &failing, &permit).await,
+        Ok(Err(Error::TransportUnavailable))
+    ));
+    assert_eq!(failing.calls.load(Ordering::SeqCst), 1);
+}
+
 #[async_trait]
 impl AntiBloatRankingProvider for FakeProvider {
     async fn rank(&self, permit: &AntiBloatSendPermit) -> Result<Vec<u8>> {
@@ -396,7 +464,9 @@ async fn no_call_states_are_durable_and_never_send() {
         let mut app = app(extra, false);
         let saved = prepare(&mut app, mode, preference).await;
         assert_eq!(saved.state, AntiBloatAttemptState::NoCall(expected));
-        assert_eq!(app.rank_once(saved.review_id).await.unwrap(), saved.state);
+        let attempt = app.prepare_send(saved.review_id).await.unwrap();
+        assert_eq!(attempt.state, saved.state);
+        assert!(attempt.permit.is_none());
         assert_eq!(app.store.sends, 0);
         assert_eq!(app.provider.calls.load(Ordering::SeqCst), 0);
     }
@@ -411,11 +481,25 @@ async fn one_use_rank_and_provider_invention_is_denied() {
         AdvisoryRequestPreference::UseWorkspace,
     )
     .await;
+    let attempt = app.prepare_send(saved.review_id).await.unwrap();
+    assert_eq!(attempt.state, AntiBloatAttemptState::Sending);
+    assert_eq!(app.provider.calls.load(Ordering::SeqCst), 0);
+    assert!(app.store.raw_response.is_none());
+    let permit = attempt.permit.unwrap();
+    let raw = app.provider.rank(&permit).await.unwrap();
+    app.seal_response(&permit, &raw).await.unwrap();
+    assert_eq!(app.store.seals, 0);
     assert_eq!(
-        app.rank_once(saved.review_id).await.unwrap(),
+        app.finalize_response(&permit, &raw).await.unwrap(),
         app.store.saved.as_ref().unwrap().state
     );
-    app.rank_once(saved.review_id).await.unwrap();
+    assert!(
+        app.prepare_send(saved.review_id)
+            .await
+            .unwrap()
+            .permit
+            .is_none()
+    );
     assert_eq!(app.store.sends, 1);
     assert_eq!(app.provider.calls.load(Ordering::SeqCst), 1);
     assert_eq!(app.store.applies, 0);
@@ -441,8 +525,16 @@ async fn one_use_rank_and_provider_invention_is_denied() {
         AdvisoryRequestPreference::UseWorkspace,
     )
     .await;
+    let permit = invented
+        .prepare_send(saved.review_id)
+        .await
+        .unwrap()
+        .permit
+        .unwrap();
+    let raw = invented.provider.rank(&permit).await.unwrap();
+    invented.seal_response(&permit, &raw).await.unwrap();
     assert!(matches!(
-        invented.rank_once(saved.review_id).await,
+        invented.finalize_response(&permit, &raw).await,
         Err(Error::InputConflict)
     ));
     assert_eq!(invented.store.seals, 0);
@@ -455,7 +547,7 @@ async fn one_use_rank_and_provider_invention_is_denied() {
         AntiBloatAttemptState::SendUnknown
     );
     assert_eq!(
-        invented.rank_once(saved.review_id).await.unwrap(),
+        invented.prepare_send(saved.review_id).await.unwrap().state,
         AntiBloatAttemptState::SendUnknown
     );
     assert_eq!(invented.provider.calls.load(Ordering::SeqCst), 1);

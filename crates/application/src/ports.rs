@@ -59,6 +59,10 @@ pub trait UnitOfWork:
     fn pipeline_phase_effect_store(&mut self) -> Option<&mut dyn crate::PipelinePhaseEffectStore> {
         None
     }
+    /// Optional source-bound anti-bloat ledger; absent adapters fail closed.
+    fn anti_bloat_store(&mut self) -> Option<&mut dyn crate::AntiBloatStore> {
+        None
+    }
     /// Optional pre-open pipeline recommendation persistence.
     fn pipeline_recommendation_store(
         &mut self,

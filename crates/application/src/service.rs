@@ -24,6 +24,7 @@ pub struct WorkspaceService {
     pub(crate) scope_manifest_supplier: Arc<dyn crate::ScopeManifestSupplier>,
     pub(crate) scope_budget: Arc<dyn crate::ScopeBudgetPolicy>,
     pub(crate) scope_advice_provider: Arc<dyn crate::ScopeAdviceProvider>,
+    pub(crate) anti_bloat_provider: Arc<dyn crate::AntiBloatRankingProvider>,
     #[allow(dead_code)]
     pub(crate) scope_caller: Arc<dyn crate::ScopeCaller>,
     #[allow(dead_code)]
@@ -98,6 +99,15 @@ impl WorkspaceService {
         service
     }
 
+    /// Explicit local/test composition seam. Default construction remains disabled.
+    pub fn with_anti_bloat_provider(
+        mut self,
+        provider: Arc<dyn crate::AntiBloatRankingProvider>,
+    ) -> Self {
+        self.anti_bloat_provider = provider;
+        self
+    }
+
     pub fn new(
         store: Arc<dyn Store>,
         inspector: Arc<dyn SourceInspector>,
@@ -122,6 +132,7 @@ impl WorkspaceService {
             scope_manifest_supplier: Arc::new(crate::UnavailableScopeManifestSupplier),
             scope_budget: Arc::new(crate::DenyScopeBudget),
             scope_advice_provider: Arc::new(crate::DisabledScopeAdviceProvider),
+            anti_bloat_provider: Arc::new(crate::DisabledAntiBloatRankingProvider),
             scope_caller: Arc::new(crate::DisabledScopeCaller),
             scope_verifier: Arc::new(crate::DisabledScopeVerifier),
             knowledge_embedding_provider: Arc::new(crate::DisabledKnowledgeEmbeddingProvider),

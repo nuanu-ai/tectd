@@ -1,12 +1,14 @@
 //! Slice 04 application policy. All source/plan facts come from the store port.
 use crate::{
     AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall, AntiBloatPreparedRequest,
-    AntiBloatRankingProvider, AntiBloatStore, Sha256ScopeDigest, StoredAntiBloatReview,
+    AntiBloatRankingProvider, AntiBloatSendPermit, AntiBloatStore, Sha256ScopeDigest,
+    StoredAntiBloatReview, TransactionMode, UnitOfWork, WorkspaceService,
 };
 use sha2::{Digest, Sha256};
+use std::future::Future;
 use tect_domain::{
-    AdvisoryRequestPreference, AntiBloatDisposition, CandidateDeltaReceipt, Error, Result,
-    WorkspaceAdvisoryMode, derive_anti_bloat_delta, review_anti_bloat,
+    AdvisoryRequestPreference, AntiBloatDisposition, CandidateDeltaReceipt, Error, RequestContext,
+    Result, WorkspaceAdvisoryMode, derive_anti_bloat_delta, review_anti_bloat,
 };
 use uuid::Uuid;
 
@@ -66,75 +68,22 @@ impl<S: AntiBloatStore, P: AntiBloatRankingProvider> AntiBloatApplication<S, P> 
             .await
     }
 
-    /// `begin_send` is a committed, one-use fence. Transport failure leaves a
-    /// send-unknown state; this method never retries it.
-    pub async fn rank_once(&mut self, review_id: Uuid) -> Result<AntiBloatAttemptState> {
-        let saved = self.store.review(review_id).await?.ok_or(Error::NotFound)?;
-        if saved.review_id != review_id {
-            return Err(Error::InputConflict);
-        }
-        if saved.state != AntiBloatAttemptState::Prepared {
-            return Ok(saved.state);
-        }
-        self.require_current(&saved).await?;
-        let eligible = saved
-            .review
-            .findings
-            .iter()
-            .filter(|finding| finding.rankable)
-            .map(|finding| finding.id.clone())
-            .collect::<Vec<_>>();
-        if eligible.is_empty() {
-            return Err(Error::InputConflict);
-        }
-        let request_bytes = serde_json::to_vec(&serde_json::json!({
-            "review": &saved.review, "eligible_ids": &eligible
-        }))
-        .map_err(|_| Error::InternalInvariant)?;
-        let prepared = AntiBloatPreparedRequest {
-            sha256: format!("{:x}", Sha256::digest(&request_bytes)),
-            bytes: request_bytes,
-        };
-        let Some(permit) = self.store.begin_send(&saved, &prepared).await? else {
-            return Ok(self
-                .store
-                .review(review_id)
-                .await?
-                .ok_or(Error::NotFound)?
-                .state);
-        };
-        if permit.review_id != review_id || permit.request != prepared {
-            return Err(Error::InputConflict);
-        }
-        let raw_response = match self.provider.rank(&permit).await {
-            Ok(raw) => raw,
-            Err(_) => {
-                self.store.mark_send_unknown(review_id).await?;
-                return Ok(AntiBloatAttemptState::SendUnknown);
-            }
-        };
-        let response_sha256 = format!("{:x}", Sha256::digest(&raw_response));
-        self.store
-            .seal_response(&permit, &raw_response, &response_sha256)
-            .await?;
-        let ranked: Vec<String> = match serde_json::from_slice(&raw_response) {
-            Ok(ids) => ids,
-            Err(_) => {
-                self.store.mark_send_unknown(review_id).await?;
-                return Err(Error::InputConflict);
-            }
-        };
-        // Provider output can only order the complete frozen eligible set.
-        let mut expected = eligible;
-        let mut actual = ranked.clone();
-        expected.sort();
-        actual.sort();
-        if expected != actual {
-            self.store.mark_send_unknown(review_id).await?;
-            return Err(Error::InputConflict);
-        }
-        self.store.seal_ranked(review_id, &ranked).await?;
-        Ok(AntiBloatAttemptState::Ranked(ranked))
+    /// The caller must commit this unit of work before giving the permit to a provider.
+    pub async fn prepare_send(&mut self, review_id: Uuid) -> Result<PreparedAntiBloatSend> {
+        prepare_anti_bloat_send(&mut self.store, review_id).await
+    }
+
+    /// Seal raw transport bytes in a separate transaction before interpreting them.
+    pub async fn seal_response(&mut self, permit: &AntiBloatSendPermit, raw: &[u8]) -> Result<()> {
+        seal_anti_bloat_response(&mut self.store, permit, raw).await
+    }
+
+    pub async fn finalize_response(
+        &mut self,
+        permit: &AntiBloatSendPermit,
+        raw: &[u8],
+    ) -> Result<AntiBloatAttemptState> {
+        finalize_anti_bloat_response(&mut self.store, permit, raw).await
     }
 
     /// Derives the complete post-delta graph from the frozen review. The store
@@ -176,23 +125,209 @@ impl<S: AntiBloatStore, P: AntiBloatRankingProvider> AntiBloatApplication<S, P> 
             )
             .await
     }
+}
 
-    async fn require_current(&mut self, saved: &StoredAntiBloatReview) -> Result<()> {
-        let current = self
-            .store
-            .authoritative_input(
-                saved.workspace_id,
-                saved.review.candidate_set_id,
-                saved.review.plan_revision,
-            )
-            .await?
-            .ok_or(Error::InputConflict)?;
-        if current != saved.input
-            || review_anti_bloat(&Sha256ScopeDigest, &current)? != saved.review
-        {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedAntiBloatSend {
+    pub state: AntiBloatAttemptState,
+    pub permit: Option<crate::AntiBloatSendPermit>,
+}
+
+pub async fn prepare_anti_bloat_send(
+    store: &mut dyn AntiBloatStore,
+    review_id: Uuid,
+) -> Result<PreparedAntiBloatSend> {
+    let saved = store.review(review_id).await?.ok_or(Error::NotFound)?;
+    if saved.review_id != review_id {
+        return Err(Error::InputConflict);
+    }
+    if saved.state != AntiBloatAttemptState::Prepared {
+        return Ok(PreparedAntiBloatSend {
+            state: saved.state,
+            permit: None,
+        });
+    }
+    require_current(store, &saved).await?;
+    let eligible = saved
+        .review
+        .findings
+        .iter()
+        .filter(|finding| finding.rankable)
+        .map(|finding| finding.id.clone())
+        .collect::<Vec<_>>();
+    if eligible.is_empty() {
+        return Err(Error::InputConflict);
+    }
+    let request_bytes = serde_json::to_vec(&serde_json::json!({
+        "review": &saved.review, "eligible_ids": &eligible
+    }))
+    .map_err(|_| Error::InternalInvariant)?;
+    let prepared = AntiBloatPreparedRequest {
+        sha256: format!("{:x}", Sha256::digest(&request_bytes)),
+        bytes: request_bytes,
+    };
+    let Some(permit) = store.begin_send(&saved, &prepared).await? else {
+        return Ok(PreparedAntiBloatSend {
+            state: store.review(review_id).await?.ok_or(Error::NotFound)?.state,
+            permit: None,
+        });
+    };
+    if permit.review_id != review_id || permit.request != prepared {
+        return Err(Error::InputConflict);
+    }
+    Ok(PreparedAntiBloatSend {
+        state: AntiBloatAttemptState::Sending,
+        permit: Some(permit),
+    })
+}
+
+pub async fn seal_anti_bloat_response(
+    store: &mut dyn AntiBloatStore,
+    permit: &crate::AntiBloatSendPermit,
+    raw: &[u8],
+) -> Result<()> {
+    let response_sha256 = format!("{:x}", Sha256::digest(raw));
+    store.seal_response(permit, raw, &response_sha256).await
+}
+
+pub async fn finalize_anti_bloat_response(
+    store: &mut dyn AntiBloatStore,
+    permit: &crate::AntiBloatSendPermit,
+    raw: &[u8],
+) -> Result<AntiBloatAttemptState> {
+    let saved = store
+        .review(permit.review_id)
+        .await?
+        .ok_or(Error::NotFound)?;
+    if saved.state != AntiBloatAttemptState::Sending {
+        return Err(Error::InputConflict);
+    }
+    let eligible = saved
+        .review
+        .findings
+        .iter()
+        .filter(|finding| finding.rankable)
+        .map(|finding| finding.id.clone())
+        .collect::<Vec<_>>();
+    let ranked: Vec<String> = match serde_json::from_slice(raw) {
+        Ok(ids) => ids,
+        Err(_) => {
+            store.mark_send_unknown(permit.review_id).await?;
             return Err(Error::InputConflict);
         }
-        Ok(())
+    };
+    // Provider output can only order the complete frozen eligible set.
+    let mut expected = eligible;
+    let mut actual = ranked.clone();
+    expected.sort();
+    actual.sort();
+    if expected != actual {
+        store.mark_send_unknown(permit.review_id).await?;
+        return Err(Error::InputConflict);
+    }
+    store.seal_ranked(permit.review_id, &ranked).await?;
+    Ok(AntiBloatAttemptState::Ranked(ranked))
+}
+
+async fn require_current(
+    store: &mut dyn AntiBloatStore,
+    saved: &StoredAntiBloatReview,
+) -> Result<()> {
+    let current = store
+        .authoritative_input(
+            saved.workspace_id,
+            saved.review.candidate_set_id,
+            saved.review.plan_revision,
+        )
+        .await?
+        .ok_or(Error::InputConflict)?;
+    if current != saved.input || review_anti_bloat(&Sha256ScopeDigest, &current)? != saved.review {
+        return Err(Error::InputConflict);
+    }
+    Ok(())
+}
+
+async fn rank_after_committed_fence<F: Future<Output = Result<()>>>(
+    commit: F,
+    provider: &dyn AntiBloatRankingProvider,
+    permit: &AntiBloatSendPermit,
+) -> Result<Result<Vec<u8>>> {
+    commit.await?;
+    Ok(provider.rank(permit).await)
+}
+
+impl WorkspaceService {
+    async fn anti_bloat_transaction(
+        &self,
+        context: &RequestContext,
+    ) -> Result<(Box<dyn UnitOfWork>, Uuid)> {
+        let (mut tx, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
+        tx.lock_native_session(identity.host_id, &context.native_session_id)
+            .await?;
+        let (workspace, _) = Self::bound_session(&mut *tx, context, &identity).await?;
+        Ok((tx, workspace.id))
+    }
+
+    /// The one-use send fence is committed before the provider sees a permit.
+    /// Raw response bytes are committed before their interpretation.
+    pub async fn run_anti_bloat_once(
+        &self,
+        context: &RequestContext,
+        review_id: Uuid,
+    ) -> Result<AntiBloatAttemptState> {
+        if review_id.is_nil() {
+            return Err(Error::InvalidArguments);
+        }
+        let (mut fence, _) = self.anti_bloat_transaction(context).await?;
+        let prepared = prepare_anti_bloat_send(
+            fence.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
+            review_id,
+        )
+        .await?;
+        let Some(permit) = prepared.permit else {
+            fence.commit().await?;
+            return Ok(prepared.state);
+        };
+
+        let raw = match rank_after_committed_fence(
+            fence.commit(),
+            self.anti_bloat_provider.as_ref(),
+            &permit,
+        )
+        .await?
+        {
+            Ok(raw) => raw,
+            Err(_) => {
+                let (mut uncertain, _) = self.anti_bloat_transaction(context).await?;
+                uncertain
+                    .anti_bloat_store()
+                    .ok_or(Error::StorageUnavailable)?
+                    .mark_send_unknown(review_id)
+                    .await?;
+                uncertain.commit().await?;
+                return Ok(AntiBloatAttemptState::SendUnknown);
+            }
+        };
+        let (mut seal, _) = self.anti_bloat_transaction(context).await?;
+        seal_anti_bloat_response(
+            seal.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
+            &permit,
+            &raw,
+        )
+        .await?;
+        seal.commit().await?;
+
+        let (mut finish, _) = self.anti_bloat_transaction(context).await?;
+        let outcome = finalize_anti_bloat_response(
+            finish.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
+            &permit,
+            &raw,
+        )
+        .await;
+        // Invalid provider output transitions to send_unknown even when the
+        // command reports a conflict; commit that terminal audit state.
+        finish.commit().await?;
+        outcome
     }
 }
 

@@ -78,6 +78,9 @@ impl Store for PgStore {
 
 #[async_trait]
 impl UnitOfWork for PgUnitOfWork {
+    fn anti_bloat_store(&mut self) -> Option<&mut dyn tect_application::AntiBloatStore> {
+        Some(self)
+    }
     fn pipeline_recommendation_dispatch_store(
         &mut self,
     ) -> Option<&mut dyn tect_application::PipelineRecommendationDispatchStore> {
