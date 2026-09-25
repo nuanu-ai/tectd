@@ -522,6 +522,7 @@ pub(super) fn successful_route(context: &Value) -> (&str, &str, &str) {
     )
 }
 
+#[allow(dead_code)] // Only some integration test targets exercise the refresh helper.
 pub(super) async fn refresh_knowledge(client: &mut Mcp, context: &Value) -> Value {
     let stale = client
         .call(
