@@ -312,6 +312,8 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                         serde_json::json!({"opportunity_id":opportunity_id,"status":"stale"}),
                     PipelineRecommendationRun::SendUnknown { opportunity_id, dispatch_id } =>
                         serde_json::json!({"opportunity_id":opportunity_id,"dispatch_id":dispatch_id,"status":"send_unknown"}),
+                    PipelineRecommendationRun::BudgetExhausted { opportunity_id, dispatch_id } =>
+                        serde_json::json!({"opportunity_id":opportunity_id,"dispatch_id":dispatch_id,"status":"budget_exhausted"}),
                     PipelineRecommendationRun::Ranked { opportunity_id, dispatch_id, ranked_ids } =>
                         serde_json::json!({"opportunity_id":opportunity_id,"dispatch_id":dispatch_id,"status":"ranked","ranked_ids":ranked_ids}),
                     PipelineRecommendationRun::Abstained { opportunity_id, dispatch_id } =>

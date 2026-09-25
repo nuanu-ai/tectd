@@ -160,6 +160,7 @@ async fn start_pipeline(
     tenant: Uuid,
     workspace: Uuid,
     dispatch_id: Uuid,
+    policy: Option<&AdvisoryBudgetPolicy>,
 ) -> Result<AdvisoryDispatchStart> {
     let row = pipeline_dispatch_row(tx, tenant, workspace, dispatch_id, true).await?;
     if row.state != "authorized"
@@ -169,6 +170,8 @@ async fn start_pipeline(
     {
         return Err(Error::InputConflict);
     }
+    let _opportunity = opportunity_by_id(tx, tenant, workspace, row.opportunity_id, true).await?;
+    let reservation = reserve_before_dispatch(tx, tenant, workspace, &row, policy, None).await?;
     let updated = sqlx::query(
         "UPDATE advisory_dispatch SET state='sending',send_certainty='sent_unknown',\
          send_started_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 \
@@ -202,7 +205,7 @@ async fn start_pipeline(
     Ok(AdvisoryDispatchStart {
         dispatch: dispatch_from_row(&started)?,
         should_send: true,
-        budget_reservation: None,
+        budget_reservation: Some(reservation),
     })
 }
 
@@ -212,8 +215,9 @@ async fn seal_pipeline(
     workspace: Uuid,
     dispatch_id: Uuid,
     observation: &PipelineProviderObservation,
+    elapsed_ms: i64,
 ) -> Result<StoredPipelineRecommendationDispatch> {
-    if observation.raw_response.is_empty()
+    if elapsed_ms < 0 || observation.raw_response.is_empty()
         || observation.raw_response.len() > MAX_SEALED_PIPELINE_RESPONSE_BYTES
     {
         return Err(Error::InvalidArguments);
@@ -234,7 +238,7 @@ async fn seal_pipeline(
         "sending" if row.send_certainty == "sent_unknown" => {
             let updated = sqlx::query(
                 "UPDATE advisory_dispatch SET response_payload=$4,pipeline_response_sha256=$5,\
-                 input_tokens=$6,output_tokens=$7,state='sealed',send_certainty='sent',\
+                 input_tokens=$6,output_tokens=$7,latency_ms=$8,state='sealed',send_certainty='sent',\
                  outcome='provider_response',sealed_at=pg_catalog.clock_timestamp() \
                  WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 \
                  AND state='sending' AND send_certainty='sent_unknown'",
@@ -246,6 +250,7 @@ async fn seal_pipeline(
             .bind(&digest)
             .bind(input_tokens)
             .bind(output_tokens)
+            .bind(elapsed_ms)
             .execute(&mut **tx)
             .await
             .map_err(storage_error)?;
@@ -259,6 +264,7 @@ async fn seal_pipeline(
                 || row.response_payload.as_deref() != Some(observation.raw_response.as_slice())
                 || row.input_tokens != input_tokens
                 || row.output_tokens != output_tokens
+                || row.latency_ms != Some(elapsed_ms)
             {
                 return Err(Error::InputConflict);
             }
@@ -316,7 +322,12 @@ impl PipelineRecommendationDispatchStore for PgUnitOfWork {
         dispatch_id: Uuid,
     ) -> Result<AdvisoryDispatchStart> {
         let tenant = self.tenant_id()?;
-        start_pipeline(self.transaction()?, tenant, workspace_id, dispatch_id).await
+        let now = i64::try_from(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| Error::BudgetPolicyInvalid)?
+            .as_millis()).map_err(|_| Error::BudgetPolicyInvalid)?;
+        let policy = self.authorized_budget_policy(workspace_id, now).await?;
+        start_pipeline(self.transaction()?, tenant, workspace_id, dispatch_id, policy.as_ref()).await
     }
 
     async fn seal_pipeline_dispatch(
@@ -325,6 +336,7 @@ impl PipelineRecommendationDispatchStore for PgUnitOfWork {
         workspace_id: Uuid,
         dispatch_id: Uuid,
         observation: &PipelineProviderObservation,
+        elapsed_ms: i64,
     ) -> Result<StoredPipelineRecommendationDispatch> {
         let tenant = self.tenant_id()?;
         seal_pipeline(
@@ -333,6 +345,7 @@ impl PipelineRecommendationDispatchStore for PgUnitOfWork {
             workspace_id,
             dispatch_id,
             observation,
+            elapsed_ms,
         )
         .await
     }

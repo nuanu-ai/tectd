@@ -50,5 +50,6 @@ pub trait PipelineRecommendationDispatchStore: Send {
         workspace_id: Uuid,
         dispatch_id: Uuid,
         observation: &PipelineProviderObservation,
+        elapsed_ms: i64,
     ) -> Result<StoredPipelineRecommendationDispatch>;
 }

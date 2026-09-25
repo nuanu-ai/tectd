@@ -421,3 +421,31 @@ mod audit_projection_tests {
 }
 
 include!("tests/budget_reason_persistence.rs");
+
+#[cfg(test)]
+mod pipeline_budget_sql_contract_tests {
+    #[test]
+    fn failure_seal_still_requires_explicit_unknown_delivery_and_no_response() {
+        let sql = include_str!("../../migrations/0086_pipeline_budget_failure_seal.sql");
+        assert!(sql.contains("NEW.send_certainty='sent_unknown' AND NEW.outcome='provider_failure'"));
+        assert!(sql.contains("NEW.response_payload IS NOT NULL OR NEW.pipeline_response_sha256 IS NOT NULL"));
+        assert!(sql.contains("NEW.input_tokens IS NOT NULL OR NEW.output_tokens IS NOT NULL"));
+    }
+
+    #[test]
+    fn exhaustion_verdict_is_checked_against_authoritative_measurements() {
+        let sql = include_str!("../../migrations/0087_advisory_budget_consumption_exhaustion_guard.sql");
+        for required in [
+            "FOR UPDATE",
+            "NOT NEW.exhausted_after_response",
+            "NEW.unknown_usage",
+            "prior_exhausted",
+            "NEW.monotonic_elapsed_ms > reservation.remaining_elapsed_ms",
+            "prior_input + NEW.input_tokens::numeric > input_limit::numeric",
+            "prior_output + NEW.output_tokens::numeric > output_limit::numeric",
+            "prior_elapsed + NEW.monotonic_elapsed_ms::numeric > elapsed_limit::numeric",
+        ] {
+            assert!(sql.contains(required), "missing {required}");
+        }
+    }
+}

@@ -118,7 +118,28 @@ impl PipelineStartedDispatchPermit {
             .map_err(Error::invalid_arguments_from)?;
         let config_digest = format!("{:x}", Sha256::digest(config_bytes));
         let config = &authorization.configuration_snapshot;
+        let reservation = started
+            .budget_reservation
+            .as_ref()
+            .ok_or(Error::BudgetPolicyInvalid)?;
         if !started.should_send
+            || reservation.dispatch_id != dispatch.id
+            || reservation.request_sha256 != prepared.body_sha256
+            || reservation.request_utf8_bytes
+                != i64::try_from(prepared.body.len()).map_err(|_| Error::BudgetPolicyInvalid)?
+            || reservation.reserved_calls != 1
+            || reservation.reserved_retry_dispatches != 0
+            || reservation.policy_version <= 0
+            || reservation.policy_digest.len() != 64
+            || !reservation
+                .policy_digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+            || reservation.policy_effective_from_unix_ms
+                >= reservation.policy_effective_until_unix_ms
+            || reservation.remaining_elapsed_ms <= 0
+            || reservation.reserved_input_tokens <= 0
+            || reservation.reserved_output_tokens <= 0
             || dispatch.state != AdvisoryDispatchState::Sending
             || dispatch.send_certainty != AdvisorySendCertainty::SentUnknown
             || dispatch.id != authorization.dispatch_id
@@ -282,7 +303,7 @@ impl PipelineRecommendationProvider for DisabledPipelineRecommendationProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tect_domain::AdvisoryRetryBasis;
+    use tect_domain::{AdvisoryBudgetReservation, AdvisoryRetryBasis};
 
     struct FakeProvider;
 
@@ -412,11 +433,37 @@ mod tests {
         sending.state = AdvisoryDispatchState::Sending;
         sending.send_certainty = AdvisorySendCertainty::SentUnknown;
         sending.configuration_digest = authorization.configuration_digest.clone();
-        let start = AdvisoryDispatchStart {
+        let mut start = AdvisoryDispatchStart {
             dispatch: sending.clone(),
             should_send: true,
             budget_reservation: None,
         };
+        assert!(matches!(
+            PipelineStartedDispatchPermit::after_committed_start(&start, &authorization, &attempt),
+            Err(Error::BudgetPolicyInvalid)
+        ));
+        start.budget_reservation = Some(AdvisoryBudgetReservation {
+            dispatch_id: sending.id,
+            policy_id: Uuid::new_v4(),
+            policy_version: 1,
+            policy_digest: "c".repeat(64),
+            policy_effective_from_unix_ms: 1,
+            policy_effective_until_unix_ms: 2,
+            request_sha256: attempt.body_sha256.clone(),
+            request_utf8_bytes: attempt.body.len() as i64,
+            reserved_calls: 1,
+            reserved_retry_dispatches: 0,
+            remaining_elapsed_ms: 1,
+            reserved_input_tokens: 1,
+            reserved_output_tokens: 1,
+        });
+        let wrong_digest = start.budget_reservation.as_mut().unwrap();
+        wrong_digest.request_sha256 = "d".repeat(64);
+        assert!(
+            PipelineStartedDispatchPermit::after_committed_start(&start, &authorization, &attempt)
+                .is_err()
+        );
+        start.budget_reservation.as_mut().unwrap().request_sha256 = attempt.body_sha256.clone();
         let permit =
             PipelineStartedDispatchPermit::after_committed_start(&start, &authorization, &attempt)
                 .unwrap();
