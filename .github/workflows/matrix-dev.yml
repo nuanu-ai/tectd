@@ -52,8 +52,17 @@ jobs:
         run: cargo fmt --all --check
       - name: Domain Matrix contracts
         run: |
-          cargo test -p tect-domain --lib engineering_matrix_composer_tests
-          cargo test -p tect-domain --lib engineering_choice_set_tests
+          for filter in engineering_matrix_composer::tests engineering_choice_set::tests; do
+            test_count="$(
+              cargo test -p tect-domain --lib "$filter" -- --list |
+                awk '/: test$/ { count += 1 } END { print count + 0 }'
+            )"
+            if [ "$test_count" -eq 0 ]; then
+              echo "No tests matched $filter" >&2
+              exit 1
+            fi
+            cargo test -p tect-domain --lib "$filter"
+          done
       - name: Application Matrix contracts
         run: cargo test -p tect-application --lib matrix_tasks::tests
       - name: PostgreSQL Matrix migration contracts
