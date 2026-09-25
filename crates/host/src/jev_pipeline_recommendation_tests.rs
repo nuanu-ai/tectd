@@ -1,4 +1,5 @@
 use super::*;
+use reqwest::Url;
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tect_domain::{
