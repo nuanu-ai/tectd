@@ -61,6 +61,13 @@ pub struct ModelRouteSendPermit {
     pub request_sha256: String,
 }
 
+/// The currently authenticated invocation, distinct from the historical
+/// caller that authored the selected Matrix/Work save.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelRouteInvocation {
+    pub session_id: Uuid,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRouteSealedRankingEvidence {
     pub permit: ModelRouteSendPermit,
@@ -137,11 +144,13 @@ pub trait ModelRouteAttemptStore: Send {
     async fn record_no_call(
         &mut self,
         prepared: &PreparedModelRouteRecommendation,
+        invocation: ModelRouteInvocation,
         reason: ModelRouteRunNoCall,
     ) -> Result<()>;
     async fn begin_send(
         &mut self,
         prepared: &PreparedModelRouteRecommendation,
+        invocation: ModelRouteInvocation,
         attempted: &ModelRoutePreparedAttempt,
     ) -> Result<Option<ModelRouteSendPermit>>;
     async fn seal_raw_response(

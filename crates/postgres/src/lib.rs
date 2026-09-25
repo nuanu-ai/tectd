@@ -1,12 +1,12 @@
 //! PostgreSQL persistence and operator-only administration.
 pub mod admin;
 mod advisory;
-mod anti_bloat_store;
-mod anti_bloat_verification_store;
-#[cfg(test)]
-mod anti_bloat_migration_tests;
 #[cfg(test)]
 mod advisory_migration_tests;
+#[cfg(test)]
+mod anti_bloat_migration_tests;
+mod anti_bloat_store;
+mod anti_bloat_verification_store;
 mod durable_knowledge;
 mod durable_knowledge_admin;
 mod durable_knowledge_store;
@@ -37,16 +37,6 @@ mod matrix_planning_effect_store;
 mod matrix_planning_selection_migration_tests;
 mod matrix_planning_selection_store;
 #[cfg(test)]
-mod pipeline_advice_migration_tests;
-#[cfg(test)]
-mod pipeline_advice_manifest_migration_tests;
-#[cfg(test)]
-mod pipeline_advice_ready_draft_migration_tests;
-#[cfg(test)]
-mod pipeline_phase_effect_migration_tests;
-#[cfg(test)]
-mod pipeline_dispatch_migration_tests;
-#[cfg(test)]
 mod matrix_task_migration_tests;
 #[cfg(test)]
 mod matrix_task_pg_tests;
@@ -56,18 +46,29 @@ mod matrix_verification_migration_tests;
 #[cfg(test)]
 mod matrix_verification_pg_tests;
 mod matrix_verification_store;
-mod model_route_selection_read;
-mod model_route_store;
-#[cfg(test)]
-mod model_route_migration_tests;
+mod model_route_attempt_store;
 #[cfg(test)]
 mod model_route_live_tests;
+#[cfg(test)]
+mod model_route_migration_tests;
+mod model_route_selection_read;
+mod model_route_store;
 mod native_planning;
 mod native_planning_store;
+#[cfg(test)]
+mod pipeline_advice_manifest_migration_tests;
+#[cfg(test)]
+mod pipeline_advice_migration_tests;
+#[cfg(test)]
+mod pipeline_advice_ready_draft_migration_tests;
+#[cfg(test)]
+mod pipeline_dispatch_migration_tests;
+mod pipeline_disposition_store;
 mod pipeline_execution;
 mod pipeline_execution_store;
-mod pipeline_disposition_store;
 mod pipeline_open_effect_store;
+#[cfg(test)]
+mod pipeline_phase_effect_migration_tests;
 mod pipeline_phase_effect_store;
 mod pipeline_recommendation_store;
 mod planning_knowledge;

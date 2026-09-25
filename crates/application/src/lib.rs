@@ -95,9 +95,9 @@ pub use model_route_provider::{
     prepare_model_route_send, seal_model_route_raw_response,
 };
 pub use model_route_provider_ports::{
-    DisabledModelRouteRankingProvider, ModelRouteAttemptStore, ModelRoutePreparedAttempt,
-    ModelRouteRankingProvider, ModelRouteRunNoCall, ModelRouteSealedRankingEvidence,
-    ModelRouteSendPermit,
+    DisabledModelRouteRankingProvider, ModelRouteAttemptStore, ModelRouteInvocation,
+    ModelRoutePreparedAttempt, ModelRouteRankingProvider, ModelRouteRunNoCall,
+    ModelRouteSealedRankingEvidence, ModelRouteSendPermit,
 };
 pub use model_route_recommendation::PrepareModelRouteRecommendation;
 pub use model_route_recommendation_ports::{

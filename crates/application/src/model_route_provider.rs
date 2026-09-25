@@ -1,7 +1,7 @@
 //! Three explicit transactions surround at most one optional adviser call.
 //! The caller commits the start before transport and the raw seal before parse.
 use crate::{
-    ModelRouteAttemptStore, ModelRoutePreparation, ModelRoutePreparedAttempt,
+    ModelRouteAttemptStore, ModelRouteInvocation, ModelRoutePreparation, ModelRoutePreparedAttempt,
     ModelRouteRankingProvider, ModelRouteRunNoCall, ModelRouteSealedRankingEvidence,
     ModelRouteSendPermit, PreparedModelRouteRecommendation,
 };
@@ -25,6 +25,7 @@ pub async fn prepare_model_route_send(
     store: &mut dyn ModelRouteAttemptStore,
     provider: &dyn ModelRouteRankingProvider,
     prepared: &PreparedModelRouteRecommendation,
+    invocation: ModelRouteInvocation,
 ) -> Result<ModelRouteSendStart> {
     let reason = if prepared.preparation != ModelRoutePreparation::Prepared {
         Some(ModelRouteRunNoCall::Preparation(prepared.preparation))
@@ -34,12 +35,12 @@ pub async fn prepare_model_route_send(
         None
     };
     if let Some(reason) = reason {
-        store.record_no_call(prepared, reason).await?;
+        store.record_no_call(prepared, invocation, reason).await?;
         return Ok(ModelRouteSendStart::NoCall(reason));
     }
     let attempted = provider.prepare(prepared)?;
     attempted.verify(prepared)?;
-    match store.begin_send(prepared, &attempted).await? {
+    match store.begin_send(prepared, invocation, &attempted).await? {
         Some(permit)
             if permit.workspace_id == prepared.workspace_id
                 && permit.preparation_request_key == prepared.request_key

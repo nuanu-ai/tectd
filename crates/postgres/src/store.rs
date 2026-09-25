@@ -118,10 +118,19 @@ impl UnitOfWork for PgUnitOfWork {
     ) -> Option<&mut dyn tect_application::ModelRouteDecisionStore> {
         Some(self)
     }
-    fn pipeline_open_effect_store(&mut self) -> Option<&mut dyn tect_application::PipelineOpenEffectStore> {
+    fn model_route_attempt_store(
+        &mut self,
+    ) -> Option<&mut dyn tect_application::ModelRouteAttemptStore> {
         Some(self)
     }
-    fn pipeline_phase_effect_store(&mut self) -> Option<&mut dyn tect_application::PipelinePhaseEffectStore> {
+    fn pipeline_open_effect_store(
+        &mut self,
+    ) -> Option<&mut dyn tect_application::PipelineOpenEffectStore> {
+        Some(self)
+    }
+    fn pipeline_phase_effect_store(
+        &mut self,
+    ) -> Option<&mut dyn tect_application::PipelinePhaseEffectStore> {
         Some(self)
     }
 

@@ -113,7 +113,7 @@ fn expected_preparation(
     })
 }
 
-async fn current_preparation(
+pub(crate) async fn current_preparation(
     uow: &mut PgUnitOfWork,
     prepared: &PreparedModelRouteRecommendation,
 ) -> Result<(String, Option<String>)> {
@@ -282,6 +282,13 @@ impl ModelRouteRecommendationStore for PgUnitOfWork {
 
 #[async_trait]
 impl ModelRouteDecisionStore for PgUnitOfWork {
+    async fn sealed_provider_ranking(
+        &mut self,
+        workspace_id: Uuid,
+        request_key: &str,
+    ) -> Result<Option<tect_application::ModelRouteSealedRankingEvidence>> {
+        crate::model_route_attempt_store::sealed_ranking(self, workspace_id, request_key).await
+    }
     async fn decision_by_id(
         &mut self,
         workspace_id: Uuid,
@@ -337,8 +344,31 @@ impl ModelRouteDecisionStore for PgUnitOfWork {
             return Err(Error::InputConflict);
         }
         current_preparation(self, &stored).await?;
+        let audit_state = crate::model_route_attempt_store::audit_state(
+            self, stored.workspace_id, &stored.request_key,
+        ).await?;
+        match &value.input {
+            ModelRouteDecisionInput::NoCall if audit_state.as_deref() != Some("no_call") => {
+                return Err(Error::Forbidden);
+            }
+            ModelRouteDecisionInput::Abstain
+                if matches!(audit_state.as_deref(), Some("send_unknown" | "raw_sealed")) => {
+                return Err(Error::InputConflict);
+            }
+            ModelRouteDecisionInput::Ranking(_) if audit_state.as_deref() != Some("parsed") => {
+                return Err(Error::Forbidden);
+            }
+            _ => {}
+        }
         let expected_outcome = match (&stored.preparation, &value.input) {
             (ModelRoutePreparation::Prepared, ModelRouteDecisionInput::Ranking(ranking)) => {
+                let proof = self
+                    .sealed_provider_ranking(stored.workspace_id, &stored.request_key)
+                    .await?
+                    .ok_or(Error::Forbidden)?;
+                if proof.verify(&stored)? != Some(ranking.clone()) {
+                    return Err(Error::InputConflict);
+                }
                 let eligible = stored.eligible.as_ref().ok_or(Error::InputConflict)?;
                 match eligible.recommendation(ranking)? {
                     Some(route_id) => ModelRouteDecisionOutcome::Recommended { route_id },
@@ -348,9 +378,28 @@ impl ModelRouteDecisionStore for PgUnitOfWork {
                 }
             }
             (ModelRoutePreparation::Prepared, ModelRouteDecisionInput::Abstain) => {
-                ModelRouteDecisionOutcome::Abstained {
-                    reason: ModelRouteAbstainReason::Explicit,
-                }
+                let reason = match self
+                    .sealed_provider_ranking(stored.workspace_id, &stored.request_key)
+                    .await?
+                {
+                    None => ModelRouteAbstainReason::Explicit,
+                    Some(proof) => {
+                        if proof.verify(&stored)?.is_some() {
+                            return Err(Error::InputConflict);
+                        }
+                        match proof.outcome {
+                            tect_domain::ModelRouteRankingWireOutcome::Abstained {
+                                reason: tect_domain::ModelRouteWireAbstainReason::NoPreference,
+                            } => ModelRouteAbstainReason::ProviderNoPreference,
+                            tect_domain::ModelRouteRankingWireOutcome::Abstained {
+                                reason:
+                                    tect_domain::ModelRouteWireAbstainReason::InsufficientEvidence,
+                            } => ModelRouteAbstainReason::ProviderInsufficientEvidence,
+                            _ => return Err(Error::InputConflict),
+                        }
+                    }
+                };
+                ModelRouteDecisionOutcome::Abstained { reason }
             }
             (ModelRoutePreparation::Prepared, ModelRouteDecisionInput::NoCall) => {
                 ModelRouteDecisionOutcome::Abstained {

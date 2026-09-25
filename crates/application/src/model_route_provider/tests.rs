@@ -13,6 +13,12 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
+fn invocation() -> ModelRouteInvocation {
+    ModelRouteInvocation {
+        session_id: Uuid::new_v4(),
+    }
+}
+
 fn caller<T>(value: T, node: Uuid) -> ModelRouteFact<T> {
     ModelRouteFact::Known {
         value,
@@ -153,6 +159,7 @@ impl ModelRouteAttemptStore for Memory {
     async fn record_no_call(
         &mut self,
         _: &PreparedModelRouteRecommendation,
+        _: ModelRouteInvocation,
         _: ModelRouteRunNoCall,
     ) -> Result<()> {
         self.no_calls += 1;
@@ -161,6 +168,7 @@ impl ModelRouteAttemptStore for Memory {
     async fn begin_send(
         &mut self,
         saved: &PreparedModelRouteRecommendation,
+        _: ModelRouteInvocation,
         attempted: &ModelRoutePreparedAttempt,
     ) -> Result<Option<ModelRouteSendPermit>> {
         attempted.verify(saved)?;
@@ -237,7 +245,7 @@ async fn one_call_after_commit_raw_sealed_before_rank_and_replay_no_send() {
     };
     let mut store = Memory::default();
     let ModelRouteSendStart::Started { attempted, permit } =
-        prepare_model_route_send(&mut store, &provider, &saved)
+        prepare_model_route_send(&mut store, &provider, &saved, invocation())
             .await
             .unwrap()
     else {
@@ -275,7 +283,7 @@ async fn one_call_after_commit_raw_sealed_before_rank_and_replay_no_send() {
     assert_eq!(saved.routes.recommended_route_id, None);
     assert_eq!(saved.routes.observed_actual, None);
     assert_eq!(
-        prepare_model_route_send(&mut store, &provider, &saved)
+        prepare_model_route_send(&mut store, &provider, &saved, invocation())
             .await
             .unwrap(),
         ModelRouteSendStart::Replay
@@ -297,7 +305,8 @@ async fn disabled_and_unknown_are_no_call_without_provider_attempt() {
         prepare_model_route_send(
             &mut store,
             &DisabledModelRouteRankingProvider,
-            &prepared(ModelRoutePreparation::Prepared)
+            &prepared(ModelRoutePreparation::Prepared),
+            invocation(),
         )
         .await
         .unwrap(),
@@ -307,7 +316,8 @@ async fn disabled_and_unknown_are_no_call_without_provider_attempt() {
         prepare_model_route_send(
             &mut store,
             &provider,
-            &prepared(ModelRoutePreparation::UnknownWorkFacts)
+            &prepared(ModelRoutePreparation::UnknownWorkFacts),
+            invocation(),
         )
         .await
         .unwrap(),
@@ -331,7 +341,7 @@ async fn malformed_sealed_raw_and_uncertain_send_never_retry() {
     };
     let mut store = Memory::default();
     let ModelRouteSendStart::Started { attempted, permit } =
-        prepare_model_route_send(&mut store, &provider, &saved)
+        prepare_model_route_send(&mut store, &provider, &saved, invocation())
             .await
             .unwrap()
     else {
@@ -350,7 +360,7 @@ async fn malformed_sealed_raw_and_uncertain_send_never_retry() {
     );
     store.mark_send_unknown(&permit).await.unwrap();
     assert_eq!(
-        prepare_model_route_send(&mut store, &provider, &saved)
+        prepare_model_route_send(&mut store, &provider, &saved, invocation())
             .await
             .unwrap(),
         ModelRouteSendStart::Replay
@@ -359,7 +369,7 @@ async fn malformed_sealed_raw_and_uncertain_send_never_retry() {
 
     let mut second = Memory::default();
     let ModelRouteSendStart::Started { attempted, permit } =
-        prepare_model_route_send(&mut second, &provider, &saved)
+        prepare_model_route_send(&mut second, &provider, &saved, invocation())
             .await
             .unwrap()
     else {
@@ -374,7 +384,7 @@ async fn malformed_sealed_raw_and_uncertain_send_never_retry() {
     );
     assert_eq!(second.sealed.as_deref(), Some(b"{malformed".as_slice()));
     assert_eq!(
-        prepare_model_route_send(&mut second, &provider, &saved)
+        prepare_model_route_send(&mut second, &provider, &saved, invocation())
             .await
             .unwrap(),
         ModelRouteSendStart::Replay

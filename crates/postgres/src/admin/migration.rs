@@ -112,6 +112,14 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
              model_route_decisions, model_route_dispositions TO {quoted_role}"
         ),
         format!(
+            "REVOKE ALL PRIVILEGES ON TABLE model_route_advisory_attempts, advisory_call_audit FROM {quoted_role}"
+        ),
+        format!("GRANT SELECT, INSERT ON TABLE model_route_advisory_attempts TO {quoted_role}"),
+        format!(
+            "GRANT UPDATE(state,response_payload,response_sha256,raw_sealed_at,parsed_outcome,parsed_at) ON TABLE model_route_advisory_attempts TO {quoted_role}"
+        ),
+        format!("GRANT SELECT ON TABLE advisory_call_audit TO {quoted_role}"),
+        format!(
             "GRANT UPDATE(state,request_bytes,request_sha256,ranked_ids,raw_response,response_sha256,response_sealed_at,send_started_at,sealed_at) \
              ON TABLE scope_anti_bloat_reviews TO {quoted_role}"
         ),

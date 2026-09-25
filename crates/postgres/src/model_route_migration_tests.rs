@@ -1,6 +1,8 @@
 const MIGRATION: &str = include_str!("../migrations/0080_model_route_recommendation_receipts.sql");
 const STORE: &str = include_str!("model_route_store.rs");
 const GRANTS: &str = include_str!("admin/migration.rs");
+const AUDIT: &str = include_str!("../migrations/0082_model_route_advisory_attempts.sql");
+const ATTEMPTS: &str = include_str!("model_route_attempt_store.rs");
 
 #[test]
 fn receipts_are_tenant_scoped_immutable_and_bound_to_exact_native_save() {
@@ -20,6 +22,37 @@ fn receipts_are_tenant_scoped_immutable_and_bound_to_exact_native_save() {
     ] {
         assert!(MIGRATION.contains(required), "missing {required}");
     }
+}
+
+#[test]
+fn optional_ranker_has_one_use_raw_fence_and_unified_audit() {
+    for required in [
+        "CREATE TABLE model_route_advisory_attempts",
+        "UNIQUE (tenant_id,workspace_id,preparation_request_key)",
+        "invoking_session_id uuid NOT NULL",
+        "invoking_principal_id uuid NOT NULL",
+        "NOT s.revoked AND NOT h.revoked AND pr.role='owner'",
+        "state='send_unknown' AND NEW.state='raw_sealed'",
+        "OLD.state='raw_sealed' AND NEW.state='parsed'",
+        "pg_catalog.sha256(request_payload)",
+        "pg_catalog.sha256(response_payload)",
+        "FORCE ROW LEVEL SECURITY",
+        "CREATE VIEW advisory_call_audit WITH (security_invoker=true)",
+        "CASE WHEN a.state='no_call' THEN 0 ELSE 1 END",
+    ] {
+        assert!(AUDIT.contains(required), "missing {required}");
+    }
+    for required in [
+        "current_preparation(uow, &prepared).await?",
+        "attempted.verify(prepared)?",
+        "model_route_wire_sha256(raw) != digest",
+        "parse_model_route_ranking_response(&attempted.request, &raw_response)?",
+    ] {
+        assert!(ATTEMPTS.contains(required), "missing {required}");
+    }
+    assert!(STORE.contains(".sealed_provider_ranking(stored.workspace_id"));
+    assert!(GRANTS.contains("model_route_advisory_attempts"));
+    assert!(GRANTS.contains("advisory_call_audit"));
 }
 
 #[test]
