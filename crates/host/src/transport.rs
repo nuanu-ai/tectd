@@ -324,6 +324,22 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 if responses::encoded_len(&response)? > capacity { return Err(Error::RequestTooLarge); }
                 Ok(response)
             }
+            Invocation::PipelinePhaseEffect(invocation) => {
+                service.authenticate_matrix_verifier_session(context).await?;
+                let output = match invocation {
+                    crate::pipeline_phase_effect_tools::PipelinePhaseEffectInvocation::Get { run_id, attempt_id } => {
+                        let (material, digest, principal, session) = service.get_pipeline_phase_effect(context, run_id, attempt_id).await?;
+                        crate::pipeline_phase_effect_tools::read(material, digest, principal, session)
+                    }
+                    crate::pipeline_phase_effect_tools::PipelinePhaseEffectInvocation::Verify(request) => {
+                        crate::pipeline_phase_effect_tools::guard_verify_output(&request, capacity)?;
+                        crate::pipeline_phase_effect_tools::receipt(service.verify_pipeline_phase_effect(context, &request).await?)
+                    }
+                };
+                let response = responses::with_actions(output, Vec::new(), None);
+                if responses::encoded_len(&response)? > capacity { return Err(Error::RequestTooLarge); }
+                Ok(response)
+            }
             Invocation::MatrixAdvisory(invocation) => {
                 let receipt = match invocation {
                     crate::matrix_advisory_tools::MatrixAdvisoryInvocation::Request(request) => {
@@ -511,6 +527,8 @@ fn invalid_request_auth(tool_name: &str) -> InvalidRequestAuth {
             | "verify_matrix_planning_effect"
             | "get_pipeline_open_effect"
             | "verify_pipeline_open_effect"
+            | "get_pipeline_phase_effect"
+            | "verify_pipeline_phase_effect"
     ) {
         InvalidRequestAuth::MatrixVerifier
     } else if allows_verifier_invalid_request(tool_name) {

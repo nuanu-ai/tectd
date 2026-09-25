@@ -35,6 +35,7 @@ mod pipeline_definitions;
 mod pipeline_dispatch;
 mod pipeline_output;
 mod pipeline_open_effect_tools;
+mod pipeline_phase_effect_tools;
 mod pipeline_recommendation_tools;
 mod pipeline_tools;
 mod program_output;

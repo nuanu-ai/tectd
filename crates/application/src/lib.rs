@@ -18,6 +18,7 @@ mod matrix_verification_ports;
 mod model_route_recommendation;
 mod model_route_recommendation_ports;
 mod pipeline_open_effect;
+mod pipeline_phase_effect;
 mod pipeline_recommendation;
 mod pipeline_recommendation_dispatch;
 mod pipeline_recommendation_dispatch_ports;
@@ -82,6 +83,8 @@ pub use pipeline_open_effect::{
     PipelineOpenEffectAttestation, PipelineOpenEffectMaterial, PipelineOpenEffectStore,
     PipelineOpenEffectVerdict, VerifyPipelineOpenEffect,
 };
+pub use pipeline_phase_effect::{PipelinePhaseEffectAttestation, PipelinePhaseEffectMaterial,
+    PipelinePhaseEffectStore, PipelinePhaseEffectVerdict, VerifyPipelinePhaseEffect};
 pub use pipeline_recommendation::{
     PreparePipelineRecommendation, pipeline_recommendation_source_digest,
 };

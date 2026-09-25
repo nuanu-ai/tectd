@@ -98,6 +98,9 @@ impl UnitOfWork for PgUnitOfWork {
     fn pipeline_open_effect_store(&mut self) -> Option<&mut dyn tect_application::PipelineOpenEffectStore> {
         Some(self)
     }
+    fn pipeline_phase_effect_store(&mut self) -> Option<&mut dyn tect_application::PipelinePhaseEffectStore> {
+        Some(self)
+    }
 
     fn matrix_planning_selection_store(
         &mut self,

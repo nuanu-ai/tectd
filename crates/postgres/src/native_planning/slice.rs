@@ -4,6 +4,7 @@ pub(crate) async fn open_slice(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     workspace: Uuid,
+    opener: Uuid,
     request: &OpenSlice,
     selected_pipeline: Option<PipelineKind>,
 ) -> Result<OpenSliceOutcome> {
@@ -77,7 +78,7 @@ pub(crate) async fn open_slice(
         }
     }
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO native_slices(id,tenant_id,workspace_id,scope_id,candidate_id,candidate_revision,opening_snapshot_id,title,outcome,pipeline,origin_request_id,origin_payload,source_checkpoint_id,source_checkpoint_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)").bind(id).bind(tenant).bind(workspace).bind(request.scope_id).bind(request.candidate_id).bind(request.candidate_revision).bind(request.candidate_snapshot_id).bind(title).bind(outcome).bind(selected_pipeline.unwrap_or(pipeline_kind).as_str()).bind(request.request_id).bind(&payload).bind(source_checkpoint.as_ref().map(|value|value.checkpoint_id)).bind(source_checkpoint.as_ref().map(|value|value.digest.as_str())).execute(&mut **tx).await.map_err(storage_error)?;
+    sqlx::query("INSERT INTO native_slices(id,tenant_id,workspace_id,scope_id,candidate_id,candidate_revision,opening_snapshot_id,title,outcome,pipeline,origin_request_id,origin_payload,source_checkpoint_id,source_checkpoint_digest,opened_by_principal_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)").bind(id).bind(tenant).bind(workspace).bind(request.scope_id).bind(request.candidate_id).bind(request.candidate_revision).bind(request.candidate_snapshot_id).bind(title).bind(outcome).bind(selected_pipeline.unwrap_or(pipeline_kind).as_str()).bind(request.request_id).bind(&payload).bind(source_checkpoint.as_ref().map(|value|value.checkpoint_id)).bind(source_checkpoint.as_ref().map(|value|value.digest.as_str())).bind(opener).execute(&mut **tx).await.map_err(storage_error)?;
     let slice = load_slice(tx, tenant, workspace, id)
         .await?
         .ok_or(Error::InternalInvariant)?;

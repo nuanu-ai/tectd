@@ -318,6 +318,8 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
         .await?;
     super::pipeline_advice::validate_pipeline_open_effect_schema(&mut transaction, runtime_role)
         .await?;
+    super::pipeline_advice::validate_pipeline_phase_effect_schema(&mut transaction, runtime_role)
+        .await?;
     crate::knowledge_search_admin::grant_search_runtime(&mut transaction, runtime_role).await?;
     transaction.commit().await.map_err(storage_error)
 }
@@ -348,6 +350,7 @@ pub async fn validate_runtime_role(pool: &PgPool, runtime_role: &str) -> Result<
                          'matrix_planning_selection_links',
                          'matrix_planning_effect_attestations',
                          'pipeline_open_effect_attestations',
+                         'pipeline_phase_effect_attestations',
                          'pipeline_advice_contexts',
                          'matrix_tasks', 'matrix_task_revisions',
                          'matrix_verifications', 'matrix_verification_bindings',

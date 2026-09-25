@@ -11,12 +11,35 @@ pub(super) async fn grant_pipeline_advice_runtime(
         format!("GRANT SELECT, INSERT ON TABLE pipeline_advice_dispositions TO {quoted_role}"),
         format!("REVOKE ALL PRIVILEGES ON TABLE pipeline_open_effect_attestations FROM {quoted_role}"),
         format!("GRANT SELECT, INSERT ON TABLE pipeline_open_effect_attestations TO {quoted_role}"),
+        format!("REVOKE ALL PRIVILEGES ON TABLE pipeline_phase_effect_attestations FROM {quoted_role}"),
+        format!("GRANT SELECT, INSERT ON TABLE pipeline_phase_effect_attestations TO {quoted_role}"),
+        format!("GRANT EXECUTE ON FUNCTION pipeline_phase_effect_caller(uuid,uuid,uuid) TO {quoted_role}"),
     ] {
         sqlx::query(&statement)
             .execute(&mut **transaction)
             .await
             .map_err(storage_error)?;
     }
+    Ok(())
+}
+
+pub(super) async fn validate_pipeline_phase_effect_schema(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>, runtime_role: &str,
+) -> Result<()> {
+    let ready: bool = sqlx::query_scalar(
+        "SELECT c.relrowsecurity AND c.relforcerowsecurity \
+          AND NOT pg_catalog.pg_has_role(r.oid,c.relowner,'MEMBER') \
+          AND pg_catalog.has_table_privilege($1,'public.pipeline_phase_effect_attestations','SELECT') \
+          AND pg_catalog.has_table_privilege($1,'public.pipeline_phase_effect_attestations','INSERT') \
+          AND NOT pg_catalog.has_table_privilege($1,'public.pipeline_phase_effect_attestations','UPDATE') \
+          AND NOT pg_catalog.has_table_privilege($1,'public.pipeline_phase_effect_attestations','DELETE') \
+          AND (SELECT pg_catalog.count(*)=2 FROM pg_catalog.pg_trigger t \
+             WHERE t.tgrelid=c.oid AND NOT t.tgisinternal \
+               AND t.tgname IN ('pipeline_phase_effect_active_verifier','pipeline_phase_effect_immutable')) \
+         FROM pg_catalog.pg_class c JOIN pg_catalog.pg_roles r ON r.rolname=$1 \
+         WHERE c.oid='public.pipeline_phase_effect_attestations'::regclass",
+    ).bind(runtime_role).fetch_one(&mut **transaction).await.map_err(storage_error)?;
+    if !ready { return Err(Error::StorageUnavailable); }
     Ok(())
 }
 

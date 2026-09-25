@@ -161,7 +161,8 @@ impl NativePlanningStore for PgUnitOfWork {
         } else {
             None
         };
-        native_planning::open_slice(self.transaction()?, tenant, workspace_id, request, selected)
+        let opener = self.principal_id()?;
+        native_planning::open_slice(self.transaction()?, tenant, workspace_id, opener, request, selected)
             .await
     }
     async fn slice_open_manifest(

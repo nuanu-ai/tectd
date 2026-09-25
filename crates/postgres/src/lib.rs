@@ -56,6 +56,7 @@ mod pipeline_execution;
 mod pipeline_execution_store;
 mod pipeline_disposition_store;
 mod pipeline_open_effect_store;
+mod pipeline_phase_effect_store;
 mod pipeline_recommendation_store;
 mod planning_knowledge;
 mod planning_knowledge_store;
