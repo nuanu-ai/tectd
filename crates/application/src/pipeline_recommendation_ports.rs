@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use tect_domain::{
-    AdvisoryOpportunity, AdvisoryOpportunityInput, PipelineDefinitionSnapshot, PipelineKind,
-    PipelineRecommendationManifest, PipelineRecommendationSource, Result,
+    AdvisoryOpportunity, AdvisoryOpportunityInput, Error, PipelineDefinitionSnapshot,
+    PipelineDispositionAdvice, PipelineDispositionResult, PipelineKind,
+    PipelineRecommendationManifest, PipelineRecommendationSource, Result, SliceCandidateNode,
 };
 use uuid::Uuid;
 
@@ -48,6 +49,15 @@ pub struct PreparedPipelineRecommendation {
     pub manifest: PipelineRecommendationManifest,
 }
 
+/// Adapter-loaded, saved provider outcome and exact saved Work node. No field
+/// in this basis may be accepted from the disposition caller.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipelineDispositionBasis {
+    pub prepared: PreparedPipelineRecommendation,
+    pub saved_work: SliceCandidateNode,
+    pub advice: PipelineDispositionAdvice,
+}
+
 /// A missing or invalid definition is excluded from eligibility. The host
 /// supplies immutable snapshots pinned to the current catalogue revision.
 pub trait PipelineRecommendationDefinitionProvider: Send + Sync {
@@ -85,6 +95,45 @@ impl PipelineRecommendationDefinitionProvider for UnavailablePipelineRecommendat
 /// exact request replay returns the saved receipt without recapturing.
 #[async_trait]
 pub trait PipelineRecommendationStore: Send {
+    async fn pipeline_disposition_by_opportunity(
+        &mut self,
+        _workspace_id: Uuid,
+        _opportunity_id: Uuid,
+    ) -> Result<Option<PipelineDispositionResult>> {
+        Ok(None)
+    }
+
+    /// Lock and load the saved manifest, Work node, and sealed/advised outcome.
+    /// An uncertain send must not be represented as `NoCall` or `Abstained`.
+    async fn load_pipeline_disposition_basis(
+        &mut self,
+        _workspace_id: Uuid,
+        _opportunity_id: Uuid,
+    ) -> Result<Option<PipelineDispositionBasis>> {
+        Ok(None)
+    }
+
+    /// Recheck saved planning, Matrix, source, catalogue and the exact Work
+    /// node under disposition locks. The dispatch check excludes no-call and
+    /// advised states, so it cannot be used for this operation.
+    async fn pipeline_disposition_is_current(
+        &mut self,
+        _workspace_id: Uuid,
+        _basis: &PipelineDispositionBasis,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
+    /// Atomically insert once per opportunity, with request ID uniqueness.
+    /// Return the saved row only when every field matches `result` exactly.
+    async fn capture_pipeline_disposition(
+        &mut self,
+        _workspace_id: Uuid,
+        _result: &PipelineDispositionResult,
+    ) -> Result<PipelineDispositionResult> {
+        Err(Error::Forbidden)
+    }
+
     /// Load the immutable captured triple by its exact opportunity ID.
     /// Unconfigured stores deny dispatch rather than accepting caller copies.
     async fn pipeline_recommendation_by_opportunity(

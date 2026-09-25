@@ -19,6 +19,7 @@ mod model_route_recommendation;
 mod model_route_recommendation_ports;
 mod pipeline_recommendation;
 mod pipeline_recommendation_dispatch;
+mod pipeline_recommendation_disposition;
 mod pipeline_recommendation_dispatch_ports;
 mod pipeline_recommendation_ports;
 mod pipeline_recommendation_runtime;
@@ -86,7 +87,7 @@ pub use pipeline_recommendation_dispatch_ports::{
     PipelineRecommendationDispatchStore, StoredPipelineRecommendationDispatch,
 };
 pub use pipeline_recommendation_ports::{
-    PipelineRecommendationBasis, PipelineRecommendationContext,
+    PipelineDispositionBasis, PipelineRecommendationBasis, PipelineRecommendationContext,
     PipelineRecommendationDefinitionProvider, PipelineRecommendationStore,
     PreparedPipelineRecommendation, UnavailablePipelineRecommendationDefinitions,
 };
