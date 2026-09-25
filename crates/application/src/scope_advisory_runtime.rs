@@ -330,10 +330,14 @@ pub trait ScopeAdviceProvider: Send + Sync {
 
 #[async_trait]
 pub(crate) trait ScopeCaller: Send + Sync {
+    // Deliberately disabled until the caller transport is explicitly wired.
+    #[allow(dead_code)]
     async fn call(&self) -> Result<()>;
 }
 #[async_trait]
 pub(crate) trait ScopeVerifier: Send + Sync {
+    // Deliberately disabled until the verifier transport is explicitly wired.
+    #[allow(dead_code)]
     async fn verify(&self) -> Result<()>;
 }
 

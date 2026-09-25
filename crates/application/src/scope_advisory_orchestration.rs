@@ -96,6 +96,8 @@ impl StartedScopeDispatchPermit {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+// Reserved for the independently authorized preservation use case below.
+#[allow(dead_code)]
 pub(crate) struct PreserveScopeAdvisory {
     pub receipt_id: Uuid,
     pub request_id: Uuid,

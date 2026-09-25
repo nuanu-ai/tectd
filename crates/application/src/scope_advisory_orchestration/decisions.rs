@@ -40,6 +40,8 @@ impl WorkspaceService {
         Ok(result)
     }
 
+    // Kept as a closed preservation seam; no public caller is wired yet.
+    #[allow(dead_code)]
     pub(crate) async fn preserve_scope_advisory(
         &self,
         context: &RequestContext,

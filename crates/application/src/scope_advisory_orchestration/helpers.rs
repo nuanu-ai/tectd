@@ -329,11 +329,16 @@ pub(super) fn prepared_scope_stale_reason(error: &Error) -> Option<AdvisoryReaso
 pub(super) fn validate_terminalized_pre_dispatch_opportunity(
     opportunity: AdvisoryOpportunity,
 ) -> Result<AdvisoryOpportunity> {
-    let expected = match (opportunity.state, opportunity.primary_reason) {
-        (AdvisoryOpportunityState::Invalidated, AdvisoryReason::ConfigurationChanged) => true,
-        (AdvisoryOpportunityState::NoCall, AdvisoryReason::DeterministicInputInvalid) => true,
-        _ => false,
-    };
+    let expected = matches!(
+        (opportunity.state, opportunity.primary_reason),
+        (
+            AdvisoryOpportunityState::Invalidated,
+            AdvisoryReason::ConfigurationChanged
+        ) | (
+            AdvisoryOpportunityState::NoCall,
+            AdvisoryReason::DeterministicInputInvalid
+        )
+    );
     if !expected || opportunity.provider_called {
         return Err(Error::InputConflict);
     }
