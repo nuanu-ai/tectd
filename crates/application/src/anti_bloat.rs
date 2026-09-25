@@ -1,11 +1,12 @@
 //! Slice 04 application policy. All source/plan facts come from the store port.
 use crate::{
-    AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall, AntiBloatRankingProvider,
-    AntiBloatStore, Sha256ScopeDigest, StoredAntiBloatReview,
+    AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall, AntiBloatPreparedRequest,
+    AntiBloatRankingProvider, AntiBloatStore, Sha256ScopeDigest, StoredAntiBloatReview,
 };
+use sha2::{Digest, Sha256};
 use tect_domain::{
     AdvisoryRequestPreference, AntiBloatDisposition, CandidateDeltaReceipt, Error, Result,
-    WorkspaceAdvisoryMode, check_anti_bloat_delta, review_anti_bloat,
+    WorkspaceAdvisoryMode, derive_anti_bloat_delta, review_anti_bloat,
 };
 use uuid::Uuid;
 
@@ -86,19 +87,41 @@ impl<S: AntiBloatStore, P: AntiBloatRankingProvider> AntiBloatApplication<S, P> 
         if eligible.is_empty() {
             return Err(Error::InputConflict);
         }
-        if !self.store.begin_send(&saved).await? {
+        let request_bytes = serde_json::to_vec(&serde_json::json!({
+            "review": &saved.review, "eligible_ids": &eligible
+        }))
+        .map_err(|_| Error::InternalInvariant)?;
+        let prepared = AntiBloatPreparedRequest {
+            sha256: format!("{:x}", Sha256::digest(&request_bytes)),
+            bytes: request_bytes,
+        };
+        let Some(permit) = self.store.begin_send(&saved, &prepared).await? else {
             return Ok(self
                 .store
                 .review(review_id)
                 .await?
                 .ok_or(Error::NotFound)?
                 .state);
+        };
+        if permit.review_id != review_id || permit.request != prepared {
+            return Err(Error::InputConflict);
         }
-        let ranked = match self.provider.rank(&saved.review, &eligible).await {
-            Ok(ranked) => ranked,
+        let raw_response = match self.provider.rank(&permit).await {
+            Ok(raw) => raw,
             Err(_) => {
                 self.store.mark_send_unknown(review_id).await?;
                 return Ok(AntiBloatAttemptState::SendUnknown);
+            }
+        };
+        let response_sha256 = format!("{:x}", Sha256::digest(&raw_response));
+        self.store
+            .seal_response(&permit, &raw_response, &response_sha256)
+            .await?;
+        let ranked: Vec<String> = match serde_json::from_slice(&raw_response) {
+            Ok(ids) => ids,
+            Err(_) => {
+                self.store.mark_send_unknown(review_id).await?;
+                return Err(Error::InputConflict);
             }
         };
         // Provider output can only order the complete frozen eligible set.
@@ -129,14 +152,13 @@ impl<S: AntiBloatStore, P: AntiBloatRankingProvider> AntiBloatApplication<S, P> 
             return Err(Error::InputConflict);
         }
         self.require_current(&saved).await?;
-        let preservation = check_anti_bloat_delta(
+        let (preservation, after) = derive_anti_bloat_delta(
             &Sha256ScopeDigest,
             &saved.input,
             &saved.review,
             &authored.finding_id,
             authored.disposition,
             &authored.delta,
-            &authored.after,
         )
         .map_err(|_| Error::InputConflict)?;
         if authored.disposition != AntiBloatDisposition::Narrow {
@@ -150,6 +172,7 @@ impl<S: AntiBloatStore, P: AntiBloatRankingProvider> AntiBloatApplication<S, P> 
                 authored.disposition,
                 &preservation,
                 &authored.delta,
+                &after,
             )
             .await
     }

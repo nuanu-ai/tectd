@@ -1,5 +1,5 @@
 use super::*;
-use crate::StoredAntiBloatReview;
+use crate::{AntiBloatSendPermit, StoredAntiBloatReview};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tect_domain::*;
@@ -150,6 +150,7 @@ fn input(extra: bool) -> AntiBloatInput {
     AntiBloatInput {
         manifest,
         selected_id: id,
+        graph_provenance: "trusted-fixture-binding".into(),
         dependency_digest: D.into(),
         obligation_links: vec![AntiBloatObligationLink {
             obligation_id: "obligation.intent".into(),
@@ -247,6 +248,10 @@ struct FakeStore {
     sends: usize,
     seals: usize,
     applies: usize,
+    prepared: Option<AntiBloatPreparedRequest>,
+    raw_response: Option<Vec<u8>>,
+    response_sha256: Option<String>,
+    after: Option<ResolvedCandidateDraft>,
 }
 
 #[async_trait]
@@ -272,13 +277,21 @@ impl AntiBloatStore for FakeStore {
     async fn review(&mut self, _: Uuid) -> Result<Option<StoredAntiBloatReview>> {
         Ok(self.saved.clone())
     }
-    async fn begin_send(&mut self, _: &StoredAntiBloatReview) -> Result<bool> {
+    async fn begin_send(
+        &mut self,
+        saved: &StoredAntiBloatReview,
+        prepared: &AntiBloatPreparedRequest,
+    ) -> Result<Option<AntiBloatSendPermit>> {
         if self.sends != 0 {
-            return Ok(false);
+            return Ok(None);
         }
         self.sends += 1;
+        self.prepared = Some(prepared.clone());
         self.saved.as_mut().unwrap().state = AntiBloatAttemptState::Sending;
-        Ok(true)
+        Ok(Some(AntiBloatSendPermit {
+            review_id: saved.review_id,
+            request: prepared.clone(),
+        }))
     }
     async fn mark_send_unknown(&mut self, _: Uuid) -> Result<()> {
         self.saved.as_mut().unwrap().state = AntiBloatAttemptState::SendUnknown;
@@ -289,6 +302,18 @@ impl AntiBloatStore for FakeStore {
         self.saved.as_mut().unwrap().state = AntiBloatAttemptState::Ranked(ranked.to_vec());
         Ok(())
     }
+    async fn seal_response(
+        &mut self,
+        permit: &AntiBloatSendPermit,
+        raw: &[u8],
+        sha256: &str,
+    ) -> Result<()> {
+        assert_eq!(self.prepared.as_ref(), Some(&permit.request));
+        assert_eq!(format!("{:x}", sha2::Sha256::digest(raw)), sha256);
+        self.raw_response = Some(raw.to_vec());
+        self.response_sha256 = Some(sha256.into());
+        Ok(())
+    }
     async fn apply_preserved_delta(
         &mut self,
         _: Uuid,
@@ -297,8 +322,10 @@ impl AntiBloatStore for FakeStore {
         _: AntiBloatDisposition,
         _: &AntiBloatPreservation,
         delta: &CandidateDeltaBatch,
+        after: &ResolvedCandidateDraft,
     ) -> Result<CandidateDeltaReceipt> {
         self.applies += 1;
+        self.after = Some(after.clone());
         Ok(CandidateDeltaReceipt {
             candidate_set_id: delta.candidate_set_id,
             idempotency_key: delta.idempotency_key.clone(),
@@ -316,12 +343,13 @@ struct FakeProvider {
 
 #[async_trait]
 impl AntiBloatRankingProvider for FakeProvider {
-    async fn rank(&self, _: &AntiBloatReview, eligible: &[String]) -> Result<Vec<String>> {
+    async fn rank(&self, permit: &AntiBloatSendPermit) -> Result<Vec<u8>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.invent {
-            Ok(vec!["invented".into()])
+            Ok(br#"["invented"]"#.to_vec())
         } else {
-            Ok(eligible.to_vec())
+            let request: serde_json::Value = serde_json::from_slice(&permit.request.bytes).unwrap();
+            Ok(serde_json::to_vec(&request["eligible_ids"]).unwrap())
         }
     }
 }
@@ -403,6 +431,22 @@ async fn one_use_rank_and_provider_invention_is_denied() {
     app.rank_once(saved.review_id).await.unwrap();
     assert_eq!(app.store.sends, 1);
     assert_eq!(app.provider.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(app.store.applies, 0);
+    let prepared = app.store.prepared.as_ref().unwrap();
+    assert_eq!(
+        prepared.sha256,
+        format!("{:x}", sha2::Sha256::digest(&prepared.bytes))
+    );
+    let request: serde_json::Value = serde_json::from_slice(&prepared.bytes).unwrap();
+    assert_eq!(
+        request["review"],
+        serde_json::to_value(&saved.review).unwrap()
+    );
+    let raw = app.store.raw_response.as_ref().unwrap();
+    assert_eq!(
+        app.store.response_sha256.as_ref().unwrap(),
+        &format!("{:x}", sha2::Sha256::digest(raw))
+    );
     let mut invented = self::app(true, true);
     let saved = prepare(
         &mut invented,
@@ -415,70 +459,19 @@ async fn one_use_rank_and_provider_invention_is_denied() {
         Err(Error::InputConflict)
     ));
     assert_eq!(invented.store.seals, 0);
+    assert_eq!(
+        invented.store.raw_response.as_deref(),
+        Some(br#"["invented"]"#.as_slice())
+    );
+    assert_eq!(
+        invented.store.saved.as_ref().unwrap().state,
+        AntiBloatAttemptState::SendUnknown
+    );
+    assert_eq!(
+        invented.rank_once(saved.review_id).await.unwrap(),
+        AntiBloatAttemptState::SendUnknown
+    );
+    assert_eq!(invented.provider.calls.load(Ordering::SeqCst), 1);
 }
 
-#[tokio::test]
-async fn exact_agent_delta_preserves_plan_before_caller() {
-    let mut app = app(true, false);
-    let saved = prepare(
-        &mut app,
-        WorkspaceAdvisoryMode::Optional,
-        AdvisoryRequestPreference::UseWorkspace,
-    )
-    .await;
-    let extra = Uuid::from_u128(70);
-    let finding = saved
-        .review
-        .findings
-        .iter()
-        .find(|item| item.candidate_id == extra)
-        .unwrap();
-    let before = &saved
-        .input
-        .manifest
-        .eligible(&saved.input.selected_id)
-        .unwrap()
-        .material;
-    let mut after = before.clone();
-    after.candidates.retain(|item| item.id != extra);
-    after.goals.retain(|item| item.id != Uuid::from_u128(71));
-    after.delta.added.retain(|item| item.candidate_id != extra);
-    let authored = AntiBloatAuthoredDelta {
-        review_id: saved.review_id,
-        finding_id: finding.id.clone(),
-        disposition: AntiBloatDisposition::Narrow,
-        delta: CandidateDeltaBatch {
-            candidate_set_id: Uuid::from_u128(1),
-            expected_revision: 3,
-            idempotency_key: "exact-removal".into(),
-            operations: vec![CandidateDeltaOperation::CandidateRemove {
-                candidate_id: extra,
-                expected_revision: 1,
-            }],
-        },
-        after,
-    };
-    let mut keep = authored.clone();
-    keep.disposition = AntiBloatDisposition::Keep;
-    assert!(matches!(
-        app.disposition_and_apply(&keep).await,
-        Err(Error::InputConflict)
-    ));
-    let mut mismatch = authored.clone();
-    mismatch.after.candidates[0].title = "Changed too".into();
-    assert!(matches!(
-        app.disposition_and_apply(&mismatch).await,
-        Err(Error::InputConflict)
-    ));
-    assert_eq!(app.store.applies, 0);
-    let receipt = app.disposition_and_apply(&authored).await.unwrap();
-    assert_eq!(receipt.to_revision, 4);
-    assert_eq!(app.store.applies, 1);
-    app.store.input.as_mut().unwrap().dependency_digest =
-        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into();
-    assert!(matches!(
-        app.disposition_and_apply(&authored).await,
-        Err(Error::InputConflict)
-    ));
-    assert_eq!(app.store.applies, 1);
-}
+mod contract;

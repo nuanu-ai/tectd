@@ -56,6 +56,7 @@ fn corpus(dependent: bool) -> (AntiBloatInput, Uuid) {
         AntiBloatInput {
             manifest,
             selected_id,
+            graph_provenance: "trusted-fixture-binding".into(),
             dependency_digest: DEPENDENCIES.into(),
             obligation_links: vec![AntiBloatObligationLink {
                 obligation_id: "obligation.intent".into(),

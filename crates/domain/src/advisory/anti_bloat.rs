@@ -21,6 +21,8 @@ pub struct AntiBloatObligationLink {
 pub struct AntiBloatInput {
     pub manifest: ScopeConstructorManifest,
     pub selected_id: ScopeAlternativeId,
+    /// Immutable identity of the trusted graph binding, supplied by its writer.
+    pub graph_provenance: String,
     /// Digest of the authoritative dependency graph at review time.
     pub dependency_digest: String,
     /// Explicit source-to-goal witnesses supplied by the authoritative caller.
@@ -115,7 +117,8 @@ fn validate_links(input: &AntiBloatInput) -> Result<BTreeMap<String, BTreeSet<Uu
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
-    if policy.len() != input.mandatory_policy_obligation_ids.len()
+    if input.graph_provenance.trim().is_empty()
+        || policy.len() != input.mandatory_policy_obligation_ids.len()
         || !policy.is_subset(&obligations)
         || !valid_digest(&input.dependency_digest)
     {
@@ -249,6 +252,24 @@ pub fn check_anti_bloat_delta(
     delta: &CandidateDeltaBatch,
     after: &ResolvedCandidateDraft,
 ) -> std::result::Result<AntiBloatPreservation, AntiBloatRefusal> {
+    let (preservation, derived) =
+        derive_anti_bloat_delta(digest, input, review, finding_id, disposition, delta)?;
+    if &derived != after {
+        return Err(AntiBloatRefusal::PlanMismatch);
+    }
+    Ok(preservation)
+}
+
+/// Derives the complete post-delta graph from the frozen authoritative graph.
+/// The caller never supplies the graph used for preservation or persistence.
+pub fn derive_anti_bloat_delta(
+    digest: &impl ScopeDigest,
+    input: &AntiBloatInput,
+    review: &AntiBloatReview,
+    finding_id: &str,
+    disposition: AntiBloatDisposition,
+    delta: &CandidateDeltaBatch,
+) -> std::result::Result<(AntiBloatPreservation, ResolvedCandidateDraft), AntiBloatRefusal> {
     let current = review_anti_bloat(digest, input).map_err(|_| AntiBloatRefusal::Stale)?;
     if &current != review
         || delta.candidate_set_id != review.candidate_set_id
@@ -331,18 +352,21 @@ pub fn check_anti_bloat_delta(
         .delta
         .unchanged
         .retain(|item| item.candidate_id != *candidate_id);
-    if &expected != after || after.validate().is_err() {
+    if expected.validate().is_err() {
         return Err(AntiBloatRefusal::PlanMismatch);
     }
-    let after_digest = super::scope_manifest::scope_candidate_material_digest(digest, after)
+    let after_digest = super::scope_manifest::scope_candidate_material_digest(digest, &expected)
         .map_err(|_| AntiBloatRefusal::PlanMismatch)?;
-    Ok(AntiBloatPreservation {
-        source_digest: review.source_digest.clone(),
-        before_material_digest: review.material_digest.clone(),
-        after_material_digest: after_digest,
-        whole_set_digest: review.whole_set_digest.clone(),
-        plan_revision: review.plan_revision,
-        dependency_digest: review.dependency_digest.clone(),
-        finding_id: finding_id.into(),
-    })
+    Ok((
+        AntiBloatPreservation {
+            source_digest: review.source_digest.clone(),
+            before_material_digest: review.material_digest.clone(),
+            after_material_digest: after_digest,
+            whole_set_digest: review.whole_set_digest.clone(),
+            plan_revision: review.plan_revision,
+            dependency_digest: review.dependency_digest.clone(),
+            finding_id: finding_id.into(),
+        },
+        expected,
+    ))
 }

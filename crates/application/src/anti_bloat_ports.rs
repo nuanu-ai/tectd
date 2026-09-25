@@ -33,10 +33,22 @@ pub struct StoredAntiBloatReview {
     pub state: AntiBloatAttemptState,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AntiBloatPreparedRequest {
+    pub bytes: Vec<u8>,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AntiBloatSendPermit {
+    pub review_id: Uuid,
+    pub request: AntiBloatPreparedRequest,
+}
+
 /// A database adapter must bind every operation to the authorized actor and
 /// workspace. `begin_send` atomically rechecks the frozen source/plan revision,
-/// fences the review, and commits before returning true. A replay or uncertain
-/// send always returns false.
+/// stores the exact prepared bytes and digest, and commits the one-use fence
+/// before returning a permit. A replay or uncertain send returns None.
 #[async_trait]
 pub trait AntiBloatStore: Send {
     async fn advisory_mode(&mut self, workspace_id: Uuid) -> Result<WorkspaceAdvisoryMode>;
@@ -53,9 +65,21 @@ pub trait AntiBloatStore: Send {
 
     async fn review(&mut self, review_id: Uuid) -> Result<Option<StoredAntiBloatReview>>;
 
-    async fn begin_send(&mut self, saved: &StoredAntiBloatReview) -> Result<bool>;
+    async fn begin_send(
+        &mut self,
+        saved: &StoredAntiBloatReview,
+        prepared: &AntiBloatPreparedRequest,
+    ) -> Result<Option<AntiBloatSendPermit>>;
 
     async fn mark_send_unknown(&mut self, review_id: Uuid) -> Result<()>;
+
+    /// Durably seals the unmodified transport response before interpretation.
+    async fn seal_response(
+        &mut self,
+        permit: &AntiBloatSendPermit,
+        raw_response: &[u8],
+        response_sha256: &str,
+    ) -> Result<()>;
 
     async fn seal_ranked(&mut self, review_id: Uuid, ranked_ids: &[String]) -> Result<()>;
 
@@ -72,14 +96,15 @@ pub trait AntiBloatStore: Send {
         disposition: AntiBloatDisposition,
         preservation: &AntiBloatPreservation,
         delta: &CandidateDeltaBatch,
+        after: &ResolvedCandidateDraft,
     ) -> Result<CandidateDeltaReceipt>;
 }
 
-/// Transport receives only the frozen eligible set. Implementations cannot
+/// Transport receives only the exact durably prepared request bytes. Implementations cannot
 /// obtain an attempt through the application path for disabled/skip/no-eligible.
 #[async_trait]
 pub trait AntiBloatRankingProvider: Send + Sync {
-    async fn rank(&self, review: &AntiBloatReview, eligible_ids: &[String]) -> Result<Vec<String>>;
+    async fn rank(&self, permit: &AntiBloatSendPermit) -> Result<Vec<u8>>;
 }
 
 #[derive(Debug, Default)]
@@ -87,7 +112,7 @@ pub struct DisabledAntiBloatRankingProvider;
 
 #[async_trait]
 impl AntiBloatRankingProvider for DisabledAntiBloatRankingProvider {
-    async fn rank(&self, _: &AntiBloatReview, _: &[String]) -> Result<Vec<String>> {
+    async fn rank(&self, _: &AntiBloatSendPermit) -> Result<Vec<u8>> {
         Err(tect_domain::Error::Forbidden)
     }
 }
@@ -98,5 +123,4 @@ pub struct AntiBloatAuthoredDelta {
     pub finding_id: String,
     pub disposition: AntiBloatDisposition,
     pub delta: CandidateDeltaBatch,
-    pub after: ResolvedCandidateDraft,
 }

@@ -5,6 +5,7 @@ mod anti_bloat_ports;
 pub use anti_bloat::AntiBloatApplication;
 pub use anti_bloat_ports::{
     AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall,
+    AntiBloatPreparedRequest, AntiBloatSendPermit,
     AntiBloatRankingProvider, AntiBloatStore, DisabledAntiBloatRankingProvider,
     StoredAntiBloatReview,
 };
