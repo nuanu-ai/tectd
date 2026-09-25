@@ -44,7 +44,10 @@ async fn run() -> tect_domain::Result<()> {
         Arc::new(tect_host::LocalSetupFiles),
         authority,
         supplier,
-    );
+    )
+    .with_pipeline_recommendation_definitions(Arc::new(
+        tect_host::StaticPipelineRecommendationDefinitions,
+    ));
     let embedding_enabled = match tect_host::LocalEmbeddingConfig::from_env() {
         Ok(Some(config)) => {
             service = service.with_knowledge_embedding_provider(Arc::new(
