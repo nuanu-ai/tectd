@@ -3,6 +3,7 @@ const STORE: &str = include_str!("model_route_store.rs");
 const GRANTS: &str = include_str!("admin/migration.rs");
 const AUDIT: &str = include_str!("../migrations/0082_model_route_advisory_attempts.sql");
 const ATTEMPTS: &str = include_str!("model_route_attempt_store.rs");
+const ATTEMPT_READS: &str = include_str!("model_route_attempt_store/reads.rs");
 
 #[test]
 fn receipts_are_tenant_scoped_immutable_and_bound_to_exact_native_save() {
@@ -43,13 +44,33 @@ fn optional_ranker_has_one_use_raw_fence_and_unified_audit() {
         assert!(AUDIT.contains(required), "missing {required}");
     }
     for required in [
-        "current_preparation(uow, &prepared).await?",
         "attempted.verify(prepared)?",
         "model_route_wire_sha256(raw) != digest",
-        "parse_model_route_ranking_response(&attempted.request, &raw_response)?",
     ] {
         assert!(ATTEMPTS.contains(required), "missing {required}");
     }
+    assert!(
+        ATTEMPT_READS
+            .contains("parse_model_route_ranking_response(&attempted.request, &raw_response)?")
+    );
+    let flow = ATTEMPTS
+        .split("async fn stored_preparation(")
+        .nth(1)
+        .expect("stored preparation guard exists")
+        .split("async fn attempt_row(")
+        .next()
+        .unwrap();
+    let checked = flow
+        .split("current_preparation(uow, &")
+        .nth(1)
+        .and_then(|tail| tail.split_once(").await?"))
+        .map(|(name, _)| name)
+        .expect("current preparation is rechecked");
+    let declaration = flow.find(&format!("let {checked} = uow")).unwrap();
+    let lookup = flow.find(".by_request(").unwrap();
+    let equality = flow.find(&format!("if {checked} != *prepared")).unwrap();
+    let current = flow.find("current_preparation(uow, &").unwrap();
+    assert!(declaration < lookup && lookup < equality && equality < current);
     assert!(STORE.contains(".sealed_provider_ranking(stored.workspace_id"));
     assert!(GRANTS.contains("model_route_advisory_attempts"));
     assert!(GRANTS.contains("advisory_call_audit"));
