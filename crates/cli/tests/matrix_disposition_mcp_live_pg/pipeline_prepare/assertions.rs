@@ -638,7 +638,18 @@ pub(super) async fn exercise_prepare(
         socket,
     )
     .await;
-    super::run_binding::exercise(pool, workspace, owner, &opened, scope).await;
+    let begun = super::run_binding::exercise(pool, workspace, owner, &opened, scope).await;
+    super::phase_effect::exercise(
+        pool,
+        workspace,
+        owner,
+        independent,
+        &opened,
+        &begun,
+        root,
+        socket,
+    )
+    .await;
 
     // A newer authoritative Matrix task revision invalidates this saved path.
     let mut revised_input = input();

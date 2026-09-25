@@ -14,9 +14,8 @@ use tect_domain::{
     pipeline_obligation_digest,
 };
 
-const PREPARE_SOCKET: &str = "/tmp/tectd-slice03-pg18.6.6DbOhT/socket";
-const PREPARE_SYSTEM_ID: &str = "7689334194567816573";
-const PREPARE_DATABASE_OID: i64 = 16384;
+const PREPARE_SYSTEM_ID: &str = "7689349823162929726";
+const PREPARE_DATABASE_OID: i64 = 16385;
 
 struct MutablePinnedDefinitions(Arc<AtomicBool>);
 
@@ -115,6 +114,8 @@ fn explicit_fixture_policy() -> PipelineCompatibilityPolicy {
 mod assertions;
 #[path = "pipeline_prepare/open_effect.rs"]
 mod open_effect;
+#[path = "pipeline_prepare/phase_effect.rs"]
+mod phase_effect;
 #[path = "pipeline_prepare/run_binding.rs"]
 mod run_binding;
 
@@ -126,7 +127,7 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
     );
     assert_eq!(
         std::env::var("TECT_TEST_EXPECTED_DB_OID").as_deref(),
-        Ok("16384")
+        Ok("16385")
     );
     assert_eq!(
         std::env::var("TECT_TEST_RUNTIME_ROLE").as_deref(),
@@ -134,16 +135,17 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
     );
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
     let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
+    assert_eq!(admin_url, "postgresql://tony@127.0.0.1:50446/tect_test");
+    assert_eq!(
+        runtime_url,
+        "postgresql://tect_ci@127.0.0.1:50446/tect_test"
+    );
     let admin_options = PgConnectOptions::from_str(&admin_url).unwrap();
     let runtime_options = PgConnectOptions::from_str(&runtime_url).unwrap();
-    for (options, user) in [(&admin_options, "postgres"), (&runtime_options, "tect_ci")] {
+    for (options, user) in [(&admin_options, "tony"), (&runtime_options, "tect_ci")] {
         assert_eq!(options.get_username(), user);
         assert_eq!(options.get_database(), Some("tect_test"));
-        assert_eq!(
-            options.get_socket().and_then(|p| p.to_str()),
-            Some(PREPARE_SOCKET)
-        );
-        assert_eq!(options.get_port(), 56591);
+        assert_eq!(options.get_port(), 50446);
     }
     let pool = PgPool::connect_with(admin_options).await.unwrap();
     let identity: (i32, String, String, i64, String, i64) = sqlx::query_as(
@@ -157,10 +159,10 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
     .unwrap();
     assert_eq!(identity.0, 180006);
     assert_eq!(identity.1, "tect_test");
-    assert_eq!(identity.2, "postgres");
+    assert_eq!(identity.2, "tony");
     assert_eq!(identity.3, PREPARE_DATABASE_OID);
     assert_eq!(identity.4, PREPARE_SYSTEM_ID);
-    assert_eq!(identity.5, 73);
+    assert_eq!(identity.5, 75);
     let runtime = PgPool::connect_with(runtime_options).await.unwrap();
     let role: (String, String, i64) = sqlx::query_as(
         "SELECT current_database(),current_user,(SELECT oid::bigint FROM pg_database WHERE datname=current_database())",
@@ -173,7 +175,7 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "writes only pinned disposable PostgreSQL 18.6 fixture at migration 73"]
+#[ignore = "writes only pinned clean disposable PostgreSQL 18.6 fixture at migration 75"]
 async fn public_prepare_and_run_guarded_pipeline_recommendation() {
     let (pool, runtime_url) = disposable_pair_for_prepare().await;
     let temp = private_temp();

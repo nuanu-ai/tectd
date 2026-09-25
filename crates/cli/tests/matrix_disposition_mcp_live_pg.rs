@@ -1,13 +1,15 @@
 //! Public MCP Matrix disposition proof with a synthetic provider and disposable PG18.
 //! The test is ignored until the exact pinned cluster and explicit guard are supplied.
+#[path = "pipeline_execution/full_support.rs"]
+mod full_support;
+#[path = "matrix_disposition_mcp_live_pg/pipeline_prepare.rs"]
+mod pipeline_prepare;
+#[path = "matrix_disposition_mcp_live_pg/planning_effect.rs"]
+mod planning_effect;
 #[allow(dead_code)]
 mod recovery_support;
 #[path = "matrix_disposition_mcp_live_pg/selection.rs"]
 mod selection;
-#[path = "matrix_disposition_mcp_live_pg/planning_effect.rs"]
-mod planning_effect;
-#[path = "matrix_disposition_mcp_live_pg/pipeline_prepare.rs"]
-mod pipeline_prepare;
 #[path = "native_planning/support.rs"]
 #[allow(dead_code)]
 mod support;

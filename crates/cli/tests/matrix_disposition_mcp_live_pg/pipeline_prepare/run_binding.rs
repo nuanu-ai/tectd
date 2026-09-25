@@ -6,8 +6,18 @@ pub(super) async fn exercise(
     owner: &mut Mcp,
     opened: &Value,
     scope: Uuid,
-) {
+) -> Value {
     let slice = &opened["created"];
+    let slice_id = Uuid::parse_str(slice["id"].as_str().unwrap()).unwrap();
+    let advice_created_runs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM slice_pipeline_runs WHERE workspace_id=$1 AND slice_id=$2",
+    )
+    .bind(workspace)
+    .bind(slice_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(advice_created_runs, 0);
     let begin = json!({
         "request_id": Uuid::new_v4(),
         "scope_id": scope,
@@ -18,6 +28,15 @@ pub(super) async fn exercise(
     });
     let begun = route(owner, "command", "slice.pipeline.begin", begin.clone()).await;
     let run = &begun["created"]["run"];
+    let attempts_before_owner_completion: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM slice_pipeline_phase_attempts WHERE workspace_id=$1 AND run_id=$2",
+    )
+    .bind(workspace)
+    .bind(Uuid::parse_str(run["id"].as_str().unwrap()).unwrap())
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(attempts_before_owner_completion, 0);
     assert_eq!(run["selected_option_id"], slice["selected_option_id"]);
     assert_eq!(run["verification_plan_id"], slice["verification_plan_id"]);
     assert_eq!(
@@ -52,4 +71,5 @@ pub(super) async fn exercise(
     );
     let replay = route(owner, "command", "slice.pipeline.begin", begin).await;
     assert_eq!(replay["replay"]["run"], *run);
+    begun["created"].clone()
 }
