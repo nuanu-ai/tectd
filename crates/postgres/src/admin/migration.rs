@@ -314,6 +314,8 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
     super::matrix_advisory::validate_matrix_advisory_schema(&mut transaction, runtime_role).await?;
     super::pipeline_advice::grant_pipeline_advice_runtime(&mut transaction, &quoted_role).await?;
     super::pipeline_advice::validate_pipeline_advice_schema(&mut transaction, runtime_role).await?;
+    super::pipeline_advice::validate_pipeline_disposition_schema(&mut transaction, runtime_role)
+        .await?;
     crate::knowledge_search_admin::grant_search_runtime(&mut transaction, runtime_role).await?;
     transaction.commit().await.map_err(storage_error)
 }

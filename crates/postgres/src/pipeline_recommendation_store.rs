@@ -3,16 +3,16 @@ use serde_json::Value;
 use sqlx::Row;
 use tect_application::{
     AdvisoryStore, MatrixPlanningEffectSnapshot, MatrixPlanningEffectStore, MatrixTaskStore,
-    MatrixVerificationStore, PipelineRecommendationBasis, PipelineRecommendationContext,
-    PipelineRecommendationStore, PreparedPipelineRecommendation,
+    MatrixVerificationStore, PipelineDispositionBasis, PipelineRecommendationBasis,
+    PipelineRecommendationContext, PipelineRecommendationStore, PreparedPipelineRecommendation,
     pipeline_recommendation_source_digest,
 };
 use tect_domain::{
     ADVISORY_POLICY_VERSION, AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryOpportunityInput,
     AdvisoryOpportunityState, AdvisoryReason, AdvisoryRequestPreference, Error,
     MatrixPlanningEffectMaterial, MatrixPlanningEffectNode, OwnerReportedEngineeringMatrixFacts,
-    PipelineCatalogueSnapshot, PipelineMatrixBasis, PipelineRecommendationManifest,
-    PipelineRecommendationSource, Result, SliceCandidateNode,
+    PipelineCatalogueSnapshot, PipelineDispositionResult, PipelineMatrixBasis,
+    PipelineRecommendationManifest, PipelineRecommendationSource, Result, SliceCandidateNode,
     compose_independently_verified_owner_matrix, evaluate_matrix_verification,
     matrix_verified_disposition_digest,
 };
@@ -98,6 +98,38 @@ fn reviewed_effect_digest(
 
 #[async_trait]
 impl PipelineRecommendationStore for PgUnitOfWork {
+    async fn pipeline_disposition_by_opportunity(
+        &mut self,
+        workspace_id: Uuid,
+        opportunity_id: Uuid,
+    ) -> Result<Option<PipelineDispositionResult>> {
+        crate::pipeline_disposition_store::by_opportunity(self, workspace_id, opportunity_id).await
+    }
+
+    async fn load_pipeline_disposition_basis(
+        &mut self,
+        workspace_id: Uuid,
+        opportunity_id: Uuid,
+    ) -> Result<Option<PipelineDispositionBasis>> {
+        crate::pipeline_disposition_store::load_basis(self, workspace_id, opportunity_id).await
+    }
+
+    async fn pipeline_disposition_is_current(
+        &mut self,
+        workspace_id: Uuid,
+        basis: &PipelineDispositionBasis,
+    ) -> Result<bool> {
+        crate::pipeline_disposition_store::is_current(self, workspace_id, basis).await
+    }
+
+    async fn capture_pipeline_disposition(
+        &mut self,
+        workspace_id: Uuid,
+        result: &PipelineDispositionResult,
+    ) -> Result<PipelineDispositionResult> {
+        crate::pipeline_disposition_store::capture(self, workspace_id, result).await
+    }
+
     async fn pipeline_recommendation_by_opportunity(
         &mut self,
         workspace_id: Uuid,

@@ -117,7 +117,13 @@ async fn dispose_in_store(
     let saved = store
         .capture_pipeline_disposition(workspace_id, &result)
         .await?;
-    if saved != result {
+    // A concurrent identical capture can return the first transaction's
+    // immutable receipt, whose generated ID differs from this attempt's ID.
+    if saved.request != result.request
+        || saved.work_id != result.work_id
+        || saved.advice != result.advice
+        || saved.selected_kind != result.selected_kind
+    {
         return Err(Error::InputConflict);
     }
     Ok(saved)

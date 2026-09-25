@@ -7,6 +7,8 @@ pub(super) async fn grant_pipeline_advice_runtime(
     for statement in [
         format!("REVOKE ALL PRIVILEGES ON TABLE pipeline_advice_contexts FROM {quoted_role}"),
         format!("GRANT SELECT, INSERT ON TABLE pipeline_advice_contexts TO {quoted_role}"),
+        format!("REVOKE ALL PRIVILEGES ON TABLE pipeline_advice_dispositions FROM {quoted_role}"),
+        format!("GRANT SELECT, INSERT ON TABLE pipeline_advice_dispositions TO {quoted_role}"),
     ] {
         sqlx::query(&statement)
             .execute(&mut **transaction)
@@ -111,6 +113,50 @@ pub(super) async fn validate_pipeline_advice_schema(
     .await
     .map_err(storage_error)?;
     if !shape_ready || !guards_ready || !transition_guard_ready || !grants_ready {
+        return Err(Error::InvalidConfiguration);
+    }
+    Ok(())
+}
+
+pub(super) async fn validate_pipeline_disposition_schema(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    runtime_role: &str,
+) -> Result<()> {
+    let valid: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class c \
+           JOIN pg_catalog.pg_roles r ON r.rolname=$1 \
+           WHERE c.oid='public.pipeline_advice_dispositions'::regclass \
+             AND c.relrowsecurity AND c.relforcerowsecurity \
+             AND NOT pg_catalog.pg_has_role(r.oid,c.relowner,'MEMBER')) \
+         AND (SELECT pg_catalog.count(*)=3 FROM pg_catalog.pg_trigger t \
+              JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid \
+              WHERE t.tgrelid='public.pipeline_advice_dispositions'::regclass \
+                AND t.tgenabled='O' AND NOT t.tgisinternal \
+                AND ((t.tgname='pipeline_advice_disposition_current' \
+                    AND p.proname='pipeline_advice_disposition_guard' AND p.prosecdef \
+                    AND NOT pg_catalog.has_function_privilege($1,p.oid,'EXECUTE')) \
+                  OR (t.tgname='pipeline_advice_disposition_response' \
+                    AND p.proname='pipeline_advice_disposition_require_sealed_response' \
+                    AND p.prosecdef \
+                    AND NOT pg_catalog.has_function_privilege($1,p.oid,'EXECUTE')) \
+                  OR (t.tgname='pipeline_advice_disposition_immutable' \
+                    AND p.proname='matrix_verification_deny_mutation'))) \
+         AND pg_catalog.has_table_privilege($1,'public.pipeline_advice_dispositions','SELECT') \
+         AND pg_catalog.has_table_privilege($1,'public.pipeline_advice_dispositions','INSERT') \
+         AND NOT pg_catalog.has_table_privilege($1,'public.pipeline_advice_dispositions','UPDATE') \
+         AND NOT pg_catalog.has_table_privilege($1,'public.pipeline_advice_dispositions','DELETE') \
+         AND NOT pg_catalog.has_table_privilege($1,'public.pipeline_advice_dispositions','TRUNCATE') \
+         AND NOT pg_catalog.has_table_privilege($1,'public.pipeline_advice_dispositions','TRIGGER') \
+         AND NOT EXISTS (SELECT 1 FROM pg_catalog.pg_class c \
+           CROSS JOIN LATERAL pg_catalog.aclexplode( \
+             COALESCE(c.relacl,pg_catalog.acldefault('r',c.relowner))) acl \
+           WHERE c.oid='public.pipeline_advice_dispositions'::regclass AND acl.grantee=0)",
+    )
+    .bind(runtime_role)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(storage_error)?;
+    if !valid {
         return Err(Error::InvalidConfiguration);
     }
     Ok(())

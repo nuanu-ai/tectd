@@ -16,6 +16,7 @@ struct FakeStore {
     current: bool,
     saved: Option<PipelineDispositionResult>,
     writes: usize,
+    concurrent_receipt: bool,
 }
 
 #[async_trait]
@@ -63,6 +64,12 @@ impl PipelineRecommendationStore for FakeStore {
         self.writes += 1;
         if self.saved.is_some() {
             return Err(Error::InputConflict);
+        }
+        if self.concurrent_receipt {
+            let mut first = result.clone();
+            first.id = Uuid::new_v4();
+            self.saved = Some(first.clone());
+            return Ok(first);
         }
         self.saved = Some(result.clone());
         Ok(result.clone())
@@ -228,8 +235,27 @@ fn fixture(
         current: true,
         saved: None,
         writes: 0,
+        concurrent_receipt: false,
     };
     (store, request, workspace, session, actor)
+}
+
+#[tokio::test]
+async fn concurrent_identical_capture_returns_first_receipt() {
+    let advice = PipelineDispositionAdvice::Ranked {
+        dispatch_id: Uuid::new_v4(),
+        ranked_ids: vec![
+            PipelineKind::LightweightTddDevelopment.as_str().into(),
+            PipelineKind::FullDesignToExecution.as_str().into(),
+        ],
+    };
+    let (mut store, request, workspace, session, actor) = fixture(advice);
+    store.concurrent_receipt = true;
+    let returned = dispose_in_store(&mut store, workspace, session, actor, &request)
+        .await
+        .unwrap();
+    assert_eq!(store.saved.as_ref(), Some(&returned));
+    assert_eq!(store.writes, 1);
 }
 
 #[tokio::test]
