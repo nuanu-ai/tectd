@@ -105,6 +105,20 @@ The endpoint requires HTTPS except for numeric loopback HTTP. Transport
 configuration does not authorize a call: workspace opt-in and the independent
 `TECT_JEV_BUDGET_OWNER_KEYS_JSON` policy are still required; absent budget owner
 keys deny dispatch. No credential value is written to configuration snapshots.
+Scope advisory transport is also disabled by default. To install its TypeSafe
+Jev provider, set all of `TECT_JEV_SCOPE_ENDPOINT`,
+`TECT_JEV_SCOPE_PROVIDER_PROFILE_ID`, `TECT_JEV_SCOPE_MODEL`, and
+`TYPESAFE_API_KEY` at daemon startup. The profile ID and model must match the
+workspace Scope advisory configuration. The provider identity is fixed as
+`jev-system-one` version `1`. A key alone does not enable Scope transport;
+partial configuration or an empty key rejects startup. The endpoint requires
+HTTPS except for numeric loopback HTTP and cannot contain URL credentials,
+query, or fragment. The daemon bounds each request to 512 KiB, response to
+64 KiB, and call to 10 seconds. When explicitly configured, Scope uses the
+signed budget preflight and the PostgreSQL Scope authority and authored
+manifest sources. `TECT_JEV_BUDGET_OWNER_KEYS_JSON` remains an independent
+dispatch requirement; absent budget owner keys deny dispatch. When the Scope
+tuple is absent, its budget and provider retain their deny/disabled defaults.
 `TECT_JEV_PIPELINE_COMPATIBILITY_POLICY_JSON` optionally installs one immutable
 host-reviewed compatibility snapshot at daemon startup. Omission keeps policy
 unavailable and denies all pipeline recommendation eligibility. The JSON is a

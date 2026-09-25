@@ -4,7 +4,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tect_application::{
-    FixedPipelineCompatibilityPolicy, PipelineProviderIdentity, WorkspaceService,
+    FixedPipelineCompatibilityPolicy, PipelineProviderIdentity, SignedScopeBudgetPreflight,
+    WorkspaceService,
 };
 use tect_domain::{
     AdvisoryModelConfiguration, AdvisoryProviderProfileRef, Error,
@@ -18,8 +19,11 @@ use tect_postgres::{
 };
 use tokio::net::UnixListener;
 
+#[path = "../daemon_config.rs"]
+mod daemon_config;
 #[path = "../knowledge_search_worker.rs"]
 mod knowledge_search_worker;
+use daemon_config::{database_max_connections, scope_provider_from_env};
 
 #[tokio::main]
 async fn main() {
@@ -44,6 +48,7 @@ async fn run() -> tect_domain::Result<()> {
     };
     let pipeline_provider = pipeline_provider_from_env()?;
     let pipeline_compatibility_policy = pipeline_compatibility_policy_from_env()?;
+    let scope_provider = scope_provider_from_env()?;
     validate_socket_parent(&socket)?;
     reject_existing_path(&socket)?;
 
@@ -58,13 +63,22 @@ async fn run() -> tect_domain::Result<()> {
         store.clone(),
         authority.clone(),
     ));
-    let mut service = WorkspaceService::new_with_scope_sources(
-        Arc::new(store),
-        Arc::new(tect_host::GitSourceInspector),
-        Arc::new(tect_host::LocalSetupFiles),
-        authority,
-        supplier,
-    )
+    let store = Arc::new(store);
+    let inspector = Arc::new(tect_host::GitSourceInspector);
+    let setup_files = Arc::new(tect_host::LocalSetupFiles);
+    let mut service = if let Some(provider) = scope_provider {
+        WorkspaceService::new_with_scope_advisory_adapters(
+            store,
+            inspector,
+            setup_files,
+            authority,
+            supplier,
+            Arc::new(SignedScopeBudgetPreflight),
+            Arc::new(provider),
+        )
+    } else {
+        WorkspaceService::new_with_scope_sources(store, inspector, setup_files, authority, supplier)
+    }
     .with_pipeline_recommendation_definitions(Arc::new(
         tect_host::StaticPipelineRecommendationDefinitions,
     ));
@@ -125,17 +139,6 @@ async fn run() -> tect_domain::Result<()> {
             let _ = server.await;
             Ok(())
         }
-    }
-}
-
-fn database_max_connections(value: Option<&str>) -> tect_domain::Result<u32> {
-    match value {
-        None => Ok(16),
-        Some(value) => value
-            .parse::<u32>()
-            .ok()
-            .filter(|value| (1..=64).contains(value))
-            .ok_or(Error::InvalidConfiguration),
     }
 }
 
