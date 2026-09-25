@@ -59,6 +59,44 @@ impl PgUnitOfWork {
 
 #[async_trait]
 impl Store for PgStore {
+    async fn seal_committed_model_route_response(
+        &self,
+        tenant_id: Uuid,
+        permit: &tect_application::ModelRouteSendPermit,
+        raw: &[u8],
+    ) -> Result<()> {
+        if tenant_id.is_nil()
+            || permit.attempt_id.is_nil()
+            || permit.workspace_id.is_nil()
+            || permit.preparation_request_key.is_empty()
+        {
+            return Err(Error::InputConflict);
+        }
+        // This transaction deliberately carries no authenticated user identity.
+        // It can only seal the exact committed attempt named by the server-held
+        // permit. The normal authenticated path still owns parsing and decisions.
+        let mut transaction = self.pool.begin().await.map_err(storage_error)?;
+        sqlx::query("SELECT pg_catalog.set_config('tect.tenant_id', $1, true)")
+            .bind(tenant_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+        let mut seal = PgUnitOfWork {
+            transaction: Some(transaction),
+            mode: TransactionMode::ReadWrite,
+            identity: None,
+            tenant_id: Some(tenant_id),
+        };
+        tect_application::ModelRouteAttemptStore::seal_raw_response(
+            &mut seal,
+            permit,
+            raw,
+            &model_route_wire_sha256(raw),
+        )
+        .await?;
+        Box::new(seal).commit().await
+    }
+
     async fn begin(&self, mode: TransactionMode) -> Result<Box<dyn UnitOfWork>> {
         let mut transaction = self.pool.begin().await.map_err(storage_error)?;
         if mode == TransactionMode::ReadOnly {

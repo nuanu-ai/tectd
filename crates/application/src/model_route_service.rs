@@ -9,7 +9,7 @@ use crate::{
     ModelRouteDispositionAction, ModelRouteInvocation, ModelRouteSendStart,
     PrepareModelRouteRecommendation, PreparedModelRouteRecommendation, TransactionMode,
     WorkspaceService, attempt_model_route_after_commit, finalize_model_route_sealed_response,
-    prepare_model_route_send, seal_model_route_raw_response,
+    prepare_model_route_send,
 };
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -234,15 +234,26 @@ impl WorkspaceService {
                     Ok(raw) => raw,
                     Err(_) => return self.get_model_route(context, preparation_request_key).await,
                 };
-                let (mut seal, _) = self.authorized(context, TransactionMode::ReadWrite).await?;
-                seal_model_route_raw_response(
-                    seal.model_route_attempt_store().ok_or(Error::Forbidden)?,
-                    &permit,
-                    &raw,
-                )
-                .await?;
-                seal.commit().await?;
-                let (mut parse, _) = self.authorized(context, TransactionMode::ReadWrite).await?;
+                // The provider may return after the invoking session is
+                // revoked. Preserve its raw response under the committed,
+                // exact one-use permit before attempting any new user auth.
+                self.seal_committed_model_route_response(identity.tenant_id, &permit, &raw)
+                    .await?;
+                let (mut parse, parse_identity) =
+                    self.authorized(context, TransactionMode::ReadWrite).await?;
+                parse
+                    .lock_native_session(parse_identity.host_id, &context.native_session_id)
+                    .await?;
+                let parse_session = parse
+                    .session(parse_identity.host_id, &context.native_session_id)
+                    .await?
+                    .ok_or(Error::WorkspaceNotOpen)?;
+                let parse_workspace =
+                    Self::validate_binding(&mut *parse, context, &parse_identity, &parse_session)
+                        .await?;
+                if parse_workspace.id != permit.workspace_id {
+                    return Err(Error::StaleContext);
+                }
                 let parsed = finalize_model_route_sealed_response(
                     parse.model_route_attempt_store().ok_or(Error::Forbidden)?,
                     &prepared,

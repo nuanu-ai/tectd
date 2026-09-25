@@ -6,6 +6,32 @@ use std::os::unix::fs::PermissionsExt;
 use tect_application::WorkspaceService;
 use tokio::net::UnixListener;
 
+struct RevokeAfterCommittedSend {
+    inner: FakeJevRanker,
+    admin_pool: PgPool,
+    session_id: Uuid,
+}
+
+#[async_trait]
+impl ModelRouteRankingProvider for RevokeAfterCommittedSend {
+    fn prepare(
+        &self,
+        saved: &tect_application::PreparedModelRouteRecommendation,
+    ) -> tect_domain::Result<ModelRoutePreparedAttempt> {
+        self.inner.prepare(saved)
+    }
+
+    async fn attempt_prepared(
+        &self,
+        attempted: ModelRoutePreparedAttempt,
+        permit: ModelRouteSendPermit,
+    ) -> tect_domain::Result<Vec<u8>> {
+        let raw = self.inner.attempt_prepared(attempted, permit).await?;
+        crate::admin::revoke_session(&self.admin_pool, self.session_id).await?;
+        Ok(raw)
+    }
+}
+
 fn request(
     created: &super::super::positive::Fixture,
     label: &str,
@@ -367,4 +393,129 @@ async fn unix_host_model_route_tools_preserve_the_committed_fake_call() {
     server.abort();
     std::fs::remove_file(socket).unwrap();
     std::fs::remove_dir(socket_dir).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires identity-pinned disposable PG18 and TECT_TEST_* URLs"]
+async fn revoked_session_after_send_still_seals_raw_without_decision() {
+    assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
+    let admin_pool = PgPool::connect(&std::env::var("TECT_TEST_ADMIN_URL").unwrap())
+        .await
+        .unwrap();
+    let runtime_pool = PgPool::connect(&std::env::var("TECT_TEST_RUNTIME_URL").unwrap())
+        .await
+        .unwrap();
+    let identity: (String, i64, String, i64) = sqlx::query_as(
+        "SELECT current_database(),(SELECT oid::bigint FROM pg_catalog.pg_database WHERE datname=current_database()),\
+         (SELECT system_identifier::text FROM pg_catalog.pg_control_system()),\
+         (SELECT max(version) FROM _sqlx_migrations)",
+    )
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (
+            identity.0.as_str(),
+            identity.1,
+            identity.2.as_str(),
+            identity.3
+        ),
+        ("tect_test", 16385, "7689349823162929726", 82)
+    );
+    let created = fixture(&admin_pool, &runtime_pool).await;
+    let context = tect_domain::RequestContext {
+        auth: created.owner.auth.clone(),
+        native_session_id: created.invocation_session.to_string(),
+        workspace_key: format!("route-positive-{}", created.workspace),
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let adapters = Arc::new(UnusedAdapters);
+    let store = PgStore::from_pool(runtime_pool.clone());
+    let service = WorkspaceService::new(Arc::new(store.clone()), adapters.clone(), adapters)
+        .with_model_route_catalogue_provider(Arc::new(TestCatalogue))
+        .with_model_route_host_capabilities_provider(Arc::new(TestHost))
+        .with_model_route_ranking_provider(Arc::new(RevokeAfterCommittedSend {
+            inner: FakeJevRanker {
+                pool: runtime_pool.clone(),
+                tenant: created.tenant,
+                calls: calls.clone(),
+                malformed: false,
+            },
+            admin_pool: admin_pool.clone(),
+            session_id: created.invocation_session,
+        }));
+    let prepared = request(&created, "revoke-after-send");
+    assert_eq!(
+        service
+            .prepare_model_route(&context, &prepared)
+            .await
+            .unwrap()
+            .preparation,
+        ModelRoutePreparation::Prepared
+    );
+    assert!(matches!(
+        service
+            .run_model_route(&context, &prepared.request_key)
+            .await,
+        Err(Error::SessionRevoked)
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let mut tx = runtime_pool.begin().await.unwrap();
+    sqlx::query("SELECT pg_catalog.set_config('tect.tenant_id',$1,true)")
+        .bind(created.tenant.to_string())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let row = sqlx::query(
+        "SELECT id,state,request_sha256,response_payload,response_sha256 \
+         FROM model_route_advisory_attempts WHERE tenant_id=$1 AND workspace_id=$2 \
+         AND preparation_request_key=$3",
+    )
+    .bind(created.tenant)
+    .bind(created.workspace)
+    .bind(&prepared.request_key)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(row.try_get::<String, _>("state").unwrap(), "raw_sealed");
+    let raw: Vec<u8> = row.try_get("response_payload").unwrap();
+    let digest: String = row.try_get("response_sha256").unwrap();
+    assert_eq!(format!("{:x}", Sha256::digest(&raw)), digest);
+    let decisions: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM model_route_decisions WHERE tenant_id=$1 AND workspace_id=$2 \
+         AND preparation_request_key=$3",
+    )
+    .bind(created.tenant)
+    .bind(created.workspace)
+    .bind(&prepared.request_key)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(decisions, 0);
+    let wrong_permit = ModelRouteSendPermit {
+        attempt_id: row.try_get("id").unwrap(),
+        workspace_id: created.workspace,
+        preparation_request_key: prepared.request_key.clone(),
+        request_sha256: "0".repeat(64),
+    };
+    tx.rollback().await.unwrap();
+    assert!(matches!(
+        store
+            .seal_committed_model_route_response(created.tenant, &wrong_permit, &raw)
+            .await,
+        Err(Error::InputConflict)
+    ));
+    assert!(matches!(
+        service
+            .get_model_route(&context, &prepared.request_key)
+            .await,
+        Err(Error::SessionRevoked)
+    ));
+    assert!(matches!(
+        service
+            .run_model_route(&context, &prepared.request_key)
+            .await,
+        Err(Error::SessionRevoked)
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }

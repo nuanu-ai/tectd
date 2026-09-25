@@ -15,6 +15,19 @@ pub enum TransactionMode {
 #[async_trait]
 pub trait Store: Send + Sync {
     async fn begin(&self, mode: TransactionMode) -> Result<Box<dyn UnitOfWork>>;
+
+    /// Internal continuation after a committed model-route send. The caller
+    /// supplies only the server-held permit and returned raw bytes; adapters
+    /// must verify the exact tenant/attempt/request binding before sealing.
+    /// This is not a new user authorization or a route to parse/decide.
+    async fn seal_committed_model_route_response(
+        &self,
+        _tenant_id: Uuid,
+        _permit: &crate::ModelRouteSendPermit,
+        _raw: &[u8],
+    ) -> Result<()> {
+        Err(tect_domain::Error::Forbidden)
+    }
 }
 
 /// A dropped unit of work rolls back. No database-specific types escape this port.
