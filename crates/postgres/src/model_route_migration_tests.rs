@@ -48,9 +48,10 @@ fn optional_ranker_has_one_use_raw_fence_and_unified_audit() {
         ATTEMPT_BUDGET.contains("attempted.verify(prepared)?"),
         "missing attempted.verify(prepared)?"
     );
-    for required in ["model_route_wire_sha256(raw) != digest"] {
-        assert!(ATTEMPTS.contains(required), "missing {required}");
-    }
+    assert!(
+        ATTEMPTS.contains("model_route_wire_sha256(raw) != digest"),
+        "missing model_route_wire_sha256(raw) != digest"
+    );
     assert!(
         ATTEMPT_READS
             .contains("parse_model_route_ranking_response(&attempted.request, &raw_response)?")
