@@ -1,5 +1,18 @@
 use super::*;
 
+type AntiBloatReservationContextRow = (
+    Uuid,
+    Uuid,
+    i64,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    Option<String>,
+);
+type AntiBloatConsumptionRow = (Option<i64>, Option<i64>, Option<i64>, bool);
+
 pub(super) async fn begin_send(
     uow: &mut PgUnitOfWork,
     saved: &StoredAntiBloatReview,
@@ -232,17 +245,7 @@ pub(super) async fn consume_budget(
     }
     let tenant = uow.tenant_id()?;
     let actor = uow.principal_id()?;
-    let row: Option<(
-        Uuid,
-        Uuid,
-        i64,
-        String,
-        String,
-        i64,
-        i64,
-        i64,
-        Option<String>,
-    )> = sqlx::query_as(
+    let row: Option<AntiBloatReservationContextRow> = sqlx::query_as(
         "SELECT r.workspace_id,r.policy_id,r.policy_version,r.policy_digest,r.request_sha256,\
          r.reserved_input_tokens,r.reserved_output_tokens,r.reserved_elapsed_ms,\
          v.response_sha256 FROM scope_anti_bloat_budget_reservations r \
@@ -274,7 +277,7 @@ pub(super) async fn consume_budget(
     if response_sha256.as_deref() != Some(digest(&observation.raw).as_str()) {
         return Err(Error::InputConflict);
     }
-    let existing: Option<(Option<i64>, Option<i64>, Option<i64>, bool)> = sqlx::query_as(
+    let existing: Option<AntiBloatConsumptionRow> = sqlx::query_as(
         "SELECT input_tokens,output_tokens,elapsed_monotonic_ms,exhausted_after_response \
          FROM scope_anti_bloat_budget_consumptions WHERE tenant_id=$1 AND review_id=$2",
     )

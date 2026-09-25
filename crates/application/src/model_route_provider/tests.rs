@@ -291,11 +291,15 @@ impl ModelRouteAttemptStore for Memory {
                 Err(Error::InputConflict)
             };
         }
-        let exhausted = observation.input_tokens.is_none_or(|n| n < 0 || n > 100)
-            || observation.output_tokens.is_none_or(|n| n < 0 || n > 100)
+        let exhausted = observation
+            .input_tokens
+            .is_none_or(|n| !(0..=100).contains(&n))
+            || observation
+                .output_tokens
+                .is_none_or(|n| !(0..=100).contains(&n))
             || observation
                 .elapsed_monotonic_ms
-                .is_none_or(|n| n < 0 || n > 10_000);
+                .is_none_or(|n| !(0..=10_000).contains(&n));
         self.consumed = Some((observation.clone(), exhausted));
         Ok(exhausted)
     }
@@ -439,8 +443,10 @@ async fn no_trusted_policy_blocks_send_and_unknown_or_overrun_usage_blocks_ranki
         committed: Arc::new(AtomicBool::new(true)),
         fail: false,
     };
-    let mut no_policy = Memory::default();
-    no_policy.policy_enabled = false;
+    let mut no_policy = Memory {
+        policy_enabled: false,
+        ..Memory::default()
+    };
     assert_eq!(
         prepare_model_route_send(&mut no_policy, &provider, &saved, invocation()).await,
         Err(Error::BudgetPolicyInvalid)
