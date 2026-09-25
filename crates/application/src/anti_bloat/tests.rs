@@ -1,0 +1,484 @@
+use super::*;
+use crate::StoredAntiBloatReview;
+use async_trait::async_trait;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tect_domain::*;
+
+const D: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+fn input(extra: bool) -> AntiBloatInput {
+    let digest = Sha256ScopeDigest;
+    let mut source = FrozenScopeSource {
+        candidate_set_id: Uuid::from_u128(1),
+        candidate_set_revision: 3,
+        snapshot_id: Uuid::from_u128(2),
+        input_cursor: 2,
+        program_id: Uuid::from_u128(3),
+        program_revision: 4,
+        program_latest_input: 2,
+        planning_latest_input: 2,
+        selected_sources_digest: D.into(),
+        method_revision: "4".into(),
+        method_digest: D.into(),
+        registry_revision: "3".into(),
+        registry_digest: D.into(),
+        inputs: vec![FrozenSourceInput {
+            id: "program.intent".into(),
+            version: "4".into(),
+            digest: D.into(),
+            provenance: "program.intent@4".into(),
+            applicability: SourceApplicability::Applicable,
+        }],
+        digest: String::new(),
+    };
+    source.digest = source.canonical_digest(&digest).unwrap();
+    let constructor = ScopeConstructorIdentity {
+        id: "fixture-constructor".into(),
+        version: "1".into(),
+        digest: D.into(),
+    };
+    let coverage = vec![ObligationCoverage {
+        obligation_id: "obligation.intent".into(),
+        condition_ids: vec!["condition.a".into()],
+        exception_ids: vec!["exception.a".into()],
+    }];
+    let required = Uuid::from_u128(52);
+    let required_goal = Uuid::from_u128(51);
+    let mut material = ResolvedCandidateDraft {
+        boundary: CandidateBoundary::Finite,
+        goals: vec![CoverageGoalEntity {
+            id: required_goal,
+            revision: 1,
+            text: "Preserve source".into(),
+            source_ref_id: Uuid::from_u128(50),
+            exact_quote: None,
+            resolution: CoverageResolutionEntity {
+                kind: CoverageResolutionKind::Candidate,
+                id: required,
+            },
+        }],
+        evidence: vec![],
+        candidates: vec![CandidateEntity {
+            id: required,
+            revision: 1,
+            title: "Required".into(),
+            outcome: "Required".into(),
+            trigger: "Source".into(),
+            delivered_behavior: "Deliver requirement".into(),
+            proof: "Test".into(),
+            includes: vec!["supplied".into()],
+            excludes: vec![],
+            dependencies: vec![],
+            coverage_goal_ids: vec![required_goal],
+            evidence_ids: vec![],
+        }],
+        blockers: vec![],
+        pending_question: None,
+        empty_disposition: None,
+        protected_changes: vec![],
+        delta: CandidateDelta {
+            added: vec![CandidateAdded {
+                candidate_id: required,
+                revision: 1,
+            }],
+            ..CandidateDelta::default()
+        },
+    };
+    if extra {
+        let extra_id = Uuid::from_u128(70);
+        let extra_goal = Uuid::from_u128(71);
+        let mut candidate = material.candidates[0].clone();
+        candidate.id = extra_id;
+        candidate.title = "Optional dashboard".into();
+        candidate.outcome = "Optional dashboard".into();
+        candidate.delivered_behavior = "Show optional dashboard".into();
+        candidate.coverage_goal_ids = vec![extra_goal];
+        material.candidates.push(candidate);
+        let mut goal = material.goals[0].clone();
+        goal.id = extra_goal;
+        goal.text = "Optional dashboard".into();
+        goal.resolution.id = extra_id;
+        material.goals.push(goal);
+        material.delta.added.push(CandidateAdded {
+            candidate_id: extra_id,
+            revision: 1,
+        });
+    }
+    let material_digest = scope_candidate_material_digest(&digest, &material).unwrap();
+    let id = stable_scope_alternative_id(
+        &digest,
+        &constructor,
+        &source.digest,
+        ScopeDecompositionKind::Cohesive,
+        &material_digest,
+        &coverage,
+    )
+    .unwrap();
+    let alternative = ScopeDecompositionAlternative {
+        id: id.clone(),
+        kind: ScopeDecompositionKind::Cohesive,
+        material,
+        material_digest,
+        coverage,
+    };
+    let mut manifest = ScopeConstructorManifest {
+        constructor,
+        source,
+        obligations: vec![SourceObligation {
+            id: "obligation.intent".into(),
+            source_input_id: "program.intent".into(),
+            statement_digest: D.into(),
+            conditions: vec![SourceClause {
+                id: "condition.a".into(),
+                digest: D.into(),
+            }],
+            exceptions: vec![SourceClause {
+                id: "exception.a".into(),
+                digest: D.into(),
+            }],
+        }],
+        emitted: vec![alternative],
+        rejected: vec![],
+        baseline_id: id.clone(),
+        ordered_ids: vec![id.clone()],
+        eligible_set_digest: String::new(),
+        whole_set_digest: String::new(),
+    };
+    manifest.eligible_set_digest = manifest.canonical_eligible_set_digest(&digest).unwrap();
+    manifest.whole_set_digest = manifest.canonical_whole_set_digest(&digest).unwrap();
+    manifest.validate(&digest).unwrap();
+    AntiBloatInput {
+        manifest,
+        selected_id: id,
+        dependency_digest: D.into(),
+        obligation_links: vec![AntiBloatObligationLink {
+            obligation_id: "obligation.intent".into(),
+            goal_id: required_goal,
+        }],
+        mandatory_policy_obligation_ids: vec!["obligation.intent".into()],
+    }
+}
+
+fn refresh(mut value: AntiBloatInput) -> AntiBloatInput {
+    let digest = Sha256ScopeDigest;
+    let alternative = &mut value.manifest.emitted[0];
+    alternative.material_digest =
+        scope_candidate_material_digest(&digest, &alternative.material).unwrap();
+    alternative.id = stable_scope_alternative_id(
+        &digest,
+        &value.manifest.constructor,
+        &value.manifest.source.digest,
+        alternative.kind,
+        &alternative.material_digest,
+        &alternative.coverage,
+    )
+    .unwrap();
+    value.selected_id = alternative.id.clone();
+    value.manifest.baseline_id = alternative.id.clone();
+    value.manifest.ordered_ids = vec![alternative.id.clone()];
+    value.manifest.eligible_set_digest = value
+        .manifest
+        .canonical_eligible_set_digest(&digest)
+        .unwrap();
+    value.manifest.whole_set_digest = value.manifest.canonical_whole_set_digest(&digest).unwrap();
+    value.manifest.validate(&digest).unwrap();
+    value
+}
+
+#[tokio::test]
+async fn required_enabler_duplicate_and_unknown_stay_source_relative() {
+    let mut cases = Vec::new();
+    let baseline = input(true);
+    cases.push((baseline.clone(), AntiBloatClass::UnsupportedMechanism, true));
+    let mut enabler = baseline.clone();
+    enabler.manifest.emitted[0].material.candidates[0]
+        .dependencies
+        .push(Uuid::from_u128(70));
+    cases.push((refresh(enabler), AntiBloatClass::NecessaryEnabler, false));
+    let mut duplicate = baseline.clone();
+    let required = duplicate.manifest.emitted[0].material.candidates[0].clone();
+    let extra = &mut duplicate.manifest.emitted[0].material.candidates[1];
+    extra.outcome = required.outcome;
+    extra.trigger = required.trigger;
+    extra.delivered_behavior = required.delivered_behavior;
+    extra.proof = required.proof;
+    cases.push((refresh(duplicate), AntiBloatClass::Duplicate, true));
+    let mut unknown = baseline;
+    let evidence_id = Uuid::from_u128(72);
+    unknown.manifest.emitted[0]
+        .material
+        .evidence
+        .push(EvidenceEntity {
+            id: evidence_id,
+            revision: 1,
+            kind: EvidenceKind::VerifiedEvidence,
+            summary: "Relevant prior evidence".into(),
+            source_ref_id: Uuid::from_u128(50),
+            authority_input_sequence: None,
+        });
+    unknown.manifest.emitted[0].material.candidates[1]
+        .evidence_ids
+        .push(evidence_id);
+    cases.push((refresh(unknown), AntiBloatClass::Unknown, false));
+    for (source, class, rankable) in cases {
+        let mut app = app(true, false);
+        app.store.input = Some(source);
+        let saved = prepare(
+            &mut app,
+            WorkspaceAdvisoryMode::Optional,
+            AdvisoryRequestPreference::UseWorkspace,
+        )
+        .await;
+        let finding = saved
+            .review
+            .findings
+            .iter()
+            .find(|finding| finding.candidate_id == Uuid::from_u128(70))
+            .unwrap();
+        assert_eq!((finding.class, finding.rankable), (class, rankable));
+    }
+}
+
+#[derive(Default)]
+struct FakeStore {
+    mode: WorkspaceAdvisoryMode,
+    input: Option<AntiBloatInput>,
+    saved: Option<StoredAntiBloatReview>,
+    sends: usize,
+    seals: usize,
+    applies: usize,
+}
+
+#[async_trait]
+impl AntiBloatStore for FakeStore {
+    async fn advisory_mode(&mut self, _: Uuid) -> Result<WorkspaceAdvisoryMode> {
+        Ok(self.mode)
+    }
+    async fn authoritative_input(
+        &mut self,
+        _: Uuid,
+        _: Uuid,
+        _: i64,
+    ) -> Result<Option<AntiBloatInput>> {
+        Ok(self.input.clone())
+    }
+    async fn save_review(
+        &mut self,
+        record: StoredAntiBloatReview,
+    ) -> Result<StoredAntiBloatReview> {
+        self.saved = Some(record.clone());
+        Ok(record)
+    }
+    async fn review(&mut self, _: Uuid) -> Result<Option<StoredAntiBloatReview>> {
+        Ok(self.saved.clone())
+    }
+    async fn begin_send(&mut self, _: &StoredAntiBloatReview) -> Result<bool> {
+        if self.sends != 0 {
+            return Ok(false);
+        }
+        self.sends += 1;
+        self.saved.as_mut().unwrap().state = AntiBloatAttemptState::Sending;
+        Ok(true)
+    }
+    async fn mark_send_unknown(&mut self, _: Uuid) -> Result<()> {
+        self.saved.as_mut().unwrap().state = AntiBloatAttemptState::SendUnknown;
+        Ok(())
+    }
+    async fn seal_ranked(&mut self, _: Uuid, ranked: &[String]) -> Result<()> {
+        self.seals += 1;
+        self.saved.as_mut().unwrap().state = AntiBloatAttemptState::Ranked(ranked.to_vec());
+        Ok(())
+    }
+    async fn apply_preserved_delta(
+        &mut self,
+        _: Uuid,
+        _: &AntiBloatInput,
+        _: &str,
+        _: AntiBloatDisposition,
+        _: &AntiBloatPreservation,
+        delta: &CandidateDeltaBatch,
+    ) -> Result<CandidateDeltaReceipt> {
+        self.applies += 1;
+        Ok(CandidateDeltaReceipt {
+            candidate_set_id: delta.candidate_set_id,
+            idempotency_key: delta.idempotency_key.clone(),
+            from_revision: delta.expected_revision,
+            to_revision: delta.expected_revision + 1,
+            stale_reasons: vec![],
+        })
+    }
+}
+
+struct FakeProvider {
+    calls: AtomicUsize,
+    invent: bool,
+}
+
+#[async_trait]
+impl AntiBloatRankingProvider for FakeProvider {
+    async fn rank(&self, _: &AntiBloatReview, eligible: &[String]) -> Result<Vec<String>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.invent {
+            Ok(vec!["invented".into()])
+        } else {
+            Ok(eligible.to_vec())
+        }
+    }
+}
+
+fn app(extra: bool, invent: bool) -> AntiBloatApplication<FakeStore, FakeProvider> {
+    AntiBloatApplication {
+        store: FakeStore {
+            input: Some(input(extra)),
+            ..FakeStore::default()
+        },
+        provider: FakeProvider {
+            calls: AtomicUsize::new(0),
+            invent,
+        },
+    }
+}
+
+async fn prepare(
+    app: &mut AntiBloatApplication<FakeStore, FakeProvider>,
+    mode: WorkspaceAdvisoryMode,
+    preference: AdvisoryRequestPreference,
+) -> StoredAntiBloatReview {
+    app.store.mode = mode;
+    app.prepare(
+        Uuid::from_u128(10),
+        Uuid::from_u128(11),
+        Uuid::from_u128(1),
+        3,
+        preference,
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn no_call_states_are_durable_and_never_send() {
+    for (extra, mode, preference, expected) in [
+        (
+            true,
+            WorkspaceAdvisoryMode::Disabled,
+            AdvisoryRequestPreference::UseWorkspace,
+            AntiBloatNoCall::Disabled,
+        ),
+        (
+            true,
+            WorkspaceAdvisoryMode::Optional,
+            AdvisoryRequestPreference::Skip,
+            AntiBloatNoCall::Skipped,
+        ),
+        (
+            false,
+            WorkspaceAdvisoryMode::Optional,
+            AdvisoryRequestPreference::UseWorkspace,
+            AntiBloatNoCall::NoEligibleFindings,
+        ),
+    ] {
+        let mut app = app(extra, false);
+        let saved = prepare(&mut app, mode, preference).await;
+        assert_eq!(saved.state, AntiBloatAttemptState::NoCall(expected));
+        assert_eq!(app.rank_once(saved.review_id).await.unwrap(), saved.state);
+        assert_eq!(app.store.sends, 0);
+        assert_eq!(app.provider.calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn one_use_rank_and_provider_invention_is_denied() {
+    let mut app = app(true, false);
+    let saved = prepare(
+        &mut app,
+        WorkspaceAdvisoryMode::Optional,
+        AdvisoryRequestPreference::UseWorkspace,
+    )
+    .await;
+    assert_eq!(
+        app.rank_once(saved.review_id).await.unwrap(),
+        app.store.saved.as_ref().unwrap().state
+    );
+    app.rank_once(saved.review_id).await.unwrap();
+    assert_eq!(app.store.sends, 1);
+    assert_eq!(app.provider.calls.load(Ordering::SeqCst), 1);
+    let mut invented = self::app(true, true);
+    let saved = prepare(
+        &mut invented,
+        WorkspaceAdvisoryMode::Optional,
+        AdvisoryRequestPreference::UseWorkspace,
+    )
+    .await;
+    assert!(matches!(
+        invented.rank_once(saved.review_id).await,
+        Err(Error::InputConflict)
+    ));
+    assert_eq!(invented.store.seals, 0);
+}
+
+#[tokio::test]
+async fn exact_agent_delta_preserves_plan_before_caller() {
+    let mut app = app(true, false);
+    let saved = prepare(
+        &mut app,
+        WorkspaceAdvisoryMode::Optional,
+        AdvisoryRequestPreference::UseWorkspace,
+    )
+    .await;
+    let extra = Uuid::from_u128(70);
+    let finding = saved
+        .review
+        .findings
+        .iter()
+        .find(|item| item.candidate_id == extra)
+        .unwrap();
+    let before = &saved
+        .input
+        .manifest
+        .eligible(&saved.input.selected_id)
+        .unwrap()
+        .material;
+    let mut after = before.clone();
+    after.candidates.retain(|item| item.id != extra);
+    after.goals.retain(|item| item.id != Uuid::from_u128(71));
+    after.delta.added.retain(|item| item.candidate_id != extra);
+    let authored = AntiBloatAuthoredDelta {
+        review_id: saved.review_id,
+        finding_id: finding.id.clone(),
+        disposition: AntiBloatDisposition::Narrow,
+        delta: CandidateDeltaBatch {
+            candidate_set_id: Uuid::from_u128(1),
+            expected_revision: 3,
+            idempotency_key: "exact-removal".into(),
+            operations: vec![CandidateDeltaOperation::CandidateRemove {
+                candidate_id: extra,
+                expected_revision: 1,
+            }],
+        },
+        after,
+    };
+    let mut keep = authored.clone();
+    keep.disposition = AntiBloatDisposition::Keep;
+    assert!(matches!(
+        app.disposition_and_apply(&keep).await,
+        Err(Error::InputConflict)
+    ));
+    let mut mismatch = authored.clone();
+    mismatch.after.candidates[0].title = "Changed too".into();
+    assert!(matches!(
+        app.disposition_and_apply(&mismatch).await,
+        Err(Error::InputConflict)
+    ));
+    assert_eq!(app.store.applies, 0);
+    let receipt = app.disposition_and_apply(&authored).await.unwrap();
+    assert_eq!(receipt.to_revision, 4);
+    assert_eq!(app.store.applies, 1);
+    app.store.input.as_mut().unwrap().dependency_digest =
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into();
+    assert!(matches!(
+        app.disposition_and_apply(&authored).await,
+        Err(Error::InputConflict)
+    ));
+    assert_eq!(app.store.applies, 1);
+}

@@ -1,5 +1,13 @@
 //! Application policy and ports. Adapters depend on this crate, never the reverse.
 mod advisory;
+mod anti_bloat;
+mod anti_bloat_ports;
+pub use anti_bloat::AntiBloatApplication;
+pub use anti_bloat_ports::{
+    AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall,
+    AntiBloatRankingProvider, AntiBloatStore, DisabledAntiBloatRankingProvider,
+    StoredAntiBloatReview,
+};
 pub use advisory::{Sha256ScopeDigest, VerifySelectedSave};
 mod advisory_ports;
 mod matrix_advice_ports;
