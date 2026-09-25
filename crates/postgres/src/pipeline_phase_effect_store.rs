@@ -47,7 +47,7 @@ impl PipelinePhaseEffectStore for PgUnitOfWork {
              WHERE a.tenant_id=$1 AND a.workspace_id=$2 AND a.run_id=$3 AND a.id=$4 \
                AND a.outcome='completed' AND a.result_payload IS NOT NULL \
                AND NOT a.payload_erased AND NOT o.payload_erased AND NOT r.payload_erased \
-               AND s.origin_result IS NOT NULL AND NOT s.payload_erased \
+               AND s.origin_result IS NOT NULL \
                AND r.slice_id=s.id AND r.selected_option_id=s.selected_option_id \
                AND r.verification_plan_id=s.verification_plan_id \
                AND r.verification_plan_version=s.verification_plan_source_definition_version \
