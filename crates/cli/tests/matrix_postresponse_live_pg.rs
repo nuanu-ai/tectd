@@ -36,6 +36,14 @@ const PROFILE: &str = "synthetic-matrix-provider";
 const MODEL: &str = "synthetic-matrix-model";
 const POLICY: &str = "synthetic-evidence-policy/1";
 
+#[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+struct DispatchRow {
+    state: String,
+    send_certainty: String,
+    outcome: Option<String>,
+    response_payload: Option<Vec<u8>>,
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Scenario {
     Ranked,
@@ -476,23 +484,28 @@ async fn run_case(pool: &PgPool, runtime_url: &str, scenario: Scenario) {
         1
     };
     assert_eq!(calls.load(Ordering::SeqCst), expected_calls);
-    let dispatches: Vec<(String, String, Option<String>, Option<Vec<u8>>)> = sqlx::query_as(
+    let dispatches: Vec<DispatchRow> = sqlx::query_as(
         "SELECT state,send_certainty,outcome,response_payload FROM advisory_dispatch WHERE opportunity_id=$1")
         .bind(receipt.id).fetch_all(pool).await.unwrap();
     assert_eq!(dispatches.len(), 1);
     match scenario {
         Scenario::RevokeBeforeSend => assert_eq!(
             dispatches[0],
-            ("cancelled".into(), "not_sent".into(), None, None)
+            DispatchRow {
+                state: "cancelled".into(),
+                send_certainty: "not_sent".into(),
+                outcome: None,
+                response_payload: None,
+            }
         ),
         _ => assert_eq!(
             dispatches[0],
-            (
-                "sealed".into(),
-                "sent".into(),
-                Some("provider_response".into()),
-                Some(b"synthetic response".to_vec())
-            )
+            DispatchRow {
+                state: "sealed".into(),
+                send_certainty: "sent".into(),
+                outcome: Some("provider_response".into()),
+                response_payload: Some(b"synthetic response".to_vec()),
+            }
         ),
     }
     let advice: i64 =

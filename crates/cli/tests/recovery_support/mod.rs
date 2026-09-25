@@ -51,6 +51,8 @@ pub fn host_file(path: &Path, auth: &HostAuth) {
         .unwrap();
     file.write_all(&serde_json::to_vec(auth).unwrap()).unwrap();
 }
+// This module is path-included by independent test crates with different fixture needs.
+#[allow(dead_code)]
 pub fn private_temp() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
     fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -131,8 +133,11 @@ pub fn ready_action(name: &str, arguments: Value) -> Value {
     call
 }
 pub struct Daemon {
+    #[allow(dead_code)]
     pub child: Child,
+    #[allow(dead_code)]
     pub socket: PathBuf,
+    #[allow(dead_code)]
     inode: (u64, u64),
 }
 impl Daemon {
@@ -248,11 +253,14 @@ impl Daemon {
             inode: (metadata.dev(), metadata.ino()),
         }
     }
+    // Recovery tests use these helpers; other path-including test crates do not.
+    #[allow(dead_code)]
     pub async fn crash(&mut self) {
         self.child.start_kill().unwrap();
         let exit = self.child.wait().await.unwrap();
         assert!(!exit.success());
     }
+    #[allow(dead_code)]
     pub fn remove_owned_stale_socket(&mut self) {
         assert!(
             self.child.try_wait().unwrap().is_some(),
