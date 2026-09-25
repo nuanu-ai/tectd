@@ -38,7 +38,7 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
             "GRANT UPDATE(state,primary_reason,updated_at) ON TABLE advisory_opportunity TO {quoted_role}"
         ),
         format!(
-            "GRANT UPDATE(response_payload,input_tokens,output_tokens,latency_ms,state,send_certainty,outcome,raw_response_ref,send_started_at,sealed_at) ON TABLE advisory_dispatch TO {quoted_role}"
+            "GRANT UPDATE(response_payload,pipeline_response_sha256,input_tokens,output_tokens,latency_ms,state,send_certainty,outcome,raw_response_ref,send_started_at,sealed_at) ON TABLE advisory_dispatch TO {quoted_role}"
         ),
         format!(
             "REVOKE ALL PRIVILEGES ON TABLE matrix_tasks, matrix_task_revisions FROM {quoted_role}"
