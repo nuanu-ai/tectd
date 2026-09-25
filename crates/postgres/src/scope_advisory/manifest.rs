@@ -117,8 +117,13 @@ async fn require_persisted_fragments(
     // The candidate-set revision and current snapshot were checked and locked
     // in this transaction by require_frozen_authority.
     let fragments = load_persisted_fragments(
-        tx, tenant, workspace, source.candidate_set_id, source.snapshot_id,
-    ).await?;
+        tx,
+        tenant,
+        workspace,
+        source.candidate_set_id,
+        source.snapshot_id,
+    )
+    .await?;
     let (expected_inputs, expected_obligations) =
         source_inputs_and_obligations(fragments, source.snapshot_id)?;
     if source.inputs != expected_inputs || obligations != expected_obligations {
@@ -215,7 +220,8 @@ async fn prepare_manifest(
         return Err(Error::InputConflict);
     }
     require_frozen_authority(tx, tenant, workspace, source).await?;
-    require_persisted_fragments(tx, tenant, workspace, source, &record.manifest.obligations).await?;
+    require_persisted_fragments(tx, tenant, workspace, source, &record.manifest.obligations)
+        .await?;
     if let Some(existing) = load_manifest_record(
         tx,
         tenant,
@@ -228,6 +234,9 @@ async fn prepare_manifest(
         return if existing.record.manifest == record.manifest
             && existing.authored_request_digest.as_deref() == authored_request_digest
         {
+            if authored_request_digest.is_some() {
+                require_authored_graph_binding(tx, tenant, workspace, &existing.record).await?;
+            }
             Ok(existing.record.manifest)
         } else {
             Err(Error::InputConflict)
@@ -282,7 +291,159 @@ async fn prepare_manifest(
     .execute(&mut **tx)
     .await
     .map_err(storage_error)?;
+    if authored_request_digest.is_some() {
+        let saved = load_manifest_record(
+            tx,
+            tenant,
+            workspace,
+            record.opportunity_id,
+            Some(record.candidate_set_id),
+        )
+        .await?
+        .ok_or(Error::StorageUnavailable)?;
+        if saved.record != *record {
+            return Err(Error::StorageUnavailable);
+        }
+        insert_authored_graph_binding(tx, tenant, workspace, &saved.record).await?;
+    }
     Ok(record.manifest.clone())
+}
+
+fn authored_graph_binding(
+    manifest: &ScopeConstructorManifest,
+) -> Result<(Vec<AntiBloatObligationLink>, String, String)> {
+    if manifest.constructor != source_authored_identity() {
+        return Err(Error::InvalidSource);
+    }
+    let baseline = manifest
+        .eligible(&manifest.baseline_id)
+        .ok_or(Error::InvalidSource)?;
+    let mut obligations = std::collections::BTreeSet::new();
+    for obligation in &manifest.obligations {
+        if obligation.id != obligation.source_input_id
+            || Uuid::parse_str(&obligation.id).is_err()
+            || !obligations.insert(obligation.id.clone())
+        {
+            return Err(Error::InvalidSource);
+        }
+    }
+    let mut links = Vec::new();
+    let mut covered = std::collections::BTreeSet::new();
+    for goal in &baseline.material.goals {
+        let source_id = goal.source_ref_id.to_string();
+        if !obligations.contains(&source_id) || !covered.insert((source_id.clone(), goal.id)) {
+            return Err(Error::InvalidSource);
+        }
+        links.push(AntiBloatObligationLink {
+            obligation_id: source_id,
+            goal_id: goal.id,
+        });
+    }
+    if covered
+        .iter()
+        .map(|(id, _)| id)
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        != obligations.len()
+    {
+        return Err(Error::InvalidSource);
+    }
+    links.sort_by(|a, b| (&a.obligation_id, a.goal_id).cmp(&(&b.obligation_id, b.goal_id)));
+
+    let mut dependencies = baseline
+        .material
+        .candidates
+        .iter()
+        .map(|candidate| {
+            let mut ids = candidate.dependencies.clone();
+            ids.sort();
+            (candidate.id, ids)
+        })
+        .collect::<Vec<_>>();
+    dependencies.sort_by_key(|(id, _)| *id);
+    let digest_payload = serde_json::to_vec(&(
+        "tect.anti-bloat-dependency-graph/1",
+        &manifest.source.digest,
+        &manifest.whole_set_digest,
+        &baseline.material_digest,
+        manifest.source.candidate_set_revision,
+        &dependencies,
+    ))
+    .map_err(storage_error)?;
+    let dependency_digest = format!("{:x}", sha2::Sha256::digest(digest_payload));
+    let provenance = format!(
+        "tect.source-authored-graph-binding/1:source={}:whole={}:material={}:revision={}:dependencies={}",
+        manifest.source.digest,
+        manifest.whole_set_digest,
+        baseline.material_digest,
+        manifest.source.candidate_set_revision,
+        dependency_digest,
+    );
+    Ok((links, dependency_digest, provenance))
+}
+
+async fn insert_authored_graph_binding(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    record: &ScopeManifestRecord,
+) -> Result<()> {
+    let (links, dependency_digest, provenance) = authored_graph_binding(&record.manifest)?;
+    sqlx::query(
+        "INSERT INTO scope_anti_bloat_bindings \
+         (tenant_id,workspace_id,candidate_set_id,opportunity_id,candidate_set_revision, \
+          source_digest,dependency_digest,obligation_links,mandatory_policy_obligation_ids,provenance) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(record.candidate_set_id)
+    .bind(record.opportunity_id)
+    .bind(record.manifest.source.candidate_set_revision)
+    .bind(&record.manifest.source.digest)
+    .bind(dependency_digest)
+    .bind(serde_json::to_value(links).map_err(storage_error)?)
+    .bind(serde_json::json!([]))
+    .bind(provenance)
+    .execute(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    Ok(())
+}
+
+async fn require_authored_graph_binding(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    record: &ScopeManifestRecord,
+) -> Result<()> {
+    let (links, dependency_digest, provenance) = authored_graph_binding(&record.manifest)?;
+    let actual: Option<(serde_json::Value, serde_json::Value, String, String)> = sqlx::query_as(
+        "SELECT obligation_links,mandatory_policy_obligation_ids,dependency_digest,provenance \
+         FROM scope_anti_bloat_bindings WHERE tenant_id=$1 AND workspace_id=$2 \
+         AND candidate_set_id=$3 AND candidate_set_revision=$4 AND opportunity_id=$5 \
+         AND source_digest=$6",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(record.candidate_set_id)
+    .bind(record.manifest.source.candidate_set_revision)
+    .bind(record.opportunity_id)
+    .bind(&record.manifest.source.digest)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    if actual
+        != Some((
+            serde_json::to_value(links).map_err(storage_error)?,
+            serde_json::json!([]),
+            dependency_digest,
+            provenance,
+        ))
+    {
+        return Err(Error::StorageUnavailable);
+    }
+    Ok(())
 }
 
 async fn load_manifest(
@@ -292,9 +453,11 @@ async fn load_manifest(
     opportunity: Uuid,
     expected_candidate: Option<Uuid>,
 ) -> Result<Option<ScopeConstructorManifest>> {
-    Ok(load_manifest_record(tx, tenant, workspace, opportunity, expected_candidate)
-        .await?
-        .map(|value| value.record.manifest))
+    Ok(
+        load_manifest_record(tx, tenant, workspace, opportunity, expected_candidate)
+            .await?
+            .map(|value| value.record.manifest),
+    )
 }
 
 fn valid_authored_request_digest(value: &str) -> bool {
@@ -398,4 +561,75 @@ async fn load_manifest_record(
         },
         authored_request_digest: row.authored_request_digest,
     }))
+}
+
+#[cfg(test)]
+mod authored_graph_binding_tests {
+    use super::*;
+
+    fn manifest(sources: &[Uuid]) -> ScopeConstructorManifest {
+        let fragments = sources
+            .iter()
+            .map(|id| (*id, crate::scope_advisory::live_support::D))
+            .collect::<Vec<_>>();
+        let mut value = crate::scope_advisory::live_support::manifest(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            &fragments,
+        );
+        value.constructor = source_authored_identity();
+        crate::scope_advisory::live_support::reseal_manifest(&mut value);
+        value
+    }
+
+    #[test]
+    fn binding_derives_exact_source_goal_and_stable_dependency_graph() {
+        let source = Uuid::new_v4();
+        let value = manifest(&[source]);
+        let (links, digest, provenance) = authored_graph_binding(&value).unwrap();
+        assert_eq!(
+            links,
+            vec![AntiBloatObligationLink {
+                obligation_id: source.to_string(),
+                goal_id: value.emitted[0].material.goals[0].id,
+            }]
+        );
+        assert_eq!(digest.len(), 64);
+        assert!(provenance.contains(&value.emitted[0].material_digest));
+        assert_eq!(
+            authored_graph_binding(&value).unwrap(),
+            (links, digest.clone(), provenance)
+        );
+
+        let mut changed = value.clone();
+        changed.emitted[0].material.candidates[0]
+            .dependencies
+            .push(Uuid::new_v4());
+        assert_ne!(authored_graph_binding(&changed).unwrap().1, digest);
+    }
+
+    #[test]
+    fn binding_refuses_missing_unmatched_and_duplicate_obligations() {
+        let source = Uuid::new_v4();
+        let mut value = manifest(&[source, Uuid::new_v4()]);
+        assert_eq!(
+            authored_graph_binding(&value).unwrap_err(),
+            Error::InvalidSource
+        );
+
+        value = manifest(&[source]);
+        value.emitted[0].material.goals[0].source_ref_id = Uuid::new_v4();
+        assert_eq!(
+            authored_graph_binding(&value).unwrap_err(),
+            Error::InvalidSource
+        );
+
+        value = manifest(&[source]);
+        value.obligations.push(value.obligations[0].clone());
+        assert_eq!(
+            authored_graph_binding(&value).unwrap_err(),
+            Error::InvalidSource
+        );
+    }
 }
