@@ -179,7 +179,10 @@ impl PipelineRecommendationStore for PgUnitOfWork {
              ORDER BY a.verified_at DESC,a.id DESC LIMIT 1",
         );
         if for_update {
-            query.push_str(" FOR SHARE OF c,n,s,source_set,source,draft,review,a,l,receipt,d");
+            // The source snapshot and Matrix evidence are read-only to the runtime
+            // role. Lock the mutable scope/source heads that the INSERT trigger
+            // does not recheck; the trigger locks and rechecks draft/effect state.
+            query.push_str(" FOR SHARE OF c,n,s,source_set");
         }
         let rows = sqlx::query(&query)
             .bind(tenant)
@@ -535,8 +538,7 @@ impl PipelineRecommendationStore for PgUnitOfWork {
              JOIN memberships m ON (m.tenant_id,m.workspace_id,m.principal_id)= \
                   (s.tenant_id,s.workspace_id,p.id) \
              WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.id=$3 \
-               AND p.id=$4 AND p.role='owner' AND NOT s.revoked AND NOT h.revoked \
-             FOR SHARE OF s,h,p,m",
+               AND p.id=$4 AND p.role='owner' AND NOT s.revoked AND NOT h.revoked",
         )
         .bind(tenant)
         .bind(workspace_id)
