@@ -1,6 +1,34 @@
 use super::*;
 
 impl WorkspaceService {
+    async fn current_verified_matrix_budget(
+        &self,
+        context: &RequestContext,
+        workspace_id: Uuid,
+    ) -> Result<Option<tect_domain::AdvisoryBudgetPolicy>> {
+        let (mut read, identity) = self
+            .authenticated(context, TransactionMode::ReadOnly)
+            .await?;
+        let session = read
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        if Self::validate_binding(&mut *read, context, &identity, &session)
+            .await?
+            .id
+            != workspace_id
+        {
+            return Err(Error::InputConflict);
+        }
+        let policy = crate::matrix_advisory_capture::lookup_verified_matrix_budget(
+            read.advisory_budget_policy_store(),
+            workspace_id,
+        )
+        .await?;
+        read.commit().await?;
+        Ok(policy)
+    }
+
     async fn cancel_stale_authorized_matrix_dispatch(
         &self,
         context: &RequestContext,
@@ -220,9 +248,22 @@ impl WorkspaceService {
                     opportunity.authorized_actor_id,
                     &prepared,
                 )?;
+                let Some(verified_policy) = self
+                    .current_verified_matrix_budget(context, workspace_id)
+                    .await?
+                else {
+                    return self
+                        .cancel_stale_authorized_matrix_dispatch(
+                            context,
+                            workspace_id,
+                            opportunity.id,
+                            dispatch.id,
+                        )
+                        .await;
+                };
                 if self
                     .matrix_budget
-                    .authorize(&budget_request)
+                    .authorize(&budget_request, &verified_policy)
                     .await?
                     .as_ref()
                     != Some(&MatrixBudgetAuthorization {
@@ -245,6 +286,7 @@ impl WorkspaceService {
                     &MatrixBudgetAuthorization {
                         policy_id: policy_id.to_owned(),
                     },
+                    &verified_policy,
                 )?;
                 if expected.configuration_snapshot != saved.configuration_snapshot
                     || expected.configuration_digest != dispatch.configuration_digest

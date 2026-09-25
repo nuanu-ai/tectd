@@ -140,7 +140,8 @@ async fn start_dispatch(
             }
             let budget_reservation = reserve_before_dispatch(tx, tenant, workspace, &row,
                 authorized_policy,
-                (opportunity.capability == AdvisoryCapability::ScopeDecomposition).then_some(&row.configuration_snapshot),
+                matches!(opportunity.capability, AdvisoryCapability::ScopeDecomposition | AdvisoryCapability::EngineeringProfile)
+                    .then_some(&row.configuration_snapshot),
                 monotonic_elapsed_ms).await?;
             let dispatch_update = sqlx::query("UPDATE advisory_dispatch SET state='sending',send_certainty='sent_unknown',send_started_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND state='authorized'")
                 .bind(tenant).bind(workspace).bind(dispatch_id).execute(&mut **tx).await.map_err(storage_error)?;

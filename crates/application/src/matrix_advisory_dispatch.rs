@@ -5,9 +5,9 @@ use crate::{
 };
 use sha2::{Digest, Sha256};
 use tect_domain::{
-    AdvisoryDispatchAuthorization, AdvisoryDispatchOutcome, AdvisoryDispatchSeal,
-    AdvisoryDispatchState, AdvisoryOpportunity, AdvisoryOpportunityState, AdvisoryReason,
-    AdvisoryRetryBasis, AdvisorySendCertainty, Error, RequestContext, Result,
+    AdvisoryBudgetPolicy, AdvisoryDispatchAuthorization, AdvisoryDispatchOutcome,
+    AdvisoryDispatchSeal, AdvisoryDispatchState, AdvisoryOpportunity, AdvisoryOpportunityState,
+    AdvisoryReason, AdvisoryRetryBasis, AdvisorySendCertainty, Error, RequestContext, Result,
     WorkspaceAdvisoryMode,
 };
 use uuid::Uuid;
@@ -91,7 +91,11 @@ pub(crate) fn authorize_prepared_matrix(
     opportunity: &AdvisoryOpportunity,
     prepared: &PreparedMatrixAdviceAttempt,
     budget: &MatrixBudgetAuthorization,
+    verified_policy: &AdvisoryBudgetPolicy,
 ) -> Result<AdvisoryDispatchAuthorization> {
+    if budget.policy_id != verified_policy.id().to_string() {
+        return Err(Error::BudgetPolicyInvalid);
+    }
     let identity = prepared.identity();
     let configuration_snapshot = serde_json::json!({
         "provider_profile_ref": identity.provider_profile_ref,
@@ -99,6 +103,11 @@ pub(crate) fn authorize_prepared_matrix(
         "destination": identity.destination,
         "wire_version": identity.wire_version,
         "budget_policy_id": budget.policy_id,
+        "budget_policy": {
+            "policy_id": budget.policy_id,
+            "policy_version": verified_policy.version(),
+            "policy_digest": verified_policy.digest(),
+        },
         "request_body_length": prepared.body_length(),
         "request_body_sha256": prepared.body_sha256(),
     });

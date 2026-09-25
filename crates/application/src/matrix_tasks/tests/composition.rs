@@ -97,6 +97,7 @@ async fn complete_stored_demo_remains_pending_independent_verification() {
         actor_id,
         &provider,
         &TestBudget(true),
+        None,
     )
     .await
     .unwrap();

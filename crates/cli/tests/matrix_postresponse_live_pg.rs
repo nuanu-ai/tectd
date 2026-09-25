@@ -102,12 +102,13 @@ impl MatrixBudgetPolicy for Budget {
     async fn authorize(
         &self,
         _: &MatrixBudgetRequest,
+        policy: &tect_domain::AdvisoryBudgetPolicy,
     ) -> tect_domain::Result<Option<MatrixBudgetAuthorization>> {
         if matches!(self.scenario, Scenario::RevokeBeforeSend) {
             self.revoked.store(true, Ordering::SeqCst);
         }
         Ok(Some(MatrixBudgetAuthorization {
-            policy_id: "synthetic-budget/1".into(),
+            policy_id: policy.id().to_string(),
         }))
     }
 }

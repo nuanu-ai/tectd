@@ -76,7 +76,7 @@ impl WorkspaceService {
             setup_files,
             advisory_provider: Arc::new(crate::DisabledAdvisoryProvider),
             matrix_advice_provider: Arc::new(crate::DisabledMatrixAdviceProvider),
-            matrix_budget: Arc::new(crate::DenyMatrixBudget),
+            matrix_budget: Arc::new(crate::SignedMatrixBudgetPreflight),
             matrix_evidence_validator: Arc::new(crate::DisabledMatrixEvidenceValidator),
             pipeline_recommendation_definitions: Arc::new(
                 crate::UnavailablePipelineRecommendationDefinitions,

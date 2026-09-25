@@ -2,7 +2,7 @@ use crate::{MatrixProviderBinding, MatrixProviderRequest};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tect_domain::{
-    AdvisoryCapability, AdvisoryDispatchAuthorization, AdvisoryDispatchStart,
+    AdvisoryBudgetPolicy, AdvisoryCapability, AdvisoryDispatchAuthorization, AdvisoryDispatchStart,
     AdvisoryDispatchState, AdvisoryModelConfiguration, AdvisoryOpportunity,
     AdvisoryProviderProfileRef, AdvisorySendCertainty, Error, Result,
 };
@@ -297,7 +297,26 @@ pub trait MatrixBudgetPolicy: Send + Sync {
     async fn authorize(
         &self,
         request: &MatrixBudgetRequest,
+        verified_policy: &AdvisoryBudgetPolicy,
     ) -> Result<Option<MatrixBudgetAuthorization>>;
+}
+
+#[derive(Debug, Default)]
+pub struct SignedMatrixBudgetPreflight;
+
+#[async_trait]
+impl MatrixBudgetPolicy for SignedMatrixBudgetPreflight {
+    async fn authorize(
+        &self,
+        request: &MatrixBudgetRequest,
+        verified_policy: &AdvisoryBudgetPolicy,
+    ) -> Result<Option<MatrixBudgetAuthorization>> {
+        let fits = i64::try_from(request.body_length)
+            .is_ok_and(|bytes| bytes > 0 && bytes <= verified_policy.ceilings().request_utf8_bytes);
+        Ok(fits.then(|| MatrixBudgetAuthorization {
+            policy_id: verified_policy.id().to_string(),
+        }))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -308,6 +327,7 @@ impl MatrixBudgetPolicy for DenyMatrixBudget {
     async fn authorize(
         &self,
         _: &MatrixBudgetRequest,
+        _: &AdvisoryBudgetPolicy,
     ) -> Result<Option<MatrixBudgetAuthorization>> {
         Ok(None)
     }
@@ -422,7 +442,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disabled_identity_and_default_budget_deny() {
+    async fn disabled_identity_and_explicit_budget_deny() {
         let provider = DisabledMatrixAdviceProvider;
         assert_eq!(provider.identity(), None);
         let budget = DenyMatrixBudget;
@@ -448,6 +468,44 @@ mod tests {
             body_length: 2,
             body_sha256: "digest".into(),
         };
-        assert_eq!(budget.authorize(&request).await, Ok(None));
+        let id = Uuid::new_v4();
+        let ceilings = tect_domain::AdvisoryBudgetCeilings {
+            provider_calls: 1,
+            input_tokens: 1,
+            output_tokens: 1,
+            request_utf8_bytes: 2,
+            elapsed_monotonic_ms: 1,
+            retry_dispatches: 1,
+        };
+        let policy = AdvisoryBudgetPolicy::new(
+            id,
+            1,
+            AdvisoryBudgetPolicy::digest_for(id, 1, 0, 100, ceilings),
+            0,
+            100,
+            ceilings,
+            Uuid::new_v4(),
+            "a".repeat(128),
+        )
+        .unwrap();
+        assert_eq!(budget.authorize(&request, &policy).await, Ok(None));
+        assert_eq!(
+            SignedMatrixBudgetPreflight
+                .authorize(&request, &policy)
+                .await,
+            Ok(Some(MatrixBudgetAuthorization {
+                policy_id: id.to_string()
+            }))
+        );
+        let too_large = MatrixBudgetRequest {
+            body_length: 3,
+            ..request
+        };
+        assert_eq!(
+            SignedMatrixBudgetPreflight
+                .authorize(&too_large, &policy)
+                .await,
+            Ok(None)
+        );
     }
 }

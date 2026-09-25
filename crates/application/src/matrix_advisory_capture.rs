@@ -2,7 +2,9 @@ use crate::{
     MatrixAdviceProvider, MatrixBudgetAuthorization, MatrixBudgetPolicy, MatrixBudgetRequest,
     MatrixProviderRequest, PreparedMatrixAdviceAttempt,
 };
-use tect_domain::{AdvisoryOpportunityInput, AdvisoryOpportunityState, AdvisoryReason, Error};
+use tect_domain::{
+    AdvisoryBudgetPolicy, AdvisoryOpportunityInput, AdvisoryOpportunityState, AdvisoryReason, Error,
+};
 use uuid::Uuid;
 
 /// Captured preparation is retained for the later, transaction-bound dispatch
@@ -23,6 +25,7 @@ pub(crate) async fn prepare_eligible_matrix_opportunity(
     actor_id: Uuid,
     provider: &dyn MatrixAdviceProvider,
     budget: &dyn MatrixBudgetPolicy,
+    verified_policy: Option<&AdvisoryBudgetPolicy>,
 ) -> tect_domain::Result<PreparedMatrixOpportunity> {
     if input.primary_reason != AdvisoryReason::CapabilityUnavailable {
         return Ok(PreparedMatrixOpportunity::NoCall);
@@ -57,9 +60,16 @@ pub(crate) async fn prepare_eligible_matrix_opportunity(
         _ => return Ok(PreparedMatrixOpportunity::NoCall),
     };
     let budget_request = MatrixBudgetRequest::from_prepared(workspace_id, actor_id, &prepared)?;
-    let authorization = budget.authorize(&budget_request).await;
+    let authorization = match verified_policy {
+        Some(policy) => budget.authorize(&budget_request, policy).await,
+        None => Ok(None),
+    };
     let result = match authorization {
-        Ok(Some(auth)) if valid_policy_id(&auth.policy_id) => {
+        Ok(Some(auth))
+            if verified_policy.is_some_and(|policy| {
+                valid_policy_id(&auth.policy_id) && auth.policy_id == policy.id().to_string()
+            }) =>
+        {
             // Positive opportunities bind the exact Matrix evaluation. The
             // legacy no-call digest remains unchanged for existing receipts.
             input.material_digest = request.binding().evaluation_digest.clone();
@@ -82,6 +92,26 @@ pub(crate) async fn prepare_eligible_matrix_opportunity(
 
 fn valid_policy_id(value: &str) -> bool {
     !value.is_empty() && value.len() <= 256 && !value.contains('\0') && value.trim() == value
+}
+
+pub(crate) async fn lookup_verified_matrix_budget(
+    store: Option<&mut dyn crate::AdvisoryBudgetPolicyStore>,
+    workspace_id: Uuid,
+) -> tect_domain::Result<Option<AdvisoryBudgetPolicy>> {
+    let Some(store) = store else { return Ok(None) };
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| Error::BudgetPolicyInvalid)?
+            .as_millis(),
+    )
+    .map_err(|_| Error::BudgetPolicyInvalid)?;
+    let policy = match store.authorized_budget_policy(workspace_id, now).await {
+        Ok(policy) => policy,
+        Err(Error::InvalidConfiguration) => None,
+        Err(error) => return Err(error),
+    };
+    Ok(policy.filter(|policy| policy.validate().is_ok() && policy.is_effective_at(now)))
 }
 
 #[cfg(test)]

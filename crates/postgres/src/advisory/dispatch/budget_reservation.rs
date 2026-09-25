@@ -109,9 +109,9 @@ async fn reservation_for_dispatch(
     }))
 }
 
-/// Called only after the application supplied an authenticated policy. The
-/// opportunity row is already locked by start_dispatch, serializing siblings.
-fn require_scope_policy_identity(
+/// Called for signed Scope and Matrix dispatches after the application supplied
+/// an authenticated policy. The locked opportunity serializes siblings.
+fn require_signed_policy_identity(
     snapshot: &serde_json::Value,
     snapshot_digest: &str,
     policy: Option<&AdvisoryBudgetPolicy>,
@@ -155,11 +155,11 @@ async fn reserve_before_dispatch(
     workspace: Uuid,
     row: &DispatchRow,
     policy: Option<&AdvisoryBudgetPolicy>,
-    scope_snapshot: Option<&serde_json::Value>,
+    signed_snapshot: Option<&serde_json::Value>,
     monotonic_elapsed_ms: Option<i64>,
 ) -> Result<AdvisoryBudgetReservation> {
-    if let Some(snapshot) = scope_snapshot {
-        require_scope_policy_identity(snapshot, &row.configuration_digest, policy)?;
+    if let Some(snapshot) = signed_snapshot {
+        require_signed_policy_identity(snapshot, &row.configuration_digest, policy)?;
     }
     let policy = policy.ok_or(Error::BudgetPolicyInvalid)?;
     policy.validate().map_err(|_| Error::BudgetPolicyInvalid)?;
@@ -329,7 +329,7 @@ mod budget_reservation_tests {
         .unwrap()
     }
     #[test]
-    fn scope_snapshot_binds_exact_evaluated_policy_identity() {
+    fn signed_snapshot_binds_exact_evaluated_policy_identity_for_scope_and_matrix() {
         let p = policy();
         let snapshot = serde_json::json!({
             "budget_policy_id": p.id().to_string(),
@@ -340,23 +340,23 @@ mod budget_reservation_tests {
             },
         });
         let digest = format!("{:x}", sha2::Sha256::digest(serde_json::to_vec(&snapshot).unwrap()));
-        assert_eq!(require_scope_policy_identity(&snapshot, &digest, Some(&p)), Ok(()));
-        assert_eq!(require_scope_policy_identity(&snapshot, &digest, None), Err(Error::BudgetPolicyInvalid));
+        assert_eq!(require_signed_policy_identity(&snapshot, &digest, Some(&p)), Ok(()));
+        assert_eq!(require_signed_policy_identity(&snapshot, &digest, None), Err(Error::BudgetPolicyInvalid));
 
         let replacement = AdvisoryBudgetPolicy::new(p.id(), 2,
             AdvisoryBudgetPolicy::digest_for(p.id(), 2, 0, 200, p.ceilings()),
             0, 200, p.ceilings(), Uuid::new_v4(), "a".repeat(128)).unwrap();
-        assert_eq!(require_scope_policy_identity(&snapshot, &digest, Some(&replacement)), Err(Error::BudgetPolicyInvalid));
+        assert_eq!(require_signed_policy_identity(&snapshot, &digest, Some(&replacement)), Err(Error::BudgetPolicyInvalid));
 
         let mut swapped = snapshot.clone();
         swapped["budget_policy"]["policy_version"] = serde_json::json!(p.version() + 1);
         let swapped_digest = format!("{:x}", sha2::Sha256::digest(serde_json::to_vec(&swapped).unwrap()));
-        assert_eq!(require_scope_policy_identity(&swapped, &swapped_digest, Some(&p)), Err(Error::BudgetPolicyInvalid));
-        assert_eq!(require_scope_policy_identity(&swapped, &digest, Some(&p)), Err(Error::BudgetPolicyInvalid));
+        assert_eq!(require_signed_policy_identity(&swapped, &swapped_digest, Some(&p)), Err(Error::BudgetPolicyInvalid));
+        assert_eq!(require_signed_policy_identity(&swapped, &digest, Some(&p)), Err(Error::BudgetPolicyInvalid));
 
         let missing = serde_json::json!({"budget_policy_id": p.id().to_string()});
         let missing_digest = format!("{:x}", sha2::Sha256::digest(serde_json::to_vec(&missing).unwrap()));
-        assert_eq!(require_scope_policy_identity(&missing, &missing_digest, Some(&p)), Err(Error::BudgetPolicyInvalid));
+        assert_eq!(require_signed_policy_identity(&missing, &missing_digest, Some(&p)), Err(Error::BudgetPolicyInvalid));
     }
     #[test]
     fn exact_edges_retry_and_unknown_monotonic_elapsed() {

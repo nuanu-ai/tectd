@@ -145,6 +145,46 @@ async fn positive_binding_requires_revalidated_exact_record() {
         fake_provider.parse_sealed_response(&provider, &saved),
         Err(Error::TransportUnavailable)
     );
+    let policy_id = Uuid::new_v4();
+    let ceilings = tect_domain::AdvisoryBudgetCeilings {
+        provider_calls: 1,
+        input_tokens: 100,
+        output_tokens: 100,
+        request_utf8_bytes: 1000,
+        elapsed_monotonic_ms: 1000,
+        retry_dispatches: 1,
+    };
+    let policy = tect_domain::AdvisoryBudgetPolicy::new(
+        policy_id,
+        1,
+        tect_domain::AdvisoryBudgetPolicy::digest_for(policy_id, 1, 0, 1000, ceilings),
+        0,
+        1000,
+        ceilings,
+        Uuid::new_v4(),
+        "a".repeat(128),
+    )
+    .unwrap();
+    let mut without_policy = opportunity.clone();
+    let denied = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
+        &mut without_policy,
+        Some(&provider),
+        workspace,
+        Uuid::new_v4(),
+        &fake_provider,
+        &FakeBudget,
+        None,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(
+        denied,
+        crate::matrix_advisory_capture::PreparedMatrixOpportunity::NoCall
+    ));
+    assert_eq!(
+        without_policy.primary_reason,
+        tect_domain::AdvisoryReason::BudgetPolicyInvalid
+    );
     let prepared = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
         &mut opportunity,
         Some(&provider),
@@ -152,6 +192,7 @@ async fn positive_binding_requires_revalidated_exact_record() {
         Uuid::new_v4(),
         &fake_provider,
         &FakeBudget,
+        Some(&policy),
     )
     .await
     .unwrap();

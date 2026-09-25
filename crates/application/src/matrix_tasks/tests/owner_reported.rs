@@ -167,6 +167,7 @@ async fn owner_reported_matrix_never_prepares_even_with_budget() {
         actor_id,
         &provider,
         &TestBudget(true),
+        None,
     )
     .await
     .unwrap();
@@ -204,6 +205,7 @@ async fn owner_reported_matrix_never_prepares_even_with_budget() {
         actor_id,
         &provider,
         &TestBudget(false),
+        None,
     )
     .await
     .unwrap();

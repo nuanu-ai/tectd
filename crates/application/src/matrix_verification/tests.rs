@@ -142,9 +142,10 @@ impl MatrixBudgetPolicy for FakeBudget {
     async fn authorize(
         &self,
         _: &MatrixBudgetRequest,
+        policy: &tect_domain::AdvisoryBudgetPolicy,
     ) -> Result<Option<MatrixBudgetAuthorization>> {
         Ok(Some(MatrixBudgetAuthorization {
-            policy_id: "test-budget".into(),
+            policy_id: policy.id().to_string(),
         }))
     }
 }

@@ -274,6 +274,15 @@ impl WorkspaceService {
                 input.primary_reason = AdvisoryReason::ProviderUnconfigured;
             }
         }
+        let verified_policy = if provider_request.is_some() {
+            crate::matrix_advisory_capture::lookup_verified_matrix_budget(
+                tx.advisory_budget_policy_store(),
+                workspace.id,
+            )
+            .await?
+        } else {
+            None
+        };
         let prepared = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
             &mut input,
             provider_request.as_ref(),
@@ -281,6 +290,7 @@ impl WorkspaceService {
             identity.principal_id,
             self.matrix_advice_provider.as_ref(),
             self.matrix_budget.as_ref(),
+            verified_policy.as_ref(),
         )
         .await?;
         let opportunity = tx
@@ -301,6 +311,7 @@ impl WorkspaceService {
             &opportunity,
             &prepared,
             &budget,
+            verified_policy.as_ref().ok_or(Error::InternalInvariant)?,
         )?;
         let lifecycle = crate::AdvisoryLifecycleCapability::internal();
         tx.authorize_advisory_dispatch(&lifecycle, workspace.id, config.revision, &authorization)

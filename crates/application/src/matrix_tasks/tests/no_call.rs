@@ -81,6 +81,7 @@ async fn matrix_no_call_precedence_and_digest_bind_stored_material() {
         actor,
         &provider,
         &TestBudget(true),
+        None,
     )
     .await
     .unwrap();

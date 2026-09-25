@@ -36,10 +36,11 @@ impl MatrixBudgetPolicy for PositiveFixtureBudget {
     async fn authorize(
         &self,
         _: &MatrixBudgetRequest,
+        policy: &tect_domain::AdvisoryBudgetPolicy,
     ) -> tect_domain::Result<Option<MatrixBudgetAuthorization>> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(Some(MatrixBudgetAuthorization {
-            policy_id: "synthetic-authorized-budget".into(),
+            policy_id: policy.id().to_string(),
         }))
     }
 }
