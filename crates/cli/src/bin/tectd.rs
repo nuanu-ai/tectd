@@ -2,8 +2,12 @@ use std::fs;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use tect_application::WorkspaceService;
-use tect_domain::Error;
+use std::time::Duration;
+use tect_application::{PipelineProviderIdentity, WorkspaceService};
+use tect_domain::{AdvisoryModelConfiguration, AdvisoryProviderProfileRef, Error};
+use tect_host::jev_pipeline_recommendation::{
+    JevPipelineConfig, JevPipelineProvider, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, WIRE_VERSION,
+};
 use tect_postgres::{
     BudgetOwnerKeys, PgScopeAuthoredManifestSupplier, PgScopeAuthorityObserver, PgStore,
 };
@@ -33,6 +37,7 @@ async fn run() -> tect_domain::Result<()> {
         Err(std::env::VarError::NotPresent) => BudgetOwnerKeys::default(),
         Err(_) => return Err(Error::InvalidConfiguration),
     };
+    let pipeline_provider = pipeline_provider_from_env()?;
     validate_socket_parent(&socket)?;
     reject_existing_path(&socket)?;
 
@@ -57,6 +62,9 @@ async fn run() -> tect_domain::Result<()> {
     .with_pipeline_recommendation_definitions(Arc::new(
         tect_host::StaticPipelineRecommendationDefinitions,
     ));
+    if let Some(provider) = pipeline_provider {
+        service = service.with_pipeline_recommendation_provider(Arc::new(provider));
+    }
     if let Some(catalogue) = tect_host::StaticModelRouteCatalogue::from_env()? {
         service = service.with_model_route_catalogue_provider(Arc::new(catalogue));
     }
@@ -119,6 +127,73 @@ fn database_max_connections(value: Option<&str>) -> tect_domain::Result<u32> {
             .filter(|value| (1..=64).contains(value))
             .ok_or(Error::InvalidConfiguration),
     }
+}
+
+fn pipeline_provider_from_env() -> tect_domain::Result<Option<JevPipelineProvider>> {
+    fn optional_env(name: &str) -> tect_domain::Result<Option<String>> {
+        match std::env::var(name) {
+            Ok(value) => Ok(Some(value)),
+            Err(std::env::VarError::NotPresent) => Ok(None),
+            Err(std::env::VarError::NotUnicode(_)) => Err(Error::InvalidConfiguration),
+        }
+    }
+    let endpoint = optional_env("TECT_JEV_PIPELINE_ENDPOINT")?;
+    let profile = optional_env("TECT_JEV_PIPELINE_PROVIDER_PROFILE_ID")?;
+    let model = optional_env("TECT_JEV_PIPELINE_MODEL")?;
+    // An existing TypeSafe key alone never opts the pipeline transport in.
+    if endpoint.is_none() && profile.is_none() && model.is_none() {
+        return Ok(None);
+    }
+    let credential = optional_env("TYPESAFE_API_KEY")?;
+    pipeline_provider_config(endpoint, profile, model, credential)?
+        .map(|(config, credential)| JevPipelineProvider::new(config, credential))
+        .transpose()
+}
+
+fn pipeline_provider_config(
+    endpoint: Option<String>,
+    profile: Option<String>,
+    model: Option<String>,
+    credential: Option<String>,
+) -> tect_domain::Result<Option<(JevPipelineConfig, String)>> {
+    if endpoint.is_none() && profile.is_none() && model.is_none() {
+        return Ok(None);
+    }
+    let (Some(endpoint), Some(profile), Some(model), Some(credential)) =
+        (endpoint, profile, model, credential)
+    else {
+        return Err(Error::InvalidConfiguration);
+    };
+    if credential.is_empty()
+        || profile.chars().any(char::is_whitespace)
+        || model.chars().any(char::is_whitespace)
+    {
+        return Err(Error::InvalidConfiguration);
+    }
+    AdvisoryProviderProfileRef {
+        id: profile.clone(),
+    }
+    .validate()
+    .map_err(|_| Error::InvalidConfiguration)?;
+    AdvisoryModelConfiguration {
+        model: model.clone(),
+    }
+    .validate()
+    .map_err(|_| Error::InvalidConfiguration)?;
+    let endpoint = url::Url::parse(&endpoint).map_err(|_| Error::InvalidConfiguration)?;
+    let config = JevPipelineConfig {
+        identity: PipelineProviderIdentity {
+            provider: profile,
+            model,
+            destination: endpoint.as_str().into(),
+            wire_version: WIRE_VERSION.into(),
+        },
+        endpoint,
+        timeout: Duration::from_secs(10),
+        maximum_request_bytes: MAX_REQUEST_BYTES,
+        maximum_response_bytes: MAX_RESPONSE_BYTES,
+    };
+    Ok(Some((config, credential)))
 }
 
 async fn shutdown_signal() -> tect_domain::Result<()> {
@@ -232,6 +307,7 @@ impl Drop for SocketGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tect_application::PipelineRecommendationProvider;
 
     #[test]
     fn database_pool_default_and_bounds_are_stable() {
@@ -243,6 +319,81 @@ mod tests {
                 database_max_connections(Some(invalid)),
                 Err(Error::InvalidConfiguration)
             );
+        }
+    }
+
+    #[test]
+    fn pipeline_transport_requires_a_complete_explicit_tuple() {
+        assert!(
+            pipeline_provider_config(None, None, None, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            pipeline_provider_config(None, None, None, Some("key".into()))
+                .unwrap()
+                .is_none()
+        );
+        let endpoint = Some("https://example.com/v1/systemone".into());
+        let profile = Some("workspace-profile".into());
+        let model = Some("jev-1.13.0".into());
+        for values in [
+            (endpoint.clone(), None, None, None),
+            (None, profile.clone(), None, Some("key".into())),
+            (None, None, model.clone(), Some("key".into())),
+            (endpoint.clone(), profile.clone(), model.clone(), None),
+            (
+                endpoint.clone(),
+                profile.clone(),
+                model.clone(),
+                Some(String::new()),
+            ),
+        ] {
+            assert!(matches!(
+                pipeline_provider_config(values.0, values.1, values.2, values.3),
+                Err(Error::InvalidConfiguration)
+            ));
+        }
+        let (config, credential) =
+            pipeline_provider_config(endpoint, profile, model, Some("fixture-key".into()))
+                .unwrap()
+                .unwrap();
+        assert_eq!(config.identity.provider, "workspace-profile");
+        assert_eq!(config.identity.model, "jev-1.13.0");
+        assert_eq!(
+            config.identity.destination,
+            "https://example.com/v1/systemone"
+        );
+        assert!(
+            JevPipelineProvider::new(config, credential)
+                .unwrap()
+                .available()
+        );
+        assert!(!tect_application::DisabledPipelineRecommendationProvider.available());
+    }
+
+    #[test]
+    fn pipeline_transport_rejects_invalid_identity_and_endpoint() {
+        for (endpoint, profile, model) in [
+            ("not-a-url", "profile", "jev-1"),
+            ("http://example.com/v1/systemone", "profile", "jev-1"),
+            ("https://example.com/other", "profile", "jev-1"),
+            ("https://example.com/v1/systemone?x=1", "profile", "jev-1"),
+            ("https://example.com/v1/systemone", "bad profile", "jev-1"),
+            ("https://example.com/v1/systemone", "profile", "bad model"),
+            ("https://example.com/v1/systemone", "profile", ""),
+        ] {
+            let result = pipeline_provider_config(
+                Some(endpoint.into()),
+                Some(profile.into()),
+                Some(model.into()),
+                Some("fixture-key".into()),
+            )
+            .and_then(|value| {
+                let (config, credential) = value.unwrap();
+                JevPipelineProvider::new(config, credential).map(|_| ())
+            });
+            assert_eq!(result, Err(Error::InvalidConfiguration));
         }
     }
 }
