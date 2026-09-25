@@ -1102,10 +1102,22 @@ async fn fixture_provider_returns_normalized_answers_once() {
         },
         &config,
         "a".repeat(64),
-        "owner:fixture",
+        &request.budget_policy,
     )
     .unwrap();
     assert_eq!(authorization.request_payload, expected_body);
+    assert_eq!(
+        authorization.configuration_snapshot["budget_policy_id"],
+        request.budget_policy.policy_id
+    );
+    assert_eq!(
+        authorization.configuration_snapshot["budget_policy"]["policy_version"],
+        request.budget_policy.policy_version
+    );
+    assert_eq!(
+        authorization.configuration_snapshot["budget_policy"]["policy_digest"],
+        request.budget_policy.policy_digest
+    );
     assert_eq!(authorization.payload_digest, sha256(&expected_body));
     let started = fixture_started_dispatch(&authorization, true);
     let permit =
@@ -1154,7 +1166,11 @@ fn permit_requires_send_start_and_binds_exact_prepared_entity() {
         },
         &config,
         "a".repeat(64),
-        "owner:fixture",
+        &crate::ScopeBudgetPolicyEvaluation {
+            policy_id: "owner:fixture".into(),
+            policy_version: 1,
+            policy_digest: "a".repeat(64),
+        },
     )
     .unwrap();
     let mut started = fixture_started_dispatch(&authorization, false);

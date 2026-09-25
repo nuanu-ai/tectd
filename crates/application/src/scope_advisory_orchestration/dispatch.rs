@@ -109,7 +109,7 @@ impl WorkspaceService {
             },
             config,
             opportunity.material_digest.clone(),
-            &policy.policy_id,
+            &policy,
         )?;
         let lifecycle = AdvisoryLifecycleCapability::internal();
         let (mut authorize, _, _) = self

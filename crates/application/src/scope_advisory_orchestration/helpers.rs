@@ -180,7 +180,7 @@ pub(super) fn scope_dispatch_authorization(
     provider: ScopeDispatchProvider<'_>,
     config: &WorkspaceAdvisoryConfig,
     material_digest: String,
-    budget_policy_id: &str,
+    budget_policy: &crate::ScopeBudgetPolicyEvaluation,
 ) -> Result<AdvisoryDispatchAuthorization> {
     let profile = config
         .provider_profile_ref
@@ -194,7 +194,12 @@ pub(super) fn scope_dispatch_authorization(
         "provider_profile_ref": profile,
         "model_configuration": model,
         "adapter_version": provider.adapter_version,
-        "budget_policy_id": budget_policy_id,
+        "budget_policy_id": budget_policy.policy_id,
+        "budget_policy": {
+            "policy_id": budget_policy.policy_id,
+            "policy_version": budget_policy.policy_version,
+            "policy_digest": budget_policy.policy_digest,
+        },
         "destination": prepared.destination(),
         "wire_version": prepared.wire_version(),
         "request_body_length": prepared.body_length(),

@@ -171,7 +171,7 @@ async fn start_pipeline(
         return Err(Error::InputConflict);
     }
     let _opportunity = opportunity_by_id(tx, tenant, workspace, row.opportunity_id, true).await?;
-    let reservation = reserve_before_dispatch(tx, tenant, workspace, &row, policy, None).await?;
+    let reservation = reserve_before_dispatch(tx, tenant, workspace, &row, policy, None, None).await?;
     let updated = sqlx::query(
         "UPDATE advisory_dispatch SET state='sending',send_certainty='sent_unknown',\
          send_started_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 \

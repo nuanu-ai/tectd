@@ -18,6 +18,7 @@ type DispatchAuditRow = (
     bool,
 );
 use crate::{PgStore, admin};
+use ring::signature::{Ed25519KeyPair, KeyPair};
 use tect_application::{
     DenyScopeBudget, PreparedScopeAdviceAttempt, ScopeAdviceProvider, ScopeAdviceProviderError,
     ScopeAdviceProviderObservation, ScopeAdviceProviderRequest, ScopeBudgetPolicy,
@@ -506,6 +507,73 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
             .unwrap();
     assert_eq!(budget_dispatches, 0);
 
+    let keypair = Ed25519KeyPair::from_seed_unchecked(&[92u8; 32]).unwrap();
+    let key_hex: String = keypair
+        .public_key()
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let owner_keys = crate::BudgetOwnerKeys::from_json(&format!(
+        r#"[{{"workspace_id":"{workspace}","owner_id":"{actor}","public_key_hex":"{key_hex}"}}]"#,
+    ))
+    .unwrap();
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    let from = now - 60_000;
+    let until = now + 600_000;
+    let policy_id = Uuid::new_v4();
+    let ceilings = AdvisoryBudgetCeilings {
+        provider_calls: 2,
+        input_tokens: 100,
+        output_tokens: 100,
+        request_utf8_bytes: 100_000,
+        elapsed_monotonic_ms: 30_000,
+        retry_dispatches: 1,
+    };
+    let unsigned = AdvisoryBudgetPolicy::new(
+        policy_id,
+        1,
+        AdvisoryBudgetPolicy::digest_for(policy_id, 1, from, until, ceilings),
+        from,
+        until,
+        ceilings,
+        actor,
+        "0".repeat(128),
+    )
+    .unwrap();
+    let signature: String = keypair
+        .sign(&unsigned.approval_signing_message(workspace).unwrap())
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let signed_policy = AdvisoryBudgetPolicy::new(
+        policy_id,
+        1,
+        unsigned.digest().to_owned(),
+        from,
+        until,
+        ceilings,
+        actor,
+        signature,
+    )
+    .unwrap();
+    let mut policy_install = rw(&store, &enrollment.auth, tenant).await;
+    policy_install
+        .advisory_budget_policy_store()
+        .unwrap()
+        .install_budget_policy(workspace, &signed_policy)
+        .await
+        .unwrap();
+    policy_install.commit().await.unwrap();
+    let signed_store = PgStore::from_pool(runtime_pool.clone()).with_budget_owner_keys(owner_keys);
+
     // Explicit test-only opt-in crosses the real Jev HTTP adapter and the
     // committed dispatch lifecycle. The same request is replayed while the
     // listener is open so an accidental retry is visible on the socket.
@@ -523,7 +591,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     )
     .unwrap();
     let positive_service = WorkspaceService::new_with_scope_advisory_adapters(
-        std::sync::Arc::new(store.clone()),
+        std::sync::Arc::new(signed_store.clone()),
         std::sync::Arc::new(UnusedHostAdapters),
         std::sync::Arc::new(UnusedHostAdapters),
         std::sync::Arc::new(PgScopeAuthorityObserver::new(
@@ -572,7 +640,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     assert_eq!(replay.opportunity.id, positive.opportunity.id);
     assert_eq!(replay.opportunity.state, positive.opportunity.state);
     assert_eq!(replay.advice, positive.advice);
-    assert!(!replay.opportunity.provider_called);
+    assert!(replay.opportunity.provider_called);
     fake_done.send(()).unwrap();
     let (received_body, second_call) = fake_server.await.unwrap();
     assert!(!second_call, "replay sent a second HTTP request");
@@ -633,10 +701,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         ("sealed", "sent", "provider_response", "initial")
     );
     assert!(*started && *sealed);
-    assert_eq!(
-        config_snapshot["budget_policy_id"],
-        "test-only-synthetic-positive"
-    );
+    assert_eq!(config_snapshot["budget_policy_id"], policy_id.to_string());
     assert_eq!(config_snapshot["destination"], endpoint.as_str());
     assert_eq!(config_snapshot["wire_version"], "jev-system-one-json/2");
     assert_eq!(request_payload, &received_body);
