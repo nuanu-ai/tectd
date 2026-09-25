@@ -9,6 +9,10 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
+mod positive;
+mod positive_input;
+mod positive_test;
+
 fn sqlstate(error: &sqlx::Error) -> Option<String> {
     error
         .as_database_error()

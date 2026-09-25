@@ -320,9 +320,11 @@ impl ModelRouteDecisionStore for PgUnitOfWork {
             return Err(Error::Forbidden);
         }
         let tenant = self.tenant_id()?;
+        // The preparation row is immutable and runtime has SELECT/INSERT only.
+        // current_preparation locks the mutable saved candidate-set head below.
         let stored: Option<Value> = sqlx::query_scalar(
             "SELECT prepared_payload FROM model_route_preparations \
-             WHERE tenant_id=$1 AND workspace_id=$2 AND request_key=$3 FOR SHARE",
+             WHERE tenant_id=$1 AND workspace_id=$2 AND request_key=$3",
         )
         .bind(tenant)
         .bind(value.prepared.workspace_id)
@@ -452,8 +454,10 @@ impl ModelRouteDecisionStore for PgUnitOfWork {
             return Err(Error::Forbidden);
         }
         let tenant = self.tenant_id()?;
+        // Decision receipts are immutable too; recheck the current mutable
+        // Work/Matrix basis under current_preparation's candidate-set lock.
         let decision: Option<Value> = sqlx::query_scalar(
-            "SELECT decision_payload FROM model_route_decisions WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR SHARE",
+            "SELECT decision_payload FROM model_route_decisions WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
         ).bind(tenant).bind(value.workspace_id).bind(value.decision_id)
             .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?;
         let decision: CapturedModelRouteDecision = decode(decision.ok_or(Error::StaleContext)?)?;
