@@ -110,7 +110,7 @@ pub(super) async fn exercise_prepare(
     assert_eq!(binding.5, effect_attestation);
     assert_eq!(binding.6, "4");
     assert_eq!(binding.7, manifest["catalogue_digest"]);
-    assert_eq!(binding.8, prepared["eligible_kind_ids"]);
+    assert_eq!(json!(binding.8), prepared["eligible_kind_ids"]);
     assert_eq!(binding.9, prepared["manifest_digest"]);
     let source_binding: (Uuid, Uuid, String, String) = sqlx::query_as(
         "SELECT planning_snapshot_id,source_snapshot_id,source_snapshot_digest,\
