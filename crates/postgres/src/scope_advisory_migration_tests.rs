@@ -1,7 +1,12 @@
 const MIGRATION: &str = include_str!("../migrations/0040_scope_advisory_persistence.sql");
 const AUTHORED_REQUEST_MIGRATION: &str =
     include_str!("../migrations/0042_scope_authored_request_manifest_binding.sql");
-const MANIFEST: &str = include_str!("scope_advisory/manifest.rs");
+const MANIFEST_SOURCES: [&str; 4] = [
+    include_str!("scope_advisory/manifest/source.rs"),
+    include_str!("scope_advisory/manifest/prepare.rs"),
+    include_str!("scope_advisory/manifest/binding.rs"),
+    include_str!("scope_advisory/manifest/load.rs"),
+];
 const DECISIONS: &str = include_str!("scope_advisory/decisions.rs");
 const DISPOSITION_PRESERVATION: &str = include_str!("scope_advisory/disposition_preservation.rs");
 const CALLER_VERIFIER: &str = include_str!("scope_advisory/caller_verifier.rs");
@@ -15,6 +20,10 @@ fn decisions_contain(token: &str) -> bool {
     DECISIONS.contains(token)
         || DISPOSITION_PRESERVATION.contains(token)
         || CALLER_VERIFIER.contains(token)
+}
+
+fn manifest_contains(token: &str) -> bool {
+    MANIFEST_SOURCES.iter().any(|source| source.contains(token))
 }
 
 #[test]
@@ -101,7 +110,7 @@ fn every_aggregate_write_and_read_is_domain_validated() {
         "evaluate_scope_preservation(",
     ] {
         assert!(
-            MANIFEST.contains(token) || MAPPINGS.contains(token) || decisions_contain(token),
+            manifest_contains(token) || MAPPINGS.contains(token) || decisions_contain(token),
             "missing validation {token}"
         );
     }
@@ -126,7 +135,7 @@ fn lifecycle_cas_and_independence_guards_are_explicit() {
         "input.actor_id == decision_actor && input.session_id == decision_session",
     ] {
         assert!(
-            MANIFEST.contains(token) || decisions_contain(token),
+            manifest_contains(token) || FINALIZE.contains(token) || decisions_contain(token),
             "missing {token}"
         );
     }
@@ -177,9 +186,11 @@ fn authored_request_digest_is_optional_manifest_lineage_and_not_provider_request
     assert!(PORT.contains("authored_request_digest: Option<String>"));
     assert!(PORT.contains("prepare_authored_scope_advisory_manifest"));
     assert!(PORT.contains("scope_advisory_manifest_by_request_key"));
-    assert!(MANIFEST.contains("authored_request_digest.as_deref() == authored_request_digest"));
-    assert!(MANIFEST.contains("o.request_key=$3"));
-    assert!(MANIFEST.contains("o.tenant_id=$1 AND o.workspace_id=$2"));
+    assert!(manifest_contains(
+        "authored_request_digest.as_deref() == authored_request_digest"
+    ));
+    assert!(manifest_contains("o.request_key=$3"));
+    assert!(manifest_contains("o.tenant_id=$1 AND o.workspace_id=$2"));
     assert!(!AUTHORED_REQUEST_MIGRATION.contains("advisory_scope_advice"));
 }
 
@@ -273,12 +284,14 @@ fn runtime_contract_is_append_only_tenant_safe_and_port_only() {
     }
     for source in [
         PORT,
-        MANIFEST,
         DECISIONS,
         DISPOSITION_PRESERVATION,
         CALLER_VERIFIER,
         MAPPINGS,
-    ] {
+    ]
+    .into_iter()
+    .chain(MANIFEST_SOURCES)
+    {
         assert!(!source.contains("raw_response"));
         assert!(!source.contains("response_payload bytea"));
     }
