@@ -808,11 +808,13 @@ async fn lightweight_v07_accepts_omitted_body_and_persists_backend_evidence() {
     assert_eq!(attempt_counts, vec![("K2".into(), 2), ("K3".into(), 2)]);
 
     let migration_count: i64 =
-        sqlx::query_scalar("SELECT pg_catalog.count(*) FROM _sqlx_migrations")
+        sqlx::query_scalar("SELECT pg_catalog.count(*) FROM _sqlx_migrations WHERE success")
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(migration_count, 40);
+    let expected_migration_count =
+        i64::try_from(sqlx::migrate!("../postgres/migrations").iter().count()).unwrap();
+    assert_eq!(migration_count, expected_migration_count);
     let body_check: String = sqlx::query_scalar(
         "SELECT pg_catalog.pg_get_constraintdef(oid) FROM pg_catalog.pg_constraint \
          WHERE conrelid='slice_pipeline_phase_outputs'::regclass \

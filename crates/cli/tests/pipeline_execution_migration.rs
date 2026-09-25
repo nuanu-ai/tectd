@@ -123,13 +123,17 @@ async fn run_upgrade(
             "schema-8 Program, Scope, Slice, graph, pipeline or Result data changed".into(),
         );
     }
-    let migration_count: i64 = sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations")
-        .fetch_one(&pool)
-        .await
-        .map_err(|error| error.to_string())?;
-    if migration_count != 40 {
+    let migration_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations WHERE success")
+            .fetch_one(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
+    let expected_migration_count =
+        i64::try_from(sqlx::migrate!("../postgres/migrations").iter().count())
+            .map_err(|error| error.to_string())?;
+    if migration_count != expected_migration_count {
         return Err(format!(
-            "expected 40 migrations, observed {migration_count}"
+            "expected {expected_migration_count} successful migrations, observed {migration_count}"
         ));
     }
     let knowledge_table_count: i64 = sqlx::query_scalar(

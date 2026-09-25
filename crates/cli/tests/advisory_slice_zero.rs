@@ -44,7 +44,9 @@ async fn slice_zero_is_live_tenant_safe_durable_and_routed() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    assert_eq!(migration_count, 40);
+    let expected_migration_count =
+        i64::try_from(sqlx::migrate!("../postgres/migrations").iter().count()).unwrap();
+    assert_eq!(migration_count, expected_migration_count);
     let server_version: String = sqlx::query_scalar("SHOW server_version_num")
         .fetch_one(&pool)
         .await
