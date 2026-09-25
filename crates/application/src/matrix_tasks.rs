@@ -251,28 +251,27 @@ impl WorkspaceService {
         if matches!(
             input.primary_reason,
             AdvisoryReason::MatrixSourceUnverified | AdvisoryReason::MatrixEvidenceUnresolved
-        ) {
-            if let Some(verification) = verification.as_ref() {
-                if !composition.unresolved_evidence.is_empty() {
-                    input.primary_reason = AdvisoryReason::MatrixEvidenceUnresolved;
-                } else if !composition.is_resolved() {
-                    input.primary_reason = AdvisoryReason::MatrixSourceUnverified;
-                } else if let (Some(profile), Some(model)) = (
-                    config.provider_profile_ref.clone(),
-                    config.model_configuration.clone(),
-                ) {
-                    let verified = crate::MatrixProviderRequest::new_verified(
-                        revision.clone(),
-                        composition,
-                        verification,
-                        profile,
-                        model,
-                    )?;
-                    input.primary_reason = AdvisoryReason::CapabilityUnavailable;
-                    provider_request = Some(verified);
-                } else {
-                    input.primary_reason = AdvisoryReason::ProviderUnconfigured;
-                }
+        ) && let Some(verification) = verification.as_ref()
+        {
+            if !composition.unresolved_evidence.is_empty() {
+                input.primary_reason = AdvisoryReason::MatrixEvidenceUnresolved;
+            } else if !composition.is_resolved() {
+                input.primary_reason = AdvisoryReason::MatrixSourceUnverified;
+            } else if let (Some(profile), Some(model)) = (
+                config.provider_profile_ref.clone(),
+                config.model_configuration.clone(),
+            ) {
+                let verified = crate::MatrixProviderRequest::new_verified(
+                    revision.clone(),
+                    composition,
+                    verification,
+                    profile,
+                    model,
+                )?;
+                input.primary_reason = AdvisoryReason::CapabilityUnavailable;
+                provider_request = Some(verified);
+            } else {
+                input.primary_reason = AdvisoryReason::ProviderUnconfigured;
             }
         }
         let prepared = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(
@@ -296,6 +295,7 @@ impl WorkspaceService {
             return Ok(opportunity);
         };
         let provider_request = provider_request.ok_or(Error::InternalInvariant)?;
+        let prepared = *prepared;
         let authorization = crate::matrix_advisory_dispatch::authorize_prepared_matrix(
             opportunity.id,
             &opportunity,
@@ -309,11 +309,13 @@ impl WorkspaceService {
         self.dispatch_prepared_matrix_advisory(
             context,
             workspace.id,
-            opportunity,
-            config.revision,
-            authorization,
-            provider_request,
-            prepared,
+            crate::matrix_advisory_dispatch::PreparedMatrixDispatch {
+                opportunity,
+                config_revision: config.revision,
+                authorization,
+                provider_request,
+                prepared,
+            },
         )
         .await
     }

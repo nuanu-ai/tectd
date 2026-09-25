@@ -9,7 +9,7 @@ use uuid::Uuid;
 /// flow. NoCall carries no provider body or budget grant.
 pub(crate) enum PreparedMatrixOpportunity {
     Authorized {
-        prepared: PreparedMatrixAdviceAttempt,
+        prepared: Box<PreparedMatrixAdviceAttempt>,
         authorization: MatrixBudgetAuthorization,
     },
     NoCall,
@@ -50,7 +50,7 @@ pub(crate) async fn prepare_eligible_matrix_opportunity(
     }
     let prepared = match provider.prepare(request) {
         Ok(prepared)
-            if prepared.validate_for(&request).is_ok() && prepared.identity() == &identity =>
+            if prepared.validate_for(request).is_ok() && prepared.identity() == &identity =>
         {
             prepared
         }
@@ -67,7 +67,7 @@ pub(crate) async fn prepare_eligible_matrix_opportunity(
             input.state = AdvisoryOpportunityState::Prepared;
             input.primary_reason = AdvisoryReason::DispatchAuthorized;
             PreparedMatrixOpportunity::Authorized {
-                prepared,
+                prepared: Box::new(prepared),
                 authorization: auth,
             }
         }

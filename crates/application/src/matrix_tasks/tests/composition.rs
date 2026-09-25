@@ -178,7 +178,6 @@ fn choice_set_must_bind_to_exact_revision_and_input() {
     choice.task_id = Uuid::new_v4().to_string();
     request.choice_set = Some(choice.clone());
     assert_eq!(validate_request(&request), Err(Error::InvalidArguments));
-    let mut choice = choice;
     choice.task_id = request.task_id.to_string();
     choice.candidates[0].assumption_fact_ids = vec!["unknown.fact".into()];
     request.choice_set = Some(choice);

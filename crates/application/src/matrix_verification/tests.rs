@@ -227,9 +227,11 @@ async fn latest_current_verification_controls_owner_composition() {
     let record = verify_locked_revision(
         &mut store,
         &FakeValidator { trusted: true },
-        workspace,
-        Uuid::new_v4(),
-        Uuid::new_v4(),
+        MatrixVerificationActor {
+            workspace_id: workspace,
+            verifier_principal_id: Uuid::new_v4(),
+            verifier_session_id: Uuid::new_v4(),
+        },
         &revision,
         &request(&revision),
         &|| Ok(100),
@@ -320,9 +322,11 @@ async fn complete_verification_is_saved_with_exact_owner_and_digest() {
     let record = verify_locked_revision(
         &mut store,
         &FakeValidator { trusted: true },
-        Uuid::new_v4(),
-        verifier,
-        Uuid::new_v4(),
+        MatrixVerificationActor {
+            workspace_id: Uuid::new_v4(),
+            verifier_principal_id: verifier,
+            verifier_session_id: Uuid::new_v4(),
+        },
         &revision,
         &request(&revision),
         &|| Ok(100),
@@ -346,12 +350,14 @@ async fn same_owner_different_session_is_denied() {
         verify_locked_revision(
             &mut store,
             &FakeValidator { trusted: true },
-            Uuid::new_v4(),
-            revision.recorded_by_principal_id,
-            Uuid::new_v4(),
+            MatrixVerificationActor {
+                workspace_id: Uuid::new_v4(),
+                verifier_principal_id: revision.recorded_by_principal_id,
+                verifier_session_id: Uuid::new_v4(),
+            },
             &revision,
             &request(&revision),
-            &|| Ok(100)
+            &|| Ok(100),
         )
         .await,
         Err(Error::Forbidden)
@@ -369,12 +375,14 @@ async fn stale_revision_or_digest_never_persists() {
         verify_locked_revision(
             &mut store,
             &FakeValidator { trusted: true },
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            Uuid::new_v4(),
+            MatrixVerificationActor {
+                workspace_id: Uuid::new_v4(),
+                verifier_principal_id: Uuid::new_v4(),
+                verifier_session_id: Uuid::new_v4(),
+            },
             &revision,
             &request,
-            &|| Ok(100)
+            &|| Ok(100),
         )
         .await,
         Err(Error::StaleRevision)
@@ -385,12 +393,14 @@ async fn stale_revision_or_digest_never_persists() {
         verify_locked_revision(
             &mut store,
             &FakeValidator { trusted: true },
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            Uuid::new_v4(),
+            MatrixVerificationActor {
+                workspace_id: Uuid::new_v4(),
+                verifier_principal_id: Uuid::new_v4(),
+                verifier_session_id: Uuid::new_v4(),
+            },
             &revision,
             &request,
-            &|| Ok(100)
+            &|| Ok(100),
         )
         .await,
         Err(Error::InputConflict)
@@ -408,12 +418,14 @@ async fn missing_or_untrusted_evidence_never_persists() {
         verify_locked_revision(
             &mut store,
             &FakeValidator { trusted: true },
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            Uuid::new_v4(),
+            MatrixVerificationActor {
+                workspace_id: Uuid::new_v4(),
+                verifier_principal_id: Uuid::new_v4(),
+                verifier_session_id: Uuid::new_v4(),
+            },
             &revision,
             &request,
-            &|| Ok(100)
+            &|| Ok(100),
         )
         .await,
         Err(Error::InvalidArguments)
@@ -423,12 +435,14 @@ async fn missing_or_untrusted_evidence_never_persists() {
         verify_locked_revision(
             &mut store,
             &FakeValidator { trusted: false },
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            Uuid::new_v4(),
+            MatrixVerificationActor {
+                workspace_id: Uuid::new_v4(),
+                verifier_principal_id: Uuid::new_v4(),
+                verifier_session_id: Uuid::new_v4(),
+            },
             &revision,
             &request,
-            &|| Ok(100)
+            &|| Ok(100),
         )
         .await,
         Err(Error::InvalidArguments)
@@ -449,9 +463,11 @@ async fn evidence_expiring_during_validation_never_persists() {
         verify_locked_revision(
             &mut store,
             &FakeValidator { trusted: true },
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            Uuid::new_v4(),
+            MatrixVerificationActor {
+                workspace_id: Uuid::new_v4(),
+                verifier_principal_id: Uuid::new_v4(),
+                verifier_session_id: Uuid::new_v4(),
+            },
             &revision,
             &request(&revision),
             &clock,

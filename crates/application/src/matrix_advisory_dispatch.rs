@@ -12,6 +12,14 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
+pub(crate) struct PreparedMatrixDispatch {
+    pub opportunity: AdvisoryOpportunity,
+    pub config_revision: i64,
+    pub authorization: AdvisoryDispatchAuthorization,
+    pub provider_request: MatrixProviderRequest,
+    pub prepared: PreparedMatrixAdviceAttempt,
+}
+
 pub(crate) fn seal_matrix_provider_observation(
     opportunity_id: Uuid,
     dispatch_id: Uuid,
@@ -193,12 +201,15 @@ impl WorkspaceService {
         &self,
         context: &RequestContext,
         workspace_id: Uuid,
-        opportunity: AdvisoryOpportunity,
-        config_revision: i64,
-        authorization: AdvisoryDispatchAuthorization,
-        provider_request: MatrixProviderRequest,
-        prepared: PreparedMatrixAdviceAttempt,
+        dispatch: PreparedMatrixDispatch,
     ) -> Result<AdvisoryOpportunity> {
+        let PreparedMatrixDispatch {
+            opportunity,
+            config_revision,
+            authorization,
+            provider_request,
+            prepared,
+        } = dispatch;
         let lifecycle = AdvisoryLifecycleCapability::internal();
         let verification_current = self
             .matrix_request_is_current(context, workspace_id, &provider_request)

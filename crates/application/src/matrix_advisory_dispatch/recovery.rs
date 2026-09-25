@@ -279,11 +279,13 @@ impl WorkspaceService {
                 self.dispatch_prepared_matrix_advisory(
                     context,
                     workspace_id,
-                    opportunity.clone(),
-                    opportunity.config_revision,
-                    authorization,
-                    request,
-                    prepared,
+                    super::PreparedMatrixDispatch {
+                        opportunity: opportunity.clone(),
+                        config_revision: opportunity.config_revision,
+                        authorization,
+                        provider_request: request,
+                        prepared,
+                    },
                 )
                 .await
             }

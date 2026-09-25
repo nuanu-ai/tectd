@@ -28,6 +28,13 @@ pub struct VerifyMatrixTask {
     pub evidence: Vec<MatrixEvidenceReference>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MatrixVerificationActor {
+    pub workspace_id: Uuid,
+    pub verifier_principal_id: Uuid,
+    pub verifier_session_id: Uuid,
+}
+
 impl WorkspaceService {
     /// Authorize a malformed verifier call against the same active, bound
     /// session required by a valid verification, without opening task data.
@@ -86,9 +93,11 @@ impl WorkspaceService {
         let record = verify_locked_revision(
             store,
             self.matrix_evidence_validator.as_ref(),
-            workspace.id,
-            identity.principal_id,
-            session.id,
+            MatrixVerificationActor {
+                workspace_id: workspace.id,
+                verifier_principal_id: identity.principal_id,
+                verifier_session_id: session.id,
+            },
             &revision,
             request,
             &current_epoch_seconds,
@@ -102,13 +111,16 @@ impl WorkspaceService {
 pub(crate) async fn verify_locked_revision(
     store: &mut dyn MatrixVerificationStore,
     validator: &dyn MatrixEvidenceValidator,
-    workspace_id: Uuid,
-    verifier_principal_id: Uuid,
-    verifier_session_id: Uuid,
+    actor: MatrixVerificationActor,
     revision: &MatrixTaskRevision,
     request: &VerifyMatrixTask,
     clock: &(dyn Fn() -> Result<i64> + Sync),
 ) -> Result<MatrixVerificationRecord> {
+    let MatrixVerificationActor {
+        workspace_id,
+        verifier_principal_id,
+        verifier_session_id,
+    } = actor;
     if revision.task_id != request.task_id {
         return Err(Error::NotFound);
     }

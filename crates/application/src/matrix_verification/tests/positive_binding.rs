@@ -31,9 +31,11 @@ async fn positive_binding_requires_revalidated_exact_record() {
     let record = verify_locked_revision(
         &mut store,
         &FakeValidator { trusted: true },
-        workspace,
-        Uuid::new_v4(),
-        Uuid::new_v4(),
+        MatrixVerificationActor {
+            workspace_id: workspace,
+            verifier_principal_id: Uuid::new_v4(),
+            verifier_session_id: Uuid::new_v4(),
+        },
         &revision,
         &request(&revision),
         &|| Ok(100),

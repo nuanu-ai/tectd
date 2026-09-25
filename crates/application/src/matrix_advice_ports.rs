@@ -258,6 +258,10 @@ pub trait MatrixAdviceStore: Send {
     /// Finalize a sealed Matrix dispatch and persist its advice using the
     /// same locked verification decision. A direct persistence call still
     /// checks evidence freshness at the time of that separate call.
+    // The application dispatch/recovery callers and PostgreSQL implementation
+    // share this stable transaction port; grouping arguments would change its
+    // cross-crate contract without changing the guarded operation.
+    #[allow(clippy::too_many_arguments)]
     async fn finalize_guarded_matrix_advice(
         &mut self,
         capability: &AdvisoryLifecycleCapability,
