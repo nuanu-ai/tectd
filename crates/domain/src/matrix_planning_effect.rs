@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn canonical_digest_has_stable_wire_value() {
         let id = Uuid::from_u128(8);
-        let material = MatrixPlanningEffectMaterial {
+        let mut material = MatrixPlanningEffectMaterial {
             workspace_id: Uuid::from_u128(1),
             candidate_set_id: Uuid::from_u128(2),
             caller_request_id: Uuid::from_u128(3),
@@ -344,6 +344,54 @@ mod tests {
         assert_eq!(
             material.canonical_digest().unwrap(),
             "8020e38e4f2ffbb2c7c31a28936cd27d998142ad90dadad3a23db3ddf4aac2ed"
+        );
+        material.nodes[0].body = SliceCandidateNode::Work {
+            id,
+            revision: 1,
+            model_route_facts: None,
+            title: "Work".into(),
+            outcome: "Ship".into(),
+            includes: vec![],
+            excludes: vec![],
+            dependencies: vec![],
+            proof: vec!["Test".into()],
+            pipeline: PipelineKind::LightweightTddDevelopment,
+            pipeline_reason: "Small".into(),
+            why_lightweight_insufficient: None,
+            why_further_vertical_split_not_viable: None,
+            source_result_ids: vec![],
+            source_checkpoint: None,
+        };
+        let absent_json = serde_json::to_value(&material.nodes[0].body).unwrap();
+        assert!(absent_json.get("model_route_facts").is_none());
+        assert_eq!(
+            material.canonical_digest().unwrap(),
+            "75b1e250626e87bba771028b134dffbaf28f6f3efc18451d4b9811961304f2b9"
+        );
+        if let SliceCandidateNode::Work {
+            model_route_facts, ..
+        } = &mut material.nodes[0].body
+        {
+            *model_route_facts = Some(Box::new(crate::ModelRouteCallerFacts {
+                role: Some("agent".into()),
+                tool: Some("code".into()),
+                data_class: Some("internal".into()),
+                remaining_budget_units: Some(10),
+                available_latency_ms: Some(50),
+            }));
+        }
+        let mut expected_json = absent_json;
+        expected_json["model_route_facts"] = serde_json::json!({
+            "role": "agent", "tool": "code", "data_class": "internal",
+            "remaining_budget_units": 10, "available_latency_ms": 50
+        });
+        assert_eq!(
+            serde_json::to_value(&material.nodes[0].body).unwrap(),
+            expected_json
+        );
+        assert_eq!(
+            material.canonical_digest().unwrap(),
+            "f7dc6a486e807eb7c32db697fbaddfa27666d72421d6b4752567d060954c5fe7"
         );
     }
 }

@@ -202,7 +202,7 @@ pub enum SliceCandidateDraftNode {
     Work {
         identity: SliceDraftIdentity,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        model_route_facts: Option<ModelRouteCallerFacts>,
+        model_route_facts: Option<Box<ModelRouteCallerFacts>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         change_rationale: Option<String>,
         title: String,
@@ -267,7 +267,7 @@ pub enum SliceCandidateNode {
         id: Uuid,
         revision: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        model_route_facts: Option<ModelRouteCallerFacts>,
+        model_route_facts: Option<Box<ModelRouteCallerFacts>>,
         title: String,
         outcome: String,
         includes: Vec<String>,
@@ -558,7 +558,7 @@ mod model_route_caller_facts_tests {
         let encoded = serde_json::to_value(&legacy).unwrap();
         assert!(encoded.get("model_route_facts").is_none());
         assert_eq!(
-            serde_json::from_value::<SliceCandidateNode>(encoded).unwrap(),
+            serde_json::from_value::<SliceCandidateNode>(encoded.clone()).unwrap(),
             legacy
         );
 
@@ -567,19 +567,49 @@ mod model_route_caller_facts_tests {
             model_route_facts, ..
         } = &mut typed
         {
-            *model_route_facts = Some(ModelRouteCallerFacts {
+            *model_route_facts = Some(Box::new(ModelRouteCallerFacts {
                 role: Some("agent".into()),
                 tool: Some("code".into()),
                 data_class: Some("internal".into()),
                 remaining_budget_units: Some(10),
                 available_latency_ms: Some(50),
-            });
+            }));
         }
-        let encoded = serde_json::to_value(&typed).unwrap();
-        assert_eq!(encoded["model_route_facts"]["role"], "agent");
+        let typed_json = serde_json::to_value(&typed).unwrap();
+        let mut expected_json = encoded;
+        expected_json["model_route_facts"] = serde_json::json!({
+            "role": "agent", "tool": "code", "data_class": "internal",
+            "remaining_budget_units": 10, "available_latency_ms": 50
+        });
+        assert_eq!(typed_json, expected_json);
         assert_eq!(
-            serde_json::from_value::<SliceCandidateNode>(encoded).unwrap(),
+            serde_json::from_value::<SliceCandidateNode>(typed_json).unwrap(),
             typed
+        );
+
+        let mut draft: SliceCandidateDraftNode = serde_json::from_value(serde_json::json!({
+            "kind": "work", "identity": {"local": "work"},
+            "title": "Work", "outcome": "Outcome", "proof": ["Proof"],
+            "pipeline": PipelineKind::LightweightTddDevelopment, "pipeline_reason": "Small"
+        }))
+        .unwrap();
+        let absent_draft_json = serde_json::to_value(&draft).unwrap();
+        assert!(absent_draft_json.get("model_route_facts").is_none());
+        if let SliceCandidateDraftNode::Work {
+            model_route_facts, ..
+        } = &mut draft
+        {
+            *model_route_facts = Some(Box::new(ModelRouteCallerFacts {
+                role: Some("agent".into()),
+                ..Default::default()
+            }));
+        }
+        let mut expected_draft_json = absent_draft_json;
+        expected_draft_json["model_route_facts"] = serde_json::json!({"role": "agent"});
+        assert_eq!(serde_json::to_value(&draft).unwrap(), expected_draft_json);
+        assert_eq!(
+            serde_json::from_value::<SliceCandidateDraftNode>(expected_draft_json).unwrap(),
+            draft
         );
     }
 

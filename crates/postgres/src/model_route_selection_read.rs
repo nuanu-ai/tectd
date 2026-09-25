@@ -418,13 +418,13 @@ mod tests {
         else {
             unreachable!()
         };
-        *model_route_facts = Some(ModelRouteCallerFacts {
+        *model_route_facts = Some(Box::new(ModelRouteCallerFacts {
             role: Some("agent".into()),
             tool: Some("code".into()),
             data_class: Some("internal".into()),
             remaining_budget_units: Some(10),
             available_latency_ms: Some(50),
-        });
+        }));
         assert_ne!(
             old_effect_digest,
             snapshot.effect_digest(workspace).unwrap()

@@ -425,13 +425,13 @@ pub(super) async fn fixture(admin_pool: &PgPool, runtime_pool: &PgPool) -> Fixtu
                     candidate_id: None,
                     revision: None,
                 },
-                model_route_facts: Some(ModelRouteCallerFacts {
+                model_route_facts: Some(Box::new(ModelRouteCallerFacts {
                     role: Some("agent".into()),
                     tool: Some("code".into()),
                     data_class: Some("internal".into()),
                     remaining_budget_units: Some(20),
                     available_latency_ms: Some(100),
-                }),
+                })),
                 change_rationale: None,
                 title: "Implement".into(),
                 outcome: "Ship".into(),
