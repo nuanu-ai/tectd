@@ -55,7 +55,7 @@ BEGIN
         RAISE EXCEPTION 'budget reservation binding mismatch' USING ERRCODE='23514';
     END IF;
     RETURN NEW;
-END $guard$;
+END; $guard$;
 CREATE TRIGGER advisory_budget_reservation_guard_trigger
     BEFORE INSERT OR UPDATE OR DELETE ON advisory_budget_reservations
     FOR EACH ROW EXECUTE FUNCTION advisory_budget_reservation_guard();
