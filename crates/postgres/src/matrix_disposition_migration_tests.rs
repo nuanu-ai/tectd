@@ -1,5 +1,5 @@
 const MIGRATION: &str = include_str!("../migrations/0058_matrix_disposition_active_owner.sql");
-const STORE: &str = include_str!("matrix_disposition_store.rs");
+const STORE: &str = include_str!("matrix_disposition_store/implementation.rs");
 const GRANTS: &str = include_str!("admin/migration.rs");
 const SCHEMA_VALIDATOR: &str = include_str!("admin/matrix_advisory.rs");
 

@@ -4,7 +4,7 @@ const STORE: &str = include_str!("matrix_verification_store.rs");
 const ADVICE_LINK: &str =
     include_str!("../migrations/0056_matrix_advisory_verification_binding.sql");
 const ADVICE_DISPATCH: &str = include_str!("advisory/dispatch.rs");
-const ADVICE_STORE: &str = include_str!("matrix_advice_store.rs");
+const ADVICE_STORE: &str = include_str!("matrix_advice_store/implementation.rs");
 const STALE_REASON: &str = include_str!("../migrations/0057_matrix_verification_stale_reason.sql");
 
 #[test]
