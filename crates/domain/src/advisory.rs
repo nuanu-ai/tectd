@@ -4,6 +4,7 @@
 //! a provider dispatch.  An opportunity is a workflow fact, including a
 //! no-call decision; a dispatch is evidence of one authorized provider-send
 
+mod anti_bloat;
 mod audit;
 mod authored_scope;
 mod config;
@@ -16,6 +17,7 @@ mod scope_source;
 mod selected_save_observation;
 mod system_one;
 
+pub use anti_bloat::*;
 pub use audit::*;
 pub use authored_scope::*;
 pub use config::*;
