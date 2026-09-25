@@ -19,6 +19,7 @@ mod model_route_recommendation;
 mod model_route_recommendation_ports;
 mod pipeline_recommendation;
 mod pipeline_recommendation_ports;
+mod pipeline_recommendation_runtime;
 mod planning_knowledge_ports;
 mod ports;
 mod programs;
@@ -80,6 +81,12 @@ pub use pipeline_recommendation_ports::{
     PipelineRecommendationBasis, PipelineRecommendationContext,
     PipelineRecommendationDefinitionProvider, PipelineRecommendationStore,
     PreparedPipelineRecommendation, UnavailablePipelineRecommendationDefinitions,
+};
+pub use pipeline_recommendation_runtime::{
+    MAX_PREPARED_PIPELINE_BODY_BYTES, MAX_SEALED_PIPELINE_RESPONSE_BYTES,
+    PipelineProviderIdentity, PipelineProviderObservation, PipelineRecommendationProvider,
+    PipelineStartedDispatchPermit, PreparedPipelineRecommendationAttempt,
+    SealedPipelineRecommendationResponse,
 };
 pub use planning_knowledge_ports::PlanningKnowledgeStore;
 pub use ports::{

@@ -3,14 +3,67 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::{Value, json};
+use tect_application::{
+    PipelineProviderIdentity, PipelineProviderObservation, PipelineRecommendationProvider,
+    PipelineStartedDispatchPermit, PreparedPipelineRecommendation,
+    PreparedPipelineRecommendationAttempt, SealedPipelineRecommendationResponse,
+};
 use tect_domain::{Error, PipelineRecommendationManifest, PipelineRecommendationRanking, Result};
 
 pub const WIRE_VERSION: &str = "tect.pipeline-typesafe-native/1";
 pub const ENDPOINT_PATH: &str = "/v1/systemone";
 pub const MAX_REQUEST_BYTES: usize = 512 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 64 * 1024;
+
+/// Pure saved-response adapter. The active transport remains a separate
+/// implementation, and no application service installs this adapter by default.
+pub struct JevPipelineSavedResponseParser {
+    identity: PipelineProviderIdentity,
+}
+
+impl JevPipelineSavedResponseParser {
+    pub fn new(identity: PipelineProviderIdentity) -> Result<Self> {
+        if identity.wire_version != WIRE_VERSION || identity.model.is_empty() {
+            return Err(Error::InvalidArguments);
+        }
+        Ok(Self { identity })
+    }
+}
+
+#[async_trait]
+impl PipelineRecommendationProvider for JevPipelineSavedResponseParser {
+    fn prepare(
+        &self,
+        saved: &PreparedPipelineRecommendation,
+    ) -> Result<PreparedPipelineRecommendationAttempt> {
+        let wire =
+            prepare_native_request(&self.identity.model, &saved.manifest, MAX_REQUEST_BYTES)?;
+        PreparedPipelineRecommendationAttempt::new(saved, self.identity.clone(), wire.body)
+    }
+
+    fn parse_sealed_response(
+        &self,
+        manifest: &PipelineRecommendationManifest,
+        attempted: &PreparedPipelineRecommendationAttempt,
+        sealed: &SealedPipelineRecommendationResponse,
+    ) -> Result<PipelineRecommendationRanking> {
+        if attempted.identity() != &self.identity {
+            return Err(Error::InputConflict);
+        }
+        Ok(parse_sealed_native_response(manifest, attempted, sealed)?.ranking)
+    }
+
+    async fn attempt_prepared(
+        &self,
+        _prepared: PreparedPipelineRecommendationAttempt,
+        _permit: PipelineStartedDispatchPermit,
+    ) -> Result<PipelineProviderObservation> {
+        Err(Error::TransportUnavailable)
+    }
+}
 const CHOICE_ID: &str = "choice_v1";
 const ABSTAIN: &str = "ABSTAIN";
 const TOLERANCE: f64 = 1e-6;
@@ -122,7 +175,23 @@ pub fn prepare_native_request(
     })
 }
 
-pub fn parse_native_response(
+/// Public parse entry accepts only bytes validated against a sealed dispatch.
+pub fn parse_sealed_native_response(
+    manifest: &PipelineRecommendationManifest,
+    attempted: &PreparedPipelineRecommendationAttempt,
+    sealed: &SealedPipelineRecommendationResponse,
+) -> Result<ParsedPipelineNativeResponse> {
+    let expected =
+        prepare_native_request(&attempted.identity().model, manifest, MAX_REQUEST_BYTES)?;
+    if attempted.manifest_digest() != manifest.digest || attempted.body() != expected.body {
+        return Err(Error::InputConflict);
+    }
+    let parsed = parse_native_response(sealed.bytes(), &expected, MAX_RESPONSE_BYTES)?;
+    parsed.ranking.validate(manifest)?;
+    Ok(parsed)
+}
+
+pub(crate) fn parse_native_response(
     bytes: &[u8],
     prepared: &PreparedPipelineNativeRequest,
     maximum_response_bytes: usize,
