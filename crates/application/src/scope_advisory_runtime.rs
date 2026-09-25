@@ -79,6 +79,8 @@ pub struct ScopeBudgetRequest {
     pub candidate_set_id: Uuid,
     pub config_revision: i64,
     pub manifest_digest: String,
+    /// Exact UTF-8 body bytes produced by pure provider preparation.
+    pub request_utf8_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +100,29 @@ pub trait ScopeBudgetPolicy: Send + Sync {
         request: &ScopeBudgetRequest,
         verified_policy: &AdvisoryBudgetPolicy,
     ) -> Result<Option<ScopeBudgetPolicyEvaluation>>;
+}
+
+/// Pure preflight for a previously authorized, signed workspace policy. The
+/// durable dispatch store remains responsible for cumulative reservations and
+/// observed token, elapsed-time, and retry accounting.
+#[derive(Debug, Default)]
+pub struct SignedScopeBudgetPreflight;
+
+#[async_trait]
+impl ScopeBudgetPolicy for SignedScopeBudgetPreflight {
+    async fn evaluate(
+        &self,
+        request: &ScopeBudgetRequest,
+        verified_policy: &AdvisoryBudgetPolicy,
+    ) -> Result<Option<ScopeBudgetPolicyEvaluation>> {
+        let fits = i64::try_from(request.request_utf8_bytes)
+            .is_ok_and(|bytes| bytes > 0 && bytes <= verified_policy.ceilings().request_utf8_bytes);
+        Ok(fits.then(|| ScopeBudgetPolicyEvaluation {
+            policy_id: verified_policy.id().to_string(),
+            policy_version: verified_policy.version(),
+            policy_digest: verified_policy.digest().to_owned(),
+        }))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

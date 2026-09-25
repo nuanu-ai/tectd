@@ -285,51 +285,6 @@ impl WorkspaceService {
         )
         .await?;
         budget_read.commit().await?;
-        let policy = evaluate_verified_scope_budget(
-            self.scope_budget.as_ref(),
-            &ScopeBudgetRequest {
-                workspace_id: workspace.id,
-                actor_id: identity.principal_id,
-                candidate_set_id: request.candidate_set_id,
-                config_revision: config.revision,
-                manifest_digest: manifest.whole_set_digest.clone(),
-            },
-            verified_policy.as_ref(),
-        )
-        .await?;
-        let Some(policy) = policy else {
-            let material_digest = if authored_request_digest.is_some() {
-                no_call_digest(
-                    request,
-                    config.revision,
-                    AdvisoryReason::BudgetPolicyInvalid,
-                )?
-            } else {
-                manifest.whole_set_digest.clone()
-            };
-            let opportunity = self
-                .capture_scope_opportunity(
-                    context,
-                    request,
-                    &config,
-                    ScopeCaptureIdentity {
-                        actor: identity.principal_id,
-                        session: session.id,
-                    },
-                    material_digest,
-                    ScopeCaptureStatus {
-                        state: AdvisoryOpportunityState::NoCall,
-                        reason: AdvisoryReason::BudgetPolicyInvalid,
-                        revision: Some(manifest.source.candidate_set_revision),
-                    },
-                )
-                .await?;
-            return Ok(ScopeAdvisoryOutcome {
-                opportunity,
-                advice: None,
-            });
-        };
-
         let typed_request = ScopeAdviceRequest::from_manifest(&Sha256ScopeDigest, &manifest)?;
         let provider_context =
             crate::ScopeAdviceProviderContext::from_manifest(&typed_request, &manifest)?;
@@ -437,6 +392,53 @@ impl WorkspaceService {
                     advice: None,
                 });
             }
+        };
+
+        let policy = evaluate_verified_scope_budget(
+            self.scope_budget.as_ref(),
+            &ScopeBudgetRequest {
+                workspace_id: workspace.id,
+                actor_id: identity.principal_id,
+                candidate_set_id: request.candidate_set_id,
+                config_revision: config.revision,
+                manifest_digest: manifest.whole_set_digest.clone(),
+                request_utf8_bytes: prepared_attempt.body_length(),
+            },
+            verified_policy.as_ref(),
+        )
+        .await?;
+        let Some(policy) = policy else {
+            let material_digest = if authored_request_digest.is_some() {
+                no_call_digest(
+                    request,
+                    config.revision,
+                    AdvisoryReason::BudgetPolicyInvalid,
+                )?
+            } else {
+                manifest.whole_set_digest.clone()
+            };
+            let opportunity = prepare
+                .capture_advisory_opportunity(
+                    workspace.id,
+                    &scope_opportunity_input(
+                        request,
+                        &config,
+                        ScopeCaptureIdentity {
+                            actor: identity.principal_id,
+                            session: session.id,
+                        },
+                        material_digest,
+                        AdvisoryOpportunityState::NoCall,
+                        AdvisoryReason::BudgetPolicyInvalid,
+                        Some(manifest.source.candidate_set_revision),
+                    ),
+                )
+                .await?;
+            prepare.commit().await?;
+            return Ok(ScopeAdvisoryOutcome {
+                opportunity,
+                advice: None,
+            });
         };
 
         let input = scope_opportunity_input(

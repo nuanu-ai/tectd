@@ -166,6 +166,7 @@ pub use scope_advisory_runtime::{
     ScopeAuthoredManifestRequest, ScopeAuthorityObservation, ScopeAuthorityObserver,
     ScopeAuthorityOutcome, ScopeAuthorityRequest, ScopeAuthorizedInvalidObservation,
     ScopeBudgetPolicy, ScopeBudgetPolicyEvaluation, ScopeBudgetRequest, ScopeManifestSupplier,
+    SignedScopeBudgetPreflight,
 };
 pub use service::WorkspaceService;
 

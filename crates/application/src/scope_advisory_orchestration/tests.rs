@@ -4,7 +4,8 @@ use crate::{
     PreparedScopeAdviceAttempt, ScopeAdviceProvider, ScopeAdviceProviderError,
     ScopeAdviceProviderObservation, ScopeAdviceProviderRequest, ScopeAuthoredManifestRequest,
     ScopeAuthorityObserver, ScopeAuthorityOutcome, ScopeAuthorizedInvalidObservation,
-    ScopeBudgetPolicy, ScopeBudgetRequest, ScopeManifestSupplier, UnavailableScopeManifestSupplier,
+    ScopeBudgetPolicy, ScopeBudgetRequest, ScopeManifestSupplier, SignedScopeBudgetPreflight,
+    UnavailableScopeManifestSupplier,
 };
 use async_trait::async_trait;
 use std::sync::{
@@ -42,6 +43,29 @@ fn fixture_budget_policy() -> AdvisoryBudgetPolicy {
         ceilings,
         Uuid::from_u128(101),
         "a".repeat(128),
+    )
+    .unwrap()
+}
+
+fn fixture_budget_policy_with_request_ceiling(bytes: i64) -> AdvisoryBudgetPolicy {
+    let original = fixture_budget_policy();
+    let mut ceilings = original.ceilings();
+    ceilings.request_utf8_bytes = bytes;
+    AdvisoryBudgetPolicy::new(
+        original.id(),
+        original.version(),
+        AdvisoryBudgetPolicy::digest_for(
+            original.id(),
+            original.version(),
+            original.effective_from_unix_ms(),
+            original.effective_until_unix_ms(),
+            ceilings,
+        ),
+        original.effective_from_unix_ms(),
+        original.effective_until_unix_ms(),
+        ceilings,
+        original.approved_by(),
+        original.approval_signature().to_owned(),
     )
     .unwrap()
 }
@@ -134,6 +158,7 @@ async fn scope_budget_requires_exact_authorized_policy_before_evaluation() {
         candidate_set_id: Uuid::from_u128(3),
         config_revision: 1,
         manifest_digest: "a".repeat(64),
+        request_utf8_bytes: 5,
     };
     let calls = Arc::new(AtomicUsize::new(0));
     let evaluator = FixtureBudgetEvaluator {
@@ -193,6 +218,53 @@ async fn scope_budget_requires_exact_authorized_policy_before_evaluation() {
         );
     }
     assert_eq!(calls.load(Ordering::SeqCst), 4);
+}
+
+#[tokio::test]
+async fn signed_scope_budget_preflight_uses_exact_prepared_utf8_byte_ceiling() {
+    let evaluator = SignedScopeBudgetPreflight;
+    let mut request = ScopeBudgetRequest {
+        workspace_id: Uuid::from_u128(1),
+        actor_id: Uuid::from_u128(2),
+        candidate_set_id: Uuid::from_u128(3),
+        config_revision: 1,
+        manifest_digest: "a".repeat(64),
+        request_utf8_bytes: "é".len(),
+    };
+    let policy = fixture_budget_policy_with_request_ceiling(2);
+    assert!(
+        evaluate_verified_scope_budget(&evaluator, &request, Some(&policy))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    request.request_utf8_bytes = 3;
+    assert!(
+        evaluate_verified_scope_budget(&evaluator, &request, Some(&policy))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    request.request_utf8_bytes = 0;
+    assert!(
+        evaluate_verified_scope_budget(&evaluator, &request, Some(&policy))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    request.request_utf8_bytes = usize::MAX;
+    assert!(
+        evaluate_verified_scope_budget(&evaluator, &request, Some(&policy))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        evaluate_verified_scope_budget(&evaluator, &request, None)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 fn orchestration_source() -> String {
@@ -938,6 +1010,7 @@ async fn production_defaults_fail_closed_without_supplier_budget_or_provider() {
                     candidate_set_id: Uuid::from_u128(3),
                     config_revision: 0,
                     manifest_digest: "a".repeat(64),
+                    request_utf8_bytes: 1,
                 },
                 &fixture_budget_policy()
             )
@@ -947,14 +1020,19 @@ async fn production_defaults_fail_closed_without_supplier_budget_or_provider() {
     );
     assert!(crate::ScopeAdviceProvider::identity(&DisabledScopeAdviceProvider).is_none());
     let source = orchestration_source();
-    let budget = source.find(".scope_budget").unwrap();
-    let no_call = source[budget..]
+    let provider = source.find("prepare_scope_advice_attempt(").unwrap();
+    let evaluation = source[provider..]
+        .find("evaluate_verified_scope_budget(")
+        .unwrap()
+        + provider;
+    let no_call = source[evaluation..]
         .find("AdvisoryReason::BudgetPolicyInvalid")
-        .unwrap();
-    let provider = source[budget..]
-        .find("prepare_scope_advice_attempt(")
-        .unwrap();
-    assert!(no_call < provider);
+        .unwrap()
+        + evaluation;
+    let send = source.find(".attempt_prepared(").unwrap();
+    assert!(provider < evaluation && evaluation < no_call && no_call < send);
+    assert!(source[no_call..send].contains("return Ok(ScopeAdvisoryOutcome"));
+    assert!(source[evaluation..no_call].contains("prepared_attempt.body_length()"));
 }
 
 struct FixtureProvider {
