@@ -225,23 +225,44 @@ pub(crate) fn annotations(read_only: bool) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn schemas_expose_five_bounded_tools() {
         let definitions = crate::api::definitions();
         let tools = definitions["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 5);
+        let tool_names: Vec<_> = tools
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            tool_names,
+            ["get_state", "query", "command", "execute", "help"]
+        );
         assert!(
             tools
                 .iter()
                 .all(|tool| tool["inputSchema"]["additionalProperties"] == false)
         );
+
+        let command = tools.iter().find(|tool| tool["name"] == "command").unwrap();
+        let schema_routes = command["inputSchema"]["properties"]["route"]["enum"]
+            .as_array()
+            .unwrap();
+        let catalog =
+            crate::api::help(crate::api::HelpRequest::DescribeTool("command".to_owned())).unwrap();
+        let catalog_routes = catalog["routes"].as_array().unwrap();
+        assert_eq!(schema_routes, catalog_routes);
+
+        let route_names: Vec<_> = schema_routes
+            .iter()
+            .map(|route| route.as_str().unwrap())
+            .collect();
         assert_eq!(
-            tools[2]["inputSchema"]["properties"]["route"]["enum"]
-                .as_array()
-                .unwrap()
-                .len(),
-            48
+            route_names.iter().copied().collect::<BTreeSet<_>>().len(),
+            route_names.len(),
+            "command schema contains duplicate routes"
         );
     }
 
