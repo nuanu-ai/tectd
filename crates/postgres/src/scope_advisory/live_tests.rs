@@ -310,7 +310,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     sqlx::query("INSERT INTO scope_candidate_source_refs(id,tenant_id,workspace_id,candidate_set_id,snapshot_id,kind,program_field,body_digest,label) VALUES($1,$2,$3,$4,$5,'program_field','intent',$6,'intent')")
         .bind(source_refs[0]).bind(tenant).bind(workspace).bind(candidate).bind(snapshot)
         .bind(D).execute(&pool).await.unwrap();
-    sqlx::query("INSERT INTO scope_candidate_source_refs(id,tenant_id,workspace_id,candidate_set_id,snapshot_id,kind,body_digest,label) VALUES($1,$2,$3,$4,$5,'program_success',$6,'success')")
+    sqlx::query("INSERT INTO scope_candidate_source_refs(id,tenant_id,workspace_id,candidate_set_id,snapshot_id,kind,program_field,body_digest,label) VALUES($1,$2,$3,$4,$5,'program_success','success',$6,'success')")
         .bind(source_refs[1]).bind(tenant).bind(workspace).bind(candidate).bind(snapshot)
         .bind(D).execute(&pool).await.unwrap();
     let blank_digest = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
