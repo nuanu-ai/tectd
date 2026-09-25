@@ -3,11 +3,12 @@
 
 use crate::{
     EngineeringChoiceSet, EngineeringMatrixComposition, EngineeringMatrixInput, Error,
-    MatrixSourceVerificationStatus, OwnerReportedEngineeringMatrixFacts, PipelineCatalogueSnapshot,
-    PipelineCompatibilityPolicy, PipelineDefinitionSnapshot, PipelineExcludedKind,
-    PipelineExclusionReason, PipelineExecutionOwner, PipelineKind, PipelineVerificationPlan,
-    Result, SliceCandidateNode, VerifiedEngineeringMatrixFacts, compose_engineering_matrix,
-    compose_owner_reported_engineering_matrix, matrix_input_digest,
+    MatrixSourceVerificationStatus, OwnerReportedEngineeringMatrixFacts,
+    PIPELINE_RECOMMENDATION_CATALOGUE_REVISION, PipelineCatalogueSnapshot,
+    PipelineCompatibilityContext, PipelineCompatibilityPolicy, PipelineDefinitionSnapshot,
+    PipelineExcludedKind, PipelineExclusionReason, PipelineExecutionOwner, PipelineKind,
+    PipelineVerificationPlan, Result, SliceCandidateNode, VerifiedEngineeringMatrixFacts,
+    compose_engineering_matrix, compose_owner_reported_engineering_matrix, matrix_input_digest,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -294,7 +295,7 @@ pub fn build_pipeline_recommendation_manifest(
     {
         return Err(Error::InvalidArguments);
     }
-    if source.catalogue.revision != "4" {
+    if source.catalogue.revision != PIPELINE_RECOMMENDATION_CATALOGUE_REVISION {
         return Err(Error::StaleContext);
     }
     source.catalogue.validate()?;
@@ -362,14 +363,19 @@ pub fn build_pipeline_recommendation_manifest(
             forbidden_claims: definition.forbidden_claims.clone(),
             verification_plan,
         };
-        if let Some(reason) = source.compatibility_policy.reason_for(
-            kind,
-            &matrix.input,
-            &input_digest,
-            &matrix.selected_choice_id,
-            &mandatory_card_ids,
-            &option,
-        ) {
+        let context = PipelineCompatibilityContext {
+            task_id: &matrix.composition.task_id,
+            task_revision: &matrix.composition.task_revision,
+            catalogue_revision: &source.catalogue.revision,
+            input: &matrix.input,
+            input_digest: &input_digest,
+            selected_candidate_id: &matrix.selected_choice_id,
+            mandatory_cards: &mandatory_card_ids,
+        };
+        if let Some(reason) = source
+            .compatibility_policy
+            .reason_for(kind, &context, &option)
+        {
             excluded.push(PipelineExcludedKind { kind, reason });
         } else {
             options.push(option);

@@ -160,6 +160,9 @@ fn source() -> PipelineRecommendationSource {
     };
     let policy = PipelineCompatibilityPolicy {
         version: PIPELINE_COMPATIBILITY_POLICY_VERSION.into(),
+        task_id: "task".into(),
+        task_revision: "3".into(),
+        catalogue_revision: "4".into(),
         rules: PipelineKind::CURRENT_SLICE_RUN_KINDS
             .into_iter()
             .map(|kind| PipelineCompatibilityRule {

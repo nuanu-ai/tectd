@@ -56,6 +56,9 @@ fn explicit_fixture_policy() -> PipelineCompatibilityPolicy {
     let definitions = tect_host::StaticPipelineRecommendationDefinitions;
     PipelineCompatibilityPolicy {
         version: PIPELINE_COMPATIBILITY_POLICY_VERSION.into(),
+        task_id: "fixture".into(),
+        task_revision: "1".into(),
+        catalogue_revision: "4".into(),
         rules: PipelineKind::CURRENT_SLICE_RUN_KINDS
             .into_iter()
             .map(|kind| {

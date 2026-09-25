@@ -114,6 +114,24 @@ fn unknown_stale_and_single_option_policy_fail_closed() {
     );
 
     input = source();
+    input.compatibility_policy.task_revision = "stale".into();
+    assert_eq!(
+        build_pipeline_recommendation_manifest(&input)
+            .unwrap()
+            .excluded[0]
+            .reason,
+        PipelineExclusionReason::StaleTask
+    );
+    input = source();
+    input.compatibility_policy.catalogue_revision = "stale".into();
+    assert_eq!(
+        build_pipeline_recommendation_manifest(&input)
+            .unwrap()
+            .excluded[0]
+            .reason,
+        PipelineExclusionReason::StaleCatalogue
+    );
+    input = source();
     input.compatibility_policy.rules[0].matrix_input_digest = "f".repeat(64);
     assert_eq!(
         build_pipeline_recommendation_manifest(&input)
@@ -145,5 +163,25 @@ fn unknown_stale_and_single_option_policy_fail_closed() {
     assert_eq!(
         PipelineRecommendationRanking::Abstained.validate(&one),
         Err(Error::InvalidArguments)
+    );
+}
+
+#[test]
+fn legacy_unpinned_snapshot_decodes_but_cannot_become_eligible() {
+    let mut legacy = serde_json::to_value(source().compatibility_policy).unwrap();
+    for field in ["task_id", "task_revision", "catalogue_revision"] {
+        legacy.as_object_mut().unwrap().remove(field);
+    }
+    let policy: PipelineCompatibilityPolicy = serde_json::from_value(legacy.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&policy).unwrap(), legacy);
+    let mut input = source();
+    input.compatibility_policy = policy;
+    let manifest = build_pipeline_recommendation_manifest(&input).unwrap();
+    assert!(manifest.options.is_empty());
+    assert!(
+        manifest
+            .excluded
+            .iter()
+            .all(|excluded| excluded.reason == PipelineExclusionReason::StaleTask)
     );
 }

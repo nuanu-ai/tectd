@@ -105,6 +105,18 @@ The endpoint requires HTTPS except for numeric loopback HTTP. Transport
 configuration does not authorize a call: workspace opt-in and the independent
 `TECT_JEV_BUDGET_OWNER_KEYS_JSON` policy are still required; absent budget owner
 keys deny dispatch. No credential value is written to configuration snapshots.
+`TECT_JEV_PIPELINE_COMPATIBILITY_POLICY_JSON` optionally installs one immutable
+host-reviewed compatibility snapshot at daemon startup. Omission keeps policy
+unavailable and denies all pipeline recommendation eligibility. The JSON is a
+`PipelineCompatibilityPolicy` with version `tect.pipeline-matrix-compatibility/1`,
+exact `task_id`, `task_revision`, and current `catalogue_revision` (`4`), plus
+explicit `rules`. Each rule binds a pipeline kind to the exact Matrix input
+SHA-256 digest, permitted engineering modes, selected candidate IDs, and every
+mandatory Matrix card to a required phase and full obligation digest. Unknown,
+malformed, or stale catalogue snapshots reject startup; task, Matrix, candidate,
+card, or obligation mismatches make the affected kinds ineligible. This single
+snapshot applies only to its named task revision. It does not supply owner policy
+for other tasks or enable the Jev transport or budget authorization.
 `TECT_MODEL_ROUTE_CATALOGUE` optionally names an absolute, non-symlinked, owner-owned
 mode-0600 JSON file (at most 64 KiB). The daemon loads it once at startup and rejects
 an invalid snapshot. Omission leaves route recommendations unavailable. The file

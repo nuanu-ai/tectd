@@ -3,8 +3,13 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tect_application::{PipelineProviderIdentity, WorkspaceService};
-use tect_domain::{AdvisoryModelConfiguration, AdvisoryProviderProfileRef, Error};
+use tect_application::{
+    FixedPipelineCompatibilityPolicy, PipelineProviderIdentity, WorkspaceService,
+};
+use tect_domain::{
+    AdvisoryModelConfiguration, AdvisoryProviderProfileRef, Error,
+    PIPELINE_RECOMMENDATION_CATALOGUE_REVISION, PipelineCompatibilityPolicy,
+};
 use tect_host::jev_pipeline_recommendation::{
     JevPipelineConfig, JevPipelineProvider, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, WIRE_VERSION,
 };
@@ -38,6 +43,7 @@ async fn run() -> tect_domain::Result<()> {
         Err(_) => return Err(Error::InvalidConfiguration),
     };
     let pipeline_provider = pipeline_provider_from_env()?;
+    let pipeline_compatibility_policy = pipeline_compatibility_policy_from_env()?;
     validate_socket_parent(&socket)?;
     reject_existing_path(&socket)?;
 
@@ -64,6 +70,10 @@ async fn run() -> tect_domain::Result<()> {
     ));
     if let Some(provider) = pipeline_provider {
         service = service.with_pipeline_recommendation_provider(Arc::new(provider));
+    }
+    if let Some(policy) = pipeline_compatibility_policy {
+        service = service
+            .with_pipeline_compatibility_policy(Arc::new(FixedPipelineCompatibilityPolicy(policy)));
     }
     if let Some(catalogue) = tect_host::StaticModelRouteCatalogue::from_env()? {
         service = service.with_model_route_catalogue_provider(Arc::new(catalogue));
@@ -127,6 +137,27 @@ fn database_max_connections(value: Option<&str>) -> tect_domain::Result<u32> {
             .filter(|value| (1..=64).contains(value))
             .ok_or(Error::InvalidConfiguration),
     }
+}
+
+fn pipeline_compatibility_policy_from_env()
+-> tect_domain::Result<Option<PipelineCompatibilityPolicy>> {
+    match std::env::var("TECT_JEV_PIPELINE_COMPATIBILITY_POLICY_JSON") {
+        Ok(value) => parse_pipeline_compatibility_policy(Some(&value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(Error::InvalidConfiguration),
+    }
+}
+
+fn parse_pipeline_compatibility_policy(
+    json: Option<&str>,
+) -> tect_domain::Result<Option<PipelineCompatibilityPolicy>> {
+    json.map(|json| {
+        let policy: PipelineCompatibilityPolicy =
+            serde_json::from_str(json).map_err(|_| Error::InvalidConfiguration)?;
+        policy.validate_host_snapshot(PIPELINE_RECOMMENDATION_CATALOGUE_REVISION)?;
+        Ok(policy)
+    })
+    .transpose()
 }
 
 fn pipeline_provider_from_env() -> tect_domain::Result<Option<JevPipelineProvider>> {
@@ -308,6 +339,66 @@ impl Drop for SocketGuard {
 mod tests {
     use super::*;
     use tect_application::PipelineRecommendationProvider;
+    use tect_domain::{
+        EngineeringMode, PIPELINE_COMPATIBILITY_POLICY_VERSION, PipelineCardCoverage,
+        PipelineCompatibilityRule, PipelineKind,
+    };
+
+    fn fixture_policy() -> PipelineCompatibilityPolicy {
+        PipelineCompatibilityPolicy {
+            version: PIPELINE_COMPATIBILITY_POLICY_VERSION.into(),
+            task_id: "fixture-task".into(),
+            task_revision: "2".into(),
+            catalogue_revision: PIPELINE_RECOMMENDATION_CATALOGUE_REVISION.into(),
+            rules: vec![PipelineCompatibilityRule {
+                kind: PipelineKind::LightweightTddDevelopment,
+                matrix_input_digest: "a".repeat(64),
+                allowed_modes: vec![EngineeringMode::Production],
+                selected_candidate_ids: vec!["candidate-1".into()],
+                card_coverage: vec![PipelineCardCoverage {
+                    card_id: "EM02-SCOPE@0.1".into(),
+                    phase_id: "proof".into(),
+                    obligation_digest: "b".repeat(64),
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn compatibility_snapshot_is_optional_and_strictly_parsed() {
+        assert_eq!(parse_pipeline_compatibility_policy(None), Ok(None));
+        let fixture = fixture_policy();
+        let json = serde_json::to_string(&fixture).unwrap();
+        assert_eq!(
+            parse_pipeline_compatibility_policy(Some(&json)),
+            Ok(Some(fixture.clone()))
+        );
+        for invalid in ["", "{}", "[]", "null"] {
+            assert_eq!(
+                parse_pipeline_compatibility_policy(Some(invalid)),
+                Err(Error::InvalidConfiguration)
+            );
+        }
+        let mut unknown = serde_json::to_value(&fixture).unwrap();
+        unknown["unknown"] = serde_json::json!(true);
+        assert_eq!(
+            parse_pipeline_compatibility_policy(Some(&unknown.to_string())),
+            Err(Error::InvalidConfiguration)
+        );
+        let mut incomplete = fixture.clone();
+        incomplete.rules[0].card_coverage.clear();
+        let mut stale = fixture.clone();
+        stale.catalogue_revision = "3".into();
+        let mut unsupported = fixture.clone();
+        unsupported.version = "unknown".into();
+        for policy in [incomplete, stale, unsupported] {
+            let json = serde_json::to_string(&policy).unwrap();
+            assert_eq!(
+                parse_pipeline_compatibility_policy(Some(&json)),
+                Err(Error::InvalidConfiguration)
+            );
+        }
+    }
 
     #[test]
     fn database_pool_default_and_bounds_are_stable() {
