@@ -34,6 +34,85 @@ async fn no_call_states_are_durable_and_never_send() {
 }
 
 #[tokio::test]
+async fn missing_trusted_policy_denies_before_one_use_send_fence() {
+    let mut app = app(true, false);
+    let saved = prepare(
+        &mut app,
+        WorkspaceAdvisoryMode::Optional,
+        AdvisoryRequestPreference::UseWorkspace,
+    )
+    .await;
+    app.store.policy = None;
+    assert_eq!(
+        app.prepare_send(saved.review_id).await,
+        Err(Error::BudgetPolicyInvalid)
+    );
+    assert_eq!(app.store.sends, 0);
+    assert_eq!(app.provider.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        app.store.saved.unwrap().state,
+        AntiBloatAttemptState::Prepared
+    );
+}
+
+#[tokio::test]
+async fn missing_or_overrun_usage_suppresses_ranked_advice_after_raw_seal() {
+    for (input_tokens, output_tokens, elapsed, expected) in [
+        (None, Some(1), Some(1), true),
+        (Some(101), Some(1), Some(1), true),
+        (Some(1), Some(1), Some(1001), true),
+        (Some(100), Some(100), Some(1000), false),
+    ] {
+        let mut app = app(true, false);
+        let saved = prepare(
+            &mut app,
+            WorkspaceAdvisoryMode::Optional,
+            AdvisoryRequestPreference::UseWorkspace,
+        )
+        .await;
+        let permit = app
+            .prepare_send(saved.review_id)
+            .await
+            .unwrap()
+            .permit
+            .unwrap();
+        let mut observation = app.provider.rank(&permit).await.unwrap();
+        observation.input_tokens = input_tokens;
+        observation.output_tokens = output_tokens;
+        observation.elapsed_monotonic_ms = elapsed;
+        app.seal_response(&permit, &observation.raw).await.unwrap();
+        assert_eq!(
+            app.store
+                .consume_budget(&permit, &observation)
+                .await
+                .unwrap(),
+            expected
+        );
+        assert_eq!(
+            app.store
+                .consume_budget(&permit, &observation)
+                .await
+                .unwrap(),
+            expected
+        );
+        if expected {
+            app.store.mark_send_unknown(permit.review_id).await.unwrap();
+            assert_eq!(
+                app.store.saved.as_ref().unwrap().state,
+                AntiBloatAttemptState::SendUnknown
+            );
+        } else {
+            assert!(matches!(
+                app.finalize_response(&permit, &observation.raw)
+                    .await
+                    .unwrap(),
+                AntiBloatAttemptState::Ranked(_)
+            ));
+        }
+    }
+}
+
+#[tokio::test]
 async fn one_use_rank_and_provider_invention_is_denied() {
     let mut app = app(true, false);
     let saved = prepare(
@@ -48,10 +127,11 @@ async fn one_use_rank_and_provider_invention_is_denied() {
     assert!(app.store.raw_response.is_none());
     let permit = attempt.permit.unwrap();
     let raw = app.provider.rank(&permit).await.unwrap();
-    app.seal_response(&permit, &raw).await.unwrap();
+    app.seal_response(&permit, &raw.raw).await.unwrap();
+    assert!(!app.store.consume_budget(&permit, &raw).await.unwrap());
     assert_eq!(app.store.seals, 0);
     assert_eq!(
-        app.finalize_response(&permit, &raw).await.unwrap(),
+        app.finalize_response(&permit, &raw.raw).await.unwrap(),
         app.store.saved.as_ref().unwrap().state
     );
     assert!(
@@ -93,9 +173,10 @@ async fn one_use_rank_and_provider_invention_is_denied() {
         .permit
         .unwrap();
     let raw = invented.provider.rank(&permit).await.unwrap();
-    invented.seal_response(&permit, &raw).await.unwrap();
+    invented.seal_response(&permit, &raw.raw).await.unwrap();
+    assert!(!invented.store.consume_budget(&permit, &raw).await.unwrap());
     assert!(matches!(
-        invented.finalize_response(&permit, &raw).await,
+        invented.finalize_response(&permit, &raw.raw).await,
         Err(Error::InputConflict)
     ));
     assert_eq!(invented.store.seals, 0);

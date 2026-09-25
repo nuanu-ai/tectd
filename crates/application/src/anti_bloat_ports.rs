@@ -1,9 +1,9 @@
 //! Durable, default-deny boundaries for a source-relative review of one saved graph.
 use async_trait::async_trait;
 use tect_domain::{
-    AntiBloatApplyReceipt, AntiBloatDisposition, AntiBloatInput, AntiBloatPreservation,
-    AntiBloatPreservationAttestation, AntiBloatReview, CandidateDeltaBatch, ResolvedCandidateDraft,
-    Result, WorkspaceAdvisoryMode,
+    AdvisoryBudgetPolicy, AntiBloatApplyReceipt, AntiBloatDisposition, AntiBloatInput,
+    AntiBloatPreservation, AntiBloatPreservationAttestation, AntiBloatReview, CandidateDeltaBatch,
+    ResolvedCandidateDraft, Result, WorkspaceAdvisoryMode,
 };
 use uuid::Uuid;
 
@@ -47,12 +47,39 @@ pub struct AntiBloatSendPermit {
     pub request: AntiBloatPreparedRequest,
 }
 
+/// Provider supplied usage is evidence, never a budget estimate. Missing values
+/// exhaust the attempt and suppress its ranking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AntiBloatProviderObservation {
+    pub raw: Vec<u8>,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub elapsed_monotonic_ms: Option<i64>,
+}
+
+impl AntiBloatProviderObservation {
+    pub fn normalized(mut self) -> Self {
+        self.input_tokens = self.input_tokens.filter(|value| *value >= 0);
+        self.output_tokens = self.output_tokens.filter(|value| *value >= 0);
+        self.elapsed_monotonic_ms = self.elapsed_monotonic_ms.filter(|value| *value >= 0);
+        self
+    }
+}
+
 /// A database adapter must bind every operation to the authorized actor and
 /// workspace. `begin_send` atomically rechecks the frozen source/plan revision,
 /// stores the exact prepared bytes and digest, and commits the one-use fence
 /// before returning a permit. A replay or uncertain send returns None.
 #[async_trait]
 pub trait AntiBloatStore: Send {
+    /// Must verify owner approval using a trusted key. The default denies send.
+    async fn authorized_budget_policy(
+        &mut self,
+        _workspace_id: Uuid,
+        _now_unix_ms: i64,
+    ) -> Result<Option<AdvisoryBudgetPolicy>> {
+        Ok(None)
+    }
     async fn advisory_mode(&mut self, workspace_id: Uuid) -> Result<WorkspaceAdvisoryMode>;
 
     async fn authoritative_input(
@@ -71,6 +98,7 @@ pub trait AntiBloatStore: Send {
         &mut self,
         saved: &StoredAntiBloatReview,
         prepared: &AntiBloatPreparedRequest,
+        policy: &AdvisoryBudgetPolicy,
     ) -> Result<Option<AntiBloatSendPermit>>;
 
     async fn mark_send_unknown(&mut self, review_id: Uuid) -> Result<()>;
@@ -82,6 +110,14 @@ pub trait AntiBloatStore: Send {
         raw_response: &[u8],
         response_sha256: &str,
     ) -> Result<()>;
+
+    /// Called only after a separate transaction has committed the raw seal.
+    /// Exact replay returns the same exhausted decision without a second charge.
+    async fn consume_budget(
+        &mut self,
+        permit: &AntiBloatSendPermit,
+        observation: &AntiBloatProviderObservation,
+    ) -> Result<bool>;
 
     async fn seal_ranked(&mut self, review_id: Uuid, ranked_ids: &[String]) -> Result<()>;
 
@@ -103,7 +139,7 @@ pub trait AntiBloatStore: Send {
 /// obtain an attempt through the application path for disabled/skip/no-eligible.
 #[async_trait]
 pub trait AntiBloatRankingProvider: Send + Sync {
-    async fn rank(&self, permit: &AntiBloatSendPermit) -> Result<Vec<u8>>;
+    async fn rank(&self, permit: &AntiBloatSendPermit) -> Result<AntiBloatProviderObservation>;
 }
 
 #[derive(Debug, Default)]
@@ -111,7 +147,7 @@ pub struct DisabledAntiBloatRankingProvider;
 
 #[async_trait]
 impl AntiBloatRankingProvider for DisabledAntiBloatRankingProvider {
-    async fn rank(&self, _: &AntiBloatSendPermit) -> Result<Vec<u8>> {
+    async fn rank(&self, _: &AntiBloatSendPermit) -> Result<AntiBloatProviderObservation> {
         Err(tect_domain::Error::Forbidden)
     }
 }

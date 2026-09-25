@@ -40,7 +40,10 @@ struct CommittedFakeProvider {
 
 #[async_trait]
 impl AntiBloatRankingProvider for CommittedFakeProvider {
-    async fn rank(&self, permit: &AntiBloatSendPermit) -> tect_domain::Result<Vec<u8>> {
+    async fn rank(
+        &self,
+        permit: &AntiBloatSendPermit,
+    ) -> tect_domain::Result<tect_application::AntiBloatProviderObservation> {
         let observed: (String, Vec<u8>, String, bool) = sqlx::query_as(
             "SELECT state,request_bytes,request_sha256,raw_response IS NOT NULL \
              FROM scope_anti_bloat_reviews WHERE review_id=$1",
@@ -56,7 +59,12 @@ impl AntiBloatRankingProvider for CommittedFakeProvider {
         assert_eq!(format!("{:x}", Sha256::digest(&observed.1)), observed.2);
         self.calls.fetch_add(1, Ordering::SeqCst);
         let request: Value = serde_json::from_slice(&permit.request.bytes).unwrap();
-        Ok(serde_json::to_vec(&request["eligible_ids"]).unwrap())
+        Ok(tect_application::AntiBloatProviderObservation {
+            raw: serde_json::to_vec(&request["eligible_ids"]).unwrap(),
+            input_tokens: Some(1),
+            output_tokens: Some(1),
+            elapsed_monotonic_ms: Some(1),
+        })
     }
 }
 
@@ -676,27 +684,38 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
         .unwrap();
     assert_eq!(finding["rankable"], true);
     let finding_id = finding["id"].as_str().unwrap();
-    let ranked = route(
+    let refused = route_error(
         &mut author,
         "command",
         "scope.anti_bloat.run",
         json!({"review_id":review_id}),
     )
     .await;
-    assert_eq!(ranked["state"]["status"], "ranked", "{ranked}");
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(
-        route(
+        refused["error"]["code"], "budget_policy_invalid",
+        "{refused}"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        route_error(
             &mut author,
             "command",
             "scope.anti_bloat.run",
             json!({"review_id":review_id})
         )
         .await,
-        ranked
+        refused
     );
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    let sealed: (String, Vec<u8>, String, Vec<u8>, String, bool, bool) = sqlx::query_as(
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let sealed: (
+        String,
+        Option<Vec<u8>>,
+        Option<String>,
+        Option<Vec<u8>>,
+        Option<String>,
+        bool,
+        bool,
+    ) = sqlx::query_as(
         "SELECT state,request_bytes,request_sha256,raw_response,response_sha256, \
          send_started_at IS NOT NULL,response_sealed_at IS NOT NULL \
          FROM scope_anti_bloat_reviews WHERE tenant_id=$1 AND workspace_id=$2 AND review_id=$3",
@@ -707,10 +726,10 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(sealed.0, "ranked");
-    assert_eq!(format!("{:x}", Sha256::digest(&sealed.1)), sealed.2);
-    assert_eq!(format!("{:x}", Sha256::digest(&sealed.3)), sealed.4);
-    assert!(sealed.5 && sealed.6);
+    assert_eq!(sealed.0, "prepared");
+    assert!(sealed.1.is_none() && sealed.2.is_none());
+    assert!(sealed.3.is_none() && sealed.4.is_none());
+    assert!(!sealed.5 && !sealed.6);
     let apply_params = json!({"review_id":review_id,"finding_id":finding_id,
     "disposition":"narrow","delta":{
         "candidate_set_id":candidate_set,"expected_revision":selected_revision,

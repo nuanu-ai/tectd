@@ -3,12 +3,13 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tect_application::{
     AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall, AntiBloatPreparedRequest,
-    AntiBloatSendPermit, AntiBloatStore, Sha256ScopeDigest, StoredAntiBloatReview,
+    AntiBloatProviderObservation, AntiBloatSendPermit, AntiBloatStore, Sha256ScopeDigest,
+    StoredAntiBloatReview,
 };
 use tect_domain::{
-    AntiBloatApplyReceipt, AntiBloatDisposition, AntiBloatInput, AntiBloatObligationLink,
-    AntiBloatPreservation, Error, ResolvedCandidateDraft, Result, ScopeConstructorManifest,
-    WorkspaceAdvisoryMode, check_anti_bloat_delta, review_anti_bloat,
+    AdvisoryBudgetPolicy, AntiBloatApplyReceipt, AntiBloatDisposition, AntiBloatInput,
+    AntiBloatObligationLink, AntiBloatPreservation, Error, ResolvedCandidateDraft, Result,
+    ScopeConstructorManifest, WorkspaceAdvisoryMode, check_anti_bloat_delta, review_anti_bloat,
     scope_candidate_material_digest,
 };
 use uuid::Uuid;
@@ -119,8 +120,9 @@ impl AntiBloatStore for PgUnitOfWork {
         &mut self,
         saved: &StoredAntiBloatReview,
         prepared: &AntiBloatPreparedRequest,
+        policy: &AdvisoryBudgetPolicy,
     ) -> Result<Option<AntiBloatSendPermit>> {
-        send::begin_send(self, saved, prepared).await
+        send::begin_send(self, saved, prepared, policy).await
     }
 
     async fn mark_send_unknown(&mut self, review_id: Uuid) -> Result<()> {
@@ -134,6 +136,14 @@ impl AntiBloatStore for PgUnitOfWork {
         response_sha256: &str,
     ) -> Result<()> {
         send::seal_response(self, permit, raw_response, response_sha256).await
+    }
+
+    async fn consume_budget(
+        &mut self,
+        permit: &AntiBloatSendPermit,
+        observation: &AntiBloatProviderObservation,
+    ) -> Result<bool> {
+        send::consume_budget(self, permit, observation).await
     }
 
     async fn seal_ranked(&mut self, review_id: Uuid, ranked_ids: &[String]) -> Result<()> {

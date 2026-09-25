@@ -7,7 +7,7 @@ pub use advisory::{Sha256ScopeDigest, VerifySelectedSave};
 pub use anti_bloat::AntiBloatApplication;
 pub use anti_bloat_ports::{
     AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall, AntiBloatPreparedRequest,
-    AntiBloatRankingProvider, AntiBloatSendPermit, AntiBloatStore,
+    AntiBloatProviderObservation, AntiBloatRankingProvider, AntiBloatSendPermit, AntiBloatStore,
     DisabledAntiBloatRankingProvider, StoredAntiBloatReview,
 };
 pub use anti_bloat_ports::{AntiBloatVerificationMaterial, AntiBloatVerificationStore};

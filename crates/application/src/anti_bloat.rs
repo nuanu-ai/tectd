@@ -1,8 +1,8 @@
 //! Slice 04 application policy. All source/plan facts come from the store port.
 use crate::{
     AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall, AntiBloatPreparedRequest,
-    AntiBloatRankingProvider, AntiBloatSendPermit, AntiBloatStore, Sha256ScopeDigest,
-    StoredAntiBloatReview, TransactionMode, UnitOfWork, WorkspaceService,
+    AntiBloatProviderObservation, AntiBloatRankingProvider, AntiBloatSendPermit, AntiBloatStore,
+    Sha256ScopeDigest, StoredAntiBloatReview, TransactionMode, UnitOfWork, WorkspaceService,
 };
 use sha2::{Digest, Sha256};
 use std::future::Future;
@@ -182,7 +182,22 @@ pub async fn prepare_anti_bloat_send(
         sha256: format!("{:x}", Sha256::digest(&request_bytes)),
         bytes: request_bytes,
     };
-    let Some(permit) = store.begin_send(&saved, &prepared).await? else {
+    let now_unix_ms = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| Error::BudgetPolicyInvalid)?
+            .as_millis(),
+    )
+    .map_err(|_| Error::BudgetPolicyInvalid)?;
+    let policy = store
+        .authorized_budget_policy(saved.workspace_id, now_unix_ms)
+        .await?
+        .ok_or(Error::BudgetPolicyInvalid)?;
+    policy.validate().map_err(|_| Error::BudgetPolicyInvalid)?;
+    if !policy.is_effective_at(now_unix_ms) {
+        return Err(Error::BudgetPolicyInvalid);
+    }
+    let Some(permit) = store.begin_send(&saved, &prepared, &policy).await? else {
         return Ok(PreparedAntiBloatSend {
             state: store.review(review_id).await?.ok_or(Error::NotFound)?.state,
             permit: None,
@@ -267,7 +282,7 @@ async fn rank_after_committed_fence<F: Future<Output = Result<()>>>(
     commit: F,
     provider: &dyn AntiBloatRankingProvider,
     permit: &AntiBloatSendPermit,
-) -> Result<Result<Vec<u8>>> {
+) -> Result<Result<AntiBloatProviderObservation>> {
     commit.await?;
     Ok(provider.rank(permit).await)
 }
@@ -387,14 +402,14 @@ impl WorkspaceService {
             return Ok(prepared.state);
         };
 
-        let raw = match rank_after_committed_fence(
+        let observation = match rank_after_committed_fence(
             fence.commit(),
             self.anti_bloat_provider.as_ref(),
             &permit,
         )
         .await?
         {
-            Ok(raw) => raw,
+            Ok(observation) => observation.normalized(),
             Err(_) => {
                 let (mut uncertain, _, _) = self
                     .anti_bloat_transaction(context, TransactionMode::ReadWrite)
@@ -414,10 +429,32 @@ impl WorkspaceService {
         seal_anti_bloat_response(
             seal.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
             &permit,
-            &raw,
+            &observation.raw,
         )
         .await?;
         seal.commit().await?;
+
+        let (mut consume, _, _) = self
+            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+            .await?;
+        let exhausted = consume
+            .anti_bloat_store()
+            .ok_or(Error::StorageUnavailable)?
+            .consume_budget(&permit, &observation)
+            .await?;
+        consume.commit().await?;
+        if exhausted {
+            let (mut uncertain, _, _) = self
+                .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+                .await?;
+            uncertain
+                .anti_bloat_store()
+                .ok_or(Error::StorageUnavailable)?
+                .mark_send_unknown(review_id)
+                .await?;
+            uncertain.commit().await?;
+            return Ok(AntiBloatAttemptState::SendUnknown);
+        }
 
         let (mut finish, _, _) = self
             .anti_bloat_transaction(context, TransactionMode::ReadWrite)
@@ -425,7 +462,7 @@ impl WorkspaceService {
         let outcome = finalize_anti_bloat_response(
             finish.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
             &permit,
-            &raw,
+            &observation.raw,
         )
         .await;
         // Invalid provider output transitions to send_unknown even when the
