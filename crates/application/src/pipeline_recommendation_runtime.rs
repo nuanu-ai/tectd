@@ -223,6 +223,10 @@ pub struct PipelineProviderObservation {
 
 #[async_trait]
 pub trait PipelineRecommendationProvider: Send + Sync {
+    fn available(&self) -> bool {
+        true
+    }
+
     fn prepare(
         &self,
         saved: &PreparedPipelineRecommendation,
@@ -240,6 +244,39 @@ pub trait PipelineRecommendationProvider: Send + Sync {
         prepared: PreparedPipelineRecommendationAttempt,
         permit: PipelineStartedDispatchPermit,
     ) -> Result<PipelineProviderObservation>;
+}
+
+pub struct DisabledPipelineRecommendationProvider;
+
+#[async_trait]
+impl PipelineRecommendationProvider for DisabledPipelineRecommendationProvider {
+    fn available(&self) -> bool {
+        false
+    }
+
+    fn prepare(
+        &self,
+        _: &PreparedPipelineRecommendation,
+    ) -> Result<PreparedPipelineRecommendationAttempt> {
+        Err(Error::TransportUnavailable)
+    }
+
+    fn parse_sealed_response(
+        &self,
+        _: &PipelineRecommendationManifest,
+        _: &PreparedPipelineRecommendationAttempt,
+        _: &SealedPipelineRecommendationResponse,
+    ) -> Result<PipelineRecommendationRanking> {
+        Err(Error::TransportUnavailable)
+    }
+
+    async fn attempt_prepared(
+        &self,
+        _: PreparedPipelineRecommendationAttempt,
+        _: PipelineStartedDispatchPermit,
+    ) -> Result<PipelineProviderObservation> {
+        Err(Error::TransportUnavailable)
+    }
 }
 
 #[cfg(test)]

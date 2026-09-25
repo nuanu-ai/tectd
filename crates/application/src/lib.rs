@@ -18,6 +18,7 @@ mod matrix_verification_ports;
 mod model_route_recommendation;
 mod model_route_recommendation_ports;
 mod pipeline_recommendation;
+mod pipeline_recommendation_dispatch;
 mod pipeline_recommendation_dispatch_ports;
 mod pipeline_recommendation_ports;
 mod pipeline_recommendation_runtime;
@@ -78,21 +79,22 @@ pub use model_route_recommendation_ports::{
 pub use pipeline_recommendation::{
     PreparePipelineRecommendation, pipeline_recommendation_source_digest,
 };
-pub use pipeline_recommendation_ports::{
-    PipelineRecommendationBasis, PipelineRecommendationContext,
-    PipelineRecommendationDefinitionProvider, PipelineRecommendationStore,
-    PreparedPipelineRecommendation, UnavailablePipelineRecommendationDefinitions,
-};
+pub use pipeline_recommendation_dispatch::{PipelineRecommendationRun, RunPipelineRecommendation};
 #[doc(hidden)]
 pub use pipeline_recommendation_dispatch_ports::PipelineDispatchCapability;
 pub use pipeline_recommendation_dispatch_ports::{
     PipelineRecommendationDispatchStore, StoredPipelineRecommendationDispatch,
 };
+pub use pipeline_recommendation_ports::{
+    PipelineRecommendationBasis, PipelineRecommendationContext,
+    PipelineRecommendationDefinitionProvider, PipelineRecommendationStore,
+    PreparedPipelineRecommendation, UnavailablePipelineRecommendationDefinitions,
+};
 pub use pipeline_recommendation_runtime::{
-    MAX_PREPARED_PIPELINE_BODY_BYTES, MAX_SEALED_PIPELINE_RESPONSE_BYTES,
-    PipelineProviderIdentity, PipelineProviderObservation, PipelineRecommendationProvider,
-    PipelineStartedDispatchPermit, PreparedPipelineRecommendationAttempt,
-    SealedPipelineRecommendationResponse,
+    DisabledPipelineRecommendationProvider, MAX_PREPARED_PIPELINE_BODY_BYTES,
+    MAX_SEALED_PIPELINE_RESPONSE_BYTES, PipelineProviderIdentity, PipelineProviderObservation,
+    PipelineRecommendationProvider, PipelineStartedDispatchPermit,
+    PreparedPipelineRecommendationAttempt, SealedPipelineRecommendationResponse,
 };
 pub use planning_knowledge_ports::PlanningKnowledgeStore;
 pub use ports::{

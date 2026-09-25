@@ -99,7 +99,8 @@ impl WorkspaceService {
             config.mode,
             request,
             manifest.should_call(),
-            self.pipeline_recommendation_definitions.available(),
+            self.pipeline_recommendation_definitions.available()
+                && self.pipeline_recommendation_provider.available(),
             config.provider_configured(),
         );
         let input = AdvisoryOpportunityInput {

@@ -18,6 +18,7 @@ pub struct WorkspaceService {
     pub(crate) matrix_evidence_validator: Arc<dyn crate::MatrixEvidenceValidator>,
     pub(crate) pipeline_recommendation_definitions:
         Arc<dyn crate::PipelineRecommendationDefinitionProvider>,
+    pub(crate) pipeline_recommendation_provider: Arc<dyn crate::PipelineRecommendationProvider>,
     pub(crate) scope_authority: Arc<dyn crate::ScopeAuthorityObserver>,
     pub(crate) scope_manifest_supplier: Arc<dyn crate::ScopeManifestSupplier>,
     pub(crate) scope_budget: Arc<dyn crate::ScopeBudgetPolicy>,
@@ -111,6 +112,9 @@ impl WorkspaceService {
             matrix_evidence_validator: Arc::new(crate::DisabledMatrixEvidenceValidator),
             pipeline_recommendation_definitions: Arc::new(
                 crate::UnavailablePipelineRecommendationDefinitions,
+            ),
+            pipeline_recommendation_provider: Arc::new(
+                crate::DisabledPipelineRecommendationProvider,
             ),
             scope_authority: Arc::new(crate::UnavailableScopeAuthorityObserver),
             scope_manifest_supplier: Arc::new(crate::UnavailableScopeManifestSupplier),
@@ -212,6 +216,15 @@ impl WorkspaceService {
         provider: Arc<dyn crate::PipelineRecommendationDefinitionProvider>,
     ) -> Self {
         self.pipeline_recommendation_definitions = provider;
+        self
+    }
+
+    /// Install an explicit provider; the normal constructor cannot dispatch.
+    pub fn with_pipeline_recommendation_provider(
+        mut self,
+        provider: Arc<dyn crate::PipelineRecommendationProvider>,
+    ) -> Self {
+        self.pipeline_recommendation_provider = provider;
         self
     }
 

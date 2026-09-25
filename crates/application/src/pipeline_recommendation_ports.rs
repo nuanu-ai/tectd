@@ -85,6 +85,26 @@ impl PipelineRecommendationDefinitionProvider for UnavailablePipelineRecommendat
 /// exact request replay returns the saved receipt without recapturing.
 #[async_trait]
 pub trait PipelineRecommendationStore: Send {
+    /// Load the immutable captured triple by its exact opportunity ID.
+    /// Unconfigured stores deny dispatch rather than accepting caller copies.
+    async fn pipeline_recommendation_by_opportunity(
+        &mut self,
+        _workspace_id: Uuid,
+        _opportunity_id: Uuid,
+    ) -> Result<Option<PreparedPipelineRecommendation>> {
+        Ok(None)
+    }
+
+    /// Check the saved triple against current planning, Matrix, source,
+    /// catalogue and config state under the adapter's dispatch locks.
+    async fn pipeline_recommendation_is_current(
+        &mut self,
+        _workspace_id: Uuid,
+        _saved: &PreparedPipelineRecommendation,
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
     async fn load_pipeline_recommendation_basis(
         &mut self,
         workspace_id: Uuid,
