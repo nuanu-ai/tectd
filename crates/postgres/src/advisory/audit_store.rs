@@ -365,6 +365,16 @@ impl AdvisoryStore for PgUnitOfWork {
         seal_dispatch(self.transaction()?, tenant, workspace_id, seal).await
     }
 
+    async fn consume_advisory_budget(
+        &mut self,
+        _capability: &tect_application::AdvisoryLifecycleCapability,
+        workspace_id: Uuid,
+        dispatch_id: Uuid,
+    ) -> Result<AdvisoryBudgetConsumption> {
+        let tenant = self.tenant_id()?;
+        consume_budget(self.transaction()?, tenant, workspace_id, dispatch_id).await
+    }
+
     async fn cancel_advisory_dispatch(
         &mut self,
         _capability: &tect_application::AdvisoryLifecycleCapability,

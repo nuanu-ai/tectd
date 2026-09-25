@@ -270,16 +270,20 @@ impl WorkspaceService {
         )?;
         // The committed Sending row is the one-use boundary. A transport error
         // remains uncertain and is never retried by this request or its replay.
+        let monotonic_start = std::time::Instant::now();
         let observed = self
             .matrix_advice_provider
             .attempt_prepared(prepared, permit)
             .await;
-        let (seal, guarded) = seal_matrix_provider_observation(
+        let monotonic_elapsed_ms =
+            i64::try_from(monotonic_start.elapsed().as_millis()).unwrap_or(i64::MAX);
+        let (mut seal, guarded) = seal_matrix_provider_observation(
             opportunity.id,
             authorization.dispatch_id,
             &provider_request,
             observed,
         );
+        seal.latency_ms = Some(monotonic_elapsed_ms);
         seal.validate()?;
         let (mut seal_tx, _) = self
             .authenticated(context, TransactionMode::ReadWrite)
@@ -288,6 +292,13 @@ impl WorkspaceService {
             .seal_advisory_dispatch(&lifecycle, workspace_id, &seal)
             .await?;
         seal_tx.commit().await?;
+        let (mut consume_tx, _) = self
+            .authenticated(context, TransactionMode::ReadWrite)
+            .await?;
+        let consumption = consume_tx
+            .consume_advisory_budget(&lifecycle, workspace_id, dispatch.id)
+            .await?;
+        consume_tx.commit().await?;
         let verification_stale = !self
             .matrix_request_is_current(context, workspace_id, &provider_request)
             .await?;
@@ -301,7 +312,11 @@ impl WorkspaceService {
                 opportunity.id,
                 config_revision,
                 &dispatch,
-                guarded.as_ref(),
+                if consumption.exhausted_after_response {
+                    None
+                } else {
+                    guarded.as_ref()
+                },
                 verification_stale,
             )
             .await?;

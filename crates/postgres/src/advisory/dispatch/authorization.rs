@@ -322,6 +322,9 @@ async fn authorize_dispatch(
     if opportunity.material_digest != input.material_digest {
         return Err(Error::InputConflict);
     }
+    if opportunity.primary_reason == AdvisoryReason::BudgetExhaustedAfterResponse {
+        return Err(Error::BudgetExhaustedBeforeDispatch);
+    }
     if input.retry_basis == AdvisoryRetryBasis::Initial {
         if opportunity.state != AdvisoryOpportunityState::Prepared {
             return Err(Error::InputConflict);

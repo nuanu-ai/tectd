@@ -184,6 +184,7 @@ impl WorkspaceService {
             &prepared_attempt,
         )?;
 
+        let monotonic_start = std::time::Instant::now();
         let mut provider_observation = self
             .scope_advice_provider
             .attempt_prepared(
@@ -198,6 +199,8 @@ impl WorkspaceService {
             .await
             .map(normalize_provider_success)
             .unwrap_or_else(provider_error_observation);
+        let monotonic_elapsed_ms =
+            i64::try_from(monotonic_start.elapsed().as_millis()).unwrap_or(i64::MAX);
         let guarded = if provider_observation.outcome == AdvisoryDispatchOutcome::ProviderResponse
             && provider_observation.send_certainty == AdvisorySendCertainty::Sent
             && provider_observation.response_payload.is_some()
@@ -228,7 +231,7 @@ impl WorkspaceService {
             response_payload: provider_observation.response_payload.clone(),
             input_tokens: provider_observation.input_tokens,
             output_tokens: provider_observation.output_tokens,
-            latency_ms: provider_observation.latency_ms,
+            latency_ms: Some(monotonic_elapsed_ms),
             raw_response_ref: provider_observation.raw_response_ref.clone(),
         };
         seal.validate()?;
@@ -239,6 +242,32 @@ impl WorkspaceService {
             .seal_advisory_dispatch(&lifecycle, workspace_id, &seal)
             .await?;
         seal_tx.commit().await?;
+        let (mut consume_tx, _, _) = self
+            .scope_transaction(context, TransactionMode::ReadWrite)
+            .await?;
+        let consumption = consume_tx
+            .consume_advisory_budget(&lifecycle, workspace_id, dispatch.id)
+            .await?;
+        consume_tx.commit().await?;
+        if consumption.exhausted_after_response {
+            let (mut finalize, _, _) = self
+                .scope_transaction(context, TransactionMode::ReadWrite)
+                .await?;
+            let terminal = finalize
+                .finalize_advisory_opportunity(
+                    &lifecycle,
+                    workspace_id,
+                    opportunity.id,
+                    config.revision,
+                    &dispatch,
+                )
+                .await?;
+            finalize.commit().await?;
+            return Ok(ScopeAdvisoryOutcome {
+                opportunity: terminal,
+                advice: None,
+            });
+        }
         let Some(advice) = guarded else {
             let (mut finalize, _, _) = self
                 .scope_transaction(context, TransactionMode::ReadWrite)

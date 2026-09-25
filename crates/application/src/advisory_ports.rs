@@ -96,6 +96,13 @@ pub trait AdvisoryStore: Send {
         workspace_id: Uuid,
         seal: &AdvisoryDispatchSeal,
     ) -> Result<AdvisoryDispatch>;
+    /// Called in a new transaction after the raw seal has committed.
+    async fn consume_advisory_budget(
+        &mut self,
+        capability: &AdvisoryLifecycleCapability,
+        workspace_id: Uuid,
+        dispatch_id: Uuid,
+    ) -> Result<tect_domain::AdvisoryBudgetConsumption>;
     async fn cancel_advisory_dispatch(
         &mut self,
         capability: &AdvisoryLifecycleCapability,

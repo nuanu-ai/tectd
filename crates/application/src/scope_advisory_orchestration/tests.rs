@@ -824,6 +824,8 @@ fn fixture_started_dispatch(
             reserved_calls: 1,
             reserved_retry_dispatches: 0,
             remaining_elapsed_ms: 100,
+            reserved_input_tokens: 1,
+            reserved_output_tokens: 1,
         }),
     }
 }
@@ -1265,7 +1267,7 @@ fn score_contract_is_discrete_and_has_no_product_effect_authority() {
     assert!(!source.contains("scope_caller.call"));
     assert!(!source.contains("scope_verifier.verify"));
     assert_eq!(source.matches(".attempt_prepared(").count(), 1);
-    assert!(source.contains("latency_ms: provider_observation.latency_ms"));
+    assert!(source.contains("latency_ms: Some(monotonic_elapsed_ms)"));
 }
 
 #[test]

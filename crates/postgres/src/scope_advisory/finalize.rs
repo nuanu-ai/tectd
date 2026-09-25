@@ -14,7 +14,12 @@ async fn finalize_advice(
            AND c.revision=$5 AND c.mode='optional' \
            AND d.tenant_id=o.tenant_id AND d.workspace_id=o.workspace_id \
            AND d.opportunity_id=o.id AND d.id=$6 AND d.material_digest=$7 \
-           AND d.state='sealed' AND d.send_certainty='sent' AND d.outcome='provider_response'",
+           AND d.state='sealed' AND d.send_certainty='sent' AND d.outcome='provider_response' \
+           AND (NOT EXISTS (SELECT 1 FROM advisory_budget_reservations r \
+                WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.dispatch_id=d.id) \
+             OR EXISTS (SELECT 1 FROM advisory_budget_consumptions b \
+                WHERE b.tenant_id=$1 AND b.workspace_id=$2 AND b.dispatch_id=d.id \
+                  AND NOT b.unknown_usage AND NOT b.exhausted_after_response))",
     )
     .bind(tenant)
     .bind(workspace)

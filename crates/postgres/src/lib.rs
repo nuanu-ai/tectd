@@ -2,6 +2,8 @@
 pub mod admin;
 mod advisory;
 #[cfg(test)]
+mod advisory_budget_consumption_migration_tests;
+#[cfg(test)]
 mod advisory_budget_policy_migration_tests;
 mod advisory_budget_policy_store;
 #[cfg(test)]

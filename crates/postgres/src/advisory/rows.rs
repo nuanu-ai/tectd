@@ -215,6 +215,7 @@ fn reason(value: &str) -> Result<AdvisoryReason> {
         "capability_unavailable" => Ok(AdvisoryReason::CapabilityUnavailable),
         "provider_unconfigured" => Ok(AdvisoryReason::ProviderUnconfigured),
         "budget_policy_invalid" => Ok(AdvisoryReason::BudgetPolicyInvalid),
+        "budget_exhausted_after_response" => Ok(AdvisoryReason::BudgetExhaustedAfterResponse),
         "configuration_changed" => Ok(AdvisoryReason::ConfigurationChanged),
         "matrix_task_revision_changed" => Ok(AdvisoryReason::MatrixTaskRevisionChanged),
         "matrix_verification_stale" => Ok(AdvisoryReason::MatrixVerificationStale),

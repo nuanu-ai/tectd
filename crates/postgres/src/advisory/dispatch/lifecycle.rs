@@ -346,6 +346,18 @@ pub(crate) async fn finalize_opportunity(
     ) {
         return Err(Error::InputConflict);
     }
+    let budget_row: Option<(Uuid, Option<bool>)> = sqlx::query_as(
+        "SELECT r.dispatch_id,c.exhausted_after_response \
+         FROM advisory_budget_reservations r LEFT JOIN advisory_budget_consumptions c \
+         ON (c.tenant_id,c.workspace_id,c.dispatch_id)=(r.tenant_id,r.workspace_id,r.dispatch_id) \
+         WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.dispatch_id=$3"
+    ).bind(tenant).bind(workspace).bind(persisted.id)
+        .fetch_optional(&mut **tx).await.map_err(storage_error)?;
+    let budget_exhausted = match budget_row {
+        None => false, // Historical pre-budget dispatches have no reservation.
+        Some((_, Some(exhausted))) => exhausted,
+        Some((_, None)) => return Err(Error::BudgetPolicyInvalid),
+    };
     let current: (i64, String) = sqlx::query_as("SELECT revision,mode FROM advisory_workspace_config WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE")
         .bind(tenant).bind(workspace).fetch_one(&mut **tx).await.map_err(storage_error)?;
     // Finalize Matrix advice against the same locked task head that guarded
@@ -371,7 +383,11 @@ pub(crate) async fn finalize_opportunity(
     } else {
         None
     };
-    let (state, reason) = if current.0 != expected_config_revision || current.1 != "optional" {
+    let (state, reason) = if persisted_certainty == AdvisorySendCertainty::SentUnknown {
+        (AdvisoryOpportunityState::Unresolved, AdvisoryReason::SendUnknown)
+    } else if budget_exhausted {
+        (AdvisoryOpportunityState::Failed, AdvisoryReason::BudgetExhaustedAfterResponse)
+    } else if current.0 != expected_config_revision || current.1 != "optional" {
         (
             AdvisoryOpportunityState::Invalidated,
             AdvisoryReason::ConfigurationChanged,
@@ -382,11 +398,6 @@ pub(crate) async fn finalize_opportunity(
         (
             AdvisoryOpportunityState::Advised,
             AdvisoryReason::ProviderResponse,
-        )
-    } else if persisted_certainty == AdvisorySendCertainty::SentUnknown {
-        (
-            AdvisoryOpportunityState::Unresolved,
-            AdvisoryReason::SendUnknown,
         )
     } else {
         (

@@ -63,6 +63,7 @@ pub enum AdvisoryReason {
     CapabilityUnavailable,
     ProviderUnconfigured,
     BudgetPolicyInvalid,
+    BudgetExhaustedAfterResponse,
     ConfigurationChanged,
     MatrixTaskRevisionChanged,
     MatrixVerificationStale,
@@ -86,6 +87,7 @@ impl AdvisoryReason {
             Self::CapabilityUnavailable => "capability_unavailable",
             Self::ProviderUnconfigured => "provider_unconfigured",
             Self::BudgetPolicyInvalid => "budget_policy_invalid",
+            Self::BudgetExhaustedAfterResponse => "budget_exhausted_after_response",
             Self::ConfigurationChanged => "configuration_changed",
             Self::MatrixTaskRevisionChanged => "matrix_task_revision_changed",
             Self::MatrixVerificationStale => "matrix_verification_stale",
@@ -133,7 +135,10 @@ pub const fn advisory_reason_matches_state(
                     | AdvisoryReason::MatrixVerificationStale
             )
         }
-        AdvisoryOpportunityState::Failed => matches!(reason, AdvisoryReason::ProviderFailure),
+        AdvisoryOpportunityState::Failed => matches!(
+            reason,
+            AdvisoryReason::ProviderFailure | AdvisoryReason::BudgetExhaustedAfterResponse
+        ),
         AdvisoryOpportunityState::Unresolved => matches!(reason, AdvisoryReason::SendUnknown),
     }
 }
@@ -483,6 +488,21 @@ pub struct AdvisoryBudgetReservation {
     pub reserved_calls: i64,
     pub reserved_retry_dispatches: i64,
     pub remaining_elapsed_ms: i64,
+    pub reserved_input_tokens: i64,
+    pub reserved_output_tokens: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdvisoryBudgetConsumption {
+    pub dispatch_id: Uuid,
+    pub policy_id: Uuid,
+    pub policy_version: i64,
+    pub policy_digest: String,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub monotonic_elapsed_ms: Option<i64>,
+    pub unknown_usage: bool,
+    pub exhausted_after_response: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

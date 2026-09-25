@@ -34,10 +34,11 @@ fn remaining_budget_envelope(
 async fn reservation_for_dispatch(
     tx: &mut Transaction<'_, Postgres>, tenant: Uuid, workspace: Uuid, dispatch_id: Uuid,
 ) -> Result<Option<AdvisoryBudgetReservation>> {
-    let row: Option<(Uuid,Uuid,i64,String,i64,i64,String,i64,i64,i64,i64)> = sqlx::query_as(
+    let row: Option<(Uuid,Uuid,i64,String,i64,i64,String,i64,i64,i64,i64,i64,i64)> = sqlx::query_as(
         "SELECT dispatch_id,policy_id,policy_version,policy_digest,\
          policy_effective_from_unix_ms,policy_effective_until_unix_ms,request_sha256,\
-         request_utf8_bytes,reserved_calls,reserved_retry_dispatches,remaining_elapsed_ms \
+         request_utf8_bytes,reserved_calls,reserved_retry_dispatches,remaining_elapsed_ms,\
+         reserved_input_tokens,reserved_output_tokens \
          FROM advisory_budget_reservations WHERE tenant_id=$1 AND workspace_id=$2 AND dispatch_id=$3"
     ).bind(tenant).bind(workspace).bind(dispatch_id)
         .fetch_optional(&mut **tx).await.map_err(storage_error)?;
@@ -47,6 +48,7 @@ async fn reservation_for_dispatch(
         policy_effective_until_unix_ms: r.5, request_sha256: r.6,
         request_utf8_bytes: r.7, reserved_calls: r.8,
         reserved_retry_dispatches: r.9, remaining_elapsed_ms: r.10,
+        reserved_input_tokens: r.11, reserved_output_tokens: r.12,
     }))
 }
 
@@ -92,6 +94,25 @@ async fn reserve_before_dispatch(
             .bind(policy.id()).bind(policy.version()).bind(policy.digest())
             .fetch_one(&mut **tx).await.map_err(storage_error)?;
     if foreign_policy != 0 { return Err(Error::BudgetPolicyInvalid); }
+    let (pending,used_input,used_output,invalid_consumption): (i64,i64,i64,i64) =
+        sqlx::query_as(
+            "SELECT COUNT(*) FILTER (WHERE c.dispatch_id IS NULL)::bigint,\
+             COALESCE(SUM(c.input_tokens),0)::bigint,\
+             COALESCE(SUM(c.output_tokens),0)::bigint,\
+             COUNT(*) FILTER (WHERE c.unknown_usage OR c.exhausted_after_response)::bigint \
+             FROM advisory_budget_reservations r LEFT JOIN advisory_budget_consumptions c \
+             ON (c.tenant_id,c.workspace_id,c.dispatch_id)=(r.tenant_id,r.workspace_id,r.dispatch_id) \
+             WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.opportunity_id=$3"
+        ).bind(tenant).bind(workspace).bind(row.opportunity_id)
+            .fetch_one(&mut **tx).await.map_err(storage_error)?;
+    if pending != 0 || invalid_consumption != 0 { return Err(Error::BudgetPolicyInvalid); }
+    let remaining_input = policy.ceilings().input_tokens.checked_sub(used_input)
+        .ok_or(Error::BudgetExhaustedBeforeDispatch)?;
+    let remaining_output = policy.ceilings().output_tokens.checked_sub(used_output)
+        .ok_or(Error::BudgetExhaustedBeforeDispatch)?;
+    if remaining_input <= 0 || remaining_output <= 0 {
+        return Err(Error::BudgetExhaustedBeforeDispatch);
+    }
     let request_bytes = i64::try_from(row.request_payload.len())
         .map_err(|_| Error::BudgetExhaustedBeforeDispatch)?;
     let is_retry = row.attempt_number > 1;
@@ -105,19 +126,22 @@ async fn reserve_before_dispatch(
         request_sha256: row.payload_digest.clone(), request_utf8_bytes: request_bytes,
         reserved_calls: 1, reserved_retry_dispatches: i64::from(is_retry),
         remaining_elapsed_ms: remaining,
+        reserved_input_tokens: remaining_input, reserved_output_tokens: remaining_output,
     };
     sqlx::query(
         "INSERT INTO advisory_budget_reservations \
          (tenant_id,workspace_id,opportunity_id,dispatch_id,policy_id,policy_version,\
          policy_digest,policy_effective_from_unix_ms,policy_effective_until_unix_ms,\
-         request_sha256,request_utf8_bytes,reserved_retry_dispatches,remaining_elapsed_ms) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)"
+         request_sha256,request_utf8_bytes,reserved_retry_dispatches,remaining_elapsed_ms,\
+         reserved_input_tokens,reserved_output_tokens) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)"
     ).bind(tenant).bind(workspace).bind(row.opportunity_id).bind(row.id)
         .bind(reservation.policy_id).bind(reservation.policy_version)
         .bind(&reservation.policy_digest).bind(reservation.policy_effective_from_unix_ms)
         .bind(reservation.policy_effective_until_unix_ms).bind(&reservation.request_sha256)
         .bind(reservation.request_utf8_bytes).bind(reservation.reserved_retry_dispatches)
         .bind(reservation.remaining_elapsed_ms)
+        .bind(reservation.reserved_input_tokens).bind(reservation.reserved_output_tokens)
         .execute(&mut **tx).await.map_err(storage_error)?;
     Ok(reservation)
 }
