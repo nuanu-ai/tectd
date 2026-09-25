@@ -157,6 +157,13 @@ impl WorkspaceService {
             .await?
             .ok_or(Error::NotFound)?;
         let value = tx.open_slice(workspace.id, session.id, request).await?;
+        let opened = match &value {
+            OpenSliceOutcome::Created(slice) | OpenSliceOutcome::Replay(slice) => slice,
+        };
+        opened.validate_verification_plan_binding()?;
+        if request.disposition_id.is_some() && opened.selected_option_id.is_none() {
+            return Err(Error::InputConflict);
+        }
         tx.commit().await?;
         Ok(value)
     }

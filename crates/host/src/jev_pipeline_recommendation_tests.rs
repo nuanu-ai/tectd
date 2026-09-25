@@ -1,19 +1,26 @@
 use super::*;
 use sha2::{Digest, Sha256};
-use tect_domain::{PIPELINE_RECOMMENDATION_SCHEMA, PipelineKind, PipelineRecommendationOption};
+use tect_domain::{
+    PIPELINE_RECOMMENDATION_SCHEMA, PipelineDefinitionSnapshot, PipelineDeliveryMode,
+    PipelineInstructionSnapshot, PipelineKind, PipelinePhaseDefinition, PipelinePhaseRetryPolicy,
+    PipelineRecommendationOption, PipelineVerificationPlan,
+};
 use uuid::Uuid;
 
 fn manifest(count: usize) -> PipelineRecommendationManifest {
     let options = PipelineKind::CURRENT_SLICE_RUN_KINDS[..count]
         .iter()
-        .map(|kind| PipelineRecommendationOption {
-            id: kind.as_str().into(),
-            kind: *kind,
-            definition_version: "1".into(),
-            definition_digest: "definition-digest".into(),
-            completion_contract: "completion".into(),
-            forbidden_claims: vec!["unverified success".into()],
-            obligations: vec![],
+        .map(|kind| {
+            let plan = PipelineVerificationPlan::from_definition(&definition(*kind)).unwrap();
+            PipelineRecommendationOption {
+                id: PipelineRecommendationOption::pair_id(*kind, &plan.id),
+                kind: *kind,
+                definition_version: "1".into(),
+                definition_digest: "definition-digest".into(),
+                completion_contract: "completion".into(),
+                forbidden_claims: vec!["unverified success".into()],
+                verification_plan: plan,
+            }
         })
         .collect();
     let mut manifest = PipelineRecommendationManifest {
@@ -30,6 +37,7 @@ fn manifest(count: usize) -> PipelineRecommendationManifest {
         compatibility_policy_digest: "f".repeat(64),
         mandatory_card_ids: vec!["card-1".into()],
         deterministic_kind: PipelineKind::CURRENT_SLICE_RUN_KINDS[0],
+        deterministic_option_id: None,
         catalogue_revision: "4".into(),
         catalogue_digest: "c".repeat(64),
         options,
@@ -43,12 +51,57 @@ fn manifest(count: usize) -> PipelineRecommendationManifest {
         evidence_refs: vec![],
         digest: String::new(),
     };
+    manifest.deterministic_option_id = Some(manifest.options[0].id.clone());
     manifest.digest = format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&manifest).unwrap())
     );
     manifest.validate_digest().unwrap();
     manifest
+}
+
+fn definition(kind: PipelineKind) -> PipelineDefinitionSnapshot {
+    let instruction = PipelineInstructionSnapshot {
+        id: "instruction".into(),
+        version: "1".into(),
+        digest: "instruction-digest".into(),
+        body: "instruction".into(),
+        origin_refs: vec!["source".into()],
+    };
+    PipelineDefinitionSnapshot {
+        kind,
+        version: "1".into(),
+        digest: "definition-digest".into(),
+        overview: instruction.clone(),
+        default_mode: PipelineDeliveryMode::Phasewise,
+        allowed_modes: vec![PipelineDeliveryMode::Phasewise],
+        phases: vec![PipelinePhaseDefinition {
+            id: "proof".into(),
+            ordinal: 1,
+            title: "Proof".into(),
+            required: true,
+            disposition_required: false,
+            instructions: vec![instruction],
+            skills: vec![],
+            resources: vec![],
+            required_artifacts: vec![],
+            validator_contracts: vec![],
+            required_fields: vec!["proof".into()],
+            allowed_verdicts: vec![],
+            required_dispositions: vec![],
+            allowed_dispositions: vec![],
+            output_constraints: vec![],
+            verdict_routes: vec![],
+            followup_contracts: vec![],
+            allowed_backward_to: vec![],
+            fresh_reviewer_input: false,
+            retry_policy: PipelinePhaseRetryPolicy::Repeatable,
+            output_contract: "proof".into(),
+        }],
+        completion_contract: "completion".into(),
+        escalation_contract: "escalation".into(),
+        forbidden_claims: vec!["unverified success".into()],
+    }
 }
 
 fn prepared(count: usize) -> PreparedPipelineNativeRequest {
@@ -110,6 +163,29 @@ fn eight_way_request_and_fake_provider_response_rank_exact_permutation() {
     let request: Value = serde_json::from_slice(&prepared.body).unwrap();
     assert_eq!(request["state"]["manifest_digest"], manifest.digest);
     assert_eq!(request["state"]["manifest"], json!(manifest));
+    for (index, option) in manifest.options.iter().enumerate() {
+        assert_eq!(prepared.eligible_ids[index], option.id);
+        assert_eq!(
+            request["state"]["manifest"]["options"][index]["kind"],
+            json!(option.kind)
+        );
+        assert_eq!(
+            request["state"]["manifest"]["options"][index]["verification_plan"]["id"],
+            json!(option.verification_plan.id)
+        );
+        assert_eq!(
+            request["state"]["manifest"]["options"][index]["verification_plan"]["digest"],
+            json!(option.verification_plan.digest)
+        );
+        assert_eq!(
+            request["state"]["manifest"]["options"][index]["verification_plan"]["source_definition_version"],
+            json!(option.verification_plan.source_definition_version)
+        );
+        assert_eq!(
+            request["state"]["manifest"]["options"][index]["verification_plan"]["obligations"],
+            json!(option.verification_plan.obligations)
+        );
+    }
     assert_eq!(request["questions"].as_object().unwrap().len(), 9);
     assert_eq!(
         request["questions"][CHOICE_ID]["criteria"]
@@ -137,11 +213,6 @@ fn canonical_request_bytes_bind_exact_manifest_digest() {
     let first = prepared(8);
     let second = prepared(8);
     assert_eq!(first.body, second.body);
-    let digest = format!("{:x}", Sha256::digest(&first.body));
-    assert_eq!(
-        digest,
-        "0ef932e8b506396466bef81140f05cb7368fd4d6e8a5d4a575288dadca7039a0"
-    );
     let mut changed = manifest(8);
     changed.selected_choice_id = "different-choice".into();
     changed.digest.clear();

@@ -25,6 +25,11 @@ impl WorkspaceService {
         let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
         let current_policy_digest = self.current_pipeline_policy()?.digest()?;
         let store = tx.pipeline_recommendation_store().ok_or(Error::Forbidden)?;
+        let prepared = store
+            .pipeline_recommendation_by_opportunity(workspace.id, request.opportunity_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        self.validate_pipeline_recommendation_definitions(&prepared.manifest)?;
         let result = dispose_in_store(
             store,
             workspace.id,
@@ -93,7 +98,7 @@ async fn dispose_in_store(
         || opportunity.target_id != Some(prepared.context.work_node_id)
         || opportunity.work_revision != Some(prepared.context.work_node_revision)
         || prepared.context.verification_contract_digest != prepared.manifest.digest
-        || prepared.context.eligible_kind_ids
+        || prepared.context.eligible_option_ids
             != prepared
                 .manifest
                 .options
@@ -132,6 +137,7 @@ async fn dispose_in_store(
         || saved.work_id != result.work_id
         || saved.advice != result.advice
         || saved.selected_kind != result.selected_kind
+        || saved.selected_option_id != result.selected_option_id
     {
         return Err(Error::InputConflict);
     }

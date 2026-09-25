@@ -430,6 +430,18 @@ pub struct NativeSlice {
     pub title: String,
     pub outcome: String,
     pub pipeline: PipelineKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_option_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_plan_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_plan_schema: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_plan_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_plan_source_definition_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_plan_source_definition_digest: Option<String>,
     pub state: SliceState,
     pub pipeline_status: String,
     #[serde(default)]
@@ -444,6 +456,8 @@ pub struct NativeSlice {
     pub source_checkpoint: Option<crate::PipelineCheckpointRef>,
     pub execution_claimed: bool,
 }
+
+mod verification_plan_binding;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

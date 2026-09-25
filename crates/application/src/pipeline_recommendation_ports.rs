@@ -39,7 +39,7 @@ pub struct PipelineRecommendationContext {
     pub catalogue_revision: String,
     pub catalogue_digest: String,
     pub compatibility_policy_digest: String,
-    pub eligible_kind_ids: Vec<String>,
+    pub eligible_option_ids: Vec<String>,
     pub verification_contract_digest: String,
 }
 

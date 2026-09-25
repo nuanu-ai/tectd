@@ -36,6 +36,7 @@ impl PipelineOpenEffectMaterial {
 
     pub fn validate(&self) -> Result<()> {
         let slice = &self.slice;
+        slice.validate_verification_plan_binding()?;
         let request = &self.open_request;
         let disposition = &self.disposition;
         if self.workspace_id.is_nil()
@@ -46,6 +47,7 @@ impl PipelineOpenEffectMaterial {
             || request.candidate_snapshot_id != slice.opening_snapshot_id
             || disposition.work_id != slice.candidate_id
             || disposition.selected_kind != Some(slice.pipeline)
+            || disposition.selected_option_id != slice.selected_option_id
             || disposition.request.expected_work_revision != slice.candidate_revision
             || self.work.id() != slice.candidate_id
             || self.work.revision() != slice.candidate_revision

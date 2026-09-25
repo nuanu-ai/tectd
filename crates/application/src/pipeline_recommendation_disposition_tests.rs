@@ -7,9 +7,55 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tect_domain::{
     AdvisoryOpportunity, AdvisoryOpportunityInput, AdvisoryReason, AdvisoryRequestPreference,
-    PIPELINE_RECOMMENDATION_SCHEMA, PipelineKind, PipelineRecommendationDisposition,
-    PipelineRecommendationManifest, PipelineRecommendationOption, SliceCandidateNode,
+    PIPELINE_RECOMMENDATION_SCHEMA, PipelineDefinitionSnapshot, PipelineDeliveryMode,
+    PipelineInstructionSnapshot, PipelineKind, PipelinePhaseDefinition, PipelinePhaseRetryPolicy,
+    PipelineRecommendationDisposition, PipelineRecommendationManifest,
+    PipelineRecommendationOption, PipelineVerificationPlan, SliceCandidateNode,
 };
+
+fn definition(kind: PipelineKind) -> PipelineDefinitionSnapshot {
+    let instruction = PipelineInstructionSnapshot {
+        id: "instruction".into(),
+        version: "1".into(),
+        digest: "instruction-digest".into(),
+        body: "instruction".into(),
+        origin_refs: vec!["source".into()],
+    };
+    PipelineDefinitionSnapshot {
+        kind,
+        version: "1".into(),
+        digest: "definition".into(),
+        overview: instruction.clone(),
+        default_mode: PipelineDeliveryMode::Phasewise,
+        allowed_modes: vec![PipelineDeliveryMode::Phasewise],
+        phases: vec![PipelinePhaseDefinition {
+            id: "proof".into(),
+            ordinal: 1,
+            title: "Proof".into(),
+            required: true,
+            disposition_required: false,
+            instructions: vec![instruction],
+            skills: vec![],
+            resources: vec![],
+            required_artifacts: vec![],
+            validator_contracts: vec![],
+            required_fields: vec!["proof".into()],
+            allowed_verdicts: vec![],
+            required_dispositions: vec![],
+            allowed_dispositions: vec![],
+            output_constraints: vec![],
+            verdict_routes: vec![],
+            followup_contracts: vec![],
+            allowed_backward_to: vec![],
+            fresh_reviewer_input: false,
+            retry_policy: PipelinePhaseRetryPolicy::Repeatable,
+            output_contract: "proof".into(),
+        }],
+        completion_contract: "proof".into(),
+        escalation_contract: "escalation".into(),
+        forbidden_claims: vec![],
+    }
+}
 
 struct FakeStore {
     basis: PipelineDispositionBasis,
@@ -127,18 +173,22 @@ fn fixture(
         compatibility_policy_digest: "e".repeat(64),
         mandatory_card_ids: vec!["card".into()],
         deterministic_kind: kinds[0],
+        deterministic_option_id: None,
         catalogue_revision: "4".into(),
         catalogue_digest: "catalogue".into(),
         options: kinds
             .into_iter()
-            .map(|kind| PipelineRecommendationOption {
-                id: kind.as_str().into(),
-                kind,
-                definition_version: "1".into(),
-                definition_digest: "definition".into(),
-                completion_contract: "proof".into(),
-                forbidden_claims: vec![],
-                obligations: vec![],
+            .map(|kind| {
+                let plan = PipelineVerificationPlan::from_definition(&definition(kind)).unwrap();
+                PipelineRecommendationOption {
+                    id: PipelineRecommendationOption::pair_id(kind, &plan.id),
+                    kind,
+                    definition_version: "1".into(),
+                    definition_digest: "definition".into(),
+                    completion_contract: "proof".into(),
+                    forbidden_claims: vec![],
+                    verification_plan: plan,
+                }
             })
             .collect(),
         excluded: PipelineKind::CURRENT_SLICE_RUN_KINDS[2..]
@@ -151,10 +201,31 @@ fn fixture(
         evidence_refs: vec![],
         digest: String::new(),
     };
+    manifest.deterministic_option_id = Some(manifest.options[0].id.clone());
     manifest.digest = format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&manifest).unwrap())
     );
+    let advice = match advice {
+        PipelineDispositionAdvice::Ranked {
+            dispatch_id,
+            ranked_ids,
+        } => PipelineDispositionAdvice::Ranked {
+            dispatch_id,
+            ranked_ids: ranked_ids
+                .into_iter()
+                .map(|id| {
+                    manifest
+                        .options
+                        .iter()
+                        .find(|option| option.kind.as_str() == id)
+                        .map(|option| option.id.clone())
+                        .unwrap_or(id)
+                })
+                .collect(),
+        },
+        other => other,
+    };
     let work = SliceCandidateNode::Work {
         id: work_id,
         revision: 2,
@@ -219,7 +290,7 @@ fn fixture(
         catalogue_revision: "4".into(),
         catalogue_digest: "catalogue".into(),
         compatibility_policy_digest: manifest.compatibility_policy_digest.clone(),
-        eligible_kind_ids: manifest
+        eligible_option_ids: manifest
             .options
             .iter()
             .map(|option| option.id.clone())

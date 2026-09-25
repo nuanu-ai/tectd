@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use serde_json::Value;
-use tect_application::{PreparePipelineRecommendation, RunPipelineRecommendation};
+use tect_application::{
+    PreparePipelineRecommendation, PreparedPipelineRecommendation, RunPipelineRecommendation,
+};
 use tect_domain::{AdvisoryRequestPreference, Error, PipelineDispositionRequest, Result};
 use uuid::Uuid;
 
@@ -65,6 +67,25 @@ pub(crate) fn parse_disposition(arguments: Value) -> Result<PipelineDispositionR
         serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
     request.validate()?;
     Ok(request)
+}
+
+pub(crate) fn prepare_receipt(prepared: &PreparedPipelineRecommendation) -> Value {
+    serde_json::json!({
+        "opportunity_id": prepared.opportunity.id,
+        "state": prepared.opportunity.state,
+        "reason": prepared.opportunity.primary_reason,
+        "eligible_option_ids": prepared.context.eligible_option_ids,
+        "options": prepared.manifest.options.iter().map(|option| serde_json::json!({
+            "option_id": option.id,
+            "kind": option.kind,
+            "verification_plan_id": option.verification_plan.id,
+            "verification_plan_schema": option.verification_plan.schema,
+            "verification_plan_digest": option.verification_plan.digest,
+            "source_definition_version": option.verification_plan.source_definition_version,
+            "source_definition_digest": option.verification_plan.source_definition_digest,
+        })).collect::<Vec<_>>(),
+        "manifest_digest": prepared.manifest.digest,
+    })
 }
 
 #[cfg(test)]

@@ -9,8 +9,9 @@ use sha2::{Digest, Sha256};
 use tect_domain::{
     ADVISORY_DECISION_POINT_VERSION, AdvisoryCapability, AdvisoryDecisionPoint,
     AdvisoryOpportunityInput, AdvisoryOpportunityState, AdvisoryReason, AdvisoryRequestPreference,
-    Error, PipelineCompatibilityPolicy, PipelineKind, RequestContext, Result, SliceCandidateNode,
-    WorkspaceAdvisoryMode, build_pipeline_recommendation_manifest,
+    Error, PipelineCompatibilityPolicy, PipelineKind, PipelineRecommendationManifest,
+    RequestContext, Result, SliceCandidateNode, WorkspaceAdvisoryMode,
+    build_pipeline_recommendation_manifest,
 };
 use uuid::Uuid;
 
@@ -73,6 +74,7 @@ impl WorkspaceService {
             if !self.pipeline_policy_matches(&saved.context.compatibility_policy_digest)? {
                 return Err(Error::StaleContext);
             }
+            self.validate_pipeline_recommendation_definitions(&saved.manifest)?;
             tx.commit().await?;
             return Ok(saved);
         }
@@ -101,6 +103,7 @@ impl WorkspaceService {
             }
         }
         let manifest = build_pipeline_recommendation_manifest(&source)?;
+        manifest.validate_against_definitions(&source.definitions)?;
         let config = tx.advisory_config(workspace.id).await?;
         let (state, primary_reason) = preparation_decision(
             config.mode,
@@ -173,13 +176,32 @@ impl PipelineRecommendationContext {
             catalogue_revision: manifest.catalogue_revision.clone(),
             catalogue_digest: manifest.catalogue_digest.clone(),
             compatibility_policy_digest: manifest.compatibility_policy_digest.clone(),
-            eligible_kind_ids: manifest
+            eligible_option_ids: manifest
                 .options
                 .iter()
                 .map(|option| option.id.clone())
                 .collect(),
             verification_contract_digest: manifest.digest.clone(),
         }
+    }
+}
+
+impl WorkspaceService {
+    /// A saved plan is usable only while the pinned catalogue still resolves
+    /// to the exact definition that generated every eligible option.
+    pub(crate) fn validate_pipeline_recommendation_definitions(
+        &self,
+        manifest: &PipelineRecommendationManifest,
+    ) -> Result<()> {
+        let mut definitions = Vec::with_capacity(manifest.options.len());
+        for option in &manifest.options {
+            let definition = self
+                .pipeline_recommendation_definitions
+                .definition(&manifest.catalogue_revision, option.kind)?
+                .ok_or(Error::StaleContext)?;
+            definitions.push(definition);
+        }
+        manifest.validate_against_definitions(&definitions)
     }
 }
 

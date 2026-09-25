@@ -141,12 +141,14 @@ pub fn prepare_native_request(
     let mut criteria = BTreeMap::new();
     for (index, option) in manifest.options.iter().enumerate() {
         criteria.insert(option.id.clone(), json!(format!(
-            "Eligible pipeline with definition version {} and digest {}. See exact obligations in state.manifest.",
-            option.definition_version, option.definition_digest
+            "Eligible pipeline kind {} paired with verification plan {} (digest {}). Source definition version {} and digest {}. Review every required-phase obligation in state.manifest.options.",
+            option.kind.as_str(), option.verification_plan.id, option.verification_plan.digest,
+            option.verification_plan.source_definition_version,
+            option.verification_plan.source_definition_digest
         )));
         questions.insert(format!("score_v1_{index}"), json!({
             "type": "score",
-            "instructions": format!("Rate only eligible pipeline ID {} against the recorded Work, selected Matrix choice, mandatory cards, and its verification obligations. Use all ten ordered levels. This is advice only; it authorizes no phase or verification claim. Wire version: {WIRE_VERSION}.", option.id),
+            "instructions": format!("Rate only eligible pipeline and verification-plan pair ID {} against the recorded Work, selected Matrix choice, mandatory cards, and every required-phase verification obligation. Use all ten ordered levels. This is advice only; it authorizes no phase or verification claim. Wire version: {WIRE_VERSION}.", option.id),
             "criteria": SCORE_LEVELS,
         }));
     }
@@ -156,7 +158,7 @@ pub fn prepare_native_request(
     );
     questions.insert(CHOICE_ID.into(), json!({
         "type": "choice",
-        "instructions": format!("Choose exactly one eligible pipeline ID or ABSTAIN. Preserve all Matrix mandatory cards and verification obligations. This is advice only; it authorizes no phase or verification claim. Wire version: {WIRE_VERSION}."),
+        "instructions": format!("Choose exactly one eligible pipeline and verification-plan pair ID or ABSTAIN. Preserve all Matrix mandatory cards and every required-phase verification obligation. This is advice only; it authorizes no phase or verification claim. Wire version: {WIRE_VERSION}."),
         "criteria": criteria,
     }));
     let body = serde_json::to_vec(&NativeRequest {

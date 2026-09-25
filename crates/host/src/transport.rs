@@ -386,13 +386,7 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 let prepared = service
                     .prepare_pipeline_recommendation(context, &request)
                     .await?;
-                let result = serde_json::json!({
-                    "opportunity_id": prepared.opportunity.id,
-                    "state": prepared.opportunity.state,
-                    "reason": prepared.opportunity.primary_reason,
-                    "eligible_kind_ids": prepared.context.eligible_kind_ids,
-                    "manifest_digest": prepared.manifest.digest,
-                });
+                let result = crate::pipeline_recommendation_tools::prepare_receipt(&prepared);
                 let result = crate::responses::with_actions(result, Vec::new(), None);
                 if crate::responses::encoded_len(&result)? > capacity {
                     return Err(Error::RequestTooLarge);
@@ -512,8 +506,11 @@ enum InvalidRequestAuth {
 fn invalid_request_auth(tool_name: &str) -> InvalidRequestAuth {
     if matches!(
         tool_name,
-        "verify_matrix_task" | "get_matrix_planning_effect" | "verify_matrix_planning_effect"
-        | "get_pipeline_open_effect" | "verify_pipeline_open_effect"
+        "verify_matrix_task"
+            | "get_matrix_planning_effect"
+            | "verify_matrix_planning_effect"
+            | "get_pipeline_open_effect"
+            | "verify_pipeline_open_effect"
     ) {
         InvalidRequestAuth::MatrixVerifier
     } else if allows_verifier_invalid_request(tool_name) {

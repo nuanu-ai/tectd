@@ -60,7 +60,7 @@ fn validate_saved(
         || opportunity.work_revision != Some(saved.context.work_node_revision)
         || saved.context.verification_contract_digest != saved.manifest.digest
         || saved.context.compatibility_policy_digest != saved.manifest.compatibility_policy_digest
-        || saved.context.eligible_kind_ids
+        || saved.context.eligible_option_ids
             != saved
                 .manifest
                 .options
@@ -135,6 +135,15 @@ impl WorkspaceService {
             .await?
             .ok_or(Error::NotFound)?;
         validate_saved(&saved, workspace.id, request.opportunity_id)?;
+        if self
+            .validate_pipeline_recommendation_definitions(&saved.manifest)
+            .is_err()
+        {
+            tx.commit().await?;
+            return Ok(PipelineRecommendationRun::Stale {
+                opportunity_id: saved.opportunity.id,
+            });
+        }
         if saved.opportunity.session_id != session.id
             || saved.opportunity.authorized_actor_id != identity.principal_id
         {
@@ -289,6 +298,9 @@ impl WorkspaceService {
         read_tx.commit().await?;
         if !still_current
             || !self.pipeline_policy_matches(&saved.context.compatibility_policy_digest)?
+            || self
+                .validate_pipeline_recommendation_definitions(&saved.manifest)
+                .is_err()
         {
             return Ok(PipelineRecommendationRun::Stale {
                 opportunity_id: saved.opportunity.id,
