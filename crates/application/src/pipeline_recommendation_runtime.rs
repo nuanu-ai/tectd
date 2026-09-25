@@ -391,6 +391,7 @@ mod tests {
         let start = AdvisoryDispatchStart {
             dispatch: authorized.clone(),
             should_send: true,
+            budget_reservation: None,
         };
         assert!(
             PipelineStartedDispatchPermit::after_committed_start(&start, &authorization, &attempt)
@@ -414,6 +415,7 @@ mod tests {
         let start = AdvisoryDispatchStart {
             dispatch: sending.clone(),
             should_send: true,
+            budget_reservation: None,
         };
         let permit =
             PipelineStartedDispatchPermit::after_committed_start(&start, &authorization, &attempt)

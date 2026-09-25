@@ -4,9 +4,11 @@ async fn start_dispatch(
     workspace: Uuid,
     dispatch_id: Uuid,
     verification_current: Option<bool>,
+    authorized_policy: Option<&AdvisoryBudgetPolicy>,
+    monotonic_elapsed_ms: Option<i64>,
 ) -> Result<AdvisoryDispatchStart> {
     let mut row = dispatch_by_id(tx, tenant, workspace, dispatch_id, true).await?;
-    let should_send = match dispatch_state(&row.state)? {
+    let (should_send, budget_reservation) = match dispatch_state(&row.state)? {
         AdvisoryDispatchState::Authorized => {
             let opportunity =
                 opportunity_by_id(tx, tenant, workspace, row.opportunity_id, true).await?;
@@ -75,6 +77,7 @@ async fn start_dispatch(
                     return Ok(AdvisoryDispatchStart {
                         dispatch: dispatch_from_row(&row)?,
                         should_send: false,
+                        budget_reservation: None,
                     });
                 }
             }
@@ -131,23 +134,32 @@ async fn start_dispatch(
                     return Ok(AdvisoryDispatchStart {
                         dispatch: dispatch_from_row(&row)?,
                         should_send: false,
+                        budget_reservation: None,
                     });
                 }
             }
-            sqlx::query("UPDATE advisory_dispatch SET state='sending',send_certainty='sent_unknown',send_started_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND state='authorized'")
+            let budget_reservation = reserve_before_dispatch(tx, tenant, workspace, &row,
+                authorized_policy, monotonic_elapsed_ms).await?;
+            let dispatch_update = sqlx::query("UPDATE advisory_dispatch SET state='sending',send_certainty='sent_unknown',send_started_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND state='authorized'")
                 .bind(tenant).bind(workspace).bind(dispatch_id).execute(&mut **tx).await.map_err(storage_error)?;
-            sqlx::query("UPDATE advisory_opportunity SET state='awaiting_response',primary_reason='send_unknown',updated_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND state IN ('prepared','failed')")
+            let opportunity_update = sqlx::query("UPDATE advisory_opportunity SET state='awaiting_response',primary_reason='send_unknown',updated_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND state IN ('prepared','failed')")
                 .bind(tenant).bind(workspace).bind(row.opportunity_id).execute(&mut **tx).await.map_err(storage_error)?;
+            if dispatch_update.rows_affected() != 1 || opportunity_update.rows_affected() != 1 {
+                return Err(Error::InputConflict);
+            }
             row.state = "sending".into();
             row.send_certainty = "sent_unknown".into();
-            true
+            (true, Some(budget_reservation))
         }
-        AdvisoryDispatchState::Sending | AdvisoryDispatchState::Sealed => false,
+        AdvisoryDispatchState::Sending | AdvisoryDispatchState::Sealed => {
+            (false, reservation_for_dispatch(tx, tenant, workspace, dispatch_id).await?)
+        },
         AdvisoryDispatchState::Cancelled => return Err(Error::InputConflict),
     };
     Ok(AdvisoryDispatchStart {
         dispatch: dispatch_from_row(&row)?,
         should_send,
+        budget_reservation,
     })
 }
 
@@ -169,7 +181,7 @@ pub(crate) async fn start_dispatch_for_test(
     workspace: Uuid,
     dispatch_id: Uuid,
 ) -> Result<AdvisoryDispatchStart> {
-    start_dispatch(tx, tenant, workspace, dispatch_id, None).await
+    start_dispatch(tx, tenant, workspace, dispatch_id, None, None, None).await
 }
 
 async fn seal_dispatch(

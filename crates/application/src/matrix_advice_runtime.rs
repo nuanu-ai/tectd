@@ -146,11 +146,19 @@ impl MatrixStartedDispatchPermit {
         prepared: &PreparedMatrixAdviceAttempt,
     ) -> Result<Self> {
         let dispatch = &started.dispatch;
+        let reservation = started
+            .budget_reservation
+            .as_ref()
+            .ok_or(Error::BudgetPolicyInvalid)?;
         let configuration_bytes = serde_json::to_vec(&authorization.configuration_snapshot)
             .map_err(Error::invalid_arguments_from)?;
         let configuration_digest = format!("{:x}", Sha256::digest(&configuration_bytes));
         let config = &authorization.configuration_snapshot;
         if !started.should_send
+            || reservation.dispatch_id != dispatch.id
+            || reservation.request_sha256 != authorization.payload_digest
+            || reservation.request_utf8_bytes != i64::try_from(prepared.body_length()).unwrap_or(-1)
+            || reservation.reserved_calls != 1
             || dispatch.state != AdvisoryDispatchState::Sending
             || dispatch.send_certainty != AdvisorySendCertainty::SentUnknown
             || dispatch.id != authorization.dispatch_id

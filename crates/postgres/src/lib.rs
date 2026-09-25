@@ -5,6 +5,8 @@ mod advisory;
 mod advisory_budget_policy_migration_tests;
 mod advisory_budget_policy_store;
 #[cfg(test)]
+mod advisory_budget_reservation_migration_tests;
+#[cfg(test)]
 mod advisory_migration_tests;
 #[cfg(test)]
 mod anti_bloat_migration_tests;

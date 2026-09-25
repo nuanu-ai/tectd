@@ -321,7 +321,13 @@ impl AdvisoryStore for PgUnitOfWork {
         dispatch_id: Uuid,
     ) -> Result<AdvisoryDispatchStart> {
         let tenant = self.tenant_id()?;
-        start_dispatch(self.transaction()?, tenant, workspace_id, dispatch_id, None).await
+        let now = i64::try_from(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| Error::BudgetPolicyInvalid)?.as_millis())
+            .map_err(|_| Error::BudgetPolicyInvalid)?;
+        let policy = self.authorized_budget_policy(workspace_id, now).await?;
+        start_dispatch(self.transaction()?, tenant, workspace_id, dispatch_id,
+            None, policy.as_ref(), None).await
     }
 
     async fn start_verified_matrix_dispatch(
@@ -332,12 +338,19 @@ impl AdvisoryStore for PgUnitOfWork {
         verification_current: bool,
     ) -> Result<AdvisoryDispatchStart> {
         let tenant = self.tenant_id()?;
+        let now = i64::try_from(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| Error::BudgetPolicyInvalid)?.as_millis())
+            .map_err(|_| Error::BudgetPolicyInvalid)?;
+        let policy = self.authorized_budget_policy(workspace_id, now).await?;
         start_dispatch(
             self.transaction()?,
             tenant,
             workspace_id,
             dispatch_id,
             Some(verification_current),
+            policy.as_ref(),
+            None,
         )
         .await
     }

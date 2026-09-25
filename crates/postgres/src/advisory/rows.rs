@@ -1,7 +1,7 @@
 use crate::{storage_error, store::PgUnitOfWork};
 use async_trait::async_trait;
 use sqlx::{Postgres, Transaction};
-use tect_application::AdvisoryStore;
+use tect_application::{AdvisoryBudgetPolicyStore, AdvisoryStore};
 use tect_domain::*;
 use uuid::Uuid;
 

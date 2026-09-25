@@ -467,6 +467,22 @@ pub struct AdvisoryDispatch {
 pub struct AdvisoryDispatchStart {
     pub dispatch: AdvisoryDispatch,
     pub should_send: bool,
+    pub budget_reservation: Option<AdvisoryBudgetReservation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdvisoryBudgetReservation {
+    pub dispatch_id: Uuid,
+    pub policy_id: Uuid,
+    pub policy_version: i64,
+    pub policy_digest: String,
+    pub policy_effective_from_unix_ms: i64,
+    pub policy_effective_until_unix_ms: i64,
+    pub request_sha256: String,
+    pub request_utf8_bytes: i64,
+    pub reserved_calls: i64,
+    pub reserved_retry_dispatches: i64,
+    pub remaining_elapsed_ms: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

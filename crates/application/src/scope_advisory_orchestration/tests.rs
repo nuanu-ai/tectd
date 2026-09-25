@@ -812,6 +812,19 @@ fn fixture_started_dispatch(
             raw_response_ref: None,
         },
         should_send,
+        budget_reservation: Some(tect_domain::AdvisoryBudgetReservation {
+            dispatch_id: authorization.dispatch_id,
+            policy_id: Uuid::new_v4(),
+            policy_version: 1,
+            policy_digest: "a".repeat(64),
+            policy_effective_from_unix_ms: 0,
+            policy_effective_until_unix_ms: i64::MAX,
+            request_sha256: authorization.payload_digest.clone(),
+            request_utf8_bytes: authorization.request_payload.len() as i64,
+            reserved_calls: 1,
+            reserved_retry_dispatches: 0,
+            remaining_elapsed_ms: 100,
+        }),
     }
 }
 
