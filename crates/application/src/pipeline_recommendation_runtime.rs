@@ -267,38 +267,8 @@ pub trait PipelineRecommendationProvider: Send + Sync {
     ) -> Result<PipelineProviderObservation>;
 }
 
-pub struct DisabledPipelineRecommendationProvider;
-
-#[async_trait]
-impl PipelineRecommendationProvider for DisabledPipelineRecommendationProvider {
-    fn available(&self) -> bool {
-        false
-    }
-
-    fn prepare(
-        &self,
-        _: &PreparedPipelineRecommendation,
-    ) -> Result<PreparedPipelineRecommendationAttempt> {
-        Err(Error::TransportUnavailable)
-    }
-
-    fn parse_sealed_response(
-        &self,
-        _: &PipelineRecommendationManifest,
-        _: &PreparedPipelineRecommendationAttempt,
-        _: &SealedPipelineRecommendationResponse,
-    ) -> Result<PipelineRecommendationRanking> {
-        Err(Error::TransportUnavailable)
-    }
-
-    async fn attempt_prepared(
-        &self,
-        _: PreparedPipelineRecommendationAttempt,
-        _: PipelineStartedDispatchPermit,
-    ) -> Result<PipelineProviderObservation> {
-        Err(Error::TransportUnavailable)
-    }
-}
+mod disabled_provider;
+pub use disabled_provider::DisabledPipelineRecommendationProvider;
 
 #[cfg(test)]
 mod tests {
