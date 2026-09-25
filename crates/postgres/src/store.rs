@@ -51,6 +51,10 @@ impl PgUnitOfWork {
             .map(|identity| identity.principal_id)
             .ok_or(Error::Forbidden)
     }
+
+    pub(crate) fn is_read_write(&self) -> bool {
+        self.mode == TransactionMode::ReadWrite
+    }
 }
 
 #[async_trait]
