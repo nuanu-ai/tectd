@@ -63,6 +63,9 @@ pub(super) async fn validate_pipeline_advice_schema(
            AND ((t.tgname='pipeline_advice_context_current' \
                  AND p.proname='pipeline_advice_context_require_current' \
                  AND p.prosecdef AND NOT pg_catalog.pg_has_role(r.oid,p.proowner,'MEMBER') \
+                 AND pg_catalog.strpos(pg_catalog.regexp_replace( \
+                   pg_catalog.pg_get_functiondef(p.oid),'[[:space:]]+','','g'), \
+                   'a.result_revision=draft.set_revision')>0 \
                  AND NOT pg_catalog.has_function_privilege($1,p.oid,'EXECUTE')) \
              OR (t.tgname='pipeline_advice_context_manifest_shape' \
                  AND p.proname='pipeline_advice_manifest_require_shape' \
