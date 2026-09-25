@@ -1,6 +1,8 @@
 //! Positive public MCP proof with a local fake adviser and a disposable PG18 fixture.
 use super::*;
 use crate::support::{ready_source_candidate, repository};
+#[path = "model_route_positive/followthrough.rs"]
+mod followthrough;
 use tect_application::{
     ModelRouteCatalogueProvider, ModelRouteHostCapabilitiesProvider, ModelRoutePreparedAttempt,
     ModelRouteRankingProvider, ModelRouteSendPermit, PreparedModelRouteRecommendation,
@@ -53,6 +55,8 @@ impl ModelRouteHostCapabilitiesProvider for HostCapabilities {
 struct FakeAdviser {
     pool: PgPool,
     calls: Arc<AtomicUsize>,
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
 }
 
 #[async_trait]
@@ -91,6 +95,8 @@ impl ModelRouteRankingProvider for FakeAdviser {
         assert_eq!(committed.1, attempted.request_bytes);
         assert_eq!(committed.2, attempted.request_sha256);
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.started.notify_one();
+        self.release.notified().await;
         Ok(response(&attempted.request))
     }
 }
@@ -181,6 +187,8 @@ async fn public_model_route_recommends_from_exact_matrix_work_without_dispatch()
     let socket = root.join("model-route-positive.sock");
     let matrix_calls = Arc::new(AtomicUsize::new(0));
     let calls = Arc::new(AtomicUsize::new(0));
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
     let service = Arc::new(
         WorkspaceService::new(
             Arc::new(PgStore::connect(&runtime_url, 4).await.unwrap()),
@@ -194,6 +202,8 @@ async fn public_model_route_recommends_from_exact_matrix_work_without_dispatch()
         .with_model_route_ranking_provider(Arc::new(FakeAdviser {
             pool: pool.clone(),
             calls: calls.clone(),
+            started: started.clone(),
+            release: release.clone(),
         })),
     );
     let listener = UnixListener::bind(&socket).unwrap();
@@ -205,13 +215,8 @@ async fn public_model_route_recommends_from_exact_matrix_work_without_dispatch()
     let owner_config = root.join("owner.json");
     host_file(&owner_config, &enrolled.auth);
     let workspace_key = format!("model-route-positive-{}", Uuid::new_v4());
-    let mut owner = Mcp::start(
-        &socket,
-        &owner_config,
-        &Uuid::new_v4().to_string(),
-        &workspace_key,
-    )
-    .await;
+    let owner_native = Uuid::new_v4().to_string();
+    let mut owner = Mcp::start(&socket, &owner_config, &owner_native, &workspace_key).await;
     let (source, candidate) = ready_source_candidate(&mut owner, &repo).await;
     let opened = owner.call("open_workspace", json!({})).await;
     let workspace = Uuid::parse_str(opened["workspace"]["id"].as_str().unwrap()).unwrap();
@@ -354,15 +359,35 @@ async fn public_model_route_recommends_from_exact_matrix_work_without_dispatch()
     assert!(prepared["routes"]["recommended_route_id"].is_null());
     assert!(prepared["routes"]["observed_actual"].is_null());
     assert_eq!(calls.load(Ordering::SeqCst), 0);
-    let run = route(
+    let before_run = route(
         &mut owner,
-        "command",
-        "model.route.run",
-        json!({
-            "preparation_request_key":key
-        }),
+        "query",
+        "model.route.get",
+        json!({"preparation_request_key":key}),
     )
     .await;
+    assert!(before_run["attempt"].is_null());
+    assert!(before_run["decision"].is_null());
+    let mut concurrent_owner =
+        Mcp::start(&socket, &owner_config, &owner_native, &workspace_key).await;
+    concurrent_owner.call("open_workspace", json!({})).await;
+    let run_args = json!({"preparation_request_key":key});
+    let (run, raced) = tokio::join!(
+        route(&mut owner, "command", "model.route.run", run_args.clone()),
+        async {
+            started.notified().await;
+            let raced = route(
+                &mut concurrent_owner,
+                "command",
+                "model.route.run",
+                run_args,
+            )
+            .await;
+            release.notify_one();
+            raced
+        }
+    );
+    assert_eq!(raced["attempt"]["id"], run["attempt"]["id"]);
     assert_eq!(run["attempt"]["state"], "parsed");
     assert_eq!(
         run["decision"]["outcome"]["Recommended"]["route_id"],
@@ -383,6 +408,22 @@ async fn public_model_route_recommends_from_exact_matrix_work_without_dispatch()
     .await;
     assert_eq!(replay["decision"]["id"], run["decision"]["id"]);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    followthrough::assert_different_session_conflicts(
+        &socket,
+        &owner_config,
+        &workspace_key,
+        &key,
+        &calls,
+    )
+    .await;
+    followthrough::assert_public_get_disposition_and_denial(
+        &mut owner,
+        &mut independent,
+        &key,
+        &run,
+        &calls,
+    )
+    .await;
 
     let row: (String, Vec<u8>, String, Vec<u8>, String, bool, bool) = sqlx::query_as(
         "SELECT state,request_payload,request_sha256,response_payload,response_sha256, \
@@ -431,9 +472,10 @@ async fn public_model_route_recommends_from_exact_matrix_work_without_dispatch()
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(no_execution, (0, 0));
+    assert_eq!(no_execution, (0, 1));
     assert_eq!(matrix_calls.load(Ordering::SeqCst), 1);
     independent.finish().await;
+    concurrent_owner.finish().await;
     owner.finish().await;
     server.abort();
     let _ = server.await;
