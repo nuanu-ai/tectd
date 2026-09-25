@@ -1,6 +1,6 @@
 //! Recommendation-only model routing. No provider client or execution operation lives here.
 use crate::{Error, MatrixPlanningSelection, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use uuid::Uuid;
@@ -53,7 +53,7 @@ impl ModelRouteHostCapabilities {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ModelRoute {
     pub id: String,
@@ -73,7 +73,7 @@ pub struct ModelRoute {
     pub minimum_latency_ms: u64,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ModelRouteCatalogue {
     pub schema: String,
@@ -82,7 +82,7 @@ pub struct ModelRouteCatalogue {
     pub routes: Vec<ModelRoute>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelRouteWorkContext {
     /// The store supplies the approved Matrix disposition from persisted state.
     pub approved_matrix_selection: MatrixPlanningSelection,
@@ -96,7 +96,7 @@ pub struct ModelRouteWorkContext {
     pub available_latency_ms: ModelRouteFact<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelRouteSelectionLink {
     pub candidate_set_id: Uuid,
     pub caller_request_id: Uuid,
@@ -105,7 +105,7 @@ pub struct ModelRouteSelectionLink {
     pub mapped_work_node_revision: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ModelRouteFact<T> {
     Known {
         value: T,
@@ -114,7 +114,7 @@ pub enum ModelRouteFact<T> {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ModelRouteFactProvenance {
     /// Explicit caller-authored fact attached to the exact saved Work node.
     Caller {
@@ -126,7 +126,7 @@ pub enum ModelRouteFactProvenance {
     Host { evidence_ref: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EligibleModelRoutes {
     pub catalogue_version: u64,
     pub catalogue_digest: String,
@@ -137,14 +137,14 @@ pub struct EligibleModelRoutes {
 }
 
 /// Ordered IDs returned by an optional adviser. Empty IDs mean abstention.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelRouteRanking {
     pub catalogue_digest: String,
     pub work_context_digest: String,
     pub ranked_route_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ObservedModelRoute {
     /// Host evidence may identify a route unknown to the current catalogue.
     pub route_id: Option<String>,
@@ -155,7 +155,7 @@ pub struct ObservedModelRoute {
 }
 
 /// These three facts are independent. None is an instruction to dispatch.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelRouteRecord {
     pub requested_route_id: Option<String>,
     pub recommended_route_id: Option<String>,

@@ -57,6 +57,9 @@ mod matrix_verification_migration_tests;
 mod matrix_verification_pg_tests;
 mod matrix_verification_store;
 mod model_route_selection_read;
+mod model_route_store;
+#[cfg(test)]
+mod model_route_migration_tests;
 mod native_planning;
 mod native_planning_store;
 mod pipeline_execution;

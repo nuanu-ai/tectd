@@ -202,6 +202,7 @@ fn prepared(preparation: ModelRoutePreparation) -> PreparedModelRouteRecommendat
         request_key: "prepare-1".into(),
         session_preference: AdvisoryRequestPreference::UseWorkspace,
         request_preference: AdvisoryRequestPreference::UseWorkspace,
+        advisory_config_revision: 2,
         work,
         catalogue: Some(catalogue),
         eligible: Some(eligible),

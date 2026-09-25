@@ -126,6 +126,7 @@ fn fixture() -> (
     };
     let basis = ModelRouteRecommendationBasis {
         advisory_mode: WorkspaceAdvisoryMode::Optional,
+        advisory_config_revision: 2,
     };
     let host = Host(ModelRouteFact::Known {
         value: vec!["model-api".into()],

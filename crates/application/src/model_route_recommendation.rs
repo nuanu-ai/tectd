@@ -72,6 +72,9 @@ impl PrepareModelRouteRecommendation {
             .load_basis(self.workspace_id, self.disposition_id)
             .await?
             .ok_or(Error::NotFound)?;
+        if basis.advisory_config_revision < 0 {
+            return Err(Error::StaleContext);
+        }
         let mut work = selection_reader
             .approved_work_context(
                 self.workspace_id,
@@ -133,6 +136,7 @@ impl PrepareModelRouteRecommendation {
             request_key: self.request_key.clone(),
             session_preference: self.session_preference,
             request_preference: self.request_preference,
+            advisory_config_revision: basis.advisory_config_revision,
             work,
             catalogue,
             eligible,

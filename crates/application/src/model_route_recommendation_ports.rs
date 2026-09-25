@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use tect_domain::{
     AdvisoryRequestPreference, EligibleModelRoutes, ModelRouteCatalogue, ModelRouteFact,
     ModelRouteRanking, ModelRouteRecord, ModelRouteWorkContext, Result, WorkspaceAdvisoryMode,
@@ -36,9 +37,10 @@ impl ModelRouteHostCapabilitiesProvider for UnavailableModelRouteHostCapabilitie
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRouteRecommendationBasis {
     pub advisory_mode: WorkspaceAdvisoryMode,
+    pub advisory_config_revision: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ModelRoutePreparation {
     Prepared,
     WorkspaceDisabled,
@@ -49,12 +51,13 @@ pub enum ModelRoutePreparation {
     NoEligibleRoutes,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PreparedModelRouteRecommendation {
     pub workspace_id: Uuid,
     pub request_key: String,
     pub session_preference: AdvisoryRequestPreference,
     pub request_preference: AdvisoryRequestPreference,
+    pub advisory_config_revision: i64,
     pub work: ModelRouteWorkContext,
     pub catalogue: Option<ModelRouteCatalogue>,
     pub eligible: Option<EligibleModelRoutes>,
@@ -101,28 +104,28 @@ pub trait ModelRouteSelectionRead: Send {
     ) -> Result<Option<ModelRouteWorkContext>>;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ModelRouteDecisionInput {
     Ranking(ModelRouteRanking),
     Abstain,
     NoCall,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ModelRouteAbstainReason {
     Explicit,
     EmptyRanking,
     NoCall,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ModelRouteDecisionOutcome {
     Recommended { route_id: String },
     Abstained { reason: ModelRouteAbstainReason },
     NoRoute { reason: ModelRoutePreparation },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CapturedModelRouteDecision {
     pub id: Uuid,
     pub prepared: PreparedModelRouteRecommendation,
@@ -131,13 +134,13 @@ pub struct CapturedModelRouteDecision {
     pub routes: ModelRouteRecord,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ModelRouteDispositionAction {
     Accept,
     Reject,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CapturedModelRouteDisposition {
     pub id: Uuid,
     pub decision_id: Uuid,

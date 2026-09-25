@@ -57,6 +57,14 @@ pub trait UnitOfWork:
     fn model_route_selection_read(&mut self) -> Option<&mut dyn crate::ModelRouteSelectionRead> {
         None
     }
+    fn model_route_recommendation_store(
+        &mut self,
+    ) -> Option<&mut dyn crate::ModelRouteRecommendationStore> {
+        None
+    }
+    fn model_route_decision_store(&mut self) -> Option<&mut dyn crate::ModelRouteDecisionStore> {
+        None
+    }
     fn pipeline_open_effect_store(&mut self) -> Option<&mut dyn crate::PipelineOpenEffectStore> {
         None
     }
