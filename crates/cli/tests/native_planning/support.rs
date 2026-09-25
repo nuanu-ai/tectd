@@ -3,6 +3,8 @@ use serde_json::{Value, json};
 use std::{path::Path, process::Command};
 use uuid::Uuid;
 
+// This file is path-included by several independent test crates; not each uses every helper.
+#[allow(dead_code)]
 pub(super) fn id(value: &Value) -> Uuid {
     Uuid::parse_str(value.as_str().unwrap()).unwrap()
 }
@@ -15,6 +17,7 @@ fn planning_guard(value: &Value) -> Option<Value> {
     })
 }
 
+#[allow(dead_code)]
 pub(super) fn repository(path: &Path) {
     std::fs::create_dir(path).unwrap();
     for args in [
@@ -57,6 +60,7 @@ pub(super) async fn route_error(client: &mut Mcp, tool: &str, name: &str, params
         .await
 }
 
+#[allow(dead_code)]
 pub(super) async fn ready_source_candidate(client: &mut Mcp, source: &Path) -> (Value, Value) {
     client.call("open_workspace", json!({})).await;
     let registered = client.call("register_source", json!({"path":source})).await;

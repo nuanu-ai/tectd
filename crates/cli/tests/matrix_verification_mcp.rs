@@ -35,6 +35,19 @@ struct DeterministicEvidence {
     accepted: Mutex<Vec<MatrixEvidenceBinding>>,
 }
 
+#[derive(sqlx::FromRow)]
+struct StoredFact {
+    fact_path: String,
+    value_digest: String,
+    content_digest: String,
+    evidence_ref: String,
+    source: String,
+    subject: String,
+    observed_at: i64,
+    expires_at: i64,
+    validation_outcome: String,
+}
+
 #[async_trait]
 impl MatrixEvidenceValidator for DeterministicEvidence {
     fn policy_version(&self) -> &str {
@@ -313,17 +326,7 @@ async fn public_mcp_matrix_verify_seals_independent_receipt() {
     );
     assert_eq!(row.4, verifier_session_id);
     assert_eq!(verification_count(&pool, task_id).await, 1);
-    let stored_facts: Vec<(
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        i64,
-        i64,
-        String,
-    )> = sqlx::query_as(
+    let stored_facts: Vec<StoredFact> = sqlx::query_as(
         "SELECT fact_path,value_digest,content_digest,evidence_ref,source,subject,\
          observed_at,expires_at,validation_outcome FROM matrix_verification_bindings \
          WHERE verification_id=(SELECT id FROM matrix_verifications WHERE task_id=$1) \
@@ -341,18 +344,18 @@ async fn public_mcp_matrix_verify_seals_independent_receipt() {
         .zip(receipt["facts"].as_array().unwrap())
         .zip(accepted.iter())
     {
-        assert_eq!(returned["fact_path"], saved.0);
-        assert_eq!(returned["value_digest"], saved.1);
-        assert_eq!(returned["content_digest"], saved.2);
-        assert_eq!(saved.0, expected.fact_path);
-        assert_eq!(saved.1, expected.value_digest);
-        assert_eq!(saved.2, expected.content_digest);
-        assert_eq!(saved.3, expected.evidence_ref);
-        assert_eq!(saved.4, expected.source);
-        assert_eq!(saved.5, expected.subject);
-        assert_eq!(saved.6, expected.observed_at);
-        assert_eq!(saved.7, expected.expires_at);
-        assert_eq!(saved.8, "accepted");
+        assert_eq!(returned["fact_path"], saved.fact_path);
+        assert_eq!(returned["value_digest"], saved.value_digest);
+        assert_eq!(returned["content_digest"], saved.content_digest);
+        assert_eq!(saved.fact_path, expected.fact_path);
+        assert_eq!(saved.value_digest, expected.value_digest);
+        assert_eq!(saved.content_digest, expected.content_digest);
+        assert_eq!(saved.evidence_ref, expected.evidence_ref);
+        assert_eq!(saved.source, expected.source);
+        assert_eq!(saved.subject, expected.subject);
+        assert_eq!(saved.observed_at, expected.observed_at);
+        assert_eq!(saved.expires_at, expected.expires_at);
+        assert_eq!(saved.validation_outcome, "accepted");
         assert_eq!(
             expected.validation_outcome,
             EvidenceValidationOutcome::Accepted
