@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 const TARGET: &str = "AGENTS.md";
 const STAGE_ATTEMPTS: usize = 4;
+const PUBLICATION_REINSPECTIONS: usize = 2;
 const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
     .union(OFlags::DIRECTORY)
     .union(OFlags::NOFOLLOW)
@@ -86,7 +87,7 @@ pub(super) fn publish(directory: &SetupDirectory, content: &str) -> Result<FileP
     let dir = checked_directory(directory)?;
     let expected = digest(content.as_bytes());
     let byte_length = u64::try_from(content.len()).map_err(|_| Error::RequestTooLarge)?;
-    match target_state(&dir, content.len()) {
+    match publication_target_state(&dir, content.len()) {
         TargetState::Existing {
             byte_length: actual,
             sha256: Some(ref hash),
@@ -207,6 +208,19 @@ fn target_state(dir: &OwnedFd, max_bytes: usize) -> TargetState {
     target_state_after_metadata(dir, max_bytes, || {})
 }
 
+fn publication_target_state(dir: &OwnedFd, max_bytes: usize) -> TargetState {
+    for _ in 0..PUBLICATION_REINSPECTIONS {
+        let state = target_state(dir, max_bytes);
+        if !matches!(
+            state,
+            TargetState::Unavailable("file_changed_during_inspection")
+        ) {
+            return state;
+        }
+    }
+    target_state(dir, max_bytes)
+}
+
 fn target_state_after_metadata<F>(dir: &OwnedFd, max_bytes: usize, after_metadata: F) -> TargetState
 where
     F: FnOnce(),
@@ -288,7 +302,7 @@ where
 }
 
 fn exact_target(dir: &OwnedFd, expected: &str, byte_length: u64) -> bool {
-    matches!(target_state(dir, usize::try_from(byte_length).unwrap_or(usize::MAX)),
+    matches!(publication_target_state(dir, usize::try_from(byte_length).unwrap_or(usize::MAX)),
         TargetState::Existing { byte_length: actual, sha256: Some(ref hash), reason: None }
             if actual == byte_length && hash == expected)
 }

@@ -75,6 +75,31 @@ fn equal_length_in_place_change_during_inspection_is_unavailable() {
 }
 
 #[test]
+fn removing_publication_stage_during_inspection_is_transiently_unavailable() {
+    let fixture = Fixture::new();
+    let content = b"same content";
+    fs::write(fixture.target(), content).unwrap();
+    let stage = fixture.task.join(".tectd-agents-publisher.tmp");
+    fs::hard_link(fixture.target(), &stage).unwrap();
+
+    let observed = unix::inspect_after_metadata(&fixture.directory, content.len(), || {
+        fs::remove_file(&stage).unwrap();
+    })
+    .unwrap();
+
+    assert_eq!(observed.status, SetupFileStatus::Unavailable);
+    assert_eq!(
+        observed.reason.as_deref(),
+        Some("file_changed_during_inspection")
+    );
+    let stable = adapter()
+        .inspect(&fixture.directory, content.len())
+        .unwrap();
+    assert_eq!(stable.status, SetupFileStatus::Existing);
+    assert_eq!(stable.sha256, Some(hash(content)));
+}
+
+#[test]
 fn symlink_target_and_symlink_ancestor_are_never_followed() {
     let fixture = Fixture::new();
     let foreign = fixture.root.join("foreign");
