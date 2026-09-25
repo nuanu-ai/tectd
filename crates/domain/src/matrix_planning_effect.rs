@@ -146,11 +146,22 @@ impl CanonicalHash {
         }
     }
 
+    fn optional_u64(&mut self, value: Option<u64>) {
+        match value {
+            Some(value) => {
+                self.0.update([1]);
+                self.0.update(value.to_be_bytes());
+            }
+            None => self.0.update([0]),
+        }
+    }
+
     fn node(&mut self, node: &SliceCandidateNode) {
         match node {
             SliceCandidateNode::Work {
                 id,
                 revision,
+                model_route_facts,
                 title,
                 outcome,
                 includes,
@@ -185,6 +196,14 @@ impl CanonicalHash {
                         self.string(&checkpoint.digest);
                     }
                     None => self.0.update([0]),
+                }
+                if let Some(facts) = model_route_facts {
+                    self.string("tect.model-route-caller-facts/1");
+                    self.optional_string(facts.role.as_deref());
+                    self.optional_string(facts.tool.as_deref());
+                    self.optional_string(facts.data_class.as_deref());
+                    self.optional_u64(facts.remaining_budget_units);
+                    self.optional_u64(facts.available_latency_ms);
                 }
             }
             SliceCandidateNode::Decision {

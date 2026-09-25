@@ -177,6 +177,7 @@ fn source() -> PipelineRecommendationSource {
     };
     PipelineRecommendationSource {
         work: SliceCandidateNode::Work {
+            model_route_facts: None,
             id: Uuid::new_v4(),
             revision: 2,
             title: "work".into(),

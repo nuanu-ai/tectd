@@ -257,6 +257,7 @@ mod tests {
             Sha256::digest(serde_json::to_vec(&manifest).unwrap())
         );
         let work = SliceCandidateNode::Work {
+            model_route_facts: None,
             id: work_id,
             revision: 2,
             title: "work".into(),

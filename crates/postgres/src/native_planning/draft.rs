@@ -191,6 +191,7 @@ async fn resolve_draft(
         let base_revision = identity.revision.unwrap_or(1);
         let candidate = match node {
             SliceCandidateDraftNode::Work {
+                model_route_facts,
                 title,
                 outcome,
                 includes,
@@ -214,6 +215,7 @@ async fn resolve_draft(
                 SliceCandidateNode::Work {
                     id,
                     revision: base_revision,
+                    model_route_facts: model_route_facts.clone(),
                     title: title.clone(),
                     outcome: outcome.clone(),
                     includes: includes.clone(),
