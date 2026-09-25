@@ -1,18 +1,22 @@
 use super::*;
 use crate::support::{ready_source_candidate, repository, review};
+use ring::signature::{Ed25519KeyPair, KeyPair};
 use tect_application::{
     FixedPipelineCompatibilityPolicy, PipelineProviderIdentity, PipelineProviderObservation,
     PipelineRecommendationDefinitionProvider, PipelineRecommendationProvider,
     PipelineStartedDispatchPermit, PreparedPipelineRecommendation,
-    PreparedPipelineRecommendationAttempt, SealedPipelineRecommendationResponse,
+    PreparedPipelineRecommendationAttempt, SealedPipelineRecommendationResponse, Store,
+    TransactionMode,
 };
 use tect_domain::{
-    EngineeringMatrixInput, EngineeringMode, Error, PIPELINE_COMPATIBILITY_POLICY_VERSION,
-    PipelineCardCoverage, PipelineCompatibilityPolicy, PipelineCompatibilityRule, PipelineKind,
+    AdvisoryBudgetCeilings, AdvisoryBudgetPolicy, EngineeringMatrixInput, EngineeringMode, Error,
+    EventKind, PIPELINE_COMPATIBILITY_POLICY_VERSION, PipelineCardCoverage,
+    PipelineCompatibilityPolicy, PipelineCompatibilityRule, PipelineKind,
     PipelineRecommendationManifest, PipelineRecommendationRanking, PipelineVerificationObligation,
     VerifiedEngineeringMatrixFacts, compose_engineering_matrix, matrix_input_digest,
     pipeline_obligation_digest,
 };
+use tect_postgres::BudgetOwnerKeys;
 
 struct MutablePinnedDefinitions(Arc<AtomicBool>);
 
@@ -191,6 +195,97 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
     (pool, runtime_url)
 }
 
+async fn signed_fixture_policy(
+    runtime_url: &str,
+    enrolled: &admin::Enrollment,
+    workspace_key: &str,
+) -> (Uuid, BudgetOwnerKeys) {
+    let keypair = Ed25519KeyPair::from_seed_unchecked(&[7_u8; 32]).unwrap();
+    let store = PgStore::connect(runtime_url, 4).await.unwrap();
+    let mut tx = store.begin(TransactionMode::ReadWrite).await.unwrap();
+    tx.authenticate(&enrolled.auth).await.unwrap();
+    tx.set_tenant(enrolled.tenant_id).await.unwrap();
+    let created = tx.ensure_workspace(workspace_key).await.unwrap();
+    let workspace = created.value.id;
+    tx.ensure_membership(workspace, enrolled.principal_id)
+        .await
+        .unwrap();
+    if created.created {
+        tx.append_creation_event(workspace, EventKind::WorkspaceOpened, workspace)
+            .await
+            .unwrap();
+    }
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap();
+    let from = now - 60_000;
+    let until = now + 600_000;
+    let id = Uuid::new_v4();
+    let ceilings = AdvisoryBudgetCeilings {
+        provider_calls: 4,
+        input_tokens: 1_000,
+        output_tokens: 1_000,
+        request_utf8_bytes: 1_000_000,
+        elapsed_monotonic_ms: 120_000,
+        retry_dispatches: 1,
+    };
+    let digest = AdvisoryBudgetPolicy::digest_for(id, 1, from, until, ceilings);
+    let unsigned = AdvisoryBudgetPolicy::new(
+        id,
+        1,
+        digest.clone(),
+        from,
+        until,
+        ceilings,
+        enrolled.principal_id,
+        "0".repeat(128),
+    )
+    .unwrap();
+    let signature = keypair.sign(&unsigned.approval_signing_message(workspace).unwrap());
+    let signature_hex: String = signature
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let policy = AdvisoryBudgetPolicy::new(
+        id,
+        1,
+        digest,
+        from,
+        until,
+        ceilings,
+        enrolled.principal_id,
+        signature_hex,
+    )
+    .unwrap();
+    tx.advisory_budget_policy_store()
+        .unwrap()
+        .install_budget_policy(workspace, &policy)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let public_key_hex: String = keypair
+        .public_key()
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let keys = BudgetOwnerKeys::from_json(
+        &json!([{
+            "workspace_id": workspace,
+            "owner_id": enrolled.principal_id,
+            "public_key_hex": public_key_hex,
+        }])
+        .to_string(),
+    )
+    .unwrap();
+    (workspace, keys)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "writes only explicitly pinned clean disposable PostgreSQL 18.6 fixture at migration 92 or later"]
 async fn public_prepare_and_run_guarded_pipeline_recommendation() {
@@ -200,12 +295,23 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
     let repo = root.join("source");
     repository(&repo);
     let socket = root.join("pipeline-prepare.sock");
+    let enrolled = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+    let workspace_key = format!("mcp-pipeline-prepare-{}", Uuid::new_v4());
+    let (workspace, budget_owner_keys) =
+        signed_fixture_policy(&runtime_url, &enrolled, &workspace_key).await;
     let matrix_calls = Arc::new(AtomicUsize::new(0));
     let pipeline_calls = Arc::new(AtomicUsize::new(0));
     let definition_drift = Arc::new(AtomicBool::new(false));
     let service = Arc::new(
         WorkspaceService::new(
-            Arc::new(PgStore::connect(&runtime_url, 4).await.unwrap()),
+            Arc::new(
+                PgStore::connect(&runtime_url, 4)
+                    .await
+                    .unwrap()
+                    .with_budget_owner_keys(budget_owner_keys.clone()),
+            ),
             Arc::new(tect_host::GitSourceInspector),
             Arc::new(tect_host::LocalSetupFiles),
         )
@@ -225,12 +331,8 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
     let server = tokio::spawn(tect_host::serve(listener, service));
 
-    let enrolled = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
-        .await
-        .unwrap();
     let owner_config = root.join("owner.json");
     host_file(&owner_config, &enrolled.auth);
-    let workspace_key = format!("mcp-pipeline-prepare-{}", Uuid::new_v4());
     let mut owner = Mcp::start(
         &socket,
         &owner_config,
@@ -240,7 +342,7 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
     .await;
     let (source, candidate) = ready_source_candidate(&mut owner, &repo).await;
     let reopened = owner.call("open_workspace", json!({})).await;
-    let workspace = Uuid::parse_str(reopened["workspace"]["id"].as_str().unwrap()).unwrap();
+    assert_eq!(reopened["workspace"]["id"], workspace.to_string());
     let verifier = admin::prepare_verifier_enrollment(&pool, enrolled.tenant_id, workspace)
         .await
         .unwrap()
@@ -367,6 +469,7 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
         owner_config: &owner_config,
         workspace_key: &workspace_key,
         workspace,
+        budget_owner_keys: &budget_owner_keys,
         set,
         work: &work,
     };
@@ -406,6 +509,7 @@ struct NoCallFixture<'a> {
     owner_config: &'a std::path::Path,
     workspace_key: &'a str,
     workspace: Uuid,
+    budget_owner_keys: &'a BudgetOwnerKeys,
     set: Uuid,
     work: &'a Value,
 }

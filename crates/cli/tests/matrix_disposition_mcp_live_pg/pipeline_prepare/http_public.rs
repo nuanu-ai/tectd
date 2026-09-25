@@ -36,7 +36,12 @@ pub(super) async fn exercise(fixture: &NoCallFixture<'_>, independent: &mut Mcp)
     .unwrap();
     let service = Arc::new(
         WorkspaceService::new(
-            Arc::new(PgStore::connect(fixture.runtime_url, 4).await.unwrap()),
+            Arc::new(
+                PgStore::connect(fixture.runtime_url, 4)
+                    .await
+                    .unwrap()
+                    .with_budget_owner_keys(fixture.budget_owner_keys.clone()),
+            ),
             Arc::new(tect_host::GitSourceInspector),
             Arc::new(tect_host::LocalSetupFiles),
         )

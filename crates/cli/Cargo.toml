@@ -37,6 +37,7 @@ percent-encoding.workspace = true
 sqlx.workspace = true
 tempfile.workspace = true
 async-trait.workspace = true
+ring.workspace = true
 
 [lints]
 workspace = true

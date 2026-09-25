@@ -1854,6 +1854,7 @@ dependencies = [
  "async-trait",
  "clap",
  "percent-encoding",
+ "ring",
  "rustix",
  "serde",
  "serde_json",
