@@ -707,7 +707,7 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
         refused
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
-    let sealed: (
+    type SealedReviewRow = (
         String,
         Option<Vec<u8>>,
         Option<String>,
@@ -715,7 +715,8 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
         Option<String>,
         bool,
         bool,
-    ) = sqlx::query_as(
+    );
+    let sealed: SealedReviewRow = sqlx::query_as(
         "SELECT state,request_bytes,request_sha256,raw_response,response_sha256, \
          send_started_at IS NOT NULL,response_sealed_at IS NOT NULL \
          FROM scope_anti_bloat_reviews WHERE tenant_id=$1 AND workspace_id=$2 AND review_id=$3",
