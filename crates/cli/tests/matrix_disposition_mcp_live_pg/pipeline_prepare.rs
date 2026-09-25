@@ -9,6 +9,8 @@ use tect_domain::{Error, PipelineRecommendationManifest, PipelineRecommendationR
 
 #[path = "pipeline_prepare/assertions.rs"]
 mod assertions;
+#[path = "pipeline_prepare/open_effect.rs"]
+mod open_effect;
 
 async fn disposable_pair_for_prepare() -> (PgPool, String) {
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
@@ -49,13 +51,13 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
     assert_eq!(identity.2, "postgres");
     assert_eq!(identity.3, DATABASE_OID);
     assert_eq!(identity.4, SYSTEM_ID);
-    assert_eq!(identity.5, 68);
+    assert_eq!(identity.5, 69);
     admin::migrate(&pool, "tect_ci").await.unwrap();
     let version: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 68);
+    assert_eq!(version, 69);
     let runtime = PgPool::connect_with(runtime_options).await.unwrap();
     let role: (String, String, i64) = sqlx::query_as(
         "SELECT current_database(),current_user,(SELECT oid::bigint FROM pg_database WHERE datname=current_database())",
@@ -65,7 +67,7 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "writes only pinned disposable PostgreSQL 18.6 fixture at migration 68"]
+#[ignore = "writes only pinned disposable PostgreSQL 18.6 fixture at migration 69"]
 async fn public_prepare_and_run_guarded_pipeline_recommendation() {
     let (pool, runtime_url) = disposable_pair_for_prepare().await;
     let temp = private_temp();
@@ -242,6 +244,8 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
         &matched,
         task,
         &pipeline_calls,
+        &root,
+        &socket,
     )
     .await;
     assert_eq!(matrix_calls.load(Ordering::SeqCst), 1);

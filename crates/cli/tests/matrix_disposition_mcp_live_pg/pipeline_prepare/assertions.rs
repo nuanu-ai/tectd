@@ -19,6 +19,8 @@ pub(super) async fn exercise_prepare(
     matched: &Value,
     task: Uuid,
     pipeline_calls: &Arc<AtomicUsize>,
+    root: &std::path::Path,
+    socket: &std::path::Path,
 ) {
     let scope = Uuid::parse_str(ready["scope"]["id"].as_str().unwrap()).unwrap();
     let before: (i64, String) = sqlx::query_as(
@@ -468,6 +470,23 @@ pub(super) async fn exercise_prepare(
     assert_eq!(opened["created"]["pipeline"], ranked["ranked_ids"][0]);
     let reopened = route(owner, "command", "slice.open", open.clone()).await;
     assert_eq!(reopened["replay"]["id"], opened["created"]["id"]);
+
+    super::open_effect::exercise(
+        pool,
+        workspace,
+        owner,
+        independent,
+        &open,
+        &opened,
+        &disposition,
+        chosen,
+        matched,
+        work,
+        &ranked["ranked_ids"][0],
+        root,
+        socket,
+    )
+    .await;
 
     // A newer authoritative Matrix task revision invalidates this saved path.
     let mut revised_input = input();
