@@ -54,6 +54,80 @@ fn request(
 
 #[tokio::test]
 #[ignore = "requires identity-pinned disposable PG18 and TECT_TEST_* URLs"]
+async fn service_fake_provider_has_zero_calls_without_trusted_policy() {
+    assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
+    let admin_pool = PgPool::connect(&std::env::var("TECT_TEST_ADMIN_URL").unwrap())
+        .await
+        .unwrap();
+    let runtime_pool = PgPool::connect(&std::env::var("TECT_TEST_RUNTIME_URL").unwrap())
+        .await
+        .unwrap();
+    let identity: (String, i64, String) = sqlx::query_as(
+        "SELECT current_database(),(SELECT oid::bigint FROM pg_catalog.pg_database WHERE datname=current_database()),(SELECT system_identifier::text FROM pg_catalog.pg_control_system())"
+    ).fetch_one(&admin_pool).await.unwrap();
+    assert_eq!(
+        identity.0,
+        std::env::var("TECT_TEST_EXPECTED_DB_NAME").unwrap()
+    );
+    assert_eq!(
+        identity.1.to_string(),
+        std::env::var("TECT_TEST_EXPECTED_DB_OID").unwrap()
+    );
+    assert_eq!(
+        identity.2,
+        std::env::var("TECT_TEST_EXPECTED_PG_SYSTEM_ID").unwrap()
+    );
+    crate::admin::migrate(
+        &admin_pool,
+        &std::env::var("TECT_TEST_RUNTIME_ROLE").unwrap(),
+    )
+    .await
+    .unwrap();
+    let created = fixture(&admin_pool, &runtime_pool).await;
+    let context = tect_domain::RequestContext {
+        auth: created.owner.auth.clone(),
+        native_session_id: created.invocation_session.to_string(),
+        workspace_key: format!("route-positive-{}", created.workspace),
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let fake = Arc::new(FakeJevRanker {
+        pool: runtime_pool.clone(),
+        tenant: created.tenant,
+        calls: calls.clone(),
+        malformed: false,
+    });
+    let adapters = Arc::new(UnusedAdapters);
+    let service = WorkspaceService::new(
+        Arc::new(PgStore::from_pool(runtime_pool.clone())),
+        adapters.clone(),
+        adapters,
+    )
+    .with_model_route_catalogue_provider(Arc::new(TestCatalogue))
+    .with_model_route_host_capabilities_provider(Arc::new(TestHost))
+    .with_model_route_ranking_provider(fake);
+    let prepare = request(&created, "no-trusted-policy");
+    service
+        .prepare_model_route(&context, &prepare)
+        .await
+        .unwrap();
+    assert!(matches!(
+        service
+            .run_model_route(&context, &prepare.request_key)
+            .await,
+        Err(Error::BudgetPolicyInvalid)
+    ));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let view = service
+        .get_model_route(&context, &prepare.request_key)
+        .await
+        .unwrap();
+    assert!(view.attempt.is_none());
+    assert!(view.decision.is_none());
+    assert!(view.disposition.is_none());
+}
+
+#[tokio::test]
+#[ignore = "requires identity-pinned disposable PG18 and TECT_TEST_* URLs"]
 async fn service_public_route_uses_one_fake_call_and_disabled_no_call() {
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
     let admin_pool = PgPool::connect(&std::env::var("TECT_TEST_ADMIN_URL").unwrap())
