@@ -90,7 +90,7 @@ pub(super) async fn exercise_prepare(
     ) = sqlx::query_as(
         "SELECT candidate_set_id,candidate_set_revision,work_node_id,work_node_revision,\
              matrix_disposition_id,match_effect_attestation_id,catalogue_revision,\
-             catalogue_digest,eligible_kind_ids,verification_contract_digest\
+             catalogue_digest,eligible_kind_ids,verification_contract_digest \
              FROM pipeline_advice_contexts WHERE workspace_id=$1 AND opportunity_id=$2",
     )
     .bind(workspace)
@@ -114,7 +114,7 @@ pub(super) async fn exercise_prepare(
     assert_eq!(binding.9, prepared["manifest_digest"]);
     let source_binding: (Uuid, Uuid, String, String) = sqlx::query_as(
         "SELECT planning_snapshot_id,source_snapshot_id,source_snapshot_digest,\
-         (SELECT source_revision FROM advisory_opportunity WHERE workspace_id=$1 AND id=$2)\
+         (SELECT source_revision FROM advisory_opportunity WHERE workspace_id=$1 AND id=$2) \
          FROM pipeline_advice_contexts WHERE workspace_id=$1 AND opportunity_id=$2",
     )
     .bind(workspace)
@@ -154,7 +154,7 @@ pub(super) async fn exercise_prepare(
         String,
         String,
     ) = sqlx::query_as(
-        "SELECT work_item_kind,work_item_id,run_id,phase,step,state,primary_reason\
+        "SELECT work_item_kind,work_item_id,run_id,phase,step,state,primary_reason \
              FROM advisory_opportunity WHERE workspace_id=$1 AND id=$2",
     )
     .bind(workspace)

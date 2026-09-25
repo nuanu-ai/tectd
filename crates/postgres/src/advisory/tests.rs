@@ -204,6 +204,18 @@ mod audit_projection_tests {
     }
 
     #[test]
+    fn pipeline_prepare_opportunity_decodes_after_insert() {
+        assert_eq!(
+            decision_point(PIPELINE_RECOMMENDATION_DECISION_POINT),
+            Ok(AdvisoryDecisionPoint::PipelineRecommendationBeforeSliceOpen)
+        );
+        assert_eq!(
+            reason("recommendation_prepared"),
+            Ok(AdvisoryReason::RecommendationPrepared)
+        );
+    }
+
+    #[test]
     fn choice_set_not_applicable_reason_parses_and_survives_audit_projection() {
         assert_eq!(
             reason("matrix_evidence_unresolved").unwrap(),

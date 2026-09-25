@@ -175,6 +175,9 @@ fn decision_point(value: &str) -> Result<AdvisoryDecisionPoint> {
         ENGINEERING_PROFILE_DECISION_POINT => {
             Ok(AdvisoryDecisionPoint::EngineeringProfileBeforeSelection)
         }
+        PIPELINE_RECOMMENDATION_DECISION_POINT => {
+            Ok(AdvisoryDecisionPoint::PipelineRecommendationBeforeSliceOpen)
+        }
         _ => Err(Error::StorageUnavailable),
     }
 }
@@ -216,6 +219,7 @@ fn reason(value: &str) -> Result<AdvisoryReason> {
         "matrix_task_revision_changed" => Ok(AdvisoryReason::MatrixTaskRevisionChanged),
         "matrix_verification_stale" => Ok(AdvisoryReason::MatrixVerificationStale),
         "dispatch_authorized" => Ok(AdvisoryReason::DispatchAuthorized),
+        "recommendation_prepared" => Ok(AdvisoryReason::RecommendationPrepared),
         "provider_response" => Ok(AdvisoryReason::ProviderResponse),
         "provider_failure" => Ok(AdvisoryReason::ProviderFailure),
         "send_unknown" => Ok(AdvisoryReason::SendUnknown),

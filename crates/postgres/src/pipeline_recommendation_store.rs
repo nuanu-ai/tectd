@@ -372,7 +372,7 @@ impl PipelineRecommendationStore for PgUnitOfWork {
         }
         let tenant = self.tenant_id()?;
         let row = sqlx::query(
-            "SELECT context.scope_id,context.candidate_set_id,context.candidate_set_revision, \
+            "SELECT o.scope_id AS scope_id,context.candidate_set_id,context.candidate_set_revision, \
                     context.planning_snapshot_id,context.source_snapshot_id, \
                     context.source_snapshot_digest,context.work_node_id,context.work_node_revision, \
                     context.matrix_disposition_id,context.match_effect_attestation_id, \
