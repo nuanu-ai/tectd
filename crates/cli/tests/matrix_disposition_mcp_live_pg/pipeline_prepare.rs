@@ -1,6 +1,7 @@
 use super::*;
 use crate::support::{ready_source_candidate, repository, review};
 
+#[path = "pipeline_prepare/assertions.rs"]
 mod assertions;
 
 async fn disposable_pair_for_prepare() -> (PgPool, String) {
