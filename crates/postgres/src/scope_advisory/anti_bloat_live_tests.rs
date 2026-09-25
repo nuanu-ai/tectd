@@ -6,6 +6,55 @@ use tect_application::{
     DisabledAntiBloatRankingProvider, UnitOfWork,
 };
 
+#[test]
+fn trusted_graph_links_every_goal_so_even_duplicate_candidates_are_not_rankable() {
+    let candidate_set = Uuid::new_v4();
+    let source_ref = Uuid::new_v4();
+    let mut authored = manifest(
+        candidate_set,
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        &[(source_ref, D)],
+    );
+    authored.constructor = source_authored_identity();
+    let baseline = &mut authored.emitted[0];
+    let duplicate_id = Uuid::new_v4();
+    let duplicate_goal_id = Uuid::new_v4();
+    let mut duplicate = baseline.material.candidates[0].clone();
+    duplicate.id = duplicate_id;
+    duplicate.coverage_goal_ids = vec![duplicate_goal_id];
+    let mut duplicate_goal = baseline.material.goals[0].clone();
+    duplicate_goal.id = duplicate_goal_id;
+    duplicate_goal.resolution.id = duplicate_id;
+    baseline.material.candidates.push(duplicate);
+    baseline.material.goals.push(duplicate_goal);
+    baseline.material.delta.added.push(CandidateAdded {
+        candidate_id: duplicate_id,
+        revision: 1,
+    });
+    baseline.material_digest =
+        scope_candidate_material_digest(&Sha256ScopeDigest, &baseline.material).unwrap();
+    reseal_manifest(&mut authored);
+    authored.validate(&Sha256ScopeDigest).unwrap();
+    let (links, dependency_digest, graph_provenance) = authored_graph_binding(&authored).unwrap();
+    assert_eq!(links.len(), 2);
+    let input = AntiBloatInput {
+        selected_id: authored.baseline_id.clone(),
+        manifest: authored,
+        graph_provenance,
+        dependency_digest,
+        obligation_links: links,
+        mandatory_policy_obligation_ids: vec![],
+    };
+    let review = review_anti_bloat(&Sha256ScopeDigest, &input).unwrap();
+    assert_eq!(review.findings.len(), 2);
+    assert!(
+        review.findings.iter().all(|finding| {
+            finding.class == AntiBloatClass::NecessaryResult && !finding.rankable
+        })
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires disposable migrated PG18 and TECT_TEST_ADMIN_URL/TECT_TEST_RUNTIME_URL"]
 async fn authored_manifest_writes_binding_and_pg_reader_prepares_no_call() {
