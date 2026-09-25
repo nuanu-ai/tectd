@@ -12,8 +12,9 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use tect_domain::{
-    AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryDispatchOutcome, AdvisoryModelConfiguration,
-    AdvisoryOpportunity, AdvisoryOpportunityState, AdvisoryProviderProfileRef, AdvisoryReason,
+    AdvisoryBudgetCeilings, AdvisoryBudgetPolicy, AdvisoryCapability, AdvisoryDecisionPoint,
+    AdvisoryDispatchOutcome, AdvisoryModelConfiguration, AdvisoryOpportunity,
+    AdvisoryOpportunityState, AdvisoryProviderProfileRef, AdvisoryReason,
     AdvisoryRequestPreference, AdvisorySendCertainty, BuildSourceAuthoredScopeManifest,
     ConfidenceBasisPoints, EmptyCandidateDisposition, EmptyCandidateDispositionKind,
     FrozenScopeSource, FrozenSourceInput, NormalizedScopeAdviceAnswers, ObligationCoverage,
@@ -21,6 +22,178 @@ use tect_domain::{
     ScopeDecompositionKind, SourceApplicability, SourceAuthoredScopeAlternative, SourceObligation,
     WorkspaceAdvisoryConfig, WorkspaceAdvisoryMode,
 };
+
+fn fixture_budget_policy() -> AdvisoryBudgetPolicy {
+    let id = Uuid::from_u128(100);
+    let ceilings = AdvisoryBudgetCeilings {
+        provider_calls: 1,
+        input_tokens: 100,
+        output_tokens: 100,
+        request_utf8_bytes: 1000,
+        elapsed_monotonic_ms: 1000,
+        retry_dispatches: 1,
+    };
+    AdvisoryBudgetPolicy::new(
+        id,
+        2,
+        AdvisoryBudgetPolicy::digest_for(id, 2, 100, 200, ceilings),
+        100,
+        200,
+        ceilings,
+        Uuid::from_u128(101),
+        "a".repeat(128),
+    )
+    .unwrap()
+}
+
+struct FixtureBudgetStore(Option<AdvisoryBudgetPolicy>);
+
+#[async_trait]
+impl crate::AdvisoryBudgetPolicyStore for FixtureBudgetStore {
+    async fn candidate_budget_policy(
+        &mut self,
+        _: Uuid,
+        _: i64,
+    ) -> Result<Option<AdvisoryBudgetPolicy>> {
+        panic!("unverified candidate must not be read")
+    }
+    async fn authorized_budget_policy(
+        &mut self,
+        _: Uuid,
+        _: i64,
+    ) -> Result<Option<AdvisoryBudgetPolicy>> {
+        Ok(self.0.clone())
+    }
+    async fn install_budget_policy(&mut self, _: Uuid, _: &AdvisoryBudgetPolicy) -> Result<()> {
+        panic!("policy installation must not occur")
+    }
+}
+
+struct InvalidBudgetStore;
+
+#[async_trait]
+impl crate::AdvisoryBudgetPolicyStore for InvalidBudgetStore {
+    async fn candidate_budget_policy(
+        &mut self,
+        _: Uuid,
+        _: i64,
+    ) -> Result<Option<AdvisoryBudgetPolicy>> {
+        panic!("unverified candidate must not be read")
+    }
+    async fn authorized_budget_policy(
+        &mut self,
+        _: Uuid,
+        _: i64,
+    ) -> Result<Option<AdvisoryBudgetPolicy>> {
+        Err(Error::InvalidConfiguration)
+    }
+    async fn install_budget_policy(&mut self, _: Uuid, _: &AdvisoryBudgetPolicy) -> Result<()> {
+        panic!("policy installation must not occur")
+    }
+}
+
+struct FixtureBudgetEvaluator {
+    calls: Arc<AtomicUsize>,
+    mismatch: Option<&'static str>,
+}
+
+#[async_trait]
+impl ScopeBudgetPolicy for FixtureBudgetEvaluator {
+    async fn evaluate(
+        &self,
+        _: &ScopeBudgetRequest,
+        verified: &AdvisoryBudgetPolicy,
+    ) -> Result<Option<crate::ScopeBudgetPolicyEvaluation>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Some(crate::ScopeBudgetPolicyEvaluation {
+            policy_id: if self.mismatch == Some("id") {
+                Uuid::from_u128(999).to_string()
+            } else {
+                verified.id().to_string()
+            },
+            policy_version: if self.mismatch == Some("version") {
+                verified.version() + 1
+            } else {
+                verified.version()
+            },
+            policy_digest: if self.mismatch == Some("digest") {
+                "b".repeat(64)
+            } else {
+                verified.digest().to_owned()
+            },
+        }))
+    }
+}
+
+#[tokio::test]
+async fn scope_budget_requires_exact_authorized_policy_before_evaluation() {
+    let workspace = Uuid::from_u128(1);
+    let request = ScopeBudgetRequest {
+        workspace_id: workspace,
+        actor_id: Uuid::from_u128(2),
+        candidate_set_id: Uuid::from_u128(3),
+        config_revision: 1,
+        manifest_digest: "a".repeat(64),
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let evaluator = FixtureBudgetEvaluator {
+        calls: calls.clone(),
+        mismatch: None,
+    };
+    assert!(
+        lookup_verified_scope_budget(None, workspace, 150)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let mut absent = FixtureBudgetStore(None);
+    let no_policy = lookup_verified_scope_budget(Some(&mut absent), workspace, 150)
+        .await
+        .unwrap();
+    assert!(
+        evaluate_verified_scope_budget(&evaluator, &request, no_policy.as_ref())
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let mut invalid = InvalidBudgetStore;
+    assert!(
+        lookup_verified_scope_budget(Some(&mut invalid), workspace, 150)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let verified = fixture_budget_policy();
+    let mut present = FixtureBudgetStore(Some(verified.clone()));
+    let selected = lookup_verified_scope_budget(Some(&mut present), workspace, 150)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(selected, verified);
+    let exact = evaluate_verified_scope_budget(&evaluator, &request, Some(&selected))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(exact.policy_id, verified.id().to_string());
+    assert_eq!(exact.policy_version, verified.version());
+    assert_eq!(exact.policy_digest, verified.digest());
+    for field in ["id", "version", "digest"] {
+        let mismatch = FixtureBudgetEvaluator {
+            calls: calls.clone(),
+            mismatch: Some(field),
+        };
+        assert!(
+            evaluate_verified_scope_budget(&mismatch, &request, Some(&selected))
+                .await
+                .unwrap()
+                .is_none(),
+            "{field} mismatch"
+        );
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 4);
+}
 
 fn orchestration_source() -> String {
     [include_str!("run.rs"), include_str!("dispatch.rs")].concat()
@@ -758,13 +931,16 @@ async fn production_defaults_fail_closed_without_supplier_budget_or_provider() {
     let budget = DenyScopeBudget;
     assert_eq!(
         budget
-            .evaluate(&ScopeBudgetRequest {
-                workspace_id: Uuid::from_u128(1),
-                actor_id: Uuid::from_u128(2),
-                candidate_set_id: Uuid::from_u128(3),
-                config_revision: 0,
-                manifest_digest: "a".repeat(64),
-            })
+            .evaluate(
+                &ScopeBudgetRequest {
+                    workspace_id: Uuid::from_u128(1),
+                    actor_id: Uuid::from_u128(2),
+                    candidate_set_id: Uuid::from_u128(3),
+                    config_revision: 0,
+                    manifest_digest: "a".repeat(64),
+                },
+                &fixture_budget_policy()
+            )
             .await
             .unwrap(),
         None
@@ -899,6 +1075,8 @@ async fn fixture_provider_returns_normalized_answers_once() {
         },
         budget_policy: crate::ScopeBudgetPolicyEvaluation {
             policy_id: "owner:fixture".into(),
+            policy_version: 1,
+            policy_digest: "a".repeat(64),
         },
     };
     let prepared = provider

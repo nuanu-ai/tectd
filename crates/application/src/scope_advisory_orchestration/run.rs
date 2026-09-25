@@ -265,16 +265,38 @@ impl WorkspaceService {
                 advice: None,
             });
         }
-        let policy = self
-            .scope_budget
-            .evaluate(&ScopeBudgetRequest {
+        let now_unix_ms = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| Error::BudgetPolicyInvalid)?
+                .as_millis(),
+        )
+        .map_err(|_| Error::BudgetPolicyInvalid)?;
+        let (mut budget_read, budget_workspace, budget_session) = self
+            .scope_transaction(context, TransactionMode::ReadOnly)
+            .await?;
+        if budget_workspace.id != workspace.id || budget_session.id != session.id {
+            return Err(Error::InputConflict);
+        }
+        let verified_policy = lookup_verified_scope_budget(
+            budget_read.advisory_budget_policy_store(),
+            workspace.id,
+            now_unix_ms,
+        )
+        .await?;
+        budget_read.commit().await?;
+        let policy = evaluate_verified_scope_budget(
+            self.scope_budget.as_ref(),
+            &ScopeBudgetRequest {
                 workspace_id: workspace.id,
                 actor_id: identity.principal_id,
                 candidate_set_id: request.candidate_set_id,
                 config_revision: config.revision,
                 manifest_digest: manifest.whole_set_digest.clone(),
-            })
-            .await?;
+            },
+            verified_policy.as_ref(),
+        )
+        .await?;
         let Some(policy) = policy else {
             let material_digest = if authored_request_digest.is_some() {
                 no_call_digest(

@@ -3,11 +3,13 @@ use crate::{
     PreparedScopeAdviceAttempt, ScopeAdviceProviderRequest, ScopeAuthorityRequest,
     ScopeBudgetRequest, ScopeManifestRecord, Sha256ScopeDigest, TransactionMode, WorkspaceService,
 };
+mod budget;
 mod capture;
 mod decisions;
 mod dispatch;
 mod helpers;
 mod run;
+use budget::{evaluate_verified_scope_budget, lookup_verified_scope_budget};
 use dispatch::PreparedScopeDispatch;
 use helpers::*;
 use tect_domain::{

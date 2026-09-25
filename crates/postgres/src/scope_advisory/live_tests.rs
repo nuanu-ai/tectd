@@ -32,9 +32,12 @@ impl ScopeBudgetPolicy for SyntheticPositiveBudget {
     async fn evaluate(
         &self,
         _: &ScopeBudgetRequest,
+        policy: &tect_domain::AdvisoryBudgetPolicy,
     ) -> Result<Option<ScopeBudgetPolicyEvaluation>> {
         Ok(Some(ScopeBudgetPolicyEvaluation {
-            policy_id: "test-only-synthetic-positive".into(),
+            policy_id: policy.id().to_string(),
+            policy_version: policy.version(),
+            policy_digest: policy.digest().to_owned(),
         }))
     }
 }

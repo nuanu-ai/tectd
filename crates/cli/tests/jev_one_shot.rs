@@ -49,11 +49,14 @@ impl ScopeBudgetPolicy for OneUseApproval {
     async fn evaluate(
         &self,
         _: &ScopeBudgetRequest,
+        policy: &tect_domain::AdvisoryBudgetPolicy,
     ) -> tect_domain::Result<Option<ScopeBudgetPolicyEvaluation>> {
         Ok(
             (!self.0.swap(true, std::sync::atomic::Ordering::SeqCst)).then(|| {
                 ScopeBudgetPolicyEvaluation {
-                    policy_id: CALL_ID.into(),
+                    policy_id: policy.id().to_string(),
+                    policy_version: policy.version(),
+                    policy_digest: policy.digest().to_owned(),
                 }
             }),
         )

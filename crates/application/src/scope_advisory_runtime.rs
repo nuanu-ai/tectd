@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tect_domain::{
-    AdvisoryDispatchOutcome, AdvisorySendCertainty, FrozenScopeSource,
+    AdvisoryBudgetPolicy, AdvisoryDispatchOutcome, AdvisorySendCertainty, FrozenScopeSource,
     NormalizedScopeAdviceAnswers, Result, ScopeAdviceRequest, ScopeConstructorManifest,
     ScopeDecompositionAlternative, SourceObligation,
 };
@@ -84,6 +84,8 @@ pub struct ScopeBudgetRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeBudgetPolicyEvaluation {
     pub policy_id: String,
+    pub policy_version: i64,
+    pub policy_digest: String,
 }
 
 #[async_trait]
@@ -94,6 +96,7 @@ pub trait ScopeBudgetPolicy: Send + Sync {
     async fn evaluate(
         &self,
         request: &ScopeBudgetRequest,
+        verified_policy: &AdvisoryBudgetPolicy,
     ) -> Result<Option<ScopeBudgetPolicyEvaluation>>;
 }
 
@@ -369,6 +372,7 @@ impl ScopeBudgetPolicy for DenyScopeBudget {
     async fn evaluate(
         &self,
         _: &ScopeBudgetRequest,
+        _: &AdvisoryBudgetPolicy,
     ) -> Result<Option<ScopeBudgetPolicyEvaluation>> {
         Ok(None)
     }
