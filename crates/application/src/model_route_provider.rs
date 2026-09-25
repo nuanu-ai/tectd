@@ -15,7 +15,7 @@ use tect_domain::{
 pub enum ModelRouteSendStart {
     NoCall(ModelRouteRunNoCall),
     Started {
-        attempted: ModelRoutePreparedAttempt,
+        attempted: Box<ModelRoutePreparedAttempt>,
         permit: ModelRouteSendPermit,
     },
     Replay,
@@ -47,7 +47,10 @@ pub async fn prepare_model_route_send(
                 && permit.request_sha256 == attempted.request_sha256
                 && !permit.attempt_id.is_nil() =>
         {
-            Ok(ModelRouteSendStart::Started { attempted, permit })
+            Ok(ModelRouteSendStart::Started {
+                attempted: Box::new(attempted),
+                permit,
+            })
         }
         None => Ok(ModelRouteSendStart::Replay),
         _ => Err(Error::InputConflict),

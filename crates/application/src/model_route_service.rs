@@ -193,8 +193,8 @@ impl WorkspaceService {
                                     },
                                 )
                                 .await?;
-                            if let Some((attempted, permit)) = recovered {
-                                if finalize_model_route_sealed_response(
+                            if let Some((attempted, permit)) = recovered
+                                && finalize_model_route_sealed_response(
                                     recovery
                                         .model_route_attempt_store()
                                         .ok_or(Error::Forbidden)?,
@@ -204,11 +204,10 @@ impl WorkspaceService {
                                 )
                                 .await
                                 .is_ok()
-                                {
-                                    recovery.commit().await?;
-                                    self.finish_from_sealed(context, preparation_request_key)
-                                        .await?;
-                                }
+                            {
+                                recovery.commit().await?;
+                                self.finish_from_sealed(context, preparation_request_key)
+                                    .await?;
                             }
                         }
                         _ => {}
@@ -219,7 +218,7 @@ impl WorkspaceService {
                 let raw = match attempt_model_route_after_commit(
                     start.commit(),
                     &*self.model_route_ranking_provider,
-                    attempted.clone(),
+                    *attempted.clone(),
                     permit.clone(),
                 )
                 .await?

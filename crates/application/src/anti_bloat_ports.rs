@@ -92,12 +92,9 @@ pub trait AntiBloatStore: Send {
     /// or provider response. Exact replay returns the original native receipt.
     async fn apply_preserved_delta(
         &mut self,
-        review_id: Uuid,
+        authored: &AntiBloatAuthoredDelta,
         input: &AntiBloatInput,
-        finding_id: &str,
-        disposition: AntiBloatDisposition,
         preservation: &AntiBloatPreservation,
-        delta: &CandidateDeltaBatch,
         after: &ResolvedCandidateDraft,
     ) -> Result<AntiBloatApplyReceipt>;
 }

@@ -159,7 +159,7 @@ async fn optional_ranker_no_call_unknown_send_and_malformed_raw_are_audited_live
     let bad_raw = attempt_model_route_after_commit(
         tx.commit(),
         &malformed_ranker,
-        bad_attempted.clone(),
+        *bad_attempted.clone(),
         bad_permit.clone(),
     )
     .await

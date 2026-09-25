@@ -139,15 +139,7 @@ pub async fn apply_anti_bloat_delta(
         return Err(Error::InputConflict);
     }
     store
-        .apply_preserved_delta(
-            authored.review_id,
-            &saved.input,
-            &authored.finding_id,
-            authored.disposition,
-            &preservation,
-            &authored.delta,
-            &after,
-        )
+        .apply_preserved_delta(authored, &saved.input, &preservation, &after)
         .await
 }
 

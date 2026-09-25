@@ -2,13 +2,13 @@ use crate::{storage_error, store::PgUnitOfWork};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tect_application::{
-    AntiBloatAttemptState, AntiBloatNoCall, AntiBloatPreparedRequest, AntiBloatSendPermit,
-    AntiBloatStore, Sha256ScopeDigest, StoredAntiBloatReview,
+    AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall, AntiBloatPreparedRequest,
+    AntiBloatSendPermit, AntiBloatStore, Sha256ScopeDigest, StoredAntiBloatReview,
 };
 use tect_domain::{
     AntiBloatApplyReceipt, AntiBloatDisposition, AntiBloatInput, AntiBloatObligationLink,
-    AntiBloatPreservation, CandidateDeltaBatch, Error, ResolvedCandidateDraft, Result,
-    ScopeConstructorManifest, WorkspaceAdvisoryMode, check_anti_bloat_delta, review_anti_bloat,
+    AntiBloatPreservation, Error, ResolvedCandidateDraft, Result, ScopeConstructorManifest,
+    WorkspaceAdvisoryMode, check_anti_bloat_delta, review_anti_bloat,
     scope_candidate_material_digest,
 };
 use uuid::Uuid;
@@ -142,24 +142,11 @@ impl AntiBloatStore for PgUnitOfWork {
 
     async fn apply_preserved_delta(
         &mut self,
-        review_id: Uuid,
+        authored: &AntiBloatAuthoredDelta,
         input: &AntiBloatInput,
-        finding_id: &str,
-        disposition: AntiBloatDisposition,
         preservation: &AntiBloatPreservation,
-        delta: &CandidateDeltaBatch,
         after: &ResolvedCandidateDraft,
     ) -> Result<AntiBloatApplyReceipt> {
-        apply::apply_preserved_delta(
-            self,
-            review_id,
-            input,
-            finding_id,
-            disposition,
-            preservation,
-            delta,
-            after,
-        )
-        .await
+        apply::apply_preserved_delta(self, authored, input, preservation, after).await
     }
 }

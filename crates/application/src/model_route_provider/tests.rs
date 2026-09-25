@@ -266,7 +266,7 @@ async fn one_call_after_commit_raw_sealed_before_rank_and_replay_no_send() {
             Ok(())
         },
         &provider,
-        attempted.clone(),
+        *attempted.clone(),
         permit.clone(),
     )
     .await
@@ -359,7 +359,7 @@ async fn malformed_sealed_raw_and_uncertain_send_never_retry() {
         attempt_model_route_after_commit(
             async { Ok(()) },
             &provider,
-            attempted.clone(),
+            *attempted.clone(),
             permit.clone()
         )
         .await

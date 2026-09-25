@@ -2,14 +2,15 @@ use super::*;
 
 pub(super) async fn apply_preserved_delta(
     uow: &mut PgUnitOfWork,
-    review_id: Uuid,
+    authored: &AntiBloatAuthoredDelta,
     input: &AntiBloatInput,
-    finding_id: &str,
-    disposition: AntiBloatDisposition,
     preservation: &AntiBloatPreservation,
-    delta: &CandidateDeltaBatch,
     after: &ResolvedCandidateDraft,
 ) -> Result<AntiBloatApplyReceipt> {
+    let review_id = authored.review_id;
+    let finding_id = authored.finding_id.as_str();
+    let disposition = authored.disposition;
+    let delta = &authored.delta;
     if !uow.is_read_write() || disposition != AntiBloatDisposition::Narrow {
         return Err(Error::Forbidden);
     }

@@ -249,7 +249,7 @@ async fn current_selected_work_fake_jev_rank_has_sealed_pg_audit_and_disposition
     let raw = attempt_model_route_after_commit(
         send_start.commit(),
         &ranker,
-        attempted.clone(),
+        *attempted.clone(),
         permit.clone(),
     )
     .await

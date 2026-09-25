@@ -279,14 +279,15 @@ impl AntiBloatStore for FakeStore {
     }
     async fn apply_preserved_delta(
         &mut self,
-        review_id: Uuid,
+        authored: &AntiBloatAuthoredDelta,
         input: &AntiBloatInput,
-        finding_id: &str,
-        disposition: AntiBloatDisposition,
         preservation: &AntiBloatPreservation,
-        delta: &CandidateDeltaBatch,
         after: &ResolvedCandidateDraft,
     ) -> Result<AntiBloatApplyReceipt> {
+        let review_id = authored.review_id;
+        let finding_id = authored.finding_id.as_str();
+        let disposition = authored.disposition;
+        let delta = &authored.delta;
         if let Some(applied) = &self.applied {
             if applied.review_id == review_id
                 && &applied.input == input
