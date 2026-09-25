@@ -2,6 +2,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tect_application::{
     AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall, StoredAntiBloatReview,
+    VerifyAntiBloatApply,
 };
 use tect_domain::{
     AdvisoryRequestPreference, AntiBloatDisposition, CandidateDeltaBatch, Error, Result,
@@ -21,6 +22,10 @@ pub(crate) enum AntiBloatInvocation {
         review_id: Uuid,
     },
     Apply(AntiBloatAuthoredDelta),
+    PreservationGet {
+        review_id: Uuid,
+    },
+    PreservationVerify(VerifyAntiBloatApply),
 }
 
 #[derive(Deserialize)]
@@ -45,6 +50,14 @@ struct ApplyArguments {
     finding_id: String,
     disposition: AntiBloatDisposition,
     delta: CandidateDeltaBatch,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VerifyPreservationArguments {
+    request_id: Uuid,
+    review_id: Uuid,
+    expected_evidence_digest: String,
 }
 
 pub(crate) fn parse(name: &str, arguments: Value) -> Result<AntiBloatInvocation> {
@@ -98,6 +111,37 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<AntiBloatInvocation>
                 delta: args.delta,
             }))
         }
+        "anti_bloat_preservation_get" => {
+            let args: ReviewArguments =
+                serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
+            if args.review_id.is_nil() {
+                return Err(Error::InvalidArguments);
+            }
+            Ok(AntiBloatInvocation::PreservationGet {
+                review_id: args.review_id,
+            })
+        }
+        "anti_bloat_preservation_verify" => {
+            let args: VerifyPreservationArguments =
+                serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
+            if args.request_id.is_nil()
+                || args.review_id.is_nil()
+                || args.expected_evidence_digest.len() != 64
+                || !args
+                    .expected_evidence_digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(Error::InvalidArguments);
+            }
+            Ok(AntiBloatInvocation::PreservationVerify(
+                VerifyAntiBloatApply {
+                    request_id: args.request_id,
+                    review_id: args.review_id,
+                    expected_evidence_digest: args.expected_evidence_digest,
+                },
+            ))
+        }
         _ => Err(Error::InvalidArguments),
     }
 }
@@ -148,6 +192,27 @@ mod tests {
         assert!(parse("anti_bloat_get", json!({"review_id":id,"extra":true})).is_err());
         assert!(
             parse(
+                "anti_bloat_preservation_get",
+                json!({"review_id":Uuid::nil()})
+            )
+            .is_err()
+        );
+        assert!(
+            parse(
+                "anti_bloat_preservation_get",
+                json!({"review_id":id,"extra":true})
+            )
+            .is_err()
+        );
+        for params in [
+            json!({"request_id":id,"review_id":id,"expected_evidence_digest":"bad"}),
+            json!({"request_id":Uuid::nil(),"review_id":id,"expected_evidence_digest":"a".repeat(64)}),
+            json!({"request_id":id,"review_id":id,"expected_evidence_digest":"a".repeat(64),"verdict":"pass"}),
+        ] {
+            assert!(parse("anti_bloat_preservation_verify", params).is_err());
+        }
+        assert!(
+            parse(
                 "anti_bloat_apply",
                 json!({"review_id":id,"finding_id":"bad","disposition":"narrow","delta":{}})
             )
@@ -176,6 +241,18 @@ mod tests {
                 "scope.anti_bloat.get",
                 "anti_bloat_get",
                 json!({"review_id":id}),
+            ),
+            (
+                "query",
+                "scope.anti_bloat.preservation.get",
+                "anti_bloat_preservation_get",
+                json!({"review_id":id}),
+            ),
+            (
+                "command",
+                "scope.anti_bloat.preservation.verify",
+                "anti_bloat_preservation_verify",
+                json!({"request_id":id,"review_id":id,"expected_evidence_digest":"a".repeat(64)}),
             ),
         ] {
             let call = crate::api::decode_public_call(tool, json!({"route":route,"params":params}))

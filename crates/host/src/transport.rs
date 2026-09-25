@@ -288,6 +288,21 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                     AntiBloatInvocation::Apply(authored) => serde_json::to_value(
                         service.apply_anti_bloat(context, &authored).await?,
                     ).map_err(Error::invalid_arguments_from)?,
+                    AntiBloatInvocation::PreservationGet { review_id } => {
+                        let (material, evidence_digest) = service
+                            .get_anti_bloat_verification_material(context, review_id).await?;
+                        let (verdict, reason) = material.verdict();
+                        serde_json::json!({
+                            "review_id": review_id,
+                            "evidence_digest": evidence_digest,
+                            "verdict": verdict,
+                            "reason": reason,
+                            "material": material,
+                        })
+                    },
+                    AntiBloatInvocation::PreservationVerify(request) => serde_json::to_value(
+                        service.verify_anti_bloat_apply(context, &request).await?,
+                    ).map_err(Error::invalid_arguments_from)?,
                 };
                 let response = responses::with_actions(value, Vec::new(), None);
                 if responses::encoded_len(&response)? > capacity { return Err(Error::RequestTooLarge); }

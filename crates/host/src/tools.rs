@@ -83,7 +83,12 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
             })
         }
         "help" => crate::api::parse_help(arguments).map(Invocation::Help),
-        "anti_bloat_prepare" | "anti_bloat_run" | "anti_bloat_get" | "anti_bloat_apply" => {
+        "anti_bloat_prepare"
+        | "anti_bloat_run"
+        | "anti_bloat_get"
+        | "anti_bloat_apply"
+        | "anti_bloat_preservation_get"
+        | "anti_bloat_preservation_verify" => {
             crate::anti_bloat_tools::parse(name, arguments).map(Invocation::AntiBloat)
         }
         "pipeline_recommendation_prepare" => crate::pipeline_recommendation_tools::parse(arguments)

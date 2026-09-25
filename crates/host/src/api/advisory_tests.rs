@@ -49,6 +49,8 @@ fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
         ("query", "scope.anti_bloat.get"),
         ("command", "scope.anti_bloat.run"),
         ("command", "scope.anti_bloat.apply"),
+        ("query", "scope.anti_bloat.preservation.get"),
+        ("command", "scope.anti_bloat.preservation.verify"),
         ("command", "scope.advisory.disposition"),
         ("command", "engineering.advisory.request"),
         ("command", "pipeline.recommendation.prepare"),
@@ -68,7 +70,7 @@ fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
             .iter()
             .filter(|route| route.route.starts_with("scope.anti_bloat."))
             .count(),
-        4,
+        6,
     );
     assert!(
         definitions["tools"]
@@ -77,6 +79,39 @@ fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
             .iter()
             .all(|tool| tool["inputSchema"]["additionalProperties"] == false)
     );
+}
+
+#[test]
+fn anti_bloat_preservation_routes_are_verifier_only_and_server_derived() {
+    let get = routes()
+        .iter()
+        .find(|spec| spec.route == "scope.anti_bloat.preservation.get")
+        .unwrap();
+    let verify = routes()
+        .iter()
+        .find(|spec| spec.route == "scope.anti_bloat.preservation.verify")
+        .unwrap();
+    assert_eq!((get.tool, verify.tool), ("query", "command"));
+    assert!(get.conditions.contains("Verifier principal"));
+    assert!(verify.conditions.contains("Verifier task/workspace"));
+    assert!(verify.effects.contains("request cannot supply a verdict"));
+    assert_eq!(verify.schema["additionalProperties"], false);
+    assert!(verify.schema["properties"].get("verdict").is_none());
+    let id = uuid::Uuid::new_v4();
+    let params = json!({"request_id":id,"review_id":id,"expected_evidence_digest":"a".repeat(64)});
+    assert_eq!(
+        decode_public_call(
+            "command",
+            json!({"route":verify.route,"params":params.clone()})
+        )
+        .unwrap()
+        .name,
+        "anti_bloat_preservation_verify"
+    );
+    assert!(decode_public_call("query", json!({"route":verify.route,"params":params})).is_err());
+    assert!(decode_public_call("command", json!({"route":verify.route,"params":{
+        "request_id":id,"review_id":id,"expected_evidence_digest":"a".repeat(64),"verdict":"pass"
+    }})).is_err());
 }
 
 #[test]
