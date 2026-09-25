@@ -74,6 +74,12 @@ impl Store for PgStore {
 
 #[async_trait]
 impl UnitOfWork for PgUnitOfWork {
+    fn pipeline_recommendation_store(
+        &mut self,
+    ) -> Option<&mut dyn tect_application::PipelineRecommendationStore> {
+        Some(self)
+    }
+
     fn matrix_planning_effect_store(
         &mut self,
     ) -> Option<&mut dyn tect_application::MatrixPlanningEffectStore> {

@@ -50,6 +50,7 @@ mod native_planning;
 mod native_planning_store;
 mod pipeline_execution;
 mod pipeline_execution_store;
+mod pipeline_recommendation_store;
 mod planning_knowledge;
 mod planning_knowledge_store;
 mod programs;
