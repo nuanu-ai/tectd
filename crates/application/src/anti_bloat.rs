@@ -137,8 +137,9 @@ impl<S: AntiBloatStore, P: AntiBloatRankingProvider> AntiBloatApplication<S, P> 
         Ok(AntiBloatAttemptState::Ranked(ranked))
     }
 
-    /// Applies only an explicit agent-authored delta that the pure checker has
-    /// proven against the full frozen plan and a fresh authoritative snapshot.
+    /// Derives the complete post-delta graph from the frozen review. The store
+    /// returns an exact prior receipt or rechecks current source and CAS in its
+    /// transaction before applying a new decision.
     pub async fn disposition_and_apply(
         &mut self,
         authored: &AntiBloatAuthoredDelta,
@@ -151,7 +152,6 @@ impl<S: AntiBloatStore, P: AntiBloatRankingProvider> AntiBloatApplication<S, P> 
         if saved.review_id != authored.review_id {
             return Err(Error::InputConflict);
         }
-        self.require_current(&saved).await?;
         let (preservation, after) = derive_anti_bloat_delta(
             &Sha256ScopeDigest,
             &saved.input,

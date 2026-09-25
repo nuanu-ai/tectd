@@ -186,60 +186,6 @@ fn refresh(mut value: AntiBloatInput) -> AntiBloatInput {
     value
 }
 
-#[tokio::test]
-async fn required_enabler_duplicate_and_unknown_stay_source_relative() {
-    let mut cases = Vec::new();
-    let baseline = input(true);
-    cases.push((baseline.clone(), AntiBloatClass::UnsupportedMechanism, true));
-    let mut enabler = baseline.clone();
-    enabler.manifest.emitted[0].material.candidates[0]
-        .dependencies
-        .push(Uuid::from_u128(70));
-    cases.push((refresh(enabler), AntiBloatClass::NecessaryEnabler, false));
-    let mut duplicate = baseline.clone();
-    let required = duplicate.manifest.emitted[0].material.candidates[0].clone();
-    let extra = &mut duplicate.manifest.emitted[0].material.candidates[1];
-    extra.outcome = required.outcome;
-    extra.trigger = required.trigger;
-    extra.delivered_behavior = required.delivered_behavior;
-    extra.proof = required.proof;
-    cases.push((refresh(duplicate), AntiBloatClass::Duplicate, true));
-    let mut unknown = baseline;
-    let evidence_id = Uuid::from_u128(72);
-    unknown.manifest.emitted[0]
-        .material
-        .evidence
-        .push(EvidenceEntity {
-            id: evidence_id,
-            revision: 1,
-            kind: EvidenceKind::VerifiedEvidence,
-            summary: "Relevant prior evidence".into(),
-            source_ref_id: Uuid::from_u128(50),
-            authority_input_sequence: None,
-        });
-    unknown.manifest.emitted[0].material.candidates[1]
-        .evidence_ids
-        .push(evidence_id);
-    cases.push((refresh(unknown), AntiBloatClass::Unknown, false));
-    for (source, class, rankable) in cases {
-        let mut app = app(true, false);
-        app.store.input = Some(source);
-        let saved = prepare(
-            &mut app,
-            WorkspaceAdvisoryMode::Optional,
-            AdvisoryRequestPreference::UseWorkspace,
-        )
-        .await;
-        let finding = saved
-            .review
-            .findings
-            .iter()
-            .find(|finding| finding.candidate_id == Uuid::from_u128(70))
-            .unwrap();
-        assert_eq!((finding.class, finding.rankable), (class, rankable));
-    }
-}
-
 #[derive(Default)]
 struct FakeStore {
     mode: WorkspaceAdvisoryMode,
@@ -252,6 +198,18 @@ struct FakeStore {
     raw_response: Option<Vec<u8>>,
     response_sha256: Option<String>,
     after: Option<ResolvedCandidateDraft>,
+    applied: Option<AppliedDecision>,
+}
+
+struct AppliedDecision {
+    review_id: Uuid,
+    input: AntiBloatInput,
+    finding_id: String,
+    disposition: AntiBloatDisposition,
+    preservation: AntiBloatPreservation,
+    delta: CandidateDeltaBatch,
+    after: ResolvedCandidateDraft,
+    receipt: CandidateDeltaReceipt,
 }
 
 #[async_trait]
@@ -316,23 +274,52 @@ impl AntiBloatStore for FakeStore {
     }
     async fn apply_preserved_delta(
         &mut self,
-        _: Uuid,
-        _: &AntiBloatInput,
-        _: &str,
-        _: AntiBloatDisposition,
-        _: &AntiBloatPreservation,
+        review_id: Uuid,
+        input: &AntiBloatInput,
+        finding_id: &str,
+        disposition: AntiBloatDisposition,
+        preservation: &AntiBloatPreservation,
         delta: &CandidateDeltaBatch,
         after: &ResolvedCandidateDraft,
     ) -> Result<CandidateDeltaReceipt> {
+        if let Some(applied) = &self.applied {
+            if applied.review_id == review_id
+                && &applied.input == input
+                && applied.finding_id == finding_id
+                && applied.disposition == disposition
+                && &applied.preservation == preservation
+                && &applied.delta == delta
+                && &applied.after == after
+            {
+                return Ok(applied.receipt.clone());
+            }
+            return Err(Error::InputConflict);
+        }
+        if self.input.as_ref() != Some(input)
+            || review_anti_bloat(&Sha256ScopeDigest, input)? != self.saved.as_ref().unwrap().review
+        {
+            return Err(Error::InputConflict);
+        }
         self.applies += 1;
         self.after = Some(after.clone());
-        Ok(CandidateDeltaReceipt {
+        let receipt = CandidateDeltaReceipt {
             candidate_set_id: delta.candidate_set_id,
             idempotency_key: delta.idempotency_key.clone(),
             from_revision: delta.expected_revision,
             to_revision: delta.expected_revision + 1,
             stale_reasons: vec![],
-        })
+        };
+        self.applied = Some(AppliedDecision {
+            review_id,
+            input: input.clone(),
+            finding_id: finding_id.into(),
+            disposition,
+            preservation: preservation.clone(),
+            delta: delta.clone(),
+            after: after.clone(),
+            receipt: receipt.clone(),
+        });
+        Ok(receipt)
     }
 }
 
@@ -474,4 +461,5 @@ async fn one_use_rank_and_provider_invention_is_denied() {
     assert_eq!(invented.provider.calls.load(Ordering::SeqCst), 1);
 }
 
+mod classification;
 mod contract;

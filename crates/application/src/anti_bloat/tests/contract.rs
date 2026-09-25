@@ -63,9 +63,52 @@ async fn exact_agent_delta_preserves_plan_before_caller() {
     assert_eq!(after.candidates[0], before.candidates[0]);
     app.store.input.as_mut().unwrap().dependency_digest =
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into();
+    assert_eq!(app.disposition_and_apply(&authored).await.unwrap(), receipt);
+    assert_eq!(app.store.applies, 1);
+
+    let mut fresh = authored.clone();
+    fresh.delta.idempotency_key = "new-decision-after-drift".into();
+    assert!(matches!(
+        app.disposition_and_apply(&fresh).await,
+        Err(Error::InputConflict)
+    ));
+    assert_eq!(app.store.applies, 1);
+}
+
+#[tokio::test]
+async fn stale_first_decision_never_reaches_caller() {
+    let mut app = app(true, false);
+    let saved = prepare(
+        &mut app,
+        WorkspaceAdvisoryMode::Optional,
+        AdvisoryRequestPreference::UseWorkspace,
+    )
+    .await;
+    let finding = saved
+        .review
+        .findings
+        .iter()
+        .find(|item| item.rankable)
+        .unwrap();
+    let authored = AntiBloatAuthoredDelta {
+        review_id: saved.review_id,
+        finding_id: finding.id.clone(),
+        disposition: AntiBloatDisposition::Narrow,
+        delta: CandidateDeltaBatch {
+            candidate_set_id: saved.review.candidate_set_id,
+            expected_revision: saved.review.plan_revision,
+            idempotency_key: "stale-first-attempt".into(),
+            operations: vec![CandidateDeltaOperation::CandidateRemove {
+                candidate_id: finding.candidate_id,
+                expected_revision: 1,
+            }],
+        },
+    };
+    app.store.input.as_mut().unwrap().dependency_digest =
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into();
     assert!(matches!(
         app.disposition_and_apply(&authored).await,
         Err(Error::InputConflict)
     ));
-    assert_eq!(app.store.applies, 1);
+    assert_eq!(app.store.applies, 0);
 }
