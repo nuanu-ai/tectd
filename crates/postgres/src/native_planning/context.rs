@@ -291,9 +291,10 @@ async fn load_slices(
 ) -> Result<Vec<NativeSlice>> {
     let rows:Vec<(Uuid,i64,Uuid,i64,Uuid,String,String,String,String,Option<Uuid>,Option<String>,Option<Uuid>,Option<Uuid>,Option<String>,Option<Uuid>,Option<String>)>=sqlx::query_as("SELECT s.id,s.revision,s.candidate_id,s.candidate_revision,s.opening_snapshot_id,s.title,s.outcome,s.pipeline,s.state,r.id,r.status,s.knowledge_change_id,s.knowledge_run_id,kr.status,s.source_checkpoint_id,s.source_checkpoint_digest FROM native_slices s LEFT JOIN slice_pipeline_runs r ON r.tenant_id=s.tenant_id AND r.workspace_id=s.workspace_id AND r.slice_id=s.id LEFT JOIN knowledge_change_runs kr ON kr.tenant_id=s.tenant_id AND kr.workspace_id=s.workspace_id AND kr.id=s.knowledge_run_id AND kr.change_id=s.knowledge_change_id WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.scope_id=$3 ORDER BY s.created_at,s.id")
         .bind(tenant).bind(workspace).bind(scope).fetch_all(&mut **tx).await.map_err(storage_error)?;
-    rows.into_iter()
-        .map(|r| {
-            Ok(NativeSlice {
+    let mut slices = Vec::with_capacity(rows.len());
+    for r in rows {
+        let plan = load_slice_plan_identity(tx, tenant, workspace, r.0).await?;
+        slices.push(NativeSlice {
                 id: r.0,
                 scope_id: scope,
                 revision: r.1,
@@ -303,6 +304,12 @@ async fn load_slices(
                 title: r.5,
                 outcome: r.6,
                 pipeline: pipeline(&r.7)?,
+                selected_option_id: plan.0,
+                verification_plan_id: plan.1,
+                verification_plan_schema: plan.2,
+                verification_plan_digest: plan.3,
+                verification_plan_source_definition_version: plan.4,
+                verification_plan_source_definition_digest: plan.5,
                 state: slice_state(&r.8)?,
                 pipeline_status: r.10.unwrap_or_else(|| "not_started".into()),
                 pipeline_run_id: r.9,
@@ -322,9 +329,33 @@ async fn load_slices(
                     })
                     .transpose()?,
                 execution_claimed: false,
-            })
-        })
-        .collect()
+        });
+    }
+    Ok(slices)
+}
+
+#[allow(clippy::type_complexity)]
+async fn load_slice_plan_identity(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    slice_id: Uuid,
+) -> Result<(
+    Option<String>, Option<String>, Option<String>, Option<String>,
+    Option<String>, Option<String>,
+)> {
+    sqlx::query_as(
+        "SELECT selected_option_id,verification_plan_id,verification_plan_schema, \
+                verification_plan_digest,verification_plan_source_definition_version, \
+                verification_plan_source_definition_digest \
+         FROM native_slices WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(slice_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(storage_error)
 }
 
 #[allow(clippy::type_complexity)]
@@ -338,7 +369,13 @@ pub(crate) async fn load_slice(
         .bind(tenant).bind(workspace).bind(id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     let source:Option<(Uuid,String)>=sqlx::query_as("SELECT source_checkpoint_id,source_checkpoint_digest FROM native_slices WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND source_checkpoint_id IS NOT NULL")
         .bind(tenant).bind(workspace).bind(id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
+    let plan = if row.is_some() {
+        Some(load_slice_plan_identity(tx, tenant, workspace, id).await?)
+    } else {
+        None
+    };
     row.map(|r| {
+        let plan = plan.ok_or(Error::InternalInvariant)?;
         Ok(NativeSlice {
             id: r.0,
             scope_id: r.1,
@@ -349,6 +386,12 @@ pub(crate) async fn load_slice(
             title: r.6,
             outcome: r.7,
             pipeline: pipeline(&r.8)?,
+            selected_option_id: plan.0,
+            verification_plan_id: plan.1,
+            verification_plan_schema: plan.2,
+            verification_plan_digest: plan.3,
+            verification_plan_source_definition_version: plan.4,
+            verification_plan_source_definition_digest: plan.5,
             state: slice_state(&r.9)?,
             pipeline_status: r.11.unwrap_or_else(|| "not_started".into()),
             pipeline_run_id: r.10,

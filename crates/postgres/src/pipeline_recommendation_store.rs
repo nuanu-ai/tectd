@@ -230,7 +230,7 @@ impl PipelineRecommendationStore for PgUnitOfWork {
             || saved.context.catalogue_digest != saved.manifest.catalogue_digest
             || saved.context.compatibility_policy_digest
                 != saved.manifest.compatibility_policy_digest
-            || saved.context.eligible_kind_ids
+            || saved.context.eligible_option_ids
                 != saved
                     .manifest
                     .options
@@ -591,7 +591,7 @@ impl PipelineRecommendationStore for PgUnitOfWork {
                     context.planning_snapshot_id,context.source_snapshot_id, \
                     context.source_snapshot_digest,context.work_node_id,context.work_node_revision, \
                     context.matrix_disposition_id,context.match_effect_attestation_id, \
-                    context.catalogue_revision,context.catalogue_digest,context.eligible_kind_ids, \
+                    context.catalogue_revision,context.catalogue_digest,context.eligible_option_ids, \
                     context.compatibility_policy_digest, \
                     context.verification_contract_digest,context.manifest_payload, \
                     context.manifest_digest,o.source_revision \
@@ -645,7 +645,7 @@ impl PipelineRecommendationStore for PgUnitOfWork {
             compatibility_policy_digest: row
                 .try_get("compatibility_policy_digest")
                 .map_err(storage_error)?,
-            eligible_kind_ids: row.try_get("eligible_kind_ids").map_err(storage_error)?,
+            eligible_option_ids: row.try_get("eligible_option_ids").map_err(storage_error)?,
             verification_contract_digest: row
                 .try_get("verification_contract_digest")
                 .map_err(storage_error)?,
@@ -690,7 +690,7 @@ impl PipelineRecommendationStore for PgUnitOfWork {
             || manifest.catalogue_revision != context.catalogue_revision
             || manifest.catalogue_digest != context.catalogue_digest
             || manifest.compatibility_policy_digest != context.compatibility_policy_digest
-            || context.eligible_kind_ids
+            || context.eligible_option_ids
                 != manifest
                     .options
                     .iter()
@@ -893,7 +893,7 @@ impl PipelineRecommendationStore for PgUnitOfWork {
                   candidate_set_revision,planning_snapshot_id,source_snapshot_id, \
                   work_node_id,work_node_revision,source_snapshot_digest, \
                   matrix_disposition_id,match_effect_attestation_id, \
-                  catalogue_revision,catalogue_digest,eligible_kind_ids, \
+                  catalogue_revision,catalogue_digest,eligible_option_ids, \
                   compatibility_policy_digest, \
                   verification_contract_digest,manifest_payload,manifest_digest) \
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)",
@@ -912,7 +912,7 @@ impl PipelineRecommendationStore for PgUnitOfWork {
         .bind(context.match_effect_attestation_id)
         .bind(&context.catalogue_revision)
         .bind(&context.catalogue_digest)
-        .bind(&context.eligible_kind_ids)
+        .bind(&context.eligible_option_ids)
         .bind(&context.compatibility_policy_digest)
         .bind(&context.verification_contract_digest)
         .bind(serde_json::to_value(manifest).map_err(storage_error)?)
@@ -928,6 +928,20 @@ impl PipelineRecommendationStore for PgUnitOfWork {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn schema_three_plan_migration_is_forward_only_and_binds_open() {
+        let migration = include_str!("../migrations/0072_pipeline_verification_plan_binding.sql");
+        assert!(migration.contains("RENAME COLUMN eligible_kind_ids TO eligible_option_ids"));
+        assert!(migration.contains("tect.pipeline-recommendation/3"));
+        assert!(migration.contains("tect.pipeline-verification-plan/1"));
+        assert!(migration.contains("NEW.verification_plan_bindings := bindings"));
+        assert!(migration.contains("NEW.selected_option_id := NEW.result_payload->>'selected_option_id'"));
+        assert!(migration.contains("NEW.verification_plan_id := disposition.verification_plan_id"));
+        assert!(migration.contains("CREATE TRIGGER z_pipeline_slice_open_plan_binding"));
+        assert!(migration.contains("REVOKE ALL PRIVILEGES ON FUNCTION pipeline_slice_open_plan_binding() FROM PUBLIC"));
+        assert!(!migration.contains("DROP TABLE"));
+    }
+
     #[test]
     fn sql_line_continuations_preserve_token_boundaries() {
         for (line_number, line) in include_str!("pipeline_recommendation_store.rs")

@@ -56,7 +56,7 @@ pub(super) async fn validate_pipeline_advice_schema(
          WHERE n.nspname='public' AND c.relname='pipeline_advice_contexts' \
            AND c.relkind='r' AND c.relrowsecurity AND c.relforcerowsecurity \
            AND NOT pg_catalog.pg_has_role(r.oid,c.relowner,'MEMBER')) \
-         AND (SELECT pg_catalog.count(*)=18 FROM pg_catalog.pg_attribute a \
+         AND (SELECT pg_catalog.count(*)=19 FROM pg_catalog.pg_attribute a \
               WHERE a.attrelid='public.pipeline_advice_contexts'::regclass \
                 AND a.attnum>0 AND NOT a.attisdropped \
                 AND a.attname=ANY(ARRAY['tenant_id','workspace_id','opportunity_id', \
@@ -64,8 +64,8 @@ pub(super) async fn validate_pipeline_advice_schema(
                   'source_snapshot_id','work_node_id', \
                   'work_node_revision','source_snapshot_digest','matrix_disposition_id', \
                   'match_effect_attestation_id','catalogue_revision','catalogue_digest', \
-                  'eligible_kind_ids','verification_contract_digest', \
-                  'manifest_payload','manifest_digest'])) \
+                  'eligible_option_ids','verification_contract_digest', \
+                  'manifest_payload','manifest_digest','verification_plan_bindings'])) \
          AND (SELECT pg_catalog.count(*)=5 FROM pg_catalog.pg_constraint con \
               WHERE con.conrelid='public.pipeline_advice_contexts'::regclass \
                 AND con.contype='f' AND con.convalidated) \
@@ -77,7 +77,17 @@ pub(super) async fn validate_pipeline_advice_schema(
               WHERE p.polrelid='public.pipeline_advice_contexts'::regclass \
                 AND p.polname='pipeline_advice_contexts_tenant_scope' \
                 AND p.polcmd='*' AND p.polqual IS NOT NULL \
-                AND p.polwithcheck IS NOT NULL)",
+                AND p.polwithcheck IS NOT NULL) \
+         AND (SELECT pg_catalog.count(*)=2 FROM pg_catalog.pg_trigger t \
+              JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid \
+              WHERE t.tgenabled='O' AND NOT t.tgisinternal \
+                AND p.prosecdef AND NOT pg_catalog.has_function_privilege($1,p.oid,'EXECUTE') \
+                AND ((t.tgrelid='public.advisory_dispatch'::regclass \
+                       AND t.tgname='z_pipeline_dispatch_plan_binding' \
+                       AND p.proname='pipeline_advice_persist_plan_binding') \
+                     OR (t.tgrelid='public.native_slices'::regclass \
+                       AND t.tgname='z_pipeline_slice_open_plan_binding' \
+                       AND p.proname='pipeline_slice_open_plan_binding')))",
     )
     .bind(runtime_role)
     .fetch_one(&mut **transaction)
@@ -155,7 +165,7 @@ pub(super) async fn validate_pipeline_disposition_schema(
            WHERE c.oid='public.pipeline_advice_dispositions'::regclass \
              AND c.relrowsecurity AND c.relforcerowsecurity \
              AND NOT pg_catalog.pg_has_role(r.oid,c.relowner,'MEMBER')) \
-         AND (SELECT pg_catalog.count(*)=3 FROM pg_catalog.pg_trigger t \
+         AND (SELECT pg_catalog.count(*)=4 FROM pg_catalog.pg_trigger t \
               JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid \
               WHERE t.tgrelid='public.pipeline_advice_dispositions'::regclass \
                 AND t.tgenabled='O' AND NOT t.tgisinternal \
@@ -167,7 +177,10 @@ pub(super) async fn validate_pipeline_disposition_schema(
                     AND p.prosecdef \
                     AND NOT pg_catalog.has_function_privilege($1,p.oid,'EXECUTE')) \
                   OR (t.tgname='pipeline_advice_disposition_immutable' \
-                    AND p.proname='matrix_verification_deny_mutation'))) \
+                    AND p.proname='matrix_verification_deny_mutation') \
+                  OR (t.tgname='z_pipeline_disposition_plan_binding' \
+                    AND p.proname='pipeline_advice_persist_plan_binding' AND p.prosecdef \
+                    AND NOT pg_catalog.has_function_privilege($1,p.oid,'EXECUTE')))) \
          AND pg_catalog.has_table_privilege($1,'public.pipeline_advice_dispositions','SELECT') \
          AND pg_catalog.has_table_privilege($1,'public.pipeline_advice_dispositions','INSERT') \
          AND NOT pg_catalog.has_table_privilege($1,'public.pipeline_advice_dispositions','UPDATE') \

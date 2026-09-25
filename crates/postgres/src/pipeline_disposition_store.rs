@@ -90,7 +90,9 @@ pub(crate) async fn selection_for_open(
     let actor_id = store.principal_id()?;
     let row = sqlx::query(
         "SELECT result_payload,opportunity_id,actor_id,session_id,work_node_id,\
-                work_node_revision,manifest_digest,matrix_disposition_id,source_snapshot_id \
+                work_node_revision,manifest_digest,matrix_disposition_id,source_snapshot_id, \
+                selected_option_id,verification_plan_id,verification_plan_version, \
+                verification_plan_digest,verification_plan_source_definition_digest \
          FROM pipeline_advice_dispositions WHERE tenant_id=$1 AND workspace_id=$2 \
            AND disposition_id=$3",
     )
@@ -126,6 +128,28 @@ pub(crate) async fn selection_for_open(
         return Err(Error::Forbidden);
     }
     let selected = result.selected_kind.ok_or(Error::Forbidden)?;
+    let selected_option_id = result.selected_option_id.as_deref().ok_or(Error::Forbidden)?;
+    let persisted_option_id: Option<String> =
+        row.try_get("selected_option_id").map_err(storage_error)?;
+    let plan_id: Option<String> = row.try_get("verification_plan_id").map_err(storage_error)?;
+    let plan_version: Option<String> = row
+        .try_get("verification_plan_version")
+        .map_err(storage_error)?;
+    let plan_digest: Option<String> = row
+        .try_get("verification_plan_digest")
+        .map_err(storage_error)?;
+    let source_definition_digest: Option<String> = row
+        .try_get("verification_plan_source_definition_digest")
+        .map_err(storage_error)?;
+    if persisted_option_id.as_deref() != Some(selected_option_id)
+        || plan_id.as_deref() != selected_option_id.split_once('+').map(|(_, id)| id)
+        || !selected_option_id.starts_with(&format!("{}+", selected.as_str()))
+        || plan_digest.as_deref() != plan_id.as_deref().and_then(|id| id.strip_prefix("verification-plan:"))
+        || plan_version.as_deref().is_none_or(str::is_empty)
+        || source_definition_digest.as_deref().is_none_or(str::is_empty)
+    {
+        return Err(Error::InputConflict);
+    }
     if replay {
         return Ok(selected);
     }
@@ -163,7 +187,16 @@ pub(crate) async fn selection_for_open(
         || !manifest
             .options
             .iter()
-            .any(|option| option.kind == selected)
+            .any(|option| {
+                option.id == selected_option_id
+                    && option.kind == selected
+                    && Some(option.verification_plan.id.as_str()) == plan_id.as_deref()
+                    && Some(option.verification_plan.digest.as_str()) == plan_digest.as_deref()
+                    && Some(option.verification_plan.source_definition_version.as_str())
+                        == plan_version.as_deref()
+                    && Some(option.verification_plan.source_definition_digest.as_str())
+                        == source_definition_digest.as_deref()
+            })
     {
         return Err(Error::StaleContext);
     }
@@ -261,7 +294,7 @@ pub(crate) async fn is_current(
         || opportunity.material_digest != manifest.digest
         || context.verification_contract_digest != manifest.digest
         || context.compatibility_policy_digest != manifest.compatibility_policy_digest
-        || context.eligible_kind_ids
+        || context.eligible_option_ids
             != manifest
                 .options
                 .iter()
@@ -411,6 +444,7 @@ pub(crate) async fn capture(
                 && saved.work_id == result.work_id
                 && saved.advice == result.advice
                 && saved.selected_kind == result.selected_kind
+                && saved.selected_option_id == result.selected_option_id
             {
                 return Ok(saved);
             }
@@ -444,6 +478,7 @@ mod tests {
             compatibility_policy_digest: String::new(),
             mandatory_card_ids: vec![],
             deterministic_kind: PipelineKind::LightweightTddDevelopment,
+            deterministic_option_id: None,
             catalogue_revision: String::new(),
             catalogue_digest: String::new(),
             options: vec![],

@@ -26,7 +26,12 @@ impl PipelineOpenEffectStore for PgUnitOfWork {
             "SELECT s.scope_id,s.candidate_id,s.candidate_revision,s.opening_snapshot_id,s.pipeline,\
                     s.origin_payload,s.origin_result,d.result_payload,d.work_node_id,\
                     d.work_node_revision,d.source_snapshot_id,d.matrix_disposition_id,d.manifest_digest,\
-                    d.actor_id,d.session_id,c.source_snapshot_id AS context_source_snapshot_id,\
+                    d.actor_id,d.session_id,d.selected_option_id AS disposition_option_id,\
+                    d.verification_plan_id AS disposition_plan_id,\
+                    d.verification_plan_version AS disposition_plan_version,\
+                    d.verification_plan_digest AS disposition_plan_digest,\
+                    d.verification_plan_source_definition_digest AS disposition_definition_digest,\
+                    c.manifest_payload,c.source_snapshot_id AS context_source_snapshot_id,\
                     c.candidate_set_id AS context_candidate_set_id,c.opportunity_id AS context_opportunity_id,\
                     c.source_snapshot_digest,c.match_effect_attestation_id,\
                     r.recorded_by_principal_id,dr.payload AS saved_draft \
@@ -88,6 +93,21 @@ impl PipelineOpenEffectStore for PgUnitOfWork {
         let matrix_disposition_id: Uuid = row
             .try_get("matrix_disposition_id")
             .map_err(storage_error)?;
+        let manifest: tect_domain::PipelineRecommendationManifest = serde_json::from_value(
+            row.try_get::<Value, _>("manifest_payload")
+                .map_err(storage_error)?,
+        )
+        .map_err(|_| Error::StaleContext)?;
+        manifest.validate_digest().map_err(|_| Error::StaleContext)?;
+        let selected_option_id = disposition
+            .selected_option_id
+            .as_deref()
+            .ok_or(Error::StaleContext)?;
+        let option = manifest
+            .options
+            .iter()
+            .find(|option| option.id == selected_option_id)
+            .ok_or(Error::StaleContext)?;
         if slice.id != slice_id
             || request.request_id != open_request_id
             || slice.scope_id != row.try_get::<Uuid, _>("scope_id").map_err(storage_error)?
@@ -126,6 +146,28 @@ impl PipelineOpenEffectStore for PgUnitOfWork {
                 != row
                     .try_get::<String, _>("manifest_digest")
                     .map_err(storage_error)?
+            || disposition.selected_kind != Some(option.kind)
+            || slice.selected_option_id.as_deref() != Some(selected_option_id)
+            || slice.verification_plan_id.as_deref()
+                != Some(option.verification_plan.id.as_str())
+            || slice.verification_plan_schema.as_deref()
+                != Some(option.verification_plan.schema.as_str())
+            || slice.verification_plan_digest.as_deref()
+                != Some(option.verification_plan.digest.as_str())
+            || slice.verification_plan_source_definition_version.as_deref()
+                != Some(option.verification_plan.source_definition_version.as_str())
+            || slice.verification_plan_source_definition_digest.as_deref()
+                != Some(option.verification_plan.source_definition_digest.as_str())
+            || row.try_get::<Option<String>, _>("disposition_option_id").map_err(storage_error)?.as_deref()
+                != Some(selected_option_id)
+            || row.try_get::<Option<String>, _>("disposition_plan_id").map_err(storage_error)?.as_deref()
+                != Some(option.verification_plan.id.as_str())
+            || row.try_get::<Option<String>, _>("disposition_plan_version").map_err(storage_error)?.as_deref()
+                != Some(option.verification_plan.source_definition_version.as_str())
+            || row.try_get::<Option<String>, _>("disposition_plan_digest").map_err(storage_error)?.as_deref()
+                != Some(option.verification_plan.digest.as_str())
+            || row.try_get::<Option<String>, _>("disposition_definition_digest").map_err(storage_error)?.as_deref()
+                != Some(option.verification_plan.source_definition_digest.as_str())
         {
             return Err(Error::StaleContext);
         }
