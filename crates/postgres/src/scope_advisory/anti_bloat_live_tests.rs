@@ -2,7 +2,8 @@ use super::live_support::{D, manifest, reseal_manifest, rw};
 use super::*;
 use crate::{PgStore, admin, store::PgUnitOfWork};
 use tect_application::{
-    AntiBloatApplication, AntiBloatStore, DisabledAntiBloatRankingProvider, UnitOfWork,
+    AntiBloatApplication, AntiBloatAuthoredDelta, AntiBloatStore, DisabledAntiBloatRankingProvider,
+    UnitOfWork,
 };
 
 #[test]
@@ -192,6 +193,15 @@ async fn selected_save_activates_exact_source_bound_anti_bloat_review() {
             "delivered_behavior": "Deliver the required result",
             "proof": "Acceptance test",
             "coverage_goals": [{"local": "goal"}]
+        }, {
+            "identity": {"local": "exploratory"},
+            "grounding": {"kind": "exploratory_unrequested", "provenance": "source_authored_v2"},
+            "title": "Unrequested exploratory dashboard",
+            "outcome": "Optional dashboard",
+            "trigger": "Exploration",
+            "delivered_behavior": "Show a dashboard",
+            "proof": "Optional visual check",
+            "coverage_goals": []
         }]
     }))
     .unwrap();
@@ -381,7 +391,7 @@ async fn selected_save_activates_exact_source_bound_anti_bloat_review() {
         .await
         .unwrap();
     assert_eq!(stored.context.candidate_set.revision, 4);
-    assert_eq!(stored.draft, Some(resolved));
+    assert_eq!(stored.draft, Some(resolved.clone()));
     saver.commit().await.unwrap();
 
     let lineage: (i64, String, Uuid, Uuid) = sqlx::query_as(
@@ -479,9 +489,128 @@ async fn selected_save_activates_exact_source_bound_anti_bloat_review() {
         .unwrap();
     assert_eq!(
         prepared.state,
-        tect_application::AntiBloatAttemptState::NoCall(
-            tect_application::AntiBloatNoCall::NoEligibleFindings
+        tect_application::AntiBloatAttemptState::Prepared
+    );
+    let stale_review = selected_app
+        .prepare(
+            workspace,
+            actor,
+            candidate,
+            4,
+            AdvisoryRequestPreference::UseWorkspace,
+        )
+        .await
+        .unwrap();
+    let exploratory = resolved
+        .candidates
+        .iter()
+        .find(|value| !value.grounding.is_source_grounded())
+        .unwrap();
+    let finding = prepared
+        .review
+        .findings
+        .iter()
+        .find(|value| value.candidate_id == exploratory.id)
+        .unwrap();
+    assert!(finding.rankable);
+    let authored_delta = AntiBloatAuthoredDelta {
+        review_id: prepared.review_id,
+        finding_id: finding.id.clone(),
+        disposition: AntiBloatDisposition::Narrow,
+        delta: CandidateDeltaBatch {
+            candidate_set_id: candidate,
+            expected_revision: 4,
+            idempotency_key: format!("live-narrow-{}", prepared.review_id),
+            operations: vec![CandidateDeltaOperation::CandidateRemove {
+                candidate_id: exploratory.id,
+                expected_revision: exploratory.revision,
+            }],
+        },
+    };
+    Box::new(selected_app.store).commit().await.unwrap();
+    let mut apply_store = PgUnitOfWork::test_begin(&runtime_pool, tenant).await;
+    apply_store.authenticate(&enrollment.auth).await.unwrap();
+    let mut apply = AntiBloatApplication {
+        store: apply_store,
+        provider: DisabledAntiBloatRankingProvider,
+    };
+    let receipt = apply.disposition_and_apply(&authored_delta).await.unwrap();
+    assert_eq!((receipt.from_revision, receipt.to_revision), (4, 5));
+    assert_eq!(receipt.source_digest, authored.source.digest);
+    assert_eq!(
+        receipt.before_material_digest,
+        authored.emitted[0].material_digest
+    );
+    Box::new(apply.store).commit().await.unwrap();
+    let persisted: (i64, serde_json::Value) = sqlx::query_as(
+        "SELECT s.revision,d.payload FROM scope_candidate_sets s JOIN scope_candidate_drafts d \
+         ON (d.tenant_id,d.workspace_id,d.candidate_set_id,d.set_revision)= \
+            (s.tenant_id,s.workspace_id,s.id,s.revision) \
+         WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.id=$3",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(candidate)
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(persisted.0, 5);
+    let after: ResolvedCandidateDraft = serde_json::from_value(persisted.1).unwrap();
+    assert_eq!(after.candidates.len(), 1);
+    assert_eq!(
+        after.candidates[0].grounding,
+        CandidateGrounding::SourceGrounded
+    );
+    assert_eq!(after.goals, resolved.goals);
+    assert_eq!(
+        scope_candidate_material_digest(&Sha256ScopeDigest, &after).unwrap(),
+        receipt.after_material_digest
+    );
+    let link: (Uuid, i64, i64, String, serde_json::Value) = sqlx::query_as(
+        "SELECT caller_request_id,from_revision,to_revision,source_digest,caller_receipt \
+         FROM scope_anti_bloat_caller_links WHERE tenant_id=$1 AND workspace_id=$2 AND review_id=$3",
+    )
+    .bind(tenant).bind(workspace).bind(prepared.review_id).fetch_one(&admin_pool).await.unwrap();
+    assert_eq!(
+        (link.0, link.1, link.2, link.3),
+        (
+            receipt.caller_request_id,
+            4,
+            5,
+            receipt.source_digest.clone()
         )
     );
-    Box::new(selected_app.store).commit().await.unwrap();
+    assert_eq!(
+        serde_json::from_value::<AntiBloatApplyReceipt>(link.4).unwrap(),
+        receipt
+    );
+    let shadow_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM scope_candidate_delta_receipts WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3",
+    )
+    .bind(tenant).bind(workspace).bind(candidate).fetch_one(&admin_pool).await.unwrap();
+    assert_eq!(shadow_count, 0);
+    let mut replay_store = PgUnitOfWork::test_begin(&runtime_pool, tenant).await;
+    replay_store.authenticate(&enrollment.auth).await.unwrap();
+    let mut replay = AntiBloatApplication {
+        store: replay_store,
+        provider: DisabledAntiBloatRankingProvider,
+    };
+    assert_eq!(
+        replay.disposition_and_apply(&authored_delta).await.unwrap(),
+        receipt
+    );
+    let mut wrong = authored_delta.clone();
+    wrong.delta.idempotency_key.push_str("-different");
+    assert_eq!(
+        replay.disposition_and_apply(&wrong).await,
+        Err(Error::InputConflict)
+    );
+    let mut stale = authored_delta.clone();
+    stale.review_id = stale_review.review_id;
+    stale.delta.idempotency_key.push_str("-stale");
+    assert_eq!(
+        replay.disposition_and_apply(&stale).await,
+        Err(Error::InputConflict)
+    );
+    Box::new(replay.store).commit().await.unwrap();
 }

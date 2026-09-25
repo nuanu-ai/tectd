@@ -15,7 +15,8 @@ pub(crate) use begin::{ensure, replay as begin_replay};
 pub(crate) use fragment::fragment;
 pub(crate) use history::{historical, history};
 pub(crate) use save::{
-    record_input, refresh, replay, save_draft, save_review, save_selected_draft,
+    record_input, refresh, replay, save_draft, save_preserved_anti_bloat_draft, save_review,
+    save_selected_draft,
 };
 
 use crate::storage_error;

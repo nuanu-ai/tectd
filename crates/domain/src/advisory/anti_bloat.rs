@@ -100,6 +100,22 @@ pub struct AntiBloatPreservation {
     pub finding_id: String,
 }
 
+/// Receipt for a native saved-draft mutation, not a shadow candidate-delta
+/// graph operation. The request ID addresses the ordinary candidate receipt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AntiBloatApplyReceipt {
+    pub review_id: Uuid,
+    pub candidate_set_id: Uuid,
+    pub idempotency_key: String,
+    pub caller_request_id: Uuid,
+    pub from_revision: i64,
+    pub to_revision: i64,
+    pub source_digest: String,
+    pub before_material_digest: String,
+    pub after_material_digest: String,
+}
+
 fn selected(input: &AntiBloatInput) -> Result<&crate::ScopeDecompositionAlternative> {
     input
         .manifest

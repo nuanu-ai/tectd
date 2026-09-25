@@ -1,4 +1,5 @@
 const MIGRATION: &str = include_str!("../migrations/0076_scope_anti_bloat_review.sql");
+const NATIVE_APPLY: &str = include_str!("../migrations/0078_scope_anti_bloat_native_apply.sql");
 
 #[test]
 fn binding_foreign_key_targets_exact_source_identity() {
@@ -36,4 +37,14 @@ fn source_binding_and_caller_receipt_cannot_be_rewritten() {
     assert!(MIGRATION.contains("after_material_digest text NOT NULL"));
     assert!(MIGRATION.contains("after_payload jsonb NOT NULL"));
     assert!(MIGRATION.contains("caller_receipt jsonb NOT NULL"));
+}
+
+#[test]
+fn native_apply_receipt_links_both_immutable_draft_revisions() {
+    assert!(NATIVE_APPLY.contains("'anti_bloat_narrow'"));
+    assert!(NATIVE_APPLY.contains("scope_anti_bloat_native_caller_receipt_fk"));
+    assert!(NATIVE_APPLY.contains("scope_anti_bloat_native_before_draft_fk"));
+    assert!(NATIVE_APPLY.contains("scope_anti_bloat_native_after_draft_fk"));
+    assert!(NATIVE_APPLY.contains("scope_anti_bloat_native_idempotency_unique"));
+    assert!(NATIVE_APPLY.contains("DROP CONSTRAINT scope_anti_bloat_caller_delta_fk"));
 }

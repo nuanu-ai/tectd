@@ -107,7 +107,7 @@ fn source_inputs_and_obligations(
     Ok((expected_inputs, expected_obligations))
 }
 
-async fn require_persisted_fragments(
+pub(crate) async fn require_persisted_fragments(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     workspace: Uuid,

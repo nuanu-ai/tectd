@@ -1,9 +1,8 @@
 //! Durable, default-deny boundaries for a source-relative review of one saved graph.
 use async_trait::async_trait;
 use tect_domain::{
-    AntiBloatDisposition, AntiBloatInput, AntiBloatPreservation, AntiBloatReview,
-    CandidateDeltaBatch, CandidateDeltaReceipt, ResolvedCandidateDraft, Result,
-    WorkspaceAdvisoryMode,
+    AntiBloatApplyReceipt, AntiBloatDisposition, AntiBloatInput, AntiBloatPreservation,
+    AntiBloatReview, CandidateDeltaBatch, ResolvedCandidateDraft, Result, WorkspaceAdvisoryMode,
 };
 use uuid::Uuid;
 
@@ -83,11 +82,11 @@ pub trait AntiBloatStore: Send {
 
     async fn seal_ranked(&mut self, review_id: Uuid, ranked_ids: &[String]) -> Result<()>;
 
-    /// This seam must atomically save explicit disposition + preservation and
-    /// invoke the existing candidate-delta caller with its CAS revision. It
+    /// This seam must atomically save explicit disposition and preservation
+    /// with a new authoritative draft at the next candidate-set revision. It
     /// must recheck `input` against source of truth in the same transaction as
-    /// the caller CAS; it must never synthesize operations from a finding or a
-    /// provider response. A successful replay may return the original receipt.
+    /// the native draft CAS; it must never synthesize operations from a finding
+    /// or provider response. Exact replay returns the original native receipt.
     async fn apply_preserved_delta(
         &mut self,
         review_id: Uuid,
@@ -97,7 +96,7 @@ pub trait AntiBloatStore: Send {
         preservation: &AntiBloatPreservation,
         delta: &CandidateDeltaBatch,
         after: &ResolvedCandidateDraft,
-    ) -> Result<CandidateDeltaReceipt>;
+    ) -> Result<AntiBloatApplyReceipt>;
 }
 
 /// Transport receives only the exact durably prepared request bytes. Implementations cannot

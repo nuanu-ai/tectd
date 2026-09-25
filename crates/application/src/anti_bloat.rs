@@ -7,7 +7,7 @@ use crate::{
 use sha2::{Digest, Sha256};
 use std::future::Future;
 use tect_domain::{
-    AdvisoryRequestPreference, AntiBloatDisposition, CandidateDeltaReceipt, Error, RequestContext,
+    AdvisoryRequestPreference, AntiBloatApplyReceipt, AntiBloatDisposition, Error, RequestContext,
     Result, WorkspaceAdvisoryMode, derive_anti_bloat_delta, review_anti_bloat,
 };
 use uuid::Uuid;
@@ -60,7 +60,7 @@ impl<S: AntiBloatStore, P: AntiBloatRankingProvider> AntiBloatApplication<S, P> 
     pub async fn disposition_and_apply(
         &mut self,
         authored: &AntiBloatAuthoredDelta,
-    ) -> Result<CandidateDeltaReceipt> {
+    ) -> Result<AntiBloatApplyReceipt> {
         apply_anti_bloat_delta(&mut self.store, authored).await
     }
 }
@@ -118,7 +118,7 @@ pub async fn prepare_anti_bloat_review(
 pub async fn apply_anti_bloat_delta(
     store: &mut dyn AntiBloatStore,
     authored: &AntiBloatAuthoredDelta,
-) -> Result<CandidateDeltaReceipt> {
+) -> Result<AntiBloatApplyReceipt> {
     let saved = store
         .review(authored.review_id)
         .await?
@@ -346,7 +346,7 @@ impl WorkspaceService {
         &self,
         context: &RequestContext,
         authored: &AntiBloatAuthoredDelta,
-    ) -> Result<CandidateDeltaReceipt> {
+    ) -> Result<AntiBloatApplyReceipt> {
         let (mut tx, workspace, _) = self
             .anti_bloat_transaction(context, TransactionMode::ReadWrite)
             .await?;

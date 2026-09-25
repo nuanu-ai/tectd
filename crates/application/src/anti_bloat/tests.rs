@@ -212,7 +212,7 @@ struct AppliedDecision {
     preservation: AntiBloatPreservation,
     delta: CandidateDeltaBatch,
     after: ResolvedCandidateDraft,
-    receipt: CandidateDeltaReceipt,
+    receipt: AntiBloatApplyReceipt,
 }
 
 #[async_trait]
@@ -284,7 +284,7 @@ impl AntiBloatStore for FakeStore {
         preservation: &AntiBloatPreservation,
         delta: &CandidateDeltaBatch,
         after: &ResolvedCandidateDraft,
-    ) -> Result<CandidateDeltaReceipt> {
+    ) -> Result<AntiBloatApplyReceipt> {
         if let Some(applied) = &self.applied {
             if applied.review_id == review_id
                 && &applied.input == input
@@ -305,12 +305,16 @@ impl AntiBloatStore for FakeStore {
         }
         self.applies += 1;
         self.after = Some(after.clone());
-        let receipt = CandidateDeltaReceipt {
+        let receipt = AntiBloatApplyReceipt {
+            review_id,
             candidate_set_id: delta.candidate_set_id,
             idempotency_key: delta.idempotency_key.clone(),
+            caller_request_id: Uuid::from_u128(999),
             from_revision: delta.expected_revision,
             to_revision: delta.expected_revision + 1,
-            stale_reasons: vec![],
+            source_digest: preservation.source_digest.clone(),
+            before_material_digest: preservation.before_material_digest.clone(),
+            after_material_digest: preservation.after_material_digest.clone(),
         };
         self.applied = Some(AppliedDecision {
             review_id,
