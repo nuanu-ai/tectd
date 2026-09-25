@@ -1,5 +1,11 @@
 use super::*;
 use crate::support::{ready_source_candidate, repository, review};
+use tect_application::{
+    PipelineProviderIdentity, PipelineProviderObservation, PipelineRecommendationProvider,
+    PipelineStartedDispatchPermit, PreparedPipelineRecommendation,
+    PreparedPipelineRecommendationAttempt, SealedPipelineRecommendationResponse,
+};
+use tect_domain::{Error, PipelineRecommendationManifest, PipelineRecommendationRanking};
 
 #[path = "pipeline_prepare/assertions.rs"]
 mod assertions;
@@ -43,13 +49,13 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
     assert_eq!(identity.2, "postgres");
     assert_eq!(identity.3, DATABASE_OID);
     assert_eq!(identity.4, SYSTEM_ID);
-    assert!(matches!(identity.5, 61..=64));
+    assert!(matches!(identity.5, 61..=65));
     admin::migrate(&pool, "tect_ci").await.unwrap();
     let version: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(version, 64);
+    assert_eq!(version, 65);
     let runtime = PgPool::connect_with(runtime_options).await.unwrap();
     let role: (String, String, i64) = sqlx::query_as(
         "SELECT current_database(),current_user,(SELECT oid::bigint FROM pg_database WHERE datname=current_database())",
@@ -59,8 +65,8 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "writes only pinned disposable PostgreSQL 18.6 fixture at migration 61-64"]
-async fn public_prepare_binds_selected_work_and_independent_match_without_dispatch() {
+#[ignore = "writes only pinned disposable PostgreSQL 18.6 fixture at migration 65"]
+async fn public_prepare_and_run_guarded_pipeline_recommendation() {
     let (pool, runtime_url) = disposable_pair_for_prepare().await;
     let temp = private_temp();
     let root = temp.path().canonicalize().unwrap();
@@ -68,6 +74,7 @@ async fn public_prepare_binds_selected_work_and_independent_match_without_dispat
     repository(&repo);
     let socket = root.join("pipeline-prepare.sock");
     let matrix_calls = Arc::new(AtomicUsize::new(0));
+    let pipeline_calls = Arc::new(AtomicUsize::new(0));
     let service = Arc::new(
         WorkspaceService::new(
             Arc::new(PgStore::connect(&runtime_url, 4).await.unwrap()),
@@ -78,7 +85,10 @@ async fn public_prepare_binds_selected_work_and_independent_match_without_dispat
         .with_matrix_advisory_adapters(Arc::new(Provider(matrix_calls.clone())), Arc::new(Budget))
         .with_pipeline_recommendation_definitions(Arc::new(
             tect_host::StaticPipelineRecommendationDefinitions,
-        )),
+        ))
+        .with_pipeline_recommendation_provider(Arc::new(FakePipelineProvider(
+            pipeline_calls.clone(),
+        ))),
     );
     let listener = UnixListener::bind(&socket).unwrap();
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
@@ -231,10 +241,75 @@ async fn public_prepare_binds_selected_work_and_independent_match_without_dispat
         &chosen,
         &matched,
         task,
+        &pipeline_calls,
     )
     .await;
     assert_eq!(matrix_calls.load(Ordering::SeqCst), 1);
     independent.finish().await;
     owner.finish().await;
     server.abort();
+}
+
+struct FakePipelineProvider(Arc<AtomicUsize>);
+
+#[async_trait]
+impl PipelineRecommendationProvider for FakePipelineProvider {
+    fn prepare(
+        &self,
+        saved: &PreparedPipelineRecommendation,
+    ) -> Result<PreparedPipelineRecommendationAttempt> {
+        PreparedPipelineRecommendationAttempt::new(
+            saved,
+            PipelineProviderIdentity {
+                provider: PROFILE.into(),
+                model: MODEL.into(),
+                destination: "https://synthetic.invalid/pipeline".into(),
+                wire_version: "synthetic-pipeline/1".into(),
+            },
+            serde_json::to_vec(&json!({"manifest_digest":saved.manifest.digest}))
+                .map_err(Error::invalid_arguments_from)?,
+        )
+    }
+
+    fn parse_sealed_response(
+        &self,
+        manifest: &PipelineRecommendationManifest,
+        _: &PreparedPipelineRecommendationAttempt,
+        sealed: &SealedPipelineRecommendationResponse,
+    ) -> Result<PipelineRecommendationRanking> {
+        let ranked: PipelineRecommendationRanking =
+            serde_json::from_slice(sealed.bytes()).map_err(Error::invalid_arguments_from)?;
+        ranked.validate(manifest)?;
+        Ok(ranked)
+    }
+
+    async fn attempt_prepared(
+        &self,
+        prepared: PreparedPipelineRecommendationAttempt,
+        permit: PipelineStartedDispatchPermit,
+    ) -> Result<PipelineProviderObservation> {
+        if !permit.permits(&prepared) {
+            return Err(Error::InputConflict);
+        }
+        self.0.fetch_add(1, Ordering::SeqCst);
+        // All current manifest IDs are stable, finite, and checked again after seal.
+        let request: Value =
+            serde_json::from_slice(prepared.body()).map_err(Error::invalid_arguments_from)?;
+        let digest = request["manifest_digest"]
+            .as_str()
+            .ok_or(Error::InputConflict)?;
+        if digest != prepared.manifest_digest() {
+            return Err(Error::InputConflict);
+        }
+        let ranked_ids = tect_domain::PipelineKind::CURRENT_SLICE_RUN_KINDS
+            .iter()
+            .map(|kind| kind.as_str().to_string())
+            .collect::<Vec<_>>();
+        Ok(PipelineProviderObservation {
+            raw_response: serde_json::to_vec(&PipelineRecommendationRanking::Ranked { ranked_ids })
+                .map_err(Error::invalid_arguments_from)?,
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+        })
+    }
 }

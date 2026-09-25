@@ -48,6 +48,7 @@ fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
         ("command", "scope.advisory.disposition"),
         ("command", "engineering.advisory.request"),
         ("command", "pipeline.recommendation.prepare"),
+        ("command", "pipeline.recommendation.run"),
         ("query", "engineering.advisory.get"),
     ] {
         assert!(
@@ -125,6 +126,38 @@ fn pipeline_prepare_is_strict_command_with_no_execution_authority() {
         "pipeline_recommendation_prepare"
     );
     assert!(decode_public_call("execute", json!({"route":route.route,"params":params})).is_err());
+}
+
+#[test]
+fn pipeline_run_is_strict_command_with_one_opportunity() {
+    let route = routes()
+        .iter()
+        .find(|spec| spec.route == "pipeline.recommendation.run")
+        .unwrap();
+    assert_eq!(route.tool, "command");
+    assert_eq!(route.schema["additionalProperties"], false);
+    assert!(route.effects.contains("does not open a Slice"));
+    let id = uuid::Uuid::new_v4();
+    let params = json!({"opportunity_id": id});
+    assert_eq!(
+        decode_public_call(
+            "command",
+            json!({"route":route.route,"params":params.clone()})
+        )
+        .unwrap()
+        .name,
+        "pipeline_recommendation_run"
+    );
+    assert!(decode_public_call("query", json!({"route":route.route,"params":params})).is_err());
+    for params in [
+        json!({}),
+        json!({"opportunity_id":uuid::Uuid::nil()}),
+        json!({"opportunity_id":id,"actor_id":id}),
+    ] {
+        assert!(
+            decode_public_call("command", json!({"route":route.route,"params":params})).is_err()
+        );
+    }
 }
 
 #[test]

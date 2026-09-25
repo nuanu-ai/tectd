@@ -383,6 +383,26 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 }
                 Ok(result)
             }
+            Invocation::PipelineRecommendationRun(request) => {
+                use tect_application::PipelineRecommendationRun;
+                let result = match service.run_pipeline_recommendation(context, &request).await? {
+                    PipelineRecommendationRun::NoCall { opportunity_id, reason } =>
+                        serde_json::json!({"opportunity_id":opportunity_id,"status":"no_call","reason":reason}),
+                    PipelineRecommendationRun::Stale { opportunity_id } =>
+                        serde_json::json!({"opportunity_id":opportunity_id,"status":"stale"}),
+                    PipelineRecommendationRun::SendUnknown { opportunity_id, dispatch_id } =>
+                        serde_json::json!({"opportunity_id":opportunity_id,"dispatch_id":dispatch_id,"status":"send_unknown"}),
+                    PipelineRecommendationRun::Ranked { opportunity_id, dispatch_id, ranked_ids } =>
+                        serde_json::json!({"opportunity_id":opportunity_id,"dispatch_id":dispatch_id,"status":"ranked","ranked_ids":ranked_ids}),
+                    PipelineRecommendationRun::Abstained { opportunity_id, dispatch_id } =>
+                        serde_json::json!({"opportunity_id":opportunity_id,"dispatch_id":dispatch_id,"status":"abstained"}),
+                };
+                let result = crate::responses::with_actions(result, Vec::new(), None);
+                if crate::responses::encoded_len(&result)? > capacity {
+                    return Err(Error::RequestTooLarge);
+                }
+                Ok(result)
+            }
             Invocation::KnowledgeMaintenance(invocation) => {
                 crate::knowledge_maintenance_dispatch::execute(
                     context, invocation, service, capacity,

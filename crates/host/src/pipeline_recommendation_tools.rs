@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use serde_json::Value;
-use tect_application::PreparePipelineRecommendation;
+use tect_application::{PreparePipelineRecommendation, RunPipelineRecommendation};
 use tect_domain::{AdvisoryRequestPreference, Error, Result};
 use uuid::Uuid;
 
@@ -43,6 +43,23 @@ pub(crate) fn parse(arguments: Value) -> Result<PreparePipelineRecommendation> {
     })
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunArguments {
+    opportunity_id: Uuid,
+}
+
+pub(crate) fn parse_run(arguments: Value) -> Result<RunPipelineRecommendation> {
+    let arguments: RunArguments =
+        serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
+    if arguments.opportunity_id.is_nil() {
+        return Err(Error::InvalidArguments);
+    }
+    Ok(RunPipelineRecommendation {
+        opportunity_id: arguments.opportunity_id,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,6 +84,20 @@ mod tests {
             let mut invalid = valid.clone();
             invalid[field] = value;
             assert!(parse(invalid).is_err(), "accepted {field}");
+        }
+    }
+
+    #[test]
+    fn strict_run_arguments() {
+        let id = Uuid::new_v4();
+        assert!(parse_run(json!({"opportunity_id": id})).is_ok());
+        for invalid in [
+            json!({}),
+            json!({"opportunity_id": Uuid::nil()}),
+            json!({"opportunity_id": id, "actor_id": id}),
+            json!({"opportunity_id": id, "request_key": "again"}),
+        ] {
+            assert!(parse_run(invalid).is_err());
         }
     }
 }

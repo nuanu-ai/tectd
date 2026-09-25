@@ -51,6 +51,17 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
         ),
         route!(
             "command",
+            "pipeline.recommendation.run",
+            "pipeline_recommendation_run",
+            "Attempt one guarded pipeline recommendation for an exact prepared opportunity.",
+            "Requires the authenticated Owner and original native session, a current prepared opportunity, unchanged advisory configuration and current saved Work, Matrix, and manifest bindings. A no-call opportunity returns its reason without a send.",
+            "Commits one dispatch start before a provider attempt, durably seals returned response bytes and digest, and returns only a validated ranking or abstention. It does not open a Slice, transition a phase, or establish verification.",
+            "Never retry a provider attempt after uncertain send. Inspect workspace.advisory.audit after uncertainty; replay cannot create another dispatch.",
+            object_schema(json!({"opportunity_id":uuid()}), json!(["opportunity_id"])),
+            json!({"opportunity_id":example_id}),
+        ),
+        route!(
+            "command",
             "engineering.advisory.request",
             "request_engineering_advisory",
             "Record an optional Engineering Matrix advisory opportunity for one exact saved task revision.",

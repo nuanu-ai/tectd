@@ -18,6 +18,7 @@ pub(super) async fn exercise_prepare(
     chosen: &Value,
     matched: &Value,
     task: Uuid,
+    pipeline_calls: &Arc<AtomicUsize>,
 ) {
     let scope = Uuid::parse_str(ready["scope"]["id"].as_str().unwrap()).unwrap();
     let before: (i64, String) = sqlx::query_as(
@@ -266,6 +267,98 @@ pub(super) async fn exercise_prepare(
     assert_eq!(after, before);
     assert_eq!(opportunity_count(pool, workspace).await, 2);
 
+    let run_request = json!({"opportunity_id":opportunity});
+    let forbidden_run = route_error(
+        independent,
+        "command",
+        "pipeline.recommendation.run",
+        run_request.clone(),
+    )
+    .await;
+    assert_error(&forbidden_run, &["forbidden"]);
+    assert_eq!(pipeline_calls.load(Ordering::SeqCst), 0);
+    let ranked = route(
+        owner,
+        "command",
+        "pipeline.recommendation.run",
+        run_request.clone(),
+    )
+    .await;
+    assert_eq!(ranked["status"], "ranked", "{ranked}");
+    assert_eq!(ranked["opportunity_id"], prepared["opportunity_id"]);
+    assert_eq!(ranked["ranked_ids"], prepared["eligible_kind_ids"]);
+    assert_eq!(pipeline_calls.load(Ordering::SeqCst), 1);
+    let dispatch_id = Uuid::parse_str(ranked["dispatch_id"].as_str().unwrap()).unwrap();
+    let dispatch: (String, String, String, String, String, Vec<u8>, Vec<u8>, String) = sqlx::query_as(
+        "SELECT state,send_certainty,outcome,material_digest,payload_digest,request_payload,response_payload,\
+         pipeline_response_sha256 FROM advisory_dispatch WHERE workspace_id=$1 AND id=$2",
+    )
+    .bind(workspace)
+    .bind(dispatch_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (&dispatch.0[..], &dispatch.1[..], &dispatch.2[..]),
+        ("sealed", "sent", "provider_response")
+    );
+    assert_eq!(dispatch.3, prepared["manifest_digest"]);
+    assert!(!dispatch.5.is_empty());
+    assert_eq!(dispatch.4, format!("{:x}", Sha256::digest(&dispatch.5)));
+    assert_eq!(dispatch.7, format!("{:x}", Sha256::digest(&dispatch.6)));
+    let saved_rank: tect_domain::PipelineRecommendationRanking =
+        serde_json::from_slice(&dispatch.6).unwrap();
+    saved_rank
+        .validate(&serde_json::from_value(manifest.clone()).unwrap())
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(saved_rank).unwrap()["ranked_ids"],
+        ranked["ranked_ids"]
+    );
+    assert_error(
+        &route_error(owner, "command", "pipeline.recommendation.run", run_request).await,
+        &["input_conflict"],
+    );
+    let no_call_run = route(
+        owner,
+        "command",
+        "pipeline.recommendation.run",
+        json!({"opportunity_id":no_call_id}),
+    )
+    .await;
+    assert_eq!(no_call_run["status"], "no_call");
+    assert_eq!(no_call_run["reason"], "request_skip");
+    assert_eq!(pipeline_calls.load(Ordering::SeqCst), 1);
+    let dispatch_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM advisory_dispatch WHERE workspace_id=$1 AND opportunity_id=$2",
+    )
+    .bind(workspace)
+    .bind(opportunity)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(dispatch_count, 1);
+    let slices_after_run: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM native_slices WHERE workspace_id=$1 AND scope_id=$2",
+    )
+    .bind(workspace)
+    .bind(scope)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(slices_after_run, 0);
+
+    let mut stale_base = base.clone();
+    stale_base["request_key"] = json!(format!("stale-run-{}", Uuid::new_v4()));
+    let stale_prepared = route(
+        owner,
+        "command",
+        "pipeline.recommendation.prepare",
+        stale_base,
+    )
+    .await;
+    assert_eq!(stale_prepared["state"], "prepared");
+
     // A newer authoritative Matrix task revision invalidates this saved path.
     let mut revised_input = input();
     revised_input["promised_behavior"]["value"] = json!("A revised synthetic promise");
@@ -295,5 +388,14 @@ pub(super) async fn exercise_prepare(
         .await,
         &["stale_context"],
     );
-    assert_eq!(opportunity_count(pool, workspace).await, 2);
+    let stale_run = route(
+        owner,
+        "command",
+        "pipeline.recommendation.run",
+        json!({"opportunity_id":stale_prepared["opportunity_id"]}),
+    )
+    .await;
+    assert_eq!(stale_run["status"], "stale");
+    assert_eq!(pipeline_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(opportunity_count(pool, workspace).await, 3);
 }
