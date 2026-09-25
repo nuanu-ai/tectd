@@ -1429,17 +1429,21 @@ fn authored_lookup_replay_and_failure_paths_precede_external_attempts() {
         .find("prepare.commit().await?")
         .unwrap()
         + authored_persist;
-    let reobserved = source[persisted_commit..]
-        .find("self.scope_authority.observe(&authority_request)")
+    let dispatch_after_commit = source[persisted_commit..]
+        .find("self.dispatch_prepared_scope_advisory(")
         .unwrap()
         + persisted_commit;
+    let reobserved = source[dispatch_after_commit..]
+        .find("self.scope_authority.observe(authority_request)")
+        .unwrap()
+        + dispatch_after_commit;
     let no_call_transition = source[reobserved..]
         .find("finalize_prepared_scope_advisory_without_dispatch")
         .unwrap()
         + reobserved;
     let provider = source.find(".attempt_prepared(").unwrap();
     assert!(authored_persist < persisted_commit);
-    assert!(persisted_commit < reobserved);
+    assert!(persisted_commit < dispatch_after_commit && dispatch_after_commit < reobserved);
     assert!(reobserved < no_call_transition && no_call_transition < provider);
 }
 
