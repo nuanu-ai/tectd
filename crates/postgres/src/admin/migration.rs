@@ -92,9 +92,7 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
             "REVOKE ALL PRIVILEGES ON TABLE scope_anti_bloat_bindings, \
              scope_anti_bloat_reviews, scope_anti_bloat_caller_links FROM {quoted_role}"
         ),
-        format!(
-            "GRANT SELECT ON TABLE scope_anti_bloat_bindings TO {quoted_role}"
-        ),
+        format!("GRANT SELECT, INSERT ON TABLE scope_anti_bloat_bindings TO {quoted_role}"),
         format!(
             "GRANT SELECT, INSERT ON TABLE scope_anti_bloat_reviews, \
              scope_anti_bloat_caller_links TO {quoted_role}"

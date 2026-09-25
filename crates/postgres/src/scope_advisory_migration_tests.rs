@@ -8,12 +8,27 @@ const CALLER_VERIFIER: &str = include_str!("scope_advisory/caller_verifier.rs");
 const FINALIZE: &str = include_str!("scope_advisory/finalize.rs");
 const MAPPINGS: &str = include_str!("scope_advisory/mappings.rs");
 const ADMIN_VALIDATOR: &str = include_str!("admin/scope_advisory.rs");
+const ADMIN_GRANTS: &str = include_str!("admin/migration.rs");
 const PORT: &str = include_str!("../../application/src/scope_advisory_ports.rs");
 
 fn decisions_contain(token: &str) -> bool {
     DECISIONS.contains(token)
         || DISPOSITION_PRESERVATION.contains(token)
         || CALLER_VERIFIER.contains(token)
+}
+
+#[test]
+fn trusted_graph_writer_has_insert_only_binding_grant() {
+    assert!(
+        ADMIN_GRANTS
+            .contains("GRANT SELECT, INSERT ON TABLE scope_anti_bloat_bindings TO {quoted_role}")
+    );
+    assert!(
+        !ADMIN_GRANTS.contains("GRANT SELECT, INSERT, UPDATE ON TABLE scope_anti_bloat_bindings")
+    );
+    assert!(
+        !ADMIN_GRANTS.contains("GRANT SELECT, INSERT, DELETE ON TABLE scope_anti_bloat_bindings")
+    );
 }
 
 #[test]
