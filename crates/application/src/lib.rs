@@ -18,6 +18,7 @@ mod matrix_verification_ports;
 mod model_route_recommendation;
 mod model_route_recommendation_ports;
 mod pipeline_recommendation;
+mod pipeline_recommendation_dispatch_ports;
 mod pipeline_recommendation_ports;
 mod pipeline_recommendation_runtime;
 mod planning_knowledge_ports;
@@ -81,6 +82,11 @@ pub use pipeline_recommendation_ports::{
     PipelineRecommendationBasis, PipelineRecommendationContext,
     PipelineRecommendationDefinitionProvider, PipelineRecommendationStore,
     PreparedPipelineRecommendation, UnavailablePipelineRecommendationDefinitions,
+};
+#[doc(hidden)]
+pub use pipeline_recommendation_dispatch_ports::PipelineDispatchCapability;
+pub use pipeline_recommendation_dispatch_ports::{
+    PipelineRecommendationDispatchStore, StoredPipelineRecommendationDispatch,
 };
 pub use pipeline_recommendation_runtime::{
     MAX_PREPARED_PIPELINE_BODY_BYTES, MAX_SEALED_PIPELINE_RESPONSE_BYTES,
