@@ -285,7 +285,8 @@ mod advisory_architecture_tests {
         }
         assert!(architecture_check.contains("domain_advisory_sources"));
         assert!(architecture_check.contains("rglob(\"*.rs\")"));
-        assert!(architecture_check.contains("if not is_test_fixture(source)"));
+        assert!(architecture_check.contains("test_only = test_only_sources(ROOT)"));
+        assert!(architecture_check.contains("if source.resolve() not in test_only"));
     }
 
     #[test]
