@@ -25,8 +25,8 @@ include!("scope_advisory/finalize.rs");
 include!("scope_advisory/store.rs");
 
 #[cfg(test)]
+mod anti_bloat_live_tests;
+#[cfg(test)]
 mod live_support;
 #[cfg(test)]
 mod live_tests;
-#[cfg(test)]
-mod anti_bloat_live_tests;

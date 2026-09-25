@@ -935,10 +935,15 @@ mod tests {
         assert!(migration.contains("tect.pipeline-recommendation/3"));
         assert!(migration.contains("tect.pipeline-verification-plan/1"));
         assert!(migration.contains("NEW.verification_plan_bindings := bindings"));
-        assert!(migration.contains("NEW.selected_option_id := NEW.result_payload->>'selected_option_id'"));
+        assert!(
+            migration
+                .contains("NEW.selected_option_id := NEW.result_payload->>'selected_option_id'")
+        );
         assert!(migration.contains("NEW.verification_plan_id := disposition.verification_plan_id"));
         assert!(migration.contains("CREATE TRIGGER z_pipeline_slice_open_plan_binding"));
-        assert!(migration.contains("REVOKE ALL PRIVILEGES ON FUNCTION pipeline_slice_open_plan_binding() FROM PUBLIC"));
+        assert!(migration.contains(
+            "REVOKE ALL PRIVILEGES ON FUNCTION pipeline_slice_open_plan_binding() FROM PUBLIC"
+        ));
         assert!(!migration.contains("DROP TABLE"));
     }
 

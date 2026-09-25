@@ -98,7 +98,9 @@ impl PipelineOpenEffectStore for PgUnitOfWork {
                 .map_err(storage_error)?,
         )
         .map_err(|_| Error::StaleContext)?;
-        manifest.validate_digest().map_err(|_| Error::StaleContext)?;
+        manifest
+            .validate_digest()
+            .map_err(|_| Error::StaleContext)?;
         let selected_option_id = disposition
             .selected_option_id
             .as_deref()
@@ -148,8 +150,7 @@ impl PipelineOpenEffectStore for PgUnitOfWork {
                     .map_err(storage_error)?
             || disposition.selected_kind != Some(option.kind)
             || slice.selected_option_id.as_deref() != Some(selected_option_id)
-            || slice.verification_plan_id.as_deref()
-                != Some(option.verification_plan.id.as_str())
+            || slice.verification_plan_id.as_deref() != Some(option.verification_plan.id.as_str())
             || slice.verification_plan_schema.as_deref()
                 != Some(option.verification_plan.schema.as_str())
             || slice.verification_plan_digest.as_deref()
@@ -158,15 +159,30 @@ impl PipelineOpenEffectStore for PgUnitOfWork {
                 != Some(option.verification_plan.source_definition_version.as_str())
             || slice.verification_plan_source_definition_digest.as_deref()
                 != Some(option.verification_plan.source_definition_digest.as_str())
-            || row.try_get::<Option<String>, _>("disposition_option_id").map_err(storage_error)?.as_deref()
+            || row
+                .try_get::<Option<String>, _>("disposition_option_id")
+                .map_err(storage_error)?
+                .as_deref()
                 != Some(selected_option_id)
-            || row.try_get::<Option<String>, _>("disposition_plan_id").map_err(storage_error)?.as_deref()
+            || row
+                .try_get::<Option<String>, _>("disposition_plan_id")
+                .map_err(storage_error)?
+                .as_deref()
                 != Some(option.verification_plan.id.as_str())
-            || row.try_get::<Option<String>, _>("disposition_plan_version").map_err(storage_error)?.as_deref()
+            || row
+                .try_get::<Option<String>, _>("disposition_plan_version")
+                .map_err(storage_error)?
+                .as_deref()
                 != Some(option.verification_plan.source_definition_version.as_str())
-            || row.try_get::<Option<String>, _>("disposition_plan_digest").map_err(storage_error)?.as_deref()
+            || row
+                .try_get::<Option<String>, _>("disposition_plan_digest")
+                .map_err(storage_error)?
+                .as_deref()
                 != Some(option.verification_plan.digest.as_str())
-            || row.try_get::<Option<String>, _>("disposition_definition_digest").map_err(storage_error)?.as_deref()
+            || row
+                .try_get::<Option<String>, _>("disposition_definition_digest")
+                .map_err(storage_error)?
+                .as_deref()
                 != Some(option.verification_plan.source_definition_digest.as_str())
         {
             return Err(Error::StaleContext);

@@ -3,11 +3,10 @@
 
 use crate::{
     EngineeringChoiceSet, EngineeringMatrixComposition, EngineeringMatrixInput, Error,
-    MatrixSourceVerificationStatus, OwnerReportedEngineeringMatrixFacts,
-    PipelineArtifactRequirement, PipelineCatalogueSnapshot, PipelineCompatibilityPolicy,
-    PipelineDefinitionSnapshot, PipelineExcludedKind, PipelineExclusionReason,
-    PipelineExecutionOwner, PipelineKind, PipelineVerificationPlan, Result, SliceCandidateNode,
-    VerifiedEngineeringMatrixFacts, compose_engineering_matrix,
+    MatrixSourceVerificationStatus, OwnerReportedEngineeringMatrixFacts, PipelineCatalogueSnapshot,
+    PipelineCompatibilityPolicy, PipelineDefinitionSnapshot, PipelineExcludedKind,
+    PipelineExclusionReason, PipelineExecutionOwner, PipelineKind, PipelineVerificationPlan,
+    Result, SliceCandidateNode, VerifiedEngineeringMatrixFacts, compose_engineering_matrix,
     compose_owner_reported_engineering_matrix, matrix_input_digest,
 };
 use serde::{Deserialize, Serialize};

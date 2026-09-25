@@ -2,10 +2,10 @@ use super::*;
 use crate::{
     CommitmentEvidence, EngineeringCandidate, EngineeringIntent, EngineeringMode, FactProvenance,
     MATRIX_CHOICE_SET_SCHEMA, MatrixFact, OperatingEnvelope, OperationalFacts,
-    PIPELINE_COMPATIBILITY_POLICY_VERSION, PipelineCardCoverage, PipelineCatalogueEntry,
-    PipelineCompatibilityRule, PipelineDeliveryMode, PipelineInstructionSnapshot,
-    PipelinePhaseDefinition, PipelinePhaseRetryPolicy, PipelineVerificationObligation,
-    ProtectedGuarantee, pipeline_obligation_digest,
+    PIPELINE_COMPATIBILITY_POLICY_VERSION, PipelineArtifactRequirement, PipelineCardCoverage,
+    PipelineCatalogueEntry, PipelineCompatibilityRule, PipelineDeliveryMode,
+    PipelineInstructionSnapshot, PipelinePhaseDefinition, PipelinePhaseRetryPolicy,
+    PipelineVerificationObligation, ProtectedGuarantee, pipeline_obligation_digest,
 };
 use uuid::Uuid;
 

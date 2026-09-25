@@ -128,7 +128,10 @@ pub(crate) async fn selection_for_open(
         return Err(Error::Forbidden);
     }
     let selected = result.selected_kind.ok_or(Error::Forbidden)?;
-    let selected_option_id = result.selected_option_id.as_deref().ok_or(Error::Forbidden)?;
+    let selected_option_id = result
+        .selected_option_id
+        .as_deref()
+        .ok_or(Error::Forbidden)?;
     let persisted_option_id: Option<String> =
         row.try_get("selected_option_id").map_err(storage_error)?;
     let plan_id: Option<String> = row.try_get("verification_plan_id").map_err(storage_error)?;
@@ -144,9 +147,14 @@ pub(crate) async fn selection_for_open(
     if persisted_option_id.as_deref() != Some(selected_option_id)
         || plan_id.as_deref() != selected_option_id.split_once('+').map(|(_, id)| id)
         || !selected_option_id.starts_with(&format!("{}+", selected.as_str()))
-        || plan_digest.as_deref() != plan_id.as_deref().and_then(|id| id.strip_prefix("verification-plan:"))
+        || plan_digest.as_deref()
+            != plan_id
+                .as_deref()
+                .and_then(|id| id.strip_prefix("verification-plan:"))
         || plan_version.as_deref().is_none_or(str::is_empty)
-        || source_definition_digest.as_deref().is_none_or(str::is_empty)
+        || source_definition_digest
+            .as_deref()
+            .is_none_or(str::is_empty)
     {
         return Err(Error::InputConflict);
     }
@@ -184,19 +192,16 @@ pub(crate) async fn selection_for_open(
             .request
             .resolve(result.id, manifest, &basis.saved_work, &basis.advice)?
             != result
-        || !manifest
-            .options
-            .iter()
-            .any(|option| {
-                option.id == selected_option_id
-                    && option.kind == selected
-                    && Some(option.verification_plan.id.as_str()) == plan_id.as_deref()
-                    && Some(option.verification_plan.digest.as_str()) == plan_digest.as_deref()
-                    && Some(option.verification_plan.source_definition_version.as_str())
-                        == plan_version.as_deref()
-                    && Some(option.verification_plan.source_definition_digest.as_str())
-                        == source_definition_digest.as_deref()
-            })
+        || !manifest.options.iter().any(|option| {
+            option.id == selected_option_id
+                && option.kind == selected
+                && Some(option.verification_plan.id.as_str()) == plan_id.as_deref()
+                && Some(option.verification_plan.digest.as_str()) == plan_digest.as_deref()
+                && Some(option.verification_plan.source_definition_version.as_str())
+                    == plan_version.as_deref()
+                && Some(option.verification_plan.source_definition_digest.as_str())
+                    == source_definition_digest.as_deref()
+        })
     {
         return Err(Error::StaleContext);
     }

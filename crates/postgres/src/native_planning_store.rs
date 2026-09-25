@@ -1,8 +1,8 @@
 use crate::{native_planning, store::PgUnitOfWork};
 use async_trait::async_trait;
+use sqlx::Row;
 use tect_application::NativePlanningStore;
 use tect_domain::*;
-use sqlx::Row;
 use uuid::Uuid;
 
 #[async_trait]
@@ -162,8 +162,15 @@ impl NativePlanningStore for PgUnitOfWork {
             None
         };
         let opener = self.principal_id()?;
-        native_planning::open_slice(self.transaction()?, tenant, workspace_id, opener, request, selected)
-            .await
+        native_planning::open_slice(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            opener,
+            request,
+            selected,
+        )
+        .await
     }
     async fn slice_open_manifest(
         &mut self,
@@ -205,8 +212,11 @@ impl NativePlanningStore for PgUnitOfWork {
                 .map_err(crate::storage_error)?,
         )
         .map_err(|_| Error::InputConflict)?;
-        if row.try_get::<Option<String>, _>("manifest_digest").map_err(crate::storage_error)?
-            .as_deref() != Some(manifest.digest.as_str())
+        if row
+            .try_get::<Option<String>, _>("manifest_digest")
+            .map_err(crate::storage_error)?
+            .as_deref()
+            != Some(manifest.digest.as_str())
         {
             return Err(Error::InputConflict);
         }

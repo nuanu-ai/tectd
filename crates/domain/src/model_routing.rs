@@ -316,10 +316,10 @@ impl ModelRouteWorkContext {
         }
         for fact in [&self.role, &self.tool, &self.data_class] {
             validate_fact(fact, false)?;
-            if let ModelRouteFact::Known { value, .. } = fact {
-                if !valid_id(value) {
-                    return Err(Error::InvalidArguments);
-                }
+            if let ModelRouteFact::Known { value, .. } = fact
+                && !valid_id(value)
+            {
+                return Err(Error::InvalidArguments);
             }
         }
         validate_fact(&self.host_capabilities, true)?;
@@ -340,12 +340,10 @@ impl ModelRouteWorkContext {
                 work_node_revision,
                 ..
             }) = provenance
+                && (*work_node_id != link.mapped_work_node_id
+                    || *work_node_revision != link.mapped_work_node_revision)
             {
-                if *work_node_id != link.mapped_work_node_id
-                    || *work_node_revision != link.mapped_work_node_revision
-                {
-                    return Err(Error::InvalidArguments);
-                }
+                return Err(Error::InvalidArguments);
             }
         }
         let mut hash = Sha256::new();
@@ -499,15 +497,14 @@ impl EligibleModelRoutes {
         {
             return Err(Error::InvalidArguments);
         }
-        if let Some(actual) = &observed_actual {
-            if actual.route_id.as_deref().is_some_and(|id| !valid_id(id))
+        if let Some(actual) = &observed_actual
+            && (actual.route_id.as_deref().is_some_and(|id| !valid_id(id))
                 || !valid_id(&actual.provider)
                 || !valid_id(&actual.model)
                 || !valid_id(&actual.effort)
-                || !valid_ref(&actual.evidence_ref)
-            {
-                return Err(Error::InvalidArguments);
-            }
+                || !valid_ref(&actual.evidence_ref))
+        {
+            return Err(Error::InvalidArguments);
         }
         Ok(ModelRouteRecord {
             requested_route_id,

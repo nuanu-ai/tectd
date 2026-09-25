@@ -1,5 +1,6 @@
 const APPLIED: &str = include_str!("../migrations/0074_pipeline_phase_effect_attestations.sql");
-const FORWARD: &str = include_str!("../migrations/0075_pipeline_phase_effect_slice_origin_guard.sql");
+const FORWARD: &str =
+    include_str!("../migrations/0075_pipeline_phase_effect_slice_origin_guard.sql");
 const STORE: &str = include_str!("pipeline_phase_effect_store.rs");
 
 fn verifier_body(sql: &str) -> &str {
@@ -20,10 +21,17 @@ fn forward_migration_changes_only_the_invalid_slice_erasure_predicate() {
         "AND NOT o.payload_erased AND NOT r.payload_erased AND NOT s.payload_erased",
         "AND NOT o.payload_erased AND NOT r.payload_erased AND s.origin_result IS NOT NULL",
     );
-    assert_ne!(old, expected, "applied guard must contain the invalid predicate");
+    assert_ne!(
+        old, expected,
+        "applied guard must contain the invalid predicate"
+    );
     assert_eq!(verifier_body(FORWARD), expected);
-    assert!(FORWARD.contains("CREATE OR REPLACE FUNCTION pipeline_phase_effect_require_verifier()"));
-    assert!(FORWARD.contains("REVOKE ALL PRIVILEGES ON FUNCTION pipeline_phase_effect_require_verifier() FROM PUBLIC"));
+    assert!(
+        FORWARD.contains("CREATE OR REPLACE FUNCTION pipeline_phase_effect_require_verifier()")
+    );
+    assert!(FORWARD.contains(
+        "REVOKE ALL PRIVILEGES ON FUNCTION pipeline_phase_effect_require_verifier() FROM PUBLIC"
+    ));
 }
 
 #[test]

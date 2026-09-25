@@ -75,7 +75,8 @@ pub fn evaluate_selected_save_checks(
         (checks.revision, "candidate_revision_stale"),
     ]
     .into_iter()
-    .filter_map(|(passed, reason)| (!passed).then(|| reason.to_owned()))
+    .filter(|(passed, _)| !*passed)
+    .map(|(_, reason)| reason.to_owned())
     .collect::<Vec<_>>();
     let status = if reasons.is_empty() {
         SelectedSaveObservationStatus::Passed

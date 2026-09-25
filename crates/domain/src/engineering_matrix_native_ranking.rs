@@ -74,18 +74,17 @@ pub fn compose_native_matrix_ranking(
         let separated_scores = sorted
             .windows(2)
             .all(|pair| pair[0].score - pair[1].score > MATRIX_NATIVE_RANKING_MIN_SCORE_GAP);
-        if separated_scores {
-            if let NativeMatrixChoice::Candidate(winner) = &signals.choice {
-                if winner == &sorted[0].candidate_id {
-                    ranking = MatrixRanking::Ranked {
-                        ranked_candidate_ids: sorted
-                            .iter()
-                            .map(|score| score.candidate_id.clone())
-                            .collect(),
-                        recommended_candidate_id: winner.clone(),
-                    };
-                }
-            }
+        if separated_scores
+            && let NativeMatrixChoice::Candidate(winner) = &signals.choice
+            && winner == &sorted[0].candidate_id
+        {
+            ranking = MatrixRanking::Ranked {
+                ranked_candidate_ids: sorted
+                    .iter()
+                    .map(|score| score.candidate_id.clone())
+                    .collect(),
+                recommended_candidate_id: winner.clone(),
+            };
         }
     }
     ranking.validate(eligibility)?;

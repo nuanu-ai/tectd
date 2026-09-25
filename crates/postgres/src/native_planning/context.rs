@@ -295,40 +295,40 @@ async fn load_slices(
     for r in rows {
         let plan = load_slice_plan_identity(tx, tenant, workspace, r.0).await?;
         slices.push(NativeSlice {
-                id: r.0,
-                scope_id: scope,
-                revision: r.1,
-                candidate_id: r.2,
-                candidate_revision: r.3,
-                opening_snapshot_id: r.4,
-                title: r.5,
-                outcome: r.6,
-                pipeline: pipeline(&r.7)?,
-                selected_option_id: plan.0,
-                verification_plan_id: plan.1,
-                verification_plan_schema: plan.2,
-                verification_plan_digest: plan.3,
-                verification_plan_source_definition_version: plan.4,
-                verification_plan_source_definition_digest: plan.5,
-                state: slice_state(&r.8)?,
-                pipeline_status: r.10.unwrap_or_else(|| "not_started".into()),
-                pipeline_run_id: r.9,
-                knowledge_change_id: r.11,
-                knowledge_run_id: r.12,
-                knowledge_status: r
-                    .13
-                    .map(|value| decode(serde_json::Value::String(value)))
-                    .transpose()?,
-                source_checkpoint: r
-                    .14
-                    .map(|checkpoint_id| {
-                        Ok(PipelineCheckpointRef {
-                            checkpoint_id,
-                            digest: r.15.clone().ok_or(Error::InternalInvariant)?,
-                        })
+            id: r.0,
+            scope_id: scope,
+            revision: r.1,
+            candidate_id: r.2,
+            candidate_revision: r.3,
+            opening_snapshot_id: r.4,
+            title: r.5,
+            outcome: r.6,
+            pipeline: pipeline(&r.7)?,
+            selected_option_id: plan.0,
+            verification_plan_id: plan.1,
+            verification_plan_schema: plan.2,
+            verification_plan_digest: plan.3,
+            verification_plan_source_definition_version: plan.4,
+            verification_plan_source_definition_digest: plan.5,
+            state: slice_state(&r.8)?,
+            pipeline_status: r.10.unwrap_or_else(|| "not_started".into()),
+            pipeline_run_id: r.9,
+            knowledge_change_id: r.11,
+            knowledge_run_id: r.12,
+            knowledge_status: r
+                .13
+                .map(|value| decode(serde_json::Value::String(value)))
+                .transpose()?,
+            source_checkpoint: r
+                .14
+                .map(|checkpoint_id| {
+                    Ok(PipelineCheckpointRef {
+                        checkpoint_id,
+                        digest: r.15.clone().ok_or(Error::InternalInvariant)?,
                     })
-                    .transpose()?,
-                execution_claimed: false,
+                })
+                .transpose()?,
+            execution_claimed: false,
         });
     }
     Ok(slices)
@@ -341,8 +341,12 @@ async fn load_slice_plan_identity(
     workspace: Uuid,
     slice_id: Uuid,
 ) -> Result<(
-    Option<String>, Option<String>, Option<String>, Option<String>,
-    Option<String>, Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
 )> {
     sqlx::query_as(
         "SELECT selected_option_id,verification_plan_id,verification_plan_schema, \

@@ -225,39 +225,73 @@ fn build_routes() -> Vec<RouteSpec> {
             json!({"request_id":"00000000-0000-4000-8000-000000000003","candidate_set_id":example_id,"caller_request_id":"00000000-0000-4000-8000-000000000002","expected_result_revision":1,"expected_effect_digest":"0".repeat(64),"verdict":"matches","summary":"Saved choice and mapped nodes match the intended plan"}),
         ),
         route!(
-            "query", "pipeline.open_effect.get", "get_pipeline_open_effect",
+            "query",
+            "pipeline.open_effect.get",
+            "get_pipeline_open_effect",
             "Read the persisted effect of one explicit Slice open for an independent verifier.",
             "Requires a verifier session, the saved Slice ID and its open request ID.",
             "Returns saved Slice, caller receipt, Work node, source and Matrix binding with an effect digest; no state change.",
             "Safe to repeat; use the digest for a separate attestation.",
-            object_schema(json!({"slice_id":uuid(),"open_request_id":uuid()}),json!(["slice_id","open_request_id"])),
+            object_schema(
+                json!({"slice_id":uuid(),"open_request_id":uuid()}),
+                json!(["slice_id", "open_request_id"])
+            ),
             json!({"slice_id":example_id,"open_request_id":"00000000-0000-4000-8000-000000000002"}),
         ),
         route!(
-            "command", "pipeline.open_effect.verify", "verify_pipeline_open_effect",
+            "command",
+            "pipeline.open_effect.verify",
+            "verify_pipeline_open_effect",
             "Append an independent match or rejection of one persisted Slice open.",
             "Requires a verifier session distinct from caller and Matrix owner, exact open request and effect digest.",
             "Appends an immutable observation; it does not complete a phase or call a provider.",
             "Retry with the same request_id and identical fields.",
-            object_schema(json!({"request_id":uuid(),"slice_id":uuid(),"open_request_id":uuid(),"expected_effect_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"verdict":{"type":"string","enum":["matches","rejects"]},"summary":{"type":"string","minLength":1,"maxLength":4096}}),json!(["request_id","slice_id","open_request_id","expected_effect_digest","verdict","summary"])),
+            object_schema(
+                json!({"request_id":uuid(),"slice_id":uuid(),"open_request_id":uuid(),"expected_effect_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"verdict":{"type":"string","enum":["matches","rejects"]},"summary":{"type":"string","minLength":1,"maxLength":4096}}),
+                json!([
+                    "request_id",
+                    "slice_id",
+                    "open_request_id",
+                    "expected_effect_digest",
+                    "verdict",
+                    "summary"
+                ])
+            ),
             json!({"request_id":"00000000-0000-4000-8000-000000000003","slice_id":example_id,"open_request_id":"00000000-0000-4000-8000-000000000002","expected_effect_digest":"0".repeat(64),"verdict":"matches","summary":"Persisted open matches the selected pipeline"}),
         ),
         route!(
-            "query", "pipeline.phase_effect.get", "get_pipeline_phase_effect",
+            "query",
+            "pipeline.phase_effect.get",
+            "get_pipeline_phase_effect",
             "Read one saved completed phase attempt, output, selected verification plan obligation and backend evidence refs.",
             "Requires an independent verifier session, exact run ID and attempt ID.",
             "Returns a bound material digest; no phase, run or terminal state change.",
             "Safe to repeat; inspect the output before attesting.",
-            object_schema(json!({"run_id":uuid(),"attempt_id":uuid()}),json!(["run_id","attempt_id"])),
+            object_schema(
+                json!({"run_id":uuid(),"attempt_id":uuid()}),
+                json!(["run_id", "attempt_id"])
+            ),
             json!({"run_id":example_id,"attempt_id":"00000000-0000-4000-8000-000000000002"}),
         ),
         route!(
-            "command", "pipeline.phase_effect.verify", "verify_pipeline_phase_effect",
+            "command",
+            "pipeline.phase_effect.verify",
+            "verify_pipeline_phase_effect",
             "Append a verifier-authored pass, fail or unknown observation for one saved completed phase attempt.",
             "Pass/fail require observation content and the exact saved output digest; without independent observation use unknown.",
             "Appends immutable evidence only; it does not advance a phase or run.",
             "Retry with the same request_id and identical fields.",
-            object_schema(json!({"request_id":uuid(),"run_id":uuid(),"attempt_id":uuid(),"expected_effect_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"verdict":{"type":"string","enum":["pass","fail","unknown"]},"observation":{"type":["string","null"],"minLength":32,"maxLength":16384},"observed_output_digest":{"type":["string","null"],"pattern":"^[0-9a-f]{64}$"},"summary":{"type":"string","minLength":1,"maxLength":4096}}),json!(["request_id","run_id","attempt_id","expected_effect_digest","verdict","summary"])),
+            object_schema(
+                json!({"request_id":uuid(),"run_id":uuid(),"attempt_id":uuid(),"expected_effect_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"verdict":{"type":"string","enum":["pass","fail","unknown"]},"observation":{"type":["string","null"],"minLength":32,"maxLength":16384},"observed_output_digest":{"type":["string","null"],"pattern":"^[0-9a-f]{64}$"},"summary":{"type":"string","minLength":1,"maxLength":4096}}),
+                json!([
+                    "request_id",
+                    "run_id",
+                    "attempt_id",
+                    "expected_effect_digest",
+                    "verdict",
+                    "summary"
+                ])
+            ),
             json!({"request_id":"00000000-0000-4000-8000-000000000003","run_id":example_id,"attempt_id":"00000000-0000-4000-8000-000000000002","expected_effect_digest":"0".repeat(64),"verdict":"unknown","summary":"Independent observation unavailable"}),
         ),
         route!(

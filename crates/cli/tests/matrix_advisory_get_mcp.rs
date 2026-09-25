@@ -393,7 +393,10 @@ async fn public_mcp_ranked_advice_get_is_current_typed_and_capacity_bounded() {
     )
     .await;
     assert_eq!(current["opportunity_id"], requested["opportunity_id"]);
-    assert_eq!(current["current_advice"]["outcome"]["status"], "ranked", "{current}");
+    assert_eq!(
+        current["current_advice"]["outcome"]["status"], "ranked",
+        "{current}"
+    );
     assert_eq!(
         current["current_advice"]["outcome"]["ranked_choice_ids"],
         json!(["a", "b"])
