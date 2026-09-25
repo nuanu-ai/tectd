@@ -3,9 +3,11 @@ use crate::{ModelRouteRecommendationBasis, PreparedModelRouteRecommendation};
 use async_trait::async_trait;
 use std::collections::BTreeMap;
 use tect_domain::{
-    AdvisoryRequestPreference, MODEL_ROUTE_CATALOGUE_SCHEMA, MatrixPlanningSelection, ModelRoute,
-    ModelRouteCatalogue, ModelRouteFact, ModelRouteFactProvenance, ModelRouteRanking,
-    ModelRouteRecord, ModelRouteSelectionLink, ModelRouteWorkContext,
+    AdvisoryRequestPreference, MODEL_ROUTE_CATALOGUE_SCHEMA, MODEL_ROUTE_HOST_CAPABILITIES_SCHEMA,
+    MODEL_ROUTE_RANKING_WIRE_SCHEMA, MatrixPlanningSelection, ModelRoute, ModelRouteCatalogue,
+    ModelRouteFact, ModelRouteFactProvenance, ModelRouteHostCapabilities, ModelRouteRanking,
+    ModelRouteRankingWireOutcome, ModelRouteRankingWireRequest, ModelRouteRecord,
+    ModelRouteSelectionLink, ModelRouteWorkContext,
 };
 
 #[derive(Default)]
@@ -15,6 +17,7 @@ struct PreparationMemory {
 
 #[derive(Default)]
 struct Memory {
+    evidence: Option<crate::ModelRouteSealedRankingEvidence>,
     decisions: BTreeMap<Uuid, CapturedModelRouteDecision>,
     dispositions: BTreeMap<Uuid, CapturedModelRouteDisposition>,
     decision_writes: usize,
@@ -51,6 +54,20 @@ impl ModelRouteRecommendationStore for PreparationMemory {
 
 #[async_trait]
 impl ModelRouteDecisionStore for Memory {
+    async fn sealed_provider_ranking(
+        &mut self,
+        workspace_id: Uuid,
+        preparation_request_key: &str,
+    ) -> Result<Option<crate::ModelRouteSealedRankingEvidence>> {
+        Ok(self
+            .evidence
+            .as_ref()
+            .filter(|proof| {
+                proof.permit.workspace_id == workspace_id
+                    && proof.permit.preparation_request_key == preparation_request_key
+            })
+            .cloned())
+    }
     async fn decision_by_id(
         &mut self,
         workspace_id: Uuid,
@@ -159,12 +176,13 @@ fn prepared(preparation: ModelRoutePreparation) -> PreparedModelRouteRecommendat
         role: caller("agent".into(), node_id),
         tool: caller("code".into(), node_id),
         data_class: caller("internal".into(), node_id),
-        host_capabilities: ModelRouteFact::Known {
-            value: vec!["model-api".into()],
-            provenance: ModelRouteFactProvenance::Host {
-                evidence_ref: "host/caps/1".into(),
-            },
-        },
+        host_capabilities: ModelRouteHostCapabilities {
+            schema: MODEL_ROUTE_HOST_CAPABILITIES_SCHEMA.into(),
+            version: 1,
+            capabilities: vec!["model-api".into()],
+        }
+        .fact()
+        .unwrap(),
         remaining_budget_units: caller(10, node_id),
         available_latency_ms: caller(50, node_id),
     };
@@ -208,12 +226,52 @@ fn prepared(preparation: ModelRoutePreparation) -> PreparedModelRouteRecommendat
         eligible: Some(eligible),
         preparation,
         routes: ModelRouteRecord {
-            requested_route_id: None,
+            requested_route_id: Some("route-b".into()),
             recommended_route_id: None,
             observed_actual: None,
         },
     }
 }
+
+fn evidence(
+    prepared: &PreparedModelRouteRecommendation,
+    ids: &[&str],
+) -> crate::ModelRouteSealedRankingEvidence {
+    let request = ModelRouteRankingWireRequest::new(
+        prepared.workspace_id,
+        &prepared.request_key,
+        &prepared.work,
+        prepared.catalogue.as_ref().unwrap(),
+        prepared.eligible.as_ref().unwrap(),
+        "jev-adviser",
+    )
+    .unwrap();
+    let attempted = crate::ModelRoutePreparedAttempt::new(request.clone()).unwrap();
+    let raw_response = serde_json::json!({
+        "schema": MODEL_ROUTE_RANKING_WIRE_SCHEMA,
+        "binding_digest": request.binding_digest,
+        "adviser_model": "jev-adviser",
+        "outcome": {"kind":"ranked", "route_ids":ids},
+    })
+    .to_string()
+    .into_bytes();
+    crate::ModelRouteSealedRankingEvidence {
+        permit: crate::ModelRouteSendPermit {
+            attempt_id: Uuid::new_v4(),
+            workspace_id: prepared.workspace_id,
+            preparation_request_key: prepared.request_key.clone(),
+            request_sha256: attempted.request_sha256.clone(),
+        },
+        attempted,
+        response_sha256: tect_domain::model_route_wire_sha256(&raw_response),
+        raw_response,
+        outcome: ModelRouteRankingWireOutcome::Ranked {
+            route_ids: ids.iter().map(|id| (*id).into()).collect(),
+        },
+    }
+}
+
+mod provider_cases;
 
 #[tokio::test]
 async fn ranked_recommendation_and_explicit_disposition_replay_without_dispatch() {
@@ -222,6 +280,7 @@ async fn ranked_recommendation_and_explicit_disposition_replay_without_dispatch(
     };
     let mut memory = Memory::default();
     let prepared = preparations.prepared.as_ref().unwrap();
+    memory.evidence = Some(evidence(prepared, &["route-a", "route-b"]));
     let decision = DecideModelRouteRecommendation {
         id: Uuid::new_v4(),
         workspace_id: prepared.workspace_id,
@@ -234,7 +293,7 @@ async fn ranked_recommendation_and_explicit_disposition_replay_without_dispatch(
                 .unwrap()
                 .work_context_digest
                 .clone(),
-            ranked_route_ids: vec!["route-a".into()],
+            ranked_route_ids: vec!["route-a".into(), "route-b".into()],
         }),
     };
     let saved = decision
@@ -245,7 +304,7 @@ async fn ranked_recommendation_and_explicit_disposition_replay_without_dispatch(
         saved.routes.recommended_route_id.as_deref(),
         Some("route-a")
     );
-    assert_eq!(saved.routes.requested_route_id, None);
+    assert_eq!(saved.routes.requested_route_id.as_deref(), Some("route-b"));
     assert_eq!(saved.routes.observed_actual, None);
     assert_eq!(memory.decision_writes, 1);
     assert_eq!(
@@ -256,7 +315,7 @@ async fn ranked_recommendation_and_explicit_disposition_replay_without_dispatch(
         saved
     );
     assert_eq!(memory.decision_writes, 1);
-    let differently_ranked_same_winner = DecideModelRouteRecommendation {
+    let differently_ranked = DecideModelRouteRecommendation {
         input: ModelRouteDecisionInput::Ranking(ModelRouteRanking {
             catalogue_digest: saved
                 .prepared
@@ -272,12 +331,12 @@ async fn ranked_recommendation_and_explicit_disposition_replay_without_dispatch(
                 .unwrap()
                 .work_context_digest
                 .clone(),
-            ranked_route_ids: vec!["route-a".into(), "route-b".into()],
+            ranked_route_ids: vec!["route-b".into(), "route-a".into()],
         }),
         ..decision
     };
     assert_eq!(
-        differently_ranked_same_winner
+        differently_ranked
             .decide(&mut preparations, &mut memory)
             .await,
         Err(Error::InputConflict)
@@ -285,11 +344,9 @@ async fn ranked_recommendation_and_explicit_disposition_replay_without_dispatch(
     assert_eq!(memory.decision_writes, 1);
     let conflicting_decision = DecideModelRouteRecommendation {
         id: Uuid::new_v4(),
-        workspace_id: differently_ranked_same_winner.workspace_id,
-        preparation_request_key: differently_ranked_same_winner
-            .preparation_request_key
-            .clone(),
-        input: differently_ranked_same_winner.input.clone(),
+        workspace_id: differently_ranked.workspace_id,
+        preparation_request_key: differently_ranked.preparation_request_key.clone(),
+        input: differently_ranked.input.clone(),
     };
     assert_eq!(
         conflicting_decision

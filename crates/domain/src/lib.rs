@@ -28,6 +28,7 @@ mod knowledge_search;
 mod knowledge_time;
 mod matrix_planning_effect;
 mod matrix_planning_selection;
+mod model_route_ranking_wire;
 mod model_routing;
 mod planning_knowledge;
 mod program;
@@ -66,6 +67,7 @@ pub use knowledge_profile_registry::*;
 pub use knowledge_search::*;
 pub use matrix_planning_effect::*;
 pub use matrix_planning_selection::*;
+pub use model_route_ranking_wire::*;
 pub use model_routing::*;
 pub use planning_knowledge::*;
 pub use state::{

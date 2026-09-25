@@ -32,6 +32,7 @@ pub struct WorkspaceService {
     pub(crate) knowledge_embedding_provider: Arc<dyn crate::KnowledgeEmbeddingProvider>,
     model_route_catalogue_provider: Arc<dyn crate::ModelRouteCatalogueProvider>,
     model_route_host_capabilities_provider: Arc<dyn crate::ModelRouteHostCapabilitiesProvider>,
+    pub(crate) model_route_ranking_provider: Arc<dyn crate::ModelRouteRankingProvider>,
     pub(crate) query_embedding_cache: std::sync::Mutex<KnowledgeQueryCache>,
 }
 
@@ -141,6 +142,7 @@ impl WorkspaceService {
             model_route_host_capabilities_provider: Arc::new(
                 crate::UnavailableModelRouteHostCapabilities,
             ),
+            model_route_ranking_provider: Arc::new(crate::DisabledModelRouteRankingProvider),
             query_embedding_cache: std::sync::Mutex::new(KnowledgeQueryCache::new()),
         }
     }
@@ -212,6 +214,16 @@ impl WorkspaceService {
     ) -> Result<tect_domain::ModelRouteFact<Vec<String>>> {
         self.model_route_host_capabilities_provider
             .host_capabilities()
+    }
+
+    /// Explicit optional adviser injection; the normal constructor remains
+    /// disabled. This never installs a model-execution dispatcher.
+    pub fn with_model_route_ranking_provider(
+        mut self,
+        provider: Arc<dyn crate::ModelRouteRankingProvider>,
+    ) -> Self {
+        self.model_route_ranking_provider = provider;
+        self
     }
 
     /// Explicit Matrix composition seam. Both decisions are selected by the

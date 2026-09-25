@@ -5,7 +5,7 @@ use crate::{
     ModelRouteDecisionInput, ModelRouteDecisionOutcome, ModelRouteDecisionStore,
     ModelRouteDispositionAction, ModelRoutePreparation, ModelRouteRecommendationStore,
 };
-use tect_domain::{Error, Result};
+use tect_domain::{Error, ModelRouteRankingWireOutcome, ModelRouteWireAbstainReason, Result};
 use uuid::Uuid;
 
 pub struct DecideModelRouteRecommendation {
@@ -49,16 +49,44 @@ impl DecideModelRouteRecommendation {
             }
             match &self.input {
                 ModelRouteDecisionInput::Ranking(ranking) => {
-                    match eligible.recommendation(ranking)? {
+                    let recommended = eligible.recommendation(ranking)?;
+                    let evidence = decisions
+                        .sealed_provider_ranking(self.workspace_id, &self.preparation_request_key)
+                        .await?
+                        .ok_or(Error::Forbidden)?;
+                    if evidence.verify(&prepared)? != Some(ranking.clone()) {
+                        return Err(Error::InputConflict);
+                    }
+                    match recommended {
                         Some(route_id) => ModelRouteDecisionOutcome::Recommended { route_id },
                         None => ModelRouteDecisionOutcome::Abstained {
                             reason: ModelRouteAbstainReason::EmptyRanking,
                         },
                     }
                 }
-                ModelRouteDecisionInput::Abstain => ModelRouteDecisionOutcome::Abstained {
-                    reason: ModelRouteAbstainReason::Explicit,
-                },
+                ModelRouteDecisionInput::Abstain => {
+                    let reason = match decisions
+                        .sealed_provider_ranking(self.workspace_id, &self.preparation_request_key)
+                        .await?
+                    {
+                        None => ModelRouteAbstainReason::Explicit,
+                        Some(evidence) => {
+                            if evidence.verify(&prepared)?.is_some() {
+                                return Err(Error::InputConflict);
+                            }
+                            match evidence.outcome {
+                                ModelRouteRankingWireOutcome::Abstained {
+                                    reason: ModelRouteWireAbstainReason::NoPreference,
+                                } => ModelRouteAbstainReason::ProviderNoPreference,
+                                ModelRouteRankingWireOutcome::Abstained {
+                                    reason: ModelRouteWireAbstainReason::InsufficientEvidence,
+                                } => ModelRouteAbstainReason::ProviderInsufficientEvidence,
+                                _ => return Err(Error::InputConflict),
+                            }
+                        }
+                    };
+                    ModelRouteDecisionOutcome::Abstained { reason }
+                }
                 ModelRouteDecisionInput::NoCall => ModelRouteDecisionOutcome::Abstained {
                     reason: ModelRouteAbstainReason::NoCall,
                 },

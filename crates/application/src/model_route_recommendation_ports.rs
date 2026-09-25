@@ -106,6 +106,8 @@ pub trait ModelRouteSelectionRead: Send {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ModelRouteDecisionInput {
+    /// Accepted only when the decision store returns exact sealed provider
+    /// evidence; the caller cannot turn arbitrary IDs into Jev advice.
     Ranking(ModelRouteRanking),
     Abstain,
     NoCall,
@@ -114,6 +116,8 @@ pub enum ModelRouteDecisionInput {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ModelRouteAbstainReason {
     Explicit,
+    ProviderNoPreference,
+    ProviderInsufficientEvidence,
     EmptyRanking,
     NoCall,
 }
@@ -154,6 +158,16 @@ pub struct CapturedModelRouteDisposition {
 /// Matrix/Work/catalogue basis before insert. Replay is exact; conflicts fail.
 #[async_trait]
 pub trait ModelRouteDecisionStore: Send {
+    /// Only a sealed raw provider response for the exact saved preparation may
+    /// authorize a Ranking. Default deny keeps old adapters from laundering
+    /// caller-supplied IDs as Jev advice.
+    async fn sealed_provider_ranking(
+        &mut self,
+        _workspace_id: Uuid,
+        _preparation_request_key: &str,
+    ) -> Result<Option<crate::ModelRouteSealedRankingEvidence>> {
+        Ok(None)
+    }
     async fn decision_by_id(
         &mut self,
         workspace_id: Uuid,

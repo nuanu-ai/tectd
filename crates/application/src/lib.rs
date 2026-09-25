@@ -3,16 +3,15 @@ mod advisory;
 mod anti_bloat;
 mod anti_bloat_ports;
 mod anti_bloat_verification;
+pub use advisory::{Sha256ScopeDigest, VerifySelectedSave};
 pub use anti_bloat::AntiBloatApplication;
 pub use anti_bloat_ports::{
-    AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall,
-    AntiBloatPreparedRequest, AntiBloatSendPermit,
-    AntiBloatRankingProvider, AntiBloatStore, DisabledAntiBloatRankingProvider,
-    StoredAntiBloatReview,
+    AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall, AntiBloatPreparedRequest,
+    AntiBloatRankingProvider, AntiBloatSendPermit, AntiBloatStore,
+    DisabledAntiBloatRankingProvider, StoredAntiBloatReview,
 };
 pub use anti_bloat_ports::{AntiBloatVerificationMaterial, AntiBloatVerificationStore};
 pub use anti_bloat_verification::VerifyAntiBloatApply;
-pub use advisory::{Sha256ScopeDigest, VerifySelectedSave};
 mod advisory_ports;
 mod matrix_advice_ports;
 mod matrix_advice_runtime;
@@ -27,9 +26,11 @@ mod matrix_task_ports;
 mod matrix_tasks;
 mod matrix_verification;
 mod matrix_verification_ports;
+mod model_route_decision;
+mod model_route_provider;
+mod model_route_provider_ports;
 mod model_route_recommendation;
 mod model_route_recommendation_ports;
-mod model_route_decision;
 mod pipeline_open_effect;
 mod pipeline_phase_effect;
 mod pipeline_recommendation;
@@ -86,23 +87,35 @@ pub use matrix_verification::{MatrixEvidenceReference, VerifyMatrixTask};
 pub use matrix_verification_ports::{
     DisabledMatrixEvidenceValidator, MatrixEvidenceValidator, MatrixVerificationStore,
 };
+pub use model_route_decision::{
+    DecideModelRouteRecommendation, DispositionModelRouteRecommendation,
+};
+pub use model_route_provider::{
+    ModelRouteSendStart, attempt_model_route_after_commit, finalize_model_route_sealed_response,
+    prepare_model_route_send, seal_model_route_raw_response,
+};
+pub use model_route_provider_ports::{
+    DisabledModelRouteRankingProvider, ModelRouteAttemptStore, ModelRoutePreparedAttempt,
+    ModelRouteRankingProvider, ModelRouteRunNoCall, ModelRouteSealedRankingEvidence,
+    ModelRouteSendPermit,
+};
 pub use model_route_recommendation::PrepareModelRouteRecommendation;
-pub use model_route_decision::{DecideModelRouteRecommendation, DispositionModelRouteRecommendation};
 pub use model_route_recommendation_ports::{
     CapturedModelRouteDecision, CapturedModelRouteDisposition, ModelRouteAbstainReason,
     ModelRouteCatalogueProvider, ModelRouteDecisionInput, ModelRouteDecisionOutcome,
-    ModelRouteDecisionStore, ModelRouteDispositionAction, ModelRoutePreparation,
-    ModelRouteRecommendationBasis,
-    ModelRouteHostCapabilitiesProvider, ModelRouteRecommendationStore, ModelRouteSelectionRead,
-    PreparedModelRouteRecommendation, UnavailableModelRouteCatalogue,
+    ModelRouteDecisionStore, ModelRouteDispositionAction, ModelRouteHostCapabilitiesProvider,
+    ModelRoutePreparation, ModelRouteRecommendationBasis, ModelRouteRecommendationStore,
+    ModelRouteSelectionRead, PreparedModelRouteRecommendation, UnavailableModelRouteCatalogue,
     UnavailableModelRouteHostCapabilities,
 };
 pub use pipeline_open_effect::{
     PipelineOpenEffectAttestation, PipelineOpenEffectMaterial, PipelineOpenEffectStore,
     PipelineOpenEffectVerdict, VerifyPipelineOpenEffect,
 };
-pub use pipeline_phase_effect::{PipelinePhaseEffectAttestation, PipelinePhaseEffectMaterial,
-    PipelinePhaseEffectStore, PipelinePhaseEffectVerdict, VerifyPipelinePhaseEffect};
+pub use pipeline_phase_effect::{
+    PipelinePhaseEffectAttestation, PipelinePhaseEffectMaterial, PipelinePhaseEffectStore,
+    PipelinePhaseEffectVerdict, VerifyPipelinePhaseEffect,
+};
 pub use pipeline_recommendation::{
     PreparePipelineRecommendation, pipeline_recommendation_source_digest,
 };
