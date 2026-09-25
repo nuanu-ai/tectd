@@ -53,6 +53,10 @@ pub trait UnitOfWork:
     ) -> Option<&mut dyn crate::MatrixPlanningEffectStore> {
         None
     }
+    /// Optional exact persisted Matrix-selection reader for model-route work facts.
+    fn model_route_selection_read(&mut self) -> Option<&mut dyn crate::ModelRouteSelectionRead> {
+        None
+    }
     fn pipeline_open_effect_store(&mut self) -> Option<&mut dyn crate::PipelineOpenEffectStore> {
         None
     }

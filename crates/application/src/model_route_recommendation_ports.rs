@@ -74,3 +74,18 @@ pub trait ModelRouteRecommendationStore: Send {
         prepared: &PreparedModelRouteRecommendation,
     ) -> Result<PreparedModelRouteRecommendation>;
 }
+
+/// Read-only provenance boundary for one exact, current Matrix-selected native save.
+/// Missing typed work facts remain Unknown; this port never dispatches a model.
+#[async_trait]
+pub trait ModelRouteSelectionRead: Send {
+    async fn approved_work_context(
+        &mut self,
+        workspace_id: Uuid,
+        disposition_id: Uuid,
+        candidate_set_id: Uuid,
+        caller_request_id: Uuid,
+        mapped_work_node_id: Uuid,
+        mapped_work_node_revision: i64,
+    ) -> Result<Option<ModelRouteWorkContext>>;
+}

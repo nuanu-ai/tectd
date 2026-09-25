@@ -98,6 +98,11 @@ impl UnitOfWork for PgUnitOfWork {
     ) -> Option<&mut dyn tect_application::MatrixPlanningEffectStore> {
         Some(self)
     }
+    fn model_route_selection_read(
+        &mut self,
+    ) -> Option<&mut dyn tect_application::ModelRouteSelectionRead> {
+        Some(self)
+    }
     fn pipeline_open_effect_store(&mut self) -> Option<&mut dyn tect_application::PipelineOpenEffectStore> {
         Some(self)
     }
