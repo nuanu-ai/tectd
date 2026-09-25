@@ -21,6 +21,9 @@ pub struct AntiBloatObligationLink {
 pub struct AntiBloatInput {
     pub manifest: ScopeConstructorManifest,
     pub selected_id: ScopeAlternativeId,
+    /// Revision of the actually saved selected draft, after the source-frozen
+    /// manifest revision. This is the caller CAS revision, not source lineage.
+    pub selected_revision: i64,
     /// Immutable identity of the trusted graph binding, supplied by its writer.
     pub graph_provenance: String,
     /// Digest of the authoritative dependency graph at review time.
@@ -118,6 +121,7 @@ fn validate_links(input: &AntiBloatInput) -> Result<BTreeMap<String, BTreeSet<Uu
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
     if input.graph_provenance.trim().is_empty()
+        || input.selected_revision <= input.manifest.source.candidate_set_revision
         || policy.len() != input.mandatory_policy_obligation_ids.len()
         || !policy.is_subset(&obligations)
         || !valid_digest(&input.dependency_digest)
@@ -234,7 +238,7 @@ pub fn review_anti_bloat(
         whole_set_digest: input.manifest.whole_set_digest.clone(),
         material_digest: alternative.material_digest.clone(),
         candidate_set_id: input.manifest.source.candidate_set_id,
-        plan_revision: input.manifest.source.candidate_set_revision,
+        plan_revision: input.selected_revision,
         dependency_digest: input.dependency_digest.clone(),
         selected_id: input.selected_id.clone(),
         findings,

@@ -246,12 +246,13 @@ pub(crate) async fn save_selected_candidate_draft(
     let stored =
         crate::scope_candidates::save_selected_draft(tx, tenant, workspace, request, &resolved)
             .await?;
+    let caller_link_id = Uuid::new_v4();
     persist_caller_link(
         tx,
         tenant,
         workspace,
         &ScopeCallerLinkInput {
-            link_id: Uuid::new_v4(),
+            link_id: caller_link_id,
             request_id: request.request_id,
             opportunity_id: selected.opportunity_id,
             candidate_set_id: request.candidate_set_id,
@@ -263,6 +264,18 @@ pub(crate) async fn save_selected_candidate_draft(
             actor_id: actor,
             session_id: session,
         },
+    )
+    .await?;
+    insert_selected_graph_binding(
+        tx,
+        tenant,
+        workspace,
+        &manifest,
+        selected.opportunity_id,
+        &selected.selected_id,
+        stored.context.candidate_set.revision,
+        caller_link_id,
+        request.request_id,
     )
     .await?;
     Ok(stored)

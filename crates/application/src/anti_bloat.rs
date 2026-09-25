@@ -86,7 +86,7 @@ pub async fn prepare_anti_bloat_review(
         .await?
         .ok_or(Error::NotFound)?;
     if input.manifest.source.candidate_set_id != candidate_set_id
-        || input.manifest.source.candidate_set_revision != expected_revision
+        || input.selected_revision != expected_revision
     {
         return Err(Error::InputConflict);
     }

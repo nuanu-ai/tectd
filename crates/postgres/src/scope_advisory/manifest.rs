@@ -312,6 +312,18 @@ async fn prepare_manifest(
 fn authored_graph_binding(
     manifest: &ScopeConstructorManifest,
 ) -> Result<(Vec<AntiBloatObligationLink>, String, String)> {
+    authored_graph_binding_for(
+        manifest,
+        &manifest.baseline_id,
+        manifest.source.candidate_set_revision,
+    )
+}
+
+pub(crate) fn authored_graph_binding_for(
+    manifest: &ScopeConstructorManifest,
+    selected_id: &ScopeAlternativeId,
+    selected_revision: i64,
+) -> Result<(Vec<AntiBloatObligationLink>, String, String)> {
     if !is_source_authored_identity(&manifest.constructor)
         || (manifest.constructor == legacy_source_authored_identity()
             && (manifest.emitted.iter().any(|alternative| {
@@ -331,9 +343,10 @@ fn authored_graph_binding(
     {
         return Err(Error::InvalidSource);
     }
-    let baseline = manifest
-        .eligible(&manifest.baseline_id)
-        .ok_or(Error::InvalidSource)?;
+    let selected = manifest.eligible(selected_id).ok_or(Error::InvalidSource)?;
+    if selected_revision < manifest.source.candidate_set_revision {
+        return Err(Error::StaleRevision);
+    }
     let mut obligations = std::collections::BTreeSet::new();
     for obligation in &manifest.obligations {
         if obligation.id != obligation.source_input_id
@@ -345,7 +358,7 @@ fn authored_graph_binding(
     }
     let mut links = Vec::new();
     let mut covered = std::collections::BTreeSet::new();
-    for goal in &baseline.material.goals {
+    for goal in &selected.material.goals {
         let source_id = goal.source_ref_id.to_string();
         if !obligations.contains(&source_id) || !covered.insert((source_id.clone(), goal.id)) {
             return Err(Error::InvalidSource);
@@ -366,7 +379,7 @@ fn authored_graph_binding(
     }
     links.sort_by(|a, b| (&a.obligation_id, a.goal_id).cmp(&(&b.obligation_id, b.goal_id)));
 
-    let mut dependencies = baseline
+    let mut dependencies = selected
         .material
         .candidates
         .iter()
@@ -381,8 +394,8 @@ fn authored_graph_binding(
         "tect.anti-bloat-dependency-graph/1",
         &manifest.source.digest,
         &manifest.whole_set_digest,
-        &baseline.material_digest,
-        manifest.source.candidate_set_revision,
+        &selected.material_digest,
+        selected_revision,
         &dependencies,
     ))
     .map_err(storage_error)?;
@@ -391,11 +404,78 @@ fn authored_graph_binding(
         "tect.source-authored-graph-binding/1:source={}:whole={}:material={}:revision={}:dependencies={}",
         manifest.source.digest,
         manifest.whole_set_digest,
-        baseline.material_digest,
-        manifest.source.candidate_set_revision,
+        selected.material_digest,
+        selected_revision,
         dependency_digest,
     );
     Ok((links, dependency_digest, provenance))
+}
+
+async fn insert_selected_graph_binding(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    manifest: &ScopeConstructorManifest,
+    opportunity_id: Uuid,
+    selected_id: &ScopeAlternativeId,
+    selected_revision: i64,
+    caller_link_id: Uuid,
+    caller_request_id: Uuid,
+) -> Result<()> {
+    let selected = manifest.eligible(selected_id).ok_or(Error::InvalidSource)?;
+    let (links, dependency_digest, provenance) =
+        authored_graph_binding_for(manifest, selected_id, selected_revision)?;
+    let provenance = format!(
+        "{provenance}:selected={}:caller={caller_link_id}:receipt={caller_request_id}",
+        selected_id.0
+    );
+    let saved_payload: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT payload FROM scope_candidate_drafts WHERE tenant_id=$1 AND workspace_id=$2 \
+         AND candidate_set_id=$3 AND set_revision=$4",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(manifest.source.candidate_set_id)
+    .bind(selected_revision)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(storage_error)?
+    .flatten();
+    let saved: ResolvedCandidateDraft =
+        serde_json::from_value(saved_payload.ok_or(Error::InputConflict)?)
+            .map_err(storage_error)?;
+    if saved != selected.material
+        || scope_candidate_material_digest(&Sha256ScopeDigest, &saved)? != selected.material_digest
+    {
+        return Err(Error::InputConflict);
+    }
+    sqlx::query(
+        "INSERT INTO scope_anti_bloat_bindings \
+         (tenant_id,workspace_id,candidate_set_id,opportunity_id,candidate_set_revision, \
+          source_digest,dependency_digest,obligation_links,mandatory_policy_obligation_ids,provenance, \
+          selected_draft_revision,selected_material_digest,selected_alternative_id, \
+          selected_caller_link_id,selected_caller_request_id) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(manifest.source.candidate_set_id)
+    .bind(opportunity_id)
+    .bind(selected_revision)
+    .bind(&manifest.source.digest)
+    .bind(dependency_digest)
+    .bind(serde_json::to_value(links).map_err(storage_error)?)
+    .bind(serde_json::json!([]))
+    .bind(provenance)
+    .bind(selected_revision)
+    .bind(&selected.material_digest)
+    .bind(&selected_id.0)
+    .bind(caller_link_id)
+    .bind(caller_request_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    Ok(())
 }
 
 async fn insert_authored_graph_binding(

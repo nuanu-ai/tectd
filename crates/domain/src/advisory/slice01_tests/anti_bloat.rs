@@ -54,6 +54,7 @@ fn corpus(dependent: bool) -> (AntiBloatInput, Uuid) {
     manifest.validate(&digest()).unwrap();
     (
         AntiBloatInput {
+            selected_revision: manifest.source.candidate_set_revision + 1,
             manifest,
             selected_id,
             graph_provenance: "trusted-fixture-binding".into(),
@@ -102,7 +103,7 @@ fn removal(
     (
         CandidateDeltaBatch {
             candidate_set_id: input.manifest.source.candidate_set_id,
-            expected_revision: input.manifest.source.candidate_set_revision,
+            expected_revision: input.selected_revision,
             idempotency_key: "fresh-corpus-removal".into(),
             operations: vec![CandidateDeltaOperation::CandidateRemove {
                 candidate_id,

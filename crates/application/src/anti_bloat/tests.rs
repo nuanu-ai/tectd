@@ -150,6 +150,7 @@ fn input(extra: bool) -> AntiBloatInput {
     manifest.whole_set_digest = manifest.canonical_whole_set_digest(&digest).unwrap();
     manifest.validate(&digest).unwrap();
     AntiBloatInput {
+        selected_revision: manifest.source.candidate_set_revision + 1,
         manifest,
         selected_id: id,
         graph_provenance: "trusted-fixture-binding".into(),
@@ -433,7 +434,7 @@ async fn prepare(
         Uuid::from_u128(10),
         Uuid::from_u128(11),
         Uuid::from_u128(1),
-        3,
+        4,
         preference,
     )
     .await

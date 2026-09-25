@@ -2,8 +2,7 @@ use super::live_support::{D, manifest, reseal_manifest, rw};
 use super::*;
 use crate::{PgStore, admin, store::PgUnitOfWork};
 use tect_application::{
-    AntiBloatApplication, AntiBloatAttemptState, AntiBloatNoCall, AntiBloatStore,
-    DisabledAntiBloatRankingProvider, UnitOfWork,
+    AntiBloatApplication, AntiBloatStore, DisabledAntiBloatRankingProvider, UnitOfWork,
 };
 
 #[test]
@@ -39,6 +38,7 @@ fn trusted_graph_links_every_goal_so_even_duplicate_candidates_are_not_rankable(
     let (links, dependency_digest, graph_provenance) = authored_graph_binding(&authored).unwrap();
     assert_eq!(links.len(), 2);
     let input = AntiBloatInput {
+        selected_revision: authored.source.candidate_set_revision + 1,
         selected_id: authored.baseline_id.clone(),
         manifest: authored,
         graph_provenance,
@@ -57,7 +57,7 @@ fn trusted_graph_links_every_goal_so_even_duplicate_candidates_are_not_rankable(
 
 #[tokio::test]
 #[ignore = "requires disposable migrated PG18 and TECT_TEST_ADMIN_URL/TECT_TEST_RUNTIME_URL"]
-async fn authored_manifest_writes_binding_and_pg_reader_prepares_no_call() {
+async fn authored_manifest_binding_is_inactive_before_selected_save() {
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
     let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
     let admin_pool = sqlx::PgPool::connect(&admin_url).await.unwrap();
@@ -177,12 +177,12 @@ async fn authored_manifest_writes_binding_and_pg_reader_prepares_no_call() {
 
     let mut reader = PgUnitOfWork::test_begin(&runtime_pool, tenant).await;
     reader.authenticate(&enrollment.auth).await.unwrap();
-    let input = AntiBloatStore::authoritative_input(&mut reader, workspace, candidate, 3)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(input.manifest, authored);
-    assert_eq!(input.graph_provenance, binding.0);
+    assert!(
+        AntiBloatStore::authoritative_input(&mut reader, workspace, candidate, 3)
+            .await
+            .unwrap()
+            .is_none()
+    );
     assert!(
         AntiBloatStore::authoritative_input(&mut reader, workspace, candidate, 4)
             .await
@@ -197,23 +197,17 @@ async fn authored_manifest_writes_binding_and_pg_reader_prepares_no_call() {
         store: app_reader,
         provider: DisabledAntiBloatRankingProvider,
     };
-    let prepared = app
-        .prepare(
+    assert_eq!(
+        app.prepare(
             workspace,
             actor,
             candidate,
             3,
-            AdvisoryRequestPreference::UseWorkspace,
+            AdvisoryRequestPreference::UseWorkspace
         )
-        .await
-        .unwrap();
-    assert_eq!(
-        prepared.state,
-        AntiBloatAttemptState::NoCall(AntiBloatNoCall::NoEligibleFindings)
+        .await,
+        Err(Error::NotFound)
     );
-    let no_send = app.prepare_send(prepared.review_id).await.unwrap();
-    assert_eq!(no_send.state, prepared.state);
-    assert!(no_send.permit.is_none());
     Box::new(app.store).commit().await.unwrap();
     let review_count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM scope_anti_bloat_reviews WHERE tenant_id=$1 AND workspace_id=$2",
@@ -223,5 +217,5 @@ async fn authored_manifest_writes_binding_and_pg_reader_prepares_no_call() {
     .fetch_one(&admin_pool)
     .await
     .unwrap();
-    assert_eq!(review_count, 1);
+    assert_eq!(review_count, 0);
 }

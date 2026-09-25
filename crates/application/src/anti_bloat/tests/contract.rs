@@ -28,7 +28,7 @@ async fn exact_agent_delta_preserves_plan_before_caller() {
         disposition: AntiBloatDisposition::Narrow,
         delta: CandidateDeltaBatch {
             candidate_set_id: Uuid::from_u128(1),
-            expected_revision: 3,
+            expected_revision: 4,
             idempotency_key: "exact-removal".into(),
             operations: vec![CandidateDeltaOperation::CandidateRemove {
                 candidate_id: extra,
@@ -56,7 +56,7 @@ async fn exact_agent_delta_preserves_plan_before_caller() {
     ));
     assert_eq!(app.store.applies, 0);
     let receipt = app.disposition_and_apply(&authored).await.unwrap();
-    assert_eq!(receipt.to_revision, 4);
+    assert_eq!(receipt.to_revision, 5);
     assert_eq!(app.store.applies, 1);
     let after = app.store.after.as_ref().unwrap();
     assert_eq!(after.candidates.len(), before.candidates.len() - 1);
