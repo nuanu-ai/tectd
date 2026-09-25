@@ -12,6 +12,7 @@ pub(super) async fn exercise_prepare(
     owner: &mut Mcp,
     independent: &mut Mcp,
     set: Uuid,
+    source: &Value,
     work: &Value,
     ready: &Value,
     chosen: &Value,
@@ -111,6 +112,39 @@ pub(super) async fn exercise_prepare(
     assert_eq!(binding.7, manifest["catalogue_digest"]);
     assert_eq!(binding.8, prepared["eligible_kind_ids"]);
     assert_eq!(binding.9, prepared["manifest_digest"]);
+    let source_binding: (Uuid, Uuid, String, String) = sqlx::query_as(
+        "SELECT planning_snapshot_id,source_snapshot_id,source_snapshot_digest,\
+         (SELECT source_revision FROM advisory_opportunity WHERE workspace_id=$1 AND id=$2)\
+         FROM pipeline_advice_contexts WHERE workspace_id=$1 AND opportunity_id=$2",
+    )
+    .bind(workspace)
+    .bind(opportunity)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(json!(source_binding.0), ready["snapshot"]["id"]);
+    assert_eq!(json!(source_binding.1), source["snapshot"]["id"]);
+    assert_eq!(
+        source_binding.3,
+        source["candidate_set"]["revision"].to_string()
+    );
+    let selected_sources_digest: String = sqlx::query_scalar(
+        "SELECT selected_sources_digest FROM scope_candidate_snapshots WHERE workspace_id=$1 AND id=$2",
+    )
+    .bind(workspace)
+    .bind(source_binding.1)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        source_binding.2,
+        tect_application::pipeline_recommendation_source_digest(
+            source_binding.1,
+            source_binding.3.parse().unwrap(),
+            &selected_sources_digest,
+        )
+        .unwrap()
+    );
     let provenance: (
         String,
         Uuid,

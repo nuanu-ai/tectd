@@ -224,6 +224,7 @@ async fn public_prepare_binds_selected_work_and_independent_match_without_dispat
         &mut owner,
         &mut independent,
         set,
+        &source,
         &work,
         &ready,
         &chosen,
