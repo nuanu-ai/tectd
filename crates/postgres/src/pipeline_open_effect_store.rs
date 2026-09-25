@@ -47,9 +47,7 @@ impl PipelineOpenEffectStore for PgUnitOfWork {
                AND e.verdict='match' AND l.disposition_id=c.matrix_disposition_id \
                AND e.candidate_set_id=c.candidate_set_id",
         );
-        if for_update {
-            sql.push_str(" FOR SHARE OF s,d,c,e,l,r,dr");
-        }
+        append_open_effect_lock(&mut sql, for_update);
         let row = sqlx::query(&sql)
             .bind(tenant)
             .bind(workspace_id)
@@ -227,4 +225,29 @@ fn c_id(row: &sqlx::postgres::PgRow) -> Result<Uuid> {
 }
 fn c_opportunity(row: &sqlx::postgres::PgRow) -> Result<Uuid> {
     row.try_get("context_opportunity_id").map_err(storage_error)
+}
+
+fn append_open_effect_lock(sql: &mut String, for_update: bool) {
+    if for_update {
+        // Runtime may lock the mutable Slice; the owner-privileged insert
+        // guard locks and rechecks the sealed upstream rows atomically.
+        sql.push_str(" FOR SHARE OF s");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_open_effect_lock;
+
+    #[test]
+    fn runtime_open_effect_lock_respects_sealed_row_privileges() {
+        let grants = include_str!("admin/pipeline_advice.rs");
+        let guard = include_str!("../migrations/0069_pipeline_open_effect_attestations.sql");
+        let mut sql = String::from("SELECT 1 FROM native_slices s");
+
+        append_open_effect_lock(&mut sql, true);
+        assert_eq!(sql, "SELECT 1 FROM native_slices s FOR SHARE OF s");
+        assert!(grants.contains("GRANT SELECT, INSERT ON TABLE pipeline_advice_dispositions"));
+        assert!(guard.contains("FOR SHARE OF opened,disposition,context,matrix_effect,selection,"));
+    }
 }
