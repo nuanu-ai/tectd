@@ -8,7 +8,7 @@ const MAX_MATRIX_INPUT_BYTES: usize = 1024 * 1024;
 const MAX_OPERATIONAL_FACTS: usize = 1024;
 
 pub(crate) enum MatrixTaskInvocation {
-    Record(RecordMatrixTask),
+    Record(Box<RecordMatrixTask>),
     Get(Uuid),
 }
 
@@ -73,7 +73,7 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<MatrixTaskInvocation
                 }
                 choice_set.validate(&request.input)?;
             }
-            Ok(MatrixTaskInvocation::Record(request))
+            Ok(MatrixTaskInvocation::Record(Box::new(request)))
         }
         "get_matrix_task" => {
             let args: GetArguments =

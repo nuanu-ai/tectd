@@ -317,8 +317,7 @@ fn native_from_prepared(
         || binding.task_revision != app_binding.task_revision.to_string()
         || binding.input_digest != app_binding.input_digest
         || binding.choice_set_id != app_binding.choice_set_id
-        || binding.choice_set_version
-            != u64::try_from(app_binding.choice_set_version).map_err(|_| Error::InvalidArguments)?
+        || binding.choice_set_version != app_binding.choice_set_version
         || binding.choice_set_digest != app_binding.choice_set_digest
         || binding.evaluation_digest != app_binding.evaluation_digest
         || binding.verification_digest != app_binding.verification_digest
