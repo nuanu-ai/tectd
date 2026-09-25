@@ -53,7 +53,7 @@ async fn disposable_pair_for_effect() -> (PgPool, String) {
     (pool, runtime_url)
 }
 
-fn save_request(planning: &Value, selection: Value) -> Value {
+pub(super) fn save_request(planning: &Value, selection: Value) -> Value {
     let mut request = json!({
         "kind":"draft","scope_id":planning["scope"]["id"],
         "candidate_set_id":planning["candidate_set"]["id"],

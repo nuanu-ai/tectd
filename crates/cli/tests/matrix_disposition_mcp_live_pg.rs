@@ -6,6 +6,8 @@ mod recovery_support;
 mod selection;
 #[path = "matrix_disposition_mcp_live_pg/planning_effect.rs"]
 mod planning_effect;
+#[path = "matrix_disposition_mcp_live_pg/pipeline_prepare.rs"]
+mod pipeline_prepare;
 #[path = "native_planning/support.rs"]
 #[allow(dead_code)]
 mod support;
