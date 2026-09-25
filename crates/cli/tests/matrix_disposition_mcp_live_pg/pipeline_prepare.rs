@@ -113,6 +113,8 @@ fn explicit_fixture_policy() -> PipelineCompatibilityPolicy {
 
 #[path = "pipeline_prepare/assertions.rs"]
 mod assertions;
+#[path = "pipeline_prepare/http_public.rs"]
+mod http_public;
 #[path = "pipeline_prepare/open_effect.rs"]
 mod open_effect;
 #[path = "pipeline_prepare/phase_effect.rs"]
@@ -356,6 +358,7 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
     };
     exercise_zero_eligible_no_call(&no_call_fixture).await;
     exercise_one_eligible_no_call(&no_call_fixture).await;
+    http_public::exercise(&no_call_fixture, &mut independent).await;
     assertions::exercise_prepare(
         &mut owner,
         &mut independent,
