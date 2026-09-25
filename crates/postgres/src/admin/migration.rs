@@ -89,6 +89,21 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
         ),
         format!("GRANT DELETE ON TABLE scope_candidate_delta_coverage TO {quoted_role}"),
         format!(
+            "REVOKE ALL PRIVILEGES ON TABLE scope_anti_bloat_bindings, \
+             scope_anti_bloat_reviews, scope_anti_bloat_caller_links FROM {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT ON TABLE scope_anti_bloat_bindings TO {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT ON TABLE scope_anti_bloat_reviews, \
+             scope_anti_bloat_caller_links TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(state,request_bytes,request_sha256,ranked_ids,raw_response,response_sha256,send_started_at,sealed_at) \
+             ON TABLE scope_anti_bloat_reviews TO {quoted_role}"
+        ),
+        format!(
             "REVOKE ALL PRIVILEGES ON TABLE native_scopes, slice_candidate_sets, \
              slice_planning_inputs, slice_planning_snapshots, slice_candidate_drafts, \
              slice_candidate_reviews, native_slices, slice_results, native_planning_receipts, \

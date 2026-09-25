@@ -1,6 +1,7 @@
 //! PostgreSQL persistence and operator-only administration.
 pub mod admin;
 mod advisory;
+mod anti_bloat_store;
 #[cfg(test)]
 mod advisory_migration_tests;
 mod durable_knowledge;
