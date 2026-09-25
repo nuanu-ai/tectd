@@ -10,6 +10,7 @@ tect-domain.workspace = true
 async-trait.workspace = true
 uuid.workspace = true
 sha2.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 [lints]

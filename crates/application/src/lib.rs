@@ -18,6 +18,7 @@ mod matrix_verification_ports;
 mod model_route_recommendation;
 mod model_route_recommendation_ports;
 mod pipeline_recommendation;
+mod pipeline_open_effect;
 mod pipeline_recommendation_dispatch;
 mod pipeline_recommendation_disposition;
 mod pipeline_recommendation_dispatch_ports;
@@ -59,6 +60,7 @@ pub use matrix_planning_effect_ports::{
     MatrixPlanningEffectAttestation, MatrixPlanningEffectSnapshot, MatrixPlanningEffectStore,
     MatrixPlanningEffectVerdict,
 };
+pub use pipeline_open_effect::{PipelineOpenEffectMaterial, PipelineOpenEffectVerdict, PipelineOpenEffectAttestation, PipelineOpenEffectStore, VerifyPipelineOpenEffect};
 pub use matrix_planning_selection_ports::{
     MatrixPlanningMappedNode, MatrixPlanningSelectionLink, MatrixPlanningSelectionStore,
 };

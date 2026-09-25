@@ -226,6 +226,8 @@ impl McpSession {
                     ("command", Some("engineering.matrix.planning_effect.verify")) => {
                         Some("verify_matrix_planning_effect")
                     }
+                    ("query", Some("pipeline.open_effect.get")) => Some("get_pipeline_open_effect"),
+                    ("command", Some("pipeline.open_effect.verify")) => Some("verify_pipeline_open_effect"),
                     ("query", Some("candidate.advisory.get")) => Some("candidate_advisory_get"),
                     ("query", Some("candidate.advisory.audit")) => Some("candidate_advisory_audit"),
                     _ => None,

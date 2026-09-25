@@ -53,6 +53,9 @@ pub trait UnitOfWork:
     ) -> Option<&mut dyn crate::MatrixPlanningEffectStore> {
         None
     }
+    fn pipeline_open_effect_store(&mut self) -> Option<&mut dyn crate::PipelineOpenEffectStore> {
+        None
+    }
     /// Optional pre-open pipeline recommendation persistence.
     fn pipeline_recommendation_store(
         &mut self,

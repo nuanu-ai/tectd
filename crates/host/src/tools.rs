@@ -20,6 +20,7 @@ pub(crate) enum Invocation {
     MatrixTask(crate::matrix_task_tools::MatrixTaskInvocation),
     MatrixVerification(tect_application::VerifyMatrixTask),
     MatrixPlanningEffect(crate::matrix_planning_effect_tools::MatrixPlanningEffectInvocation),
+    PipelineOpenEffect(crate::pipeline_open_effect_tools::PipelineOpenEffectInvocation),
     MatrixAdvisory(crate::matrix_advisory_tools::MatrixAdvisoryInvocation),
     MatrixDisposition(crate::matrix_disposition_tools::MatrixDispositionInvocation),
     Help(crate::api::HelpRequest),
@@ -100,6 +101,9 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
         "get_matrix_planning_effect" | "verify_matrix_planning_effect" => {
             crate::matrix_planning_effect_tools::parse(name, arguments)
                 .map(Invocation::MatrixPlanningEffect)
+        }
+        "get_pipeline_open_effect" | "verify_pipeline_open_effect" => {
+            crate::pipeline_open_effect_tools::parse(name, arguments).map(Invocation::PipelineOpenEffect)
         }
         "request_engineering_advisory" | "get_engineering_advisory" => {
             crate::matrix_advisory_tools::parse(name, arguments).map(Invocation::MatrixAdvisory)

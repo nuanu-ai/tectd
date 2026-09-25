@@ -308,6 +308,22 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 }
                 Ok(response)
             }
+            Invocation::PipelineOpenEffect(invocation) => {
+                service.authenticate_matrix_verifier_session(context).await?;
+                let output = match invocation {
+                    crate::pipeline_open_effect_tools::PipelineOpenEffectInvocation::Get { slice_id, open_request_id } => {
+                        let (material, digest, principal, session) = service.get_pipeline_open_effect(context, slice_id, open_request_id).await?;
+                        crate::pipeline_open_effect_tools::read(material, digest, principal, session)
+                    }
+                    crate::pipeline_open_effect_tools::PipelineOpenEffectInvocation::Verify(request) => {
+                        crate::pipeline_open_effect_tools::guard_verify_output(&request, capacity)?;
+                        crate::pipeline_open_effect_tools::receipt(service.verify_pipeline_open_effect(context, &request).await?)
+                    }
+                };
+                let response = responses::with_actions(output, Vec::new(), None);
+                if responses::encoded_len(&response)? > capacity { return Err(Error::RequestTooLarge); }
+                Ok(response)
+            }
             Invocation::MatrixAdvisory(invocation) => {
                 let receipt = match invocation {
                     crate::matrix_advisory_tools::MatrixAdvisoryInvocation::Request(request) => {
@@ -497,6 +513,7 @@ fn invalid_request_auth(tool_name: &str) -> InvalidRequestAuth {
     if matches!(
         tool_name,
         "verify_matrix_task" | "get_matrix_planning_effect" | "verify_matrix_planning_effect"
+        | "get_pipeline_open_effect" | "verify_pipeline_open_effect"
     ) {
         InvalidRequestAuth::MatrixVerifier
     } else if allows_verifier_invalid_request(tool_name) {
