@@ -144,8 +144,8 @@ impl ScopeAdviceProvider for CountingCapableProvider {
         PreparedScopeAdviceAttempt::new(
             request.clone(),
             b"{}".to_vec(),
-            "test-only".into(),
             "fixture".into(),
+            "jev".into(),
             "https://fixture.invalid".into(),
             "fixture.v1".into(),
         )
@@ -339,12 +339,17 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     ).bind(opportunity).fetch_one(&pool).await.unwrap();
     assert_eq!(preselection, (true, 0));
 
-    let manifest = manifest(
+    let mut manifest = manifest(
         candidate,
         snapshot,
         program,
         &[(source_refs[0], D), (source_refs[1], D)],
     );
+    manifest.constructor = source_authored_identity();
+    manifest.emitted[0].material.goals[0].source_ref_id = source_refs[1];
+    manifest.emitted[0].material_digest =
+        scope_candidate_material_digest(&Sha256ScopeDigest, &manifest.emitted[0].material).unwrap();
+    reseal_manifest(&mut manifest);
     let store = PgStore::connect(&runtime_url, 4).await.unwrap();
     let runtime_pool = sqlx::PgPool::connect(&runtime_url).await.unwrap();
     let authority =
@@ -488,7 +493,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         AdvisoryReason::BudgetPolicyInvalid
     );
     assert!(budget_no_call.advice.is_none());
-    assert_eq!(provider_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(provider_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     let (state, reason): (String, String) =
         sqlx::query_as("SELECT state,primary_reason FROM advisory_opportunity WHERE id=$1")
             .bind(budget_no_call.opportunity.id)
@@ -738,6 +743,21 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         )
     );
 
+    // The signed advisory already owns the revision-3 source binding. Give
+    // the separate aggregate lifecycle a fresh revision on this same fixture.
+    sqlx::query("UPDATE scope_candidate_sets SET revision=4 WHERE id=$1")
+        .bind(candidate)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE advisory_opportunity SET source_revision='4' WHERE id=$1")
+        .bind(opportunity)
+        .execute(&pool)
+        .await
+        .unwrap();
+    manifest.source.candidate_set_revision = 4;
+    reseal_manifest(&mut manifest);
+
     assert_eq!(
         authority
             .observe(&ScopeAuthorityRequest {
@@ -815,12 +835,16 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
             .await,
         Err(Error::InvalidArguments)
     );
-    let make_record = |manifest: ScopeConstructorManifest| ScopeManifestRecord {
-        opportunity_id: opportunity,
-        candidate_set_id: candidate,
-        config_revision: 1,
-        opportunity_material_digest: D.into(),
-        manifest,
+    let make_record = |mut manifest: ScopeConstructorManifest| {
+        manifest.source.candidate_set_revision = 4;
+        reseal_manifest(&mut manifest);
+        ScopeManifestRecord {
+            opportunity_id: opportunity,
+            candidate_set_id: candidate,
+            config_revision: 1,
+            opportunity_material_digest: D.into(),
+            manifest,
+        }
     };
     let missing =
         super::live_support::manifest(candidate, snapshot, program, &[(source_refs[0], D)]);
@@ -904,7 +928,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
 
     let stale_opportunity = Uuid::new_v4();
     let stale_request_key = format!("request-{stale_opportunity}");
-    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'3',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','use_workspace','1',$7,$8,'prepared','dispatch_authorized')")
+    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'4',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','use_workspace','1',$7,$8,'prepared','dispatch_authorized')")
         .bind(stale_opportunity).bind(tenant).bind(workspace).bind(candidate).bind(session).bind(actor)
         .bind(&stale_request_key).bind(D).execute(&pool).await.unwrap();
     let stale_prepared = ScopeManifestRecord {
@@ -1051,7 +1075,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     // Both transactions start together; the winner commits before the loser checks replay.
     let other_opportunity = Uuid::new_v4();
     let other_dispatch = Uuid::new_v4();
-    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'3',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','use_workspace','1',$7,$8,'prepared','dispatch_authorized')")
+    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'4',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','use_workspace','1',$7,$8,'prepared','dispatch_authorized')")
         .bind(other_opportunity).bind(tenant).bind(workspace).bind(candidate).bind(session).bind(actor)
         .bind(format!("request-{other_opportunity}")).bind(D).execute(&pool).await.unwrap();
     let mut setup = rw(&store, &enrollment.auth, tenant).await;
@@ -1146,7 +1170,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         .execute(&pool).await.unwrap();
     let third_opportunity = Uuid::new_v4();
     let third_dispatch = Uuid::new_v4();
-    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'3',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','use_workspace','1',$7,$8,'prepared','dispatch_authorized')")
+    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'4',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','use_workspace','1',$7,$8,'prepared','dispatch_authorized')")
         .bind(third_opportunity).bind(tenant).bind(workspace).bind(candidate).bind(session).bind(actor)
         .bind(format!("request-{third_opportunity}")).bind(D).execute(&pool).await.unwrap();
     let mut setup = rw(&store, &enrollment.auth, tenant).await;
@@ -1366,7 +1390,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     let observation = FreshScopeObservation {
         source: manifest.source.clone(),
         manifest: manifest.clone(),
-        candidate_set_revision: 3,
+        candidate_set_revision: 4,
         advice_id: advice.id.clone(),
     };
     let preservation = evaluate_scope_preservation(
@@ -1437,7 +1461,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     );
     drop(unit);
     let caller_request = Uuid::new_v4();
-    sqlx::query("INSERT INTO scope_candidate_receipts(tenant_id,workspace_id,candidate_set_id,operation,request_id,request_payload,result_revision,result_payload) VALUES($1,$2,$3,'save_review',$4,'{}',3,'{}')")
+    sqlx::query("INSERT INTO scope_candidate_receipts(tenant_id,workspace_id,candidate_set_id,operation,request_id,request_payload,result_revision,result_payload) VALUES($1,$2,$3,'save_review',$4,'{}',4,'{}')")
         .bind(tenant).bind(workspace).bind(candidate).bind(caller_request).execute(&pool).await.unwrap();
     let caller = ScopeCallerLinkInput {
         link_id: Uuid::new_v4(),
@@ -1448,7 +1472,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         preservation_receipt_id: preservation_id,
         caller_operation: "save_review".into(),
         caller_request_id: caller_request,
-        caller_result_revision: 3,
+        caller_result_revision: 4,
         actor_id: actor,
         session_id: session,
     };
@@ -1464,7 +1488,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     let mut failed_result = preservation.clone();
     failed_result.status = ScopePreservationStatus::Failed;
     failed_result.reason_codes = vec!["source_changed".into()];
-    sqlx::query("INSERT INTO advisory_scope_preservation_receipt(tenant_id,workspace_id,opportunity_id,candidate_set_id,receipt_id,request_id,advice_id,disposition_id,disposition_revision,source_digest,manifest_digest,eligible_set_digest,observed_candidate_set_revision,status,aggregate_schema,observation_payload,result_payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,3,'failed','tect.scope-preservation/1',$13,$14)")
+    sqlx::query("INSERT INTO advisory_scope_preservation_receipt(tenant_id,workspace_id,opportunity_id,candidate_set_id,receipt_id,request_id,advice_id,disposition_id,disposition_revision,source_digest,manifest_digest,eligible_set_digest,observed_candidate_set_revision,status,aggregate_schema,observation_payload,result_payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,4,'failed','tect.scope-preservation/1',$13,$14)")
         .bind(tenant).bind(workspace).bind(opportunity).bind(candidate).bind(failed_preservation_id)
         .bind(Uuid::new_v4()).bind(&advice.id.0).bind(disposition.id).bind(disposition.revision)
         .bind(&manifest.source.digest).bind(&manifest.whole_set_digest).bind(&manifest.eligible_set_digest)
@@ -1522,7 +1546,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         caller_link_id: caller.link_id,
         actor_id: actor,
         session_id: session,
-        verified_revision: 3,
+        verified_revision: 4,
         verifier_digest: D.into(),
     };
     let mut unit = rw(&store, &enrollment.auth, tenant).await;
@@ -1537,7 +1561,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         .unwrap();
     unit.commit().await.unwrap();
     let skipped = Uuid::new_v4();
-    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'3',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','skip','1',$7,$8,'no_call','request_skip')")
+    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'4',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','skip','1',$7,$8,'no_call','request_skip')")
         .bind(skipped).bind(tenant).bind(workspace).bind(candidate).bind(session).bind(actor)
         .bind(format!("skip-{skipped}")).bind(D).execute(&pool).await.unwrap();
     let mut unit = rw(&store, &enrollment.auth, tenant).await;
@@ -1643,17 +1667,25 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     };
 
     // Authorization fences a stale authored source before inserting a dispatch.
+    sqlx::query("UPDATE scope_candidate_sets SET revision=revision+1 WHERE id=$1")
+        .bind(candidate)
+        .execute(&pool)
+        .await
+        .unwrap();
     let authorize_stale_opportunity = Uuid::new_v4();
     let authorize_stale_request = format!("request-{authorize_stale_opportunity}");
-    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'3',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','use_workspace','1',$7,$8,'prepared','dispatch_authorized')")
+    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'5',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','use_workspace','1',$7,$8,'prepared','dispatch_authorized')")
         .bind(authorize_stale_opportunity).bind(tenant).bind(workspace).bind(candidate).bind(session).bind(actor)
         .bind(&authorize_stale_request).bind(D).execute(&pool).await.unwrap();
+    let mut authorize_stale_manifest = manifest.clone();
+    authorize_stale_manifest.source.candidate_set_revision = 5;
+    reseal_manifest(&mut authorize_stale_manifest);
     let authorize_stale_record = ScopeManifestRecord {
         opportunity_id: authorize_stale_opportunity,
         candidate_set_id: candidate,
         config_revision: 1,
         opportunity_material_digest: D.into(),
-        manifest: manifest.clone(),
+        manifest: authorize_stale_manifest,
     };
     let mut prepare = rw(&store, &enrollment.auth, tenant).await;
     prepare
@@ -1702,11 +1734,11 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     // leaving send_started_at and provider outcome absent.
     let start_stale_opportunity = Uuid::new_v4();
     let start_stale_request = format!("request-{start_stale_opportunity}");
-    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'4',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','use_workspace','1',$7,$8,'prepared','dispatch_authorized')")
+    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'6',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','use_workspace','1',$7,$8,'prepared','dispatch_authorized')")
         .bind(start_stale_opportunity).bind(tenant).bind(workspace).bind(candidate).bind(session).bind(actor)
         .bind(&start_stale_request).bind(D).execute(&pool).await.unwrap();
     let mut current_manifest = manifest.clone();
-    current_manifest.source.candidate_set_revision = 4;
+    current_manifest.source.candidate_set_revision = 6;
     reseal_manifest(&mut current_manifest);
     let start_stale_record = ScopeManifestRecord {
         opportunity_id: start_stale_opportunity,
@@ -1788,11 +1820,11 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
 
     let config_stale_opportunity = Uuid::new_v4();
     let config_stale_request = format!("request-{config_stale_opportunity}");
-    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'5',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','use_workspace','1',$7,$8,'prepared','dispatch_authorized')")
+    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'7',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','use_workspace','1',$7,$8,'prepared','dispatch_authorized')")
         .bind(config_stale_opportunity).bind(tenant).bind(workspace).bind(candidate).bind(session).bind(actor)
         .bind(&config_stale_request).bind(D).execute(&pool).await.unwrap();
     let mut config_manifest = manifest.clone();
-    config_manifest.source.candidate_set_revision = 5;
+    config_manifest.source.candidate_set_revision = 7;
     reseal_manifest(&mut config_manifest);
     let config_stale_record = ScopeManifestRecord {
         opportunity_id: config_stale_opportunity,
@@ -1863,14 +1895,14 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     // The selected source-authored material, preservation and caller receipt
     // commit together. A changed draft rolls all of them back.
     set_config(&pool, tenant, workspace, true).await;
-    sqlx::query("UPDATE scope_candidate_sets SET status='ready' WHERE id=$1")
+    sqlx::query("UPDATE scope_candidate_sets SET revision=revision+1,status='ready' WHERE id=$1")
         .bind(candidate)
         .execute(&pool)
         .await
         .unwrap();
     let selected_opportunity = Uuid::new_v4();
     let selected_dispatch = Uuid::new_v4();
-    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'5',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','use_workspace','1',$7,$8,'prepared','dispatch_authorized')")
+    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,source_revision,session_id,authorized_actor_id,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,'8',$5,$6,'scope_decomposition','scope.decomposition.before_selection',1,'use_workspace','use_workspace','1',$7,$8,'prepared','dispatch_authorized')")
         .bind(selected_opportunity).bind(tenant).bind(workspace).bind(candidate).bind(session).bind(actor)
         .bind(format!("request-{selected_opportunity}")).bind(D).execute(&pool).await.unwrap();
     let ScopeAuthorityOutcome::Authorized(current) =
@@ -1879,7 +1911,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         panic!("current source must be authorized");
     };
     let mut authored_for_save = authored_scope_set.clone();
-    authored_for_save.expected_candidate_set_revision = 5;
+    authored_for_save.expected_candidate_set_revision = 8;
     let selected_manifest = PgScopeAuthoredManifestSupplier::new(
         store.clone(),
         std::sync::Arc::new(PgScopeAuthorityObserver::new(
@@ -1967,7 +1999,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         .unwrap();
     let mut save = SaveCandidateDraft {
         candidate_set_id: candidate,
-        revision: 5,
+        revision: 8,
         snapshot_id: snapshot,
         input_cursor: 2,
         request_id: Uuid::new_v4(),
@@ -2031,7 +2063,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         Err(Error::StaleRevision),
     );
     let rejected_effects: (i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision=6),\
+        "SELECT (SELECT count(*) FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision=9),\
                 (SELECT count(*) FROM scope_candidate_receipts WHERE candidate_set_id=$1 AND request_id=$2)"
     ).bind(candidate).bind(save.request_id).fetch_one(&pool).await.unwrap();
     assert_eq!(rejected_effects, (0, 0));
@@ -2063,7 +2095,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     );
     drop(bypass);
     let bypass_effects: (i64, i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision=6),\
+        "SELECT (SELECT count(*) FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision=9),\
                 (SELECT count(*) FROM scope_candidate_receipts WHERE candidate_set_id=$1 AND request_id=$2),\
                 (SELECT count(*) FROM advisory_scope_caller_link WHERE candidate_set_id=$1 AND request_id=$2)"
     ).bind(candidate).bind(save.request_id).fetch_one(&pool).await.unwrap();
@@ -2091,7 +2123,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     );
     drop(failed);
     let rolled_back: (i64, i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision=6),\
+        "SELECT (SELECT count(*) FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision=9),\
                 (SELECT count(*) FROM scope_candidate_receipts WHERE candidate_set_id=$1 AND request_id=$2),\
                 (SELECT count(*) FROM advisory_scope_caller_link WHERE candidate_set_id=$1 AND request_id=$2)"
     ).bind(candidate).bind(altered.request_id).fetch_one(&pool).await.unwrap();
@@ -2160,12 +2192,12 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         .unwrap()
         .unwrap();
     assert_eq!(concurrent_replay.draft, stored.draft);
-    assert_eq!(concurrent_replay.context.candidate_set.revision, 6);
+    assert_eq!(concurrent_replay.context.candidate_set.revision, 9);
     let committed: (i64, i64, i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision=6),\
+        "SELECT (SELECT count(*) FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision=9),\
                 (SELECT count(*) FROM scope_candidate_receipts WHERE candidate_set_id=$1 AND request_id=$2),\
                 (SELECT count(*) FROM advisory_scope_preservation_receipt WHERE candidate_set_id=$1 AND request_id=$2 AND status='passed'),\
-                (SELECT count(*) FROM advisory_scope_caller_link WHERE candidate_set_id=$1 AND request_id=$2 AND caller_result_revision=6)"
+                (SELECT count(*) FROM advisory_scope_caller_link WHERE candidate_set_id=$1 AND request_id=$2 AND caller_result_revision=9)"
     ).bind(candidate).bind(save.request_id).fetch_one(&pool).await.unwrap();
     assert_eq!(committed, (1, 1, 1, 1));
     let mut audit_unit = rw(&store, &enrollment.auth, tenant).await;
@@ -2191,7 +2223,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         candidate_set_id: candidate,
         caller_link_id: selected_audit.caller_link_id.unwrap(),
         caller_receipt_request_id: save.request_id,
-        target_revision: 6,
+        target_revision: 9,
         session_id: session,
     };
     let mut observation_unit = rw(&store, &enrollment.auth, tenant).await;
@@ -2212,7 +2244,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     let public_pass = passed_audit.selected_save_observation.unwrap();
     assert_eq!(public_pass.id, observed.id);
     assert_eq!(public_pass.status, SelectedSaveObservationStatus::Passed);
-    assert_eq!(public_pass.target_revision, 6);
+    assert_eq!(public_pass.target_revision, 9);
     assert!(public_pass.reason_codes.is_empty());
     assert_eq!(public_pass.evidence_digest, observed.evidence_digest);
     assert_eq!(public_pass.qualification, "unresolved");
@@ -2298,9 +2330,9 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     .await
     .unwrap();
     let original_draft: serde_json::Value = sqlx::query_scalar(
-        "SELECT payload FROM scope_candidate_drafts WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 AND set_revision=6",
+        "SELECT payload FROM scope_candidate_drafts WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 AND set_revision=9",
     ).bind(tenant).bind(workspace).bind(candidate).fetch_one(&pool).await.unwrap();
-    sqlx::query("UPDATE scope_candidate_drafts SET payload='{}'::jsonb WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 AND set_revision=6")
+    sqlx::query("UPDATE scope_candidate_drafts SET payload='{}'::jsonb WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 AND set_revision=9")
         .bind(tenant).bind(workspace).bind(candidate).execute(&pool).await.unwrap();
     let mut tampered = observe_request.clone();
     tampered.request_id = Uuid::new_v4();
@@ -2326,7 +2358,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         .unwrap();
     assert_eq!(latest.id, tamper_result.id);
     assert_eq!(latest.status, SelectedSaveObservationStatus::Failed);
-    assert_eq!(latest.target_revision, 6);
+    assert_eq!(latest.target_revision, 9);
     assert!(
         latest
             .reason_codes
@@ -2366,7 +2398,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     drop(audit_unit);
     let mut stale = observe_request.clone();
     stale.request_id = Uuid::new_v4();
-    stale.target_revision = 5;
+    stale.target_revision = 8;
     let mut observation_unit = rw(&store, &enrollment.auth, tenant).await;
     let stale_result = observation_unit
         .observe_selected_scope_save(workspace, &stale)
@@ -2379,7 +2411,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
             .contains(&"candidate_revision_stale".into())
     );
     observation_unit.commit().await.unwrap();
-    sqlx::query("UPDATE scope_candidate_drafts SET payload=$1 WHERE tenant_id=$2 AND workspace_id=$3 AND candidate_set_id=$4 AND set_revision=6")
+    sqlx::query("UPDATE scope_candidate_drafts SET payload=$1 WHERE tenant_id=$2 AND workspace_id=$3 AND candidate_set_id=$4 AND set_revision=9")
         .bind(original_draft).bind(tenant).bind(workspace).bind(candidate).execute(&pool).await.unwrap();
     let mut missing = observe_request.clone();
     missing.request_id = Uuid::new_v4();
@@ -2471,7 +2503,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     );
     drop(failed);
     let stale_effects: (i64, i64) = sqlx::query_as(
-        "SELECT (SELECT count(*) FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision=7),\
+        "SELECT (SELECT count(*) FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision=10),\
                 (SELECT count(*) FROM advisory_scope_caller_link WHERE candidate_set_id=$1 AND request_id=$2)"
     ).bind(candidate).bind(stale_save.request_id).fetch_one(&pool).await.unwrap();
     assert_eq!(stale_effects, (0, 0));
@@ -2560,7 +2592,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         Err(Error::InputConflict)
     );
     let mut changed_qualified = qualified_request.clone();
-    changed_qualified.target_revision = 5;
+    changed_qualified.target_revision = 8;
     assert_eq!(
         verifier_attempt
             .independently_observe_selected_scope_save(workspace, &changed_qualified)
@@ -2582,7 +2614,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     assert!(!public_qualified.establishes_current_acceptance);
     drop(audit_unit);
 
-    sqlx::query("UPDATE scope_candidate_drafts SET payload='{}'::jsonb WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 AND set_revision=6")
+    sqlx::query("UPDATE scope_candidate_drafts SET payload='{}'::jsonb WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 AND set_revision=9")
         .bind(tenant).bind(workspace).bind(candidate).execute(&pool).await.unwrap();
     let mut failed_request = qualified_request.clone();
     failed_request.request_id = Uuid::new_v4();
@@ -2611,7 +2643,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     assert!(!public_failure.establishes_independent_approval);
     assert!(!public_failure.establishes_current_acceptance);
     drop(audit_unit);
-    sqlx::query("UPDATE scope_candidate_sets SET revision=7 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
+    sqlx::query("UPDATE scope_candidate_sets SET revision=10 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
         .bind(tenant).bind(workspace).bind(candidate).execute(&pool).await.unwrap();
     let mut stale_qualified_request = qualified_request.clone();
     stale_qualified_request.request_id = Uuid::new_v4();
