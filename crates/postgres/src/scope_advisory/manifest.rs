@@ -42,9 +42,10 @@ struct FrozenAuthorityRow {
     registry_digest: String,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(Clone, sqlx::FromRow)]
 struct PersistedSourceFragment {
     id: Uuid,
+    kind: String,
     body_digest: String,
     body: String,
 }
@@ -57,7 +58,7 @@ async fn load_persisted_fragments(
     snapshot_id: Uuid,
 ) -> Result<Vec<PersistedSourceFragment>> {
     let fragments: Vec<PersistedSourceFragment> = sqlx::query_as(
-        "SELECT r.id,r.body_digest,c.body FROM scope_candidate_source_refs r \
+        "SELECT r.id,r.kind,r.body_digest,c.body FROM scope_candidate_source_refs r \
          JOIN scope_candidate_contents c ON (c.tenant_id,c.workspace_id,c.digest)=\
            (r.tenant_id,r.workspace_id,r.body_digest) \
          WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.candidate_set_id=$3 \
@@ -130,6 +131,56 @@ pub(crate) async fn require_persisted_fragments(
         return Err(Error::InvalidSource);
     }
     Ok(())
+}
+
+/// Re-read the exact frozen source and its native citation kinds. The source
+/// digest covers IDs and bodies; the immutable typed partition also prevents
+/// a changed kind from silently converting required context into a goal.
+pub(crate) async fn trusted_non_goal_source_obligation_ids(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    manifest: &ScopeConstructorManifest,
+    boundary: tect_domain::CandidateBoundary,
+) -> Result<Vec<String>> {
+    let fragments = load_persisted_fragments(
+        tx,
+        tenant,
+        workspace,
+        manifest.source.candidate_set_id,
+        manifest.source.snapshot_id,
+    )
+    .await?;
+    let (inputs, obligations) =
+        source_inputs_and_obligations(fragments.clone(), manifest.source.snapshot_id)?;
+    if inputs != manifest.source.inputs || obligations != manifest.obligations {
+        return Err(Error::InvalidSource);
+    }
+    let mut non_goal = Vec::new();
+    for fragment in fragments {
+        if fragment.body.trim().is_empty() {
+            continue;
+        }
+        if !source_ref_can_anchor_goal(boundary, &fragment.kind)? {
+            non_goal.push(fragment.id.to_string());
+        }
+    }
+    non_goal.sort();
+    Ok(non_goal)
+}
+
+fn source_ref_can_anchor_goal(
+    boundary: tect_domain::CandidateBoundary,
+    kind: &str,
+) -> Result<bool> {
+    if !matches!(kind, "planning_input" | "program_success" | "program_field") {
+        return Err(Error::InvalidSource);
+    }
+    Ok(kind
+        == match boundary {
+            tect_domain::CandidateBoundary::Ongoing => "planning_input",
+            tect_domain::CandidateBoundary::Finite => "program_success",
+        })
 }
 
 async fn require_frozen_authority(
@@ -311,11 +362,13 @@ async fn prepare_manifest(
 
 fn authored_graph_binding(
     manifest: &ScopeConstructorManifest,
+    non_goal: &[String],
 ) -> Result<(Vec<AntiBloatObligationLink>, String, String)> {
     authored_graph_binding_for(
         manifest,
         &manifest.baseline_id,
         manifest.source.candidate_set_revision,
+        non_goal,
     )
 }
 
@@ -323,6 +376,7 @@ pub(crate) fn authored_graph_binding_for(
     manifest: &ScopeConstructorManifest,
     selected_id: &ScopeAlternativeId,
     selected_revision: i64,
+    non_goal: &[String],
 ) -> Result<(Vec<AntiBloatObligationLink>, String, String)> {
     if !is_source_authored_identity(&manifest.constructor)
         || (manifest.constructor == legacy_source_authored_identity()
@@ -356,11 +410,23 @@ pub(crate) fn authored_graph_binding_for(
             return Err(Error::InvalidSource);
         }
     }
+    let non_goal_set = non_goal.iter().collect::<std::collections::BTreeSet<_>>();
+    if non_goal_set.len() != non_goal.len()
+        || non_goal.windows(2).any(|pair| pair[0] >= pair[1])
+        || non_goal_set
+            .iter()
+            .any(|id| !obligations.contains(id.as_str()))
+    {
+        return Err(Error::InvalidSource);
+    }
     let mut links = Vec::new();
     let mut covered = std::collections::BTreeSet::new();
     for goal in &selected.material.goals {
         let source_id = goal.source_ref_id.to_string();
-        if !obligations.contains(&source_id) || !covered.insert((source_id.clone(), goal.id)) {
+        if !obligations.contains(&source_id)
+            || non_goal_set.contains(&source_id)
+            || !covered.insert((source_id.clone(), goal.id))
+        {
             return Err(Error::InvalidSource);
         }
         links.push(AntiBloatObligationLink {
@@ -368,13 +434,12 @@ pub(crate) fn authored_graph_binding_for(
             goal_id: goal.id,
         });
     }
-    if covered
+    let mut accounted = covered
         .iter()
-        .map(|(id, _)| id)
-        .collect::<std::collections::BTreeSet<_>>()
-        .len()
-        != obligations.len()
-    {
+        .map(|(id, _)| id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    accounted.extend(non_goal.iter().map(String::as_str));
+    if accounted != obligations.iter().map(String::as_str).collect() {
         return Err(Error::InvalidSource);
     }
     links.sort_by(|a, b| (&a.obligation_id, a.goal_id).cmp(&(&b.obligation_id, b.goal_id)));
@@ -423,8 +488,16 @@ async fn insert_selected_graph_binding(
     caller_request_id: Uuid,
 ) -> Result<()> {
     let selected = manifest.eligible(selected_id).ok_or(Error::InvalidSource)?;
+    let non_goal = trusted_non_goal_source_obligation_ids(
+        tx,
+        tenant,
+        workspace,
+        manifest,
+        selected.material.boundary,
+    )
+    .await?;
     let (links, dependency_digest, provenance) =
-        authored_graph_binding_for(manifest, selected_id, selected_revision)?;
+        authored_graph_binding_for(manifest, selected_id, selected_revision, &non_goal)?;
     let provenance = format!(
         "{provenance}:selected={}:caller={caller_link_id}:receipt={caller_request_id}",
         selected_id.0
@@ -452,10 +525,10 @@ async fn insert_selected_graph_binding(
     sqlx::query(
         "INSERT INTO scope_anti_bloat_bindings \
          (tenant_id,workspace_id,candidate_set_id,opportunity_id,candidate_set_revision, \
-          source_digest,dependency_digest,obligation_links,mandatory_policy_obligation_ids,provenance, \
+          source_digest,dependency_digest,obligation_links,non_goal_source_obligation_ids,mandatory_policy_obligation_ids,provenance, \
           selected_draft_revision,selected_material_digest,selected_alternative_id, \
           selected_caller_link_id,selected_caller_request_id) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)",
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
     )
     .bind(tenant)
     .bind(workspace)
@@ -465,6 +538,7 @@ async fn insert_selected_graph_binding(
     .bind(&manifest.source.digest)
     .bind(dependency_digest)
     .bind(serde_json::to_value(links).map_err(storage_error)?)
+    .bind(serde_json::to_value(non_goal).map_err(storage_error)?)
     .bind(serde_json::json!([]))
     .bind(provenance)
     .bind(selected_revision)
@@ -484,12 +558,26 @@ async fn insert_authored_graph_binding(
     workspace: Uuid,
     record: &ScopeManifestRecord,
 ) -> Result<()> {
-    let (links, dependency_digest, provenance) = authored_graph_binding(&record.manifest)?;
+    let non_goal = trusted_non_goal_source_obligation_ids(
+        tx,
+        tenant,
+        workspace,
+        &record.manifest,
+        record
+            .manifest
+            .eligible(&record.manifest.baseline_id)
+            .ok_or(Error::InvalidSource)?
+            .material
+            .boundary,
+    )
+    .await?;
+    let (links, dependency_digest, provenance) =
+        authored_graph_binding(&record.manifest, &non_goal)?;
     sqlx::query(
         "INSERT INTO scope_anti_bloat_bindings \
          (tenant_id,workspace_id,candidate_set_id,opportunity_id,candidate_set_revision, \
-          source_digest,dependency_digest,obligation_links,mandatory_policy_obligation_ids,provenance) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",
+          source_digest,dependency_digest,obligation_links,non_goal_source_obligation_ids,mandatory_policy_obligation_ids,provenance) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
     )
     .bind(tenant)
     .bind(workspace)
@@ -499,6 +587,7 @@ async fn insert_authored_graph_binding(
     .bind(&record.manifest.source.digest)
     .bind(dependency_digest)
     .bind(serde_json::to_value(links).map_err(storage_error)?)
+    .bind(serde_json::to_value(non_goal).map_err(storage_error)?)
     .bind(serde_json::json!([]))
     .bind(provenance)
     .execute(&mut **tx)
@@ -513,9 +602,23 @@ async fn require_authored_graph_binding(
     workspace: Uuid,
     record: &ScopeManifestRecord,
 ) -> Result<()> {
-    let (links, dependency_digest, provenance) = authored_graph_binding(&record.manifest)?;
-    let actual: Option<(serde_json::Value, serde_json::Value, String, String)> = sqlx::query_as(
-        "SELECT obligation_links,mandatory_policy_obligation_ids,dependency_digest,provenance \
+    let non_goal = trusted_non_goal_source_obligation_ids(
+        tx,
+        tenant,
+        workspace,
+        &record.manifest,
+        record
+            .manifest
+            .eligible(&record.manifest.baseline_id)
+            .ok_or(Error::InvalidSource)?
+            .material
+            .boundary,
+    )
+    .await?;
+    let (links, dependency_digest, provenance) =
+        authored_graph_binding(&record.manifest, &non_goal)?;
+    let actual: Option<(serde_json::Value, serde_json::Value, serde_json::Value, String, String)> = sqlx::query_as(
+        "SELECT obligation_links,non_goal_source_obligation_ids,mandatory_policy_obligation_ids,dependency_digest,provenance \
          FROM scope_anti_bloat_bindings WHERE tenant_id=$1 AND workspace_id=$2 \
          AND candidate_set_id=$3 AND candidate_set_revision=$4 AND opportunity_id=$5 \
          AND source_digest=$6",
@@ -532,6 +635,7 @@ async fn require_authored_graph_binding(
     if actual
         != Some((
             serde_json::to_value(links).map_err(storage_error)?,
+            serde_json::to_value(non_goal).map_err(storage_error)?,
             serde_json::json!([]),
             dependency_digest,
             provenance,
@@ -684,7 +788,7 @@ mod authored_graph_binding_tests {
     fn binding_derives_exact_source_goal_and_stable_dependency_graph() {
         let source = Uuid::new_v4();
         let value = manifest(&[source]);
-        let (links, digest, provenance) = authored_graph_binding(&value).unwrap();
+        let (links, digest, provenance) = authored_graph_binding(&value, &[]).unwrap();
         assert_eq!(
             links,
             vec![AntiBloatObligationLink {
@@ -695,7 +799,7 @@ mod authored_graph_binding_tests {
         assert_eq!(digest.len(), 64);
         assert!(provenance.contains(&value.emitted[0].material_digest));
         assert_eq!(
-            authored_graph_binding(&value).unwrap(),
+            authored_graph_binding(&value, &[]).unwrap(),
             (links, digest.clone(), provenance)
         );
 
@@ -703,30 +807,76 @@ mod authored_graph_binding_tests {
         changed.emitted[0].material.candidates[0]
             .dependencies
             .push(Uuid::new_v4());
-        assert_ne!(authored_graph_binding(&changed).unwrap().1, digest);
+        assert_ne!(authored_graph_binding(&changed, &[]).unwrap().1, digest);
     }
 
     #[test]
     fn binding_refuses_missing_unmatched_and_duplicate_obligations() {
-        let source = Uuid::new_v4();
-        let mut value = manifest(&[source, Uuid::new_v4()]);
+        let source = Uuid::from_u128(1);
+        let metadata = Uuid::from_u128(2);
+        let mut value = manifest(&[source, metadata]);
         assert_eq!(
-            authored_graph_binding(&value).unwrap_err(),
+            authored_graph_binding(&value, &[]).unwrap_err(),
+            Error::InvalidSource
+        );
+        assert_eq!(
+            authored_graph_binding(&value, &[metadata.to_string()])
+                .unwrap()
+                .0
+                .len(),
+            1
+        );
+        assert_eq!(
+            authored_graph_binding(&value, &[source.to_string()]).unwrap_err(),
+            Error::InvalidSource
+        );
+        assert_eq!(
+            authored_graph_binding(&value, &[metadata.to_string(), metadata.to_string()])
+                .unwrap_err(),
             Error::InvalidSource
         );
 
         value = manifest(&[source]);
         value.emitted[0].material.goals[0].source_ref_id = Uuid::new_v4();
         assert_eq!(
-            authored_graph_binding(&value).unwrap_err(),
+            authored_graph_binding(&value, &[]).unwrap_err(),
             Error::InvalidSource
         );
 
         value = manifest(&[source]);
         value.obligations.push(value.obligations[0].clone());
         assert_eq!(
-            authored_graph_binding(&value).unwrap_err(),
+            authored_graph_binding(&value, &[]).unwrap_err(),
             Error::InvalidSource
+        );
+    }
+
+    #[test]
+    fn native_source_kind_partition_is_boundary_specific_and_fail_closed() {
+        use tect_domain::CandidateBoundary::{Finite, Ongoing};
+        assert_eq!(
+            source_ref_can_anchor_goal(Ongoing, "planning_input"),
+            Ok(true)
+        );
+        assert_eq!(
+            source_ref_can_anchor_goal(Ongoing, "program_success"),
+            Ok(false)
+        );
+        assert_eq!(
+            source_ref_can_anchor_goal(Finite, "program_success"),
+            Ok(true)
+        );
+        assert_eq!(
+            source_ref_can_anchor_goal(Finite, "planning_input"),
+            Ok(false)
+        );
+        assert_eq!(
+            source_ref_can_anchor_goal(Finite, "program_field"),
+            Ok(false)
+        );
+        assert_eq!(
+            source_ref_can_anchor_goal(Ongoing, "forged_kind"),
+            Err(Error::InvalidSource)
         );
     }
 
@@ -734,7 +884,7 @@ mod authored_graph_binding_tests {
     fn v2_exploratory_mechanism_preserves_source_obligations_and_v1_refuses_it() {
         let source = Uuid::new_v4();
         let mut value = manifest(&[source]);
-        let original = authored_graph_binding(&value).unwrap().0;
+        let original = authored_graph_binding(&value, &[]).unwrap().0;
         let mut exploratory = value.emitted[0].material.candidates[0].clone();
         exploratory.id = Uuid::new_v4();
         exploratory.grounding = CandidateGrounding::ExploratoryUnrequested {
@@ -755,10 +905,10 @@ mod authored_graph_binding_tests {
             "{:?}",
             value.emitted[0].material.validate()
         );
-        assert_eq!(authored_graph_binding(&value).unwrap().0, original);
+        assert_eq!(authored_graph_binding(&value, &[]).unwrap().0, original);
         value.constructor = legacy_source_authored_identity();
         assert_eq!(
-            authored_graph_binding(&value).unwrap_err(),
+            authored_graph_binding(&value, &[]).unwrap_err(),
             Error::InvalidSource
         );
     }

@@ -60,10 +60,11 @@ fn corpus(dependent: bool) -> (AntiBloatInput, Uuid) {
             graph_provenance: "trusted-fixture-binding".into(),
             dependency_digest: DEPENDENCIES.into(),
             obligation_links: vec![AntiBloatObligationLink {
-                obligation_id: "obligation.intent".into(),
+                obligation_id: Uuid::from_u128(50).to_string(),
                 goal_id: Uuid::from_u128(51),
             }],
-            mandatory_policy_obligation_ids: vec!["obligation.intent".into()],
+            non_goal_source_obligation_ids: vec![],
+            mandatory_policy_obligation_ids: vec![Uuid::from_u128(50).to_string()],
         },
         extra_id,
     )

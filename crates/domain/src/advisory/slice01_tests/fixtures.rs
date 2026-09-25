@@ -37,7 +37,7 @@ pub(super) fn fixture_manifest() -> ScopeConstructorManifest {
         registry_revision: "3".into(),
         registry_digest: D.into(),
         inputs: vec![FrozenSourceInput {
-            id: "program.intent".into(),
+            id: source_ref.to_string(),
             version: "4".into(),
             digest: D.into(),
             provenance: "program.intent@4".into(),
@@ -47,8 +47,8 @@ pub(super) fn fixture_manifest() -> ScopeConstructorManifest {
     };
     source.digest = source.canonical_digest(&digest()).unwrap();
     let obligations = vec![SourceObligation {
-        id: "obligation.intent".into(),
-        source_input_id: "program.intent".into(),
+        id: source_ref.to_string(),
+        source_input_id: source_ref.to_string(),
         statement_digest: D.into(),
         conditions: vec![SourceClause {
             id: "condition.a".into(),
@@ -65,7 +65,7 @@ pub(super) fn fixture_manifest() -> ScopeConstructorManifest {
         digest: D.into(),
     };
     let coverage = vec![ObligationCoverage {
-        obligation_id: "obligation.intent".into(),
+        obligation_id: source_ref.to_string(),
         condition_ids: vec!["condition.a".into()],
         exception_ids: vec!["exception.a".into()],
     }];

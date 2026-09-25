@@ -59,7 +59,8 @@ fn trusted_graph_links_every_goal_so_even_duplicate_candidates_are_not_rankable(
         scope_candidate_material_digest(&Sha256ScopeDigest, &baseline.material).unwrap();
     reseal_manifest(&mut authored);
     authored.validate(&Sha256ScopeDigest).unwrap();
-    let (links, dependency_digest, graph_provenance) = authored_graph_binding(&authored).unwrap();
+    let (links, dependency_digest, graph_provenance) =
+        authored_graph_binding(&authored, &[]).unwrap();
     assert_eq!(links.len(), 2);
     let input = AntiBloatInput {
         selected_revision: authored.source.candidate_set_revision + 1,
@@ -68,6 +69,7 @@ fn trusted_graph_links_every_goal_so_even_duplicate_candidates_are_not_rankable(
         graph_provenance,
         dependency_digest,
         obligation_links: links,
+        non_goal_source_obligation_ids: vec![],
         mandatory_policy_obligation_ids: vec![],
     };
     let review = review_anti_bloat(&Sha256ScopeDigest, &input).unwrap();

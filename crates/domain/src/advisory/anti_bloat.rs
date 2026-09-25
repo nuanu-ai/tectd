@@ -30,6 +30,9 @@ pub struct AntiBloatInput {
     pub dependency_digest: String,
     /// Explicit source-to-goal witnesses supplied by the authoritative caller.
     pub obligation_links: Vec<AntiBloatObligationLink>,
+    /// Frozen source refs that the native resolver does not permit as goal
+    /// citations. These remain mandatory source context, not goal links.
+    pub non_goal_source_obligation_ids: Vec<String>,
     /// Mandatory policy is part of the frozen obligation universe, never an
     /// exemption from it.
     pub mandatory_policy_obligation_ids: Vec<String>,
@@ -172,10 +175,17 @@ fn validate_links(input: &AntiBloatInput) -> Result<BTreeMap<String, BTreeSet<Uu
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
+    let non_goal = input
+        .non_goal_source_obligation_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
     if input.graph_provenance.trim().is_empty()
         || input.selected_revision <= input.manifest.source.candidate_set_revision
         || policy.len() != input.mandatory_policy_obligation_ids.len()
         || !policy.is_subset(&obligations)
+        || non_goal.len() != input.non_goal_source_obligation_ids.len()
+        || !non_goal.is_subset(&obligations)
         || !valid_digest(&input.dependency_digest)
     {
         return Err(Error::InvalidArguments);
@@ -186,10 +196,14 @@ fn validate_links(input: &AntiBloatInput) -> Result<BTreeMap<String, BTreeSet<Uu
         .map(|goal| (goal.id, goal))
         .collect::<BTreeMap<_, _>>();
     let mut links: BTreeMap<String, BTreeSet<Uuid>> = BTreeMap::new();
+    let mut linked_goals = BTreeSet::new();
     for link in &input.obligation_links {
         if !obligations.contains(link.obligation_id.as_str())
             || !valid_id(&link.obligation_id)
             || !goals.contains_key(&link.goal_id)
+            || non_goal.contains(link.obligation_id.as_str())
+            || !linked_goals.insert(link.goal_id)
+            || goals[&link.goal_id].source_ref_id.to_string() != link.obligation_id
             || !links
                 .entry(link.obligation_id.clone())
                 .or_default()
@@ -198,7 +212,15 @@ fn validate_links(input: &AntiBloatInput) -> Result<BTreeMap<String, BTreeSet<Uu
             return Err(Error::InvalidArguments);
         }
     }
-    if links.len() != obligations.len() {
+    if links
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>()
+        .union(&non_goal)
+        .copied()
+        .collect::<BTreeSet<_>>()
+        != obligations
+    {
         return Err(Error::InvalidSource);
     }
     Ok(links)

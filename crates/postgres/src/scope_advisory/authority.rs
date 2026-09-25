@@ -61,7 +61,10 @@ impl<'a> From<&'a CandidateSnapshotMaterial> for GuidanceFingerprint<'a> {
     }
 }
 
-fn require_current_source(row: &SourceAuthorityRow, current: &GuidanceFingerprint<'_>) -> Result<()> {
+fn require_current_source(
+    row: &SourceAuthorityRow,
+    current: &GuidanceFingerprint<'_>,
+) -> Result<()> {
     if row.program_revision != row.snapshot_program_revision
         || row.program_current_latest != row.program_latest_input
         || row.candidate_latest_input != row.planning_latest_input
@@ -114,7 +117,9 @@ impl ScopeAuthorityObserver for PgScopeAuthorityObserver {
         .fetch_optional(&mut *tx)
         .await
         .map_err(storage_error)?;
-        let Some(host_id) = host_id else { return Err(Error::Forbidden) };
+        let Some(host_id) = host_id else {
+            return Err(Error::Forbidden);
+        };
 
         let row: Option<SourceAuthorityRow> = sqlx::query_as(
             "SELECT c.revision AS candidate_set_revision,s.id AS snapshot_id,c.input_cursor,\
@@ -137,7 +142,9 @@ impl ScopeAuthorityObserver for PgScopeAuthorityObserver {
         .fetch_optional(&mut *tx)
         .await
         .map_err(storage_error)?;
-        let Some(row) = row else { return Err(Error::NotFound) };
+        let Some(row) = row else {
+            return Err(Error::NotFound);
+        };
         crate::planning_knowledge::require_owned_payload_identity(
             &mut tx,
             request.tenant_id,
@@ -177,12 +184,12 @@ impl ScopeAuthorityObserver for PgScopeAuthorityObserver {
             row.snapshot_id,
         )
         .await?;
-        let (inputs, obligations) =
-            match source_inputs_and_obligations(fragments, row.snapshot_id) {
-                Ok(value) => value,
-                Err(Error::InvalidSource) => return Ok(invalid_source(request)),
-                Err(error) => return Err(error),
-            };
+        let (inputs, obligations) = match source_inputs_and_obligations(fragments, row.snapshot_id)
+        {
+            Ok(value) => value,
+            Err(Error::InvalidSource) => return Ok(invalid_source(request)),
+            Err(error) => return Err(error),
+        };
         let mut source = FrozenScopeSource {
             candidate_set_id: request.candidate_set_id,
             candidate_set_revision: row.candidate_set_revision,
@@ -205,14 +212,16 @@ impl ScopeAuthorityObserver for PgScopeAuthorityObserver {
             return Ok(invalid_source(request));
         }
         tx.commit().await.map_err(storage_error)?;
-        Ok(ScopeAuthorityOutcome::Authorized(ScopeAuthorityObservation {
-            workspace_id: request.workspace_id,
-            actor_id: request.actor_id,
-            session_id: request.session_id,
-            candidate_set_id: request.candidate_set_id,
-            source,
-            obligations,
-        }))
+        Ok(ScopeAuthorityOutcome::Authorized(
+            ScopeAuthorityObservation {
+                workspace_id: request.workspace_id,
+                actor_id: request.actor_id,
+                session_id: request.session_id,
+                candidate_set_id: request.candidate_set_id,
+                source,
+                obligations,
+            },
+        ))
     }
 }
 
@@ -228,16 +237,19 @@ mod authority_tests {
             vec![
                 PersistedSourceFragment {
                     id: Uuid::from_u128(3),
+                    kind: "planning_input".into(),
                     body_digest: digest.clone(),
                     body: "second".into(),
                 },
                 PersistedSourceFragment {
                     id: Uuid::from_u128(1),
+                    kind: "planning_input".into(),
                     body_digest: digest.clone(),
                     body: "first".into(),
                 },
                 PersistedSourceFragment {
                     id: Uuid::from_u128(2),
+                    kind: "planning_input".into(),
                     body_digest: digest.clone(),
                     body: "   ".into(),
                 },
@@ -254,8 +266,15 @@ mod authority_tests {
         assert_eq!(obligations.len(), 2);
         assert_eq!(obligations[0].source_input_id, inputs[0].id);
         assert_eq!(obligations[0].statement_digest, inputs[0].digest);
-        assert!(obligations.iter().all(|value| value.conditions.is_empty() && value.exceptions.is_empty()));
-        assert_eq!(source_inputs_and_obligations(Vec::new(), snapshot), Err(Error::InvalidSource));
+        assert!(
+            obligations
+                .iter()
+                .all(|value| value.conditions.is_empty() && value.exceptions.is_empty())
+        );
+        assert_eq!(
+            source_inputs_and_obligations(Vec::new(), snapshot),
+            Err(Error::InvalidSource)
+        );
     }
 
     #[test]
@@ -287,16 +306,28 @@ mod authority_tests {
         };
         assert_eq!(require_current_source(&row, &current), Ok(()));
         row.program_revision += 1;
-        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
+        assert_eq!(
+            require_current_source(&row, &current),
+            Err(Error::StaleRevision)
+        );
         row.program_revision -= 1;
         row.program_current_latest += 1;
-        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
+        assert_eq!(
+            require_current_source(&row, &current),
+            Err(Error::StaleRevision)
+        );
         row.program_current_latest -= 1;
         row.candidate_latest_input += 1;
-        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
+        assert_eq!(
+            require_current_source(&row, &current),
+            Err(Error::StaleRevision)
+        );
         row.candidate_latest_input -= 1;
         row.input_cursor -= 1;
-        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
+        assert_eq!(
+            require_current_source(&row, &current),
+            Err(Error::StaleRevision)
+        );
     }
 
     #[test]
@@ -328,18 +359,33 @@ mod authority_tests {
         };
         assert_eq!(require_current_source(&row, &current), Ok(()));
         current.selected_sources_digest = "changed";
-        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
+        assert_eq!(
+            require_current_source(&row, &current),
+            Err(Error::StaleRevision)
+        );
         current.selected_sources_digest = "sources";
         current.method_revision = "5";
-        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
+        assert_eq!(
+            require_current_source(&row, &current),
+            Err(Error::StaleRevision)
+        );
         current.method_revision = "4";
         current.method_digest = "changed";
-        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
+        assert_eq!(
+            require_current_source(&row, &current),
+            Err(Error::StaleRevision)
+        );
         current.method_digest = "method";
         current.registry_revision = "4";
-        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
+        assert_eq!(
+            require_current_source(&row, &current),
+            Err(Error::StaleRevision)
+        );
         current.registry_revision = "3";
         current.registry_digest = "changed";
-        assert_eq!(require_current_source(&row, &current), Err(Error::StaleRevision));
+        assert_eq!(
+            require_current_source(&row, &current),
+            Err(Error::StaleRevision)
+        );
     }
 }

@@ -18,6 +18,7 @@ struct SelectedBindingRow {
     manifest_payload: serde_json::Value,
     draft_payload: Option<serde_json::Value>,
     obligation_links: serde_json::Value,
+    non_goal_source_obligation_ids: serde_json::Value,
     mandatory_policy_obligation_ids: serde_json::Value,
     dependency_digest: String,
     source_digest: String,
@@ -111,7 +112,7 @@ impl AntiBloatStore for PgUnitOfWork {
         let tenant = self.tenant_id()?;
         let row: Option<SelectedBindingRow> = sqlx::query_as(
             "SELECT m.aggregate_payload AS manifest_payload,dr.payload AS draft_payload, \
-                    b.obligation_links,b.mandatory_policy_obligation_ids, \
+                    b.obligation_links,b.non_goal_source_obligation_ids,b.mandatory_policy_obligation_ids, \
                     b.dependency_digest,b.source_digest,b.provenance,s.revision AS set_revision, \
                     s.current_snapshot_id,b.selected_draft_revision,b.selected_material_digest, \
                     b.selected_alternative_id,b.selected_caller_link_id,b.selected_caller_request_id, \
@@ -171,17 +172,28 @@ impl AntiBloatStore for PgUnitOfWork {
         {
             return Err(Error::InputConflict);
         }
+        let expected_non_goal = crate::scope_advisory::trusted_non_goal_source_obligation_ids(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            &manifest,
+            saved.boundary,
+        )
+        .await?;
         let (expected_links, expected_dependency, base_provenance) =
             crate::scope_advisory::authored_graph_binding_for(
                 &manifest,
                 &selected_id,
                 expected_revision,
+                &expected_non_goal,
             )?;
         let expected_provenance = format!(
             "{base_provenance}:selected={}:caller={}:receipt={}",
             selected_id.0, row.selected_caller_link_id, row.selected_caller_request_id
         );
         if row.obligation_links != serde_json::to_value(expected_links).map_err(storage_error)?
+            || row.non_goal_source_obligation_ids
+                != serde_json::to_value(&expected_non_goal).map_err(storage_error)?
             || row.dependency_digest != expected_dependency
             || row.provenance != expected_provenance
             || row.mandatory_policy_obligation_ids != serde_json::json!([])
@@ -198,6 +210,7 @@ impl AntiBloatStore for PgUnitOfWork {
                 row.obligation_links,
             )
             .map_err(storage_error)?,
+            non_goal_source_obligation_ids: expected_non_goal,
             mandatory_policy_obligation_ids: serde_json::from_value(
                 row.mandatory_policy_obligation_ids,
             )

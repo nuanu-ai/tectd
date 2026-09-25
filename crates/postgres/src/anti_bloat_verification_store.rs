@@ -78,19 +78,25 @@ impl AntiBloatVerificationStore for PgUnitOfWork {
             .map_err(storage_error)?;
         let Some(row) = row else { return Ok(None) };
         let input: AntiBloatInput = parse(row.try_get("input_payload").map_err(storage_error)?)?;
-        let source_fragments_match = match crate::scope_advisory::require_persisted_fragments(
-            self.transaction()?,
-            tenant,
-            workspace,
-            &input.manifest.source,
-            &input.manifest.obligations,
-        )
-        .await
-        {
-            Ok(()) => true,
-            Err(Error::InvalidSource) => false,
-            Err(error) => return Err(error),
-        };
+        let source_fragments_match =
+            match crate::scope_advisory::trusted_non_goal_source_obligation_ids(
+                self.transaction()?,
+                tenant,
+                workspace,
+                &input.manifest,
+                input
+                    .manifest
+                    .eligible(&input.selected_id)
+                    .ok_or(Error::InvalidSource)?
+                    .material
+                    .boundary,
+            )
+            .await
+            {
+                Ok(non_goal) => non_goal == input.non_goal_source_obligation_ids,
+                Err(Error::InvalidSource) => false,
+                Err(error) => return Err(error),
+            };
         let disposition: String = row.try_get("disposition").map_err(storage_error)?;
         let material = AntiBloatVerificationMaterial {
             workspace_id: workspace,

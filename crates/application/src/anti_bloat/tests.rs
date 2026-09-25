@@ -24,7 +24,7 @@ fn input(extra: bool) -> AntiBloatInput {
         registry_revision: "3".into(),
         registry_digest: D.into(),
         inputs: vec![FrozenSourceInput {
-            id: "program.intent".into(),
+            id: Uuid::from_u128(50).to_string(),
             version: "4".into(),
             digest: D.into(),
             provenance: "program.intent@4".into(),
@@ -39,7 +39,7 @@ fn input(extra: bool) -> AntiBloatInput {
         digest: D.into(),
     };
     let coverage = vec![ObligationCoverage {
-        obligation_id: "obligation.intent".into(),
+        obligation_id: Uuid::from_u128(50).to_string(),
         condition_ids: vec!["condition.a".into()],
         exception_ids: vec!["exception.a".into()],
     }];
@@ -127,8 +127,8 @@ fn input(extra: bool) -> AntiBloatInput {
         constructor,
         source,
         obligations: vec![SourceObligation {
-            id: "obligation.intent".into(),
-            source_input_id: "program.intent".into(),
+            id: Uuid::from_u128(50).to_string(),
+            source_input_id: Uuid::from_u128(50).to_string(),
             statement_digest: D.into(),
             conditions: vec![SourceClause {
                 id: "condition.a".into(),
@@ -156,10 +156,11 @@ fn input(extra: bool) -> AntiBloatInput {
         graph_provenance: "trusted-fixture-binding".into(),
         dependency_digest: D.into(),
         obligation_links: vec![AntiBloatObligationLink {
-            obligation_id: "obligation.intent".into(),
+            obligation_id: Uuid::from_u128(50).to_string(),
             goal_id: required_goal,
         }],
-        mandatory_policy_obligation_ids: vec!["obligation.intent".into()],
+        non_goal_source_obligation_ids: vec![],
+        mandatory_policy_obligation_ids: vec![Uuid::from_u128(50).to_string()],
     }
 }
 
