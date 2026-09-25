@@ -4,12 +4,20 @@ mod recovery_support;
 #[allow(dead_code)]
 mod support;
 
-use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
+use async_trait::async_trait;
+use recovery_support::{Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
-use std::sync::Arc;
+use std::os::unix::fs::PermissionsExt;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use support::{id, repository, route, route_error};
-use tect_application::Sha256ScopeDigest;
+use tect_application::{
+    AntiBloatRankingProvider, AntiBloatSendPermit, Sha256ScopeDigest, WorkspaceService,
+};
 use tect_application::{
     AuthoredScopeAlternative, AuthoredScopeSet, GuardedScopeAdviceRecord, ScopeAuthorityObserver,
 };
@@ -22,7 +30,35 @@ use tect_domain::{
     ScopeAdviceChoice, ScopeAdviceScoreBand, ScopeDecompositionKind, guard_scope_advice,
 };
 use tect_postgres::{PgScopeAuthoredManifestSupplier, PgScopeAuthorityObserver, PgStore, admin};
+use tokio::net::UnixListener;
 use uuid::Uuid;
+
+struct CommittedFakeProvider {
+    pool: PgPool,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl AntiBloatRankingProvider for CommittedFakeProvider {
+    async fn rank(&self, permit: &AntiBloatSendPermit) -> tect_domain::Result<Vec<u8>> {
+        let observed: (String, Vec<u8>, String, bool) = sqlx::query_as(
+            "SELECT state,request_bytes,request_sha256,raw_response IS NOT NULL \
+             FROM scope_anti_bloat_reviews WHERE review_id=$1",
+        )
+        .bind(permit.review_id)
+        .fetch_one(&self.pool)
+        .await
+        .expect("independent connection observes committed send fence");
+        assert_eq!(observed.0, "sending");
+        assert_eq!(observed.1, permit.request.bytes);
+        assert_eq!(observed.2, permit.request.sha256);
+        assert!(!observed.3);
+        assert_eq!(format!("{:x}", Sha256::digest(&observed.1)), observed.2);
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let request: Value = serde_json::from_slice(&permit.request.bytes).unwrap();
+        Ok(serde_json::to_vec(&request["eligible_ids"]).unwrap())
+    }
+}
 
 fn authored_draft(source_ref: &Value) -> Value {
     json!({
@@ -47,7 +83,23 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
     let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
     let role = std::env::var("TECT_TEST_RUNTIME_ROLE").unwrap();
     let pool = PgPool::connect(&admin_url).await.unwrap();
-    admin::migrate(&pool, &role).await.unwrap();
+    let (database, database_oid, system_id, migration_count, last_migration):
+        (String, i64, String, i64, i64) = sqlx::query_as(
+        "SELECT current_database(),d.oid::bigint,(SELECT system_identifier::text FROM pg_control_system()), \
+         (SELECT count(*) FROM _sqlx_migrations),(SELECT max(version) FROM _sqlx_migrations) \
+         FROM pg_database d WHERE datname=current_database()"
+    ).fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        (database.as_str(), database_oid, system_id.as_str()),
+        ("tect_test", 16385, "7689349823162929726")
+    );
+    assert_eq!((migration_count, last_migration), (81, 81));
+    let runtime_pool = PgPool::connect(&runtime_url).await.unwrap();
+    let runtime_user: String = sqlx::query_scalar("SELECT current_user")
+        .fetch_one(&runtime_pool)
+        .await
+        .unwrap();
+    assert_eq!(runtime_user, role);
     let version: String = sqlx::query_scalar("SHOW server_version_num")
         .fetch_one(&pool)
         .await
@@ -60,7 +112,22 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
     repository(&repo);
     let socket = root.join("selected-advice.sock");
     let runtime = tagged_url(&runtime_url, &format!("tect-selected-{}", Uuid::new_v4()));
-    let mut daemon = Daemon::start(&runtime, socket.clone()).await;
+    let store = PgStore::connect(&runtime, 4).await.unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let service = Arc::new(
+        WorkspaceService::new(
+            Arc::new(store.clone()),
+            Arc::new(tect_host::GitSourceInspector),
+            Arc::new(tect_host::LocalSetupFiles),
+        )
+        .with_anti_bloat_provider(Arc::new(CommittedFakeProvider {
+            pool: pool.clone(),
+            calls: calls.clone(),
+        })),
+    );
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let server = tokio::spawn(tect_host::serve(listener, service));
     let enrollment = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
         .await
         .unwrap();
@@ -191,6 +258,13 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
         json!({"id":prior_candidate["id"],"revision":prior_candidate["revision"]});
     draft["candidates"][0]["coverage_goals"] = json!([{"id":goal["id"]}]);
     draft["candidates"][0]["change_rationale"] = json!("Use the selected source-authored title");
+    draft["candidates"].as_array_mut().unwrap().push(json!({
+        "identity":{"local":"exploratory"},
+        "grounding":{"kind":"exploratory_unrequested","provenance":"source_authored_v2"},
+        "title":"Unrequested exploratory dashboard","outcome":"Optional dashboard",
+        "trigger":"Exploration","delivered_behavior":"Show a dashboard",
+        "proof":"Optional visual check","coverage_goals":[]
+    }));
     let revision = context["candidate_set"]["revision"].as_i64().unwrap();
     let snapshot = id(&context["snapshot"]["id"]);
     let input_cursor = context["candidate_set"]["input_cursor"].as_i64().unwrap();
@@ -201,13 +275,12 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
             key: "baseline".into(),
             kind: ScopeDecompositionKind::Cohesive,
             draft: serde_json::from_value(draft.clone()).unwrap(),
-            covered_source_ref_ids: refs,
+            covered_source_ref_ids: refs.clone(),
         }],
     };
     let (session, actor): (Uuid, Uuid) = sqlx::query_as(
         "SELECT s.id,h.principal_id FROM agent_sessions s JOIN hosts h ON (h.tenant_id,h.id)=(s.tenant_id,s.host_id) WHERE s.tenant_id=$1 AND s.native_session_id=$2"
     ).bind(enrollment.tenant_id).bind(&native_a).fetch_one(&pool).await.unwrap();
-    let store = PgStore::connect(&runtime_url, 4).await.unwrap();
     let authority = Arc::new(PgScopeAuthorityObserver::new(
         store.clone(),
         Arc::new(tect_host::StaticCandidateGuidance),
@@ -563,6 +636,235 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
     let after_verify: (i64,i64,i64) = sqlx::query_as("SELECT (SELECT count(*) FROM scope_candidate_receipts WHERE tenant_id=$1 AND workspace_id=$2),(SELECT count(*) FROM advisory_scope_caller_link WHERE tenant_id=$1 AND workspace_id=$2),(SELECT count(*) FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2)")
         .bind(enrollment.tenant_id).bind(workspace).fetch_one(&pool).await.unwrap();
     assert_eq!(before_verify, after_verify);
+    let selected_revision = saved["context"]["candidate_set"]["revision"]
+        .as_i64()
+        .unwrap();
+    let partition: (Value, Value) = sqlx::query_as(
+        "SELECT obligation_links,non_goal_source_obligation_ids \
+         FROM scope_anti_bloat_bindings WHERE tenant_id=$1 AND workspace_id=$2 \
+         AND candidate_set_id=$3 AND candidate_set_revision=$4",
+    )
+    .bind(enrollment.tenant_id)
+    .bind(workspace)
+    .bind(candidate_set)
+    .bind(selected_revision)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(partition.0.as_array().unwrap().len(), 1);
+    assert_eq!(partition.1.as_array().unwrap().len(), refs.len() - 1);
+    let prepared = route(
+        &mut author,
+        "command",
+        "scope.anti_bloat.prepare",
+        json!({
+            "candidate_set_id":candidate_set,"expected_revision":selected_revision
+        }),
+    )
+    .await;
+    assert_eq!(prepared["state"]["status"], "prepared", "{prepared}");
+    let review_id = id(&prepared["review_id"]);
+    let exploratory_id = id(&saved["draft"]["candidates"][1]["id"]);
+    let exploratory_revision = saved["draft"]["candidates"][1]["revision"]
+        .as_i64()
+        .unwrap();
+    let finding = prepared["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["candidate_id"] == exploratory_id.to_string())
+        .unwrap();
+    assert_eq!(finding["rankable"], true);
+    let finding_id = finding["id"].as_str().unwrap();
+    let ranked = route(
+        &mut author,
+        "command",
+        "scope.anti_bloat.run",
+        json!({"review_id":review_id}),
+    )
+    .await;
+    assert_eq!(ranked["state"]["status"], "ranked", "{ranked}");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        route(
+            &mut author,
+            "command",
+            "scope.anti_bloat.run",
+            json!({"review_id":review_id})
+        )
+        .await,
+        ranked
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let sealed: (String, Vec<u8>, String, Vec<u8>, String, bool, bool) = sqlx::query_as(
+        "SELECT state,request_bytes,request_sha256,raw_response,response_sha256, \
+         send_started_at IS NOT NULL,response_sealed_at IS NOT NULL \
+         FROM scope_anti_bloat_reviews WHERE tenant_id=$1 AND workspace_id=$2 AND review_id=$3",
+    )
+    .bind(enrollment.tenant_id)
+    .bind(workspace)
+    .bind(review_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(sealed.0, "ranked");
+    assert_eq!(format!("{:x}", Sha256::digest(&sealed.1)), sealed.2);
+    assert_eq!(format!("{:x}", Sha256::digest(&sealed.3)), sealed.4);
+    assert!(sealed.5 && sealed.6);
+    let apply_params = json!({"review_id":review_id,"finding_id":finding_id,
+    "disposition":"narrow","delta":{
+        "candidate_set_id":candidate_set,"expected_revision":selected_revision,
+        "idempotency_key":format!("public-narrow-{review_id}"),
+        "operations":[{"operation":"candidate.remove",
+            "candidate_id":exploratory_id,"expected_revision":exploratory_revision}]
+    }});
+    let applied = route(
+        &mut author,
+        "command",
+        "scope.anti_bloat.apply",
+        apply_params.clone(),
+    )
+    .await;
+    assert_eq!(applied["from_revision"], selected_revision);
+    assert_eq!(applied["to_revision"], selected_revision + 1);
+    assert_eq!(
+        route(
+            &mut author,
+            "command",
+            "scope.anti_bloat.apply",
+            apply_params
+        )
+        .await,
+        applied
+    );
+    assert_eq!(
+        route_error(
+            &mut author,
+            "command",
+            "scope.anti_bloat.prepare",
+            json!({
+                "candidate_set_id":candidate_set,"expected_revision":selected_revision
+            })
+        )
+        .await["error"]["code"],
+        "not_found"
+    );
+    let after = route(
+        &mut author,
+        "query",
+        "scope.candidates.context",
+        json!({
+            "candidate_set_id":candidate_set,"view":"candidates","limit":25
+        }),
+    )
+    .await;
+    let candidates = after["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item.get("candidate").is_some())
+        .collect::<Vec<_>>();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(
+        candidates[0]["candidate"]["id"],
+        saved["draft"]["candidates"][0]["id"]
+    );
+    assert_eq!(
+        after["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item.get("goal").is_some())
+            .count(),
+        saved["draft"]["goals"].as_array().unwrap().len()
+    );
+    let preserved = route(
+        &mut verifier_mcp,
+        "query",
+        "scope.anti_bloat.preservation.get",
+        json!({"review_id":review_id}),
+    )
+    .await;
+    assert_eq!(preserved["verdict"], "pass", "{preserved}");
+    for key in [
+        "review_id",
+        "candidate_set_id",
+        "from_revision",
+        "to_revision",
+        "before_material_digest",
+        "after_material_digest",
+        "source_digest",
+        "caller_request_id",
+        "idempotency_key",
+    ] {
+        assert_eq!(preserved["material"]["receipt"][key], applied[key], "{key}");
+    }
+    assert_eq!(
+        preserved["material"]["after_saved"]["goals"],
+        saved["draft"]["goals"]
+    );
+    let evidence = preserved["evidence_digest"].as_str().unwrap();
+    let anti_verify = json!({"request_id":Uuid::new_v4(),"review_id":review_id,
+        "expected_evidence_digest":evidence});
+    let mut wrong_digest = anti_verify.clone();
+    wrong_digest["request_id"] = json!(Uuid::new_v4());
+    wrong_digest["expected_evidence_digest"] = json!("f".repeat(64));
+    assert_eq!(
+        route_error(
+            &mut verifier_mcp,
+            "command",
+            "scope.anti_bloat.preservation.verify",
+            wrong_digest
+        )
+        .await["error"]["code"],
+        "input_conflict"
+    );
+    assert_eq!(
+        route_error(
+            &mut author,
+            "command",
+            "scope.anti_bloat.preservation.verify",
+            anti_verify.clone()
+        )
+        .await["error"]["code"],
+        "forbidden"
+    );
+    let attestation = route(
+        &mut verifier_mcp,
+        "command",
+        "scope.anti_bloat.preservation.verify",
+        anti_verify.clone(),
+    )
+    .await;
+    assert_eq!(attestation["verdict"], "pass", "{attestation}");
+    assert_eq!(
+        attestation["verifier_principal_id"],
+        verifier.principal_id.to_string()
+    );
+    assert_eq!(
+        route(
+            &mut verifier_mcp,
+            "command",
+            "scope.anti_bloat.preservation.verify",
+            anti_verify
+        )
+        .await,
+        attestation
+    );
+    assert_eq!(
+        route_error(
+            &mut foreign_mcp,
+            "query",
+            "scope.anti_bloat.preservation.get",
+            json!({"review_id":review_id})
+        )
+        .await["error"]["code"],
+        "forbidden"
+    );
+    let current_revision: i64 = sqlx::query_scalar(
+        "SELECT revision FROM scope_candidate_sets WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3"
+    ).bind(enrollment.tenant_id).bind(workspace).bind(candidate_set).fetch_one(&pool).await.unwrap();
+    assert_eq!(current_revision, selected_revision + 1);
     sqlx::query("UPDATE scope_candidate_drafts SET payload='{}'::jsonb WHERE tenant_id=$1 AND workspace_id=$2 AND candidate_set_id=$3 AND set_revision=$4")
         .bind(enrollment.tenant_id).bind(workspace).bind(candidate_set).bind(binding.6).execute(&pool).await.unwrap();
     let mut failed_request = verify_request.clone();
@@ -589,6 +891,6 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
     verifier_mcp.finish().await;
     author.finish().await;
     reader.finish().await;
-    daemon.crash().await;
-    daemon.remove_owned_stale_socket();
+    server.abort();
+    let _ = server.await;
 }
