@@ -14,6 +14,10 @@ use tect_domain::{
     pipeline_obligation_digest,
 };
 
+const PREPARE_SOCKET: &str = "/tmp/tectd-slice03-pg18.6.6DbOhT/socket";
+const PREPARE_SYSTEM_ID: &str = "7689334194567816573";
+const PREPARE_DATABASE_OID: i64 = 16384;
+
 fn explicit_fixture_policy() -> PipelineCompatibilityPolicy {
     let input: EngineeringMatrixInput = serde_json::from_value(input()).unwrap();
     let composition = compose_engineering_matrix(
@@ -97,11 +101,11 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
     assert_eq!(
         std::env::var("TECT_TEST_EXPECTED_PG_SYSTEM_ID").as_deref(),
-        Ok(SYSTEM_ID)
+        Ok(PREPARE_SYSTEM_ID)
     );
     assert_eq!(
         std::env::var("TECT_TEST_EXPECTED_DB_OID").as_deref(),
-        Ok("16385")
+        Ok("16384")
     );
     assert_eq!(
         std::env::var("TECT_TEST_RUNTIME_ROLE").as_deref(),
@@ -114,8 +118,11 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
     for (options, user) in [(&admin_options, "postgres"), (&runtime_options, "tect_ci")] {
         assert_eq!(options.get_username(), user);
         assert_eq!(options.get_database(), Some("tect_test"));
-        assert_eq!(options.get_socket().and_then(|p| p.to_str()), Some(SOCKET));
-        assert_eq!(options.get_port(), 55479);
+        assert_eq!(
+            options.get_socket().and_then(|p| p.to_str()),
+            Some(PREPARE_SOCKET)
+        );
+        assert_eq!(options.get_port(), 56591);
     }
     let pool = PgPool::connect_with(admin_options).await.unwrap();
     let identity: (i32, String, String, i64, String, i64) = sqlx::query_as(
@@ -130,25 +137,22 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
     assert_eq!(identity.0, 180006);
     assert_eq!(identity.1, "tect_test");
     assert_eq!(identity.2, "postgres");
-    assert_eq!(identity.3, DATABASE_OID);
-    assert_eq!(identity.4, SYSTEM_ID);
-    assert!(matches!(identity.5, 69 | 70 | 71));
-    admin::migrate(&pool, "tect_ci").await.unwrap();
-    let version: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
-    assert_eq!(version, 71);
+    assert_eq!(identity.3, PREPARE_DATABASE_OID);
+    assert_eq!(identity.4, PREPARE_SYSTEM_ID);
+    assert_eq!(identity.5, 72);
     let runtime = PgPool::connect_with(runtime_options).await.unwrap();
     let role: (String, String, i64) = sqlx::query_as(
         "SELECT current_database(),current_user,(SELECT oid::bigint FROM pg_database WHERE datname=current_database())",
     ).fetch_one(&runtime).await.unwrap();
-    assert_eq!(role, ("tect_test".into(), "tect_ci".into(), DATABASE_OID));
+    assert_eq!(
+        role,
+        ("tect_test".into(), "tect_ci".into(), PREPARE_DATABASE_OID)
+    );
     (pool, runtime_url)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "writes only pinned disposable PostgreSQL 18.6 fixture at migration 69 or 70"]
+#[ignore = "writes only pinned disposable PostgreSQL 18.6 fixture at migration 72"]
 async fn public_prepare_and_run_guarded_pipeline_recommendation() {
     let (pool, runtime_url) = disposable_pair_for_prepare().await;
     let temp = private_temp();
@@ -420,7 +424,7 @@ async fn exercise_zero_eligible_no_call(
     .await;
     assert_eq!(prepared["state"], "no_call", "{prepared}");
     assert_eq!(prepared["reason"], "choice_set_not_applicable");
-    assert_eq!(prepared["eligible_kind_ids"], json!([]));
+    assert_eq!(prepared["eligible_option_ids"], json!([]));
     let opportunity = Uuid::parse_str(prepared["opportunity_id"].as_str().unwrap()).unwrap();
     let manifest: Value = sqlx::query_scalar(
         "SELECT manifest_payload FROM pipeline_advice_contexts WHERE workspace_id=$1 AND opportunity_id=$2",
@@ -518,8 +522,11 @@ async fn exercise_one_eligible_no_call(
     assert_eq!(prepared["state"], "no_call", "{prepared}");
     assert_eq!(prepared["reason"], "choice_set_not_applicable");
     assert_eq!(
-        prepared["eligible_kind_ids"],
-        json!([PipelineKind::LightweightTddDevelopment.as_str()])
+        prepared["eligible_option_ids"],
+        json!([manifest_option_id_for_kind(
+            &prepared,
+            PipelineKind::LightweightTddDevelopment.as_str()
+        )])
     );
     let opportunity = Uuid::parse_str(prepared["opportunity_id"].as_str().unwrap()).unwrap();
     let manifest: Value = sqlx::query_scalar(
@@ -553,6 +560,18 @@ async fn exercise_one_eligible_no_call(
     server.abort();
 }
 
+fn manifest_option_id_for_kind(prepared: &Value, kind: &str) -> String {
+    prepared["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["kind"] == kind)
+        .unwrap()["option_id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
 struct FakePipelineProvider(Arc<AtomicUsize>);
 
 #[async_trait]
@@ -571,7 +590,7 @@ impl PipelineRecommendationProvider for FakePipelineProvider {
             },
             serde_json::to_vec(&json!({
                 "manifest_digest":saved.manifest.digest,
-                "eligible_kind_ids":saved.manifest.options.iter().map(|option| &option.id).collect::<Vec<_>>()
+                "eligible_option_ids":saved.manifest.options.iter().map(|option| &option.id).collect::<Vec<_>>()
             }))
                 .map_err(Error::invalid_arguments_from)?,
         )
@@ -607,8 +626,9 @@ impl PipelineRecommendationProvider for FakePipelineProvider {
         if digest != prepared.manifest_digest() {
             return Err(Error::InputConflict);
         }
-        let ranked_ids: Vec<String> = serde_json::from_value(request["eligible_kind_ids"].clone())
-            .map_err(Error::invalid_arguments_from)?;
+        let ranked_ids: Vec<String> =
+            serde_json::from_value(request["eligible_option_ids"].clone())
+                .map_err(Error::invalid_arguments_from)?;
         Ok(PipelineProviderObservation {
             raw_response: serde_json::to_vec(&PipelineRecommendationRanking::Ranked { ranked_ids })
                 .map_err(Error::invalid_arguments_from)?,

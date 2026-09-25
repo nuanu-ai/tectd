@@ -52,12 +52,16 @@ pub(super) async fn exercise_prepare(
         .filter(|kind| **kind != PipelineKind::DebugRootCause)
         .map(|kind| kind.as_str())
         .collect();
-    assert_eq!(prepared["eligible_kind_ids"], json!(expected));
+    let expected_options: Vec<String> = expected
+        .iter()
+        .map(|kind| super::manifest_option_id_for_kind(&prepared, kind))
+        .collect();
+    assert_eq!(prepared["eligible_option_ids"], json!(expected_options));
     let opportunity = Uuid::parse_str(prepared["opportunity_id"].as_str().unwrap()).unwrap();
     let manifest: Value = sqlx::query_scalar(
         "SELECT manifest_payload FROM pipeline_advice_contexts WHERE workspace_id=$1 AND opportunity_id=$2",
     ).bind(workspace).bind(opportunity).fetch_one(pool).await.unwrap();
-    assert_eq!(manifest["schema"], "tect.pipeline-recommendation/2");
+    assert_eq!(manifest["schema"], "tect.pipeline-recommendation/3");
     assert_eq!(manifest["work_id"], work["id"]);
     assert_eq!(manifest["work_revision"], work["revision"]);
     assert_eq!(manifest["matrix_task_id"], task.to_string());
@@ -89,11 +93,48 @@ pub(super) async fn exercise_prepare(
     ).bind(workspace).bind(opportunity).fetch_one(pool).await.unwrap();
     assert_eq!(saved_policy_digest, manifest["compatibility_policy_digest"]);
     for (option, kind) in options.iter().zip(expected) {
-        assert_eq!(option["id"], kind);
+        let pair_id = super::manifest_option_id_for_kind(&prepared, kind);
+        assert_eq!(option["id"], pair_id);
         assert_eq!(option["kind"], kind);
+        assert_eq!(
+            prepared["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["option_id"] == pair_id)
+                .unwrap()["verification_plan_id"],
+            option["verification_plan"]["id"]
+        );
+        assert_eq!(
+            option["id"],
+            format!(
+                "{kind}+{}",
+                option["verification_plan"]["id"].as_str().unwrap()
+            )
+        );
         assert_eq!(option["definition_digest"].as_str().unwrap().len(), 64);
         assert!(!option["completion_contract"].as_str().unwrap().is_empty());
-        assert!(option["obligations"].is_array());
+        let definition = tect_host::StaticPipelineRecommendationDefinitions
+            .definition("4", serde_json::from_value(option["kind"].clone()).unwrap())
+            .unwrap()
+            .unwrap();
+        let expected_plan =
+            tect_domain::PipelineVerificationPlan::from_definition(&definition).unwrap();
+        assert_eq!(
+            option["verification_plan"],
+            serde_json::to_value(expected_plan).unwrap()
+        );
+        assert_eq!(
+            option["verification_plan"]["obligations"]
+                .as_array()
+                .unwrap()
+                .len(),
+            definition
+                .phases
+                .iter()
+                .filter(|phase| phase.required)
+                .count()
+        );
     }
     let binding: (
         Uuid,
@@ -109,7 +150,7 @@ pub(super) async fn exercise_prepare(
     ) = sqlx::query_as(
         "SELECT candidate_set_id,candidate_set_revision,work_node_id,work_node_revision,\
              matrix_disposition_id,match_effect_attestation_id,catalogue_revision,\
-             catalogue_digest,eligible_kind_ids,verification_contract_digest \
+             catalogue_digest,eligible_option_ids,verification_contract_digest \
              FROM pipeline_advice_contexts WHERE workspace_id=$1 AND opportunity_id=$2",
     )
     .bind(workspace)
@@ -129,7 +170,7 @@ pub(super) async fn exercise_prepare(
     assert_eq!(binding.5, effect_attestation);
     assert_eq!(binding.6, "4");
     assert_eq!(binding.7, manifest["catalogue_digest"]);
-    assert_eq!(json!(binding.8), prepared["eligible_kind_ids"]);
+    assert_eq!(json!(binding.8), prepared["eligible_option_ids"]);
     assert_eq!(binding.9, prepared["manifest_digest"]);
     let source_binding: (Uuid, Uuid, String, String) = sqlx::query_as(
         "SELECT planning_snapshot_id,source_snapshot_id,source_snapshot_digest,\
@@ -248,7 +289,10 @@ pub(super) async fn exercise_prepare(
     let no_call = route(owner, "command", "pipeline.recommendation.prepare", skip).await;
     assert_eq!(no_call["state"], "no_call");
     assert_eq!(no_call["reason"], "request_skip");
-    assert_eq!(no_call["eligible_kind_ids"], prepared["eligible_kind_ids"]);
+    assert_eq!(
+        no_call["eligible_option_ids"],
+        prepared["eligible_option_ids"]
+    );
     let no_call_id = Uuid::parse_str(no_call["opportunity_id"].as_str().unwrap()).unwrap();
     let no_call_manifest: Value = sqlx::query_scalar(
         "SELECT manifest_payload FROM pipeline_advice_contexts WHERE workspace_id=$1 AND opportunity_id=$2",
@@ -304,7 +348,7 @@ pub(super) async fn exercise_prepare(
     .await;
     assert_eq!(ranked["status"], "ranked", "{ranked}");
     assert_eq!(ranked["opportunity_id"], prepared["opportunity_id"]);
-    assert_eq!(ranked["ranked_ids"], prepared["eligible_kind_ids"]);
+    assert_eq!(ranked["ranked_ids"], prepared["eligible_option_ids"]);
     assert_eq!(pipeline_calls.load(Ordering::SeqCst), 1);
     let dispatch_id = Uuid::parse_str(ranked["dispatch_id"].as_str().unwrap()).unwrap();
     let dispatch: (String, String, String, String, String, Vec<u8>, Vec<u8>, String) = sqlx::query_as(
@@ -323,9 +367,9 @@ pub(super) async fn exercise_prepare(
     assert_eq!(dispatch.3, prepared["manifest_digest"]);
     assert!(!dispatch.5.is_empty());
     let sent: Value = serde_json::from_slice(&dispatch.5).unwrap();
-    assert_eq!(sent["eligible_kind_ids"], prepared["eligible_kind_ids"]);
+    assert_eq!(sent["eligible_option_ids"], prepared["eligible_option_ids"]);
     assert!(
-        !sent["eligible_kind_ids"]
+        !sent["eligible_option_ids"]
             .as_array()
             .unwrap()
             .contains(&json!(PipelineKind::DebugRootCause.as_str()))
@@ -348,6 +392,24 @@ pub(super) async fn exercise_prepare(
             .validate(&serde_json::from_value(manifest.clone()).unwrap())
             .is_err()
     );
+    for stale_id in [
+        format!(
+            "{}+verification-plan:{}",
+            options[0]["kind"].as_str().unwrap(),
+            "0".repeat(64)
+        ),
+        "unknown+verification-plan:unknown".to_owned(),
+        options[0]["kind"].as_str().unwrap().to_owned(),
+    ] {
+        let invalid = PipelineRecommendationRanking::Ranked {
+            ranked_ids: vec![stale_id],
+        };
+        assert!(
+            invalid
+                .validate(&serde_json::from_value(manifest.clone()).unwrap())
+                .is_err()
+        );
+    }
     assert_eq!(
         serde_json::to_value(saved_rank).unwrap()["ranked_ids"],
         ranked["ranked_ids"]
@@ -419,6 +481,7 @@ pub(super) async fn exercise_prepare(
     )
     .await;
     assert!(rejected["selected_kind"].is_null());
+    assert!(rejected["selected_option_id"].is_null());
     let rejected_open = json!({
         "request_id":Uuid::new_v4(),"scope_id":scope,
         "scope_revision":ready["scope"]["revision"],
@@ -471,7 +534,8 @@ pub(super) async fn exercise_prepare(
     )
     .await;
     assert_eq!(disposition["request"], disposition_request);
-    assert_eq!(disposition["selected_kind"], ranked["ranked_ids"][0]);
+    assert_eq!(disposition["selected_option_id"], ranked["ranked_ids"][0]);
+    assert_eq!(disposition["selected_kind"], options[0]["kind"]);
     assert_eq!(disposition["advice"]["status"], "ranked");
     let replay = route(
         owner,
@@ -518,7 +582,27 @@ pub(super) async fn exercise_prepare(
         &["stale_context", "stale_revision"],
     );
     let opened = route(owner, "command", "slice.open", open.clone()).await;
-    assert_eq!(opened["created"]["pipeline"], ranked["ranked_ids"][0]);
+    assert_eq!(opened["created"]["pipeline"], options[0]["kind"]);
+    assert_eq!(
+        opened["created"]["selected_option_id"],
+        ranked["ranked_ids"][0]
+    );
+    assert_eq!(
+        opened["created"]["verification_plan_id"],
+        options[0]["verification_plan"]["id"]
+    );
+    assert_eq!(
+        opened["created"]["verification_plan_schema"],
+        options[0]["verification_plan"]["schema"]
+    );
+    assert_eq!(
+        opened["created"]["verification_plan_digest"],
+        options[0]["verification_plan"]["digest"]
+    );
+    assert_eq!(
+        opened["created"]["verification_plan_source_definition_version"],
+        options[0]["verification_plan"]["source_definition_version"]
+    );
     let reopened = route(owner, "command", "slice.open", open.clone()).await;
     assert_eq!(reopened["replay"]["id"], opened["created"]["id"]);
 
@@ -533,7 +617,7 @@ pub(super) async fn exercise_prepare(
         chosen,
         matched,
         work,
-        &ranked["ranked_ids"][0],
+        &options[0]["kind"],
         root,
         socket,
     )

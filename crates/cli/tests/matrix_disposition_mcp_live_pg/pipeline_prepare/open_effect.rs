@@ -34,6 +34,42 @@ pub(super) async fn exercise(
         effect["material"]["disposition"]["selected_kind"],
         *selected_pipeline
     );
+    let plan: Value = sqlx::query_scalar(
+        "SELECT option->'verification_plan' FROM pipeline_advice_contexts c, \
+         jsonb_array_elements(c.manifest_payload->'options') option \
+         WHERE c.workspace_id=$1 AND c.opportunity_id=$2 \
+         AND option->>'id'=$3",
+    )
+    .bind(workspace)
+    .bind(Uuid::parse_str(disposition["request"]["opportunity_id"].as_str().unwrap()).unwrap())
+    .bind(disposition["selected_option_id"].as_str().unwrap())
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        effect["material"]["slice"]["selected_option_id"],
+        disposition["selected_option_id"]
+    );
+    assert_eq!(
+        effect["material"]["slice"]["verification_plan_id"],
+        plan["id"]
+    );
+    assert_eq!(
+        effect["material"]["slice"]["verification_plan_schema"],
+        plan["schema"]
+    );
+    assert_eq!(
+        effect["material"]["slice"]["verification_plan_digest"],
+        plan["digest"]
+    );
+    assert_eq!(
+        effect["material"]["slice"]["verification_plan_source_definition_version"],
+        plan["source_definition_version"]
+    );
+    assert_eq!(
+        effect["material"]["slice"]["verification_plan_source_definition_digest"],
+        plan["source_definition_digest"]
+    );
     assert_eq!(effect["material"]["work"]["id"], work["id"]);
     assert_eq!(effect["material"]["work"]["revision"], work["revision"]);
     assert_eq!(
