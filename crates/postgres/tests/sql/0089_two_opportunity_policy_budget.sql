@@ -3,6 +3,7 @@
 -- origin triggers enabled. No provider call or durable row is made.
 SET LOCAL tect.tenant_id = '11111111-1111-1111-1111-111111111111';
 SET LOCAL session_replication_role = replica;
+ALTER TABLE advisory_budget_policies DISABLE TRIGGER advisory_budget_policy_guard_trigger;
 INSERT INTO advisory_budget_policies
  (tenant_id,workspace_id,id,version,digest,effective_from_unix_ms,effective_until_unix_ms,
   provider_calls,input_tokens,output_tokens,request_utf8_bytes,elapsed_monotonic_ms,
@@ -25,10 +26,11 @@ SELECT ('00000000-0000-0000-0000-' || lpad(n::text,12,'0'))::uuid,
        '11111111-1111-1111-1111-111111111111'::uuid,
        '22222222-2222-2222-2222-222222222222'::uuid,
        ('00000000-0000-0000-0001-' || lpad(n::text,12,'0'))::uuid,
-       1,'test','test','{}'::jsonb,repeat('c',64),repeat('d',64),
+  1,'test','test','{}'::jsonb,repeat('c',64),repeat('d',64),
        encode(sha256(convert_to('x','UTF8')),'hex'),convert_to('x','UTF8'),
        'authorized','not_sent','initial'
 FROM generate_series(1,5) AS n;
+ALTER TABLE advisory_budget_policies ENABLE ALWAYS TRIGGER advisory_budget_policy_guard_trigger;
 SET LOCAL session_replication_role = origin;
 
 -- First policy: one consumed call on opportunity 1; opportunity 2 must fail.

@@ -2,6 +2,10 @@ const MIGRATION: &str = include_str!("../migrations/0089_advisory_budget_policy_
 const USAGE: &str = include_str!("budget_policy_usage.rs");
 const ANTI_BLOAT: &str = include_str!("anti_bloat_store/send.rs");
 const TWO_OPPORTUNITIES: &str = include_str!("../tests/sql/0089_two_opportunity_policy_budget.sql");
+const LOCK_MIGRATION: &str =
+    include_str!("../migrations/0090_advisory_budget_policy_immutable_lock.sql");
+const GRANTS: &str = include_str!("admin/migration.rs");
+const LOCK_TEST: &str = include_str!("../tests/sql/0090_policy_lock_privilege.sql");
 
 #[test]
 fn exact_policy_serialization_and_cross_route_ledger_are_required() {
@@ -23,4 +27,8 @@ fn exact_policy_serialization_and_cross_route_ledger_are_required() {
     assert!(TWO_OPPORTUNITIES.contains("second opportunity improperly passed one-call policy"));
     assert!(TWO_OPPORTUNITIES.contains("two-call policy did not admit two opportunities"));
     assert!(TWO_OPPORTUNITIES.contains("shared dispatch ignored Anti-Bloat call"));
+    assert!(LOCK_MIGRATION.contains("ENABLE ALWAYS TRIGGER advisory_budget_policy_guard_trigger"));
+    assert!(GRANTS.contains("GRANT UPDATE(id) ON TABLE advisory_budget_policies"));
+    assert!(LOCK_TEST.contains("FOR UPDATE"));
+    assert!(LOCK_TEST.contains("advisory budget policy is immutable"));
 }
