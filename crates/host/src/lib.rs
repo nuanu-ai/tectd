@@ -30,6 +30,7 @@ mod matrix_planning_effect_tools;
 mod matrix_task_tools;
 mod matrix_verification_tools;
 mod mcp;
+mod model_route_catalogue;
 mod pipeline_definitions;
 mod pipeline_dispatch;
 mod pipeline_output;
@@ -61,6 +62,7 @@ pub use git::GitSourceInspector;
 pub use jev_scope_advice::{JevScopeAdviceConfig, JevScopeAdviceProvider};
 pub use knowledge_embedding::{LocalEmbeddingConfig, LocalKnowledgeEmbeddingWorker};
 pub use mcp::run_stdio;
+pub use model_route_catalogue::StaticModelRouteCatalogue;
 pub use pipeline_definitions::StaticPipelineRecommendationDefinitions;
 #[doc(hidden)]
 pub use scope_guidance::CandidateEncoding;

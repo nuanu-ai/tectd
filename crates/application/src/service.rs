@@ -27,6 +27,7 @@ pub struct WorkspaceService {
     #[allow(dead_code)]
     pub(crate) scope_verifier: Arc<dyn crate::ScopeVerifier>,
     pub(crate) knowledge_embedding_provider: Arc<dyn crate::KnowledgeEmbeddingProvider>,
+    model_route_catalogue_provider: Arc<dyn crate::ModelRouteCatalogueProvider>,
     pub(crate) query_embedding_cache: std::sync::Mutex<KnowledgeQueryCache>,
 }
 
@@ -118,6 +119,7 @@ impl WorkspaceService {
             scope_caller: Arc::new(crate::DisabledScopeCaller),
             scope_verifier: Arc::new(crate::DisabledScopeVerifier),
             knowledge_embedding_provider: Arc::new(crate::DisabledKnowledgeEmbeddingProvider),
+            model_route_catalogue_provider: Arc::new(crate::UnavailableModelRouteCatalogue),
             query_embedding_cache: std::sync::Mutex::new(KnowledgeQueryCache::new()),
         }
     }
@@ -158,6 +160,20 @@ impl WorkspaceService {
     ) -> Self {
         self.knowledge_embedding_provider = provider;
         self
+    }
+
+    /// Install a host-owned immutable model-route catalogue. This does not
+    /// select or dispatch a model and does not supply actual execution evidence.
+    pub fn with_model_route_catalogue_provider(
+        mut self,
+        provider: Arc<dyn crate::ModelRouteCatalogueProvider>,
+    ) -> Self {
+        self.model_route_catalogue_provider = provider;
+        self
+    }
+
+    pub fn model_route_catalogue(&self) -> Result<Option<tect_domain::ModelRouteCatalogue>> {
+        self.model_route_catalogue_provider.catalogue()
     }
 
     /// Explicit Matrix composition seam. Both decisions are selected by the

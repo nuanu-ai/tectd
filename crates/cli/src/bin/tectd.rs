@@ -48,6 +48,9 @@ async fn run() -> tect_domain::Result<()> {
     .with_pipeline_recommendation_definitions(Arc::new(
         tect_host::StaticPipelineRecommendationDefinitions,
     ));
+    if let Some(catalogue) = tect_host::StaticModelRouteCatalogue::from_env()? {
+        service = service.with_model_route_catalogue_provider(Arc::new(catalogue));
+    }
     let embedding_enabled = match tect_host::LocalEmbeddingConfig::from_env() {
         Ok(Some(config)) => {
             service = service.with_knowledge_embedding_provider(Arc::new(

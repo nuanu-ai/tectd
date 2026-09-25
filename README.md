@@ -93,6 +93,13 @@ absolute path inside a private directory. The daemon does not overwrite an exist
 socket or manage another process. `TECT_DATABASE_MAX_CONNECTIONS` optionally sets
 the daemon pool to an integer from 1 through 64 and defaults to 16. SIGINT and
 SIGTERM both stop the daemon gracefully and remove only the socket inode it created.
+`TECT_MODEL_ROUTE_CATALOGUE` optionally names an absolute, non-symlinked, owner-owned
+mode-0600 JSON file (at most 64 KiB). The daemon loads it once at startup and rejects
+an invalid snapshot. Omission leaves route recommendations unavailable. The file
+must contain `schema` (`tect.model-routes/1`), a positive `version`, `routes` with
+the exact `ModelRoute` fields, and `digest` equal to the catalogue SHA-256 digest
+computed by Tect. This is a host-owned policy snapshot only: it does not configure
+Jev, the local embedding model, model dispatch, or observed execution routes.
 `tectd-mcp` requires:
 
 | Host setting | Meaning |

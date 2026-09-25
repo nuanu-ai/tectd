@@ -1,11 +1,13 @@
 //! Recommendation-only model routing. No provider client or execution operation lives here.
 use crate::{Error, MatrixPlanningSelection, Result};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 pub const MODEL_ROUTE_CATALOGUE_SCHEMA: &str = "tect.model-routes/1";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ModelRoute {
     pub id: String,
     pub provider: String,
@@ -24,7 +26,8 @@ pub struct ModelRoute {
     pub minimum_latency_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ModelRouteCatalogue {
     pub schema: String,
     pub version: u64,
