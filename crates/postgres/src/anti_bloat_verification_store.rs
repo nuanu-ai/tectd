@@ -21,8 +21,28 @@ impl AntiBloatVerificationStore for PgUnitOfWork {
         lock: bool,
     ) -> Result<Option<AntiBloatVerificationMaterial>> {
         let tenant = self.tenant_id()?;
-        let mut query = String::from(
-            "SELECT r.actor_id AS review_actor_id,r.input_payload,r.review_payload, \
+        if lock {
+            // Candidate-set writers serialize on this mutable row. The review,
+            // binding, caller link, receipt and drafts are immutable and only
+            // SELECT is granted to runtime on several of those tables.
+            let locked: Option<Uuid> = sqlx::query_scalar(
+                "SELECT s.id FROM scope_candidate_sets s \
+                 WHERE s.tenant_id=$1 AND s.workspace_id=$2 \
+                   AND s.id=(SELECT l.candidate_set_id FROM scope_anti_bloat_caller_links l \
+                             WHERE l.tenant_id=$1 AND l.workspace_id=$2 AND l.review_id=$3) \
+                 FOR UPDATE OF s",
+            )
+            .bind(tenant)
+            .bind(workspace)
+            .bind(review_id)
+            .fetch_optional(&mut **self.transaction()?)
+            .await
+            .map_err(storage_error)?;
+            if locked.is_none() {
+                return Ok(None);
+            }
+        }
+        let query = "SELECT r.actor_id AS review_actor_id,r.input_payload,r.review_payload, \
                     d.actor_id AS selected_disposition_actor_id, \
                     c.actor_id AS selected_caller_actor_id,c.session_id AS selected_caller_session_id, \
                     l.finding_id,l.disposition,l.preservation_payload,l.delta_payload,l.after_payload, \
@@ -48,12 +68,8 @@ impl AntiBloatVerificationStore for PgUnitOfWork {
              WHERE l.tenant_id=$1 AND l.workspace_id=$2 AND l.review_id=$3 \
                AND l.caller_operation='anti_bloat_narrow' \
                AND cr.result_payload=l.caller_receipt \
-               AND b.selected_draft_revision=l.from_revision",
-        );
-        if lock {
-            query.push_str(" FOR SHARE OF l,r,b,c,d,s,bd,ad,cr");
-        }
-        let row = sqlx::query(&query)
+               AND b.selected_draft_revision=l.from_revision";
+        let row = sqlx::query(query)
             .bind(tenant)
             .bind(workspace)
             .bind(review_id)

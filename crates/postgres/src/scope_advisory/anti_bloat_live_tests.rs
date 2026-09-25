@@ -1,10 +1,33 @@
 use super::live_support::{D, manifest, reseal_manifest, rw};
 use super::*;
 use crate::{PgStore, admin, store::PgUnitOfWork};
+use async_trait::async_trait;
+use std::sync::Arc;
 use tect_application::{
     AntiBloatApplication, AntiBloatAuthoredDelta, AntiBloatStore, DisabledAntiBloatRankingProvider,
-    UnitOfWork,
+    SetupFiles, SourceInspector, UnitOfWork, VerifyAntiBloatApply, WorkspaceService,
 };
+
+struct UnusedVerifierAdapters;
+
+#[async_trait]
+impl SourceInspector for UnusedVerifierAdapters {
+    async fn inspect(&self, _: &str, _: &[String]) -> Result<SourceLocation> {
+        Err(Error::InternalInvariant)
+    }
+}
+
+impl SetupFiles for UnusedVerifierAdapters {
+    fn resolve_directory(&self, _: &str, _: &[String]) -> Result<SetupDirectory> {
+        Err(Error::InternalInvariant)
+    }
+    fn inspect(&self, _: &SetupDirectory, _: usize) -> Result<FileObservation> {
+        Err(Error::InternalInvariant)
+    }
+    fn publish(&self, _: &SetupDirectory, _: &str) -> Result<FilePublication> {
+        Err(Error::InternalInvariant)
+    }
+}
 
 #[test]
 fn trusted_graph_links_every_goal_so_even_duplicate_candidates_are_not_rankable() {
@@ -613,4 +636,164 @@ async fn selected_save_activates_exact_source_bound_anti_bloat_review() {
         Err(Error::InputConflict)
     );
     Box::new(replay.store).commit().await.unwrap();
+
+    let verifier = admin::prepare_verifier_enrollment(&admin_pool, tenant, workspace)
+        .await
+        .unwrap()
+        .try_commit()
+        .await
+        .unwrap();
+    let verifier_session = Uuid::new_v4();
+    sqlx::query("INSERT INTO agent_sessions(id,tenant_id,host_id,workspace_id,native_session_id) VALUES($1,$2,$3,$4,$5)")
+        .bind(Uuid::new_v4()).bind(tenant).bind(verifier.auth.host_id).bind(workspace)
+        .bind(verifier_session.to_string()).execute(&admin_pool).await.unwrap();
+    let adapters = Arc::new(UnusedVerifierAdapters);
+    let service = WorkspaceService::new(
+        Arc::new(PgStore::from_pool(runtime_pool.clone())),
+        adapters.clone(),
+        adapters,
+    );
+    let workspace_key = format!("anti-bloat-live-{workspace}");
+    let verifier_context = RequestContext {
+        auth: verifier.auth.clone(),
+        native_session_id: verifier_session.to_string(),
+        workspace_key: workspace_key.clone(),
+    };
+    let owner_context = RequestContext {
+        auth: enrollment.auth.clone(),
+        native_session_id: session.to_string(),
+        workspace_key,
+    };
+    assert_eq!(
+        service
+            .get_anti_bloat_verification_material(&owner_context, prepared.review_id)
+            .await,
+        Err(Error::Forbidden),
+    );
+    let (observed, evidence_digest) = service
+        .get_anti_bloat_verification_material(&verifier_context, prepared.review_id)
+        .await
+        .unwrap();
+    assert!(observed.source_fragments_match);
+    assert_eq!(observed.after_saved, after);
+    assert_eq!(observed.receipt, receipt);
+    assert_eq!(observed.verdict().0, AntiBloatVerificationVerdict::Pass);
+    let verify = VerifyAntiBloatApply {
+        request_id: Uuid::new_v4(),
+        review_id: prepared.review_id,
+        expected_evidence_digest: evidence_digest.clone(),
+    };
+    assert_eq!(
+        service
+            .verify_anti_bloat_apply(&owner_context, &verify)
+            .await,
+        Err(Error::Forbidden),
+    );
+    let mut wrong_digest = verify.clone();
+    wrong_digest.request_id = Uuid::new_v4();
+    wrong_digest.expected_evidence_digest = "f".repeat(64);
+    assert_eq!(
+        service
+            .verify_anti_bloat_apply(&verifier_context, &wrong_digest)
+            .await,
+        Err(Error::InputConflict),
+    );
+    let attestation = service
+        .verify_anti_bloat_apply(&verifier_context, &verify)
+        .await
+        .unwrap();
+    assert_eq!(attestation.verdict, AntiBloatVerificationVerdict::Pass);
+    assert_eq!(
+        attestation.reason,
+        AntiBloatVerificationReason::FullGraphPreserved
+    );
+    assert_eq!(attestation.verifier_principal_id, verifier.principal_id);
+    assert_ne!(attestation.verifier_principal_id, actor);
+    assert_eq!(attestation.evidence_digest, evidence_digest);
+    assert_eq!(
+        service
+            .verify_anti_bloat_apply(&verifier_context, &verify)
+            .await
+            .unwrap(),
+        attestation
+    );
+    let attestation_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM scope_anti_bloat_preservation_attestations \
+         WHERE tenant_id=$1 AND workspace_id=$2 AND review_id=$3",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(prepared.review_id)
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(attestation_count, 1);
+    let unchanged_revision: i64 = sqlx::query_scalar(
+        "SELECT revision FROM scope_candidate_sets WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
+    ).bind(tenant).bind(workspace).bind(candidate).fetch_one(&admin_pool).await.unwrap();
+    assert_eq!(unchanged_revision, 5);
+
+    // A later native input advances the authoritative set. A new verifier
+    // request for the old r4 -> r5 effect must then fail stale.
+    let ordinary = RecordCandidateInput {
+        candidate_set_id: candidate,
+        revision: 5,
+        request_id: Uuid::new_v4(),
+        input: "A new planning input arrived after anti-bloat attestation".into(),
+    };
+    let mut ordinary_writer = rw(&store, &enrollment.auth, tenant).await;
+    let later = ordinary_writer
+        .record_candidate_input(workspace, session, &ordinary, ordinary.input.len() as i64)
+        .await
+        .unwrap();
+    assert_eq!(later.context.candidate_set.revision, 6);
+    ordinary_writer.commit().await.unwrap();
+    let mut stale_verify = verify.clone();
+    stale_verify.request_id = Uuid::new_v4();
+    assert_eq!(
+        service
+            .verify_anti_bloat_apply(&verifier_context, &stale_verify)
+            .await,
+        Err(Error::StaleRevision),
+    );
+    assert_eq!(
+        service
+            .verify_anti_bloat_apply(&verifier_context, &verify)
+            .await
+            .unwrap(),
+        attestation
+    );
+
+    let foreign = admin::enroll_host(&admin_pool, None, vec![]).await.unwrap();
+    let foreign_workspace = Uuid::new_v4();
+    let foreign_session = Uuid::new_v4();
+    sqlx::query("INSERT INTO workspaces(id,tenant_id,key) VALUES($1,$2,$3)")
+        .bind(foreign_workspace)
+        .bind(foreign.tenant_id)
+        .bind(format!("anti-bloat-foreign-{foreign_workspace}"))
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    let foreign_verifier =
+        admin::prepare_verifier_enrollment(&admin_pool, foreign.tenant_id, foreign_workspace)
+            .await
+            .unwrap()
+            .try_commit()
+            .await
+            .unwrap();
+    sqlx::query("INSERT INTO agent_sessions(id,tenant_id,host_id,workspace_id,native_session_id) VALUES($1,$2,$3,$4,$5)")
+        .bind(Uuid::new_v4()).bind(foreign.tenant_id).bind(foreign_verifier.auth.host_id)
+        .bind(foreign_workspace).bind(foreign_session.to_string())
+        .execute(&admin_pool).await.unwrap();
+    let foreign_context = RequestContext {
+        auth: foreign_verifier.auth,
+        native_session_id: foreign_session.to_string(),
+        workspace_key: format!("anti-bloat-foreign-{foreign_workspace}"),
+    };
+    assert_eq!(
+        service
+            .get_anti_bloat_verification_material(&foreign_context, prepared.review_id)
+            .await,
+        Err(Error::NotFound),
+    );
 }
