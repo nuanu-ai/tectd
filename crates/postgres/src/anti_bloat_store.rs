@@ -2,13 +2,13 @@ use crate::{storage_error, store::PgUnitOfWork};
 use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tect_application::{
-    AntiBloatAttemptState, AntiBloatNoCall, AntiBloatStore, Sha256ScopeDigest,
-    StoredAntiBloatReview,
+    AntiBloatAttemptState, AntiBloatNoCall, AntiBloatPreparedRequest, AntiBloatSendPermit,
+    AntiBloatStore, CandidateDeltaStore, Sha256ScopeDigest, StoredAntiBloatReview,
 };
 use tect_domain::{
     AntiBloatDisposition, AntiBloatInput, AntiBloatObligationLink, AntiBloatPreservation,
-    CandidateDeltaBatch, CandidateDeltaReceipt, Error, Result, ScopeConstructorManifest,
-    WorkspaceAdvisoryMode, review_anti_bloat,
+    CandidateDeltaBatch, CandidateDeltaReceipt, Error, ResolvedCandidateDraft, Result,
+    ScopeConstructorManifest, WorkspaceAdvisoryMode, check_anti_bloat_delta, review_anti_bloat,
 };
 use uuid::Uuid;
 
@@ -76,12 +76,13 @@ impl AntiBloatStore for PgUnitOfWork {
             serde_json::Value,
             String,
             String,
+            String,
             i64,
             Uuid,
         );
         let row: Option<Bound> = sqlx::query_as(
             "SELECT m.aggregate_payload,b.obligation_links,b.mandatory_policy_obligation_ids, \
-                    b.dependency_digest,b.source_digest,s.revision,s.current_snapshot_id \
+                    b.dependency_digest,b.source_digest,b.provenance,s.revision,s.current_snapshot_id \
              FROM scope_anti_bloat_bindings b \
              JOIN advisory_scope_manifest m ON (m.tenant_id,m.workspace_id,m.opportunity_id,m.candidate_set_id)= \
                  (b.tenant_id,b.workspace_id,b.opportunity_id,b.candidate_set_id) \
@@ -97,8 +98,16 @@ impl AntiBloatStore for PgUnitOfWork {
         .fetch_optional(&mut **self.transaction()?)
         .await
         .map_err(storage_error)?;
-        let Some((payload, links, policy, dependency_digest, source_digest, revision, snapshot)) =
-            row
+        let Some((
+            payload,
+            links,
+            policy,
+            dependency_digest,
+            source_digest,
+            graph_provenance,
+            revision,
+            snapshot,
+        )) = row
         else {
             return Ok(None);
         };
@@ -117,6 +126,7 @@ impl AntiBloatStore for PgUnitOfWork {
         let input = AntiBloatInput {
             selected_id: manifest.baseline_id.clone(),
             manifest,
+            graph_provenance,
             dependency_digest,
             obligation_links: serde_json::from_value::<Vec<AntiBloatObligationLink>>(links)
                 .map_err(storage_error)?,
@@ -211,7 +221,11 @@ impl AntiBloatStore for PgUnitOfWork {
         .transpose()
     }
 
-    async fn begin_send(&mut self, saved: &StoredAntiBloatReview) -> Result<bool> {
+    async fn begin_send(
+        &mut self,
+        saved: &StoredAntiBloatReview,
+        prepared: &AntiBloatPreparedRequest,
+    ) -> Result<Option<AntiBloatSendPermit>> {
         if !self.is_read_write() || self.principal_id()? != saved.actor_id {
             return Err(Error::Forbidden);
         }
@@ -249,12 +263,18 @@ impl AntiBloatStore for PgUnitOfWork {
             .map(|item| item.id.clone())
             .collect::<Vec<_>>();
         if eligible.is_empty() || saved.state != AntiBloatAttemptState::Prepared {
-            return Ok(false);
+            return Ok(None);
         }
-        let bytes = serde_json::to_vec(&serde_json::json!({
+        if digest(&prepared.bytes) != prepared.sha256 {
+            return Err(Error::InputConflict);
+        }
+        let expected = serde_json::to_vec(&serde_json::json!({
             "review": &saved.review, "eligible_ids": &eligible
         }))
         .map_err(storage_error)?;
+        if prepared.bytes != expected {
+            return Err(Error::InputConflict);
+        }
         let result = sqlx::query(
             "UPDATE scope_anti_bloat_reviews SET state='sending',request_bytes=$5, \
              request_sha256=$6,send_started_at=pg_catalog.clock_timestamp() \
@@ -265,14 +285,17 @@ impl AntiBloatStore for PgUnitOfWork {
         .bind(saved.workspace_id)
         .bind(saved.review_id)
         .bind(saved.actor_id)
-        .bind(&bytes)
-        .bind(digest(&bytes))
+        .bind(&prepared.bytes)
+        .bind(&prepared.sha256)
         .bind(serde_json::to_value(&saved.input).map_err(storage_error)?)
         .bind(serde_json::to_value(&saved.review).map_err(storage_error)?)
         .execute(&mut **self.transaction()?)
         .await
         .map_err(storage_error)?;
-        Ok(result.rows_affected() == 1)
+        Ok((result.rows_affected() == 1).then(|| AntiBloatSendPermit {
+            review_id: saved.review_id,
+            request: prepared.clone(),
+        }))
     }
 
     async fn mark_send_unknown(&mut self, review_id: Uuid) -> Result<()> {
@@ -291,15 +314,54 @@ impl AntiBloatStore for PgUnitOfWork {
         Ok(())
     }
 
+    async fn seal_response(
+        &mut self,
+        permit: &AntiBloatSendPermit,
+        raw_response: &[u8],
+        response_sha256: &str,
+    ) -> Result<()> {
+        if !self.is_read_write() || digest(raw_response) != response_sha256 {
+            return Err(Error::InputConflict);
+        }
+        let result = sqlx::query(
+            "UPDATE scope_anti_bloat_reviews SET raw_response=$5,response_sha256=$6, \
+             response_sealed_at=pg_catalog.clock_timestamp() \
+             WHERE tenant_id=$1 AND review_id=$2 AND actor_id=$3 AND state='sending' \
+               AND request_bytes=$4 AND request_sha256=$7 AND raw_response IS NULL",
+        )
+        .bind(self.tenant_id()?)
+        .bind(permit.review_id)
+        .bind(self.principal_id()?)
+        .bind(&permit.request.bytes)
+        .bind(raw_response)
+        .bind(response_sha256)
+        .bind(&permit.request.sha256)
+        .execute(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
+        if result.rows_affected() != 1 {
+            return Err(Error::InputConflict);
+        }
+        Ok(())
+    }
+
     async fn seal_ranked(&mut self, review_id: Uuid, ranked_ids: &[String]) -> Result<()> {
         let tenant = self.tenant_id()?;
         let actor = self.principal_id()?;
         let value = serde_json::to_value(ranked_ids).map_err(storage_error)?;
-        let result = sqlx::query("UPDATE scope_anti_bloat_reviews SET state='ranked',ranked_ids=$4, \
+        let result = sqlx::query(
+            "UPDATE scope_anti_bloat_reviews SET state='ranked',ranked_ids=$4, \
              sealed_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND review_id=$2 \
-             AND actor_id=$3 AND state='sending' AND eligible_ids @> $4::jsonb AND $4::jsonb @> eligible_ids")
-            .bind(tenant).bind(review_id).bind(actor).bind(value)
-            .execute(&mut **self.transaction()?).await.map_err(storage_error)?;
+             AND actor_id=$3 AND state='sending' AND raw_response IS NOT NULL \
+             AND eligible_ids @> $4::jsonb AND $4::jsonb @> eligible_ids",
+        )
+        .bind(tenant)
+        .bind(review_id)
+        .bind(actor)
+        .bind(value)
+        .execute(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
         if result.rows_affected() != 1 {
             return Err(Error::InputConflict);
         }
@@ -308,16 +370,128 @@ impl AntiBloatStore for PgUnitOfWork {
 
     async fn apply_preserved_delta(
         &mut self,
-        _review_id: Uuid,
-        _input: &AntiBloatInput,
-        _finding_id: &str,
-        _disposition: AntiBloatDisposition,
-        _preservation: &AntiBloatPreservation,
-        _delta: &CandidateDeltaBatch,
+        review_id: Uuid,
+        input: &AntiBloatInput,
+        finding_id: &str,
+        disposition: AntiBloatDisposition,
+        preservation: &AntiBloatPreservation,
+        delta: &CandidateDeltaBatch,
+        after: &ResolvedCandidateDraft,
     ) -> Result<CandidateDeltaReceipt> {
-        // The current application port does not pass the caller's full after
-        // graph into this transaction. Refuse until whole-plan recheck and the
-        // candidate-delta CAS can be bound in one transaction.
-        Err(Error::Forbidden)
+        if !self.is_read_write() || disposition != AntiBloatDisposition::Narrow {
+            return Err(Error::Forbidden);
+        }
+        let saved = self.review(review_id).await?.ok_or(Error::NotFound)?;
+        if &saved.input != input || saved.review.candidate_set_id != delta.candidate_set_id {
+            return Err(Error::InputConflict);
+        }
+        let tenant = self.tenant_id()?;
+        let workspace = saved.workspace_id;
+        type Existing = (
+            String,
+            serde_json::Value,
+            serde_json::Value,
+            serde_json::Value,
+            String,
+            serde_json::Value,
+        );
+        let existing: Option<Existing> = sqlx::query_as(
+            "SELECT finding_id,preservation_payload,delta_payload,after_payload, \
+             after_material_digest,caller_receipt FROM scope_anti_bloat_caller_links \
+             WHERE tenant_id=$1 AND workspace_id=$2 AND review_id=$3",
+        )
+        .bind(tenant)
+        .bind(workspace)
+        .bind(review_id)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
+        let preservation_json = serde_json::to_value(preservation).map_err(storage_error)?;
+        let delta_json = serde_json::to_value(delta).map_err(storage_error)?;
+        let after_json = serde_json::to_value(after).map_err(storage_error)?;
+        if let Some((
+            stored_finding,
+            stored_preservation,
+            stored_delta,
+            stored_after,
+            stored_after_digest,
+            stored_receipt,
+        )) = existing
+        {
+            if stored_finding != finding_id
+                || stored_preservation != preservation_json
+                || stored_delta != delta_json
+                || stored_after != after_json
+                || stored_after_digest != preservation.after_material_digest
+            {
+                return Err(Error::InputConflict);
+            }
+            return serde_json::from_value(stored_receipt).map_err(storage_error);
+        }
+        // Serialize with every candidate-delta writer before rereading source,
+        // graph binding and revision. The caller CAS runs under this same lock.
+        let revision: Option<i64> = sqlx::query_scalar(
+            "SELECT revision FROM scope_candidate_sets WHERE tenant_id=$1 AND workspace_id=$2 \
+             AND id=$3 FOR UPDATE",
+        )
+        .bind(tenant)
+        .bind(workspace)
+        .bind(delta.candidate_set_id)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
+        if revision != Some(delta.expected_revision)
+            || self
+                .authoritative_input(workspace, delta.candidate_set_id, delta.expected_revision)
+                .await?
+                .as_ref()
+                != Some(input)
+            || review_anti_bloat(&Sha256ScopeDigest, input)? != saved.review
+        {
+            return Err(Error::InputConflict);
+        }
+        let checked = check_anti_bloat_delta(
+            &Sha256ScopeDigest,
+            input,
+            &saved.review,
+            finding_id,
+            disposition,
+            delta,
+            after,
+        )
+        .map_err(|_| Error::InputConflict)?;
+        if &checked != preservation {
+            return Err(Error::InputConflict);
+        }
+        if self
+            .candidate_delta_status(workspace, delta.candidate_set_id, &delta.idempotency_key)
+            .await?
+            .is_some()
+        {
+            return Err(Error::InputConflict);
+        }
+        let receipt = self.apply_candidate_delta(workspace, delta).await?;
+        sqlx::query(
+            "INSERT INTO scope_anti_bloat_caller_links \
+             (tenant_id,workspace_id,review_id,candidate_set_id,finding_id,disposition, \
+              preservation_payload,delta_payload,after_payload,after_material_digest, \
+              caller_idempotency_key,caller_receipt) \
+             VALUES ($1,$2,$3,$4,$5,'narrow',$6,$7,$8,$9,$10,$11)",
+        )
+        .bind(tenant)
+        .bind(workspace)
+        .bind(review_id)
+        .bind(delta.candidate_set_id)
+        .bind(finding_id)
+        .bind(preservation_json)
+        .bind(delta_json)
+        .bind(after_json)
+        .bind(&preservation.after_material_digest)
+        .bind(&delta.idempotency_key)
+        .bind(serde_json::to_value(&receipt).map_err(storage_error)?)
+        .execute(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
+        Ok(receipt)
     }
 }

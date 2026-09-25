@@ -3,6 +3,8 @@ pub mod admin;
 mod advisory;
 mod anti_bloat_store;
 #[cfg(test)]
+mod anti_bloat_migration_tests;
+#[cfg(test)]
 mod advisory_migration_tests;
 mod durable_knowledge;
 mod durable_knowledge_admin;

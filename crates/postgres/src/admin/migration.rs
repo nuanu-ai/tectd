@@ -100,7 +100,7 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
              scope_anti_bloat_caller_links TO {quoted_role}"
         ),
         format!(
-            "GRANT UPDATE(state,request_bytes,request_sha256,ranked_ids,raw_response,response_sha256,send_started_at,sealed_at) \
+            "GRANT UPDATE(state,request_bytes,request_sha256,ranked_ids,raw_response,response_sha256,response_sealed_at,send_started_at,sealed_at) \
              ON TABLE scope_anti_bloat_reviews TO {quoted_role}"
         ),
         format!(
