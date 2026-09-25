@@ -78,6 +78,7 @@ impl PipelineDispositionRequest {
         if id.is_nil()
             || *work_id != manifest.work_id
             || *revision != manifest.work_revision
+            || *pipeline != manifest.deterministic_kind
             || self.expected_work_revision != *revision
             || self.manifest_digest != manifest.digest
         {
@@ -88,6 +89,7 @@ impl PipelineDispositionRequest {
                 if self.action != PipelineRecommendationDisposition::UseDeterministicChoice {
                     return Err(Error::InvalidArguments);
                 }
+                require_eligible_baseline(manifest, *pipeline)?;
                 Some(*pipeline)
             }
             PipelineDispositionAdvice::Abstained { dispatch_id } => {
@@ -96,6 +98,7 @@ impl PipelineDispositionRequest {
                 {
                     return Err(Error::InvalidArguments);
                 }
+                require_eligible_baseline(manifest, *pipeline)?;
                 Some(*pipeline)
             }
             PipelineDispositionAdvice::Ranked {
@@ -122,7 +125,10 @@ impl PipelineDispositionRequest {
                         )
                     }
                     PipelineRecommendationDisposition::RejectRecommendation => None,
-                    PipelineRecommendationDisposition::UseDeterministicChoice => Some(*pipeline),
+                    PipelineRecommendationDisposition::UseDeterministicChoice => {
+                        require_eligible_baseline(manifest, *pipeline)?;
+                        Some(*pipeline)
+                    }
                 }
             }
         };
@@ -136,6 +142,21 @@ impl PipelineDispositionRequest {
     }
 }
 
+fn require_eligible_baseline(
+    manifest: &PipelineRecommendationManifest,
+    baseline: PipelineKind,
+) -> Result<()> {
+    if manifest
+        .options
+        .iter()
+        .any(|option| option.kind == baseline)
+    {
+        Ok(())
+    } else {
+        Err(Error::InvalidArguments)
+    }
+}
+
 fn sha256(value: &str) -> bool {
     value.len() == 64
         && value
@@ -146,7 +167,10 @@ fn sha256(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{PIPELINE_RECOMMENDATION_SCHEMA, PipelineRecommendationOption};
+    use crate::{
+        PIPELINE_RECOMMENDATION_SCHEMA, PipelineExcludedKind, PipelineExclusionReason,
+        PipelineRecommendationOption,
+    };
     use sha2::{Digest, Sha256};
 
     fn fixture() -> (
@@ -166,7 +190,11 @@ mod tests {
             selected_choice_id: "choice".into(),
             matrix_choice_set_digest: "a".repeat(64),
             matrix_verification_digest: "b".repeat(64),
+            matrix_input_digest: "c".repeat(64),
+            selected_candidate_digest: "d".repeat(64),
+            compatibility_policy_digest: "e".repeat(64),
             mandatory_card_ids: vec!["card".into()],
+            deterministic_kind: kind,
             catalogue_revision: "4".into(),
             catalogue_digest: "catalogue".into(),
             options: [kind, other]
@@ -179,6 +207,14 @@ mod tests {
                     completion_contract: "proof".into(),
                     forbidden_claims: vec![],
                     obligations: vec![],
+                })
+                .collect(),
+            excluded: PipelineKind::CURRENT_SLICE_RUN_KINDS
+                .into_iter()
+                .filter(|candidate| *candidate != kind && *candidate != other)
+                .map(|kind| PipelineExcludedKind {
+                    kind,
+                    reason: PipelineExclusionReason::MissingRule,
                 })
                 .collect(),
             evidence_refs: vec![],
@@ -291,9 +327,16 @@ mod tests {
     }
 
     #[test]
-    fn baseline_is_available_when_no_eligible_provider_options_exist() {
+    fn excluded_baseline_cannot_be_used_even_without_provider_call() {
         let (mut manifest, work, mut request) = fixture();
         manifest.options.clear();
+        manifest.excluded = PipelineKind::CURRENT_SLICE_RUN_KINDS
+            .into_iter()
+            .map(|kind| PipelineExcludedKind {
+                kind,
+                reason: PipelineExclusionReason::MissingRule,
+            })
+            .collect();
         manifest.digest.clear();
         manifest.digest = format!(
             "{:x}",
@@ -301,17 +344,15 @@ mod tests {
         );
         request.manifest_digest = manifest.digest.clone();
         request.action = PipelineRecommendationDisposition::UseDeterministicChoice;
+        assert!(!manifest.should_call());
         assert_eq!(
-            request
-                .resolve(
-                    Uuid::new_v4(),
-                    &manifest,
-                    &work,
-                    &PipelineDispositionAdvice::NoCall
-                )
-                .unwrap()
-                .selected_kind,
-            Some(PipelineKind::LightweightTddDevelopment)
+            request.resolve(
+                Uuid::new_v4(),
+                &manifest,
+                &work,
+                &PipelineDispositionAdvice::NoCall
+            ),
+            Err(Error::InvalidArguments)
         );
     }
 }

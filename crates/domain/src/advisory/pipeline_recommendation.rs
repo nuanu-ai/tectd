@@ -2,21 +2,26 @@
 //! The caller loads current records; this module cannot open a Slice or verify a phase.
 
 use crate::{
-    EngineeringMatrixComposition, Error, MatrixSourceVerificationStatus,
-    PipelineArtifactRequirement, PipelineCatalogueSnapshot, PipelineDefinitionSnapshot,
+    EngineeringChoiceSet, EngineeringMatrixComposition, EngineeringMatrixInput, Error,
+    MatrixSourceVerificationStatus, OwnerReportedEngineeringMatrixFacts,
+    PipelineArtifactRequirement, PipelineCatalogueSnapshot, PipelineCompatibilityPolicy,
+    PipelineDefinitionSnapshot, PipelineExcludedKind, PipelineExclusionReason,
     PipelineExecutionOwner, PipelineKind, PipelineOutputConstraint, PipelineValidatorContract,
-    PipelineVerdictRoute, Result, SliceCandidateNode,
+    PipelineVerdictRoute, Result, SliceCandidateNode, VerifiedEngineeringMatrixFacts,
+    compose_engineering_matrix, compose_owner_reported_engineering_matrix, matrix_input_digest,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const PIPELINE_RECOMMENDATION_SCHEMA: &str = "tect.pipeline-recommendation/1";
+pub const PIPELINE_RECOMMENDATION_SCHEMA: &str = "tect.pipeline-recommendation/2";
 
 /// Server-loaded Matrix provenance. Current values must be read again before
 /// dispatch and disposition; a client-supplied copy has no authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PipelineMatrixBasis {
+    pub input: EngineeringMatrixInput,
+    pub choice_set: EngineeringChoiceSet,
     pub composition: EngineeringMatrixComposition,
     pub selected_choice_id: String,
     pub current_selected_choice_id: String,
@@ -37,6 +42,7 @@ pub struct PipelineRecommendationSource {
     /// Server-provided current pinned definitions. A missing or invalid kind
     /// is excluded, never repaired or invented by the model.
     pub definitions: Vec<PipelineDefinitionSnapshot>,
+    pub compatibility_policy: PipelineCompatibilityPolicy,
     /// Inspectable references only; their presence never records a check pass.
     pub evidence_refs: Vec<String>,
 }
@@ -81,17 +87,22 @@ pub struct PipelineRecommendationManifest {
     pub selected_choice_id: String,
     pub matrix_choice_set_digest: String,
     pub matrix_verification_digest: String,
+    pub matrix_input_digest: String,
+    pub selected_candidate_digest: String,
+    pub compatibility_policy_digest: String,
     pub mandatory_card_ids: Vec<String>,
+    pub deterministic_kind: PipelineKind,
     pub catalogue_revision: String,
     pub catalogue_digest: String,
     pub options: Vec<PipelineRecommendationOption>,
+    pub excluded: Vec<PipelineExcludedKind>,
     pub evidence_refs: Vec<String>,
     pub digest: String,
 }
 
 impl PipelineRecommendationManifest {
     pub fn should_call(&self) -> bool {
-        !self.options.is_empty()
+        self.options.len() >= 2
     }
 
     pub fn validate_digest(&self) -> Result<()> {
@@ -101,6 +112,27 @@ impl PipelineRecommendationManifest {
             || self.work_id.is_nil()
             || self.work_revision < 1
             || self.mandatory_card_ids.is_empty()
+            || !valid_sha256(&self.matrix_input_digest)
+            || !valid_sha256(&self.selected_candidate_digest)
+            || !valid_sha256(&self.compatibility_policy_digest)
+            || self.options.len() + self.excluded.len()
+                != PipelineKind::CURRENT_SLICE_RUN_KINDS.len()
+            || self.excluded.iter().enumerate().any(|(index, excluded)| {
+                let order = PipelineKind::CURRENT_SLICE_RUN_KINDS
+                    .iter()
+                    .position(|kind| *kind == excluded.kind);
+                order.is_none()
+                    || index > 0
+                        && order
+                            <= PipelineKind::CURRENT_SLICE_RUN_KINDS
+                                .iter()
+                                .position(|kind| *kind == self.excluded[index - 1].kind)
+            })
+            || self.options.iter().any(|option| {
+                self.excluded
+                    .iter()
+                    .any(|excluded| excluded.kind == option.kind)
+            })
             || self.options.iter().any(|option| {
                 option.id != option.kind.as_str()
                     || !PipelineKind::CURRENT_SLICE_RUN_KINDS.contains(&option.kind)
@@ -131,12 +163,17 @@ impl PipelineRecommendationManifest {
     }
 }
 
-/// All eight rev4 SliceRun kinds are considered. The Matrix's selected choice
-/// and mandatory cards are provenance and duties, never a mode-to-kind rule.
+/// All eight rev4 SliceRun kinds receive a recorded eligibility outcome.
 pub fn build_pipeline_recommendation_manifest(
     source: &PipelineRecommendationSource,
 ) -> Result<PipelineRecommendationManifest> {
-    let SliceCandidateNode::Work { id, revision, .. } = &source.work else {
+    let SliceCandidateNode::Work {
+        id,
+        revision,
+        pipeline,
+        ..
+    } = &source.work
+    else {
         return Err(Error::InvalidArguments);
     };
     if id.is_nil() || *revision < 1 || *revision != source.current_work_revision {
@@ -163,6 +200,53 @@ pub fn build_pipeline_recommendation_manifest(
     ) {
         return Err(Error::StaleContext);
     }
+    matrix.input.validate()?;
+    if matrix.choice_set.task_id != matrix.composition.task_id
+        || matrix.choice_set.task_revision != matrix.composition.task_revision
+        || matrix.choice_set.canonical_digest(&matrix.input)? != matrix.choice_set_digest
+        || !matrix
+            .choice_set
+            .candidates
+            .iter()
+            .any(|candidate| candidate.candidate_id == matrix.selected_choice_id)
+    {
+        return Err(Error::StaleContext);
+    }
+    let expected_composition = match matrix.composition.source_verification_status {
+        MatrixSourceVerificationStatus::VerifiedByCaller => compose_engineering_matrix(
+            &VerifiedEngineeringMatrixFacts::bind_caller_verified_task_revision(
+                matrix.composition.task_id.clone(),
+                matrix.composition.task_revision.clone(),
+                matrix.input.clone(),
+            )?,
+        ),
+        MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported => {
+            let mut expected = compose_owner_reported_engineering_matrix(
+                &OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
+                    matrix.composition.task_id.clone(),
+                    matrix.composition.task_revision.clone(),
+                    matrix.input.clone(),
+                )?,
+            );
+            expected.source_verification_status =
+                MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported;
+            expected
+        }
+        MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification => {
+            return Err(Error::StaleContext);
+        }
+    };
+    if matrix.composition != expected_composition {
+        return Err(Error::StaleContext);
+    }
+    let input_digest = matrix_input_digest(&matrix.input)?;
+    let selected_candidate = matrix
+        .choice_set
+        .candidates
+        .iter()
+        .find(|candidate| candidate.candidate_id == matrix.selected_choice_id)
+        .ok_or(Error::StaleContext)?;
+    let selected_candidate_digest = digest_json(selected_candidate)?;
     let mandatory_card_ids = matrix
         .composition
         .mandatory_cards
@@ -203,6 +287,7 @@ pub fn build_pipeline_recommendation_manifest(
         }
     }
     let mut options = Vec::new();
+    let mut excluded = Vec::new();
     for kind in PipelineKind::CURRENT_SLICE_RUN_KINDS {
         let entry = source
             .catalogue
@@ -211,9 +296,17 @@ pub fn build_pipeline_recommendation_manifest(
             .find(|entry| entry.kind == kind)
             .ok_or(Error::StaleContext)?;
         if !entry.executable || entry.execution_owner != PipelineExecutionOwner::SlicePipelineRun {
+            excluded.push(PipelineExcludedKind {
+                kind,
+                reason: PipelineExclusionReason::UnavailableDefinition,
+            });
             continue;
         }
         let Some(definition) = definitions.get(&kind) else {
+            excluded.push(PipelineExcludedKind {
+                kind,
+                reason: PipelineExclusionReason::UnavailableDefinition,
+            });
             continue;
         };
         if definition.validate().is_err()
@@ -223,6 +316,10 @@ pub fn build_pipeline_recommendation_manifest(
                     .unwrap_or(definition.default_mode)
             || definition.allowed_modes != entry.allowed_delivery_modes
         {
+            excluded.push(PipelineExcludedKind {
+                kind,
+                reason: PipelineExclusionReason::UnavailableDefinition,
+            });
             continue;
         }
         let obligations = definition
@@ -243,7 +340,7 @@ pub fn build_pipeline_recommendation_manifest(
                 output_contract: phase.output_contract.clone(),
             })
             .collect();
-        options.push(PipelineRecommendationOption {
+        let option = PipelineRecommendationOption {
             id: kind.as_str().to_string(),
             kind,
             definition_version: definition.version.clone(),
@@ -251,7 +348,19 @@ pub fn build_pipeline_recommendation_manifest(
             completion_contract: definition.completion_contract.clone(),
             forbidden_claims: definition.forbidden_claims.clone(),
             obligations,
-        });
+        };
+        if let Some(reason) = source.compatibility_policy.reason_for(
+            kind,
+            &matrix.input,
+            &input_digest,
+            &matrix.selected_choice_id,
+            &mandatory_card_ids,
+            &option,
+        ) {
+            excluded.push(PipelineExcludedKind { kind, reason });
+        } else {
+            options.push(option);
+        }
     }
     if source
         .evidence_refs
@@ -270,10 +379,15 @@ pub fn build_pipeline_recommendation_manifest(
         selected_choice_id: matrix.selected_choice_id.clone(),
         matrix_choice_set_digest: matrix.choice_set_digest.clone(),
         matrix_verification_digest: matrix.verification_digest.clone(),
+        matrix_input_digest: input_digest,
+        selected_candidate_digest,
+        compatibility_policy_digest: source.compatibility_policy.digest()?,
         mandatory_card_ids: mandatory_card_ids.into_iter().collect(),
+        deterministic_kind: *pipeline,
         catalogue_revision: source.catalogue.revision.clone(),
         catalogue_digest: source.catalogue.digest.clone(),
         options,
+        excluded,
         evidence_refs: source
             .evidence_refs
             .iter()
@@ -340,284 +454,5 @@ fn valid_sha256(value: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        MandatoryMatrixCard, PipelineCatalogueEntry, PipelineDeliveryMode,
-        PipelineInstructionSnapshot, PipelinePhaseDefinition, PipelinePhaseRetryPolicy,
-    };
-    use uuid::Uuid;
-
-    fn definition(kind: PipelineKind) -> PipelineDefinitionSnapshot {
-        let instruction = PipelineInstructionSnapshot {
-            id: "instruction".into(),
-            version: "1".into(),
-            digest: "instruction-digest".into(),
-            body: "instruction".into(),
-            origin_refs: vec!["source".into()],
-        };
-        PipelineDefinitionSnapshot {
-            kind,
-            version: "1".into(),
-            digest: format!("definition-{}", kind.as_str()),
-            overview: instruction.clone(),
-            default_mode: PipelineDeliveryMode::Phasewise,
-            allowed_modes: vec![PipelineDeliveryMode::Phasewise],
-            phases: vec![PipelinePhaseDefinition {
-                id: "proof".into(),
-                ordinal: 1,
-                title: "Proof".into(),
-                required: true,
-                disposition_required: false,
-                instructions: vec![instruction],
-                skills: vec![],
-                resources: vec![],
-                required_artifacts: vec![PipelineArtifactRequirement {
-                    name_pattern: "proof.txt".into(),
-                    media_type: "text/plain".into(),
-                    schema_ref: None,
-                    schema_resource_id: None,
-                    schema_resource_digest: None,
-                    required: true,
-                    minimum_matches: 1,
-                    when_verdict: None,
-                }],
-                validator_contracts: vec![],
-                required_fields: vec!["proof_summary".into()],
-                allowed_verdicts: vec![],
-                required_dispositions: vec![],
-                allowed_dispositions: vec![],
-                output_constraints: vec![],
-                verdict_routes: vec![],
-                followup_contracts: vec![],
-                allowed_backward_to: vec![],
-                fresh_reviewer_input: false,
-                retry_policy: PipelinePhaseRetryPolicy::Repeatable,
-                output_contract: "proof is checked by the caller".into(),
-            }],
-            completion_contract: "completion proof".into(),
-            escalation_contract: "escalation".into(),
-            forbidden_claims: vec!["unverified".into()],
-        }
-    }
-
-    fn source() -> PipelineRecommendationSource {
-        let kinds = PipelineKind::CURRENT_SLICE_RUN_KINDS
-            .into_iter()
-            .chain([PipelineKind::PromoteToDurableKnowledge]);
-        let entries = kinds
-            .map(|kind| PipelineCatalogueEntry {
-                kind,
-                description: "description".into(),
-                implementation_status: "executable".into(),
-                description_status: "refined".into(),
-                refinement_required: false,
-                choose_when: "choose".into(),
-                do_not_choose_when: "avoid".into(),
-                expected_result: "result".into(),
-                executable: true,
-                default_delivery_mode: Some(PipelineDeliveryMode::Phasewise),
-                allowed_delivery_modes: vec![PipelineDeliveryMode::Phasewise],
-                execution_owner: if kind == PipelineKind::PromoteToDurableKnowledge {
-                    PipelineExecutionOwner::KnowledgeChange
-                } else {
-                    PipelineExecutionOwner::SlicePipelineRun
-                },
-            })
-            .collect();
-        let card = MandatoryMatrixCard {
-            id: "EM02-SCOPE@0.1",
-            catalogue_version: "EM02-INITIAL@0.1",
-            summary: "scope",
-            body: "scope proof",
-        };
-        PipelineRecommendationSource {
-            work: SliceCandidateNode::Work {
-                id: Uuid::new_v4(),
-                revision: 2,
-                title: "work".into(),
-                outcome: "outcome".into(),
-                includes: vec![],
-                excludes: vec![],
-                dependencies: vec![],
-                proof: vec![],
-                pipeline: PipelineKind::LightweightTddDevelopment,
-                pipeline_reason: "existing choice".into(),
-                why_lightweight_insufficient: None,
-                why_further_vertical_split_not_viable: None,
-                source_result_ids: vec![],
-                source_checkpoint: None,
-            },
-            current_work_revision: 2,
-            matrix: PipelineMatrixBasis {
-                composition: EngineeringMatrixComposition {
-                    catalogue_version: "EM02-INITIAL@0.1",
-                    task_id: "task".into(),
-                    task_revision: "3".into(),
-                    source_verification_status: MatrixSourceVerificationStatus::VerifiedByCaller,
-                    mandatory_cards: vec![card],
-                    unresolved_evidence: vec![],
-                },
-                selected_choice_id: "choice".into(),
-                current_selected_choice_id: "choice".into(),
-                current_task_revision: "3".into(),
-                choice_set_digest: "a".repeat(64),
-                current_choice_set_digest: "a".repeat(64),
-                verification_digest: "b".repeat(64),
-                current_verification_digest: "b".repeat(64),
-                saved_mandatory_card_ids: vec!["EM02-SCOPE@0.1".into()],
-            },
-            catalogue: PipelineCatalogueSnapshot {
-                revision: "4".into(),
-                digest: "catalogue".into(),
-                entries,
-            },
-            definitions: PipelineKind::CURRENT_SLICE_RUN_KINDS
-                .into_iter()
-                .map(definition)
-                .collect(),
-            evidence_refs: vec!["evidence:2".into(), "evidence:1".into()],
-        }
-    }
-
-    #[test]
-    fn current_eight_are_closed_and_promotion_is_excluded() {
-        let manifest = build_pipeline_recommendation_manifest(&source()).unwrap();
-        assert!(manifest.should_call());
-        assert_eq!(manifest.options.len(), 8);
-        assert!(
-            !manifest
-                .options
-                .iter()
-                .any(|option| option.kind == PipelineKind::PromoteToDurableKnowledge)
-        );
-        assert_eq!(
-            manifest.options[0].id,
-            PipelineKind::LightweightTddDevelopment.as_str()
-        );
-        assert_eq!(
-            manifest.options[0].obligations[0].required_fields,
-            ["proof_summary"]
-        );
-        assert_eq!(
-            manifest.options[0].obligations[0].required_artifacts[0].name_pattern,
-            "proof.txt"
-        );
-        assert_eq!(manifest.mandatory_card_ids, ["EM02-SCOPE@0.1"]);
-        assert_eq!(manifest.evidence_refs, ["evidence:1", "evidence:2"]);
-        manifest.validate_digest().unwrap();
-    }
-
-    #[test]
-    fn digest_is_canonical_for_definition_and_evidence_order_and_binds_content() {
-        let original = source();
-        let first = build_pipeline_recommendation_manifest(&original).unwrap();
-        let mut reordered = original.clone();
-        reordered.definitions.reverse();
-        reordered.evidence_refs.reverse();
-        assert_eq!(
-            first.digest,
-            build_pipeline_recommendation_manifest(&reordered)
-                .unwrap()
-                .digest
-        );
-        reordered.definitions[0].digest.push('x');
-        assert_ne!(
-            first.digest,
-            build_pipeline_recommendation_manifest(&reordered)
-                .unwrap()
-                .digest
-        );
-        let mut tampered = first;
-        tampered.mandatory_card_ids.clear();
-        assert_eq!(tampered.validate_digest(), Err(Error::InputConflict));
-    }
-
-    #[test]
-    fn stale_unresolved_or_missing_matrix_duties_reject_before_call() {
-        let mut stale = source();
-        stale.current_work_revision += 1;
-        assert_eq!(
-            build_pipeline_recommendation_manifest(&stale),
-            Err(Error::StaleRevision)
-        );
-        stale = source();
-        stale.matrix.current_task_revision = "4".into();
-        assert_eq!(
-            build_pipeline_recommendation_manifest(&stale),
-            Err(Error::StaleContext)
-        );
-        stale = source();
-        stale.matrix.current_selected_choice_id = "other".into();
-        assert_eq!(
-            build_pipeline_recommendation_manifest(&stale),
-            Err(Error::StaleContext)
-        );
-        stale = source();
-        stale.matrix.current_verification_digest = "c".repeat(64);
-        assert_eq!(
-            build_pipeline_recommendation_manifest(&stale),
-            Err(Error::StaleContext)
-        );
-        stale = source();
-        stale.matrix.composition.source_verification_status =
-            MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification;
-        assert_eq!(
-            build_pipeline_recommendation_manifest(&stale),
-            Err(Error::StaleContext)
-        );
-        stale = source();
-        stale.matrix.saved_mandatory_card_ids.clear();
-        assert_eq!(
-            build_pipeline_recommendation_manifest(&stale),
-            Err(Error::InvalidArguments)
-        );
-    }
-
-    #[test]
-    fn invalid_definitions_are_ineligible_and_empty_set_means_no_call() {
-        let mut input = source();
-        input.definitions[0].allowed_modes = vec![PipelineDeliveryMode::Whole];
-        let manifest = build_pipeline_recommendation_manifest(&input).unwrap();
-        assert_eq!(manifest.options.len(), 7);
-        input.definitions.clear();
-        let empty = build_pipeline_recommendation_manifest(&input).unwrap();
-        assert!(!empty.should_call());
-        assert_eq!(
-            PipelineRecommendationRanking::Abstained.validate(&empty),
-            Err(Error::InvalidArguments)
-        );
-    }
-
-    #[test]
-    fn ranking_requires_exact_permutation_or_abstention() {
-        let manifest = build_pipeline_recommendation_manifest(&source()).unwrap();
-        let ids = manifest
-            .options
-            .iter()
-            .map(|option| option.id.clone())
-            .collect::<Vec<_>>();
-        assert!(
-            PipelineRecommendationRanking::Ranked {
-                ranked_ids: ids.clone()
-            }
-            .validate(&manifest)
-            .is_ok()
-        );
-        assert!(
-            PipelineRecommendationRanking::Abstained
-                .validate(&manifest)
-                .is_ok()
-        );
-        for ranked_ids in [
-            ids[..7].to_vec(),
-            vec![ids[0].clone(); 8],
-            [ids[..7].to_vec(), vec!["unknown".into()]].concat(),
-        ] {
-            assert_eq!(
-                PipelineRecommendationRanking::Ranked { ranked_ids }.validate(&manifest),
-                Err(Error::InvalidArguments)
-            );
-        }
-    }
-}
+#[path = "pipeline_recommendation_tests.rs"]
+mod tests;
