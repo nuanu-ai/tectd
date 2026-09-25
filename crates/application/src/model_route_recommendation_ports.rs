@@ -1,10 +1,14 @@
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use tect_domain::{
-    AdvisoryRequestPreference, EligibleModelRoutes, ModelRouteCatalogue, ModelRouteFact,
-    ModelRouteRanking, ModelRouteRecord, ModelRouteWorkContext, Result, WorkspaceAdvisoryMode,
+    ModelRouteCatalogue, ModelRouteFact, ModelRouteWorkContext, Result, WorkspaceAdvisoryMode,
 };
 use uuid::Uuid;
+
+pub use tect_domain::{
+    CapturedModelRouteDecision, CapturedModelRouteDisposition, ModelRouteAbstainReason,
+    ModelRouteDecisionInput, ModelRouteDecisionOutcome, ModelRouteDispositionAction,
+    ModelRoutePreparation, PreparedModelRouteRecommendation,
+};
 
 /// A host-owned, immutable snapshot. None means the capability is unavailable.
 pub trait ModelRouteCatalogueProvider: Send + Sync {
@@ -38,32 +42,6 @@ impl ModelRouteHostCapabilitiesProvider for UnavailableModelRouteHostCapabilitie
 pub struct ModelRouteRecommendationBasis {
     pub advisory_mode: WorkspaceAdvisoryMode,
     pub advisory_config_revision: i64,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ModelRoutePreparation {
-    Prepared,
-    WorkspaceDisabled,
-    SessionSkip,
-    RequestSkip,
-    CapabilityUnavailable,
-    UnknownWorkFacts,
-    NoEligibleRoutes,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct PreparedModelRouteRecommendation {
-    pub workspace_id: Uuid,
-    pub request_key: String,
-    pub session_preference: AdvisoryRequestPreference,
-    pub request_preference: AdvisoryRequestPreference,
-    pub advisory_config_revision: i64,
-    pub work: ModelRouteWorkContext,
-    pub catalogue: Option<ModelRouteCatalogue>,
-    pub eligible: Option<EligibleModelRoutes>,
-    pub preparation: ModelRoutePreparation,
-    /// Recommendation stays empty until a separately validated ranking arrives.
-    pub routes: ModelRouteRecord,
 }
 
 /// Capture must lock and recheck the approved selection, work facts, config,
@@ -108,56 +86,6 @@ pub trait ModelRouteSelectionRead: Send {
         mapped_work_node_id: Uuid,
         mapped_work_node_revision: i64,
     ) -> Result<Option<ModelRouteWorkContext>>;
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ModelRouteDecisionInput {
-    /// Accepted only when the decision store returns exact sealed provider
-    /// evidence; the caller cannot turn arbitrary IDs into Jev advice.
-    Ranking(ModelRouteRanking),
-    Abstain,
-    NoCall,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ModelRouteAbstainReason {
-    Explicit,
-    ProviderNoPreference,
-    ProviderInsufficientEvidence,
-    EmptyRanking,
-    NoCall,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ModelRouteDecisionOutcome {
-    Recommended { route_id: String },
-    Abstained { reason: ModelRouteAbstainReason },
-    NoRoute { reason: ModelRoutePreparation },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CapturedModelRouteDecision {
-    pub id: Uuid,
-    pub prepared: PreparedModelRouteRecommendation,
-    pub input: ModelRouteDecisionInput,
-    pub outcome: ModelRouteDecisionOutcome,
-    pub routes: ModelRouteRecord,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ModelRouteDispositionAction {
-    Accept,
-    Reject,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct CapturedModelRouteDisposition {
-    pub id: Uuid,
-    pub decision_id: Uuid,
-    pub workspace_id: Uuid,
-    pub actor_id: Uuid,
-    pub action: ModelRouteDispositionAction,
-    pub rationale: String,
 }
 
 /// Implementations must lock/recheck the immutable preparation and exact

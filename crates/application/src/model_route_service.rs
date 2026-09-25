@@ -1,24 +1,17 @@
 //! Public recommendation-only workflow. No recommended model is executed.
-use serde::Serialize;
 use tect_domain::{Error, RequestContext, Result};
 use uuid::Uuid;
 
 use crate::{
-    CapturedModelRouteDecision, CapturedModelRouteDisposition, DecideModelRouteRecommendation,
-    DispositionModelRouteRecommendation, ModelRouteAttemptSnapshot, ModelRouteDecisionInput,
-    ModelRouteDispositionAction, ModelRouteInvocation, ModelRouteSendStart,
-    PrepareModelRouteRecommendation, PreparedModelRouteRecommendation, TransactionMode,
-    WorkspaceService, attempt_model_route_after_commit, finalize_model_route_sealed_response,
+    CapturedModelRouteDisposition, DecideModelRouteRecommendation,
+    DispositionModelRouteRecommendation, ModelRouteDecisionInput, ModelRouteDispositionAction,
+    ModelRouteInvocation, ModelRouteSendStart, PrepareModelRouteRecommendation,
+    PreparedModelRouteRecommendation, TransactionMode, WorkspaceService,
+    attempt_model_route_after_commit, finalize_model_route_sealed_response,
     prepare_model_route_send,
 };
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct ModelRouteView {
-    pub preparation: PreparedModelRouteRecommendation,
-    pub attempt: Option<ModelRouteAttemptSnapshot>,
-    pub decision: Option<CapturedModelRouteDecision>,
-    pub disposition: Option<CapturedModelRouteDisposition>,
-}
+pub use tect_domain::ModelRouteView;
 
 impl WorkspaceService {
     pub async fn prepare_model_route(

@@ -31,12 +31,12 @@ fn caller<T>(value: T, node: Uuid) -> ModelRouteFact<T> {
 }
 
 fn prepared(state: ModelRoutePreparation) -> PreparedModelRouteRecommendation {
-    let node = Uuid::new_v4();
+    let node = Uuid::from_u128(101);
     let mut work = ModelRouteWorkContext {
         approved_matrix_selection: MatrixPlanningSelection {
-            task_id: Uuid::new_v4(),
+            task_id: Uuid::from_u128(102),
             task_revision: 1,
-            disposition_id: Uuid::new_v4(),
+            disposition_id: Uuid::from_u128(103),
             selected_choice_id: "choice-a".into(),
             expected_input_digest: "a".repeat(64),
             expected_choice_set_digest: "b".repeat(64),
@@ -44,8 +44,8 @@ fn prepared(state: ModelRoutePreparation) -> PreparedModelRouteRecommendation {
             mapped_draft_node_indices: vec![0],
         },
         selection_link: ModelRouteSelectionLink {
-            candidate_set_id: Uuid::new_v4(),
-            caller_request_id: Uuid::new_v4(),
+            candidate_set_id: Uuid::from_u128(104),
+            caller_request_id: Uuid::from_u128(105),
             mapped_draft_node_index: 0,
             mapped_work_node_id: node,
             mapped_work_node_revision: 1,
@@ -86,7 +86,7 @@ fn prepared(state: ModelRoutePreparation) -> PreparedModelRouteRecommendation {
     };
     let eligible = catalogue.eligible(&work).unwrap();
     PreparedModelRouteRecommendation {
-        workspace_id: Uuid::new_v4(),
+        workspace_id: Uuid::from_u128(106),
         request_key: "prepare-1".into(),
         session_preference: AdvisoryRequestPreference::UseWorkspace,
         request_preference: AdvisoryRequestPreference::UseWorkspace,
@@ -396,5 +396,94 @@ async fn malformed_sealed_raw_and_uncertain_send_never_retry() {
             .await
             .unwrap(),
         ModelRouteSendStart::Replay
+    );
+}
+
+#[test]
+fn model_route_wire_and_digest_golden_vectors() {
+    let eligible = prepared(ModelRoutePreparation::Prepared);
+    let no_call = ModelRouteAttemptSnapshot {
+        attempt_id: Uuid::from_u128(107),
+        state: crate::ModelRouteAttemptState::NoCall,
+        no_call_reason: Some("provider_unavailable".into()),
+        request_sha256: None,
+        response_sha256: None,
+    };
+    let raw_sealed = ModelRouteAttemptSnapshot {
+        attempt_id: Uuid::from_u128(108),
+        state: crate::ModelRouteAttemptState::RawSealed,
+        no_call_reason: None,
+        request_sha256: Some("a".repeat(64)),
+        response_sha256: Some("b".repeat(64)),
+    };
+    let abstain = crate::CapturedModelRouteDecision {
+        id: Uuid::from_u128(109),
+        prepared: eligible.clone(),
+        input: crate::ModelRouteDecisionInput::Abstain,
+        outcome: crate::ModelRouteDecisionOutcome::Abstained {
+            reason: crate::ModelRouteAbstainReason::Explicit,
+        },
+        routes: eligible.routes.clone(),
+    };
+    for (name, bytes, golden, digest) in [
+        (
+            "eligible",
+            serde_json::to_vec(&eligible).unwrap(),
+            include_str!("tests/eligible_golden.json"),
+            "b215dfcc7c0e36f013395367627a2d84299091cae971db1aac427ab72b491a47",
+        ),
+        (
+            "no_call",
+            serde_json::to_vec(&no_call).unwrap(),
+            include_str!("tests/no_call_golden.json"),
+            "19676169e39e30227cde58b96b894b9dec95e85f1cc0cdb918122897a3ff8d35",
+        ),
+        (
+            "raw_sealed",
+            serde_json::to_vec(&raw_sealed).unwrap(),
+            include_str!("tests/raw_sealed_golden.json"),
+            "84cd0d1ace27c19da5a0f923dabd75dfbd3454b24c0c2a32441c3da897655a7a",
+        ),
+        (
+            "abstain",
+            serde_json::to_vec(&abstain).unwrap(),
+            include_str!("tests/abstain_golden.json"),
+            "6afcc2c6cb52c099939edaed2ac696e5aca33175dd2347a47bb80e70fe2e9973",
+        ),
+    ] {
+        assert_eq!(
+            std::str::from_utf8(&bytes).unwrap(),
+            golden.trim_end(),
+            "{name}"
+        );
+        assert_eq!(model_route_wire_sha256(&bytes), digest, "{name}");
+    }
+    assert_eq!(
+        serde_json::from_str::<PreparedModelRouteRecommendation>(include_str!(
+            "tests/eligible_golden.json"
+        ))
+        .unwrap(),
+        eligible
+    );
+    assert_eq!(
+        serde_json::from_str::<ModelRouteAttemptSnapshot>(include_str!(
+            "tests/no_call_golden.json"
+        ))
+        .unwrap(),
+        no_call
+    );
+    assert_eq!(
+        serde_json::from_str::<ModelRouteAttemptSnapshot>(include_str!(
+            "tests/raw_sealed_golden.json"
+        ))
+        .unwrap(),
+        raw_sealed
+    );
+    assert_eq!(
+        serde_json::from_str::<crate::CapturedModelRouteDecision>(include_str!(
+            "tests/abstain_golden.json"
+        ))
+        .unwrap(),
+        abstain
     );
 }

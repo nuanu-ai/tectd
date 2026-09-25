@@ -1,6 +1,5 @@
 //! Optional adviser boundary. A route recommendation never dispatches that route.
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use tect_domain::{
     Error, ModelRouteRanking, ModelRouteRankingWireOutcome, ModelRouteRankingWireRequest, Result,
     model_route_ranking_from_wire, model_route_wire_sha256, parse_model_route_ranking_response,
@@ -8,6 +7,8 @@ use tect_domain::{
 use uuid::Uuid;
 
 use crate::PreparedModelRouteRecommendation;
+
+pub use tect_domain::{ModelRouteAttemptSnapshot, ModelRouteAttemptState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelRouteRunNoCall {
@@ -67,24 +68,6 @@ pub struct ModelRouteSendPermit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelRouteInvocation {
     pub session_id: Uuid,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelRouteAttemptState {
-    NoCall,
-    SendUnknown,
-    RawSealed,
-    Parsed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ModelRouteAttemptSnapshot {
-    pub attempt_id: Uuid,
-    pub state: ModelRouteAttemptState,
-    pub no_call_reason: Option<String>,
-    pub request_sha256: Option<String>,
-    pub response_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
