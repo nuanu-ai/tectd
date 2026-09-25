@@ -3,6 +3,7 @@ const STORE: &str = include_str!("model_route_store.rs");
 const GRANTS: &str = include_str!("admin/migration.rs");
 const AUDIT: &str = include_str!("../migrations/0082_model_route_advisory_attempts.sql");
 const ATTEMPTS: &str = include_str!("model_route_attempt_store.rs");
+const ATTEMPT_BUDGET: &str = include_str!("model_route_attempt_store/budget.rs");
 const ATTEMPT_READS: &str = include_str!("model_route_attempt_store/reads.rs");
 
 #[test]
@@ -43,10 +44,11 @@ fn optional_ranker_has_one_use_raw_fence_and_unified_audit() {
     ] {
         assert!(AUDIT.contains(required), "missing {required}");
     }
-    for required in [
-        "attempted.verify(prepared)?",
-        "model_route_wire_sha256(raw) != digest",
-    ] {
+    assert!(
+        ATTEMPT_BUDGET.contains("attempted.verify(prepared)?"),
+        "missing attempted.verify(prepared)?"
+    );
+    for required in ["model_route_wire_sha256(raw) != digest"] {
         assert!(ATTEMPTS.contains(required), "missing {required}");
     }
     assert!(
