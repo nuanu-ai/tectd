@@ -3,7 +3,8 @@ const GRANTS: &str = include_str!("admin/migration.rs");
 const STORE: &str = include_str!("matrix_verification_store.rs");
 const ADVICE_LINK: &str =
     include_str!("../migrations/0056_matrix_advisory_verification_binding.sql");
-const ADVICE_DISPATCH: &str = include_str!("advisory/dispatch.rs");
+const ADVICE_DISPATCH_AUTHORIZATION: &str = include_str!("advisory/dispatch/authorization.rs");
+const ADVICE_DISPATCH_LIFECYCLE: &str = include_str!("advisory/dispatch/lifecycle.rs");
 const ADVICE_STORE: &str = include_str!("matrix_advice_store/implementation.rs");
 const STALE_REASON: &str = include_str!("../migrations/0057_matrix_verification_stale_reason.sql");
 
@@ -15,7 +16,7 @@ fn post_response_verification_drift_is_terminal_and_matrix_only() {
             .contains("AND capability = 'engineering_profile' AND work_item_kind = 'matrix_task'")
     );
     assert!(STALE_REASON.contains("NOT VALID"));
-    assert!(ADVICE_DISPATCH.contains("Some(AdvisoryReason::MatrixVerificationStale)"));
+    assert!(ADVICE_DISPATCH_LIFECYCLE.contains("Some(AdvisoryReason::MatrixVerificationStale)"));
     assert!(
         ADVICE_STORE.contains(
             "record.binding.verification_digest.as_deref() != Some(latest_digest.as_str())"
@@ -41,7 +42,10 @@ fn positive_matrix_advice_requires_exact_immutable_verification() {
         "verified_input_digest != input_digest",
         "expires_at <=",
     ] {
-        assert!(ADVICE_DISPATCH.contains(required), "missing {required}");
+        assert!(
+            ADVICE_DISPATCH_AUTHORIZATION.contains(required),
+            "missing {required}"
+        );
     }
     assert!(ADVICE_STORE.contains("verification_digest != record.binding.verification_digest"));
     assert!(ADVICE_STORE.contains("o.matrix_verification_digest"));
