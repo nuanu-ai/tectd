@@ -561,3 +561,74 @@ async fn one_use_rank_and_provider_invention_is_denied() {
 
 mod classification;
 mod contract;
+
+#[test]
+fn independent_verifier_rederives_full_graph_not_receipt_claim() {
+    let input = input(true);
+    let review = review_anti_bloat(&Sha256ScopeDigest, &input).unwrap();
+    let finding = review
+        .findings
+        .iter()
+        .find(|item| item.candidate_id == Uuid::from_u128(70))
+        .unwrap();
+    let finding_id = finding.id.clone();
+    let delta = CandidateDeltaBatch {
+        candidate_set_id: review.candidate_set_id,
+        expected_revision: review.plan_revision,
+        idempotency_key: "verifier-fixture".into(),
+        operations: vec![CandidateDeltaOperation::CandidateRemove {
+            candidate_id: finding.candidate_id,
+            expected_revision: 1,
+        }],
+    };
+    let (preservation, after) = derive_anti_bloat_delta(
+        &Sha256ScopeDigest,
+        &input,
+        &review,
+        &finding_id,
+        AntiBloatDisposition::Narrow,
+        &delta,
+    )
+    .unwrap();
+    let before = input
+        .manifest
+        .eligible(&input.selected_id)
+        .unwrap()
+        .material
+        .clone();
+    let mut material = crate::AntiBloatVerificationMaterial {
+        workspace_id: Uuid::from_u128(10),
+        review_id: Uuid::from_u128(12),
+        review_actor_id: Uuid::from_u128(11),
+        selected_disposition_actor_id: Uuid::from_u128(11),
+        selected_caller_actor_id: Uuid::from_u128(11),
+        selected_caller_session_id: Uuid::from_u128(13),
+        input,
+        review,
+        finding_id,
+        disposition: AntiBloatDisposition::Narrow,
+        preservation: preservation.clone(),
+        delta: delta.clone(),
+        claimed_after: after.clone(),
+        receipt: AntiBloatApplyReceipt {
+            review_id: Uuid::from_u128(12),
+            candidate_set_id: delta.candidate_set_id,
+            idempotency_key: delta.idempotency_key.clone(),
+            caller_request_id: Uuid::from_u128(14),
+            from_revision: delta.expected_revision,
+            to_revision: delta.expected_revision + 1,
+            source_digest: preservation.source_digest.clone(),
+            before_material_digest: preservation.before_material_digest.clone(),
+            after_material_digest: preservation.after_material_digest.clone(),
+        },
+        before_saved: before,
+        after_saved: after,
+        current_revision: delta.expected_revision + 1,
+        source_fragments_match: true,
+    };
+    assert_eq!(material.verdict().0, AntiBloatVerificationVerdict::Pass);
+    material.after_saved.candidates[0].title.push_str(" forged");
+    assert_eq!(material.verdict().0, AntiBloatVerificationVerdict::Fail);
+    material.source_fragments_match = false;
+    assert_eq!(material.verdict().0, AntiBloatVerificationVerdict::Unknown);
+}

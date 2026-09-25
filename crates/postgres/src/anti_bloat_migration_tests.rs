@@ -1,5 +1,7 @@
 const MIGRATION: &str = include_str!("../migrations/0076_scope_anti_bloat_review.sql");
 const NATIVE_APPLY: &str = include_str!("../migrations/0078_scope_anti_bloat_native_apply.sql");
+const VERIFIER: &str =
+    include_str!("../migrations/0079_scope_anti_bloat_preservation_attestation.sql");
 
 #[test]
 fn binding_foreign_key_targets_exact_source_identity() {
@@ -47,4 +49,16 @@ fn native_apply_receipt_links_both_immutable_draft_revisions() {
     assert!(NATIVE_APPLY.contains("scope_anti_bloat_native_after_draft_fk"));
     assert!(NATIVE_APPLY.contains("scope_anti_bloat_native_idempotency_unique"));
     assert!(NATIVE_APPLY.contains("DROP CONSTRAINT scope_anti_bloat_caller_delta_fk"));
+}
+
+#[test]
+fn verifier_attestation_is_independent_and_append_only() {
+    assert!(VERIFIER.contains("scope_anti_bloat_preservation_attestation_guard"));
+    assert!(VERIFIER.contains("vp.role='verifier'"));
+    assert!(VERIFIER.contains("vp.id<>r.actor_id AND vp.id<>c.actor_id AND vp.id<>d.actor_id"));
+    assert!(VERIFIER.contains("s.revision=NEW.to_revision"));
+    assert!(
+        VERIFIER.contains("BEFORE UPDATE OR DELETE ON scope_anti_bloat_preservation_attestations")
+    );
+    assert!(VERIFIER.contains("FORCE ROW LEVEL SECURITY"));
 }

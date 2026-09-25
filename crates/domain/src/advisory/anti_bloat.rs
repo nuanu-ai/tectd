@@ -116,6 +116,42 @@ pub struct AntiBloatApplyReceipt {
     pub after_material_digest: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AntiBloatVerificationVerdict {
+    Pass,
+    Fail,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AntiBloatVerificationReason {
+    FullGraphPreserved,
+    GraphOrReceiptMismatch,
+    SourceEvidenceUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AntiBloatPreservationAttestation {
+    pub request_id: Uuid,
+    pub workspace_id: Uuid,
+    pub review_id: Uuid,
+    pub candidate_set_id: Uuid,
+    pub from_revision: i64,
+    pub to_revision: i64,
+    pub verifier_principal_id: Uuid,
+    pub verifier_session_id: Uuid,
+    pub verdict: AntiBloatVerificationVerdict,
+    pub reason: AntiBloatVerificationReason,
+    pub evidence_digest: String,
+    pub source_digest: String,
+    pub before_material_digest: String,
+    pub after_material_digest: String,
+    pub caller_request_id: Uuid,
+}
+
 fn selected(input: &AntiBloatInput) -> Result<&crate::ScopeDecompositionAlternative> {
     input
         .manifest

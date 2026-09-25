@@ -2,6 +2,7 @@
 mod advisory;
 mod anti_bloat;
 mod anti_bloat_ports;
+mod anti_bloat_verification;
 pub use anti_bloat::AntiBloatApplication;
 pub use anti_bloat_ports::{
     AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall,
@@ -9,6 +10,8 @@ pub use anti_bloat_ports::{
     AntiBloatRankingProvider, AntiBloatStore, DisabledAntiBloatRankingProvider,
     StoredAntiBloatReview,
 };
+pub use anti_bloat_ports::{AntiBloatVerificationMaterial, AntiBloatVerificationStore};
+pub use anti_bloat_verification::VerifyAntiBloatApply;
 pub use advisory::{Sha256ScopeDigest, VerifySelectedSave};
 mod advisory_ports;
 mod matrix_advice_ports;

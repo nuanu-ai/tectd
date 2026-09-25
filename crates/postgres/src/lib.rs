@@ -2,6 +2,7 @@
 pub mod admin;
 mod advisory;
 mod anti_bloat_store;
+mod anti_bloat_verification_store;
 #[cfg(test)]
 mod anti_bloat_migration_tests;
 #[cfg(test)]

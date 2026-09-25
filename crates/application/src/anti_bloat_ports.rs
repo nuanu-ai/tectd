@@ -2,7 +2,8 @@
 use async_trait::async_trait;
 use tect_domain::{
     AntiBloatApplyReceipt, AntiBloatDisposition, AntiBloatInput, AntiBloatPreservation,
-    AntiBloatReview, CandidateDeltaBatch, ResolvedCandidateDraft, Result, WorkspaceAdvisoryMode,
+    AntiBloatPreservationAttestation, AntiBloatReview, CandidateDeltaBatch, ResolvedCandidateDraft,
+    Result, WorkspaceAdvisoryMode,
 };
 use uuid::Uuid;
 
@@ -122,4 +123,49 @@ pub struct AntiBloatAuthoredDelta {
     pub finding_id: String,
     pub disposition: AntiBloatDisposition,
     pub delta: CandidateDeltaBatch,
+}
+
+/// All evidence is re-read from the immutable caller/review ledger and native
+/// saved drafts. The caller cannot supply any of these facts.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AntiBloatVerificationMaterial {
+    pub workspace_id: Uuid,
+    pub review_id: Uuid,
+    pub review_actor_id: Uuid,
+    pub selected_disposition_actor_id: Uuid,
+    pub selected_caller_actor_id: Uuid,
+    pub selected_caller_session_id: Uuid,
+    pub input: AntiBloatInput,
+    pub review: AntiBloatReview,
+    pub finding_id: String,
+    pub disposition: AntiBloatDisposition,
+    pub preservation: AntiBloatPreservation,
+    pub delta: CandidateDeltaBatch,
+    pub claimed_after: ResolvedCandidateDraft,
+    pub receipt: AntiBloatApplyReceipt,
+    pub before_saved: ResolvedCandidateDraft,
+    pub after_saved: ResolvedCandidateDraft,
+    pub current_revision: i64,
+    pub source_fragments_match: bool,
+}
+
+#[async_trait]
+pub trait AntiBloatVerificationStore: Send {
+    async fn anti_bloat_verification_material(
+        &mut self,
+        workspace_id: Uuid,
+        review_id: Uuid,
+        lock: bool,
+    ) -> Result<Option<AntiBloatVerificationMaterial>>;
+
+    async fn anti_bloat_attestation_by_request(
+        &mut self,
+        workspace_id: Uuid,
+        request_id: Uuid,
+    ) -> Result<Option<AntiBloatPreservationAttestation>>;
+
+    async fn append_anti_bloat_attestation(
+        &mut self,
+        value: &AntiBloatPreservationAttestation,
+    ) -> Result<()>;
 }

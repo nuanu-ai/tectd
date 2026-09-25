@@ -67,6 +67,11 @@ pub trait UnitOfWork:
     fn anti_bloat_store(&mut self) -> Option<&mut dyn crate::AntiBloatStore> {
         None
     }
+    fn anti_bloat_verification_store(
+        &mut self,
+    ) -> Option<&mut dyn crate::AntiBloatVerificationStore> {
+        None
+    }
     /// Optional pre-open pipeline recommendation persistence.
     fn pipeline_recommendation_store(
         &mut self,

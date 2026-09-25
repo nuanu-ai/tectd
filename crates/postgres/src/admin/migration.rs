@@ -98,6 +98,12 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
              scope_anti_bloat_caller_links TO {quoted_role}"
         ),
         format!(
+            "REVOKE ALL PRIVILEGES ON TABLE scope_anti_bloat_preservation_attestations FROM {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT ON TABLE scope_anti_bloat_preservation_attestations TO {quoted_role}"
+        ),
+        format!(
             "GRANT UPDATE(state,request_bytes,request_sha256,ranked_ids,raw_response,response_sha256,response_sealed_at,send_started_at,sealed_at) \
              ON TABLE scope_anti_bloat_reviews TO {quoted_role}"
         ),
@@ -364,6 +370,7 @@ pub async fn validate_runtime_role(pool: &PgPool, runtime_role: &str) -> Result<
                          'matrix_planning_effect_attestations',
                          'pipeline_open_effect_attestations',
                          'pipeline_phase_effect_attestations',
+                         'scope_anti_bloat_preservation_attestations',
                          'pipeline_advice_contexts',
                          'matrix_tasks', 'matrix_task_revisions',
                          'matrix_verifications', 'matrix_verification_bindings',
