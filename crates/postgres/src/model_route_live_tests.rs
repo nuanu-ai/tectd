@@ -9,6 +9,7 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
+mod budget_authorization_test;
 mod positive;
 mod positive_input;
 mod positive_test;

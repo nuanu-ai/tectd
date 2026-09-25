@@ -17,6 +17,7 @@ mod advisory_migration_tests;
 mod anti_bloat_migration_tests;
 mod anti_bloat_store;
 mod anti_bloat_verification_store;
+mod budget_owner_keys;
 mod budget_policy_usage;
 mod durable_knowledge;
 mod durable_knowledge_admin;
@@ -98,6 +99,7 @@ mod store;
 
 pub use admin::Enrollment;
 pub use advisory_budget_policy_approval::verify_budget_policy_approval;
+pub use budget_owner_keys::BudgetOwnerKeys;
 pub use durable_knowledge_admin::enable_durable_knowledge;
 pub use knowledge_recovery::{
     KnowledgeAdminPool, KnowledgeDatabaseIdentity, KnowledgeRecoveryReport,

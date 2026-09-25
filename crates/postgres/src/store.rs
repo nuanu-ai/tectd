@@ -1,7 +1,9 @@
+use crate::BudgetOwnerKeys;
 use crate::{programs, runtime, sources, storage_error};
 use async_trait::async_trait;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Postgres, Transaction};
+use std::sync::Arc;
 use tect_application::{Store, TransactionMode, UnitOfWork};
 use tect_domain::*;
 use uuid::Uuid;
@@ -9,6 +11,7 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct PgStore {
     pool: PgPool,
+    budget_owner_keys: Arc<BudgetOwnerKeys>,
 }
 
 mod connection;
@@ -18,6 +21,7 @@ pub(crate) struct PgUnitOfWork {
     mode: TransactionMode,
     identity: Option<HostIdentity>,
     tenant_id: Option<Uuid>,
+    pub(crate) budget_owner_keys: Arc<BudgetOwnerKeys>,
 }
 
 impl PgUnitOfWork {
@@ -34,6 +38,7 @@ impl PgUnitOfWork {
             mode: TransactionMode::ReadWrite,
             identity: None,
             tenant_id: Some(tenant_id),
+            budget_owner_keys: Arc::new(BudgetOwnerKeys::default()),
         }
     }
 
@@ -79,6 +84,7 @@ impl Store for PgStore {
             mode: TransactionMode::ReadWrite,
             identity: None,
             tenant_id: Some(tenant_id),
+            budget_owner_keys: self.budget_owner_keys.clone(),
         };
         let exhausted = tect_application::ModelRouteAttemptStore::consume_budget(
             &mut consume,
@@ -109,6 +115,7 @@ impl Store for PgStore {
             mode: TransactionMode::ReadWrite,
             identity: None,
             tenant_id: Some(tenant_id),
+            budget_owner_keys: self.budget_owner_keys.clone(),
         };
         tect_application::ModelRouteAttemptStore::mark_send_unknown(&mut failed, permit).await?;
         Box::new(failed).commit().await
@@ -141,6 +148,7 @@ impl Store for PgStore {
             mode: TransactionMode::ReadWrite,
             identity: None,
             tenant_id: Some(tenant_id),
+            budget_owner_keys: self.budget_owner_keys.clone(),
         };
         tect_application::ModelRouteAttemptStore::seal_raw_response(
             &mut seal,
@@ -165,6 +173,7 @@ impl Store for PgStore {
             mode,
             identity: None,
             tenant_id: None,
+            budget_owner_keys: self.budget_owner_keys.clone(),
         }))
     }
 }

@@ -77,6 +77,26 @@ mod tests {
         let signature = keypair.sign(&unsigned.approval_signing_message(workspace).unwrap());
         let signed = policy_with_signature(owner, ceilings(), format_hex(signature.as_ref()));
         let public_key = keypair.public_key().as_ref();
+        let key_hex = format_hex(public_key);
+        let keys = crate::BudgetOwnerKeys::from_json(&format!(
+            r#"[{{"workspace_id":"{workspace}","owner_id":"{owner}","public_key_hex":"{key_hex}"}}]"#
+        ))
+        .unwrap();
+        assert!(keys.authorizes(workspace, &signed));
+        assert!(!crate::BudgetOwnerKeys::default().authorizes(workspace, &signed));
+        assert!(!keys.authorizes(Uuid::new_v4(), &signed));
+        let wrong_owner_keys = crate::BudgetOwnerKeys::from_json(&format!(
+            r#"[{{"workspace_id":"{workspace}","owner_id":"{}","public_key_hex":"{key_hex}"}}]"#,
+            Uuid::new_v4()
+        ))
+        .unwrap();
+        assert!(!wrong_owner_keys.authorizes(workspace, &signed));
+        let wrong_key_keys = crate::BudgetOwnerKeys::from_json(&format!(
+            r#"[{{"workspace_id":"{workspace}","owner_id":"{owner}","public_key_hex":"{}"}}]"#,
+            "00".repeat(32)
+        ))
+        .unwrap();
+        assert!(!wrong_key_keys.authorizes(workspace, &signed));
 
         assert!(verify_budget_policy_approval(workspace, owner, &signed, public_key).is_ok());
         assert!(verify_budget_policy_approval(Uuid::new_v4(), owner, &signed, public_key).is_err());
@@ -110,6 +130,7 @@ mod tests {
         );
         assert_ne!(altered.digest(), signed.digest());
         assert!(verify_budget_policy_approval(workspace, owner, &altered, public_key).is_err());
+        assert!(!keys.authorizes(workspace, &altered));
         let wrong_owner = policy_with_signature(
             Uuid::new_v4(),
             ceilings(),

@@ -184,6 +184,13 @@ async fn permit_row(
 
 #[async_trait]
 impl ModelRouteAttemptStore for PgUnitOfWork {
+    async fn authorized_budget_policy(
+        &mut self,
+        workspace_id: Uuid,
+        now_unix_ms: i64,
+    ) -> Result<Option<AdvisoryBudgetPolicy>> {
+        self.verified_budget_policy(workspace_id, now_unix_ms).await
+    }
     async fn by_preparation(
         &mut self,
         workspace_id: Uuid,
@@ -229,7 +236,6 @@ impl ModelRouteAttemptStore for PgUnitOfWork {
             response_sha256: row.try_get("response_sha256").map_err(storage_error)?,
         }))
     }
-
     async fn recover_raw_sealed(
         &mut self,
         workspace_id: Uuid,

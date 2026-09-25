@@ -4,7 +4,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tect_application::WorkspaceService;
 use tect_domain::Error;
-use tect_postgres::{PgScopeAuthoredManifestSupplier, PgScopeAuthorityObserver, PgStore};
+use tect_postgres::{
+    BudgetOwnerKeys, PgScopeAuthoredManifestSupplier, PgScopeAuthorityObserver, PgStore,
+};
 use tokio::net::UnixListener;
 
 #[path = "../knowledge_search_worker.rs"]
@@ -26,10 +28,17 @@ async fn run() -> tect_domain::Result<()> {
             .ok()
             .as_deref(),
     )?;
+    let budget_owner_keys = match std::env::var("TECT_JEV_BUDGET_OWNER_KEYS_JSON") {
+        Ok(value) => BudgetOwnerKeys::from_json(&value)?,
+        Err(std::env::VarError::NotPresent) => BudgetOwnerKeys::default(),
+        Err(_) => return Err(Error::InvalidConfiguration),
+    };
     validate_socket_parent(&socket)?;
     reject_existing_path(&socket)?;
 
-    let store = PgStore::connect(&database_url, max_connections).await?;
+    let store = PgStore::connect(&database_url, max_connections)
+        .await?
+        .with_budget_owner_keys(budget_owner_keys);
     let authority = Arc::new(PgScopeAuthorityObserver::new(
         store.clone(),
         Arc::new(tect_host::StaticCandidateGuidance),

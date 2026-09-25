@@ -26,8 +26,8 @@ use tect_domain::{
 mod negative_cases;
 mod service_test;
 
-/// Explicit test-only trust boundary. Production PgUnitOfWork keeps the trait's
-/// default `None`; a syntactically valid stored signature never authorizes it.
+/// Explicit test-only trust boundary for synthetic legacy policies. Production
+/// PgUnitOfWork requires a pinned owner key and a valid signature.
 struct TrustedTestRouteStore<'a> {
     inner: &'a mut dyn ModelRouteAttemptStore,
     policy: AdvisoryBudgetPolicy,

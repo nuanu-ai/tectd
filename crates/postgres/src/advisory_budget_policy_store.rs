@@ -6,8 +6,29 @@ use uuid::Uuid;
 
 use crate::{storage_error, store::PgUnitOfWork};
 
+impl PgUnitOfWork {
+    pub(crate) async fn verified_budget_policy(
+        &mut self,
+        workspace_id: Uuid,
+        now_unix_ms: i64,
+    ) -> Result<Option<AdvisoryBudgetPolicy>> {
+        let candidate = self
+            .candidate_budget_policy(workspace_id, now_unix_ms)
+            .await?;
+        Ok(candidate.filter(|policy| self.budget_owner_keys.authorizes(workspace_id, policy)))
+    }
+}
+
 #[async_trait]
 impl AdvisoryBudgetPolicyStore for PgUnitOfWork {
+    async fn authorized_budget_policy(
+        &mut self,
+        workspace_id: Uuid,
+        now_unix_ms: i64,
+    ) -> Result<Option<AdvisoryBudgetPolicy>> {
+        self.verified_budget_policy(workspace_id, now_unix_ms).await
+    }
+
     async fn candidate_budget_policy(
         &mut self,
         workspace_id: Uuid,

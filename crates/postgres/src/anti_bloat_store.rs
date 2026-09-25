@@ -92,6 +92,14 @@ fn parse_state(name: &str, ranked: Option<serde_json::Value>) -> Result<AntiBloa
 
 #[async_trait]
 impl AntiBloatStore for PgUnitOfWork {
+    async fn authorized_budget_policy(
+        &mut self,
+        workspace_id: Uuid,
+        now_unix_ms: i64,
+    ) -> Result<Option<AdvisoryBudgetPolicy>> {
+        self.verified_budget_policy(workspace_id, now_unix_ms).await
+    }
+
     async fn advisory_mode(&mut self, workspace_id: Uuid) -> Result<WorkspaceAdvisoryMode> {
         input::advisory_mode(self, workspace_id).await
     }
