@@ -132,6 +132,7 @@ impl PipelineCompatibilityPolicy {
         }
         for coverage in &rule.card_coverage {
             let Some(obligation) = option
+                .verification_plan
                 .obligations
                 .iter()
                 .find(|obligation| obligation.phase_id == coverage.phase_id)

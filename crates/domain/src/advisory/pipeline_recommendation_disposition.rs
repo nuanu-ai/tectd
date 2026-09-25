@@ -40,6 +40,7 @@ pub struct PipelineDispositionResult {
     pub work_id: Uuid,
     pub advice: PipelineDispositionAdvice,
     pub selected_kind: Option<PipelineKind>,
+    pub selected_option_id: Option<String>,
 }
 
 impl PipelineDispositionRequest {
@@ -84,13 +85,12 @@ impl PipelineDispositionRequest {
         {
             return Err(Error::InputConflict);
         }
-        let selected_kind = match advice {
+        let selected_option_id = match advice {
             PipelineDispositionAdvice::NoCall => {
                 if self.action != PipelineRecommendationDisposition::UseDeterministicChoice {
                     return Err(Error::InvalidArguments);
                 }
-                require_eligible_baseline(manifest, *pipeline)?;
-                Some(*pipeline)
+                Some(require_eligible_baseline(manifest, *pipeline)?)
             }
             PipelineDispositionAdvice::Abstained { dispatch_id } => {
                 if dispatch_id.is_nil()
@@ -98,8 +98,7 @@ impl PipelineDispositionRequest {
                 {
                     return Err(Error::InvalidArguments);
                 }
-                require_eligible_baseline(manifest, *pipeline)?;
-                Some(*pipeline)
+                Some(require_eligible_baseline(manifest, *pipeline)?)
             }
             PipelineDispositionAdvice::Ranked {
                 dispatch_id,
@@ -115,29 +114,30 @@ impl PipelineDispositionRequest {
                 match self.action {
                     PipelineRecommendationDisposition::AcceptRecommendation => {
                         let top = &ranked_ids[0];
-                        Some(
-                            manifest
-                                .options
-                                .iter()
-                                .find(|option| &option.id == top)
-                                .ok_or(Error::InvalidArguments)?
-                                .kind,
-                        )
+                        Some(top.clone())
                     }
                     PipelineRecommendationDisposition::RejectRecommendation => None,
                     PipelineRecommendationDisposition::UseDeterministicChoice => {
-                        require_eligible_baseline(manifest, *pipeline)?;
-                        Some(*pipeline)
+                        Some(require_eligible_baseline(manifest, *pipeline)?)
                     }
                 }
             }
         };
+        let selected_kind = selected_option_id.as_ref().map(|id| {
+            manifest
+                .options
+                .iter()
+                .find(|option| &option.id == id)
+                .expect("validated eligible pair")
+                .kind
+        });
         Ok(PipelineDispositionResult {
             id,
             request: self.clone(),
             work_id: *work_id,
             advice: advice.clone(),
             selected_kind,
+            selected_option_id,
         })
     }
 }
@@ -145,16 +145,20 @@ impl PipelineDispositionRequest {
 fn require_eligible_baseline(
     manifest: &PipelineRecommendationManifest,
     baseline: PipelineKind,
-) -> Result<()> {
-    if manifest
+) -> Result<String> {
+    let id = manifest
+        .deterministic_option_id
+        .as_ref()
+        .ok_or(Error::InvalidArguments)?;
+    let option = manifest
         .options
         .iter()
-        .any(|option| option.kind == baseline)
-    {
-        Ok(())
-    } else {
-        Err(Error::InvalidArguments)
+        .find(|option| &option.id == id)
+        .ok_or(Error::InvalidArguments)?;
+    if option.kind != baseline {
+        return Err(Error::InvalidArguments);
     }
+    Ok(id.clone())
 }
 
 fn sha256(value: &str) -> bool {
@@ -168,8 +172,9 @@ fn sha256(value: &str) -> bool {
 mod tests {
     use super::*;
     use crate::{
-        PIPELINE_RECOMMENDATION_SCHEMA, PipelineExcludedKind, PipelineExclusionReason,
-        PipelineRecommendationOption,
+        PIPELINE_RECOMMENDATION_SCHEMA, PIPELINE_VERIFICATION_PLAN_SCHEMA, PipelineExcludedKind,
+        PipelineExclusionReason, PipelineRecommendationOption, PipelineVerificationObligation,
+        PipelineVerificationPlan,
     };
     use sha2::{Digest, Sha256};
 
@@ -195,18 +200,44 @@ mod tests {
             compatibility_policy_digest: "e".repeat(64),
             mandatory_card_ids: vec!["card".into()],
             deterministic_kind: kind,
+            deterministic_option_id: None,
             catalogue_revision: "4".into(),
             catalogue_digest: "catalogue".into(),
             options: [kind, other]
                 .into_iter()
-                .map(|kind| PipelineRecommendationOption {
-                    id: kind.as_str().into(),
-                    kind,
-                    definition_version: "1".into(),
-                    definition_digest: "definition".into(),
-                    completion_contract: "proof".into(),
-                    forbidden_claims: vec![],
-                    obligations: vec![],
+                .map(|kind| {
+                    let mut plan = PipelineVerificationPlan {
+                        schema: PIPELINE_VERIFICATION_PLAN_SCHEMA.into(),
+                        id: String::new(),
+                        digest: String::new(),
+                        source_kind: kind,
+                        source_definition_version: "1".into(),
+                        source_definition_digest: "definition".into(),
+                        obligations: vec![PipelineVerificationObligation {
+                            phase_id: "proof".into(),
+                            required_fields: vec!["proof".into()],
+                            required_artifacts: vec![],
+                            validator_contracts: vec![],
+                            output_constraints: vec![],
+                            allowed_verdicts: vec![],
+                            verdict_routes: vec![],
+                            disposition_required: false,
+                            required_dispositions: vec![],
+                            fresh_reviewer_input: false,
+                            output_contract: "proof".into(),
+                        }],
+                    };
+                    plan.digest = plan.content_digest().unwrap();
+                    plan.id = format!("verification-plan:{}", plan.digest);
+                    PipelineRecommendationOption {
+                        id: PipelineRecommendationOption::pair_id(kind, &plan.id),
+                        kind,
+                        definition_version: "1".into(),
+                        definition_digest: "definition".into(),
+                        completion_contract: "proof".into(),
+                        forbidden_claims: vec![],
+                        verification_plan: plan,
+                    }
                 })
                 .collect(),
             excluded: PipelineKind::CURRENT_SLICE_RUN_KINDS
@@ -220,6 +251,7 @@ mod tests {
             evidence_refs: vec![],
             digest: String::new(),
         };
+        manifest.deterministic_option_id = Some(manifest.options[0].id.clone());
         manifest.digest = format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&manifest).unwrap())
@@ -330,6 +362,7 @@ mod tests {
     fn excluded_baseline_cannot_be_used_even_without_provider_call() {
         let (mut manifest, work, mut request) = fixture();
         manifest.options.clear();
+        manifest.deterministic_option_id = None;
         manifest.excluded = PipelineKind::CURRENT_SLICE_RUN_KINDS
             .into_iter()
             .map(|kind| PipelineExcludedKind {

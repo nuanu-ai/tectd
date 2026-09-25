@@ -4,8 +4,8 @@ use crate::{
     MATRIX_CHOICE_SET_SCHEMA, MatrixFact, OperatingEnvelope, OperationalFacts,
     PIPELINE_COMPATIBILITY_POLICY_VERSION, PipelineCardCoverage, PipelineCatalogueEntry,
     PipelineCompatibilityRule, PipelineDeliveryMode, PipelineInstructionSnapshot,
-    PipelinePhaseDefinition, PipelinePhaseRetryPolicy, ProtectedGuarantee,
-    pipeline_obligation_digest,
+    PipelinePhaseDefinition, PipelinePhaseRetryPolicy, PipelineVerificationObligation,
+    ProtectedGuarantee, pipeline_obligation_digest,
 };
 use uuid::Uuid;
 
@@ -233,14 +233,17 @@ fn current_eight_are_closed_and_promotion_is_excluded() {
     );
     assert_eq!(
         manifest.options[0].id,
-        PipelineKind::LightweightTddDevelopment.as_str()
+        PipelineRecommendationOption::pair_id(
+            PipelineKind::LightweightTddDevelopment,
+            &manifest.options[0].verification_plan.id,
+        )
     );
     assert_eq!(
-        manifest.options[0].obligations[0].required_fields,
+        manifest.options[0].verification_plan.obligations[0].required_fields,
         ["proof_summary"]
     );
     assert_eq!(
-        manifest.options[0].obligations[0].required_artifacts[0].name_pattern,
+        manifest.options[0].verification_plan.obligations[0].required_artifacts[0].name_pattern,
         "proof.txt"
     );
     assert_eq!(manifest.mandatory_card_ids, ["EM02-SCOPE@0.1"]);
@@ -374,4 +377,102 @@ fn ranking_requires_exact_permutation_or_abstention() {
             Err(Error::InvalidArguments)
         );
     }
+}
+
+#[test]
+fn plan_and_pair_identity_are_stable_and_source_bound() {
+    let pinned = definition(PipelineKind::LightweightTddDevelopment);
+    let first = PipelineVerificationPlan::from_definition(&pinned).unwrap();
+    let second = PipelineVerificationPlan::from_definition(&pinned).unwrap();
+    assert_eq!(first, second);
+    first.validate_against_definition(&pinned).unwrap();
+    let mut changed = pinned.clone();
+    changed.version = "2".into();
+    let newer = PipelineVerificationPlan::from_definition(&changed).unwrap();
+    assert_ne!(first.id, newer.id);
+    assert_eq!(
+        first.validate_against_definition(&changed),
+        Err(Error::StaleContext)
+    );
+    assert_ne!(
+        PipelineRecommendationOption::pair_id(pinned.kind, &first.id),
+        PipelineRecommendationOption::pair_id(pinned.kind, &newer.id)
+    );
+}
+
+#[test]
+fn saved_manifest_requires_current_pinned_definitions() {
+    let input = source();
+    let manifest = build_pipeline_recommendation_manifest(&input).unwrap();
+    manifest
+        .validate_against_definitions(&input.definitions)
+        .unwrap();
+    let mut changed = input.definitions.clone();
+    changed[0].phases[0]
+        .required_fields
+        .push("additional_check".into());
+    assert_eq!(
+        manifest.validate_against_definitions(&changed),
+        Err(Error::StaleContext)
+    );
+    changed.remove(0);
+    assert_eq!(
+        manifest.validate_against_definitions(&changed),
+        Err(Error::StaleContext)
+    );
+}
+
+#[test]
+fn required_phase_omission_cannot_match_pinned_definition() {
+    let mut pinned = definition(PipelineKind::LightweightTddDevelopment);
+    let mut second = pinned.phases[0].clone();
+    second.id = "review".into();
+    second.ordinal = 2;
+    pinned.phases.push(second);
+    let complete = PipelineVerificationPlan::from_definition(&pinned).unwrap();
+    assert_eq!(complete.obligations.len(), 2);
+    let mut omitted = complete.clone();
+    omitted.obligations.pop();
+    omitted.digest = omitted.content_digest().unwrap();
+    omitted.id = format!("verification-plan:{}", omitted.digest);
+    omitted.validate().unwrap();
+    assert_eq!(
+        omitted.validate_against_definition(&pinned),
+        Err(Error::StaleContext)
+    );
+}
+
+#[test]
+fn manifest_rejects_missing_duplicate_or_stale_plan_identity() {
+    let valid = build_pipeline_recommendation_manifest(&source()).unwrap();
+    for mutation in 0..3 {
+        let mut manifest = valid.clone();
+        match mutation {
+            0 => manifest.options[0].verification_plan.id.clear(),
+            1 => manifest.options[1].id = manifest.options[0].id.clone(),
+            _ => {
+                manifest.options[0]
+                    .verification_plan
+                    .source_definition_version = "stale".into()
+            }
+        }
+        manifest.digest.clear();
+        manifest.digest = digest_json(&manifest).unwrap();
+        assert_eq!(manifest.validate_digest(), Err(Error::InputConflict));
+    }
+    let ids = valid
+        .options
+        .iter()
+        .map(|option| option.id.clone())
+        .collect::<Vec<_>>();
+    let mut old = ids.clone();
+    old[0] = format!(
+        "{}+verification-plan:{}",
+        valid.options[0].kind.as_str(),
+        "0".repeat(64)
+    );
+    assert_eq!(
+        PipelineRecommendationRanking::Ranked { ranked_ids: old }.validate(&valid),
+        Err(Error::InvalidArguments)
+    );
 }

@@ -6,15 +6,15 @@ use crate::{
     MatrixSourceVerificationStatus, OwnerReportedEngineeringMatrixFacts,
     PipelineArtifactRequirement, PipelineCatalogueSnapshot, PipelineCompatibilityPolicy,
     PipelineDefinitionSnapshot, PipelineExcludedKind, PipelineExclusionReason,
-    PipelineExecutionOwner, PipelineKind, PipelineOutputConstraint, PipelineValidatorContract,
-    PipelineVerdictRoute, Result, SliceCandidateNode, VerifiedEngineeringMatrixFacts,
-    compose_engineering_matrix, compose_owner_reported_engineering_matrix, matrix_input_digest,
+    PipelineExecutionOwner, PipelineKind, PipelineVerificationPlan, Result, SliceCandidateNode,
+    VerifiedEngineeringMatrixFacts, compose_engineering_matrix,
+    compose_owner_reported_engineering_matrix, matrix_input_digest,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const PIPELINE_RECOMMENDATION_SCHEMA: &str = "tect.pipeline-recommendation/2";
+pub const PIPELINE_RECOMMENDATION_SCHEMA: &str = "tect.pipeline-recommendation/3";
 
 /// Server-loaded Matrix provenance. Current values must be read again before
 /// dispatch and disposition; a client-supplied copy has no authority.
@@ -49,31 +49,21 @@ pub struct PipelineRecommendationSource {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PipelineVerificationObligation {
-    pub phase_id: String,
-    pub required_fields: Vec<String>,
-    pub required_artifacts: Vec<PipelineArtifactRequirement>,
-    pub validator_contracts: Vec<PipelineValidatorContract>,
-    pub output_constraints: Vec<PipelineOutputConstraint>,
-    pub allowed_verdicts: Vec<String>,
-    pub verdict_routes: Vec<PipelineVerdictRoute>,
-    pub disposition_required: bool,
-    pub required_dispositions: Vec<String>,
-    pub fresh_reviewer_input: bool,
-    pub output_contract: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct PipelineRecommendationOption {
-    /// Stable ID from `PipelineKind::as_str`, never provider-generated.
+    /// Stable identity of the exact pipeline and verification-plan pair.
     pub id: String,
     pub kind: PipelineKind,
     pub definition_version: String,
     pub definition_digest: String,
     pub completion_contract: String,
     pub forbidden_claims: Vec<String>,
-    pub obligations: Vec<PipelineVerificationObligation>,
+    pub verification_plan: PipelineVerificationPlan,
+}
+
+impl PipelineRecommendationOption {
+    pub fn pair_id(kind: PipelineKind, plan_id: &str) -> String {
+        format!("{}+{}", kind.as_str(), plan_id)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +82,7 @@ pub struct PipelineRecommendationManifest {
     pub compatibility_policy_digest: String,
     pub mandatory_card_ids: Vec<String>,
     pub deterministic_kind: PipelineKind,
+    pub deterministic_option_id: Option<String>,
     pub catalogue_revision: String,
     pub catalogue_digest: String,
     pub options: Vec<PipelineRecommendationOption>,
@@ -134,11 +125,22 @@ impl PipelineRecommendationManifest {
                     .any(|excluded| excluded.kind == option.kind)
             })
             || self.options.iter().any(|option| {
-                option.id != option.kind.as_str()
+                option.verification_plan.validate().is_err()
+                    || option.id != Self::pair_id(option)
                     || !PipelineKind::CURRENT_SLICE_RUN_KINDS.contains(&option.kind)
                     || option.definition_version.trim().is_empty()
                     || option.definition_digest.trim().is_empty()
+                    || option.verification_plan.source_kind != option.kind
+                    || option.verification_plan.source_definition_version
+                        != option.definition_version
+                    || option.verification_plan.source_definition_digest != option.definition_digest
             })
+            || self.deterministic_option_id
+                != self
+                    .options
+                    .iter()
+                    .find(|option| option.kind == self.deterministic_kind)
+                    .map(|option| option.id.clone())
             || self.options.windows(2).any(|pair| {
                 let left = PipelineKind::CURRENT_SLICE_RUN_KINDS
                     .iter()
@@ -160,6 +162,35 @@ impl PipelineRecommendationManifest {
             return Err(Error::InputConflict);
         }
         Ok(())
+    }
+
+    /// The caller supplies freshly loaded pinned definitions before a saved
+    /// recommendation can be used. A valid historical digest is not currentness.
+    pub fn validate_against_definitions(
+        &self,
+        definitions: &[PipelineDefinitionSnapshot],
+    ) -> Result<()> {
+        self.validate_digest()?;
+        for option in &self.options {
+            let mut matching = definitions
+                .iter()
+                .filter(|definition| definition.kind == option.kind);
+            let definition = matching.next().ok_or(Error::StaleContext)?;
+            if matching.next().is_some()
+                || option.definition_version != definition.version
+                || option.definition_digest != definition.digest
+            {
+                return Err(Error::StaleContext);
+            }
+            option
+                .verification_plan
+                .validate_against_definition(definition)?;
+        }
+        Ok(())
+    }
+
+    fn pair_id(option: &PipelineRecommendationOption) -> String {
+        PipelineRecommendationOption::pair_id(option.kind, &option.verification_plan.id)
     }
 }
 
@@ -322,32 +353,15 @@ pub fn build_pipeline_recommendation_manifest(
             });
             continue;
         }
-        let obligations = definition
-            .phases
-            .iter()
-            .filter(|phase| phase.required)
-            .map(|phase| PipelineVerificationObligation {
-                phase_id: phase.id.clone(),
-                required_fields: phase.required_fields.clone(),
-                required_artifacts: phase.required_artifacts.clone(),
-                validator_contracts: phase.validator_contracts.clone(),
-                output_constraints: phase.output_constraints.clone(),
-                allowed_verdicts: phase.allowed_verdicts.clone(),
-                verdict_routes: phase.verdict_routes.clone(),
-                disposition_required: phase.disposition_required,
-                required_dispositions: phase.required_dispositions.clone(),
-                fresh_reviewer_input: phase.fresh_reviewer_input,
-                output_contract: phase.output_contract.clone(),
-            })
-            .collect();
+        let verification_plan = PipelineVerificationPlan::from_definition(definition)?;
         let option = PipelineRecommendationOption {
-            id: kind.as_str().to_string(),
+            id: PipelineRecommendationOption::pair_id(kind, &verification_plan.id),
             kind,
             definition_version: definition.version.clone(),
             definition_digest: definition.digest.clone(),
             completion_contract: definition.completion_contract.clone(),
             forbidden_claims: definition.forbidden_claims.clone(),
-            obligations,
+            verification_plan,
         };
         if let Some(reason) = source.compatibility_policy.reason_for(
             kind,
@@ -384,6 +398,10 @@ pub fn build_pipeline_recommendation_manifest(
         compatibility_policy_digest: source.compatibility_policy.digest()?,
         mandatory_card_ids: mandatory_card_ids.into_iter().collect(),
         deterministic_kind: *pipeline,
+        deterministic_option_id: options
+            .iter()
+            .find(|option| option.kind == *pipeline)
+            .map(|option| option.id.clone()),
         catalogue_revision: source.catalogue.revision.clone(),
         catalogue_digest: source.catalogue.digest.clone(),
         options,
