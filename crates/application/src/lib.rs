@@ -31,6 +31,7 @@ mod model_route_provider;
 mod model_route_provider_ports;
 mod model_route_recommendation;
 mod model_route_recommendation_ports;
+mod model_route_service;
 mod pipeline_open_effect;
 mod pipeline_phase_effect;
 mod pipeline_recommendation;
@@ -95,9 +96,10 @@ pub use model_route_provider::{
     prepare_model_route_send, seal_model_route_raw_response,
 };
 pub use model_route_provider_ports::{
-    DisabledModelRouteRankingProvider, ModelRouteAttemptStore, ModelRouteInvocation,
-    ModelRoutePreparedAttempt, ModelRouteRankingProvider, ModelRouteRunNoCall,
-    ModelRouteSealedRankingEvidence, ModelRouteSendPermit,
+    DisabledModelRouteRankingProvider, ModelRouteAttemptSnapshot, ModelRouteAttemptState,
+    ModelRouteAttemptStore, ModelRouteInvocation, ModelRoutePreparedAttempt,
+    ModelRouteRankingProvider, ModelRouteRunNoCall, ModelRouteSealedRankingEvidence,
+    ModelRouteSendPermit,
 };
 pub use model_route_recommendation::PrepareModelRouteRecommendation;
 pub use model_route_recommendation_ports::{
@@ -108,6 +110,7 @@ pub use model_route_recommendation_ports::{
     ModelRouteSelectionRead, PreparedModelRouteRecommendation, UnavailableModelRouteCatalogue,
     UnavailableModelRouteHostCapabilities,
 };
+pub use model_route_service::ModelRouteView;
 pub use pipeline_open_effect::{
     PipelineOpenEffectAttestation, PipelineOpenEffectMaterial, PipelineOpenEffectStore,
     PipelineOpenEffectVerdict, VerifyPipelineOpenEffect,

@@ -22,6 +22,7 @@ use tect_domain::{
 };
 
 mod negative_cases;
+mod service_test;
 
 struct FakeJevRanker {
     pool: PgPool,

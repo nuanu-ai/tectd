@@ -15,6 +15,7 @@ pub(crate) enum Invocation {
     KnowledgeSearch(tect_domain::KnowledgeSearchQuery),
     Advisory(crate::advisory_tools::AdvisoryInvocation),
     AntiBloat(crate::anti_bloat_tools::AntiBloatInvocation),
+    ModelRoute(crate::model_route_tools::ModelRouteInvocation),
     PipelineRecommendationPrepare(tect_application::PreparePipelineRecommendation),
     PipelineRecommendationRun(tect_application::RunPipelineRecommendation),
     PipelineRecommendationDisposition(tect_domain::PipelineDispositionRequest),
@@ -90,6 +91,12 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
         | "anti_bloat_preservation_get"
         | "anti_bloat_preservation_verify" => {
             crate::anti_bloat_tools::parse(name, arguments).map(Invocation::AntiBloat)
+        }
+        "model_route_prepare"
+        | "model_route_run"
+        | "model_route_get"
+        | "model_route_disposition" => {
+            crate::model_route_tools::parse(name, arguments).map(Invocation::ModelRoute)
         }
         "pipeline_recommendation_prepare" => crate::pipeline_recommendation_tools::parse(arguments)
             .map(Invocation::PipelineRecommendationPrepare),

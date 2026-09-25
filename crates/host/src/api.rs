@@ -9,6 +9,7 @@ mod knowledge_maintenance_schema;
 mod knowledge_schema;
 mod knowledge_search_schema;
 mod matrix_task_schema;
+mod model_route_schema;
 mod slice_schema;
 
 use crate::tools::{annotations, object_schema};

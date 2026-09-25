@@ -308,6 +308,26 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 if responses::encoded_len(&response)? > capacity { return Err(Error::RequestTooLarge); }
                 Ok(response)
             }
+            Invocation::ModelRoute(invocation) => {
+                use crate::model_route_tools::ModelRouteInvocation;
+                let value = match invocation {
+                    ModelRouteInvocation::Prepare(request) => serde_json::to_value(
+                        service.prepare_model_route(context, &request).await?
+                    ).map_err(Error::invalid_arguments_from)?,
+                    ModelRouteInvocation::Run { preparation_request_key } => serde_json::to_value(
+                        service.run_model_route(context, &preparation_request_key).await?
+                    ).map_err(Error::invalid_arguments_from)?,
+                    ModelRouteInvocation::Get { preparation_request_key } => serde_json::to_value(
+                        service.get_model_route(context, &preparation_request_key).await?
+                    ).map_err(Error::invalid_arguments_from)?,
+                    ModelRouteInvocation::Disposition { disposition_id, decision_id, action, rationale } => serde_json::to_value(
+                        service.disposition_model_route(context, decision_id, disposition_id, action, rationale).await?
+                    ).map_err(Error::invalid_arguments_from)?,
+                };
+                let response = responses::with_actions(value, Vec::new(), None);
+                if responses::encoded_len(&response)? > capacity { return Err(Error::RequestTooLarge); }
+                Ok(response)
+            }
             Invocation::MatrixPlanningEffect(invocation) => {
                 service
                     .authenticate_matrix_verifier_session(context)

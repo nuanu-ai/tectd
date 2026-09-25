@@ -1,5 +1,5 @@
 use super::*;
-use crate::DisabledModelRouteRankingProvider;
+use crate::{DisabledModelRouteRankingProvider, ModelRouteAttemptSnapshot};
 use async_trait::async_trait;
 use std::sync::{
     Arc,
@@ -156,6 +156,14 @@ struct Memory {
 
 #[async_trait]
 impl ModelRouteAttemptStore for Memory {
+    async fn by_preparation(
+        &mut self,
+        _: Uuid,
+        _: &str,
+        _: ModelRouteInvocation,
+    ) -> Result<Option<ModelRouteAttemptSnapshot>> {
+        Ok(None)
+    }
     async fn record_no_call(
         &mut self,
         _: &PreparedModelRouteRecommendation,

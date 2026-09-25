@@ -71,6 +71,12 @@ pub struct PreparedModelRouteRecommendation {
 /// receipt atomically. Exact replay returns the original; changed input conflicts.
 #[async_trait]
 pub trait ModelRouteRecommendationStore: Send {
+    async fn validate_current(
+        &mut self,
+        _prepared: &PreparedModelRouteRecommendation,
+    ) -> Result<()> {
+        Err(tect_domain::Error::Forbidden)
+    }
     async fn by_request(
         &mut self,
         workspace_id: Uuid,

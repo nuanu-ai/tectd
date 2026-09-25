@@ -1,5 +1,6 @@
 //! Optional adviser boundary. A route recommendation never dispatches that route.
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use tect_domain::{
     Error, ModelRouteRanking, ModelRouteRankingWireOutcome, ModelRouteRankingWireRequest, Result,
     model_route_ranking_from_wire, model_route_wire_sha256, parse_model_route_ranking_response,
@@ -66,6 +67,24 @@ pub struct ModelRouteSendPermit {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModelRouteInvocation {
     pub session_id: Uuid,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelRouteAttemptState {
+    NoCall,
+    SendUnknown,
+    RawSealed,
+    Parsed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelRouteAttemptSnapshot {
+    pub attempt_id: Uuid,
+    pub state: ModelRouteAttemptState,
+    pub no_call_reason: Option<String>,
+    pub request_sha256: Option<String>,
+    pub response_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,6 +160,20 @@ impl ModelRouteRankingProvider for DisabledModelRouteRankingProvider {
 /// seal raw bytes before parsing, and recheck currentness on every transition.
 #[async_trait]
 pub trait ModelRouteAttemptStore: Send {
+    async fn by_preparation(
+        &mut self,
+        workspace_id: Uuid,
+        preparation_request_key: &str,
+        invocation: ModelRouteInvocation,
+    ) -> Result<Option<ModelRouteAttemptSnapshot>>;
+    async fn recover_raw_sealed(
+        &mut self,
+        _workspace_id: Uuid,
+        _preparation_request_key: &str,
+        _invocation: ModelRouteInvocation,
+    ) -> Result<Option<(ModelRoutePreparedAttempt, ModelRouteSendPermit)>> {
+        Ok(None)
+    }
     async fn record_no_call(
         &mut self,
         prepared: &PreparedModelRouteRecommendation,

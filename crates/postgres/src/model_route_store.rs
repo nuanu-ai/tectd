@@ -186,6 +186,19 @@ pub(crate) async fn current_preparation(
 
 #[async_trait]
 impl ModelRouteRecommendationStore for PgUnitOfWork {
+    async fn validate_current(
+        &mut self,
+        prepared: &PreparedModelRouteRecommendation,
+    ) -> Result<()> {
+        let stored = self
+            .by_request(prepared.workspace_id, &prepared.request_key)
+            .await?
+            .ok_or(Error::StaleContext)?;
+        if stored != *prepared {
+            return Err(Error::InputConflict);
+        }
+        current_preparation(self, prepared).await.map(|_| ())
+    }
     async fn by_request(
         &mut self,
         workspace_id: Uuid,

@@ -33,6 +33,7 @@ mod matrix_verification_tools;
 mod mcp;
 mod model_route_catalogue;
 mod model_route_host_capabilities;
+mod model_route_tools;
 mod pipeline_definitions;
 mod pipeline_dispatch;
 mod pipeline_open_effect_tools;

@@ -86,6 +86,17 @@ impl KnowledgeQueryCache {
 }
 
 impl WorkspaceService {
+    pub(crate) fn model_route_advisory_inputs(
+        &self,
+    ) -> (
+        &dyn crate::ModelRouteHostCapabilitiesProvider,
+        &dyn crate::ModelRouteCatalogueProvider,
+    ) {
+        (
+            &*self.model_route_host_capabilities_provider,
+            &*self.model_route_catalogue_provider,
+        )
+    }
     /// Installs only the authoritative Scope source adapters. The budget stays
     /// deny-by-default and the transport provider stays disabled.
     pub fn new_with_scope_sources(

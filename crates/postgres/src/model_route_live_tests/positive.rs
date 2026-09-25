@@ -27,7 +27,7 @@ fn sha(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-struct UnusedAdapters;
+pub(super) struct UnusedAdapters;
 #[async_trait]
 impl SourceInspector for UnusedAdapters {
     async fn inspect(
