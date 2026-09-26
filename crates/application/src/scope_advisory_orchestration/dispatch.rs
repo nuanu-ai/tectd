@@ -184,183 +184,52 @@ impl WorkspaceService {
             &prepared_attempt,
         )?;
 
+        let continuation = crate::AdvisoryDispatchContinuation::after_committed_start(
+            tenant_id,
+            workspace_id,
+            &opportunity,
+            &started,
+            &authorization,
+        )?;
+        // Clone immutable DATA only; the one-use permit moves into transport.
+        let sealed_prepared = prepared_attempt.clone();
         let monotonic_start = std::time::Instant::now();
-        let mut provider_observation = self
+        let raw = self
             .scope_advice_provider
-            .attempt_prepared(
+            .observe_prepared(
                 &ScopeAdviceProviderRequest {
                     dispatch_id,
-                    request: typed_request.clone(),
+                    request: typed_request,
                     budget_policy: policy,
                 },
                 prepared_attempt,
                 send_permit,
             )
             .await
-            .map(normalize_provider_success)
-            .unwrap_or_else(provider_error_observation);
-        let monotonic_elapsed_ms =
-            i64::try_from(monotonic_start.elapsed().as_millis()).unwrap_or(i64::MAX);
-        let guarded = if provider_observation.outcome == AdvisoryDispatchOutcome::ProviderResponse
-            && provider_observation.send_certainty == AdvisorySendCertainty::Sent
-            && provider_observation.response_payload.is_some()
-        {
-            provider_observation.answers.as_ref().and_then(|answers| {
-                guard_scope_advice(
-                    &Sha256ScopeDigest,
-                    opportunity.id,
-                    manifest,
-                    &typed_request,
-                    answers,
-                )
-                .ok()
-            })
-        } else {
-            None
-        };
-        if provider_observation.outcome == AdvisoryDispatchOutcome::ProviderResponse
-            && guarded.is_none()
-        {
-            provider_observation.outcome = AdvisoryDispatchOutcome::ProviderFailure;
-            provider_observation.answers = None;
-        }
-        let seal = AdvisoryDispatchSeal {
-            dispatch_id,
-            send_certainty: provider_observation.send_certainty,
-            outcome: provider_observation.outcome,
-            response_payload: provider_observation.response_payload.clone(),
-            input_tokens: provider_observation.input_tokens,
-            output_tokens: provider_observation.output_tokens,
-            latency_ms: Some(monotonic_elapsed_ms),
-            raw_response_ref: provider_observation.raw_response_ref.clone(),
-        };
-        seal.validate()?;
-        let (mut seal_tx, _, _) = self
-            .scope_transaction(context, TransactionMode::ReadWrite)
-            .await?;
-        let dispatch = seal_tx
-            .seal_advisory_dispatch(&lifecycle, workspace_id, &seal)
-            .await?;
-        seal_tx.commit().await?;
-        let (mut consume_tx, _, _) = self
-            .scope_transaction(context, TransactionMode::ReadWrite)
-            .await?;
-        let consumption = consume_tx
-            .consume_advisory_budget(&lifecycle, workspace_id, dispatch.id)
-            .await?;
-        consume_tx.commit().await?;
-        if consumption.exhausted_after_response {
-            let (mut finalize, _, _) = self
-                .scope_transaction(context, TransactionMode::ReadWrite)
-                .await?;
-            let terminal = finalize
-                .finalize_advisory_opportunity(
-                    &lifecycle,
-                    workspace_id,
-                    opportunity.id,
-                    config.revision,
-                    &dispatch,
-                )
-                .await?;
-            finalize.commit().await?;
-            return Ok(ScopeAdvisoryOutcome {
-                opportunity: terminal,
-                advice: None,
+            .unwrap_or_else(|error| {
+                crate::ScopeAdviceRawObservation::from_legacy(provider_error_observation(error))
             });
-        }
-        let Some(advice) = guarded else {
-            let (mut finalize, _, _) = self
-                .scope_transaction(context, TransactionMode::ReadWrite)
-                .await?;
-            let finalized = finalize
-                .finalize_advisory_opportunity(
-                    &lifecycle,
-                    workspace_id,
-                    opportunity.id,
-                    config.revision,
-                    &dispatch,
-                )
-                .await?;
-            finalize.commit().await?;
-            return Ok(ScopeAdvisoryOutcome {
-                opportunity: finalized,
-                advice: None,
-            });
-        };
-
-        let fresh = self.scope_authority.observe(authority_request).await;
-        let fresh_manifest = match &fresh {
-            Ok(crate::ScopeAuthorityOutcome::Authorized(value))
-                if validate_observation(authority_request, value).is_ok() =>
-            {
-                supply_scope_manifest(
-                    self.scope_manifest_supplier.as_ref(),
-                    tenant_id,
-                    value,
-                    request,
-                )
-                .await
-                .ok()
-            }
-            _ => None,
-        };
-        let (mut persist, _, _) = self
-            .scope_transaction(context, TransactionMode::ReadWrite)
+        let elapsed = i64::try_from(monotonic_start.elapsed().as_millis()).unwrap_or(i64::MAX);
+        // No caller/session reauthorization may precede durable retention/accounting.
+        let saved = self
+            .seal_committed_advisory_observation(&continuation, &raw.receipt, elapsed)
             .await?;
-        let current_manifest = persist
-            .scope_advisory_manifest(workspace_id, opportunity.id)
+        let usage = self
+            .scope_advice_provider
+            .usage_from_sealed_response(&saved)
+            .unwrap_or_default();
+        let (saved, consumption) = self
+            .consume_committed_advisory_observation(&continuation, usage)
             .await?;
-        let fresh_valid = fresh.as_ref().is_ok_and(|value| {
-            value == &crate::ScopeAuthorityOutcome::Authorized(Box::new(observation.clone()))
-        }) && fresh_manifest
-            .as_ref()
-            .is_some_and(|value| value.validate(&Sha256ScopeDigest).is_ok() && value == manifest);
-        if !fresh_valid
-            || persist.advisory_config(workspace_id).await? != *config
-            || current_manifest.as_ref() != Some(manifest)
-        {
-            persist
-                .invalidate_scope_advisory(workspace_id, opportunity.id)
-                .await?;
-            persist.commit().await?;
-            return Err(Error::StaleRevision);
-        }
-        let advice = match persist
-            .finalize_guarded_scope_advice(
-                workspace_id,
-                &GuardedScopeAdviceRecord {
-                    opportunity_id: opportunity.id,
-                    candidate_set_id: request.candidate_set_id,
-                    dispatch_id,
-                    dispatch_material_digest: dispatch.material_digest,
-                    config_revision: config.revision,
-                    advice,
-                },
-            )
-            .await
-        {
-            Ok(advice) => advice,
-            Err(_) => {
-                drop(persist);
-                let (mut invalidate, _, _) = self
-                    .scope_transaction(context, TransactionMode::ReadWrite)
-                    .await?;
-                invalidate
-                    .invalidate_scope_advisory(workspace_id, opportunity.id)
-                    .await?;
-                invalidate.commit().await?;
-                return Err(Error::StaleRevision);
-            }
-        };
-        persist.commit().await?;
-        Ok(ScopeAdvisoryOutcome {
-            opportunity: AdvisoryOpportunity {
-                state: AdvisoryOpportunityState::Advised,
-                primary_reason: AdvisoryReason::ProviderResponse,
-                provider_called: true,
-                ..opportunity
-            },
-            advice: Some(advice),
-        })
+        self.finish_scope_receipt(
+            context,
+            request,
+            &saved,
+            consumption,
+            sealed_prepared,
+            manifest,
+            raw.legacy_answers,
+        )
+        .await
     }
 }

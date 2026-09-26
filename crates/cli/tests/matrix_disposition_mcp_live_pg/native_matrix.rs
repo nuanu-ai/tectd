@@ -429,7 +429,7 @@ async fn audit(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires explicitly owned disposable PG18.6 migration99; no real JEV"]
+#[ignore = "requires explicitly owned disposable PG18.6 migration100; no real JEV"]
 async fn public_native_matrix_retains_raw_before_ranking_and_after_revocation() {
     for case in [
         Case::Ranked,

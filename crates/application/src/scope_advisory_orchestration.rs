@@ -8,19 +8,23 @@ mod capture;
 mod decisions;
 mod dispatch;
 mod helpers;
+mod receipts;
+mod recovery;
 mod run;
 use budget::{evaluate_verified_scope_budget, lookup_verified_scope_budget};
 use dispatch::PreparedScopeDispatch;
 use helpers::*;
 use tect_domain::{
-    AdvisoryDispatchAuthorization, AdvisoryDispatchOutcome, AdvisoryDispatchSeal,
-    AdvisoryDispatchStart, AdvisoryDispatchState, AdvisoryOpportunity, AdvisoryOpportunityState,
-    AdvisoryPolicyInput, AdvisoryReason, AdvisoryRequestPreference, AdvisorySendCertainty, Error,
-    GuardedScopeAdvice, RequestContext, Result, ScopeAdviceRequest, ScopeDispositionRevision,
-    assess_advisory_policy, guard_scope_advice,
+    AdvisoryDispatchAuthorization, AdvisoryDispatchOutcome, AdvisoryDispatchStart,
+    AdvisoryDispatchState, AdvisoryOpportunity, AdvisoryOpportunityState, AdvisoryPolicyInput,
+    AdvisoryReason, AdvisoryRequestPreference, AdvisorySendCertainty, Error, GuardedScopeAdvice,
+    RequestContext, Result, ScopeAdviceRequest, ScopeDispositionRevision, assess_advisory_policy,
+    guard_scope_advice,
 };
 use uuid::Uuid;
 
+#[cfg(test)]
+mod receipt_tests;
 #[cfg(test)]
 mod tests;
 

@@ -243,6 +243,16 @@ impl tect_application::CandidateGuidance for FixtureCandidateGuidance {
 #[ignore = "requires disposable PG18 and TECT_TEST_ADMIN_URL/TECT_TEST_RUNTIME_URL/TECT_TEST_RUNTIME_ROLE"]
 async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lineage_and_identity()
 {
+    scope_vertical_fixture(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires exact disposable PG18 and TECT_TEST_ADMIN_URL/TECT_TEST_RUNTIME_URL/TECT_TEST_RUNTIME_ROLE"]
+async fn scope_attached_sending_receipt_recovers_real_reservation_without_http() {
+    scope_vertical_fixture(true).await;
+}
+
+async fn scope_vertical_fixture(recovery_only: bool) {
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
     let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
     let role = std::env::var("TECT_TEST_RUNTIME_ROLE").unwrap();
@@ -596,7 +606,10 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     )
     .unwrap();
     let positive_service = WorkspaceService::new_with_scope_advisory_adapters(
-        std::sync::Arc::new(signed_store.clone()),
+        std::sync::Arc::new(super::receipt_recovery_test_support::InterruptAfterRaw {
+            inner: signed_store.clone(),
+            pending: std::sync::atomic::AtomicBool::new(recovery_only),
+        }),
         std::sync::Arc::new(UnusedHostAdapters),
         std::sync::Arc::new(UnusedHostAdapters),
         std::sync::Arc::new(PgScopeAuthorityObserver::new(
@@ -613,7 +626,7 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         std::sync::Arc::new(SyntheticPositiveBudget),
         std::sync::Arc::new(jev),
     );
-    let positive_context = tect_domain::RequestContext {
+    let mut positive_context = tect_domain::RequestContext {
         auth: enrollment.auth.clone(),
         native_session_id: session.to_string(),
         workspace_key: format!("scope-live-{workspace}"),
@@ -625,6 +638,20 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
         request_preference: tect_domain::AdvisoryRequestPreference::UseWorkspace,
         authored_scope_set: Some(authored_scope_set.clone()),
     };
+    if recovery_only {
+        assert_eq!(
+            positive_service
+                .run_scope_advisory(&positive_context, &positive_request)
+                .await,
+            Err(Error::StorageUnavailable)
+        );
+        let pending: (String, i64, i64, i64) = sqlx::query_as(
+            "SELECT d.state,(SELECT count(*) FROM advisory_provider_observations x WHERE x.dispatch_id=d.id),(SELECT count(*) FROM advisory_budget_reservations r WHERE r.dispatch_id=d.id),(SELECT count(*) FROM advisory_budget_consumptions c WHERE c.dispatch_id=d.id) FROM advisory_dispatch d JOIN advisory_opportunity o ON o.id=d.opportunity_id WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.request_key=$3"
+        ).bind(tenant).bind(workspace).bind(positive_request.request_id.to_string()).fetch_one(&pool).await.unwrap();
+        assert_eq!(pending, ("sending".to_owned(), 1, 1, 0));
+        // Same lawful actor, different current session; the send permit is never replayed.
+        positive_context.native_session_id = verifier_session.to_string();
+    }
     let positive = positive_service
         .run_scope_advisory(&positive_context, &positive_request)
         .await
@@ -649,6 +676,13 @@ async fn seven_aggregate_vertical_rejects_wrong_candidate_unresolved_partial_lin
     fake_done.send(()).unwrap();
     let (received_body, second_call) = fake_server.await.unwrap();
     assert!(!second_call, "replay sent a second HTTP request");
+    if recovery_only {
+        let final_counts: (i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM advisory_dispatch d WHERE d.opportunity_id=$1),(SELECT count(*) FROM advisory_budget_reservations r JOIN advisory_dispatch d ON d.id=r.dispatch_id WHERE d.opportunity_id=$1),(SELECT count(*) FROM advisory_budget_consumptions c JOIN advisory_dispatch d ON d.id=c.dispatch_id WHERE d.opportunity_id=$1)"
+        ).bind(positive.opportunity.id).fetch_one(&pool).await.unwrap();
+        assert_eq!(final_counts, (1, 1, 1));
+        return;
+    }
     let sent: serde_json::Value = serde_json::from_slice(&received_body).unwrap();
     assert_eq!(
         sent.as_object()

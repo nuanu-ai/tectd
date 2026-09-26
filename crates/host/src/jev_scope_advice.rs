@@ -6,14 +6,17 @@ use reqwest::{
 use sha2::{Digest, Sha256};
 use std::time::Duration;
 use tect_application::{
-    PreparedScopeAdviceAttempt, ScopeAdviceProvider, ScopeAdviceProviderContext,
-    ScopeAdviceProviderError, ScopeAdviceProviderFailureReason, ScopeAdviceProviderObservation,
-    ScopeAdviceProviderRequest, StartedScopeDispatchPermit,
+    AdvisoryProviderReceiptObservation, AdvisoryProviderReceiptUsage,
+    AdvisoryProviderTransportContext, PreparedScopeAdviceAttempt, ScopeAdviceProvider,
+    ScopeAdviceProviderContext, ScopeAdviceProviderError, ScopeAdviceProviderFailureReason,
+    ScopeAdviceProviderObservation, ScopeAdviceProviderRequest, ScopeAdviceRawObservation,
+    StartedScopeDispatchPermit, StoredAdvisoryProviderReceipt,
 };
 use tect_domain::{
     AdvisoryDispatchOutcome, AdvisorySendCertainty, Error, Result, ScopeAdviceRequest,
 };
 
+mod sealed;
 mod wire;
 
 const WIRE_FORMAT: &str = "jev-system-one-json/2";
@@ -150,8 +153,9 @@ impl JevScopeAdviceProvider {
         bytes: Vec<u8>,
         observed_bytes: usize,
         reason: ScopeAdviceProviderFailureReason,
-        latency_ms: i64,
-    ) -> ScopeAdviceProviderObservation {
+        status: u16,
+        complete: bool,
+    ) -> ScopeAdviceRawObservation {
         let reason_name = match reason {
             ScopeAdviceProviderFailureReason::HttpStatus => "http-status",
             ScopeAdviceProviderFailureReason::InvalidContentType => "content-type",
@@ -165,24 +169,29 @@ impl JevScopeAdviceProvider {
             self.config.profile,
             bytes.len()
         );
-        ScopeAdviceProviderObservation {
-            send_certainty: AdvisorySendCertainty::Sent,
-            outcome: AdvisoryDispatchOutcome::ProviderFailure,
-            answers: None,
-            response_payload: Some(bytes),
-            input_tokens: None,
-            output_tokens: None,
-            latency_ms: Some(latency_ms),
-            raw_response_ref: Some(raw_response_ref),
-            failure_reason: Some(reason),
+        ScopeAdviceRawObservation {
+            receipt: AdvisoryProviderReceiptObservation {
+                response_payload: Some(bytes),
+                http_status: Some(status),
+                input_tokens: None,
+                output_tokens: None,
+                response_complete: complete,
+                original_transport_context: Some(AdvisoryProviderTransportContext {
+                    send_certainty: AdvisorySendCertainty::Sent,
+                    outcome: AdvisoryDispatchOutcome::ProviderFailure,
+                    raw_response_ref: Some(raw_response_ref),
+                    provider_failure_code: Some(reason.as_code().into()),
+                }),
+            },
+            legacy_answers: None,
         }
     }
 
-    async fn attempt_prepared(
+    async fn observe_transport(
         &self,
         dispatch_id: uuid::Uuid,
         prepared: PreparedScopeAdviceAttempt,
-    ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
+    ) -> std::result::Result<ScopeAdviceRawObservation, ScopeAdviceProviderError> {
         if prepared.profile() != self.config.profile
             || prepared.model() != self.config.model
             || prepared.wire_version() != WIRE_FORMAT
@@ -193,7 +202,7 @@ impl JevScopeAdviceProvider {
         {
             return Err(ScopeAdviceProviderError::ProvenNotSent);
         }
-        let (request, body, _, _, _, _, _, _) = prepared.into_parts();
+        let (_request, body, _, _, _, _, _, _) = prepared.into_parts();
         let started = std::time::Instant::now();
         let response = self
             .client
@@ -232,7 +241,8 @@ impl JevScopeAdviceProvider {
                     partial,
                     observed_bytes,
                     ScopeAdviceProviderFailureReason::ResponseOversize,
-                    elapsed_ms(started),
+                    status.as_u16(),
+                    false,
                 ));
             }
             BodyRead::Failed(partial) => {
@@ -242,11 +252,11 @@ impl JevScopeAdviceProvider {
                     partial,
                     observed_bytes,
                     ScopeAdviceProviderFailureReason::ResponseBodyRead,
-                    elapsed_ms(started),
+                    status.as_u16(),
+                    false,
                 ));
             }
         };
-        let receipt_latency_ms = elapsed_ms(started);
         if !status.is_success() {
             let observed_bytes = bytes.len();
             return Ok(self.received_failure(
@@ -254,7 +264,8 @@ impl JevScopeAdviceProvider {
                 bytes,
                 observed_bytes,
                 ScopeAdviceProviderFailureReason::HttpStatus,
-                receipt_latency_ms,
+                status.as_u16(),
+                true,
             ));
         }
         if !is_json {
@@ -264,30 +275,26 @@ impl JevScopeAdviceProvider {
                 bytes,
                 observed_bytes,
                 ScopeAdviceProviderFailureReason::InvalidContentType,
-                receipt_latency_ms,
+                status.as_u16(),
+                true,
             ));
         }
         let raw_response_ref = self.raw_ref(dispatch_id, &bytes);
-        let Ok(parsed) = wire::parse_response(&bytes, &self.config.model, &request) else {
-            let observed_bytes = bytes.len();
-            return Ok(self.received_failure(
-                dispatch_id,
-                bytes,
-                observed_bytes,
-                ScopeAdviceProviderFailureReason::InvalidResponse,
-                receipt_latency_ms,
-            ));
-        };
-        Ok(ScopeAdviceProviderObservation {
-            send_certainty: AdvisorySendCertainty::Sent,
-            outcome: AdvisoryDispatchOutcome::ProviderResponse,
-            answers: Some(parsed.answers),
-            response_payload: Some(bytes),
-            input_tokens: parsed.input_tokens,
-            output_tokens: parsed.output_tokens,
-            latency_ms: Some(receipt_latency_ms),
-            raw_response_ref: Some(raw_response_ref),
-            failure_reason: None,
+        Ok(ScopeAdviceRawObservation {
+            receipt: AdvisoryProviderReceiptObservation {
+                response_payload: Some(bytes),
+                http_status: Some(status.as_u16()),
+                input_tokens: None,
+                output_tokens: None,
+                response_complete: true,
+                original_transport_context: Some(AdvisoryProviderTransportContext {
+                    send_certainty: AdvisorySendCertainty::Sent,
+                    outcome: AdvisoryDispatchOutcome::ProviderResponse,
+                    raw_response_ref: Some(raw_response_ref),
+                    provider_failure_code: None,
+                }),
+            },
+            legacy_answers: None,
         })
     }
 
@@ -298,7 +305,31 @@ impl JevScopeAdviceProvider {
         request: &ScopeAdviceRequest,
     ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
         let prepared = self.prepare(request)?;
-        self.attempt_prepared(dispatch_id, prepared).await
+        self.test_observation(dispatch_id, prepared).await
+    }
+    #[cfg(test)]
+    async fn test_observation(
+        &self,
+        dispatch_id: uuid::Uuid,
+        prepared: PreparedScopeAdviceAttempt,
+    ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
+        let started = std::time::Instant::now();
+        let raw = self.observe_transport(dispatch_id, prepared).await?;
+        let context = raw.receipt.original_transport_context.unwrap();
+        Ok(ScopeAdviceProviderObservation {
+            send_certainty: context.send_certainty,
+            outcome: context.outcome,
+            answers: None,
+            response_payload: raw.receipt.response_payload,
+            input_tokens: None,
+            output_tokens: None,
+            latency_ms: Some(elapsed_ms(started)),
+            raw_response_ref: context.raw_response_ref,
+            failure_reason: context
+                .provider_failure_code
+                .as_deref()
+                .and_then(ScopeAdviceProviderFailureReason::from_code),
+        })
     }
 }
 
@@ -330,14 +361,38 @@ impl ScopeAdviceProvider for JevScopeAdviceProvider {
 
     async fn attempt_prepared(
         &self,
+        _request: &ScopeAdviceProviderRequest,
+        _prepared: PreparedScopeAdviceAttempt,
+        _permit: StartedScopeDispatchPermit,
+    ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
+        Err(ScopeAdviceProviderError::ProvenNotSent)
+    }
+
+    async fn observe_prepared(
+        &self,
         request: &ScopeAdviceProviderRequest,
         prepared: PreparedScopeAdviceAttempt,
         permit: StartedScopeDispatchPermit,
-    ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError> {
+    ) -> std::result::Result<ScopeAdviceRawObservation, ScopeAdviceProviderError> {
         if prepared.request() != &request.request || !permit.permits(request.dispatch_id, &prepared)
         {
             return Err(ScopeAdviceProviderError::ProvenNotSent);
         }
-        JevScopeAdviceProvider::attempt_prepared(self, request.dispatch_id, prepared).await
+        self.observe_transport(request.dispatch_id, prepared).await
+    }
+
+    fn usage_from_sealed_response(
+        &self,
+        saved: &StoredAdvisoryProviderReceipt,
+    ) -> Result<AdvisoryProviderReceiptUsage> {
+        sealed::usage(self, saved)
+    }
+
+    fn parse_sealed_response(
+        &self,
+        prepared: &PreparedScopeAdviceAttempt,
+        saved: &StoredAdvisoryProviderReceipt,
+    ) -> Result<tect_domain::NormalizedScopeAdviceAnswers> {
+        sealed::parse(self, prepared, saved)
     }
 }

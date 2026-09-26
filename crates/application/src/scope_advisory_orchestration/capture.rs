@@ -23,6 +23,35 @@ pub(super) struct ScopeEarlyNoCall {
 }
 
 impl WorkspaceService {
+    pub(super) async fn replay_or_capture_early_scope_no_call(
+        &self,
+        context: &RequestContext,
+        request: &RunScopeAdvisory,
+        config: &WorkspaceAdvisoryConfig,
+        existing: Option<tect_domain::AdvisoryOpportunity>,
+        identity: ScopeCaptureIdentity,
+        no_call: ScopeEarlyNoCall,
+    ) -> Result<ScopeAdvisoryOutcome> {
+        let digest = super::no_call_digest(request, config.revision, no_call.reason)?;
+        let opportunity = if let Some(existing) = existing {
+            if existing.target_kind != "scope_candidate_set"
+                || existing.target_id != Some(request.candidate_set_id)
+                || existing.work_revision != Some(no_call.revision)
+                || existing.config_revision != config.revision
+                || existing.material_digest != digest
+            {
+                return Err(tect_domain::Error::InputConflict);
+            }
+            existing
+        } else {
+            self.capture_early_scope_no_call(context, request, config, identity, digest, no_call)
+                .await?
+        };
+        Ok(ScopeAdvisoryOutcome {
+            opportunity,
+            advice: None,
+        })
+    }
     pub(super) async fn capture_early_scope_no_call(
         &self,
         context: &RequestContext,

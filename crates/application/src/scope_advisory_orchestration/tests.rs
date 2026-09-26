@@ -268,7 +268,12 @@ async fn signed_scope_budget_preflight_uses_exact_prepared_utf8_byte_ceiling() {
 }
 
 fn orchestration_source() -> String {
-    [include_str!("run.rs"), include_str!("dispatch.rs")].concat()
+    [
+        include_str!("run.rs"),
+        include_str!("dispatch.rs"),
+        include_str!("receipts.rs"),
+    ]
+    .concat()
 }
 
 fn no_call_config(mode: WorkspaceAdvisoryMode) -> WorkspaceAdvisoryConfig {
@@ -383,13 +388,13 @@ fn early_no_call_branch_precedes_all_external_advisory_ports() {
         .find("let authority_request = ScopeAuthorityRequest")
         .unwrap()
         + branch;
-    assert!(source[branch..return_from_branch].contains("capture_early_scope_no_call"));
-    assert!(source[branch..return_from_branch].contains("return Ok(ScopeAdvisoryOutcome"));
+    assert!(source[branch..return_from_branch].contains("replay_or_capture_early_scope_no_call"));
+    assert!(source[branch..return_from_branch].contains("return self"));
     for port in [
         "scope_authority.observe(&authority_request)",
         "supply_scope_manifest(",
         ".scope_budget",
-        ".attempt_prepared(\n                &ScopeAdviceProviderRequest",
+        ".observe_prepared(\n                &ScopeAdviceProviderRequest",
     ] {
         assert!(return_from_branch < source.find(port).unwrap(), "{port}");
     }
@@ -1029,7 +1034,7 @@ async fn production_defaults_fail_closed_without_supplier_budget_or_provider() {
         .find("AdvisoryReason::BudgetPolicyInvalid")
         .unwrap()
         + evaluation;
-    let send = source.find(".attempt_prepared(").unwrap();
+    let send = source.find(".observe_prepared(").unwrap();
     assert!(provider < evaluation && evaluation < no_call && no_call < send);
     assert!(source[no_call..send].contains("return Ok(ScopeAdvisoryOutcome"));
     assert!(source[evaluation..no_call].contains("prepared_attempt.body_length()"));
@@ -1308,7 +1313,7 @@ fn permit_is_minted_only_after_successful_start_commit_in_runtime_path() {
         .find("StartedScopeDispatchPermit::after_committed_start")
         .unwrap()
         + no_send;
-    let send = source[mint..].find(".attempt_prepared(").unwrap() + mint;
+    let send = source[mint..].find(".observe_prepared(").unwrap() + mint;
     assert!(start < commit && commit < no_send && no_send < mint && mint < send);
 }
 
@@ -1460,7 +1465,7 @@ fn request_key_replay_gate_precedes_wire_preparation() {
     let prepare = source
         .find("let prepared_attempt = match prepare_scope_advice_attempt")
         .unwrap();
-    let send = source.find(".attempt_prepared(").unwrap();
+    let send = source.find(".observe_prepared(").unwrap();
     assert!(locked_gate < request_lookup && request_lookup < replay);
     assert!(replay < prepare && prepare < send);
 }
@@ -1538,8 +1543,11 @@ fn score_contract_is_discrete_and_has_no_product_effect_authority() {
     let source = orchestration_source();
     assert!(!source.contains("scope_caller.call"));
     assert!(!source.contains("scope_verifier.verify"));
-    assert_eq!(source.matches(".attempt_prepared(").count(), 1);
-    assert!(source.contains("latency_ms: Some(monotonic_elapsed_ms)"));
+    assert_eq!(source.matches(".observe_prepared(").count(), 1);
+    assert!(
+        source
+            .contains(".seal_committed_advisory_observation(&continuation, &raw.receipt, elapsed)")
+    );
 }
 
 #[test]
@@ -1677,8 +1685,8 @@ fn replay_precedes_policy_and_provider_and_success_is_rechecked_atomically() {
     let source = orchestration_source();
     let replay = source.find("advisory_opportunity_by_request").unwrap();
     let policy = source.find(".scope_budget").unwrap();
-    let provider = source.find(".attempt_prepared(").unwrap();
-    let sealed = source.find(".seal_advisory_dispatch").unwrap();
+    let provider = source.find(".observe_prepared(").unwrap();
+    let sealed = source.find(".seal_committed_advisory_observation").unwrap();
     let reobserved = source[sealed..].find("scope_authority.observe").unwrap() + sealed;
     let finalized = source.find(".finalize_guarded_scope_advice").unwrap();
     assert!(replay < policy && policy < provider);
@@ -1700,7 +1708,7 @@ fn authored_lookup_replay_and_failure_paths_precede_external_attempts() {
         .unwrap();
     let supplier = source.find("supply_scope_manifest(").unwrap();
     assert!(digest < request_lookup && request_lookup < replay);
-    let provider = source.find(".attempt_prepared(").unwrap();
+    let provider = source.find(".observe_prepared(").unwrap();
     assert!(replay < observer && observer < supplier && replay < provider);
     let early_no_call = source.find("if let Some((reason, revision))").unwrap();
     let active_input_gate = source
@@ -1728,7 +1736,7 @@ fn authored_lookup_replay_and_failure_paths_precede_external_attempts() {
         .find("finalize_prepared_scope_advisory_without_dispatch")
         .unwrap()
         + reobserved;
-    let provider = source.find(".attempt_prepared(").unwrap();
+    let provider = source.find(".observe_prepared(").unwrap();
     assert!(authored_persist < persisted_commit);
     assert!(persisted_commit < dispatch_after_commit && dispatch_after_commit < reobserved);
     assert!(reobserved < no_call_transition && no_call_transition < provider);
@@ -1758,7 +1766,7 @@ fn authorize_staleness_and_cancelled_start_terminalize_before_provider_attempt()
         .find("advisory_opportunity_for_dispatch(workspace_id, opportunity.id)")
         .unwrap()
         + cancelled;
-    let provider = source.find(".attempt_prepared(").unwrap();
+    let provider = source.find(".observe_prepared(").unwrap();
     assert!(authorize < stale_mapping && stale_mapping < rollback && rollback < close);
     assert!(close < start && start < cancelled && cancelled < terminal_load);
     assert!(terminal_load < provider);
@@ -1786,7 +1794,7 @@ fn authored_supplier_failure_is_captured_as_no_call_before_budget_or_provider() 
         .unwrap()
         + failure;
     let budget = source.find(".scope_budget").unwrap();
-    let provider = source.find(".attempt_prepared(").unwrap();
+    let provider = source.find(".observe_prepared(").unwrap();
     assert!(supplied < failure && failure < capture);
     assert!(capture < budget && budget < provider);
 }

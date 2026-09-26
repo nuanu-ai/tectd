@@ -8,6 +8,8 @@ use tect_domain::{
 use uuid::Uuid;
 
 mod http;
+mod sealed;
+mod source_guard;
 
 const ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const DISPATCH_ID: Uuid = Uuid::from_u128(7);
@@ -152,11 +154,9 @@ fn response_rejects_unknown_missing_and_invalid_native_shapes() {
 }
 
 #[test]
-fn valid_response_normalizes_only_provider_neutral_answers_and_usage() {
+fn valid_response_normalizes_only_provider_neutral_answers() {
     let bytes = serde_json::to_vec(&valid_response()).unwrap();
     let parsed = parse_response(&bytes, "jev-1.13.0", &request()).unwrap();
-    assert_eq!(parsed.input_tokens, Some(11));
-    assert_eq!(parsed.output_tokens, Some(5));
     assert_eq!(parsed.answers.answers.len(), 1);
     let answer = &parsed.answers.answers[0];
     assert_eq!(answer.choice, tect_domain::ScopeAdviceChoice::Preferred);

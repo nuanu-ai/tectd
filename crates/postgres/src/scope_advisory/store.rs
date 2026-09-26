@@ -1,5 +1,39 @@
 #[async_trait]
 impl ScopeAdvisoryStore for PgUnitOfWork {
+    async fn finalize_scope_advisory_without_advice(
+        &mut self,
+        workspace_id: Uuid,
+        opportunity_id: Uuid,
+        expected_config_revision: i64,
+        dispatch: &AdvisoryDispatch,
+    ) -> Result<AdvisoryOpportunity> {
+        let tenant = self.tenant_id()?;
+        let actor = self.principal_id()?;
+        let opportunity = crate::advisory::opportunity_by_id(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            opportunity_id,
+            true,
+        )
+        .await?;
+        if opportunity.authorized_actor_id != actor
+            || opportunity.capability != AdvisoryCapability::ScopeDecomposition
+        {
+            return Err(Error::Forbidden);
+        }
+        crate::advisory::finalize_interpreted_advisory_response(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            opportunity_id,
+            expected_config_revision,
+            dispatch,
+            false,
+            false,
+        )
+        .await
+    }
     async fn prepare_scope_advisory_manifest(
         &mut self,
         workspace_id: Uuid,
@@ -154,7 +188,15 @@ impl ScopeAdvisoryStore for PgUnitOfWork {
     ) -> Result<SelectedSaveObservation> {
         let tenant = self.tenant_id()?;
         let actor = self.principal_id()?;
-        observe_selected_save(self.transaction()?, tenant, workspace_id, actor, request, false).await
+        observe_selected_save(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            actor,
+            request,
+            false,
+        )
+        .await
     }
 
     async fn independently_observe_selected_scope_save(
@@ -167,6 +209,14 @@ impl ScopeAdvisoryStore for PgUnitOfWork {
             return Err(Error::Forbidden);
         }
         let actor = self.principal_id()?;
-        observe_selected_save(self.transaction()?, tenant, workspace_id, actor, request, true).await
+        observe_selected_save(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            actor,
+            request,
+            true,
+        )
+        .await
     }
 }

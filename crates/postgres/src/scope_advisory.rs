@@ -30,3 +30,5 @@ mod anti_bloat_live_tests;
 mod live_support;
 #[cfg(test)]
 mod live_tests;
+#[cfg(test)]
+mod receipt_recovery_test_support;

@@ -1,6 +1,6 @@
 const MIGRATION: &str = include_str!("../migrations/0085_advisory_budget_consumption.sql");
 const START: &str = include_str!("advisory/dispatch/budget_reservation.rs");
-const SEAL: &str = include_str!("advisory/dispatch/lifecycle.rs");
+const SEAL: &str = include_str!("advisory/dispatch/finalization.rs");
 const SCOPE: &str = include_str!("../../application/src/scope_advisory_orchestration/dispatch.rs");
 const MATRIX: &str = include_str!("../../application/src/matrix_advisory_dispatch.rs");
 const SCOPE_FINALIZE: &str = include_str!("scope_advisory/finalize.rs");
@@ -36,8 +36,10 @@ fn consumption_is_append_only_bound_to_seal_and_gates_finalization() {
     assert!(CONSUME.contains("crate::budget_policy_usage::policy_usage("));
     assert!(CONSUME.contains("usage.pending != 1"));
     {
-        let seal_commit = SCOPE.find("seal_tx.commit().await?").unwrap();
-        let consume = SCOPE.find(".consume_advisory_budget(").unwrap();
+        let seal_commit = SCOPE.find(".seal_committed_advisory_observation(").unwrap();
+        let consume = SCOPE
+            .find(".consume_committed_advisory_observation(")
+            .unwrap();
         assert!(seal_commit < consume);
         assert!(SCOPE.contains("monotonic_start.elapsed().as_millis()"));
     }

@@ -207,6 +207,14 @@ async fn opportunity_detail(
 
 #[async_trait]
 impl AdvisoryStore for PgUnitOfWork {
+    async fn advisory_dispatch_receipt(
+        &mut self, workspace: Uuid, opportunity: Uuid,
+    ) -> Result<Option<tect_application::StoredAdvisoryProviderReceipt>> {
+        let tenant = self.tenant_id()?;
+        let actor = self.principal_id()?;
+        load_provider_receipt_for_actor(self.transaction()?, tenant, workspace, actor, opportunity).await
+    }
+
     async fn advisory_config(&mut self, workspace_id: Uuid) -> Result<WorkspaceAdvisoryConfig> {
         let tenant = self.tenant_id()?;
         config(self.transaction()?, tenant, workspace_id).await

@@ -389,6 +389,7 @@ pub(super) fn provider_error_observation(
     }
 }
 
+#[cfg(test)]
 pub(super) fn normalize_provider_success(
     observation: ScopeAdviceProviderObservation,
 ) -> ScopeAdviceProviderObservation {

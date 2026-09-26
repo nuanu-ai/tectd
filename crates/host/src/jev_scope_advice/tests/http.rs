@@ -161,7 +161,7 @@ async fn prepared_entity_is_the_received_entity_with_exact_digest_and_binding() 
     assert_eq!(prepared.destination(), endpoint.as_str());
 
     let observation = provider
-        .attempt_prepared(DISPATCH_ID, prepared)
+        .test_observation(DISPATCH_ID, prepared)
         .await
         .unwrap();
     server.await.unwrap();
@@ -197,7 +197,7 @@ async fn prepared_digest_changes_with_model_or_content_and_mismatch_is_not_sent(
     .unwrap();
     assert_eq!(legacy_label.wire_version(), "jev-system-one-json/1");
     assert_eq!(
-        provider.attempt_prepared(DISPATCH_ID, legacy_label).await,
+        provider.test_observation(DISPATCH_ID, legacy_label).await,
         Err(ScopeAdviceProviderError::ProvenNotSent)
     );
     let mut modified = request();
@@ -222,7 +222,7 @@ async fn prepared_digest_changes_with_model_or_content_and_mismatch_is_not_sent(
     let changed_model = other_model.prepare(&request()).unwrap();
     assert_ne!(original.body_sha256(), changed_model.body_sha256());
     assert_eq!(
-        provider.attempt_prepared(DISPATCH_ID, changed_model).await,
+        provider.test_observation(DISPATCH_ID, changed_model).await,
         Err(ScopeAdviceProviderError::ProvenNotSent)
     );
     assert!(
@@ -344,14 +344,6 @@ async fn assert_received_failure(
 
 #[tokio::test]
 async fn malformed_oversize_non_json_and_status_are_sent_failures_without_retry() {
-    assert_received_failure(
-        200,
-        "application/json",
-        b"{".to_vec(),
-        1024,
-        ScopeAdviceProviderFailureReason::InvalidResponse,
-    )
-    .await;
     let oversize = assert_received_failure(
         200,
         "application/json",
@@ -387,21 +379,28 @@ async fn malformed_oversize_non_json_and_status_are_sent_failures_without_retry(
 }
 
 #[tokio::test]
-async fn duplicate_keys_at_nested_levels_are_rejected_after_one_http_call() {
-    let choice = format!("choice_{ID}");
+async fn malformed_answers_are_retained_without_transport_interpretation() {
     for body in [
+        b"{".to_vec(),
         br#"{"model":"jev-1.13.0","model":"jev-1.13.0","answers":{},"usage":null}"#.to_vec(),
-        format!(r#"{{"model":"jev-1.13.0","answers":{{"{choice}":{{"type":"choice","type":"choice"}}}},"usage":null}}"#).into_bytes(),
-        format!(r#"{{"model":"jev-1.13.0","answers":{{"{choice}":{{"type":"choice","choice":"PREFERRED","confidence":0.8,"probabilities":{{"PREFERRED":0.8,"PREFERRED":0.8,"NON_PREFERRED":0.2}}}}}},"usage":null}}"#).into_bytes(),
     ] {
-        assert_received_failure(
-            200,
-            "application/json",
-            body,
-            4096,
-            ScopeAdviceProviderFailureReason::InvalidResponse,
-        )
+        let (endpoint, calls, _, server) = fixture(FixtureResponse {
+            status: 200,
+            content_type: "application/json",
+            body: body.clone(),
+            delay: Duration::ZERO,
+        })
         .await;
+        let observed = provider(endpoint, Duration::from_secs(1), 4096)
+            .attempt_request(DISPATCH_ID, &request())
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert_eq!(observed.response_payload, Some(body));
+        assert!(observed.answers.is_none());
+        assert_eq!(observed.input_tokens, None);
+        assert_eq!(observed.failure_reason, None);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
 
@@ -473,71 +472,4 @@ async fn timeout_and_connection_failure_are_sent_unknown_without_retry() {
         Err(ScopeAdviceProviderError::SentUnknown { .. })
     ));
     closed.await.unwrap();
-}
-
-#[test]
-fn config_and_source_have_no_hidden_defaults_retries_or_credential_rendering() {
-    assert!(
-        JevScopeAdviceProvider::new(
-            JevScopeAdviceConfig {
-                profile: "fixture".into(),
-                endpoint: Url::parse("https://api.typesafe.ai/v1/systemone").unwrap(),
-                model: "jev-1.13.0".into(),
-                timeout: Duration::from_secs(1),
-                maximum_request_bytes: 0,
-                maximum_response_bytes: 1,
-            },
-            "credential".into(),
-        )
-        .is_err()
-    );
-    assert!(
-        JevScopeAdviceProvider::new(
-            JevScopeAdviceConfig {
-                profile: "".into(),
-                endpoint: Url::parse("https://api.typesafe.ai/v1/systemone").unwrap(),
-                model: "jev-1.13.0".into(),
-                timeout: Duration::from_secs(1),
-                maximum_request_bytes: 1,
-                maximum_response_bytes: 1,
-            },
-            "credential".into(),
-        )
-        .is_err()
-    );
-    assert!(
-        JevScopeAdviceProvider::new(
-            JevScopeAdviceConfig {
-                profile: "fixture".into(),
-                endpoint: Url::parse("https://api.typesafe.ai/v1/systemone?token=hidden").unwrap(),
-                model: "jev-1.13.0".into(),
-                timeout: Duration::from_secs(1),
-                maximum_request_bytes: 1,
-                maximum_response_bytes: 1,
-            },
-            "credential".into(),
-        )
-        .is_err()
-    );
-    let source = include_str!("../../jev_scope_advice.rs");
-    assert!(!source.contains("pub async fn attempt_prepared("));
-    let trait_guard = source
-        .find("|| !permit.permits(request.dispatch_id, &prepared)")
-        .unwrap();
-    let trait_send = source[trait_guard..]
-        .find("JevScopeAdviceProvider::attempt_prepared(self, request.dispatch_id, prepared)")
-        .unwrap()
-        + trait_guard;
-    assert!(trait_guard < trait_send);
-    assert_eq!(source.matches(".send()").count(), 1);
-    assert!(source.contains(".retry(reqwest::retry::never())"));
-    let receipt_boundary = source
-        .find("let receipt_latency_ms = elapsed_ms(started);")
-        .unwrap();
-    assert!(receipt_boundary < source.find("wire::parse_response(&bytes").unwrap());
-    assert!(source.contains("latency_ms: Some(receipt_latency_ms)"));
-    assert!(!source.contains("TYPESAFE_API_KEY"));
-    assert!(!source.contains("api.typesafe.ai"));
-    assert!(!source.contains("jev-1.13.0"));
-    assert!(!source.contains("#[derive(Debug)]\npub struct JevScopeAdviceProvider"));
 }

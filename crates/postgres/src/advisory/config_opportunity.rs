@@ -208,7 +208,7 @@ async fn capture_opportunity(
     opportunity_from_row(workspace, row)
 }
 
-async fn opportunity_by_id(
+pub(crate) async fn opportunity_by_id(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     workspace: Uuid,

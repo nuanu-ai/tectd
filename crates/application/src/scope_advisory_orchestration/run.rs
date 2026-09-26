@@ -19,6 +19,21 @@ impl WorkspaceService {
         let existing = read
             .advisory_opportunity_by_request(workspace.id, &request.request_id.to_string())
             .await?;
+        if let Some((saved, stored)) = self
+            .scope_receipt_for_replay(
+                &mut *read,
+                workspace.id,
+                identity.principal_id,
+                request,
+                existing.as_ref(),
+            )
+            .await?
+        {
+            read.commit().await?;
+            return self
+                .recover_scope_receipt(context, request, identity.tenant_id, saved, stored)
+                .await;
+        }
         // Disabled and explicitly skipped requests do not need source material.
         // The workspace-scoped candidate lookup still proves target access.
         let early_no_call =
@@ -51,38 +66,19 @@ impl WorkspaceService {
         read.commit().await?;
 
         if let Some((reason, revision)) = early_no_call {
-            let digest = no_call_digest(request, config.revision, reason)?;
-            if let Some(existing) = existing {
-                if existing.target_kind != "scope_candidate_set"
-                    || existing.target_id != Some(request.candidate_set_id)
-                    || existing.work_revision != Some(revision)
-                    || existing.config_revision != config.revision
-                    || existing.material_digest != digest
-                {
-                    return Err(Error::InputConflict);
-                }
-                return Ok(ScopeAdvisoryOutcome {
-                    opportunity: existing,
-                    advice: None,
-                });
-            }
-            let opportunity = self
-                .capture_early_scope_no_call(
+            return self
+                .replay_or_capture_early_scope_no_call(
                     context,
                     request,
                     &config,
+                    existing,
                     ScopeCaptureIdentity {
                         actor: identity.principal_id,
                         session: session.id,
                     },
-                    digest,
                     ScopeEarlyNoCall { reason, revision },
                 )
-                .await?;
-            return Ok(ScopeAdvisoryOutcome {
-                opportunity,
-                advice: None,
-            });
+                .await;
         }
 
         // An active invocation needs the caller's complete authored set.

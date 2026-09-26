@@ -1,7 +1,7 @@
 //! Explicit mismatch follow-up; synthetic facts, no provider or HTTP adapter.
 use super::*;
 
-pub(super) const OWNED_MIGRATION: i64 = 99;
+pub(super) const OWNED_MIGRATION: i64 = 100;
 
 pub(super) async fn guard(pool: &PgPool) {
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
@@ -44,7 +44,7 @@ async fn counts(pool: &PgPool, workspace: Uuid) -> (i64, i64, i64) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires the owned PG18.6 system7689676854994613066 at migration99"]
+#[ignore = "requires the owned PG18.6 system7689676854994613066 at migration100"]
 async fn public_matrix_mismatch_requires_explicit_revision_bound_decomposition() {
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
     let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();

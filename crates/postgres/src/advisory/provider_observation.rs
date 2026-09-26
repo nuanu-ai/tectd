@@ -52,6 +52,44 @@ async fn read_provider_observation(
     .transpose()
 }
 
+async fn load_provider_receipt_for_actor(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    actor: Uuid,
+    opportunity_id: Uuid,
+) -> Result<Option<StoredAdvisoryProviderReceipt>> {
+    let opportunity = opportunity_by_id(tx, tenant, workspace, opportunity_id, false).await?;
+    if opportunity.authorized_actor_id != actor
+        || opportunity.capability != AdvisoryCapability::ScopeDecomposition
+    {
+        return Err(Error::Forbidden);
+    }
+    let dispatch: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3 ORDER BY attempt_number DESC LIMIT 1"
+    ).bind(tenant).bind(workspace).bind(opportunity_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
+    let Some(dispatch) = dispatch else {
+        return Ok(None);
+    };
+    let row = dispatch_by_id(tx, tenant, workspace, dispatch, false).await?;
+    if !matches!(
+        dispatch_state(&row.state)?,
+        AdvisoryDispatchState::Sending | AdvisoryDispatchState::Sealed
+    ) {
+        return Ok(None);
+    }
+    let observation = read_provider_observation(tx, tenant, workspace, dispatch).await?;
+    Ok(Some(StoredAdvisoryProviderReceipt {
+        opportunity,
+        dispatch: dispatch_from_row(&row)?,
+        configuration_snapshot: row.configuration_snapshot,
+        request_payload_sha256: format!("{:x}", Sha256::digest(&row.request_payload)),
+        request_payload: row.request_payload,
+        original_elapsed_ms: observation.as_ref().map(|(_, elapsed)| *elapsed),
+        observation: observation.map(|(raw, _)| raw),
+    }))
+}
+
 /// Locks and validates only frozen committed dispatch material. Current source,
 /// configuration, session authority, and Matrix revisions are not read here.
 pub(crate) async fn provider_receipt_for_continuation(

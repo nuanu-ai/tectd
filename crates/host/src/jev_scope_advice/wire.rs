@@ -104,8 +104,12 @@ pub(super) fn serialize_request(
 
 pub(super) struct ParsedResponse {
     pub answers: NormalizedScopeAdviceAnswers,
-    pub input_tokens: Option<i64>,
-    pub output_tokens: Option<i64>,
+}
+
+pub(super) fn parse_unique_json(bytes: &[u8]) -> std::result::Result<Value, ()> {
+    serde_json::from_slice::<DuplicateCheckedValue>(bytes)
+        .map(|value| value.0)
+        .map_err(|_| ())
 }
 
 pub(super) fn parse_response(
@@ -113,9 +117,7 @@ pub(super) fn parse_response(
     model: &str,
     request: &ScopeAdviceRequest,
 ) -> std::result::Result<ParsedResponse, ()> {
-    let value = serde_json::from_slice::<DuplicateCheckedValue>(bytes)
-        .map_err(|_| ())?
-        .0;
+    let value = parse_unique_json(bytes)?;
     let root = object(value)?;
     exact_keys(&root, &["answers", "model", "usage"])?;
     if string(root.get("model"))? != model {
@@ -193,23 +195,12 @@ pub(super) fn parse_response(
             score_confidence,
         });
     }
-    let usage = root.get("usage").ok_or(())?;
-    let (input_tokens, output_tokens) = if usage.is_null() {
-        (None, None)
-    } else {
-        let usage = object(usage.clone())?;
-        exact_keys(&usage, &["input_tokens", "output_tokens"])?;
-        (
-            Some(nonnegative_integer(usage.get("input_tokens"))?),
-            Some(nonnegative_integer(usage.get("output_tokens"))?),
-        )
-    };
+    // Usage is retained in the raw schema but decoded only by the sealed
+    // accounting hook; answer interpretation supplies no counters.
     Ok(ParsedResponse {
         answers: NormalizedScopeAdviceAnswers {
             answers: normalized,
         },
-        input_tokens,
-        output_tokens,
     })
 }
 
@@ -246,13 +237,6 @@ fn probabilities(value: Option<&Value>, keys: &[&str]) -> std::result::Result<()
         Ok::<_, ()>(sum + finite_unit(Some(value), 1.0)?)
     })?;
     ((sum - 1.0).abs() <= 0.03).then_some(()).ok_or(())
-}
-
-fn nonnegative_integer(value: Option<&Value>) -> std::result::Result<i64, ()> {
-    value
-        .and_then(Value::as_i64)
-        .filter(|value| *value >= 0)
-        .ok_or(())
 }
 
 struct DuplicateCheckedValue(Value);

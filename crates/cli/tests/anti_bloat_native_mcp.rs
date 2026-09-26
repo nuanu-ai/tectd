@@ -41,7 +41,7 @@ async fn identity(pool: &PgPool) {
         .fetch_one(pool).await.unwrap();
     assert_eq!(
         row,
-        ("tect_test".into(), 16385, "7689676854994613066".into(), 99)
+        ("tect_test".into(), 16385, "7689676854994613066".into(), 100)
     );
 }
 async fn call(pool: &PgPool, client: &mut Mcp, kind: &str, route: &str, params: Value) -> Value {

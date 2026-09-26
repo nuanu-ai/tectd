@@ -90,6 +90,16 @@ pub struct ScopeVerifierReceiptInput {
 
 #[async_trait]
 pub trait ScopeAdvisoryStore: Send {
+    /// Terminal interpretation failure; original transport dispatch stays immutable.
+    async fn finalize_scope_advisory_without_advice(
+        &mut self,
+        _workspace_id: Uuid,
+        _opportunity_id: Uuid,
+        _expected_config_revision: i64,
+        _dispatch: &tect_domain::AdvisoryDispatch,
+    ) -> Result<tect_domain::AdvisoryOpportunity> {
+        Err(tect_domain::Error::Forbidden)
+    }
     async fn prepare_scope_advisory_manifest(
         &mut self,
         workspace_id: Uuid,
