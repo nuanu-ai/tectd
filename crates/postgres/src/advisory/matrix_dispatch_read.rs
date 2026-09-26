@@ -1,4 +1,3 @@
-use sha2::{Digest, Sha256};
 use sqlx::Row;
 use tect_application::{
     MAX_PREPARED_MATRIX_BODY_BYTES, MatrixProviderBinding, StoredMatrixDispatch,

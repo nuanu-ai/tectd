@@ -64,6 +64,46 @@ impl PgUnitOfWork {
 
 #[async_trait]
 impl Store for PgStore {
+    async fn seal_committed_advisory_observation(
+        &self,
+        continuation: &tect_application::AdvisoryDispatchContinuation,
+        observation: &tect_application::AdvisoryProviderReceiptObservation,
+        elapsed: i64,
+    ) -> Result<tect_application::StoredAdvisoryProviderReceipt> {
+        let mut tx = self
+            .provider_receipt_transaction(continuation.tenant_id())
+            .await?;
+        let saved = crate::advisory::seal_provider_raw_observation(
+            &mut tx,
+            continuation,
+            observation,
+            elapsed,
+        )
+        .await?;
+        tx.commit().await.map_err(storage_error)?;
+        Ok(saved)
+    }
+
+    async fn consume_committed_advisory_observation(
+        &self,
+        continuation: &tect_application::AdvisoryDispatchContinuation,
+        usage: tect_application::AdvisoryProviderReceiptUsage,
+    ) -> Result<(
+        tect_application::StoredAdvisoryProviderReceipt,
+        AdvisoryBudgetConsumption,
+    )> {
+        let mut tx = self
+            .provider_receipt_transaction(continuation.tenant_id())
+            .await?;
+        crate::advisory::seal_provider_observation_usage(&mut tx, continuation, usage).await?;
+        tx.commit().await.map_err(storage_error)?;
+        let mut tx = self
+            .provider_receipt_transaction(continuation.tenant_id())
+            .await?;
+        let result = crate::advisory::consume_provider_observation(&mut tx, continuation).await?;
+        tx.commit().await.map_err(storage_error)?;
+        Ok(result)
+    }
     async fn seal_committed_matrix_observation(
         &self,
         tenant: Uuid,
@@ -71,15 +111,14 @@ impl Store for PgStore {
         observation: &tect_application::MatrixProviderObservation,
         elapsed: i64,
     ) -> Result<tect_application::StoredMatrixDispatch> {
-        let mut tx = self.matrix_continuation_transaction(tenant).await?;
-        let saved = crate::advisory::seal_matrix_raw_observation(
-            &mut tx,
-            tenant,
-            continuation,
-            observation,
-            elapsed,
-        )
-        .await?;
+        let common = continuation.receipt_continuation();
+        if common.tenant_id() != tenant {
+            return Err(Error::InputConflict);
+        }
+        self.seal_committed_advisory_observation(common, &observation.into(), elapsed)
+            .await?;
+        let mut tx = self.provider_receipt_transaction(tenant).await?;
+        let saved = crate::advisory::matrix_receipt_view(&mut tx, common).await?;
         tx.commit().await.map_err(storage_error)?;
         Ok(saved)
     }
@@ -93,15 +132,17 @@ impl Store for PgStore {
         tect_application::StoredMatrixDispatch,
         AdvisoryBudgetConsumption,
     )> {
-        let mut tx = self.matrix_continuation_transaction(tenant).await?;
-        crate::advisory::seal_matrix_observation_usage(&mut tx, tenant, continuation, usage)
+        let common = continuation.receipt_continuation();
+        if common.tenant_id() != tenant {
+            return Err(Error::InputConflict);
+        }
+        let (_, consumption) = self
+            .consume_committed_advisory_observation(common, usage)
             .await?;
+        let mut tx = self.provider_receipt_transaction(tenant).await?;
+        let saved = crate::advisory::matrix_receipt_view(&mut tx, common).await?;
         tx.commit().await.map_err(storage_error)?;
-        let mut tx = self.matrix_continuation_transaction(tenant).await?;
-        let result =
-            crate::advisory::consume_matrix_observation(&mut tx, tenant, continuation).await?;
-        tx.commit().await.map_err(storage_error)?;
-        Ok(result)
+        Ok((saved, consumption))
     }
     async fn seal_committed_model_route_observation(
         &self,
@@ -244,7 +285,7 @@ impl Store for PgStore {
 }
 
 impl PgStore {
-    async fn matrix_continuation_transaction(
+    async fn provider_receipt_transaction(
         &self,
         tenant: Uuid,
     ) -> Result<Transaction<'static, Postgres>> {

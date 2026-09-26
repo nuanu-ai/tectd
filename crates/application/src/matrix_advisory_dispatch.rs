@@ -298,9 +298,14 @@ impl WorkspaceService {
         )?;
         let continuation = crate::MatrixDispatchContinuation::from_started(
             &permit,
-            workspace_id,
-            opportunity.authorized_actor_id,
-        );
+            crate::AdvisoryDispatchContinuation::after_committed_start(
+                identity.tenant_id,
+                workspace_id,
+                &opportunity,
+                &started,
+                &authorization,
+            )?,
+        )?;
         // The committed Sending row is the one-use boundary. A transport error
         // remains uncertain and is never retried by this request or its replay.
         let monotonic_start = std::time::Instant::now();

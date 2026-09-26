@@ -343,10 +343,18 @@ pub struct MatrixProviderObservation {
     pub response_complete: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct MatrixProviderUsage {
-    pub input_tokens: Option<u64>,
-    pub output_tokens: Option<u64>,
+pub type MatrixProviderUsage = crate::AdvisoryProviderReceiptUsage;
+
+impl From<&MatrixProviderObservation> for crate::AdvisoryProviderReceiptObservation {
+    fn from(value: &MatrixProviderObservation) -> Self {
+        Self {
+            response_payload: value.response_payload.clone(),
+            http_status: value.http_status,
+            input_tokens: value.input_tokens,
+            output_tokens: value.output_tokens,
+            response_complete: value.response_complete,
+        }
+    }
 }
 
 impl MatrixProviderResponse {

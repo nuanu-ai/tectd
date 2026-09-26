@@ -16,6 +16,26 @@ pub enum TransactionMode {
 pub trait Store: Send + Sync {
     async fn begin(&self, mode: TransactionMode) -> Result<Box<dyn UnitOfWork>>;
 
+    async fn seal_committed_advisory_observation(
+        &self,
+        _continuation: &crate::AdvisoryDispatchContinuation,
+        _observation: &crate::AdvisoryProviderReceiptObservation,
+        _elapsed_ms: i64,
+    ) -> Result<crate::StoredAdvisoryProviderReceipt> {
+        Err(tect_domain::Error::Forbidden)
+    }
+
+    async fn consume_committed_advisory_observation(
+        &self,
+        _continuation: &crate::AdvisoryDispatchContinuation,
+        _usage: crate::AdvisoryProviderReceiptUsage,
+    ) -> Result<(
+        crate::StoredAdvisoryProviderReceipt,
+        tect_domain::AdvisoryBudgetConsumption,
+    )> {
+        Err(tect_domain::Error::Forbidden)
+    }
+
     async fn seal_committed_matrix_observation(
         &self,
         _tenant_id: Uuid,

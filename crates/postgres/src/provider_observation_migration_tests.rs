@@ -1,6 +1,7 @@
 const SQL: &str = include_str!("../migrations/0097_provider_raw_observation.sql");
 const PARTIAL: &str = include_str!("../migrations/0098_provider_partial_observation.sql");
-const STORE: &str = include_str!("advisory/matrix_observation.rs");
+const STORE: &str = include_str!("advisory/provider_observation.rs");
+const FAMILIES: &str = include_str!("../migrations/0099_provider_observation_families.sql");
 const APP: &str = include_str!("../../application/src/matrix_advisory_dispatch.rs");
 const RECOVERY: &str = include_str!("../../application/src/matrix_advisory_dispatch/recovery.rs");
 
@@ -24,9 +25,25 @@ fn immutable_raw_observation_is_tenant_scoped_and_bound_to_committed_bytes() {
     assert!(STORE.contains("continuation.actor_id()"));
     assert!(STORE.contains("reservation.policy_version"));
     assert!(STORE.contains("reservation.policy_digest"));
-    assert!(STORE.contains("saved.raw_observation_sealed"));
+    assert!(STORE.contains("existing != observation"));
     assert!(STORE.contains("saved.original_elapsed_ms != Some(elapsed)"));
-    assert!(STORE.contains("saved.response_complete != observation.response_complete"));
+    assert!(!STORE.contains("matrix_task_revisions"));
+    assert!(!STORE.contains(".authenticated("));
+    for binding in [
+        "opportunity.target_kind != continuation.target_kind()",
+        "opportunity.target_id != continuation.target_id()",
+        "opportunity.work_revision != continuation.work_revision()",
+        "opportunity.material_digest != continuation.material_digest()",
+    ] {
+        assert!(STORE.contains(binding));
+    }
+    for family in [
+        "('engineering_profile','engineering.profile.before_selection','matrix_task')",
+        "('scope_decomposition','scope.decomposition.before_selection','scope_candidate_set')",
+        "('pipeline_recommendation','pipeline_recommendation_before_slice_open','slice_candidate_node')",
+    ] {
+        assert!(FAMILIES.contains(family));
+    }
     assert!(PARTIAL.contains("CREATE OR REPLACE FUNCTION advisory_provider_observation_guard()"));
     assert!(PARTIAL.contains("d.state='sending'"));
     assert!(PARTIAL.contains("d.payload_digest=NEW.request_sha256"));

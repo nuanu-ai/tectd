@@ -142,9 +142,10 @@ impl WorkspaceService {
             read.commit().await?;
             let continuation = crate::MatrixDispatchContinuation::from_saved(
                 &saved,
+                identity.tenant_id,
                 workspace_id,
-                opportunity.authorized_actor_id,
-            );
+                &opportunity,
+            )?;
             let usage = if saved.response_complete {
                 self.matrix_advice_provider.sealed_response_usage(&saved)
             } else {

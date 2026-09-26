@@ -49,6 +49,11 @@ mod pipeline_recommendation_ports;
 mod pipeline_recommendation_runtime;
 mod planning_knowledge_ports;
 mod ports;
+mod provider_receipt_ports;
+pub use provider_receipt_ports::{
+    AdvisoryDispatchContinuation, AdvisoryProviderReceiptObservation, AdvisoryProviderReceiptUsage,
+    StoredAdvisoryProviderReceipt,
+};
 mod programs;
 mod scope_advisory_orchestration;
 mod scope_advisory_ports;

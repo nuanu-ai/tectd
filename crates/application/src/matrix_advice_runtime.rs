@@ -138,60 +138,63 @@ pub struct MatrixStartedDispatchPermit {
 /// Internal persistence continuation for an already committed one-use send.
 #[derive(Debug, Clone)]
 pub struct MatrixDispatchContinuation {
-    workspace_id: Uuid,
-    actor_id: Uuid,
-    opportunity_id: Uuid,
-    dispatch_id: Uuid,
-    configuration_digest: String,
-    request_sha256: String,
+    inner: crate::AdvisoryDispatchContinuation,
 }
 
 impl MatrixDispatchContinuation {
     pub(crate) fn from_started(
         permit: &MatrixStartedDispatchPermit,
-        workspace_id: Uuid,
-        actor_id: Uuid,
-    ) -> Self {
-        Self {
-            workspace_id,
-            actor_id,
-            opportunity_id: permit.opportunity_id,
-            dispatch_id: permit.dispatch_id,
-            configuration_digest: permit.configuration_digest.clone(),
-            request_sha256: permit.body_sha256.clone(),
+        inner: crate::AdvisoryDispatchContinuation,
+    ) -> Result<Self> {
+        if inner.capability() != AdvisoryCapability::EngineeringProfile
+            || inner.opportunity_id() != permit.opportunity_id
+            || inner.dispatch_id() != permit.dispatch_id
+            || inner.configuration_digest() != permit.configuration_digest
+            || inner.request_sha256() != permit.body_sha256
+        {
+            return Err(Error::InputConflict);
         }
+        Ok(Self { inner })
     }
     pub(crate) fn from_saved(
         saved: &crate::StoredMatrixDispatch,
+        tenant_id: Uuid,
         workspace_id: Uuid,
-        actor_id: Uuid,
-    ) -> Self {
-        Self {
+        opportunity: &AdvisoryOpportunity,
+    ) -> Result<Self> {
+        let inner = crate::AdvisoryDispatchContinuation::from_saved(
+            tenant_id,
             workspace_id,
-            actor_id,
-            opportunity_id: saved.dispatch.opportunity_id,
-            dispatch_id: saved.dispatch.id,
-            configuration_digest: saved.dispatch.configuration_digest.clone(),
-            request_sha256: saved.request_payload_sha256.clone(),
+            opportunity,
+            &saved.dispatch,
+        )?;
+        if inner.capability() != AdvisoryCapability::EngineeringProfile
+            || inner.request_sha256() != saved.request_payload_sha256
+        {
+            return Err(Error::InputConflict);
         }
+        Ok(Self { inner })
+    }
+    pub fn receipt_continuation(&self) -> &crate::AdvisoryDispatchContinuation {
+        &self.inner
     }
     pub fn workspace_id(&self) -> Uuid {
-        self.workspace_id
+        self.inner.workspace_id()
     }
     pub fn actor_id(&self) -> Uuid {
-        self.actor_id
+        self.inner.actor_id()
     }
     pub fn opportunity_id(&self) -> Uuid {
-        self.opportunity_id
+        self.inner.opportunity_id()
     }
     pub fn dispatch_id(&self) -> Uuid {
-        self.dispatch_id
+        self.inner.dispatch_id()
     }
     pub fn configuration_digest(&self) -> &str {
-        &self.configuration_digest
+        self.inner.configuration_digest()
     }
     pub fn request_sha256(&self) -> &str {
-        &self.request_sha256
+        self.inner.request_sha256()
     }
 }
 

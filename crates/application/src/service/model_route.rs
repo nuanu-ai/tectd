@@ -2,30 +2,6 @@ use super::WorkspaceService;
 use tect_domain::Result;
 
 impl WorkspaceService {
-    pub(crate) async fn seal_committed_matrix_observation(
-        &self,
-        tenant: uuid::Uuid,
-        continuation: &crate::MatrixDispatchContinuation,
-        observation: &crate::MatrixProviderObservation,
-        elapsed: i64,
-    ) -> Result<crate::StoredMatrixDispatch> {
-        self.store
-            .seal_committed_matrix_observation(tenant, continuation, observation, elapsed)
-            .await
-    }
-    pub(crate) async fn consume_committed_matrix_observation(
-        &self,
-        tenant: uuid::Uuid,
-        continuation: &crate::MatrixDispatchContinuation,
-        usage: crate::MatrixProviderUsage,
-    ) -> Result<(
-        crate::StoredMatrixDispatch,
-        tect_domain::AdvisoryBudgetConsumption,
-    )> {
-        self.store
-            .consume_committed_matrix_observation(tenant, continuation, usage)
-            .await
-    }
     pub(crate) async fn seal_committed_model_route_observation(
         &self,
         tenant_id: uuid::Uuid,

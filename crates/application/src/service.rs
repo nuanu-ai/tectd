@@ -6,6 +6,7 @@ use tect_domain::{
 };
 
 mod model_route;
+mod provider_receipts;
 mod query_cache;
 pub(crate) use query_cache::{KnowledgeQueryCache, KnowledgeQueryCacheKey};
 
