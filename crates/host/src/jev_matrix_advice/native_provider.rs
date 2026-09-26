@@ -12,8 +12,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tect_application::{
     MAX_PREPARED_MATRIX_BODY_BYTES, MatrixAdviceProvider, MatrixProviderIdentity,
-    MatrixProviderRequest, MatrixProviderResponse, MatrixStartedDispatchPermit,
-    PreparedMatrixAdviceAttempt, StoredMatrixDispatch,
+    MatrixProviderObservation, MatrixProviderRequest, MatrixProviderResponse, MatrixProviderUsage,
+    MatrixStartedDispatchPermit, PreparedMatrixAdviceAttempt, StoredMatrixDispatch,
 };
 use tect_domain::{
     AdvisoryDispatchOutcome, AdvisoryDispatchState, AdvisorySendCertainty, Error,
@@ -121,25 +121,27 @@ impl JevNativeMatrixProvider {
         })
     }
 
-    async fn bounded_body(&self, mut response: reqwest::Response) -> Result<Vec<u8>> {
+    async fn bounded_body(&self, mut response: reqwest::Response) -> (Vec<u8>, bool) {
         let mut bytes = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| Error::TransportUnavailable)?
-        {
-            if bytes.len().saturating_add(chunk.len()) > self.config.maximum_response_bytes {
-                return Err(Error::RequestTooLarge);
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    let remaining = self
+                        .config
+                        .maximum_response_bytes
+                        .saturating_sub(bytes.len());
+                    bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+                    if chunk.len() > remaining {
+                        return (bytes, false);
+                    }
+                }
+                Ok(None) => return (bytes, true),
+                Err(_) => return (bytes, false),
             }
-            bytes.extend_from_slice(&chunk);
         }
-        if bytes.is_empty() {
-            return Err(Error::InvalidArguments);
-        }
-        Ok(bytes)
     }
 
-    async fn send_once(&self, body: Vec<u8>) -> Result<Vec<u8>> {
+    async fn send_once(&self, body: Vec<u8>) -> Result<MatrixProviderObservation> {
         let response = self
             .client
             .post(self.config.endpoint.clone())
@@ -150,21 +152,15 @@ impl JevNativeMatrixProvider {
             .await
             .map_err(|_| Error::TransportUnavailable)?;
         let status = response.status();
-        let is_json = response
-            .headers()
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| {
-                value
-                    .split(';')
-                    .next()
-                    .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("application/json"))
-            });
-        let bytes = self.bounded_body(response).await?;
-        if !status.is_success() || !is_json {
-            return Err(Error::TransportUnavailable);
-        }
-        Ok(bytes)
+        let (bytes, response_complete) = self.bounded_body(response).await;
+        Ok(MatrixProviderObservation {
+            legacy_response: None,
+            response_complete,
+            response_payload: Some(bytes),
+            http_status: Some(status.as_u16()),
+            input_tokens: None,
+            output_tokens: None,
+        })
     }
 }
 
@@ -202,6 +198,11 @@ impl MatrixAdviceProvider for JevNativeMatrixProvider {
             .as_ref()
             .ok_or(Error::InvalidArguments)?;
         if saved.request_payload.is_empty()
+            || !saved.raw_observation_sealed
+            || !saved.response_complete
+            || !saved
+                .response_http_status
+                .is_some_and(|status| (200..300).contains(&status))
             || response.is_empty()
             || saved.request_payload.len() > self.config.maximum_request_bytes
             || response.len() > self.config.maximum_response_bytes
@@ -238,6 +239,7 @@ impl MatrixAdviceProvider for JevNativeMatrixProvider {
             "budget_policy_id": policy_id,
             "request_body_length": saved.request_payload.len(),
             "request_body_sha256": request_hash,
+            "budget_policy": validated_budget_header(snapshot, policy_id)?,
         });
         let snapshot_bytes = serde_json::to_vec(snapshot).map_err(|_| Error::InvalidArguments)?;
         if snapshot != &expected_snapshot
@@ -259,8 +261,14 @@ impl MatrixAdviceProvider for JevNativeMatrixProvider {
             i64::try_from(parsed.input_tokens).map_err(|_| Error::InvalidArguments)?;
         let output_tokens =
             i64::try_from(parsed.output_tokens).map_err(|_| Error::InvalidArguments)?;
-        if saved.dispatch.input_tokens != Some(input_tokens)
-            || saved.dispatch.output_tokens != Some(output_tokens)
+        if saved
+            .dispatch
+            .input_tokens
+            .is_some_and(|value| value != input_tokens)
+            || saved
+                .dispatch
+                .output_tokens
+                .is_some_and(|value| value != output_tokens)
         {
             return Err(Error::InvalidArguments);
         }
@@ -271,9 +279,19 @@ impl MatrixAdviceProvider for JevNativeMatrixProvider {
 
     async fn attempt_prepared(
         &self,
+        _prepared: PreparedMatrixAdviceAttempt,
+        _permit: MatrixStartedDispatchPermit,
+    ) -> Result<MatrixProviderResponse> {
+        // Native transport requires the raw-seal lifecycle; the legacy typed
+        // attempt cannot perform an unsealed parse or network call.
+        Err(Error::TransportUnavailable)
+    }
+
+    async fn observe_prepared(
+        &self,
         prepared: PreparedMatrixAdviceAttempt,
         permit: MatrixStartedDispatchPermit,
-    ) -> Result<MatrixProviderResponse> {
+    ) -> Result<MatrixProviderObservation> {
         // The permit is minted only after the Sending row commits and is consumed
         // before a single network attempt. A transport error has unknown send status.
         if !permit.permits_prepared(&prepared)
@@ -283,11 +301,60 @@ impl MatrixAdviceProvider for JevNativeMatrixProvider {
         {
             return Err(Error::InputConflict);
         }
-        let native = native_from_prepared(&prepared)?;
-        let (binding, _, body, _) = prepared.into_parts();
-        let bytes = self.send_once(body).await?;
-        self.parse_response(binding, &native, bytes)
+        native_from_prepared(&prepared)?;
+        let (_, _, body, _) = prepared.into_parts();
+        self.send_once(body).await
     }
+
+    fn sealed_response_usage(&self, saved: &StoredMatrixDispatch) -> MatrixProviderUsage {
+        let unknown = MatrixProviderUsage {
+            input_tokens: None,
+            output_tokens: None,
+        };
+        if !saved.raw_observation_sealed || !saved.response_complete {
+            return unknown;
+        }
+        let Some(bytes) = saved.response_payload.as_ref() else {
+            return unknown;
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+            return unknown;
+        };
+        let Some(usage) = value.get("usage").and_then(Value::as_object) else {
+            return unknown;
+        };
+        MatrixProviderUsage {
+            input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
+            output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
+        }
+    }
+}
+
+// Application owns signature verification and exact committed policy binding.
+// The codec accepts only this known header; no arbitrary frozen fields are stripped.
+fn validated_budget_header(snapshot: &Value, policy_id: &str) -> Result<Value> {
+    let header = snapshot
+        .get("budget_policy")
+        .and_then(Value::as_object)
+        .ok_or(Error::InvalidArguments)?;
+    if header.len() != 3
+        || header.get("policy_id").and_then(Value::as_str) != Some(policy_id)
+        || header
+            .get("policy_version")
+            .and_then(Value::as_i64)
+            .is_none_or(|v| v <= 0)
+        || !header
+            .get("policy_digest")
+            .and_then(Value::as_str)
+            .is_some_and(|v| {
+                v.len() == 64
+                    && v.bytes()
+                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            })
+    {
+        return Err(Error::InvalidArguments);
+    }
+    Ok(Value::Object(header.clone()))
 }
 
 /// Recover only parser metadata from the exact prepared native body. The body
@@ -367,124 +434,5 @@ fn native_from_prepared(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{
-        io::{Read, Write},
-        net::TcpListener,
-    };
-    use tect_domain::{AdvisoryModelConfiguration, AdvisoryProviderProfileRef};
-
-    fn config(endpoint: Url, maximum_response_bytes: usize) -> JevNativeMatrixConfig {
-        JevNativeMatrixConfig {
-            provider_identity: MatrixProviderIdentity {
-                provider_profile_ref: AdvisoryProviderProfileRef {
-                    id: "profile".into(),
-                },
-                model_configuration: AdvisoryModelConfiguration {
-                    model: "jev-1.13.0".into(),
-                },
-                destination: endpoint.as_str().into(),
-                wire_version: "caller-value-is-normalized".into(),
-            },
-            endpoint,
-            timeout: Duration::from_secs(2),
-            maximum_request_bytes: 262_144,
-            maximum_response_bytes,
-        }
-    }
-
-    fn loopback(response: Vec<u8>) -> (Url, std::thread::JoinHandle<String>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let endpoint = Url::parse(&format!(
-            "http://{}/v1/systemone",
-            listener.local_addr().unwrap()
-        ))
-        .unwrap();
-        let handle = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
-            let mut request = vec![0; 4096];
-            let received = stream.read(&mut request).unwrap();
-            stream.write_all(&response).unwrap();
-            String::from_utf8_lossy(&request[..received]).into_owned()
-        });
-        (endpoint, handle)
-    }
-
-    #[test]
-    fn constructor_requires_explicit_credential_and_exact_endpoint_path() {
-        let endpoint = Url::parse("http://127.0.0.1:9/v1/systemone").unwrap();
-        assert!(matches!(
-            JevNativeMatrixProvider::new(config(endpoint.clone(), 1024), String::new()),
-            Err(Error::InvalidConfiguration)
-        ));
-        let wrong = Url::parse("http://127.0.0.1:9/other").unwrap();
-        assert!(matches!(
-            JevNativeMatrixProvider::new(config(wrong, 1024), "secret".into()),
-            Err(Error::InvalidConfiguration)
-        ));
-        let provider =
-            JevNativeMatrixProvider::new(config(endpoint, 1024), "secret".into()).unwrap();
-        assert_eq!(
-            provider.identity().unwrap().wire_version,
-            native_wire::NATIVE_MATRIX_WIRE_VERSION
-        );
-    }
-
-    #[test]
-    fn constructor_rejects_cleartext_remote_or_dns_and_url_credentials() {
-        for url in [
-            "http://192.0.2.1/v1/systemone",
-            "http://localhost/v1/systemone",
-            "http://example.test/v1/systemone",
-            "https://name:password@example.test/v1/systemone",
-            "https://example.test/v1/systemone#fragment",
-        ] {
-            let endpoint = Url::parse(url).unwrap();
-            assert!(matches!(
-                JevNativeMatrixProvider::new(config(endpoint, 1024), "secret".into()),
-                Err(Error::InvalidConfiguration)
-            ));
-        }
-        for url in [
-            "http://127.0.0.1/v1/systemone",
-            "http://[::1]/v1/systemone",
-            "https://example.test/v1/systemone",
-        ] {
-            let endpoint = Url::parse(url).unwrap();
-            assert!(JevNativeMatrixProvider::new(config(endpoint, 1024), "secret".into()).is_ok());
-        }
-    }
-
-    #[tokio::test]
-    async fn single_loopback_post_has_bearer_and_returns_bounded_bytes() {
-        let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".to_vec();
-        let (endpoint, server) = loopback(response);
-        let provider =
-            JevNativeMatrixProvider::new(config(endpoint, 64), "local-test".into()).unwrap();
-        assert_eq!(provider.send_once(b"{}".to_vec()).await, Ok(b"{}".to_vec()));
-        let request = server.join().unwrap();
-        assert!(request.starts_with("POST /v1/systemone HTTP/1.1"));
-        assert!(
-            request
-                .to_ascii_lowercase()
-                .contains("authorization: bearer local-test")
-        );
-    }
-
-    #[tokio::test]
-    async fn oversized_loopback_response_is_rejected_while_reading() {
-        let response = b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 5\r\nConnection: close\r\n\r\n12345".to_vec();
-        let (endpoint, server) = loopback(response);
-        let provider =
-            JevNativeMatrixProvider::new(config(endpoint, 4), "local-test".into()).unwrap();
-        assert_eq!(
-            provider.send_once(b"{}".to_vec()).await,
-            Err(Error::RequestTooLarge)
-        );
-        server.join().unwrap();
-    }
-}
+#[path = "native_provider_tests.rs"]
+mod tests;

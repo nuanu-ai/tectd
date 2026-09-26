@@ -7,7 +7,7 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
-fn stored_dispatch(
+pub(super) fn stored_dispatch(
     request_payload: Vec<u8>,
     response_payload: Option<Vec<u8>>,
     configuration_snapshot: serde_json::Value,
@@ -56,6 +56,12 @@ fn stored_dispatch(
         request_payload_sha256: String::new(),
         response_payload,
         response_payload_sha256: Some(String::new()),
+        response_complete: true,
+        response_http_status: None,
+        original_input_tokens: None,
+        original_output_tokens: None,
+        original_elapsed_ms: None,
+        raw_observation_sealed: false,
     }
 }
 
