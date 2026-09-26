@@ -83,6 +83,62 @@ pub struct AntiBloatSendPermit {
     pub request: AntiBloatPreparedRequest,
 }
 
+/// Opaque transport authority, created only after the application commits a new
+/// one-use send fence. Reservation metadata alone cannot construct this token.
+///
+/// ```compile_fail
+/// let _ = tect_application::AntiBloatStartedDispatchPermit {
+///     reservation: todo!(), claimed: todo!(),
+/// };
+/// ```
+#[derive(Debug)]
+pub struct AntiBloatStartedDispatchPermit {
+    reservation: AntiBloatSendPermit,
+    claimed: std::sync::atomic::AtomicBool,
+}
+
+impl AntiBloatStartedDispatchPermit {
+    pub(crate) fn after_committed_fence(reservation: &AntiBloatSendPermit) -> Result<Self> {
+        use sha2::{Digest, Sha256};
+        if reservation.review_id.is_nil()
+            || reservation.request.sha256
+                != format!("{:x}", Sha256::digest(&reservation.request.bytes))
+            || reservation.request.material_sha256.len() != 64
+            || !reservation
+                .request
+                .material_sha256
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit())
+            || reservation.request.adapter_identity.is_empty()
+        {
+            return Err(tect_domain::Error::InputConflict);
+        }
+        Ok(Self {
+            reservation: reservation.clone(),
+            claimed: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    /// Read-only frozen metadata; this does not itself authorize transport.
+    pub fn reservation(&self) -> &AntiBloatSendPermit {
+        &self.reservation
+    }
+
+    /// Atomically claims the sole send. Providers call this before any I/O and
+    /// then validate their identity and the frozen body against this metadata.
+    pub fn claim(&self) -> Result<&AntiBloatSendPermit> {
+        self.claimed
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .map_err(|_| tect_domain::Error::InputConflict)?;
+        Ok(&self.reservation)
+    }
+}
+
 /// Provider supplied usage is evidence, never a budget estimate. Missing values
 /// exhaust the attempt and suppress its ranking.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,8 +160,9 @@ impl AntiBloatProviderObservation {
 
 /// A database adapter must bind every operation to the authorized actor and
 /// workspace. `begin_send` atomically rechecks the frozen source/plan revision,
-/// stores the exact prepared bytes and digest, and commits the one-use fence
-/// before returning a permit. A replay or uncertain send returns None.
+/// stores the exact prepared bytes and digest, and stages the one-use fence.
+/// The application must commit before minting transport authority; the returned
+/// reservation metadata alone cannot send. A replay or uncertain send returns None.
 #[async_trait]
 pub trait AntiBloatStore: Send {
     /// Must verify owner approval using a trusted key. The default denies send.
@@ -197,8 +254,9 @@ pub trait AntiBloatStore: Send {
     ) -> Result<AntiBloatApplyReceipt>;
 }
 
-/// Transport receives only the exact durably prepared request bytes. Implementations cannot
-/// obtain an attempt through the application path for disabled/skip/no-eligible.
+/// Transport receives only opaque started authority for the exact committed
+/// prepared request. Implementations must claim it before I/O. The application
+/// cannot mint an attempt for disabled/skip/no-eligible or replayed fences.
 #[async_trait]
 pub trait AntiBloatRankingProvider: Send + Sync {
     fn adapter_identity(&self) -> &'static str {
@@ -235,7 +293,10 @@ pub trait AntiBloatRankingProvider: Send + Sync {
     ) -> Result<AntiBloatUsage> {
         Ok(transport_usage.clone())
     }
-    async fn rank(&self, permit: &AntiBloatSendPermit) -> Result<AntiBloatProviderObservation>;
+    async fn rank(
+        &self,
+        permit: &AntiBloatStartedDispatchPermit,
+    ) -> Result<AntiBloatProviderObservation>;
 }
 
 #[derive(Debug, Default)]
@@ -243,7 +304,11 @@ pub struct DisabledAntiBloatRankingProvider;
 
 #[async_trait]
 impl AntiBloatRankingProvider for DisabledAntiBloatRankingProvider {
-    async fn rank(&self, _: &AntiBloatSendPermit) -> Result<AntiBloatProviderObservation> {
+    async fn rank(
+        &self,
+        permit: &AntiBloatStartedDispatchPermit,
+    ) -> Result<AntiBloatProviderObservation> {
+        permit.claim()?;
         Err(tect_domain::Error::Forbidden)
     }
 }

@@ -30,7 +30,11 @@ impl AntiBloatRankingProvider for WireProvider {
             .map(crate::AntiBloatRankingOutcome::Ranked)
             .map_err(|_| Error::InputConflict)
     }
-    async fn rank(&self, permit: &AntiBloatSendPermit) -> Result<AntiBloatProviderObservation> {
+    async fn rank(
+        &self,
+        started: &crate::AntiBloatStartedDispatchPermit,
+    ) -> Result<AntiBloatProviderObservation> {
+        let permit = started.claim()?;
         assert_eq!(permit.request.bytes, b"exact provider wire");
         Err(Error::Forbidden) // This test never performs transport.
     }
@@ -66,7 +70,12 @@ async fn provider_preparation_and_parse_are_fenced_by_durable_authorization() {
         .unwrap();
     assert_eq!(app.store.prepared.as_ref(), Some(&permit.request));
     assert_eq!(permit.request.bytes, b"exact provider wire");
-    assert_eq!(app.provider.rank(&permit).await, Err(Error::Forbidden));
+    assert_eq!(
+        rank_after_committed_fence(async { Ok(()) }, &app.provider, &permit)
+            .await
+            .unwrap(),
+        Err(Error::Forbidden)
+    );
     assert_eq!(
         permit.request.sha256,
         format!("{:x}", Sha256::digest(b"exact provider wire"))

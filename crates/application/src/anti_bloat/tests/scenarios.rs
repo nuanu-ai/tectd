@@ -76,7 +76,10 @@ async fn missing_or_overrun_usage_suppresses_ranked_advice_after_raw_seal() {
             .unwrap()
             .permit
             .unwrap();
-        let mut observation = app.provider.rank(&permit).await.unwrap();
+        let mut observation = rank_after_committed_fence(async { Ok(()) }, &app.provider, &permit)
+            .await
+            .unwrap()
+            .unwrap();
         observation.input_tokens = input_tokens;
         observation.output_tokens = output_tokens;
         observation.elapsed_monotonic_ms = elapsed;
@@ -126,7 +129,10 @@ async fn one_use_rank_and_provider_invention_is_denied() {
     assert_eq!(app.provider.calls.load(Ordering::SeqCst), 0);
     assert!(app.store.raw_response.is_none());
     let permit = attempt.permit.unwrap();
-    let raw = app.provider.rank(&permit).await.unwrap();
+    let raw = rank_after_committed_fence(async { Ok(()) }, &app.provider, &permit)
+        .await
+        .unwrap()
+        .unwrap();
     app.seal_response(&permit, &raw.raw).await.unwrap();
     assert!(!app.store.consume_budget(&permit, &raw).await.unwrap());
     assert_eq!(app.store.seals, 0);
@@ -172,7 +178,10 @@ async fn one_use_rank_and_provider_invention_is_denied() {
         .unwrap()
         .permit
         .unwrap();
-    let raw = invented.provider.rank(&permit).await.unwrap();
+    let raw = rank_after_committed_fence(async { Ok(()) }, &invented.provider, &permit)
+        .await
+        .unwrap()
+        .unwrap();
     invented.seal_response(&permit, &raw.raw).await.unwrap();
     assert!(!invented.store.consume_budget(&permit, &raw).await.unwrap());
     assert!(matches!(

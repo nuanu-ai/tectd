@@ -30,7 +30,11 @@ impl AntiBloatRankingProvider for LifecycleProvider {
         assert_eq!(raw, b"true HTTP raw body");
         Ok(self.outcome.clone())
     }
-    async fn rank(&self, _: &AntiBloatSendPermit) -> Result<AntiBloatProviderObservation> {
+    async fn rank(
+        &self,
+        started: &crate::AntiBloatStartedDispatchPermit,
+    ) -> Result<AntiBloatProviderObservation> {
+        started.claim()?;
         Err(Error::Forbidden)
     }
 }

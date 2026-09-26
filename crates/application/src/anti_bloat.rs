@@ -356,7 +356,8 @@ async fn rank_after_committed_fence<F: Future<Output = Result<()>>>(
         return Err(Error::InputConflict);
     }
     commit.await?;
-    Ok(provider.rank(permit).await)
+    let started = crate::AntiBloatStartedDispatchPermit::after_committed_fence(permit)?;
+    Ok(provider.rank(&started).await)
 }
 
 mod service;

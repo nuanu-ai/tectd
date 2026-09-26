@@ -446,7 +446,11 @@ struct CommitObservingProvider {
 
 #[async_trait]
 impl AntiBloatRankingProvider for CommitObservingProvider {
-    async fn rank(&self, _: &AntiBloatSendPermit) -> Result<AntiBloatProviderObservation> {
+    async fn rank(
+        &self,
+        started: &crate::AntiBloatStartedDispatchPermit,
+    ) -> Result<AntiBloatProviderObservation> {
+        started.claim()?;
         assert!(self.committed.load(Ordering::SeqCst));
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail {
@@ -519,7 +523,11 @@ async fn provider_observes_committed_fence_and_commit_failure_never_calls() {
 
 #[async_trait]
 impl AntiBloatRankingProvider for FakeProvider {
-    async fn rank(&self, permit: &AntiBloatSendPermit) -> Result<AntiBloatProviderObservation> {
+    async fn rank(
+        &self,
+        started: &crate::AntiBloatStartedDispatchPermit,
+    ) -> Result<AntiBloatProviderObservation> {
+        let permit = started.claim()?;
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.invent {
             Ok(AntiBloatProviderObservation {
@@ -576,3 +584,4 @@ mod contract;
 mod lifecycle;
 mod provider_seams;
 mod scenarios;
+mod started_dispatch;

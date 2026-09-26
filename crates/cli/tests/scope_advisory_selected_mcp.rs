@@ -15,9 +15,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 use support::{id, repository, route, route_error};
-use tect_application::{
-    AntiBloatRankingProvider, AntiBloatSendPermit, Sha256ScopeDigest, WorkspaceService,
-};
+use tect_application::{AntiBloatRankingProvider, Sha256ScopeDigest, WorkspaceService};
 use tect_application::{
     AuthoredScopeAlternative, AuthoredScopeSet, GuardedScopeAdviceRecord, ScopeAuthorityObserver,
 };
@@ -42,8 +40,9 @@ struct CommittedFakeProvider {
 impl AntiBloatRankingProvider for CommittedFakeProvider {
     async fn rank(
         &self,
-        permit: &AntiBloatSendPermit,
+        started: &tect_application::AntiBloatStartedDispatchPermit,
     ) -> tect_domain::Result<tect_application::AntiBloatProviderObservation> {
+        let permit = started.claim()?;
         let observed: (String, Vec<u8>, String, bool) = sqlx::query_as(
             "SELECT state,request_bytes,request_sha256,raw_response IS NOT NULL \
              FROM scope_anti_bloat_reviews WHERE review_id=$1",

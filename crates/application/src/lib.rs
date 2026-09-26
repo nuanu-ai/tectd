@@ -5,6 +5,7 @@ mod anti_bloat_ports;
 mod anti_bloat_verification;
 pub use advisory::{Sha256ScopeDigest, VerifySelectedSave};
 pub use anti_bloat::AntiBloatApplication;
+pub use anti_bloat_ports::AntiBloatStartedDispatchPermit;
 pub use anti_bloat_ports::{
     AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall, AntiBloatPreparedRequest,
     AntiBloatProviderObservation, AntiBloatRankingMaterial, AntiBloatRankingProvider,
