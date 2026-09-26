@@ -6,10 +6,7 @@ use crate::{
     ModelRouteSealedRankingEvidence, ModelRouteSendPermit, PreparedModelRouteRecommendation,
 };
 use std::future::Future;
-use tect_domain::{
-    Error, ModelRouteRankingWireOutcome, Result, model_route_wire_sha256,
-    parse_model_route_ranking_response,
-};
+use tect_domain::{Error, ModelRouteRankingWireOutcome, Result, model_route_wire_sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelRouteSendStart {
@@ -38,8 +35,33 @@ pub async fn prepare_model_route_send(
         store.record_no_call(prepared, invocation, reason).await?;
         return Ok(ModelRouteSendStart::NoCall(reason));
     }
-    let attempted = provider.prepare(prepared)?;
-    attempted.verify(prepared)?;
+    let attempted = match provider.prepare(prepared) {
+        Ok(value) => value,
+        Err(_) => {
+            store
+                .record_no_call(
+                    prepared,
+                    invocation,
+                    ModelRouteRunNoCall::ProviderUnavailable,
+                )
+                .await?;
+            return Ok(ModelRouteSendStart::NoCall(
+                ModelRouteRunNoCall::ProviderUnavailable,
+            ));
+        }
+    };
+    if attempted.verify(prepared).is_err() {
+        store
+            .record_no_call(
+                prepared,
+                invocation,
+                ModelRouteRunNoCall::ProviderUnavailable,
+            )
+            .await?;
+        return Ok(ModelRouteSendStart::NoCall(
+            ModelRouteRunNoCall::ProviderUnavailable,
+        ));
+    }
     if let Some(existing) = store
         .by_preparation(prepared.workspace_id, &prepared.request_key, invocation)
         .await?
@@ -95,7 +117,15 @@ pub async fn attempt_model_route_observed_after_commit<F: Future<Output = Result
     permit: ModelRouteSendPermit,
 ) -> Result<Result<ModelRouteProviderObservation>> {
     commit.await?;
-    Ok(provider.attempt_prepared_observed(attempted, permit).await)
+    let start = std::time::Instant::now();
+    let observed = provider
+        .attempt_prepared_observed(attempted, permit)
+        .await
+        .map(|mut observation| {
+            observation.elapsed_monotonic_ms = i64::try_from(start.elapsed().as_millis()).ok();
+            observation
+        });
+    Ok(observed)
 }
 
 /// The Future must commit the one-use start transaction. A failed commit
@@ -128,12 +158,39 @@ pub async fn finalize_model_route_sealed_response(
     attempted: &ModelRoutePreparedAttempt,
     permit: &ModelRouteSendPermit,
 ) -> Result<ModelRouteRankingWireOutcome> {
+    finalize_model_route_provider_response(
+        store,
+        &crate::DisabledModelRouteRankingProvider,
+        prepared,
+        attempted,
+        permit,
+    )
+    .await
+}
+
+pub async fn finalize_model_route_provider_response(
+    store: &mut dyn ModelRouteAttemptStore,
+    provider: &dyn ModelRouteRankingProvider,
+    prepared: &PreparedModelRouteRecommendation,
+    attempted: &ModelRoutePreparedAttempt,
+    permit: &ModelRouteSendPermit,
+) -> Result<ModelRouteRankingWireOutcome> {
     attempted.verify(prepared)?;
-    let raw = store
-        .sealed_response(permit)
+    let observation = store
+        .sealed_observation(permit)
         .await?
         .ok_or(Error::StaleContext)?;
-    let outcome = parse_model_route_ranking_response(&attempted.request, &raw)?;
+    if store.consumption_healthy(permit).await? != Some(true) {
+        return Err(Error::BudgetPolicyInvalid);
+    }
+    if observation
+        .http_status
+        .is_some_and(|s| !(200..300).contains(&s))
+    {
+        return Err(Error::InvalidArguments);
+    }
+    let outcome = provider.parse_sealed(attempted, &observation)?;
+    let raw = observation.raw;
     let evidence = ModelRouteSealedRankingEvidence {
         permit: permit.clone(),
         attempted: attempted.clone(),
@@ -141,8 +198,8 @@ pub async fn finalize_model_route_sealed_response(
         raw_response: raw,
         outcome: outcome.clone(),
     };
-    evidence.verify(prepared)?;
-    store.capture_sealed_outcome(&evidence).await?;
+    evidence.validate_material(prepared)?;
+    store.capture_provider_outcome(&evidence, provider).await?;
     Ok(outcome)
 }
 

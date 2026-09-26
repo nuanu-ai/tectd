@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use tect_domain::{
     AdvisoryBudgetPolicy, Error, ModelRouteRanking, ModelRouteRankingWireOutcome,
     ModelRouteRankingWireRequest, Result, model_route_ranking_from_wire, model_route_wire_sha256,
-    parse_model_route_ranking_response,
+    parse_model_route_ranking_response, validate_model_route_ranking_outcome,
 };
 use uuid::Uuid;
 
@@ -22,6 +22,7 @@ pub struct ModelRoutePreparedAttempt {
     pub request: ModelRouteRankingWireRequest,
     pub request_bytes: Vec<u8>,
     pub request_sha256: String,
+    pub adapter_identity: Option<String>,
 }
 
 impl ModelRoutePreparedAttempt {
@@ -32,6 +33,24 @@ impl ModelRoutePreparedAttempt {
             request,
             request_bytes,
             request_sha256,
+            adapter_identity: None,
+        })
+    }
+
+    pub fn native(
+        request: ModelRouteRankingWireRequest,
+        request_bytes: Vec<u8>,
+        adapter_identity: String,
+    ) -> Result<Self> {
+        request.validate()?;
+        if request_bytes.is_empty() || adapter_identity.is_empty() || adapter_identity.len() > 256 {
+            return Err(Error::InvalidArguments);
+        }
+        Ok(Self {
+            request,
+            request_sha256: model_route_wire_sha256(&request_bytes),
+            request_bytes,
+            adapter_identity: Some(adapter_identity),
         })
     }
 
@@ -47,7 +66,12 @@ impl ModelRoutePreparedAttempt {
             &self.request.binding.adviser_model,
         )?;
         if self.request != expected
-            || self.request_bytes != self.request.bytes()?
+            || (self.adapter_identity.is_none() && self.request_bytes != self.request.bytes()?)
+            || self
+                .adapter_identity
+                .as_ref()
+                .is_some_and(|id| id.is_empty() || id.len() > 256)
+            || self.request_bytes.is_empty()
             || self.request_sha256 != model_route_wire_sha256(&self.request_bytes)
         {
             return Err(Error::InputConflict);
@@ -70,9 +94,16 @@ pub struct ModelRouteSendPermit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRouteProviderObservation {
     pub raw: Vec<u8>,
+    pub http_status: Option<u16>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub elapsed_monotonic_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelRouteUsage {
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
 }
 
 /// The currently authenticated invocation, distinct from the historical
@@ -97,6 +128,17 @@ impl ModelRouteSealedRankingEvidence {
         &self,
         prepared: &PreparedModelRouteRecommendation,
     ) -> Result<Option<ModelRouteRanking>> {
+        if self.attempted.adapter_identity.is_some() {
+            return Err(Error::InputConflict);
+        }
+        self.validate_material(prepared)
+    }
+
+    /// Native raw derivation is checked by the matched codec at the store capture boundary.
+    pub fn validate_material(
+        &self,
+        prepared: &PreparedModelRouteRecommendation,
+    ) -> Result<Option<ModelRouteRanking>> {
         self.attempted.verify(prepared)?;
         if self.permit.attempt_id.is_nil()
             || self.permit.policy_id.is_nil()
@@ -106,11 +148,13 @@ impl ModelRouteSealedRankingEvidence {
             || self.permit.preparation_request_key != prepared.request_key
             || self.permit.request_sha256 != self.attempted.request_sha256
             || self.response_sha256 != model_route_wire_sha256(&self.raw_response)
-            || parse_model_route_ranking_response(&self.attempted.request, &self.raw_response)?
-                != self.outcome
+            || (self.attempted.adapter_identity.is_none()
+                && parse_model_route_ranking_response(&self.attempted.request, &self.raw_response)?
+                    != self.outcome)
         {
             return Err(Error::InputConflict);
         }
+        validate_model_route_ranking_outcome(&self.attempted.request, &self.outcome)?;
         Ok(model_route_ranking_from_wire(
             &self.attempted.request,
             &self.outcome,
@@ -121,6 +165,31 @@ impl ModelRouteSealedRankingEvidence {
 /// The default is disabled. A fake or trusted host adapter must be explicitly installed.
 #[async_trait]
 pub trait ModelRouteRankingProvider: Send + Sync {
+    /// Pure hooks run only on an authorized persisted seal.
+    fn sealed_usage(
+        &self,
+        _attempted: &ModelRoutePreparedAttempt,
+        observation: &ModelRouteProviderObservation,
+    ) -> Result<ModelRouteUsage> {
+        Ok(ModelRouteUsage {
+            input_tokens: observation.input_tokens,
+            output_tokens: observation.output_tokens,
+        })
+    }
+    fn parse_sealed(
+        &self,
+        attempted: &ModelRoutePreparedAttempt,
+        observation: &ModelRouteProviderObservation,
+    ) -> Result<ModelRouteRankingWireOutcome> {
+        if attempted.adapter_identity.is_some()
+            || observation
+                .http_status
+                .is_some_and(|s| !(200..300).contains(&s))
+        {
+            return Err(Error::InvalidArguments);
+        }
+        parse_model_route_ranking_response(&attempted.request, &observation.raw)
+    }
     fn available(&self) -> bool {
         true
     }
@@ -145,6 +214,7 @@ pub trait ModelRouteRankingProvider: Send + Sync {
         let elapsed_monotonic_ms = i64::try_from(start.elapsed().as_millis()).ok();
         Ok(ModelRouteProviderObservation {
             raw,
+            http_status: None,
             input_tokens: None,
             output_tokens: None,
             elapsed_monotonic_ms,
@@ -218,6 +288,33 @@ pub trait ModelRouteAttemptStore: Send {
         response_sha256: &str,
     ) -> Result<()>;
     async fn sealed_response(&mut self, permit: &ModelRouteSendPermit) -> Result<Option<Vec<u8>>>;
+    async fn seal_observation(
+        &mut self,
+        permit: &ModelRouteSendPermit,
+        observation: &ModelRouteProviderObservation,
+    ) -> Result<()> {
+        self.seal_raw_response(
+            permit,
+            &observation.raw,
+            &model_route_wire_sha256(&observation.raw),
+        )
+        .await
+    }
+    async fn sealed_observation(
+        &mut self,
+        permit: &ModelRouteSendPermit,
+    ) -> Result<Option<ModelRouteProviderObservation>> {
+        Ok(self
+            .sealed_response(permit)
+            .await?
+            .map(|raw| ModelRouteProviderObservation {
+                raw,
+                http_status: None,
+                input_tokens: None,
+                output_tokens: None,
+                elapsed_monotonic_ms: None,
+            }))
+    }
     /// Returns true for missing, unknown, or overrun usage. Exact replay is idempotent.
     async fn consume_budget(
         &mut self,
@@ -236,5 +333,15 @@ pub trait ModelRouteAttemptStore: Send {
         &mut self,
         evidence: &ModelRouteSealedRankingEvidence,
     ) -> Result<()>;
+    async fn capture_provider_outcome(
+        &mut self,
+        evidence: &ModelRouteSealedRankingEvidence,
+        _provider: &dyn ModelRouteRankingProvider,
+    ) -> Result<()> {
+        if evidence.attempted.adapter_identity.is_some() {
+            return Err(Error::InputConflict);
+        }
+        self.capture_sealed_outcome(evidence).await
+    }
     async fn mark_send_unknown(&mut self, permit: &ModelRouteSendPermit) -> Result<()>;
 }

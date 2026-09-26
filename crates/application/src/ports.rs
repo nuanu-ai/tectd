@@ -36,6 +36,14 @@ pub trait Store: Send + Sync {
     ) -> Result<bool> {
         Err(tect_domain::Error::Forbidden)
     }
+    async fn seal_committed_model_route_observation(
+        &self,
+        _tenant_id: Uuid,
+        _permit: &crate::ModelRouteSendPermit,
+        _observation: &crate::ModelRouteProviderObservation,
+    ) -> Result<()> {
+        Err(tect_domain::Error::Forbidden)
+    }
     async fn record_committed_model_route_failure(
         &self,
         _tenant_id: Uuid,

@@ -2,28 +2,16 @@ use super::WorkspaceService;
 use tect_domain::Result;
 
 impl WorkspaceService {
-    pub(crate) async fn seal_committed_model_route_response(
-        &self,
-        tenant_id: uuid::Uuid,
-        permit: &crate::ModelRouteSendPermit,
-        raw: &[u8],
-    ) -> Result<()> {
-        self.store
-            .seal_committed_model_route_response(tenant_id, permit, raw)
-            .await
-    }
-
-    pub(crate) async fn consume_committed_model_route_budget(
+    pub(crate) async fn seal_committed_model_route_observation(
         &self,
         tenant_id: uuid::Uuid,
         permit: &crate::ModelRouteSendPermit,
         observation: &crate::ModelRouteProviderObservation,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         self.store
-            .consume_committed_model_route_budget(tenant_id, permit, observation)
+            .seal_committed_model_route_observation(tenant_id, permit, observation)
             .await
     }
-
     pub(crate) async fn record_committed_model_route_failure(
         &self,
         tenant_id: uuid::Uuid,

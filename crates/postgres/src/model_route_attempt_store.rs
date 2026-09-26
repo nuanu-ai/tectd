@@ -17,6 +17,7 @@ use uuid::Uuid;
 use crate::{model_route_store::current_preparation, storage_error, store::PgUnitOfWork};
 mod budget;
 mod reads;
+mod response;
 use reads::row_permit;
 pub(crate) use reads::{audit_state, sealed_ranking};
 
@@ -65,7 +66,8 @@ async fn attempt_row(
     let tenant = uow.tenant_id()?;
     sqlx::query(
         "SELECT a.id,a.invoking_session_id,a.invoking_principal_id,a.state,a.no_call_reason,a.adviser_model, \
-         a.request_payload,a.request_sha256,a.response_payload,a.response_sha256,a.parsed_outcome, \
+         a.request_payload,a.typed_request_payload,a.adapter_identity,a.request_sha256,a.response_payload,a.response_sha256,a.parsed_outcome, \
+         a.response_http_status,a.response_original_input_tokens,a.response_original_output_tokens,a.response_original_elapsed_ms, \
          r.policy_id,r.policy_version,r.policy_digest,c.exhausted_after_response \
          FROM model_route_advisory_attempts a LEFT JOIN model_route_budget_reservations r \
          ON (r.tenant_id,r.workspace_id,r.attempt_id)=(a.tenant_id,a.workspace_id,a.id) \
@@ -112,8 +114,8 @@ async fn insert_attempt(
          (tenant_id,workspace_id,id,preparation_request_key,invoking_session_id, \
           invoking_principal_id,candidate_set_id,work_node_id,work_node_revision, \
           task_id,task_revision,work_digest,catalogue_digest,host_capability_evidence_ref, \
-          state,no_call_reason,adviser_model,request_payload,request_sha256) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)",
+          state,no_call_reason,adviser_model,request_payload,request_sha256,typed_request_payload,adapter_identity) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)",
     )
     .bind(tenant)
     .bind(prepared.workspace_id)
@@ -146,6 +148,8 @@ async fn insert_attempt(
     .bind(attempted.map(|a| a.request.binding.adviser_model.as_str()))
     .bind(attempted.map(|a| a.request_bytes.as_slice()))
     .bind(attempted.map(|a| a.request_sha256.as_str()))
+    .bind(attempted.map(|a| serde_json::to_value(&a.request)).transpose().map_err(storage_error)?)
+    .bind(attempted.and_then(|a| a.adapter_identity.as_deref()))
     .execute(&mut **uow.transaction()?)
     .await
     .map_err(write_error)?;
@@ -265,14 +269,7 @@ impl ModelRouteAttemptStore for PgUnitOfWork {
         if row.try_get::<String, _>("state").map_err(storage_error)? != "raw_sealed" {
             return Ok(None);
         }
-        let request_bytes: Vec<u8> = row.try_get("request_payload").map_err(storage_error)?;
-        let request: ModelRouteRankingWireRequest =
-            serde_json::from_slice(&request_bytes).map_err(|_| Error::InputConflict)?;
-        let attempted = ModelRoutePreparedAttempt {
-            request,
-            request_sha256: row.try_get("request_sha256").map_err(storage_error)?,
-            request_bytes,
-        };
+        let attempted = reads::row_attempted(&row)?;
         attempted.verify(&prepared)?;
         Ok(Some((
             attempted,
@@ -404,6 +401,21 @@ impl ModelRouteAttemptStore for PgUnitOfWork {
         Ok(raw)
     }
 
+    async fn seal_observation(
+        &mut self,
+        permit: &ModelRouteSendPermit,
+        observation: &ModelRouteProviderObservation,
+    ) -> Result<()> {
+        response::seal(self, permit, observation).await
+    }
+    async fn sealed_observation(
+        &mut self,
+        permit: &ModelRouteSendPermit,
+    ) -> Result<Option<ModelRouteProviderObservation>> {
+        let row = permit_row(self, permit).await?;
+        reads::observation_from_row(&row)
+    }
+
     async fn consume_budget(
         &mut self,
         permit: &ModelRouteSendPermit,
@@ -426,74 +438,15 @@ impl ModelRouteAttemptStore for PgUnitOfWork {
         &mut self,
         evidence: &ModelRouteSealedRankingEvidence,
     ) -> Result<()> {
-        if !self.is_read_write() {
-            return Err(Error::Forbidden);
-        }
-        let prepared = self
-            .by_request(
-                evidence.permit.workspace_id,
-                &evidence.permit.preparation_request_key,
-            )
-            .await?
-            .ok_or(Error::StaleContext)?;
-        current_preparation(self, &prepared).await?;
-        evidence.verify(&prepared)?;
-        let row = permit_row(self, &evidence.permit).await?;
-        if row
-            .try_get::<Option<Vec<u8>>, _>("request_payload")
-            .map_err(storage_error)?
-            != Some(evidence.attempted.request_bytes.clone())
-            || row
-                .try_get::<Option<Vec<u8>>, _>("response_payload")
-                .map_err(storage_error)?
-                != Some(evidence.raw_response.clone())
-        {
-            return Err(Error::InputConflict);
-        }
-        let outcome = serde_json::to_value(&evidence.outcome).map_err(storage_error)?;
-        let state: String = row.try_get("state").map_err(storage_error)?;
-        if state == "parsed" {
-            return if row
-                .try_get::<Option<Value>, _>("parsed_outcome")
-                .map_err(storage_error)?
-                == Some(outcome)
-            {
-                Ok(())
-            } else {
-                Err(Error::InputConflict)
-            };
-        }
-        if state != "raw_sealed" {
-            return Err(Error::InputConflict);
-        }
-        let tenant = self.tenant_id()?;
-        let healthy: Option<bool> = sqlx::query_scalar(
-            "SELECT NOT unknown_usage AND NOT exhausted_after_response \
-             FROM model_route_budget_consumptions WHERE tenant_id=$1 AND workspace_id=$2 AND attempt_id=$3",
-        ).bind(tenant).bind(evidence.permit.workspace_id).bind(evidence.permit.attempt_id)
-        .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?;
-        if healthy != Some(true) {
-            return Err(Error::BudgetPolicyInvalid);
-        }
-        let affected = sqlx::query(
-            "UPDATE model_route_advisory_attempts SET state='parsed',parsed_outcome=$4, \
-             parsed_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 \
-             AND id=$3 AND state='raw_sealed'",
-        )
-        .bind(tenant)
-        .bind(evidence.permit.workspace_id)
-        .bind(evidence.permit.attempt_id)
-        .bind(outcome)
-        .execute(&mut **self.transaction()?)
-        .await
-        .map_err(write_error)?
-        .rows_affected();
-        if affected != 1 {
-            return Err(Error::InputConflict);
-        }
-        Ok(())
+        response::capture(self, evidence, None).await
     }
-
+    async fn capture_provider_outcome(
+        &mut self,
+        evidence: &ModelRouteSealedRankingEvidence,
+        provider: &dyn tect_application::ModelRouteRankingProvider,
+    ) -> Result<()> {
+        response::capture(self, evidence, Some(provider)).await
+    }
     async fn mark_send_unknown(&mut self, permit: &ModelRouteSendPermit) -> Result<()> {
         budget::mark_send_unknown(self, permit).await
     }

@@ -23,6 +23,8 @@ use tect_domain::{
     ModelRouteHostCapabilities, ModelRouteRankingWireRequest,
 };
 
+mod native_preflight;
+mod native_seal;
 mod negative_cases;
 mod service_test;
 
@@ -119,6 +121,19 @@ impl ModelRouteAttemptStore for TrustedTestRouteStore<'_> {
         observation: &ModelRouteProviderObservation,
     ) -> tect_domain::Result<bool> {
         self.inner.consume_budget(permit, observation).await
+    }
+    async fn seal_observation(
+        &mut self,
+        permit: &ModelRouteSendPermit,
+        observation: &ModelRouteProviderObservation,
+    ) -> tect_domain::Result<()> {
+        self.inner.seal_observation(permit, observation).await
+    }
+    async fn sealed_observation(
+        &mut self,
+        permit: &ModelRouteSendPermit,
+    ) -> tect_domain::Result<Option<ModelRouteProviderObservation>> {
+        self.inner.sealed_observation(permit).await
     }
     async fn consumption_healthy(
         &mut self,
@@ -273,6 +288,7 @@ impl ModelRouteRankingProvider for FakeJevRanker {
     ) -> tect_domain::Result<ModelRouteProviderObservation> {
         Ok(ModelRouteProviderObservation {
             raw: self.attempt_prepared(attempted, permit).await?,
+            http_status: None,
             input_tokens: Some(4),
             output_tokens: Some(3),
             elapsed_monotonic_ms: Some(1),
@@ -491,13 +507,13 @@ async fn current_selected_work_fake_jev_rank_has_sealed_pg_audit_and_disposition
     let mut raw_writer = store.begin(TransactionMode::ReadWrite).await.unwrap();
     raw_writer.authenticate(&created.owner.auth).await.unwrap();
     raw_writer.set_tenant(created.tenant).await.unwrap();
-    let response_sha = seal_model_route_raw_response(
-        raw_writer.model_route_attempt_store().unwrap(),
-        &permit,
-        &raw,
-    )
-    .await
-    .unwrap();
+    let response_sha = tect_domain::model_route_wire_sha256(&raw);
+    raw_writer
+        .model_route_attempt_store()
+        .unwrap()
+        .seal_observation(&permit, &observation)
+        .await
+        .unwrap();
     raw_writer.commit().await.unwrap();
     let mut consumer = store.begin(TransactionMode::ReadWrite).await.unwrap();
     consumer.authenticate(&created.owner.auth).await.unwrap();
@@ -812,13 +828,11 @@ async fn model_route_unknown_and_overrun_usage_have_no_visible_advice() {
         let mut seal = store.begin(TransactionMode::ReadWrite).await.unwrap();
         seal.authenticate(&created.owner.auth).await.unwrap();
         seal.set_tenant(created.tenant).await.unwrap();
-        seal_model_route_raw_response(
-            seal.model_route_attempt_store().unwrap(),
-            &permit,
-            &observation.raw,
-        )
-        .await
-        .unwrap();
+        seal.model_route_attempt_store()
+            .unwrap()
+            .seal_observation(&permit, &observation)
+            .await
+            .unwrap();
         seal.commit().await.unwrap();
         let mut consume = store.begin(TransactionMode::ReadWrite).await.unwrap();
         consume.authenticate(&created.owner.auth).await.unwrap();

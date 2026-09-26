@@ -276,7 +276,7 @@ impl ModelRouteDecisionStore for PgUnitOfWork {
                     .sealed_provider_ranking(stored.workspace_id, &stored.request_key)
                     .await?
                     .ok_or(Error::Forbidden)?;
-                if proof.verify(&stored)? != Some(ranking.clone()) {
+                if proof.validate_material(&stored)? != Some(ranking.clone()) {
                     return Err(Error::InputConflict);
                 }
                 let eligible = stored.eligible.as_ref().ok_or(Error::InputConflict)?;
@@ -294,7 +294,7 @@ impl ModelRouteDecisionStore for PgUnitOfWork {
                 {
                     None => ModelRouteAbstainReason::Explicit,
                     Some(proof) => {
-                        if proof.verify(&stored)?.is_some() {
+                        if proof.validate_material(&stored)?.is_some() {
                             return Err(Error::InputConflict);
                         }
                         match proof.outcome {

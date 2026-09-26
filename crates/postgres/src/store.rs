@@ -64,6 +64,32 @@ impl PgUnitOfWork {
 
 #[async_trait]
 impl Store for PgStore {
+    async fn seal_committed_model_route_observation(
+        &self,
+        tenant_id: Uuid,
+        permit: &tect_application::ModelRouteSendPermit,
+        observation: &tect_application::ModelRouteProviderObservation,
+    ) -> Result<()> {
+        if tenant_id.is_nil() || permit.attempt_id.is_nil() || permit.workspace_id.is_nil() {
+            return Err(Error::InputConflict);
+        }
+        let mut transaction = self.pool.begin().await.map_err(storage_error)?;
+        sqlx::query("SELECT pg_catalog.set_config('tect.tenant_id', $1, true)")
+            .bind(tenant_id.to_string())
+            .execute(&mut *transaction)
+            .await
+            .map_err(storage_error)?;
+        let mut seal = PgUnitOfWork {
+            transaction: Some(transaction),
+            mode: TransactionMode::ReadWrite,
+            identity: None,
+            tenant_id: Some(tenant_id),
+            budget_owner_keys: self.budget_owner_keys.clone(),
+        };
+        tect_application::ModelRouteAttemptStore::seal_observation(&mut seal, permit, observation)
+            .await?;
+        Box::new(seal).commit().await
+    }
     async fn consume_committed_model_route_budget(
         &self,
         tenant_id: Uuid,

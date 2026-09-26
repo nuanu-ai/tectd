@@ -54,7 +54,7 @@ impl DecideModelRouteRecommendation {
                         .sealed_provider_ranking(self.workspace_id, &self.preparation_request_key)
                         .await?
                         .ok_or(Error::Forbidden)?;
-                    if evidence.verify(&prepared)? != Some(ranking.clone()) {
+                    if evidence.validate_material(&prepared)? != Some(ranking.clone()) {
                         return Err(Error::InputConflict);
                     }
                     match recommended {
@@ -71,7 +71,7 @@ impl DecideModelRouteRecommendation {
                     {
                         None => ModelRouteAbstainReason::Explicit,
                         Some(evidence) => {
-                            if evidence.verify(&prepared)?.is_some() {
+                            if evidence.validate_material(&prepared)?.is_some() {
                                 return Err(Error::InputConflict);
                             }
                             match evidence.outcome {

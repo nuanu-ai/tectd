@@ -1,7 +1,7 @@
 use super::*;
 use tect_application::{DisabledModelRouteRankingProvider, PreparedModelRouteRecommendation};
 
-async fn prepare_case(
+pub(super) async fn prepare_case(
     store: &PgStore,
     runtime_pool: &PgPool,
     created: &super::super::positive::Fixture,

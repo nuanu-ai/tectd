@@ -7,7 +7,7 @@ use crate::{
     DispositionModelRouteRecommendation, ModelRouteDecisionInput, ModelRouteDispositionAction,
     ModelRouteInvocation, ModelRouteSendStart, PrepareModelRouteRecommendation,
     PreparedModelRouteRecommendation, TransactionMode, WorkspaceService,
-    attempt_model_route_observed_after_commit, finalize_model_route_sealed_response,
+    attempt_model_route_observed_after_commit, finalize_model_route_provider_response,
     prepare_model_route_send,
 };
 
@@ -180,58 +180,8 @@ impl WorkspaceService {
                                 .await?
                         }
                         Some(crate::ModelRouteAttemptState::RawSealed) => {
-                            let (mut recovery, _) =
-                                self.authorized(context, TransactionMode::ReadWrite).await?;
-                            let recovered = recovery
-                                .model_route_attempt_store()
-                                .ok_or(Error::Forbidden)?
-                                .recover_raw_sealed(
-                                    workspace.id,
-                                    preparation_request_key,
-                                    ModelRouteInvocation {
-                                        session_id: session.id,
-                                    },
-                                )
+                            self.continue_model_route_sealed(context, preparation_request_key)
                                 .await?;
-                            if let Some((attempted, permit)) = recovered {
-                                let store = recovery
-                                    .model_route_attempt_store()
-                                    .ok_or(Error::Forbidden)?;
-                                let healthy = match store.consumption_healthy(&permit).await? {
-                                    Some(value) => value,
-                                    None => {
-                                        let raw = store
-                                            .sealed_response(&permit)
-                                            .await?
-                                            .ok_or(Error::StaleContext)?;
-                                        store
-                                            .consume_budget(
-                                                &permit,
-                                                &crate::ModelRouteProviderObservation {
-                                                    raw,
-                                                    input_tokens: None,
-                                                    output_tokens: None,
-                                                    elapsed_monotonic_ms: None,
-                                                },
-                                            )
-                                            .await?;
-                                        false
-                                    }
-                                };
-                                if healthy
-                                    && finalize_model_route_sealed_response(
-                                        store, &prepared, &attempted, &permit,
-                                    )
-                                    .await
-                                    .is_ok()
-                                {
-                                    recovery.commit().await?;
-                                    self.finish_from_sealed(context, preparation_request_key)
-                                        .await?;
-                                } else {
-                                    recovery.commit().await?;
-                                }
-                            }
                         }
                         _ => {}
                     }
@@ -256,51 +206,107 @@ impl WorkspaceService {
                 // The provider may return after the invoking session is
                 // revoked. Preserve its raw response under the committed,
                 // exact one-use permit before attempting any new user auth.
-                self.seal_committed_model_route_response(
+                self.seal_committed_model_route_observation(
                     identity.tenant_id,
                     &permit,
-                    &observation.raw,
+                    &observation,
                 )
                 .await?;
-                let exhausted = self
-                    .consume_committed_model_route_budget(identity.tenant_id, &permit, &observation)
+                self.continue_model_route_sealed(context, preparation_request_key)
                     .await?;
-                if exhausted {
-                    return self.get_model_route(context, preparation_request_key).await;
-                }
-                let (mut parse, parse_identity) =
-                    self.authorized(context, TransactionMode::ReadWrite).await?;
-                parse
-                    .lock_native_session(parse_identity.host_id, &context.native_session_id)
-                    .await?;
-                let parse_session = parse
-                    .session(parse_identity.host_id, &context.native_session_id)
-                    .await?
-                    .ok_or(Error::WorkspaceNotOpen)?;
-                let parse_workspace =
-                    Self::validate_binding(&mut *parse, context, &parse_identity, &parse_session)
-                        .await?;
-                if parse_workspace.id != permit.workspace_id {
-                    return Err(Error::StaleContext);
-                }
-                let parsed = finalize_model_route_sealed_response(
-                    parse.model_route_attempt_store().ok_or(Error::Forbidden)?,
-                    &prepared,
-                    &attempted,
-                    &permit,
-                )
-                .await;
-                match parsed {
-                    Ok(_) => {
-                        parse.commit().await?;
-                        self.finish_from_sealed(context, preparation_request_key)
-                            .await?;
-                    }
-                    Err(_) => return self.get_model_route(context, preparation_request_key).await,
-                }
             }
         }
         self.get_model_route(context, preparation_request_key).await
+    }
+
+    async fn continue_model_route_sealed(&self, context: &RequestContext, key: &str) -> Result<()> {
+        let (mut tx, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
+        tx.lock_native_session(identity.host_id, &context.native_session_id)
+            .await?;
+        let session = tx
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
+        let prepared = tx
+            .model_route_recommendation_store()
+            .ok_or(Error::Forbidden)?
+            .by_request(workspace.id, key)
+            .await?
+            .ok_or(Error::NotFound)?;
+        let store = tx.model_route_attempt_store().ok_or(Error::Forbidden)?;
+        let (attempted, permit) = store
+            .recover_raw_sealed(
+                workspace.id,
+                key,
+                ModelRouteInvocation {
+                    session_id: session.id,
+                },
+            )
+            .await?
+            .ok_or(Error::StaleContext)?;
+        let mut observation = store
+            .sealed_observation(&permit)
+            .await?
+            .ok_or(Error::StaleContext)?;
+        let usage = self
+            .model_route_ranking_provider
+            .sealed_usage(&attempted, &observation);
+        let invalid_usage = usage.is_err();
+        let usage = usage.unwrap_or(crate::ModelRouteUsage {
+            input_tokens: None,
+            output_tokens: None,
+        });
+        observation.input_tokens = usage.input_tokens;
+        observation.output_tokens = usage.output_tokens;
+        let exhausted = store.consume_budget(&permit, &observation).await?;
+        if exhausted {
+            tx.commit().await?;
+            if observation
+                .http_status
+                .is_some_and(|s| !(200..300).contains(&s))
+            {
+                return Err(Error::InvalidArguments);
+            }
+            return Ok(());
+        }
+        if invalid_usage {
+            tx.commit().await?;
+            return Err(Error::InvalidArguments);
+        }
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| Error::BudgetPolicyInvalid)?
+                .as_millis(),
+        )
+        .map_err(|_| Error::BudgetPolicyInvalid)?;
+        let policy = store.authorized_budget_policy(workspace.id, now).await;
+        let valid = policy
+            .as_ref()
+            .ok()
+            .and_then(|p| p.as_ref())
+            .is_some_and(|p| {
+                p.is_effective_at(now)
+                    && p.id() == permit.policy_id
+                    && p.version() == permit.policy_version
+                    && p.digest() == permit.policy_digest
+            });
+        if !valid {
+            tx.commit().await?;
+            return Err(Error::BudgetPolicyInvalid);
+        }
+        let outcome = finalize_model_route_provider_response(
+            store,
+            &*self.model_route_ranking_provider,
+            &prepared,
+            &attempted,
+            &permit,
+        )
+        .await;
+        tx.commit().await?;
+        outcome?;
+        self.finish_from_sealed(context, key).await
     }
 
     async fn finish_from_sealed(&self, context: &RequestContext, key: &str) -> Result<()> {
@@ -324,7 +330,7 @@ impl WorkspaceService {
             .by_request(workspace.id, key)
             .await?
             .ok_or(Error::NotFound)?;
-        let input = match saved.verify(&prepared)? {
+        let input = match saved.validate_material(&prepared)? {
             Some(ranking) => ModelRouteDecisionInput::Ranking(ranking),
             None => ModelRouteDecisionInput::Abstain,
         };

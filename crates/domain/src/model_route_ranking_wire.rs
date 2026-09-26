@@ -204,7 +204,17 @@ pub fn parse_model_route_ranking_response(
     {
         return Err(Error::InputConflict);
     }
-    if let ModelRouteRankingWireOutcome::Ranked { route_ids } = &response.outcome {
+    validate_model_route_ranking_outcome(request, &response.outcome)?;
+    Ok(response.outcome)
+}
+
+/// Validate a trusted native codec's typed result without rewriting its raw seal.
+pub fn validate_model_route_ranking_outcome(
+    request: &ModelRouteRankingWireRequest,
+    outcome: &ModelRouteRankingWireOutcome,
+) -> Result<()> {
+    request.validate()?;
+    if let ModelRouteRankingWireOutcome::Ranked { route_ids } = outcome {
         let expected = &request.binding.eligible_route_ids;
         let actual: BTreeSet<_> = route_ids.iter().collect();
         if route_ids.len() != expected.len()
@@ -214,7 +224,7 @@ pub fn parse_model_route_ranking_response(
             return Err(Error::InvalidArguments);
         }
     }
-    Ok(response.outcome)
+    Ok(())
 }
 
 pub fn model_route_ranking_from_wire(

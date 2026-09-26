@@ -191,6 +191,12 @@ pub(super) async fn consume_budget(
     if state != "raw_sealed" && state != "parsed" {
         return Err(Error::InputConflict);
     }
+    let original = reads::observation_from_row(&row)?.ok_or(Error::StaleContext)?;
+    if original.http_status != observation.http_status
+        || original.elapsed_monotonic_ms != observation.elapsed_monotonic_ms
+    {
+        return Err(Error::InputConflict);
+    }
     let response_digest = model_route_wire_sha256(&observation.raw);
     if row
         .try_get::<Option<Vec<u8>>, _>("response_payload")
@@ -314,6 +320,7 @@ mod tests {
     fn immutable_replay_result_is_reused_and_mismatch_is_rejected() {
         let observation = ModelRouteProviderObservation {
             raw: vec![],
+            http_status: None,
             input_tokens: Some(3),
             output_tokens: Some(5),
             elapsed_monotonic_ms: Some(7),
