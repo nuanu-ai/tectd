@@ -14,6 +14,24 @@ type ProviderObservationRow = (
     Option<serde_json::Value>,
 );
 
+// Pipeline source_revision is the snapshot revision, not the Work revision.
+// Read only its immutable captured context; current source never gates accounting.
+async fn receipt_opportunity(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    id: Uuid,
+    lock: bool,
+) -> Result<AdvisoryOpportunity> {
+    let mut opportunity = opportunity_by_id(tx, tenant, workspace, id, lock).await?;
+    if opportunity.capability == AdvisoryCapability::PipelineRecommendation {
+        let revision: i64 = sqlx::query_scalar("SELECT work_node_revision FROM pipeline_advice_contexts WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3")
+            .bind(tenant).bind(workspace).bind(id).fetch_one(&mut **tx).await.map_err(storage_error)?;
+        opportunity.work_revision = Some(revision);
+    }
+    Ok(opportunity)
+}
+
 async fn read_provider_observation(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -59,9 +77,12 @@ async fn load_provider_receipt_for_actor(
     actor: Uuid,
     opportunity_id: Uuid,
 ) -> Result<Option<StoredAdvisoryProviderReceipt>> {
-    let opportunity = opportunity_by_id(tx, tenant, workspace, opportunity_id, false).await?;
+    let opportunity = receipt_opportunity(tx, tenant, workspace, opportunity_id, false).await?;
     if opportunity.authorized_actor_id != actor
-        || opportunity.capability != AdvisoryCapability::ScopeDecomposition
+        || !matches!(
+            opportunity.capability,
+            AdvisoryCapability::ScopeDecomposition | AdvisoryCapability::PipelineRecommendation
+        )
     {
         return Err(Error::Forbidden);
     }
@@ -100,7 +121,7 @@ pub(crate) async fn provider_receipt_for_continuation(
     let workspace = continuation.workspace_id();
     let row = dispatch_by_id(tx, tenant, workspace, continuation.dispatch_id(), true).await?;
     let opportunity =
-        opportunity_by_id(tx, tenant, workspace, continuation.opportunity_id(), true).await?;
+        receipt_opportunity(tx, tenant, workspace, continuation.opportunity_id(), true).await?;
     let request_sha = format!("{:x}", Sha256::digest(&row.request_payload));
     let config_sha = format!(
         "{:x}",
@@ -227,10 +248,6 @@ pub(crate) async fn seal_provider_observation_usage(
     usage: AdvisoryProviderReceiptUsage,
 ) -> Result<()> {
     let saved = provider_receipt_for_continuation(tx, continuation).await?;
-    // Pipeline's seal guard awaits its own vertical integration.
-    if saved.opportunity.capability == AdvisoryCapability::PipelineRecommendation {
-        return Err(Error::TransportUnavailable);
-    }
     let observation = saved.observation.ok_or(Error::InputConflict)?;
     let mut seal = provider_usage_seal(
         continuation.dispatch_id(),
@@ -239,7 +256,10 @@ pub(crate) async fn seal_provider_observation_usage(
         saved.original_elapsed_ms,
         observation.response_complete,
     );
-    if saved.opportunity.capability == AdvisoryCapability::ScopeDecomposition {
+    if matches!(
+        saved.opportunity.capability,
+        AdvisoryCapability::ScopeDecomposition | AdvisoryCapability::PipelineRecommendation
+    ) {
         apply_scope_transport_context(&mut seal, observation.original_transport_context.as_ref())?;
     }
     seal_dispatch(

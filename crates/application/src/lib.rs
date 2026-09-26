@@ -144,8 +144,9 @@ pub use pipeline_recommendation_dispatch_ports::{
     PipelineRecommendationDispatchStore, StoredPipelineRecommendationDispatch,
 };
 pub use pipeline_recommendation_ports::{
-    FixedPipelineCompatibilityPolicy, PipelineCompatibilityPolicyProvider,
-    PipelineDispositionBasis, PipelineRecommendationBasis, PipelineRecommendationContext,
+    FixedPipelineCompatibilityPolicy, PIPELINE_ADVICE_INTERPRETATION_VERSION,
+    PipelineAdviceInterpretation, PipelineCompatibilityPolicyProvider, PipelineDispositionBasis,
+    PipelineRecommendationBasis, PipelineRecommendationContext,
     PipelineRecommendationDefinitionProvider, PipelineRecommendationStore,
     PreparedPipelineRecommendation, UnavailablePipelineCompatibilityPolicy,
     UnavailablePipelineRecommendationDefinitions,

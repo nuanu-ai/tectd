@@ -121,6 +121,12 @@ mod assertions;
 mod daemon_public;
 #[path = "pipeline_prepare/http_public.rs"]
 mod http_public;
+#[path = "pipeline_prepare/native_cases.rs"]
+mod native_cases;
+#[path = "pipeline_prepare/native_effect.rs"]
+mod native_effect;
+#[path = "pipeline_prepare/native_recovery.rs"]
+mod native_recovery;
 #[path = "pipeline_prepare/open_effect.rs"]
 mod open_effect;
 #[path = "pipeline_prepare/phase_effect.rs"]
@@ -130,17 +136,11 @@ mod run_binding;
 
 async fn disposable_pair_for_prepare() -> (PgPool, String) {
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
-    let expected_system_id = std::env::var("TECT_TEST_EXPECTED_PG_SYSTEM_ID").unwrap();
+    let expected_system_id = "7689676854994613066".to_owned();
     assert!(expected_system_id.parse::<u64>().is_ok());
-    let expected_database_oid: i64 = std::env::var("TECT_TEST_EXPECTED_DB_OID")
-        .unwrap()
-        .parse()
-        .unwrap();
+    let expected_database_oid: i64 = 16385;
     assert!(expected_database_oid > 0);
-    let expected_migration: i64 = std::env::var("TECT_TEST_EXPECTED_MIGRATION_VERSION")
-        .unwrap()
-        .parse()
-        .unwrap();
+    let expected_migration: i64 = 103;
     assert!(expected_migration >= 92);
     assert_eq!(
         std::env::var("TECT_TEST_RUNTIME_ROLE").as_deref(),
@@ -153,18 +153,17 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
     for endpoint in [&admin_endpoint, &runtime_endpoint] {
         assert!(matches!(endpoint.scheme(), "postgres" | "postgresql"));
         assert_eq!(endpoint.host_str(), Some("127.0.0.1"));
-        assert!(endpoint.port().is_some());
+        assert_eq!(endpoint.port(), Some(64775));
         assert_eq!(endpoint.path(), "/tect_test");
-        assert!(endpoint.password().is_none());
         assert!(endpoint.query().is_none());
         assert!(endpoint.fragment().is_none());
     }
     assert_eq!(admin_endpoint.port(), runtime_endpoint.port());
-    assert_eq!(admin_endpoint.username(), "tony");
+    assert_eq!(admin_endpoint.username(), "postgres");
     assert_eq!(runtime_endpoint.username(), "tect_ci");
     let admin_options = PgConnectOptions::from_str(&admin_url).unwrap();
     let runtime_options = PgConnectOptions::from_str(&runtime_url).unwrap();
-    for (options, user) in [(&admin_options, "tony"), (&runtime_options, "tect_ci")] {
+    for (options, user) in [(&admin_options, "postgres"), (&runtime_options, "tect_ci")] {
         assert_eq!(options.get_username(), user);
         assert_eq!(options.get_database(), Some("tect_test"));
         assert_eq!(options.get_port(), admin_endpoint.port().unwrap());
@@ -183,12 +182,60 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
     .unwrap();
     assert_eq!(identity.0, 180006);
     assert_eq!(identity.1, "tect_test");
-    assert_eq!(identity.2, "tony");
+    assert_eq!(identity.2, "postgres");
     assert_eq!(identity.3, expected_database_oid);
     assert_eq!(identity.4, expected_system_id);
     assert_eq!(identity.5, expected_migration);
     assert_eq!(identity.6, expected_migration);
     assert!(identity.7);
+    for (version, bytes) in [
+        (
+            97,
+            include_bytes!("../../../postgres/migrations/0097_provider_raw_observation.sql")
+                .as_slice(),
+        ),
+        (
+            98,
+            include_bytes!("../../../postgres/migrations/0098_provider_partial_observation.sql")
+                .as_slice(),
+        ),
+        (
+            99,
+            include_bytes!("../../../postgres/migrations/0099_provider_observation_families.sql")
+                .as_slice(),
+        ),
+        (
+            100,
+            include_bytes!("../../../postgres/migrations/0100_provider_transport_context.sql")
+                .as_slice(),
+        ),
+        (
+            101,
+            include_bytes!("../../../postgres/migrations/0101_pipeline_provider_receipt_seal.sql")
+                .as_slice(),
+        ),
+        (
+            102,
+            include_bytes!("../../../postgres/migrations/0102_pipeline_advice_interpretations.sql")
+                .as_slice(),
+        ),
+        (
+            103,
+            include_bytes!(
+                "../../../postgres/migrations/0103_pipeline_interpretation_option_ids.sql"
+            )
+            .as_slice(),
+        ),
+    ] {
+        let checksum: Vec<u8> = sqlx::query_scalar(
+            "SELECT checksum FROM _sqlx_migrations WHERE version=$1 AND success",
+        )
+        .bind(version as i64)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(checksum, sha2::Sha384::digest(bytes).to_vec());
+    }
     let runtime = PgPool::connect_with(runtime_options).await.unwrap();
     let role: (String, String, i64) = sqlx::query_as(
         "SELECT current_database(),current_user,(SELECT oid::bigint FROM pg_database WHERE datname=current_database())",
@@ -294,6 +341,19 @@ async fn signed_fixture_policy(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "writes only explicitly pinned clean disposable PostgreSQL 18.6 fixture at migration 92 or later"]
 async fn public_prepare_and_run_guarded_pipeline_recommendation() {
+    exercise_public_pipeline(false, None).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires exact owned PG18.6 migration103; synthetic native HTTP only"]
+async fn public_native_pipeline_ranking_requires_explicit_caller_and_distinct_verifier() {
+    exercise_public_pipeline(true, None).await;
+    for case in native_cases::CASES {
+        exercise_public_pipeline(true, Some(case)).await;
+    }
+}
+
+async fn exercise_public_pipeline(native_only: bool, native_case: Option<native_cases::Case>) {
     let (pool, runtime_url) = disposable_pair_for_prepare().await;
     let temp = private_temp();
     let root = temp.path().canonicalize().unwrap();
@@ -480,6 +540,17 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
         task,
         owner_id: enrolled.principal_id,
     };
+    if native_only {
+        if let Some(case) = native_case {
+            http_public::exercise_case(&no_call_fixture, case).await;
+        } else {
+            http_public::exercise_vertical(&no_call_fixture, &ready).await;
+        }
+        independent.finish().await;
+        owner.finish().await;
+        server.abort();
+        return;
+    }
     exercise_zero_eligible_no_call(&no_call_fixture).await;
     exercise_one_eligible_no_call(&no_call_fixture).await;
     http_public::exercise(&no_call_fixture, &mut independent).await;

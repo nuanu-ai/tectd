@@ -11,6 +11,23 @@ use tokio::{
 use url::Url;
 
 pub(super) async fn exercise(fixture: &NoCallFixture<'_>, independent: &mut Mcp) {
+    exercise_inner(fixture, Some(independent), None, None).await;
+}
+
+pub(super) async fn exercise_vertical(fixture: &NoCallFixture<'_>, ready: &Value) {
+    exercise_inner(fixture, None, Some(ready), None).await;
+}
+
+pub(super) async fn exercise_case(fixture: &NoCallFixture<'_>, case: super::native_cases::Case) {
+    exercise_inner(fixture, None, None, Some(case)).await;
+}
+
+async fn exercise_inner(
+    fixture: &NoCallFixture<'_>,
+    independent: Option<&mut Mcp>,
+    ready: Option<&Value>,
+    case: Option<super::native_cases::Case>,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = Url::parse(&format!(
         "http://{}/v1/systemone",
@@ -34,14 +51,21 @@ pub(super) async fn exercise(fixture: &NoCallFixture<'_>, independent: &mut Mcp)
         "fixture-secret".into(),
     )
     .unwrap();
+    let store = PgStore::connect(fixture.runtime_url, 4)
+        .await
+        .unwrap()
+        .with_budget_owner_keys(fixture.budget_owner_keys.clone());
+    let store: Arc<dyn Store> = if ready.is_some() {
+        Arc::new(super::native_recovery::InterruptAfterRaw {
+            inner: store,
+            pending: AtomicBool::new(true),
+        })
+    } else {
+        Arc::new(store)
+    };
     let service = Arc::new(
         WorkspaceService::new(
-            Arc::new(
-                PgStore::connect(fixture.runtime_url, 4)
-                    .await
-                    .unwrap()
-                    .with_budget_owner_keys(fixture.budget_owner_keys.clone()),
-            ),
+            store,
             Arc::new(tect_host::GitSourceInspector),
             Arc::new(tect_host::LocalSetupFiles),
         )
@@ -56,10 +80,11 @@ pub(super) async fn exercise(fixture: &NoCallFixture<'_>, independent: &mut Mcp)
     let unix = UnixListener::bind(&socket).unwrap();
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
     let server = tokio::spawn(tect_host::serve(unix, service));
+    let caller_native = Uuid::new_v4().to_string();
     let mut owner = Mcp::start(
         &socket,
         fixture.owner_config,
-        &Uuid::new_v4().to_string(),
+        &caller_native,
         fixture.workspace_key,
     )
     .await;
@@ -76,6 +101,13 @@ pub(super) async fn exercise(fixture: &NoCallFixture<'_>, independent: &mut Mcp)
     )
     .await;
 
+    if let Some(case) = case {
+        let listener = super::native_cases::exercise(fixture, &socket, listener, case).await;
+        assert_no_http(&listener).await;
+        owner.finish().await;
+        server.abort();
+        return;
+    }
     let revision: i64 = sqlx::query_scalar(
         "SELECT revision FROM slice_candidate_sets WHERE workspace_id=$1 AND id=$2",
     )
@@ -113,16 +145,18 @@ pub(super) async fn exercise(fixture: &NoCallFixture<'_>, independent: &mut Mcp)
     let raw_response = native_response(&frozen.body, &frozen.eligible_ids);
     let run = json!({"opportunity_id":opportunity});
 
-    assert_error(
-        &route_error(
-            independent,
-            "command",
-            "pipeline.recommendation.run",
-            run.clone(),
-        )
-        .await,
-        &["forbidden"],
-    );
+    if let Some(independent) = independent {
+        assert_error(
+            &route_error(
+                independent,
+                "command",
+                "pipeline.recommendation.run",
+                run.clone(),
+            )
+            .await,
+            &["forbidden"],
+        );
+    }
     assert_error(
         &route_error(
             &mut owner,
@@ -196,6 +230,27 @@ pub(super) async fn exercise(fixture: &NoCallFixture<'_>, independent: &mut Mcp)
         (listener, request, head_end)
     });
 
+    if ready.is_some() {
+        let interrupted = route_error(
+            &mut owner,
+            "command",
+            "pipeline.recommendation.run",
+            run.clone(),
+        )
+        .await;
+        assert_error(&interrupted, &["storage_unavailable"]);
+        let pending:(String,i64,i64,i64)=sqlx::query_as("SELECT state,(SELECT count(*) FROM advisory_provider_observations WHERE dispatch_id=d.id),(SELECT count(*) FROM advisory_budget_reservations WHERE dispatch_id=d.id),(SELECT count(*) FROM advisory_budget_consumptions WHERE dispatch_id=d.id) FROM advisory_dispatch d WHERE opportunity_id=$1").bind(opportunity).fetch_one(fixture.pool).await.unwrap();
+        assert_eq!(pending, ("sending".into(), 1, 1, 0));
+        owner.finish().await;
+        owner = Mcp::start(
+            &socket,
+            fixture.owner_config,
+            &Uuid::new_v4().to_string(),
+            fixture.workspace_key,
+        )
+        .await;
+        owner.call("open_workspace", json!({})).await;
+    }
     let ranked = route(
         &mut owner,
         "command",
@@ -253,10 +308,8 @@ pub(super) async fn exercise(fixture: &NoCallFixture<'_>, independent: &mut Mcp)
     .await
     .unwrap();
     assert_eq!(usage, (Some(20), Some(30)));
-    assert_error(
-        &route_error(&mut owner, "command", "pipeline.recommendation.run", run).await,
-        &["input_conflict"],
-    );
+    let replay = route(&mut owner, "command", "pipeline.recommendation.run", run).await;
+    assert_eq!(replay, ranked);
     assert_no_http(&listener).await;
     let dispatches: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM advisory_dispatch WHERE workspace_id=$1 AND opportunity_id=$2",
@@ -267,6 +320,43 @@ pub(super) async fn exercise(fixture: &NoCallFixture<'_>, independent: &mut Mcp)
     .await
     .unwrap();
     assert_eq!(dispatches, 1);
+    if let Some(ready) = ready {
+        // Recovery is actor-bound; explicit disposition/caller authority still
+        // belongs to the original captured session, which remains lawful.
+        owner.finish().await;
+        owner = Mcp::start(
+            &socket,
+            fixture.owner_config,
+            &caller_native,
+            fixture.workspace_key,
+        )
+        .await;
+        owner.call("open_workspace", json!({})).await;
+        let receipt:(Vec<u8>,String,i32,bool,Option<String>,Option<String>,Value)=sqlx::query_as("SELECT response_payload,response_sha256,http_status,response_complete,original_input_tokens,original_output_tokens,original_transport_context FROM advisory_provider_observations WHERE dispatch_id=$1").bind(dispatch_id).fetch_one(fixture.pool).await.unwrap();
+        assert_eq!(receipt.0, raw_response);
+        assert_eq!(receipt.1, format!("{:x}", Sha256::digest(&raw_response)));
+        assert_eq!(receipt.2, 200);
+        assert!(receipt.3);
+        assert_eq!((receipt.4, receipt.5), (None, None));
+        assert_eq!(receipt.6["send_certainty"], "sent");
+        assert_eq!(receipt.6["outcome"], "provider_response");
+        assert!(receipt.6["provider_failure_code"].is_null());
+        let interpretation:(String,String,i32,Value)=sqlx::query_as("SELECT manifest_digest,response_sha256,contract_version,ranking FROM pipeline_advice_interpretations WHERE dispatch_id=$1").bind(dispatch_id).fetch_one(fixture.pool).await.unwrap();
+        assert_eq!(interpretation.0, manifest.digest);
+        assert_eq!(interpretation.1, receipt.1);
+        assert_eq!(interpretation.2, 1);
+        let counts:(i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM advisory_budget_reservations WHERE dispatch_id=$1),(SELECT count(*) FROM advisory_budget_consumptions WHERE dispatch_id=$1)").bind(dispatch_id).fetch_one(fixture.pool).await.unwrap();
+        assert_eq!(counts, (1, 1));
+        let runtime = PgPool::connect(fixture.runtime_url).await.unwrap();
+        let rejected=sqlx::query("UPDATE advisory_provider_observations SET elapsed_ms=elapsed_ms+1 WHERE dispatch_id=$1").bind(dispatch_id).execute(&runtime).await.unwrap_err();
+        assert_eq!(
+            rejected.as_database_error().unwrap().code().as_deref(),
+            Some("42501")
+        );
+        assert_no_http(&listener).await;
+        super::native_effect::exercise(fixture, &socket, &mut owner, &prepared, &ranked, ready)
+            .await;
+    }
     route(
         &mut owner,
         "command",

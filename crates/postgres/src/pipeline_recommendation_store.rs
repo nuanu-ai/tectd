@@ -23,6 +23,7 @@ use crate::{storage_error, store::PgUnitOfWork};
 
 mod basis;
 mod current;
+pub(crate) mod interpretation;
 mod receipt;
 
 fn write_error(error: sqlx::Error) -> Error {
@@ -115,6 +116,20 @@ fn reviewed_effect_digest(
 
 #[async_trait]
 impl PipelineRecommendationStore for PgUnitOfWork {
+    async fn insert_pipeline_advice_interpretation(
+        &mut self,
+        workspace_id: Uuid,
+        value: &tect_application::PipelineAdviceInterpretation,
+    ) -> Result<tect_application::PipelineAdviceInterpretation> {
+        interpretation::insert(self, workspace_id, value).await
+    }
+    async fn pipeline_advice_interpretation(
+        &mut self,
+        workspace_id: Uuid,
+        opportunity_id: Uuid,
+    ) -> Result<Option<tect_application::PipelineAdviceInterpretation>> {
+        interpretation::get(self, workspace_id, opportunity_id).await
+    }
     async fn pipeline_disposition_by_opportunity(
         &mut self,
         workspace_id: Uuid,

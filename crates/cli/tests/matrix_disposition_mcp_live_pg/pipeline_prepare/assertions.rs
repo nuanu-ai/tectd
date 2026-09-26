@@ -434,10 +434,8 @@ pub(super) async fn exercise_prepare(
         serde_json::to_value(saved_rank).unwrap()["ranked_ids"],
         ranked["ranked_ids"]
     );
-    assert_error(
-        &route_error(owner, "command", "pipeline.recommendation.run", run_request).await,
-        &["input_conflict"],
-    );
+    let replay = route(owner, "command", "pipeline.recommendation.run", run_request).await;
+    assert_eq!(replay, ranked);
     let no_call_run = route(
         owner,
         "command",

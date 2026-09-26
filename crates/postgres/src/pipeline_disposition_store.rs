@@ -21,33 +21,7 @@ fn write_error(error: sqlx::Error) -> Error {
     }
 }
 
-fn sealed_advice(
-    dispatch_id: Uuid,
-    bytes: &[u8],
-    saved_digest: &str,
-    manifest: &tect_domain::PipelineRecommendationManifest,
-) -> Result<PipelineDispositionAdvice> {
-    let actual = format!("{:x}", Sha256::digest(bytes));
-    if actual != saved_digest || bytes.is_empty() || bytes.len() > 65536 {
-        return Err(Error::InputConflict);
-    }
-    // The durable disposition accepts only the exact typed ranking wire
-    // shape. A provider envelope needs its own saved parser contract first.
-    let ranking: PipelineRecommendationRanking =
-        serde_json::from_slice(bytes).map_err(|_| Error::InputConflict)?;
-    ranking
-        .validate(manifest)
-        .map_err(|_| Error::InputConflict)?;
-    Ok(match ranking {
-        PipelineRecommendationRanking::Ranked { ranked_ids } => PipelineDispositionAdvice::Ranked {
-            dispatch_id,
-            ranked_ids,
-        },
-        PipelineRecommendationRanking::Abstained => {
-            PipelineDispositionAdvice::Abstained { dispatch_id }
-        }
-    })
-}
+include!("pipeline_disposition_sealed.rs");
 
 pub(crate) async fn by_opportunity(
     store: &mut PgUnitOfWork,
@@ -258,7 +232,20 @@ pub(crate) async fn load_basis(
                 .try_get::<Option<String>, _>("pipeline_response_sha256")
                 .map_err(storage_error)?
                 .ok_or(Error::InputConflict)?;
-            sealed_advice(dispatch_id, &bytes, &digest, &prepared.manifest)?
+            if let Some(advice) =
+                crate::pipeline_recommendation_store::interpretation::disposition_advice(
+                    store,
+                    workspace_id,
+                    opportunity_id,
+                    dispatch_id,
+                    &digest,
+                )
+                .await?
+            {
+                advice
+            } else {
+                sealed_advice(dispatch_id, &bytes, &digest, &prepared.manifest)?
+            }
         }
         _ => return Err(Error::InputConflict),
     };

@@ -40,7 +40,16 @@ pub(crate) async fn finalize_interpreted_advisory_response(
     if persisted.opportunity_id != opportunity_id {
         return Err(Error::InputConflict);
     }
-    if !supported_dispatch_opportunity(&opportunity)
+    if opportunity.capability == AdvisoryCapability::PipelineRecommendation && provider_response_valid {
+        let interpreted: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pipeline_advice_interpretations i WHERE i.tenant_id=$1 AND i.workspace_id=$2 AND i.opportunity_id=$3 AND i.dispatch_id=$4 AND i.manifest_digest=$5 AND i.contract_version=1 AND i.response_sha256=encode(sha256($6::bytea),'hex'))")
+            .bind(tenant).bind(workspace).bind(opportunity_id).bind(persisted.id)
+            .bind(&opportunity.material_digest).bind(&persisted.response_payload)
+            .fetch_one(&mut **tx).await.map_err(storage_error)?;
+        if !interpreted { return Err(Error::InputConflict); }
+    }
+    if !(supported_dispatch_opportunity(&opportunity)
+        || (opportunity.capability == AdvisoryCapability::PipelineRecommendation
+            && opportunity.decision_point == AdvisoryDecisionPoint::PipelineRecommendationBeforeSliceOpen))
         || expected_config_revision != opportunity.config_revision
         || persisted.material_digest != opportunity.material_digest
     {

@@ -25,6 +25,14 @@ pub struct StoredPipelineRecommendationDispatch {
 
 #[async_trait]
 pub trait PipelineRecommendationDispatchStore: Send {
+    /// Historical typed raw fallback only when no normalized interpretation exists.
+    async fn pipeline_dispatch_for_replay(
+        &mut self,
+        _workspace_id: Uuid,
+        _opportunity_id: Uuid,
+    ) -> Result<Option<StoredPipelineRecommendationDispatch>> {
+        Err(tect_domain::Error::Forbidden)
+    }
     /// Commit the UoW before using a `PipelineStartedDispatchPermit`. Replaying
     /// an authorized dispatch may read its identity, but cannot start it twice.
     async fn authorize_pipeline_dispatch(

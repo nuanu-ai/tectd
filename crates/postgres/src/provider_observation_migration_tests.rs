@@ -7,6 +7,54 @@ const APP: &str = include_str!("../../application/src/matrix_advisory_dispatch.r
 const RECOVERY: &str = include_str!("../../application/src/matrix_advisory_dispatch/recovery.rs");
 
 #[test]
+fn pipeline_receipt_and_interpretation_forward_contracts_preserve_transport() {
+    let latest = include_str!("../migrations/0103_pipeline_interpretation_option_ids.sql");
+    let renamed = include_str!("../migrations/0072_pipeline_verification_plan_binding.sql");
+    assert!(renamed.contains("RENAME COLUMN eligible_kind_ids TO eligible_option_ids"));
+    assert!(latest.contains("'context.eligible_kind_ids','context.eligible_option_ids'"));
+    assert!(latest.contains("pg_catalog.pg_get_functiondef"));
+    let raw = include_str!("../migrations/0101_pipeline_provider_receipt_seal.sql");
+    let interpreted = include_str!("../migrations/0102_pipeline_advice_interpretations.sql");
+    for expected in [
+        "old_arm",
+        "r.response_payload IS NOT DISTINCT FROM NEW.response_payload",
+        "r.elapsed_ms=NEW.latency_ms",
+        "BETWEEN 0 AND 65536",
+        "NEW.pipeline_response_sha256",
+        "NEW.input_tokens IS NULL AND NEW.output_tokens IS NULL",
+    ] {
+        assert!(raw.contains(expected), "{expected}");
+    }
+    for expected in [
+        "contract_version=1",
+        "FORCE ROW LEVEL SECURITY",
+        "REFERENCES advisory_dispatch",
+        "pipeline interpretation is immutable",
+        "NOT c.unknown_usage",
+        "NOT c.exhausted_after_response",
+        "i.response_sha256=encode(sha256(saved_bytes)",
+        "ELSE\n            ranking := pg_catalog.convert_from(saved_bytes",
+    ] {
+        assert!(interpreted.contains(expected), "{expected}");
+    }
+    let adapter = include_str!("pipeline_recommendation_store/interpretation.rs");
+    let compact: String = adapter.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(compact.contains("value.ranking.validate(&saved.manifest)"));
+    assert!(adapter.contains("stored != *value"));
+    assert!(!adapter.contains("tect_host"));
+    let attached = raw.find("AND EXISTS (").unwrap();
+    let fail_closed = raw
+        .find("pipeline seal differs from committed raw receipt")
+        .unwrap();
+    let legacy = raw.find("$arm$ || old_arm").unwrap();
+    assert!(attached < fail_closed && fail_closed < legacy);
+    assert!(
+        interpreted.contains("IF EXISTS (SELECT 1 FROM public.pipeline_advice_interpretations")
+    );
+    assert!(interpreted.contains("IF ranking IS NULL THEN RAISE EXCEPTION"));
+}
+
+#[test]
 fn immutable_raw_observation_is_tenant_scoped_and_bound_to_committed_bytes() {
     for expected in [
         "FORCE ROW LEVEL SECURITY",

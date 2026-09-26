@@ -196,10 +196,8 @@ pub(super) async fn exercise(fixture: &NoCallFixture<'_>) {
     assert_eq!(audit.4, raw_response);
     assert_eq!(audit.5, format!("{:x}", Sha256::digest(&audit.4)));
     assert_eq!((audit.6, audit.7), (Some(20), Some(30)));
-    assert_error(
-        &route_error(&mut owner, "command", "pipeline.recommendation.run", run).await,
-        &["input_conflict"],
-    );
+    let replay = route(&mut owner, "command", "pipeline.recommendation.run", run).await;
+    assert_eq!(replay, ranked);
     super::http_public::assert_no_http(&listener).await;
     assert_eq!(dispatch_count(fixture, opportunity).await, 1);
     route(

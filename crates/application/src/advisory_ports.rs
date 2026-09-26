@@ -28,6 +28,15 @@ impl AdvisoryLifecycleCapability {
 /// dispatch use case, while no-call opportunities are still durable.
 #[async_trait]
 pub trait AdvisoryStore: Send {
+    async fn finalize_pipeline_advisory_without_advice(
+        &mut self,
+        _workspace_id: Uuid,
+        _opportunity_id: Uuid,
+        _expected_config_revision: i64,
+        _dispatch: &AdvisoryDispatch,
+    ) -> Result<AdvisoryOpportunity> {
+        Err(Error::Forbidden)
+    }
     /// Authorized-actor internal recovery evidence, never a public audit body.
     async fn advisory_dispatch_receipt(
         &mut self,

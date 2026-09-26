@@ -207,6 +207,15 @@ async fn opportunity_detail(
 
 #[async_trait]
 impl AdvisoryStore for PgUnitOfWork {
+    async fn finalize_pipeline_advisory_without_advice(&mut self, workspace_id: Uuid, opportunity_id: Uuid, expected_config_revision: i64, dispatch: &AdvisoryDispatch) -> Result<AdvisoryOpportunity> {
+        let tenant = self.tenant_id()?;
+        let actor = self.principal_id()?;
+        let opportunity = opportunity_by_id(self.transaction()?, tenant, workspace_id, opportunity_id, true).await?;
+        if opportunity.authorized_actor_id != actor || opportunity.capability != AdvisoryCapability::PipelineRecommendation {
+            return Err(Error::Forbidden);
+        }
+        finalize_interpreted_advisory_response(self.transaction()?, tenant, workspace_id, opportunity_id, expected_config_revision, dispatch, false, false).await
+    }
     async fn advisory_dispatch_receipt(
         &mut self, workspace: Uuid, opportunity: Uuid,
     ) -> Result<Option<tect_application::StoredAdvisoryProviderReceipt>> {

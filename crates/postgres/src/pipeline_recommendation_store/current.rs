@@ -51,11 +51,17 @@ pub(super) async fn pipeline_recommendation_is_current(
     if saved.context != persisted.context
         || saved.manifest != persisted.manifest
         || old.workspace_id != workspace_id
-        || old.state != AdvisoryOpportunityState::Prepared
-        || old.primary_reason != AdvisoryReason::RecommendationPrepared
+        || !matches!(
+            old.state,
+            AdvisoryOpportunityState::Prepared
+                | AdvisoryOpportunityState::AwaitingResponse
+                | AdvisoryOpportunityState::Advised
+        )
         || !matches!(
             now.state,
-            AdvisoryOpportunityState::Prepared | AdvisoryOpportunityState::AwaitingResponse
+            AdvisoryOpportunityState::Prepared
+                | AdvisoryOpportunityState::AwaitingResponse
+                | AdvisoryOpportunityState::Advised
         )
         || old.id != now.id
         || old.workspace_id != now.workspace_id

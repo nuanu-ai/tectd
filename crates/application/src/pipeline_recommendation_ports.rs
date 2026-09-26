@@ -6,6 +6,18 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
+pub const PIPELINE_ADVICE_INTERPRETATION_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipelineAdviceInterpretation {
+    pub opportunity_id: Uuid,
+    pub dispatch_id: Uuid,
+    pub manifest_digest: String,
+    pub response_sha256: String,
+    pub contract_version: u32,
+    pub ranking: tect_domain::PipelineRecommendationRanking,
+}
+
 /// All fields are read from one current saved planning and Matrix path. The
 /// adapter must never derive the match from a public verifier projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +131,21 @@ impl PipelineRecommendationDefinitionProvider for UnavailablePipelineRecommendat
 /// exact request replay returns the saved receipt without recapturing.
 #[async_trait]
 pub trait PipelineRecommendationStore: Send {
+    async fn insert_pipeline_advice_interpretation(
+        &mut self,
+        _workspace_id: Uuid,
+        _interpretation: &PipelineAdviceInterpretation,
+    ) -> Result<PipelineAdviceInterpretation> {
+        Err(Error::Forbidden)
+    }
+
+    async fn pipeline_advice_interpretation(
+        &mut self,
+        _workspace_id: Uuid,
+        _opportunity_id: Uuid,
+    ) -> Result<Option<PipelineAdviceInterpretation>> {
+        Err(Error::Forbidden)
+    }
     async fn pipeline_disposition_by_opportunity(
         &mut self,
         _workspace_id: Uuid,

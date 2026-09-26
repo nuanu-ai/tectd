@@ -10,10 +10,13 @@ use reqwest::{
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use tect_application::{
-    PipelineProviderIdentity, PipelineProviderObservation, PipelineRecommendationProvider,
-    PipelineStartedDispatchPermit, PreparedPipelineRecommendation,
-    PreparedPipelineRecommendationAttempt, SealedPipelineRecommendationResponse,
+    AdvisoryProviderReceiptObservation, AdvisoryProviderReceiptUsage, PipelineProviderIdentity,
+    PipelineProviderObservation, PipelineRecommendationProvider, PipelineStartedDispatchPermit,
+    PreparedPipelineRecommendation, PreparedPipelineRecommendationAttempt,
+    SealedPipelineRecommendationResponse, StoredAdvisoryProviderReceipt,
 };
+
+mod receipt;
 use tect_domain::{Error, PipelineRecommendationManifest, PipelineRecommendationRanking, Result};
 
 use super::{
@@ -155,6 +158,31 @@ impl JevPipelineProvider {
 
 #[async_trait]
 impl PipelineRecommendationProvider for JevPipelineProvider {
+    async fn observe_prepared(
+        &self,
+        prepared: PreparedPipelineRecommendationAttempt,
+        permit: PipelineStartedDispatchPermit,
+    ) -> Result<AdvisoryProviderReceiptObservation> {
+        let dispatch_id = permit.dispatch_id();
+        if !permit.permits(&prepared)
+            || prepared.identity() != &self.config.identity
+            || prepared.body().len() > self.config.maximum_request_bytes
+            || prepared.body_sha256() != format!("{:x}", Sha256::digest(prepared.body()))
+        {
+            return Err(Error::InputConflict);
+        }
+        receipt::validate_body(self, prepared.body(), prepared.manifest_digest())?;
+        self.observe_once(dispatch_id, prepared.body().to_vec())
+            .await
+    }
+
+    fn usage_from_sealed_response(
+        &self,
+        saved: &StoredAdvisoryProviderReceipt,
+    ) -> Result<AdvisoryProviderReceiptUsage> {
+        receipt::usage(self, saved)
+    }
+
     fn prepare(
         &self,
         saved: &PreparedPipelineRecommendation,

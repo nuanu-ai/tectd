@@ -14,7 +14,7 @@ use uuid::Uuid;
 #[path = "jev_pipeline_duplicate_tests.rs"]
 mod duplicate_tests;
 
-async fn http_fixture(
+pub(super) async fn http_fixture(
     status: u16,
     body: Vec<u8>,
     delay: Duration,
@@ -66,7 +66,7 @@ async fn http_fixture(
     (endpoint, receiver, task)
 }
 
-fn http_provider(endpoint: Url, timeout: Duration, cap: usize) -> JevPipelineProvider {
+pub(super) fn http_provider(endpoint: Url, timeout: Duration, cap: usize) -> JevPipelineProvider {
     JevPipelineProvider::new(
         JevPipelineConfig {
             identity: PipelineProviderIdentity {
@@ -256,7 +256,7 @@ fn definition(kind: PipelineKind) -> PipelineDefinitionSnapshot {
     }
 }
 
-fn prepared(count: usize) -> PreparedPipelineNativeRequest {
+pub(super) fn prepared(count: usize) -> PreparedPipelineNativeRequest {
     prepare_native_request("jev-1.13.0", &manifest(count), MAX_REQUEST_BYTES).unwrap()
 }
 
@@ -277,7 +277,7 @@ fn score_answer(level: usize) -> Value {
     json!({"type":"score", "score":level, "legend":legend, "probabilities":probabilities, "confidence":0.91})
 }
 
-fn response(prepared: &PreparedPipelineNativeRequest) -> Value {
+pub(super) fn response(prepared: &PreparedPipelineNativeRequest) -> Value {
     let mut answers = serde_json::Map::new();
     for index in 0..prepared.eligible_ids.len() {
         answers.insert(format!("score_v1_{index}"), score_answer(9 - index));

@@ -10,6 +10,10 @@ pub(super) async fn grant_pipeline_advice_runtime(
         format!("REVOKE ALL PRIVILEGES ON TABLE pipeline_advice_dispositions FROM {quoted_role}"),
         format!("GRANT SELECT, INSERT ON TABLE pipeline_advice_dispositions TO {quoted_role}"),
         format!(
+            "REVOKE ALL PRIVILEGES ON TABLE pipeline_advice_interpretations FROM {quoted_role}"
+        ),
+        format!("GRANT SELECT, INSERT ON TABLE pipeline_advice_interpretations TO {quoted_role}"),
+        format!(
             "REVOKE ALL PRIVILEGES ON TABLE pipeline_open_effect_attestations FROM {quoted_role}"
         ),
         format!("GRANT SELECT, INSERT ON TABLE pipeline_open_effect_attestations TO {quoted_role}"),
@@ -85,6 +89,20 @@ pub(super) async fn validate_pipeline_advice_schema(
     transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     runtime_role: &str,
 ) -> Result<()> {
+    let interpretations_ready: bool = sqlx::query_scalar(
+        "SELECT c.relrowsecurity AND c.relforcerowsecurity \
+         AND NOT pg_has_role(r.oid,c.relowner,'MEMBER') \
+         AND has_table_privilege($1,c.oid,'SELECT') AND has_table_privilege($1,c.oid,'INSERT') \
+         AND NOT has_table_privilege($1,c.oid,'UPDATE') AND NOT has_table_privilege($1,c.oid,'DELETE') \
+         AND EXISTS(SELECT 1 FROM pg_trigger t WHERE t.tgrelid=c.oid AND t.tgname='pipeline_advice_interpretation_guard' AND NOT t.tgisinternal) \
+         AND (SELECT count(*)=9 FROM pg_attribute a WHERE a.attrelid=c.oid AND a.attnum>0 AND NOT a.attisdropped \
+              AND a.attname=ANY(ARRAY['tenant_id','workspace_id','opportunity_id','dispatch_id','manifest_digest','response_sha256','contract_version','ranking','created_at'])) \
+         AND (SELECT count(*)=2 FROM pg_constraint k WHERE k.conrelid=c.oid AND k.contype='f') \
+         FROM pg_class c JOIN pg_roles r ON r.rolname=$1 WHERE c.oid='public.pipeline_advice_interpretations'::regclass"
+    ).bind(runtime_role).fetch_one(&mut **transaction).await.map_err(storage_error)?;
+    if !interpretations_ready {
+        return Err(Error::StorageUnavailable);
+    }
     let shape_ready: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM pg_catalog.pg_class c \
          JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace \

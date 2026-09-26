@@ -207,7 +207,7 @@ async fn seal_dispatch(
     let existing = dispatch_by_id(tx, tenant, workspace, seal.dispatch_id, true).await?;
     match dispatch_state(&existing.state)? {
         AdvisoryDispatchState::Sending => {
-            sqlx::query("UPDATE advisory_dispatch SET response_payload=$4,input_tokens=$5,output_tokens=$6,latency_ms=$7,state='sealed',send_certainty=$8,outcome=$9,raw_response_ref=$10,sealed_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND state='sending'")
+            sqlx::query("UPDATE advisory_dispatch SET response_payload=$4,input_tokens=$5,output_tokens=$6,latency_ms=$7,state='sealed',send_certainty=$8,outcome=$9,raw_response_ref=$10,pipeline_response_sha256=CASE WHEN EXISTS(SELECT 1 FROM advisory_opportunity o WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.id=advisory_dispatch.opportunity_id AND o.capability='pipeline_recommendation') THEN encode(sha256($4::bytea),'hex') ELSE pipeline_response_sha256 END,sealed_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND state='sending'")
                 .bind(tenant).bind(workspace).bind(seal.dispatch_id).bind(&seal.response_payload).bind(seal.input_tokens).bind(seal.output_tokens).bind(seal.latency_ms).bind(seal.send_certainty.as_str()).bind(seal.outcome.as_str()).bind(&seal.raw_response_ref).execute(&mut **tx).await.map_err(storage_error)?;
             let sealed = dispatch_by_id(tx, tenant, workspace, seal.dispatch_id, false).await?;
             dispatch_from_row(&sealed)

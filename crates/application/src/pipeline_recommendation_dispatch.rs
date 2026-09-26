@@ -9,11 +9,15 @@ use crate::{
 use sha2::{Digest, Sha256};
 use tect_domain::{
     AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryDispatchAuthorization,
-    AdvisoryDispatchOutcome, AdvisoryDispatchSeal, AdvisoryOpportunityState, AdvisoryReason,
-    AdvisoryRetryBasis, AdvisorySendCertainty, Error, PipelineRecommendationRanking,
-    RequestContext, Result, WorkspaceAdvisoryMode,
+    AdvisoryDispatchOutcome, AdvisoryOpportunityState, AdvisoryReason, AdvisoryRetryBasis,
+    AdvisorySendCertainty, Error, PipelineRecommendationRanking, RequestContext, Result,
+    WorkspaceAdvisoryMode,
 };
 use uuid::Uuid;
+
+#[cfg(test)]
+mod receipt_tests;
+mod receipts;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunPipelineRecommendation {
@@ -140,6 +144,30 @@ impl WorkspaceService {
             .await?
             .ok_or(Error::NotFound)?;
         validate_saved(&saved, workspace.id, request.opportunity_id)?;
+        if saved.opportunity.authorized_actor_id != identity.principal_id {
+            return Err(Error::Forbidden);
+        }
+        // Actor-bound recovery precedes all fresh source/configuration gates.
+        if let Some(receipt) = tx
+            .advisory_dispatch_receipt(workspace.id, saved.opportunity.id)
+            .await?
+        {
+            if receipt.opportunity.authorized_actor_id != identity.principal_id {
+                return Err(Error::Forbidden);
+            }
+            let tenant = identity.tenant_id;
+            tx.commit().await?;
+            return self
+                .recover_pipeline_receipt(context, tenant, saved, receipt)
+                .await;
+        }
+        if saved.opportunity.state == AdvisoryOpportunityState::NoCall {
+            tx.commit().await?;
+            return Ok(PipelineRecommendationRun::NoCall {
+                opportunity_id: saved.opportunity.id,
+                reason: saved.opportunity.primary_reason,
+            });
+        }
         if self
             .validate_pipeline_recommendation_definitions(&saved.manifest)
             .is_err()
@@ -149,22 +177,10 @@ impl WorkspaceService {
                 opportunity_id: saved.opportunity.id,
             });
         }
-        if saved.opportunity.session_id != session.id
-            || saved.opportunity.authorized_actor_id != identity.principal_id
-        {
-            return Err(Error::Forbidden);
-        }
         if !self.pipeline_policy_matches(&saved.context.compatibility_policy_digest)? {
             tx.commit().await?;
             return Ok(PipelineRecommendationRun::Stale {
                 opportunity_id: saved.opportunity.id,
-            });
-        }
-        if saved.opportunity.state == AdvisoryOpportunityState::NoCall {
-            tx.commit().await?;
-            return Ok(PipelineRecommendationRun::NoCall {
-                opportunity_id: saved.opportunity.id,
-                reason: saved.opportunity.primary_reason,
             });
         }
         if saved.opportunity.state != AdvisoryOpportunityState::Prepared
@@ -227,11 +243,18 @@ impl WorkspaceService {
                 authorized.id,
             )
             .await?;
+        let tenant = identity.tenant_id;
         // COMMIT is the critical boundary. A failed commit cannot mint a permit.
         tx.commit().await?;
         let permit =
             PipelineStartedDispatchPermit::after_committed_start(&started, &grant, &attempt)?;
-        let dispatch_id = started.dispatch.id;
+        let continuation = crate::AdvisoryDispatchContinuation::after_committed_start(
+            tenant,
+            workspace.id,
+            &saved.opportunity,
+            &started,
+            &grant,
+        )?;
         let saved_attempt = PreparedPipelineRecommendationAttempt::new(
             &saved,
             attempt.identity().clone(),
@@ -240,150 +263,34 @@ impl WorkspaceService {
         let monotonic_start = std::time::Instant::now();
         let observed = self
             .pipeline_recommendation_provider
-            .attempt_prepared(attempt, permit)
+            .observe_prepared(attempt, permit)
             .await;
         let elapsed_ms = i64::try_from(monotonic_start.elapsed().as_millis()).unwrap_or(i64::MAX);
-        // Response bytes and digest are sealed in a separate transaction.
-        let (mut seal_tx, seal_identity) =
-            self.authorized(context, TransactionMode::ReadWrite).await?;
-        let seal_session = seal_tx
-            .session(seal_identity.host_id, &context.native_session_id)
-            .await?
-            .ok_or(Error::WorkspaceNotOpen)?;
-        if Self::validate_binding(&mut *seal_tx, context, &seal_identity, &seal_session)
-            .await?
-            .id
-            != workspace.id
-        {
-            return Err(Error::InputConflict);
-        }
-        let sealed = if let Ok(observation) = &observed {
-            Some(
-                seal_tx
-                    .pipeline_recommendation_dispatch_store()
-                    .ok_or(Error::Forbidden)?
-                    .seal_pipeline_dispatch(
-                        &PipelineDispatchCapability::internal(),
-                        workspace.id,
-                        dispatch_id,
-                        observation,
-                        elapsed_ms,
-                    )
-                    .await?,
-            )
-        } else {
-            let seal = AdvisoryDispatchSeal {
-                dispatch_id,
+        let raw = observed.unwrap_or(crate::AdvisoryProviderReceiptObservation {
+            response_payload: None,
+            http_status: None,
+            input_tokens: None,
+            output_tokens: None,
+            response_complete: false,
+            original_transport_context: Some(crate::AdvisoryProviderTransportContext {
                 send_certainty: AdvisorySendCertainty::SentUnknown,
                 outcome: AdvisoryDispatchOutcome::ProviderFailure,
-                response_payload: None,
-                input_tokens: None,
-                output_tokens: None,
-                latency_ms: Some(elapsed_ms),
                 raw_response_ref: None,
-            };
-            seal_tx
-                .seal_advisory_dispatch(
-                    &crate::AdvisoryLifecycleCapability::internal(),
-                    workspace.id,
-                    &seal,
-                )
-                .await?;
-            None
-        };
-        seal_tx.commit().await?;
-        let (mut consume_tx, consume_identity) =
-            self.authorized(context, TransactionMode::ReadWrite).await?;
-        let consume_session = consume_tx
-            .session(consume_identity.host_id, &context.native_session_id)
-            .await?
-            .ok_or(Error::WorkspaceNotOpen)?;
-        if Self::validate_binding(
-            &mut *consume_tx,
-            context,
-            &consume_identity,
-            &consume_session,
-        )
-        .await?
-        .id != workspace.id
-        {
-            return Err(Error::InputConflict);
-        }
-        let consumption = consume_tx
-            .consume_advisory_budget(
-                &crate::AdvisoryLifecycleCapability::internal(),
-                workspace.id,
-                dispatch_id,
-            )
+                provider_failure_code: None,
+            }),
+        });
+        // Immutable transport facts commit before any post-send caller fence.
+        let receipt = self
+            .seal_committed_advisory_observation(&continuation, &raw, elapsed_ms)
             .await?;
-        consume_tx.commit().await?;
-        if observed.is_err() {
-            return Ok(PipelineRecommendationRun::SendUnknown {
-                opportunity_id: saved.opportunity.id,
-                dispatch_id,
-            });
-        }
-        if consumption.exhausted_after_response || consumption.unknown_usage {
-            return Ok(PipelineRecommendationRun::BudgetExhausted {
-                opportunity_id: saved.opportunity.id,
-                dispatch_id,
-            });
-        }
-        let sealed = sealed.ok_or(Error::InternalInvariant)?;
-        let saved_response = SealedPipelineRecommendationResponse::from_saved(
-            &sealed.dispatch,
-            &saved_attempt,
-            &sealed.request_payload,
-            sealed.response_payload,
-            &sealed.response_sha256,
-        )?;
-        let (mut read_tx, read_identity) =
-            self.authorized(context, TransactionMode::ReadOnly).await?;
-        let read_session = read_tx
-            .session(read_identity.host_id, &context.native_session_id)
-            .await?
-            .ok_or(Error::WorkspaceNotOpen)?;
-        if Self::validate_binding(&mut *read_tx, context, &read_identity, &read_session)
-            .await?
-            .id
-            != workspace.id
-        {
-            return Err(Error::InputConflict);
-        }
-        let still_current = read_tx
-            .pipeline_recommendation_store()
-            .ok_or(Error::Forbidden)?
-            .pipeline_recommendation_is_current(workspace.id, &saved)
-            .await?;
-        read_tx.commit().await?;
-        if !still_current
-            || !self.pipeline_policy_matches(&saved.context.compatibility_policy_digest)?
-            || self
-                .validate_pipeline_recommendation_definitions(&saved.manifest)
-                .is_err()
-        {
-            return Ok(PipelineRecommendationRun::Stale {
-                opportunity_id: saved.opportunity.id,
-            });
-        }
-        let parsed = self
+        let usage = self
             .pipeline_recommendation_provider
-            .parse_sealed_response(&saved.manifest, &saved_attempt, &saved_response)?;
-        parsed.validate(&saved.manifest)?;
-        // The ranking is advisory data only. No phase or verifier operation is
-        // reachable from this use case.
-        Ok(match parsed {
-            PipelineRecommendationRanking::Ranked { ranked_ids } => {
-                PipelineRecommendationRun::Ranked {
-                    opportunity_id: saved.opportunity.id,
-                    dispatch_id,
-                    ranked_ids,
-                }
-            }
-            PipelineRecommendationRanking::Abstained => PipelineRecommendationRun::Abstained {
-                opportunity_id: saved.opportunity.id,
-                dispatch_id,
-            },
-        })
+            .usage_from_sealed_response(&receipt)
+            .unwrap_or_default();
+        let (receipt, consumption) = self
+            .consume_committed_advisory_observation(&continuation, usage)
+            .await?;
+        self.finish_pipeline_receipt(context, saved, receipt, consumption, saved_attempt)
+            .await
     }
 }

@@ -171,7 +171,8 @@ async fn start_pipeline(
         return Err(Error::InputConflict);
     }
     let _opportunity = opportunity_by_id(tx, tenant, workspace, row.opportunity_id, true).await?;
-    let reservation = reserve_before_dispatch(tx, tenant, workspace, &row, policy, None, None).await?;
+    let reservation =
+        reserve_before_dispatch(tx, tenant, workspace, &row, policy, None, None).await?;
     let updated = sqlx::query(
         "UPDATE advisory_dispatch SET state='sending',send_certainty='sent_unknown',\
          send_started_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 \
@@ -217,7 +218,8 @@ async fn seal_pipeline(
     observation: &PipelineProviderObservation,
     elapsed_ms: i64,
 ) -> Result<StoredPipelineRecommendationDispatch> {
-    if elapsed_ms < 0 || observation.raw_response.is_empty()
+    if elapsed_ms < 0
+        || observation.raw_response.is_empty()
         || observation.raw_response.len() > MAX_SEALED_PIPELINE_RESPONSE_BYTES
     {
         return Err(Error::InvalidArguments);
@@ -297,6 +299,49 @@ async fn seal_pipeline(
 
 #[async_trait]
 impl PipelineRecommendationDispatchStore for PgUnitOfWork {
+    async fn pipeline_dispatch_for_replay(
+        &mut self,
+        workspace_id: Uuid,
+        opportunity_id: Uuid,
+    ) -> Result<Option<StoredPipelineRecommendationDispatch>> {
+        let tenant = self.tenant_id()?;
+        let actor = self.principal_id()?;
+        let opportunity = opportunity_by_id(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            opportunity_id,
+            false,
+        )
+        .await?;
+        if opportunity.authorized_actor_id != actor
+            || opportunity.capability != AdvisoryCapability::PipelineRecommendation
+        {
+            return Err(Error::Forbidden);
+        }
+        let id: Option<Uuid> = sqlx::query_scalar("SELECT id FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3 AND state='sealed' ORDER BY attempt_number DESC LIMIT 1")
+            .bind(tenant).bind(workspace_id).bind(opportunity_id).fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?;
+        let Some(id) = id else {
+            return Ok(None);
+        };
+        let row =
+            pipeline_dispatch_row(self.transaction()?, tenant, workspace_id, id, false).await?;
+        let digest: Option<String> = sqlx::query_scalar("SELECT pipeline_response_sha256 FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
+            .bind(tenant).bind(workspace_id).bind(id).fetch_one(&mut **self.transaction()?).await.map_err(storage_error)?;
+        let response = row.response_payload.clone().ok_or(Error::InputConflict)?;
+        if row.send_certainty != "sent"
+            || row.outcome.as_deref() != Some("provider_response")
+            || digest.as_deref() != Some(pipeline_digest(&response).as_str())
+        {
+            return Err(Error::InputConflict);
+        }
+        Ok(Some(StoredPipelineRecommendationDispatch {
+            dispatch: dispatch_from_row(&row)?,
+            request_payload: row.request_payload,
+            response_payload: response,
+            response_sha256: digest.ok_or(Error::InputConflict)?,
+        }))
+    }
     async fn authorize_pipeline_dispatch(
         &mut self,
         _capability: &PipelineDispatchCapability,
@@ -322,12 +367,22 @@ impl PipelineRecommendationDispatchStore for PgUnitOfWork {
         dispatch_id: Uuid,
     ) -> Result<AdvisoryDispatchStart> {
         let tenant = self.tenant_id()?;
-        let now = i64::try_from(std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| Error::BudgetPolicyInvalid)?
-            .as_millis()).map_err(|_| Error::BudgetPolicyInvalid)?;
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| Error::BudgetPolicyInvalid)?
+                .as_millis(),
+        )
+        .map_err(|_| Error::BudgetPolicyInvalid)?;
         let policy = self.authorized_budget_policy(workspace_id, now).await?;
-        start_pipeline(self.transaction()?, tenant, workspace_id, dispatch_id, policy.as_ref()).await
+        start_pipeline(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            dispatch_id,
+            policy.as_ref(),
+        )
+        .await
     }
 
     async fn seal_pipeline_dispatch(
