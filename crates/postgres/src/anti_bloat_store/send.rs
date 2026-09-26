@@ -61,11 +61,9 @@ pub(super) async fn begin_send(
     if digest(&prepared.bytes) != prepared.sha256 {
         return Err(Error::InputConflict);
     }
-    let expected = serde_json::to_vec(&serde_json::json!({
-        "review": &saved.review, "eligible_ids": &eligible
-    }))
-    .map_err(storage_error)?;
-    if prepared.bytes != expected {
+    if prepared.material_sha256 != tect_application::anti_bloat_material_sha256(saved)?
+        || prepared.adapter_identity.is_empty()
+    {
         return Err(Error::InputConflict);
     }
     policy.validate().map_err(|_| Error::BudgetPolicyInvalid)?;
@@ -165,7 +163,7 @@ pub(super) async fn begin_send(
     }
     let result = sqlx::query(
         "UPDATE scope_anti_bloat_reviews SET state='sending',request_bytes=$5, \
-         request_sha256=$6,send_started_at=pg_catalog.clock_timestamp() \
+         request_sha256=$6,request_adapter_identity=$9,send_started_at=pg_catalog.clock_timestamp() \
          WHERE tenant_id=$1 AND workspace_id=$2 AND review_id=$3 AND actor_id=$4 \
            AND state='prepared' AND input_payload=$7 AND review_payload=$8",
     )
@@ -177,6 +175,7 @@ pub(super) async fn begin_send(
     .bind(&prepared.sha256)
     .bind(serde_json::to_value(&saved.input).map_err(storage_error)?)
     .bind(serde_json::to_value(&saved.review).map_err(storage_error)?)
+    .bind(&prepared.adapter_identity)
     .execute(&mut **uow.transaction()?)
     .await
     .map_err(storage_error)?;
@@ -207,6 +206,32 @@ pub(super) async fn begin_send(
         review_id: saved.review_id,
         request: prepared.clone(),
     }))
+}
+
+pub(super) async fn authorized_sealed_response(
+    uow: &mut PgUnitOfWork,
+    permit: &AntiBloatSendPermit,
+) -> Result<Vec<u8>> {
+    let raw: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT v.raw_response FROM scope_anti_bloat_reviews v \
+         JOIN scope_anti_bloat_budget_consumptions c ON \
+         (v.tenant_id,v.workspace_id,v.review_id)=(c.tenant_id,c.workspace_id,c.review_id) \
+         WHERE v.tenant_id=$1 AND v.review_id=$2 AND v.actor_id=$3 \
+         AND v.state='sending' AND v.response_sealed_at IS NOT NULL \
+         AND v.request_bytes=$4 AND v.request_sha256=$5 AND v.request_adapter_identity=$6 \
+         AND c.request_sha256=v.request_sha256 AND c.response_sha256=v.response_sha256 \
+         AND NOT c.unknown_usage AND NOT c.exhausted_after_response AND NOT c.transport_failed",
+    )
+    .bind(uow.tenant_id()?)
+    .bind(permit.review_id)
+    .bind(uow.principal_id()?)
+    .bind(&permit.request.bytes)
+    .bind(&permit.request.sha256)
+    .bind(&permit.request.adapter_identity)
+    .fetch_optional(&mut **uow.transaction()?)
+    .await
+    .map_err(storage_error)?;
+    raw.ok_or(Error::InputConflict)
 }
 
 pub(super) async fn mark_send_unknown(uow: &mut PgUnitOfWork, review_id: Uuid) -> Result<()> {

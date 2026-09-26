@@ -41,7 +41,7 @@ impl<S: AntiBloatStore, P: AntiBloatRankingProvider> AntiBloatApplication<S, P> 
 
     /// The caller must commit this unit of work before giving the permit to a provider.
     pub async fn prepare_send(&mut self, review_id: Uuid) -> Result<PreparedAntiBloatSend> {
-        prepare_anti_bloat_send(&mut self.store, review_id).await
+        prepare_anti_bloat_send(&mut self.store, &self.provider, review_id).await
     }
 
     /// Seal raw transport bytes in a separate transaction before interpreting them.
@@ -54,7 +54,7 @@ impl<S: AntiBloatStore, P: AntiBloatRankingProvider> AntiBloatApplication<S, P> 
         permit: &AntiBloatSendPermit,
         raw: &[u8],
     ) -> Result<AntiBloatAttemptState> {
-        finalize_anti_bloat_response(&mut self.store, permit, raw).await
+        finalize_anti_bloat_response(&mut self.store, &self.provider, permit, raw).await
     }
 
     pub async fn disposition_and_apply(
@@ -151,6 +151,7 @@ pub struct PreparedAntiBloatSend {
 
 pub async fn prepare_anti_bloat_send(
     store: &mut dyn AntiBloatStore,
+    provider: &dyn AntiBloatRankingProvider,
     review_id: Uuid,
 ) -> Result<PreparedAntiBloatSend> {
     let saved = store.review(review_id).await?.ok_or(Error::NotFound)?;
@@ -174,13 +175,18 @@ pub async fn prepare_anti_bloat_send(
     if eligible.is_empty() {
         return Err(Error::InputConflict);
     }
-    let request_bytes = serde_json::to_vec(&serde_json::json!({
-        "review": &saved.review, "eligible_ids": &eligible
-    }))
-    .map_err(|_| Error::InternalInvariant)?;
+    let request_bytes = provider.prepare(&crate::AntiBloatRankingMaterial {
+        saved: &saved,
+        eligible_ids: &eligible,
+    })?;
+    if request_bytes.is_empty() || provider.adapter_identity().is_empty() {
+        return Err(Error::InputConflict);
+    }
     let prepared = AntiBloatPreparedRequest {
         sha256: format!("{:x}", Sha256::digest(&request_bytes)),
         bytes: request_bytes,
+        material_sha256: crate::anti_bloat_material_sha256(&saved)?,
+        adapter_identity: provider.adapter_identity().into(),
     };
     let now_unix_ms = i64::try_from(
         std::time::SystemTime::now()
@@ -223,6 +229,7 @@ pub async fn seal_anti_bloat_response(
 
 pub async fn finalize_anti_bloat_response(
     store: &mut dyn AntiBloatStore,
+    provider: &dyn AntiBloatRankingProvider,
     permit: &crate::AntiBloatSendPermit,
     raw: &[u8],
 ) -> Result<AntiBloatAttemptState> {
@@ -233,6 +240,15 @@ pub async fn finalize_anti_bloat_response(
     if saved.state != AntiBloatAttemptState::Sending {
         return Err(Error::InputConflict);
     }
+    if permit.request.adapter_identity != provider.adapter_identity()
+        || permit.request.material_sha256 != crate::anti_bloat_material_sha256(&saved)?
+    {
+        return Err(Error::InputConflict);
+    }
+    let sealed = store.authorized_sealed_response(permit).await?;
+    if sealed != raw {
+        return Err(Error::InputConflict);
+    }
     let eligible = saved
         .review
         .findings
@@ -240,7 +256,7 @@ pub async fn finalize_anti_bloat_response(
         .filter(|finding| finding.rankable)
         .map(|finding| finding.id.clone())
         .collect::<Vec<_>>();
-    let ranked: Vec<String> = match serde_json::from_slice(raw) {
+    let ranked: Vec<String> = match provider.parse_sealed(&sealed) {
         Ok(ids) => ids,
         Err(_) => {
             store.mark_send_unknown(permit.review_id).await?;
@@ -283,6 +299,11 @@ async fn rank_after_committed_fence<F: Future<Output = Result<()>>>(
     provider: &dyn AntiBloatRankingProvider,
     permit: &AntiBloatSendPermit,
 ) -> Result<Result<AntiBloatProviderObservation>> {
+    if permit.request.adapter_identity != provider.adapter_identity()
+        || permit.request.sha256 != format!("{:x}", Sha256::digest(&permit.request.bytes))
+    {
+        return Err(Error::InputConflict);
+    }
     commit.await?;
     Ok(provider.rank(permit).await)
 }
@@ -394,6 +415,7 @@ impl WorkspaceService {
         }
         let prepared = prepare_anti_bloat_send(
             fence.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
+            self.anti_bloat_provider.as_ref(),
             review_id,
         )
         .await?;
@@ -461,6 +483,7 @@ impl WorkspaceService {
             .await?;
         let outcome = finalize_anti_bloat_response(
             finish.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
+            self.anti_bloat_provider.as_ref(),
             &permit,
             &observation.raw,
         )

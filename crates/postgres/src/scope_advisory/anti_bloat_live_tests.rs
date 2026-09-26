@@ -634,6 +634,8 @@ async fn selected_save_activates_exact_source_bound_anti_bloat_review() {
     let request = AntiBloatPreparedRequest {
         sha256: format!("{:x}", Sha256::digest(&bytes)),
         bytes,
+        material_sha256: tect_application::anti_bloat_material_sha256(&prepared).unwrap(),
+        adapter_identity: "generic-json-v1".into(),
     };
     let mut stale = rw(&store, &enrollment.auth, tenant).await;
     assert_eq!(

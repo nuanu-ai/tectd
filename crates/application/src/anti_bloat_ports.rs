@@ -39,6 +39,27 @@ pub struct StoredAntiBloatReview {
 pub struct AntiBloatPreparedRequest {
     pub bytes: Vec<u8>,
     pub sha256: String,
+    pub material_sha256: String,
+    pub adapter_identity: String,
+}
+
+/// Typed frozen material given to a provider before the durable send fence.
+pub struct AntiBloatRankingMaterial<'a> {
+    pub saved: &'a StoredAntiBloatReview,
+    pub eligible_ids: &'a [String],
+}
+
+pub fn anti_bloat_material_sha256(saved: &StoredAntiBloatReview) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let bytes = serde_json::to_vec(&(
+        saved.review_id,
+        saved.workspace_id,
+        saved.actor_id,
+        &saved.input,
+        &saved.review,
+    ))
+    .map_err(|_| tect_domain::Error::InternalInvariant)?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +140,15 @@ pub trait AntiBloatStore: Send {
         observation: &AntiBloatProviderObservation,
     ) -> Result<bool>;
 
+    /// Returns only exact raw bytes with committed seal and successful committed
+    /// budget consumption for this permit. Default denies interpretation.
+    async fn authorized_sealed_response(
+        &mut self,
+        _permit: &AntiBloatSendPermit,
+    ) -> Result<Vec<u8>> {
+        Err(tect_domain::Error::InputConflict)
+    }
+
     async fn seal_ranked(&mut self, review_id: Uuid, ranked_ids: &[String]) -> Result<()>;
 
     /// This seam must atomically save explicit disposition and preservation
@@ -139,6 +169,22 @@ pub trait AntiBloatStore: Send {
 /// obtain an attempt through the application path for disabled/skip/no-eligible.
 #[async_trait]
 pub trait AntiBloatRankingProvider: Send + Sync {
+    fn adapter_identity(&self) -> &'static str {
+        "generic-json-v1"
+    }
+
+    /// Pure wire preparation; called before reservation and fence commit.
+    fn prepare(&self, material: &AntiBloatRankingMaterial<'_>) -> Result<Vec<u8>> {
+        serde_json::to_vec(&serde_json::json!({
+            "review": &material.saved.review, "eligible_ids": material.eligible_ids
+        }))
+        .map_err(|_| tect_domain::Error::InternalInvariant)
+    }
+
+    /// Pure interpretation of untouched transport bytes authorized by the store.
+    fn parse_sealed(&self, raw: &[u8]) -> Result<Vec<String>> {
+        serde_json::from_slice(raw).map_err(|_| tect_domain::Error::InputConflict)
+    }
     async fn rank(&self, permit: &AntiBloatSendPermit) -> Result<AntiBloatProviderObservation>;
 }
 

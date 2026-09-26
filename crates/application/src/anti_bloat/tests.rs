@@ -331,6 +331,25 @@ impl AntiBloatStore for FakeStore {
             || observation.output_tokens.is_some_and(|n| n > 100)
             || observation.elapsed_monotonic_ms.is_some_and(|n| n > 1000))
     }
+    async fn authorized_sealed_response(
+        &mut self,
+        permit: &AntiBloatSendPermit,
+    ) -> Result<Vec<u8>> {
+        if self.prepared.as_ref() != Some(&permit.request) {
+            return Err(Error::InputConflict);
+        }
+        let consumed = self.consumed.as_ref().ok_or(Error::InputConflict)?;
+        if consumed.input_tokens.is_none()
+            || consumed.output_tokens.is_none()
+            || consumed.elapsed_monotonic_ms.is_none()
+            || consumed.input_tokens.is_some_and(|n| n > 100)
+            || consumed.output_tokens.is_some_and(|n| n > 100)
+            || consumed.elapsed_monotonic_ms.is_some_and(|n| n > 1000)
+        {
+            return Err(Error::InputConflict);
+        }
+        self.raw_response.clone().ok_or(Error::InputConflict)
+    }
     async fn apply_preserved_delta(
         &mut self,
         authored: &AntiBloatAuthoredDelta,
@@ -428,7 +447,9 @@ async fn provider_observes_committed_fence_and_commit_failure_never_calls() {
         review_id: Uuid::new_v4(),
         request: AntiBloatPreparedRequest {
             bytes: b"{}".to_vec(),
-            sha256: "a".repeat(64),
+            sha256: format!("{:x}", Sha256::digest(b"{}")),
+            material_sha256: "a".repeat(64),
+            adapter_identity: "generic-json-v1".into(),
         },
     };
     let commit_flag = committed.clone();
@@ -525,4 +546,5 @@ async fn prepare(
 
 mod classification;
 mod contract;
+mod provider_seams;
 mod scenarios;

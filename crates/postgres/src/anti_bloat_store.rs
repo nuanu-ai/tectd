@@ -154,6 +154,13 @@ impl AntiBloatStore for PgUnitOfWork {
         send::consume_budget(self, permit, observation).await
     }
 
+    async fn authorized_sealed_response(
+        &mut self,
+        permit: &AntiBloatSendPermit,
+    ) -> Result<Vec<u8>> {
+        send::authorized_sealed_response(self, permit).await
+    }
+
     async fn seal_ranked(&mut self, review_id: Uuid, ranked_ids: &[String]) -> Result<()> {
         send::seal_ranked(self, review_id, ranked_ids).await
     }
