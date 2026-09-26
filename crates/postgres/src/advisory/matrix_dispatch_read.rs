@@ -234,6 +234,7 @@ fn stored_matrix_dispatch(
         original_elapsed_ms: row.latency_ms,
         raw_observation_sealed: false,
         response_complete,
+        original_transport_context: None,
     })
 }
 
@@ -322,6 +323,7 @@ mod matrix_dispatch_read_tests {
             assert_eq!(saved.binding, binding);
             assert_eq!(saved.request_payload, exact_request);
             assert_eq!(saved.response_payload, exact_response);
+            assert_eq!(saved.original_transport_context, None);
             assert_eq!(saved.dispatch.state, dispatch_state(state).unwrap());
             assert_eq!(
                 saved.dispatch.send_certainty,
@@ -345,6 +347,41 @@ mod matrix_dispatch_read_tests {
             stored_matrix_dispatch(row, binding),
             Err(Error::StorageUnavailable)
         ));
+    }
+
+    #[test]
+    fn recovery_attaches_only_original_saved_transport_context() {
+        for context in [
+            None,
+            Some(AdvisoryProviderTransportContext {
+                send_certainty: AdvisorySendCertainty::Sent,
+                outcome: AdvisoryDispatchOutcome::ProviderFailure,
+                raw_response_ref: Some("original-ref".into()),
+                provider_failure_code: Some("http-status".into()),
+            }),
+        ] {
+            let (row, binding) = fixture("sealed", "sent", Some("provider_response"));
+            let mut saved = stored_matrix_dispatch(row, binding).unwrap();
+            let observation = AdvisoryProviderReceiptObservation {
+                response_payload: saved.response_payload.clone(),
+                http_status: Some(500),
+                input_tokens: None,
+                output_tokens: None,
+                response_complete: true,
+                original_transport_context: context.as_ref().map(|value| {
+                    decode_transport_context(encode_transport_context(value).unwrap()).unwrap()
+                }),
+            };
+            apply_matrix_observation(&mut saved, observation, 12).unwrap();
+            assert_eq!(saved.original_transport_context, context);
+            assert_eq!(saved.response_http_status, Some(500));
+            assert_eq!(saved.original_elapsed_ms, Some(12));
+            assert!(saved.raw_observation_sealed);
+            assert_eq!(
+                saved.dispatch.outcome,
+                Some(AdvisoryDispatchOutcome::ProviderResponse)
+            );
+        }
     }
 
     #[test]

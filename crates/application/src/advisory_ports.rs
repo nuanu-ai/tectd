@@ -192,6 +192,7 @@ pub struct StoredMatrixDispatch {
     pub original_elapsed_ms: Option<i64>,
     pub raw_observation_sealed: bool,
     pub response_complete: bool,
+    pub original_transport_context: Option<crate::AdvisoryProviderTransportContext>,
 }
 
 impl std::fmt::Debug for StoredMatrixDispatch {
@@ -358,6 +359,7 @@ pub struct MatrixProviderObservation {
     /// Compatibility only: native transports leave this absent. Never persisted.
     pub legacy_response: Option<MatrixProviderResponse>,
     pub response_complete: bool,
+    pub original_transport_context: Option<crate::AdvisoryProviderTransportContext>,
 }
 
 pub type MatrixProviderUsage = crate::AdvisoryProviderReceiptUsage;
@@ -370,7 +372,7 @@ impl From<&MatrixProviderObservation> for crate::AdvisoryProviderReceiptObservat
             input_tokens: value.input_tokens,
             output_tokens: value.output_tokens,
             response_complete: value.response_complete,
-            original_transport_context: None,
+            original_transport_context: value.original_transport_context.clone(),
         }
     }
 }
@@ -433,6 +435,7 @@ pub trait MatrixAdviceProvider: Send + Sync {
                 output_tokens: response.output_tokens,
                 legacy_response: Some(response),
                 response_complete: true,
+                original_transport_context: None,
             })
     }
 
@@ -446,6 +449,10 @@ pub trait MatrixAdviceProvider: Send + Sync {
 
 #[derive(Debug, Default)]
 pub struct DisabledMatrixAdviceProvider;
+
+#[cfg(test)]
+#[path = "advisory_ports/matrix_observation_tests.rs"]
+mod matrix_observation_tests;
 
 #[async_trait]
 impl MatrixAdviceProvider for DisabledMatrixAdviceProvider {

@@ -146,6 +146,7 @@ async fn positive_binding_requires_revalidated_exact_record() {
         original_elapsed_ms: None,
         raw_observation_sealed: false,
         response_complete: true,
+        original_transport_context: None,
     };
     assert_eq!(
         fake_provider.parse_sealed_response(&provider, &saved),

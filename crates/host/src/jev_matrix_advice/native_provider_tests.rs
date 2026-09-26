@@ -64,6 +64,49 @@ fn constructor_requires_explicit_credential_and_exact_endpoint_path() {
 }
 
 #[test]
+fn native_response_configuration_matches_recovery_ceiling() {
+    let endpoint = Url::parse("http://127.0.0.1:9/v1/systemone").unwrap();
+    assert_eq!(MAX_NATIVE_MATRIX_RESPONSE_BYTES, 4 * 1024 * 1024);
+    assert_eq!(super::super::MAX_MATRIX_RESPONSE_BYTES, 8 * 1024 * 1024);
+    assert!(
+        JevNativeMatrixProvider::new(
+            config(endpoint.clone(), MAX_NATIVE_MATRIX_RESPONSE_BYTES),
+            "local-test".into()
+        )
+        .is_ok()
+    );
+    assert!(matches!(
+        JevNativeMatrixProvider::new(
+            config(endpoint, MAX_NATIVE_MATRIX_RESPONSE_BYTES + 1),
+            "local-test".into()
+        ),
+        Err(Error::InvalidConfiguration)
+    ));
+}
+
+fn assert_context(observed: &MatrixProviderObservation, failure: Option<&str>) {
+    let context = observed.original_transport_context.as_ref().unwrap();
+    assert_eq!(context.send_certainty, AdvisorySendCertainty::Sent);
+    assert_eq!(
+        context.outcome,
+        if failure.is_some() {
+            AdvisoryDispatchOutcome::ProviderFailure
+        } else {
+            AdvisoryDispatchOutcome::ProviderResponse
+        }
+    );
+    assert_eq!(context.provider_failure_code.as_deref(), failure);
+    let bytes = observed.response_payload.as_ref().unwrap();
+    assert_eq!(
+        context.raw_response_ref,
+        Some(format!("sha256:{:x}", Sha256::digest(bytes)))
+    );
+    context.validate_for(&observed.response_payload).unwrap();
+    let common = tect_application::AdvisoryProviderReceiptObservation::from(observed);
+    assert_eq!(common.original_transport_context.as_ref(), Some(context));
+}
+
+#[test]
 fn constructor_rejects_cleartext_remote_or_dns_and_url_credentials() {
     for url in [
         "http://192.0.2.1/v1/systemone",
@@ -97,6 +140,7 @@ async fn single_loopback_post_has_bearer_and_returns_bounded_bytes() {
     assert_eq!(observed.response_payload, Some(b"{}".to_vec()));
     assert_eq!(observed.http_status, Some(200));
     assert!(observed.response_complete);
+    assert_context(&observed, None);
     assert_eq!(observed.input_tokens, None);
     let request = server.join().unwrap();
     assert!(request.starts_with("POST /v1/systemone HTTP/1.1"));
@@ -117,6 +161,7 @@ async fn completed_error_malformed_and_empty_bodies_are_raw_observations() {
         let observed = provider.send_once(b"{}".to_vec()).await.unwrap();
         assert_eq!(observed.http_status, Some(status));
         assert!(observed.response_complete);
+        assert_context(&observed, (status == 500).then_some("http-status"));
         assert_eq!(observed.response_payload, Some(body.as_bytes().to_vec()));
         assert_eq!(observed.input_tokens, None);
         assert_eq!(observed.output_tokens, None);
@@ -202,6 +247,7 @@ async fn oversized_loopback_response_retains_bounded_prefix_and_status() {
     assert_eq!(observed.response_payload, Some(b"1234".to_vec()));
     assert_eq!(observed.http_status, Some(200));
     assert!(!observed.response_complete);
+    assert_context(&observed, Some("response-oversize"));
     assert_eq!(observed.input_tokens, None);
     server.join().unwrap();
 }
@@ -215,6 +261,20 @@ async fn truncated_body_retains_prefix_and_received_status() {
     assert_eq!(observed.response_payload, Some(b"123".to_vec()));
     assert_eq!(observed.http_status, Some(200));
     assert!(!observed.response_complete);
+    assert_context(&observed, Some("response-body-read"));
     assert_eq!(observed.input_tokens, None);
+    server.join().unwrap();
+}
+
+#[tokio::test]
+async fn exact_configured_response_boundary_is_complete() {
+    let response =
+        b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\n1234".to_vec();
+    let (endpoint, server) = loopback(response);
+    let provider = JevNativeMatrixProvider::new(config(endpoint, 4), "local-test".into()).unwrap();
+    let observed = provider.send_once(b"{}".to_vec()).await.unwrap();
+    assert_eq!(observed.response_payload, Some(b"1234".to_vec()));
+    assert!(observed.response_complete);
+    assert_context(&observed, None);
     server.join().unwrap();
 }

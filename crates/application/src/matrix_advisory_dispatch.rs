@@ -320,6 +320,12 @@ impl WorkspaceService {
                 output_tokens: None,
                 legacy_response: None,
                 response_complete: false,
+                original_transport_context: Some(crate::AdvisoryProviderTransportContext {
+                    send_certainty: AdvisorySendCertainty::SentUnknown,
+                    outcome: AdvisoryDispatchOutcome::ProviderFailure,
+                    raw_response_ref: None,
+                    provider_failure_code: Some("transport-unknown".into()),
+                }),
             });
         let monotonic_elapsed_ms =
             i64::try_from(monotonic_start.elapsed().as_millis()).unwrap_or(i64::MAX);

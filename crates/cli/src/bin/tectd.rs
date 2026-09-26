@@ -13,8 +13,9 @@ use tect_domain::{
     PIPELINE_RECOMMENDATION_CATALOGUE_REVISION, PipelineCompatibilityPolicy,
 };
 use tect_host::jev_matrix_advice::{
-    MAX_MATRIX_RESPONSE_BYTES,
-    native_provider::{JevNativeMatrixConfig, JevNativeMatrixProvider},
+    native_provider::{
+        JevNativeMatrixConfig, JevNativeMatrixProvider, MAX_NATIVE_MATRIX_RESPONSE_BYTES,
+    },
     native_wire::NATIVE_MATRIX_WIRE_VERSION,
 };
 use tect_host::jev_pipeline_recommendation::{
@@ -258,7 +259,7 @@ fn matrix_provider_config(
         endpoint,
         timeout: Duration::from_secs(10),
         maximum_request_bytes: MAX_PREPARED_MATRIX_BODY_BYTES,
-        maximum_response_bytes: MAX_MATRIX_RESPONSE_BYTES,
+        maximum_response_bytes: MAX_NATIVE_MATRIX_RESPONSE_BYTES,
     };
     Ok(Some((config, credential)))
 }

@@ -62,6 +62,7 @@ pub(super) fn stored_dispatch(
         original_output_tokens: None,
         original_elapsed_ms: None,
         raw_observation_sealed: false,
+        original_transport_context: None,
     }
 }
 

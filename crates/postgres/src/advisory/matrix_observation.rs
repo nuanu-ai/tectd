@@ -8,23 +8,33 @@ async fn attach_matrix_observation(
     if let Some((observation, elapsed)) =
         read_provider_observation(tx, tenant, workspace, saved.dispatch.id).await?
     {
-        if saved.dispatch.state == AdvisoryDispatchState::Sealed
-            && saved.response_payload != observation.response_payload
-        {
-            return Err(Error::InputConflict);
-        }
-        saved.response_payload_sha256 = observation
-            .response_payload
-            .as_ref()
-            .map(|raw| format!("{:x}", Sha256::digest(raw)));
-        saved.response_payload = observation.response_payload;
-        saved.response_http_status = observation.http_status;
-        saved.original_input_tokens = observation.input_tokens;
-        saved.original_output_tokens = observation.output_tokens;
-        saved.original_elapsed_ms = Some(elapsed);
-        saved.raw_observation_sealed = true;
-        saved.response_complete = observation.response_complete;
+        apply_matrix_observation(saved, observation, elapsed)?;
     }
+    Ok(())
+}
+
+fn apply_matrix_observation(
+    saved: &mut tect_application::StoredMatrixDispatch,
+    observation: tect_application::AdvisoryProviderReceiptObservation,
+    elapsed: i64,
+) -> Result<()> {
+    if saved.dispatch.state == AdvisoryDispatchState::Sealed
+        && saved.response_payload != observation.response_payload
+    {
+        return Err(Error::InputConflict);
+    }
+    saved.response_payload_sha256 = observation
+        .response_payload
+        .as_ref()
+        .map(|raw| format!("{:x}", Sha256::digest(raw)));
+    saved.response_payload = observation.response_payload;
+    saved.response_http_status = observation.http_status;
+    saved.original_input_tokens = observation.input_tokens;
+    saved.original_output_tokens = observation.output_tokens;
+    saved.original_elapsed_ms = Some(elapsed);
+    saved.raw_observation_sealed = true;
+    saved.response_complete = observation.response_complete;
+    saved.original_transport_context = observation.original_transport_context;
     Ok(())
 }
 

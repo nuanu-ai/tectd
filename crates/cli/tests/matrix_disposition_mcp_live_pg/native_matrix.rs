@@ -32,6 +32,7 @@ type RawAudit = (
     bool,
     String,
     String,
+    Value,
 );
 
 async fn guarded(pool: &PgPool, client: &mut Mcp, name: &str, params: Value) -> Value {
@@ -265,7 +266,7 @@ async fn audit(
         .await
         .unwrap();
     let row:RawAudit=sqlx::query_as(
-        "SELECT d.request_payload,o.request_sha256,o.response_payload,o.response_sha256,o.http_status,o.original_input_tokens,o.original_output_tokens,o.elapsed_ms,o.original_transport_outcome,o.response_complete,d.configuration_digest,o.configuration_digest FROM advisory_dispatch d JOIN advisory_provider_observations o ON o.dispatch_id=d.id AND o.workspace_id=d.workspace_id WHERE d.workspace_id=$1")
+        "SELECT d.request_payload,o.request_sha256,o.response_payload,o.response_sha256,o.http_status,o.original_input_tokens,o.original_output_tokens,o.elapsed_ms,o.original_transport_outcome,o.response_complete,d.configuration_digest,o.configuration_digest,o.original_transport_context FROM advisory_dispatch d JOIN advisory_provider_observations o ON o.dispatch_id=d.id AND o.workspace_id=d.workspace_id WHERE d.workspace_id=$1")
         .bind(workspace).fetch_one(&mut *tx).await.unwrap();
     assert_eq!(row.0, sent);
     assert_eq!(row.1, format!("{:x}", Sha256::digest(sent)));
@@ -302,6 +303,26 @@ async fn audit(
     );
     assert_eq!(row.9, !partial);
     assert_eq!(row.10, row.11);
+    let failure = match case {
+        Case::Http500 => Some("http-status"),
+        Case::Oversize => Some("response-oversize"),
+        Case::Truncated => Some("response-body-read"),
+        _ => None,
+    };
+    assert_eq!(row.12["send_certainty"], "sent");
+    assert_eq!(
+        row.12["outcome"],
+        if failure.is_some() {
+            "provider_failure"
+        } else {
+            "provider_response"
+        }
+    );
+    assert_eq!(row.12["provider_failure_code"], json!(failure));
+    assert_eq!(
+        row.12["raw_response_ref"],
+        format!("sha256:{:x}", Sha256::digest(raw))
+    );
     let identity: (String, String, Value, String) = sqlx::query_as(
         "SELECT provider,model,configuration_snapshot,configuration_digest \
          FROM advisory_dispatch WHERE workspace_id=$1",

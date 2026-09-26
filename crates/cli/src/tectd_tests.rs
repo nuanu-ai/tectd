@@ -188,6 +188,10 @@ fn matrix_transport_requires_a_complete_explicit_tuple() {
     )
     .unwrap()
     .unwrap();
+    assert_eq!(
+        config.maximum_response_bytes,
+        MAX_NATIVE_MATRIX_RESPONSE_BYTES
+    );
     let provider = JevNativeMatrixProvider::new(config, credential).unwrap();
     let identity = provider.identity().unwrap();
     assert_eq!(identity.provider_profile_ref.id, "profile");

@@ -20,7 +20,11 @@ use tect_domain::{
     MatrixAdviceEligibility, Result, compose_native_matrix_ranking,
 };
 
-use super::{MAX_MATRIX_RESPONSE_BYTES, MatrixRankingBinding, native_wire};
+use super::{MatrixRankingBinding, native_wire};
+
+/// Native captures must fit the existing Postgres Matrix recovery ceiling.
+/// The general request/frame and saved-parser ceilings remain unchanged.
+pub const MAX_NATIVE_MATRIX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Supplied by the caller, never read from process environment or saved audit.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,7 +64,7 @@ impl JevNativeMatrixConfig {
             || self.maximum_request_bytes == 0
             || self.maximum_request_bytes > MAX_PREPARED_MATRIX_BODY_BYTES
             || self.maximum_response_bytes == 0
-            || self.maximum_response_bytes > MAX_MATRIX_RESPONSE_BYTES
+            || self.maximum_response_bytes > MAX_NATIVE_MATRIX_RESPONSE_BYTES
         {
             return Err(Error::InvalidConfiguration);
         }
@@ -121,7 +125,10 @@ impl JevNativeMatrixProvider {
         })
     }
 
-    async fn bounded_body(&self, mut response: reqwest::Response) -> (Vec<u8>, bool) {
+    async fn bounded_body(
+        &self,
+        mut response: reqwest::Response,
+    ) -> (Vec<u8>, bool, Option<&'static str>) {
         let mut bytes = Vec::new();
         loop {
             match response.chunk().await {
@@ -132,11 +139,11 @@ impl JevNativeMatrixProvider {
                         .saturating_sub(bytes.len());
                     bytes.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
                     if chunk.len() > remaining {
-                        return (bytes, false);
+                        return (bytes, false, Some("response-oversize"));
                     }
                 }
-                Ok(None) => return (bytes, true),
-                Err(_) => return (bytes, false),
+                Ok(None) => return (bytes, true, None),
+                Err(_) => return (bytes, false, Some("response-body-read")),
             }
         }
     }
@@ -152,7 +159,18 @@ impl JevNativeMatrixProvider {
             .await
             .map_err(|_| Error::TransportUnavailable)?;
         let status = response.status();
-        let (bytes, response_complete) = self.bounded_body(response).await;
+        let (bytes, response_complete, body_failure) = self.bounded_body(response).await;
+        let failure = body_failure.or_else(|| (!status.is_success()).then_some("http-status"));
+        let original_transport_context = Some(tect_application::AdvisoryProviderTransportContext {
+            send_certainty: AdvisorySendCertainty::Sent,
+            outcome: if failure.is_some() {
+                AdvisoryDispatchOutcome::ProviderFailure
+            } else {
+                AdvisoryDispatchOutcome::ProviderResponse
+            },
+            raw_response_ref: Some(format!("sha256:{:x}", Sha256::digest(&bytes))),
+            provider_failure_code: failure.map(str::to_owned),
+        });
         Ok(MatrixProviderObservation {
             legacy_response: None,
             response_complete,
@@ -160,6 +178,7 @@ impl JevNativeMatrixProvider {
             http_status: Some(status.as_u16()),
             input_tokens: None,
             output_tokens: None,
+            original_transport_context,
         })
     }
 }
