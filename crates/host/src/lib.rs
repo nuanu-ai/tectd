@@ -59,6 +59,7 @@ mod slice_dispatch;
 mod slice_guidance;
 mod slice_pipeline_catalog;
 mod slice_tools;
+mod system_one_transport;
 mod tools;
 mod transport;
 mod workspace_output;
