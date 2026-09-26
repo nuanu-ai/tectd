@@ -1,5 +1,17 @@
 use super::*;
 
+pub(super) async fn provider_profile_matches(
+    uow: &mut PgUnitOfWork,
+    workspace: Uuid,
+    profile: &str,
+) -> Result<bool> {
+    let tenant = uow.tenant_id()?;
+    // SELECT-only: preserves existing runtime grants/RLS and read-only recovery.
+    let selected: Option<String> = sqlx::query_scalar("SELECT provider_profile_ref FROM public.advisory_workspace_config WHERE tenant_id=$1 AND workspace_id=$2 AND mode='optional'")
+        .bind(tenant).bind(workspace).fetch_optional(&mut **uow.transaction()?).await.map_err(storage_error)?.flatten();
+    Ok(selected.as_deref() == Some(profile))
+}
+
 pub(super) async fn advisory_mode(
     uow: &mut PgUnitOfWork,
     workspace_id: Uuid,

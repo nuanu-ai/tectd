@@ -193,6 +193,7 @@ fn refresh(mut value: AntiBloatInput) -> AntiBloatInput {
 
 #[derive(Default)]
 struct FakeStore {
+    selected_profile: Option<String>,
     mode: WorkspaceAdvisoryMode,
     input: Option<AntiBloatInput>,
     saved: Option<StoredAntiBloatReview>,
@@ -249,6 +250,9 @@ struct AppliedDecision {
 
 #[async_trait]
 impl AntiBloatStore for FakeStore {
+    async fn provider_profile_matches(&mut self, _: Uuid, profile: &str) -> Result<bool> {
+        Ok(self.selected_profile.as_deref() == Some(profile))
+    }
     async fn record_preflight_no_call(&mut self, _: Uuid, reason: AntiBloatNoCall) -> Result<()> {
         assert_eq!(
             self.saved.as_ref().unwrap().state,
@@ -292,6 +296,7 @@ impl AntiBloatStore for FakeStore {
         saved: &StoredAntiBloatReview,
         prepared: &AntiBloatPreparedRequest,
         _: &AdvisoryBudgetPolicy,
+        _: Option<&str>,
     ) -> Result<Option<AntiBloatSendPermit>> {
         if self.sends != 0 {
             return Ok(None);
@@ -484,6 +489,7 @@ impl AntiBloatStore for FakeStore {
 }
 
 struct FakeProvider {
+    required_profile: Option<&'static str>,
     calls: AtomicUsize,
     invent: bool,
 }
@@ -570,6 +576,9 @@ async fn provider_observes_committed_fence_and_commit_failure_never_calls() {
 
 #[async_trait]
 impl AntiBloatRankingProvider for FakeProvider {
+    fn required_profile(&self) -> Option<&str> {
+        self.required_profile
+    }
     async fn rank(
         &self,
         started: &crate::AntiBloatStartedDispatchPermit,
@@ -605,6 +614,7 @@ fn app(extra: bool, invent: bool) -> AntiBloatApplication<FakeStore, FakeProvide
             ..FakeStore::default()
         },
         provider: FakeProvider {
+            required_profile: None,
             calls: AtomicUsize::new(0),
             invent,
         },

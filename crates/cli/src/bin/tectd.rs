@@ -29,7 +29,9 @@ use tokio::net::UnixListener;
 mod daemon_config;
 #[path = "../knowledge_search_worker.rs"]
 mod knowledge_search_worker;
-use daemon_config::{database_max_connections, scope_provider_from_env};
+use daemon_config::{
+    anti_bloat_provider_from_env, database_max_connections, scope_provider_from_env,
+};
 
 #[tokio::main]
 async fn main() {
@@ -56,6 +58,7 @@ async fn run() -> tect_domain::Result<()> {
     let matrix_provider = matrix_provider_from_env()?;
     let pipeline_compatibility_policy = pipeline_compatibility_policy_from_env()?;
     let scope_provider = scope_provider_from_env()?;
+    let anti_bloat_provider = anti_bloat_provider_from_env()?;
     validate_socket_parent(&socket)?;
     reject_existing_path(&socket)?;
 
@@ -91,6 +94,9 @@ async fn run() -> tect_domain::Result<()> {
     ));
     if let Some(provider) = pipeline_provider {
         service = service.with_pipeline_recommendation_provider(Arc::new(provider));
+    }
+    if let Some(provider) = anti_bloat_provider {
+        service = service.with_anti_bloat_provider(Arc::new(provider));
     }
     if let Some(provider) = matrix_provider {
         service = service.with_matrix_advisory_adapters(

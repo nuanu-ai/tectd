@@ -172,6 +172,18 @@ pub async fn prepare_anti_bloat_send(
     if !provider.available() {
         return preflight_no_call(store, review_id, AntiBloatNoCall::ProviderUnconfigured).await;
     }
+    if let Some(profile) = provider.required_profile()
+        && !store
+            .provider_profile_matches(saved.workspace_id, profile)
+            .await?
+    {
+        return preflight_no_call(
+            store,
+            review_id,
+            AntiBloatNoCall::PreflightInvalidConfiguration,
+        )
+        .await;
+    }
     let eligible = saved
         .review
         .findings
@@ -227,7 +239,10 @@ pub async fn prepare_anti_bloat_send(
     if !policy.is_effective_at(now_unix_ms) {
         return Err(Error::BudgetPolicyInvalid);
     }
-    let Some(permit) = store.begin_send(&saved, &prepared, &policy).await? else {
+    let Some(permit) = store
+        .begin_send(&saved, &prepared, &policy, provider.required_profile())
+        .await?
+    else {
         return Ok(PreparedAntiBloatSend {
             state: store.review(review_id).await?.ok_or(Error::NotFound)?.state,
             permit: None,
@@ -369,10 +384,10 @@ async fn observe_sealed_usage(
         return Err(Error::InputConflict);
     }
     let decoded = provider.usage_sealed(permit, &sealed);
-    if let Err(error) = &decoded {
-        if *error != Error::InputConflict {
-            return Err(error.clone());
-        }
+    if let Err(error) = &decoded
+        && *error != Error::InputConflict
+    {
+        return Err(error.clone());
     }
     let invalid = decoded.is_err();
     let usage = decoded.unwrap_or(crate::AntiBloatUsage {

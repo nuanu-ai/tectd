@@ -78,6 +78,9 @@ impl JevAntiBloatProvider {
 
 #[async_trait]
 impl AntiBloatRankingProvider for JevAntiBloatProvider {
+    fn required_profile(&self) -> Option<&str> {
+        Some(&self.config.profile)
+    }
     fn available(&self) -> bool {
         true
     }

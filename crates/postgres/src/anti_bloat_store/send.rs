@@ -20,11 +20,23 @@ pub(super) async fn begin_send(
     saved: &StoredAntiBloatReview,
     prepared: &AntiBloatPreparedRequest,
     policy: &AdvisoryBudgetPolicy,
+    required_profile: Option<&str>,
 ) -> Result<Option<AntiBloatSendPermit>> {
     if !uow.is_read_write() || uow.principal_id()? != saved.actor_id {
         return Err(Error::Forbidden);
     }
     let tenant = uow.tenant_id()?;
+    if let Some(profile) = required_profile
+        && !input::provider_profile_matches(uow, saved.workspace_id, profile).await?
+    {
+        response::record_preflight_no_call(
+            uow,
+            saved.review_id,
+            tect_application::AntiBloatNoCall::PreflightInvalidConfiguration,
+        )
+        .await?;
+        return Ok(None);
+    }
     let locked_revision: Option<i64> = sqlx::query_scalar(
         "SELECT revision FROM scope_candidate_sets WHERE tenant_id=$1 \
          AND workspace_id=$2 AND id=$3",

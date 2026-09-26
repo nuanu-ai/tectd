@@ -145,6 +145,13 @@ impl AntiBloatStore for PgUnitOfWork {
     async fn advisory_mode(&mut self, workspace_id: Uuid) -> Result<WorkspaceAdvisoryMode> {
         input::advisory_mode(self, workspace_id).await
     }
+    async fn provider_profile_matches(
+        &mut self,
+        workspace_id: Uuid,
+        profile: &str,
+    ) -> Result<bool> {
+        input::provider_profile_matches(self, workspace_id, profile).await
+    }
 
     async fn authoritative_input(
         &mut self,
@@ -171,8 +178,9 @@ impl AntiBloatStore for PgUnitOfWork {
         saved: &StoredAntiBloatReview,
         prepared: &AntiBloatPreparedRequest,
         policy: &AdvisoryBudgetPolicy,
+        required_profile: Option<&str>,
     ) -> Result<Option<AntiBloatSendPermit>> {
-        send::begin_send(self, saved, prepared, policy).await
+        send::begin_send(self, saved, prepared, policy, required_profile).await
     }
 
     async fn mark_send_unknown(&mut self, review_id: Uuid) -> Result<()> {

@@ -194,6 +194,15 @@ pub trait AntiBloatStore: Send {
         Ok(None)
     }
     async fn advisory_mode(&mut self, workspace_id: Uuid) -> Result<WorkspaceAdvisoryMode>;
+    /// Native configured profiles must match the workspace's explicit choice.
+    /// Legacy providers declare no required profile and do not use this port.
+    async fn provider_profile_matches(
+        &mut self,
+        _workspace_id: Uuid,
+        _profile: &str,
+    ) -> Result<bool> {
+        Ok(false)
+    }
 
     async fn authoritative_input(
         &mut self,
@@ -212,6 +221,7 @@ pub trait AntiBloatStore: Send {
         saved: &StoredAntiBloatReview,
         prepared: &AntiBloatPreparedRequest,
         policy: &AdvisoryBudgetPolicy,
+        required_profile: Option<&str>,
     ) -> Result<Option<AntiBloatSendPermit>>;
 
     async fn mark_send_unknown(&mut self, review_id: Uuid) -> Result<()>;
@@ -287,6 +297,9 @@ pub trait AntiBloatStore: Send {
 /// cannot mint an attempt for disabled/skip/no-eligible or replayed fences.
 #[async_trait]
 pub trait AntiBloatRankingProvider: Send + Sync {
+    fn required_profile(&self) -> Option<&str> {
+        None
+    }
     fn available(&self) -> bool {
         true
     }

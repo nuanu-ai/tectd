@@ -10,6 +10,13 @@ pub(super) async fn load_saved_response(
         return Err(Error::InputConflict);
     }
     require_current(store, &review).await?;
+    if let Some(profile) = provider.required_profile()
+        && !store
+            .provider_profile_matches(review.workspace_id, profile)
+            .await?
+    {
+        return Err(Error::InputConflict);
+    }
     if !provider.available() {
         return Err(Error::InvalidConfiguration);
     }
