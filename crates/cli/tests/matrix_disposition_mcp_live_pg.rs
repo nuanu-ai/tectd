@@ -1,5 +1,7 @@
 //! Public MCP Matrix disposition proof with a synthetic provider and disposable PG18.
 //! The test is ignored until the exact pinned cluster and explicit guard are supplied.
+#[path = "matrix_disposition_mcp_live_pg/decomposition_parent.rs"]
+mod decomposition_parent;
 #[path = "pipeline_execution/full_support.rs"]
 mod full_support;
 #[path = "matrix_disposition_mcp_live_pg/model_route_native.rs"]
