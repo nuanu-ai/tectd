@@ -2,6 +2,8 @@
 //! The test is ignored until the exact pinned cluster and explicit guard are supplied.
 #[path = "pipeline_execution/full_support.rs"]
 mod full_support;
+#[path = "matrix_disposition_mcp_live_pg/model_route_native.rs"]
+mod model_route_native;
 #[path = "matrix_disposition_mcp_live_pg/model_route_positive.rs"]
 mod model_route_positive;
 #[path = "matrix_disposition_mcp_live_pg/pipeline_prepare.rs"]
