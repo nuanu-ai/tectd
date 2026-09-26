@@ -256,11 +256,17 @@ pub async fn finalize_anti_bloat_response(
         .filter(|finding| finding.rankable)
         .map(|finding| finding.id.clone())
         .collect::<Vec<_>>();
-    let ranked: Vec<String> = match provider.parse_sealed(&sealed) {
-        Ok(ids) => ids,
-        Err(_) => {
-            store.mark_send_unknown(permit.review_id).await?;
-            return Err(Error::InputConflict);
+    let ranked: Vec<String> = match provider.parse_sealed(permit, &sealed) {
+        Ok(crate::AntiBloatRankingOutcome::Ranked(ids)) => ids,
+        Err(error) if error != Error::InputConflict => return Err(error),
+        outcome => {
+            let state = if matches!(outcome, Ok(crate::AntiBloatRankingOutcome::Abstained)) {
+                AntiBloatAttemptState::ProviderAbstained
+            } else {
+                AntiBloatAttemptState::InvalidResponse
+            };
+            store.seal_terminal(permit, state.clone()).await?;
+            return Ok(state);
         }
     };
     // Provider output can only order the complete frozen eligible set.
@@ -294,6 +300,51 @@ async fn require_current(
     Ok(())
 }
 
+async fn observe_sealed_usage(
+    store: &mut dyn AntiBloatStore,
+    provider: &dyn AntiBloatRankingProvider,
+    permit: &AntiBloatSendPermit,
+    observation: &AntiBloatProviderObservation,
+) -> Result<(AntiBloatProviderObservation, bool)> {
+    if permit.request.adapter_identity != provider.adapter_identity()
+        || permit.request.sha256 != format!("{:x}", Sha256::digest(&permit.request.bytes))
+    {
+        return Err(Error::InputConflict);
+    }
+    let sealed = store.sealed_response_for_usage(permit).await?;
+    if sealed != observation.raw {
+        return Err(Error::InputConflict);
+    }
+    let decoded = provider.usage_sealed(
+        permit,
+        &sealed,
+        &crate::AntiBloatUsage {
+            input_tokens: observation.input_tokens,
+            output_tokens: observation.output_tokens,
+        },
+    );
+    if let Err(error) = &decoded {
+        if *error != Error::InputConflict {
+            return Err(error.clone());
+        }
+    }
+    let invalid = decoded.is_err();
+    let usage = decoded.unwrap_or(crate::AntiBloatUsage {
+        input_tokens: None,
+        output_tokens: None,
+    });
+    Ok((
+        AntiBloatProviderObservation {
+            raw: observation.raw.clone(),
+            elapsed_monotonic_ms: observation.elapsed_monotonic_ms,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+        }
+        .normalized(),
+        invalid,
+    ))
+}
+
 async fn rank_after_committed_fence<F: Future<Output = Result<()>>>(
     commit: F,
     provider: &dyn AntiBloatRankingProvider,
@@ -308,192 +359,6 @@ async fn rank_after_committed_fence<F: Future<Output = Result<()>>>(
     Ok(provider.rank(permit).await)
 }
 
-impl WorkspaceService {
-    async fn anti_bloat_transaction(
-        &self,
-        context: &RequestContext,
-        mode: TransactionMode,
-    ) -> Result<(Box<dyn UnitOfWork>, Uuid, Uuid)> {
-        let (mut tx, identity) = self.authorized(context, mode).await?;
-        if mode == TransactionMode::ReadWrite {
-            tx.lock_native_session(identity.host_id, &context.native_session_id)
-                .await?;
-        }
-        let (workspace, _) = Self::bound_session(&mut *tx, context, &identity).await?;
-        Ok((tx, workspace.id, identity.principal_id))
-    }
-
-    pub async fn prepare_anti_bloat(
-        &self,
-        context: &RequestContext,
-        candidate_set_id: Uuid,
-        expected_revision: i64,
-        preference: AdvisoryRequestPreference,
-    ) -> Result<StoredAntiBloatReview> {
-        let (mut tx, workspace, actor) = self
-            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
-            .await?;
-        let review = prepare_anti_bloat_review(
-            tx.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
-            workspace,
-            actor,
-            candidate_set_id,
-            expected_revision,
-            preference,
-        )
-        .await?;
-        tx.commit().await?;
-        Ok(review)
-    }
-
-    pub async fn get_anti_bloat(
-        &self,
-        context: &RequestContext,
-        review_id: Uuid,
-    ) -> Result<StoredAntiBloatReview> {
-        if review_id.is_nil() {
-            return Err(Error::InvalidArguments);
-        }
-        let (mut tx, workspace, _) = self
-            .anti_bloat_transaction(context, TransactionMode::ReadOnly)
-            .await?;
-        let review = tx
-            .anti_bloat_store()
-            .ok_or(Error::StorageUnavailable)?
-            .review(review_id)
-            .await?
-            .ok_or(Error::NotFound)?;
-        if review.workspace_id != workspace {
-            return Err(Error::Forbidden);
-        }
-        tx.commit().await?;
-        Ok(review)
-    }
-
-    pub async fn apply_anti_bloat(
-        &self,
-        context: &RequestContext,
-        authored: &AntiBloatAuthoredDelta,
-    ) -> Result<AntiBloatApplyReceipt> {
-        let (mut tx, workspace, _) = self
-            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
-            .await?;
-        let store = tx.anti_bloat_store().ok_or(Error::StorageUnavailable)?;
-        let saved = store
-            .review(authored.review_id)
-            .await?
-            .ok_or(Error::NotFound)?;
-        if saved.workspace_id != workspace {
-            return Err(Error::Forbidden);
-        }
-        let receipt = apply_anti_bloat_delta(store, authored).await?;
-        tx.commit().await?;
-        Ok(receipt)
-    }
-
-    /// The one-use send fence is committed before the provider sees a permit.
-    /// Raw response bytes are committed before their interpretation.
-    pub async fn run_anti_bloat_once(
-        &self,
-        context: &RequestContext,
-        review_id: Uuid,
-    ) -> Result<AntiBloatAttemptState> {
-        if review_id.is_nil() {
-            return Err(Error::InvalidArguments);
-        }
-        let (mut fence, workspace, _) = self
-            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
-            .await?;
-        let saved = fence
-            .anti_bloat_store()
-            .ok_or(Error::StorageUnavailable)?
-            .review(review_id)
-            .await?
-            .ok_or(Error::NotFound)?;
-        if saved.workspace_id != workspace {
-            return Err(Error::Forbidden);
-        }
-        let prepared = prepare_anti_bloat_send(
-            fence.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
-            self.anti_bloat_provider.as_ref(),
-            review_id,
-        )
-        .await?;
-        let Some(permit) = prepared.permit else {
-            fence.commit().await?;
-            return Ok(prepared.state);
-        };
-
-        let observation = match rank_after_committed_fence(
-            fence.commit(),
-            self.anti_bloat_provider.as_ref(),
-            &permit,
-        )
-        .await?
-        {
-            Ok(observation) => observation.normalized(),
-            Err(_) => {
-                let (mut uncertain, _, _) = self
-                    .anti_bloat_transaction(context, TransactionMode::ReadWrite)
-                    .await?;
-                uncertain
-                    .anti_bloat_store()
-                    .ok_or(Error::StorageUnavailable)?
-                    .mark_send_unknown(review_id)
-                    .await?;
-                uncertain.commit().await?;
-                return Ok(AntiBloatAttemptState::SendUnknown);
-            }
-        };
-        let (mut seal, _, _) = self
-            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
-            .await?;
-        seal_anti_bloat_response(
-            seal.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
-            &permit,
-            &observation.raw,
-        )
-        .await?;
-        seal.commit().await?;
-
-        let (mut consume, _, _) = self
-            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
-            .await?;
-        let exhausted = consume
-            .anti_bloat_store()
-            .ok_or(Error::StorageUnavailable)?
-            .consume_budget(&permit, &observation)
-            .await?;
-        consume.commit().await?;
-        if exhausted {
-            let (mut uncertain, _, _) = self
-                .anti_bloat_transaction(context, TransactionMode::ReadWrite)
-                .await?;
-            uncertain
-                .anti_bloat_store()
-                .ok_or(Error::StorageUnavailable)?
-                .mark_send_unknown(review_id)
-                .await?;
-            uncertain.commit().await?;
-            return Ok(AntiBloatAttemptState::SendUnknown);
-        }
-
-        let (mut finish, _, _) = self
-            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
-            .await?;
-        let outcome = finalize_anti_bloat_response(
-            finish.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
-            self.anti_bloat_provider.as_ref(),
-            &permit,
-            &observation.raw,
-        )
-        .await;
-        // Invalid provider output transitions to send_unknown even when the
-        // command reports a conflict; commit that terminal audit state.
-        finish.commit().await?;
-        outcome
-    }
-}
-
+mod service;
 #[cfg(test)]
 mod tests;

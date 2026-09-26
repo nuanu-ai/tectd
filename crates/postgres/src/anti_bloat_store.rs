@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 mod apply;
 mod input;
+mod response;
 mod review;
 mod send;
 
@@ -71,6 +72,8 @@ fn state_name(state: &AntiBloatAttemptState) -> &'static str {
         AntiBloatAttemptState::Sending => "sending",
         AntiBloatAttemptState::Ranked(_) => "ranked",
         AntiBloatAttemptState::SendUnknown => "send_unknown",
+        AntiBloatAttemptState::ProviderAbstained => "provider_abstained",
+        AntiBloatAttemptState::InvalidResponse => "invalid_response",
     }
 }
 
@@ -82,6 +85,8 @@ fn parse_state(name: &str, ranked: Option<serde_json::Value>) -> Result<AntiBloa
         "prepared" => AntiBloatAttemptState::Prepared,
         "sending" => AntiBloatAttemptState::Sending,
         "send_unknown" => AntiBloatAttemptState::SendUnknown,
+        "provider_abstained" => AntiBloatAttemptState::ProviderAbstained,
+        "invalid_response" => AntiBloatAttemptState::InvalidResponse,
         "ranked" => AntiBloatAttemptState::Ranked(
             serde_json::from_value(ranked.ok_or(Error::InternalInvariant)?)
                 .map_err(storage_error)?,
@@ -163,6 +168,18 @@ impl AntiBloatStore for PgUnitOfWork {
 
     async fn seal_ranked(&mut self, review_id: Uuid, ranked_ids: &[String]) -> Result<()> {
         send::seal_ranked(self, review_id, ranked_ids).await
+    }
+
+    async fn sealed_response_for_usage(&mut self, permit: &AntiBloatSendPermit) -> Result<Vec<u8>> {
+        response::sealed_response_for_usage(self, permit).await
+    }
+
+    async fn seal_terminal(
+        &mut self,
+        permit: &AntiBloatSendPermit,
+        state: AntiBloatAttemptState,
+    ) -> Result<()> {
+        response::seal_terminal(self, permit, state).await
     }
 
     async fn apply_preserved_delta(

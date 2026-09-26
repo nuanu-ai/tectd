@@ -212,6 +212,7 @@ pub(super) async fn authorized_sealed_response(
     uow: &mut PgUnitOfWork,
     permit: &AntiBloatSendPermit,
 ) -> Result<Vec<u8>> {
+    super::response::validate_permit_material(uow, permit).await?;
     let raw: Option<Vec<u8>> = sqlx::query_scalar(
         "SELECT v.raw_response FROM scope_anti_bloat_reviews v \
          JOIN scope_anti_bloat_budget_consumptions c ON \

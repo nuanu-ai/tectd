@@ -156,6 +156,8 @@ pub(crate) fn state(value: &AntiBloatAttemptState) -> Value {
         AntiBloatAttemptState::Sending => json!({"status":"sending"}),
         AntiBloatAttemptState::Ranked(ids) => json!({"status":"ranked","ranked_ids":ids}),
         AntiBloatAttemptState::SendUnknown => json!({"status":"send_unknown"}),
+        AntiBloatAttemptState::ProviderAbstained => json!({"status":"provider_abstained"}),
+        AntiBloatAttemptState::InvalidResponse => json!({"status":"invalid_response"}),
     }
 }
 

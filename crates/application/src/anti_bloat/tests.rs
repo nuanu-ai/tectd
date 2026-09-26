@@ -350,6 +350,33 @@ impl AntiBloatStore for FakeStore {
         }
         self.raw_response.clone().ok_or(Error::InputConflict)
     }
+    async fn sealed_response_for_usage(&mut self, permit: &AntiBloatSendPermit) -> Result<Vec<u8>> {
+        if self.prepared.as_ref() != Some(&permit.request)
+            || self.saved.as_ref().unwrap().state != AntiBloatAttemptState::Sending
+        {
+            return Err(Error::InputConflict);
+        }
+        self.raw_response.clone().ok_or(Error::InputConflict)
+    }
+    async fn seal_terminal(
+        &mut self,
+        permit: &AntiBloatSendPermit,
+        state: AntiBloatAttemptState,
+    ) -> Result<()> {
+        self.sealed_response_for_usage(permit).await?;
+        if self.consumed.is_none() {
+            return Err(Error::InputConflict);
+        }
+        if state == AntiBloatAttemptState::ProviderAbstained {
+            self.authorized_sealed_response(permit).await?;
+        }
+        assert!(matches!(
+            state,
+            AntiBloatAttemptState::ProviderAbstained | AntiBloatAttemptState::InvalidResponse
+        ));
+        self.saved.as_mut().unwrap().state = state;
+        Ok(())
+    }
     async fn apply_preserved_delta(
         &mut self,
         authored: &AntiBloatAuthoredDelta,
@@ -546,5 +573,6 @@ async fn prepare(
 
 mod classification;
 mod contract;
+mod lifecycle;
 mod provider_seams;
 mod scenarios;

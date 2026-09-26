@@ -2,6 +2,39 @@ const MIGRATION: &str = include_str!("../migrations/0076_scope_anti_bloat_review
 const NATIVE_APPLY: &str = include_str!("../migrations/0078_scope_anti_bloat_native_apply.sql");
 const VERIFIER: &str =
     include_str!("../migrations/0079_scope_anti_bloat_preservation_attestation.sql");
+const ADAPTER: &str = include_str!("../migrations/0093_anti_bloat_adapter_identity.sql");
+const TERMINALS: &str = include_str!("../migrations/0094_anti_bloat_terminal_outcomes.sql");
+
+#[test]
+fn adapter_identity_backfills_generic_and_freezes_with_exact_request() {
+    assert!(ADAPTER.contains("NOT NULL DEFAULT 'generic-json-v1'"));
+    assert!(ADAPTER.contains("CHECK (length(request_adapter_identity) > 0)"));
+    assert!(ADAPTER.contains("OLD.request_bytes IS NOT NULL"));
+    assert!(
+        ADAPTER
+            .contains("NEW.request_adapter_identity IS DISTINCT FROM OLD.request_adapter_identity")
+    );
+    assert!(ADAPTER.contains("BEFORE UPDATE ON scope_anti_bloat_reviews"));
+}
+
+#[test]
+fn native_terminal_states_require_raw_seal_consumption_and_remain_immutable() {
+    assert!(TERMINALS.contains("scope_anti_bloat_review_terminal_check CHECK"));
+    assert!(TERMINALS.contains(
+        "raw_response IS NOT NULL AND response_sealed_at IS NOT NULL AND sealed_at IS NOT NULL"
+    ));
+    assert!(TERMINALS.contains(
+        "OLD.state='sending' AND NEW.state IN ('provider_abstained','invalid_response')"
+    ));
+    assert!(
+        TERMINALS.contains(
+            "c.request_sha256=OLD.request_sha256 AND c.response_sha256=OLD.response_sha256"
+        )
+    );
+    assert!(TERMINALS.contains("NOT c.unknown_usage AND NOT c.exhausted_after_response"));
+    assert!(TERMINALS.contains("NEW.request_adapter_identity) IS DISTINCT FROM"));
+    assert!(TERMINALS.contains("NEW.raw_response,NEW.response_sha256,NEW.response_sealed_at"));
+}
 
 #[test]
 fn binding_foreign_key_targets_exact_source_identity() {

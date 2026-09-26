@@ -17,12 +17,18 @@ impl AntiBloatRankingProvider for WireProvider {
         assert!(!material.eligible_ids.is_empty());
         Ok(b"exact provider wire".to_vec())
     }
-    fn parse_sealed(&self, raw: &[u8]) -> Result<Vec<String>> {
+    fn parse_sealed(
+        &self,
+        _: &AntiBloatSendPermit,
+        raw: &[u8],
+    ) -> Result<crate::AntiBloatRankingOutcome> {
         self.parses.fetch_add(1, Ordering::SeqCst);
         let payload = raw
             .strip_prefix(b"untouched transport:")
             .ok_or(Error::InputConflict)?;
-        serde_json::from_slice(payload).map_err(|_| Error::InputConflict)
+        serde_json::from_slice(payload)
+            .map(crate::AntiBloatRankingOutcome::Ranked)
+            .map_err(|_| Error::InputConflict)
     }
     async fn rank(&self, permit: &AntiBloatSendPermit) -> Result<AntiBloatProviderObservation> {
         assert_eq!(permit.request.bytes, b"exact provider wire");

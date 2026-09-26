@@ -11,6 +11,7 @@ pub use anti_bloat_ports::{
     AntiBloatSendPermit, AntiBloatStore, DisabledAntiBloatRankingProvider, StoredAntiBloatReview,
     anti_bloat_material_sha256,
 };
+pub use anti_bloat_ports::{AntiBloatRankingOutcome, AntiBloatUsage};
 pub use anti_bloat_ports::{AntiBloatVerificationMaterial, AntiBloatVerificationStore};
 pub use anti_bloat_verification::AntiBloatVerificationEvidence;
 pub use anti_bloat_verification::VerifyAntiBloatApply;

@@ -23,6 +23,21 @@ pub enum AntiBloatAttemptState {
     Sending,
     Ranked(Vec<String>),
     SendUnknown,
+    ProviderAbstained,
+    InvalidResponse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AntiBloatRankingOutcome {
+    Ranked(Vec<String>),
+    Abstained,
+    InvalidResponse,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AntiBloatUsage {
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -149,6 +164,23 @@ pub trait AntiBloatStore: Send {
         Err(tect_domain::Error::InputConflict)
     }
 
+    /// Returns exact committed raw bytes before body usage extraction. This
+    /// grants no permission to rank; successful budget consumption is separate.
+    async fn sealed_response_for_usage(
+        &mut self,
+        _permit: &AntiBloatSendPermit,
+    ) -> Result<Vec<u8>> {
+        Err(tect_domain::Error::InputConflict)
+    }
+
+    async fn seal_terminal(
+        &mut self,
+        _permit: &AntiBloatSendPermit,
+        _state: AntiBloatAttemptState,
+    ) -> Result<()> {
+        Err(tect_domain::Error::InputConflict)
+    }
+
     async fn seal_ranked(&mut self, review_id: Uuid, ranked_ids: &[String]) -> Result<()>;
 
     /// This seam must atomically save explicit disposition and preservation
@@ -182,8 +214,26 @@ pub trait AntiBloatRankingProvider: Send + Sync {
     }
 
     /// Pure interpretation of untouched transport bytes authorized by the store.
-    fn parse_sealed(&self, raw: &[u8]) -> Result<Vec<String>> {
-        serde_json::from_slice(raw).map_err(|_| tect_domain::Error::InputConflict)
+    fn parse_sealed(
+        &self,
+        _permit: &AntiBloatSendPermit,
+        raw: &[u8],
+    ) -> Result<AntiBloatRankingOutcome> {
+        serde_json::from_slice(raw)
+            .map(AntiBloatRankingOutcome::Ranked)
+            .map_err(|_| tect_domain::Error::InputConflict)
+    }
+
+    /// Pure post-seal body usage extraction. Generic providers already supply
+    /// counters out of band, so their observation remains unchanged. Native
+    /// HTTP providers override this hook; transport must not parse body usage.
+    fn usage_sealed(
+        &self,
+        _permit: &AntiBloatSendPermit,
+        _raw: &[u8],
+        transport_usage: &AntiBloatUsage,
+    ) -> Result<AntiBloatUsage> {
+        Ok(transport_usage.clone())
     }
     async fn rank(&self, permit: &AntiBloatSendPermit) -> Result<AntiBloatProviderObservation>;
 }
