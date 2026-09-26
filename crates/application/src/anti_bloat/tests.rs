@@ -244,6 +244,16 @@ struct AppliedDecision {
 
 #[async_trait]
 impl AntiBloatStore for FakeStore {
+    async fn record_preflight_no_call(&mut self, _: Uuid, reason: AntiBloatNoCall) -> Result<()> {
+        assert_eq!(
+            self.saved.as_ref().unwrap().state,
+            AntiBloatAttemptState::Prepared
+        );
+        assert!(self.prepared.is_none());
+        assert_eq!(self.sends, 0);
+        self.saved.as_mut().unwrap().state = AntiBloatAttemptState::NoCall(reason);
+        Ok(())
+    }
     async fn authorized_budget_policy(
         &mut self,
         _: Uuid,
@@ -582,6 +592,7 @@ async fn prepare(
 mod classification;
 mod contract;
 mod lifecycle;
+mod preflight;
 mod provider_seams;
 mod scenarios;
 mod started_dispatch;

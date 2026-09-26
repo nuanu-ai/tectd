@@ -68,6 +68,21 @@ fn state_name(state: &AntiBloatAttemptState) -> &'static str {
         AntiBloatAttemptState::NoCall(AntiBloatNoCall::Disabled) => "disabled",
         AntiBloatAttemptState::NoCall(AntiBloatNoCall::Skipped) => "skipped",
         AntiBloatAttemptState::NoCall(AntiBloatNoCall::NoEligibleFindings) => "no_eligible",
+        AntiBloatAttemptState::NoCall(AntiBloatNoCall::ProviderUnconfigured) => {
+            "provider_unconfigured"
+        }
+        AntiBloatAttemptState::NoCall(AntiBloatNoCall::PreflightInvalidConfiguration) => {
+            "preflight_invalid_configuration"
+        }
+        AntiBloatAttemptState::NoCall(AntiBloatNoCall::PreflightInvalidArguments) => {
+            "preflight_invalid_arguments"
+        }
+        AntiBloatAttemptState::NoCall(AntiBloatNoCall::PreflightInputConflict) => {
+            "preflight_input_conflict"
+        }
+        AntiBloatAttemptState::NoCall(AntiBloatNoCall::PreflightRequestTooLarge) => {
+            "preflight_request_too_large"
+        }
         AntiBloatAttemptState::Prepared => "prepared",
         AntiBloatAttemptState::Sending => "sending",
         AntiBloatAttemptState::Ranked(_) => "ranked",
@@ -82,6 +97,21 @@ fn parse_state(name: &str, ranked: Option<serde_json::Value>) -> Result<AntiBloa
         "disabled" => AntiBloatAttemptState::NoCall(AntiBloatNoCall::Disabled),
         "skipped" => AntiBloatAttemptState::NoCall(AntiBloatNoCall::Skipped),
         "no_eligible" => AntiBloatAttemptState::NoCall(AntiBloatNoCall::NoEligibleFindings),
+        "provider_unconfigured" => {
+            AntiBloatAttemptState::NoCall(AntiBloatNoCall::ProviderUnconfigured)
+        }
+        "preflight_invalid_configuration" => {
+            AntiBloatAttemptState::NoCall(AntiBloatNoCall::PreflightInvalidConfiguration)
+        }
+        "preflight_invalid_arguments" => {
+            AntiBloatAttemptState::NoCall(AntiBloatNoCall::PreflightInvalidArguments)
+        }
+        "preflight_input_conflict" => {
+            AntiBloatAttemptState::NoCall(AntiBloatNoCall::PreflightInputConflict)
+        }
+        "preflight_request_too_large" => {
+            AntiBloatAttemptState::NoCall(AntiBloatNoCall::PreflightRequestTooLarge)
+        }
         "prepared" => AntiBloatAttemptState::Prepared,
         "sending" => AntiBloatAttemptState::Sending,
         "send_unknown" => AntiBloatAttemptState::SendUnknown,
@@ -97,6 +127,13 @@ fn parse_state(name: &str, ranked: Option<serde_json::Value>) -> Result<AntiBloa
 
 #[async_trait]
 impl AntiBloatStore for PgUnitOfWork {
+    async fn record_preflight_no_call(
+        &mut self,
+        review_id: Uuid,
+        reason: AntiBloatNoCall,
+    ) -> Result<()> {
+        response::record_preflight_no_call(self, review_id, reason).await
+    }
     async fn authorized_budget_policy(
         &mut self,
         workspace_id: Uuid,

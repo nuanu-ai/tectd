@@ -1,5 +1,40 @@
 use super::*;
 
+pub(super) async fn record_preflight_no_call(
+    uow: &mut PgUnitOfWork,
+    review_id: Uuid,
+    reason: AntiBloatNoCall,
+) -> Result<()> {
+    if !uow.is_read_write()
+        || !matches!(
+            reason,
+            AntiBloatNoCall::ProviderUnconfigured
+                | AntiBloatNoCall::PreflightInvalidConfiguration
+                | AntiBloatNoCall::PreflightInvalidArguments
+                | AntiBloatNoCall::PreflightInputConflict
+                | AntiBloatNoCall::PreflightRequestTooLarge
+        )
+    {
+        return Err(Error::InputConflict);
+    }
+    let changed = sqlx::query(
+        "UPDATE scope_anti_bloat_reviews SET state=$4 WHERE tenant_id=$1 \
+        AND review_id=$2 AND actor_id=$3 AND state='prepared' AND request_bytes IS NULL \
+        AND request_sha256 IS NULL AND send_started_at IS NULL AND raw_response IS NULL",
+    )
+    .bind(uow.tenant_id()?)
+    .bind(review_id)
+    .bind(uow.principal_id()?)
+    .bind(state_name(&AntiBloatAttemptState::NoCall(reason)))
+    .execute(&mut **uow.transaction()?)
+    .await
+    .map_err(storage_error)?;
+    if changed.rows_affected() != 1 {
+        return Err(Error::InputConflict);
+    }
+    Ok(())
+}
+
 pub(super) async fn validate_permit_material(
     uow: &mut PgUnitOfWork,
     permit: &AntiBloatSendPermit,

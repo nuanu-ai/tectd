@@ -37,6 +37,17 @@ fn native_terminal_states_require_raw_seal_consumption_and_remain_immutable() {
 }
 
 #[test]
+fn guard_resolves_true_budget_table_and_preflight_cannot_freeze_a_send() {
+    assert!(TERMINALS.contains("FUNCTION public.scope_anti_bloat_review_guard()"));
+    assert!(TERMINALS.contains("SECURITY INVOKER SET search_path=pg_catalog,public,pg_temp"));
+    assert!(TERMINALS.contains("FROM public.scope_anti_bloat_budget_consumptions c"));
+    assert!(!TERMINALS.contains("FROM scope_anti_bloat_budget_consumptions c"));
+    assert!(TERMINALS.contains("OLD.state='prepared' AND NEW.state IN ('provider_unconfigured'"));
+    assert!(TERMINALS.contains("OLD.request_bytes IS NULL AND NEW.request_bytes IS NULL"));
+    assert!(TERMINALS.contains("NEW.request_sha256 IS NULL AND NEW.send_started_at IS NULL"));
+}
+
+#[test]
 fn binding_foreign_key_targets_exact_source_identity() {
     assert!(
         MIGRATION

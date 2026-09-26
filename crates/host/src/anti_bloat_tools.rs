@@ -151,6 +151,11 @@ pub(crate) fn state(value: &AntiBloatAttemptState) -> Value {
         AntiBloatAttemptState::NoCall(reason) => json!({"status":"no_call","reason":match reason {
             AntiBloatNoCall::Disabled => "disabled", AntiBloatNoCall::Skipped => "skipped",
             AntiBloatNoCall::NoEligibleFindings => "no_eligible_findings",
+            AntiBloatNoCall::ProviderUnconfigured => "provider_unconfigured",
+            AntiBloatNoCall::PreflightInvalidConfiguration => "preflight_invalid_configuration",
+            AntiBloatNoCall::PreflightInvalidArguments => "preflight_invalid_arguments",
+            AntiBloatNoCall::PreflightInputConflict => "preflight_input_conflict",
+            AntiBloatNoCall::PreflightRequestTooLarge => "preflight_request_too_large",
         }}),
         AntiBloatAttemptState::Prepared => json!({"status":"prepared"}),
         AntiBloatAttemptState::Sending => json!({"status":"sending"}),

@@ -14,6 +14,11 @@ pub enum AntiBloatNoCall {
     Disabled,
     Skipped,
     NoEligibleFindings,
+    ProviderUnconfigured,
+    PreflightInvalidConfiguration,
+    PreflightInvalidArguments,
+    PreflightInputConflict,
+    PreflightRequestTooLarge,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,6 +170,14 @@ impl AntiBloatProviderObservation {
 /// reservation metadata alone cannot send. A replay or uncertain send returns None.
 #[async_trait]
 pub trait AntiBloatStore: Send {
+    /// Durable no-call audit, allowed only while prepared with no request fence.
+    async fn record_preflight_no_call(
+        &mut self,
+        _review_id: Uuid,
+        _reason: AntiBloatNoCall,
+    ) -> Result<()> {
+        Err(tect_domain::Error::InputConflict)
+    }
     /// Must verify owner approval using a trusted key. The default denies send.
     async fn authorized_budget_policy(
         &mut self,
@@ -259,6 +272,9 @@ pub trait AntiBloatStore: Send {
 /// cannot mint an attempt for disabled/skip/no-eligible or replayed fences.
 #[async_trait]
 pub trait AntiBloatRankingProvider: Send + Sync {
+    fn available(&self) -> bool {
+        true
+    }
     fn adapter_identity(&self) -> &'static str {
         "generic-json-v1"
     }
@@ -304,6 +320,9 @@ pub struct DisabledAntiBloatRankingProvider;
 
 #[async_trait]
 impl AntiBloatRankingProvider for DisabledAntiBloatRankingProvider {
+    fn available(&self) -> bool {
+        false
+    }
     async fn rank(
         &self,
         permit: &AntiBloatStartedDispatchPermit,

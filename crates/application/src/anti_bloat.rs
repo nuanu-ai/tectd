@@ -165,6 +165,9 @@ pub async fn prepare_anti_bloat_send(
         });
     }
     require_current(store, &saved).await?;
+    if !provider.available() {
+        return preflight_no_call(store, review_id, AntiBloatNoCall::ProviderUnconfigured).await;
+    }
     let eligible = saved
         .review
         .findings
@@ -175,12 +178,29 @@ pub async fn prepare_anti_bloat_send(
     if eligible.is_empty() {
         return Err(Error::InputConflict);
     }
-    let request_bytes = provider.prepare(&crate::AntiBloatRankingMaterial {
+    let request_bytes = match provider.prepare(&crate::AntiBloatRankingMaterial {
         saved: &saved,
         eligible_ids: &eligible,
-    })?;
+    }) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let reason = match error {
+                Error::InvalidConfiguration => AntiBloatNoCall::PreflightInvalidConfiguration,
+                Error::InvalidArguments => AntiBloatNoCall::PreflightInvalidArguments,
+                Error::InputConflict => AntiBloatNoCall::PreflightInputConflict,
+                Error::RequestTooLarge => AntiBloatNoCall::PreflightRequestTooLarge,
+                other => return Err(other),
+            };
+            return preflight_no_call(store, review_id, reason).await;
+        }
+    };
     if request_bytes.is_empty() || provider.adapter_identity().is_empty() {
-        return Err(Error::InputConflict);
+        return preflight_no_call(
+            store,
+            review_id,
+            AntiBloatNoCall::PreflightInvalidConfiguration,
+        )
+        .await;
     }
     let prepared = AntiBloatPreparedRequest {
         sha256: format!("{:x}", Sha256::digest(&request_bytes)),
@@ -215,6 +235,18 @@ pub async fn prepare_anti_bloat_send(
     Ok(PreparedAntiBloatSend {
         state: AntiBloatAttemptState::Sending,
         permit: Some(permit),
+    })
+}
+
+async fn preflight_no_call(
+    store: &mut dyn AntiBloatStore,
+    review_id: Uuid,
+    reason: AntiBloatNoCall,
+) -> Result<PreparedAntiBloatSend> {
+    store.record_preflight_no_call(review_id, reason).await?;
+    Ok(PreparedAntiBloatSend {
+        state: AntiBloatAttemptState::NoCall(reason),
+        permit: None,
     })
 }
 
