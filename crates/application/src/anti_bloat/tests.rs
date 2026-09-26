@@ -206,6 +206,11 @@ struct FakeStore {
     applied: Option<AppliedDecision>,
     policy: Option<AdvisoryBudgetPolicy>,
     consumed: Option<AntiBloatProviderObservation>,
+    sealed_observation: Option<AntiBloatProviderObservation>,
+    fail_recovery_read: bool,
+    fail_consume: bool,
+    fail_finish: bool,
+    consumption_count: usize,
 }
 
 fn approved_policy() -> AdvisoryBudgetPolicy {
@@ -304,6 +309,10 @@ impl AntiBloatStore for FakeStore {
         Ok(())
     }
     async fn seal_ranked(&mut self, _: Uuid, ranked: &[String]) -> Result<()> {
+        if self.fail_finish {
+            self.fail_finish = false;
+            return Err(Error::StorageUnavailable);
+        }
         self.seals += 1;
         self.saved.as_mut().unwrap().state = AntiBloatAttemptState::Ranked(ranked.to_vec());
         Ok(())
@@ -311,12 +320,16 @@ impl AntiBloatStore for FakeStore {
     async fn seal_response(
         &mut self,
         permit: &AntiBloatSendPermit,
-        raw: &[u8],
+        observation: &AntiBloatProviderObservation,
         sha256: &str,
     ) -> Result<()> {
         assert_eq!(self.prepared.as_ref(), Some(&permit.request));
-        assert_eq!(format!("{:x}", sha2::Sha256::digest(raw)), sha256);
-        self.raw_response = Some(raw.to_vec());
+        assert_eq!(
+            format!("{:x}", sha2::Sha256::digest(&observation.raw)),
+            sha256
+        );
+        self.raw_response = Some(observation.raw.clone());
+        self.sealed_observation = Some(observation.clone());
         self.response_sha256 = Some(sha256.into());
         Ok(())
     }
@@ -325,6 +338,10 @@ impl AntiBloatStore for FakeStore {
         _: &AntiBloatSendPermit,
         observation: &AntiBloatProviderObservation,
     ) -> Result<bool> {
+        if self.fail_consume {
+            self.fail_consume = false;
+            return Err(Error::StorageUnavailable);
+        }
         assert_eq!(
             self.raw_response.as_deref(),
             Some(observation.raw.as_slice())
@@ -332,6 +349,7 @@ impl AntiBloatStore for FakeStore {
         if let Some(saved) = &self.consumed {
             assert_eq!(saved, observation);
         } else {
+            self.consumption_count += 1;
             self.consumed = Some(observation.clone());
         }
         Ok(observation.input_tokens.is_none()
@@ -344,7 +362,7 @@ impl AntiBloatStore for FakeStore {
     async fn authorized_sealed_response(
         &mut self,
         permit: &AntiBloatSendPermit,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<AntiBloatProviderObservation> {
         if self.prepared.as_ref() != Some(&permit.request) {
             return Err(Error::InputConflict);
         }
@@ -358,15 +376,37 @@ impl AntiBloatStore for FakeStore {
         {
             return Err(Error::InputConflict);
         }
-        self.raw_response.clone().ok_or(Error::InputConflict)
+        self.sealed_observation.clone().ok_or(Error::InputConflict)
     }
-    async fn sealed_response_for_usage(&mut self, permit: &AntiBloatSendPermit) -> Result<Vec<u8>> {
+    async fn sealed_response_for_usage(
+        &mut self,
+        permit: &AntiBloatSendPermit,
+    ) -> Result<AntiBloatProviderObservation> {
         if self.prepared.as_ref() != Some(&permit.request)
             || self.saved.as_ref().unwrap().state != AntiBloatAttemptState::Sending
         {
             return Err(Error::InputConflict);
         }
-        self.raw_response.clone().ok_or(Error::InputConflict)
+        self.sealed_observation.clone().ok_or(Error::InputConflict)
+    }
+    async fn saved_sealed_response(
+        &mut self,
+        review_id: Uuid,
+    ) -> Result<Option<crate::AntiBloatSealedResponse>> {
+        if self.fail_recovery_read {
+            self.fail_recovery_read = false;
+            return Err(Error::StorageUnavailable);
+        }
+        Ok(self
+            .sealed_observation
+            .clone()
+            .map(|observation| crate::AntiBloatSealedResponse {
+                permit: AntiBloatSendPermit {
+                    review_id,
+                    request: self.prepared.clone().unwrap(),
+                },
+                observation,
+            }))
     }
     async fn seal_terminal(
         &mut self,
@@ -467,6 +507,7 @@ impl AntiBloatRankingProvider for CommitObservingProvider {
             Err(Error::TransportUnavailable)
         } else {
             Ok(AntiBloatProviderObservation {
+                http_status: None,
                 raw: b"[]".to_vec(),
                 input_tokens: Some(1),
                 output_tokens: Some(1),
@@ -494,25 +535,21 @@ async fn provider_observes_committed_fence_and_commit_failure_never_calls() {
         },
     };
     let commit_flag = committed.clone();
-    assert_eq!(
-        rank_after_committed_fence(
-            async move {
-                commit_flag.store(true, Ordering::SeqCst);
-                Ok(())
-            },
-            &provider,
-            &permit
-        )
-        .await
-        .unwrap()
-        .unwrap(),
-        AntiBloatProviderObservation {
-            raw: b"[]".to_vec(),
-            input_tokens: Some(1),
-            output_tokens: Some(1),
-            elapsed_monotonic_ms: Some(1)
-        }
-    );
+    let observed = rank_after_committed_fence(
+        async move {
+            commit_flag.store(true, Ordering::SeqCst);
+            Ok(())
+        },
+        &provider,
+        &permit,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(observed.raw, b"[]");
+    assert_eq!(observed.input_tokens, Some(1));
+    assert_eq!(observed.output_tokens, Some(1));
+    assert!(observed.elapsed_monotonic_ms.is_some_and(|n| n >= 0));
     assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
     assert!(matches!(
         rank_after_committed_fence(async { Err(Error::InputConflict) }, &provider, &permit).await,
@@ -541,6 +578,7 @@ impl AntiBloatRankingProvider for FakeProvider {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.invent {
             Ok(AntiBloatProviderObservation {
+                http_status: None,
                 raw: br#"["invented"]"#.to_vec(),
                 input_tokens: Some(1),
                 output_tokens: Some(1),
@@ -549,6 +587,7 @@ impl AntiBloatRankingProvider for FakeProvider {
         } else {
             let request: serde_json::Value = serde_json::from_slice(&permit.request.bytes).unwrap();
             Ok(AntiBloatProviderObservation {
+                http_status: None,
                 raw: serde_json::to_vec(&request["eligible_ids"]).unwrap(),
                 input_tokens: Some(1),
                 output_tokens: Some(1),
@@ -594,5 +633,6 @@ mod contract;
 mod lifecycle;
 mod preflight;
 mod provider_seams;
+mod recovery;
 mod scenarios;
 mod started_dispatch;

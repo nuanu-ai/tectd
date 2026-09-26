@@ -149,9 +149,16 @@ impl AntiBloatStartedDispatchPermit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AntiBloatProviderObservation {
     pub raw: Vec<u8>,
+    pub http_status: Option<u16>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
     pub elapsed_monotonic_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AntiBloatSealedResponse {
+    pub permit: AntiBloatSendPermit,
+    pub observation: AntiBloatProviderObservation,
 }
 
 impl AntiBloatProviderObservation {
@@ -213,7 +220,7 @@ pub trait AntiBloatStore: Send {
     async fn seal_response(
         &mut self,
         permit: &AntiBloatSendPermit,
-        raw_response: &[u8],
+        observation: &AntiBloatProviderObservation,
         response_sha256: &str,
     ) -> Result<()>;
 
@@ -230,7 +237,7 @@ pub trait AntiBloatStore: Send {
     async fn authorized_sealed_response(
         &mut self,
         _permit: &AntiBloatSendPermit,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<AntiBloatProviderObservation> {
         Err(tect_domain::Error::InputConflict)
     }
 
@@ -239,7 +246,15 @@ pub trait AntiBloatStore: Send {
     async fn sealed_response_for_usage(
         &mut self,
         _permit: &AntiBloatSendPermit,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<AntiBloatProviderObservation> {
+        Err(tect_domain::Error::InputConflict)
+    }
+
+    /// Metadata-only recovery: never grants transport authority.
+    async fn saved_sealed_response(
+        &mut self,
+        _review_id: Uuid,
+    ) -> Result<Option<AntiBloatSealedResponse>> {
         Err(tect_domain::Error::InputConflict)
     }
 
@@ -291,9 +306,9 @@ pub trait AntiBloatRankingProvider: Send + Sync {
     fn parse_sealed(
         &self,
         _permit: &AntiBloatSendPermit,
-        raw: &[u8],
+        observation: &AntiBloatProviderObservation,
     ) -> Result<AntiBloatRankingOutcome> {
-        serde_json::from_slice(raw)
+        serde_json::from_slice(&observation.raw)
             .map(AntiBloatRankingOutcome::Ranked)
             .map_err(|_| tect_domain::Error::InputConflict)
     }
@@ -304,10 +319,12 @@ pub trait AntiBloatRankingProvider: Send + Sync {
     fn usage_sealed(
         &self,
         _permit: &AntiBloatSendPermit,
-        _raw: &[u8],
-        transport_usage: &AntiBloatUsage,
+        observation: &AntiBloatProviderObservation,
     ) -> Result<AntiBloatUsage> {
-        Ok(transport_usage.clone())
+        Ok(AntiBloatUsage {
+            input_tokens: observation.input_tokens,
+            output_tokens: observation.output_tokens,
+        })
     }
     async fn rank(
         &self,

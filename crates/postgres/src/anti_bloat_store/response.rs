@@ -54,23 +54,84 @@ pub(super) async fn validate_permit_material(
 pub(super) async fn sealed_response_for_usage(
     uow: &mut PgUnitOfWork,
     permit: &AntiBloatSendPermit,
-) -> Result<Vec<u8>> {
+) -> Result<AntiBloatProviderObservation> {
     validate_permit_material(uow, permit).await?;
-    let raw: Option<Vec<u8>> = sqlx::query_scalar(
-        "SELECT raw_response FROM scope_anti_bloat_reviews WHERE tenant_id=$1 \
-         AND review_id=$2 AND actor_id=$3 AND state='sending' AND response_sealed_at IS NOT NULL \
-         AND request_bytes=$4 AND request_sha256=$5 AND request_adapter_identity=$6",
+    let saved = saved_sealed_response(uow, permit.review_id)
+        .await?
+        .ok_or(Error::InputConflict)?;
+    if saved.permit != *permit {
+        return Err(Error::InputConflict);
+    }
+    Ok(saved.observation)
+}
+
+pub(super) async fn saved_sealed_response(
+    uow: &mut PgUnitOfWork,
+    review_id: Uuid,
+) -> Result<Option<AntiBloatSealedResponse>> {
+    let review = AntiBloatStore::review(uow, review_id)
+        .await?
+        .ok_or(Error::NotFound)?;
+    if review.state != AntiBloatAttemptState::Sending {
+        return Err(Error::InputConflict);
+    }
+    type Row = (
+        Vec<u8>,
+        String,
+        String,
+        Vec<u8>,
+        String,
+        Option<i32>,
+        Option<i64>,
+        Option<i64>,
+        Option<i64>,
+    );
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT request_bytes,request_sha256,request_adapter_identity,raw_response,response_sha256, \
+         response_http_status,response_original_input_tokens,response_original_output_tokens,response_original_elapsed_ms \
+         FROM public.scope_anti_bloat_reviews WHERE tenant_id=$1 AND review_id=$2 AND actor_id=$3 \
+         AND state='sending' AND response_sealed_at IS NOT NULL AND raw_response IS NOT NULL",
+    ).bind(uow.tenant_id()?).bind(review_id).bind(uow.principal_id()?)
+        .fetch_optional(&mut **uow.transaction()?).await.map_err(storage_error)?;
+    row.map(
+        |(
+            bytes,
+            sha256,
+            adapter_identity,
+            raw,
+            response_sha256,
+            status,
+            input_tokens,
+            output_tokens,
+            elapsed,
+        )| {
+            if digest(&bytes) != sha256 || digest(&raw) != response_sha256 {
+                return Err(Error::InputConflict);
+            }
+            Ok(AntiBloatSealedResponse {
+                permit: AntiBloatSendPermit {
+                    review_id,
+                    request: AntiBloatPreparedRequest {
+                        bytes,
+                        sha256,
+                        adapter_identity,
+                        material_sha256: tect_application::anti_bloat_material_sha256(&review)?,
+                    },
+                },
+                observation: AntiBloatProviderObservation {
+                    raw,
+                    http_status: status
+                        .map(u16::try_from)
+                        .transpose()
+                        .map_err(|_| Error::InputConflict)?,
+                    input_tokens,
+                    output_tokens,
+                    elapsed_monotonic_ms: elapsed,
+                },
+            })
+        },
     )
-    .bind(uow.tenant_id()?)
-    .bind(permit.review_id)
-    .bind(uow.principal_id()?)
-    .bind(&permit.request.bytes)
-    .bind(&permit.request.sha256)
-    .bind(&permit.request.adapter_identity)
-    .fetch_optional(&mut **uow.transaction()?)
-    .await
-    .map_err(storage_error)?;
-    raw.ok_or(Error::InputConflict)
+    .transpose()
 }
 
 pub(super) async fn seal_terminal(

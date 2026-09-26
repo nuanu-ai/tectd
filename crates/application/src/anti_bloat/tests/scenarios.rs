@@ -83,7 +83,7 @@ async fn missing_or_overrun_usage_suppresses_ranked_advice_after_raw_seal() {
         observation.input_tokens = input_tokens;
         observation.output_tokens = output_tokens;
         observation.elapsed_monotonic_ms = elapsed;
-        app.seal_response(&permit, &observation.raw).await.unwrap();
+        app.seal_response(&permit, &observation).await.unwrap();
         assert_eq!(
             app.store
                 .consume_budget(&permit, &observation)
@@ -133,7 +133,7 @@ async fn one_use_rank_and_provider_invention_is_denied() {
         .await
         .unwrap()
         .unwrap();
-    app.seal_response(&permit, &raw.raw).await.unwrap();
+    app.seal_response(&permit, &raw).await.unwrap();
     assert!(!app.store.consume_budget(&permit, &raw).await.unwrap());
     assert_eq!(app.store.seals, 0);
     assert_eq!(
@@ -182,7 +182,7 @@ async fn one_use_rank_and_provider_invention_is_denied() {
         .await
         .unwrap()
         .unwrap();
-    invented.seal_response(&permit, &raw.raw).await.unwrap();
+    invented.seal_response(&permit, &raw).await.unwrap();
     assert!(!invented.store.consume_budget(&permit, &raw).await.unwrap());
     assert!(matches!(
         invented.finalize_response(&permit, &raw.raw).await,

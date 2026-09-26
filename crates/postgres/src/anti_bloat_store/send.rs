@@ -10,6 +10,8 @@ type AntiBloatReservationContextRow = (
     i64,
     i64,
     Option<String>,
+    Option<i64>,
+    Option<i32>,
 );
 type AntiBloatConsumptionRow = (Option<i64>, Option<i64>, Option<i64>, bool);
 
@@ -211,7 +213,8 @@ pub(super) async fn begin_send(
 pub(super) async fn authorized_sealed_response(
     uow: &mut PgUnitOfWork,
     permit: &AntiBloatSendPermit,
-) -> Result<Vec<u8>> {
+) -> Result<AntiBloatProviderObservation> {
+    let observation = super::response::sealed_response_for_usage(uow, permit).await?;
     super::response::validate_permit_material(uow, permit).await?;
     let raw: Option<Vec<u8>> = sqlx::query_scalar(
         "SELECT v.raw_response FROM scope_anti_bloat_reviews v \
@@ -232,7 +235,8 @@ pub(super) async fn authorized_sealed_response(
     .fetch_optional(&mut **uow.transaction()?)
     .await
     .map_err(storage_error)?;
-    raw.ok_or(Error::InputConflict)
+    raw.ok_or(Error::InputConflict)?;
+    Ok(observation)
 }
 
 pub(super) async fn mark_send_unknown(uow: &mut PgUnitOfWork, review_id: Uuid) -> Result<()> {
@@ -285,7 +289,7 @@ pub(super) async fn consume_budget(
     let row: Option<AntiBloatReservationContextRow> = sqlx::query_as(
         "SELECT r.workspace_id,r.policy_id,r.policy_version,r.policy_digest,r.request_sha256,\
          r.reserved_input_tokens,r.reserved_output_tokens,r.reserved_elapsed_ms,\
-         v.response_sha256 FROM scope_anti_bloat_budget_reservations r \
+         v.response_sha256,v.response_original_elapsed_ms,v.response_http_status FROM scope_anti_bloat_budget_reservations r \
          JOIN scope_anti_bloat_reviews v ON \
          (v.tenant_id,v.workspace_id,v.review_id)=(r.tenant_id,r.workspace_id,r.review_id) \
          WHERE r.tenant_id=$1 AND r.review_id=$2 AND v.actor_id=$3 \
@@ -310,8 +314,15 @@ pub(super) async fn consume_budget(
         output_limit,
         elapsed_limit,
         response_sha256,
+        original_elapsed,
+        http_status,
     ) = row.ok_or(Error::InputConflict)?;
     if response_sha256.as_deref() != Some(digest(&observation.raw).as_str()) {
+        return Err(Error::InputConflict);
+    }
+    if observation.elapsed_monotonic_ms != original_elapsed
+        || observation.http_status.map(i32::from) != http_status
+    {
         return Err(Error::InputConflict);
     }
     let existing: Option<AntiBloatConsumptionRow> = sqlx::query_as(
@@ -387,15 +398,21 @@ pub(super) async fn consume_budget(
 pub(super) async fn seal_response(
     uow: &mut PgUnitOfWork,
     permit: &AntiBloatSendPermit,
-    raw_response: &[u8],
+    observation: &AntiBloatProviderObservation,
     response_sha256: &str,
 ) -> Result<()> {
-    if !uow.is_read_write() || digest(raw_response) != response_sha256 {
+    if !uow.is_read_write()
+        || digest(&observation.raw) != response_sha256
+        || observation
+            .http_status
+            .is_some_and(|n| !(100..=599).contains(&n))
+    {
         return Err(Error::InputConflict);
     }
     let result = sqlx::query(
         "UPDATE scope_anti_bloat_reviews SET raw_response=$5,response_sha256=$6, \
-         response_sealed_at=pg_catalog.clock_timestamp() \
+         response_sealed_at=pg_catalog.clock_timestamp(), response_http_status=$8, \
+         response_original_input_tokens=$9,response_original_output_tokens=$10,response_original_elapsed_ms=$11 \
          WHERE tenant_id=$1 AND review_id=$2 AND actor_id=$3 AND state='sending' \
            AND request_bytes=$4 AND request_sha256=$7 AND raw_response IS NULL",
     )
@@ -403,9 +420,13 @@ pub(super) async fn seal_response(
     .bind(permit.review_id)
     .bind(uow.principal_id()?)
     .bind(&permit.request.bytes)
-    .bind(raw_response)
+    .bind(&observation.raw)
     .bind(response_sha256)
     .bind(&permit.request.sha256)
+    .bind(observation.http_status.map(i32::from))
+    .bind(observation.input_tokens)
+    .bind(observation.output_tokens)
+    .bind(observation.elapsed_monotonic_ms)
     .execute(&mut **uow.transaction()?)
     .await
     .map_err(storage_error)?;
@@ -427,6 +448,7 @@ pub(super) async fn seal_ranked(
         "UPDATE scope_anti_bloat_reviews SET state='ranked',ranked_ids=$4, \
          sealed_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND review_id=$2 \
          AND actor_id=$3 AND state='sending' AND raw_response IS NOT NULL \
+         AND (response_http_status IS NULL OR response_http_status BETWEEN 200 AND 299) \
          AND eligible_ids @> $4::jsonb AND $4::jsonb @> eligible_ids \
          AND EXISTS (SELECT 1 FROM scope_anti_bloat_budget_consumptions c \
              WHERE (c.tenant_id,c.workspace_id,c.review_id)= \

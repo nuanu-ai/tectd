@@ -105,6 +105,10 @@ impl WorkspaceService {
         if saved.workspace_id != workspace {
             return Err(Error::Forbidden);
         }
+        if saved.state == AntiBloatAttemptState::Sending {
+            fence.commit().await?;
+            return self.finish_anti_bloat_response(context, review_id).await;
+        }
         let prepared = prepare_anti_bloat_send(
             fence.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
             self.anti_bloat_provider.as_ref(),
@@ -123,7 +127,7 @@ impl WorkspaceService {
         )
         .await?
         {
-            Ok(observation) => observation.normalized(),
+            Ok(observation) => observation,
             Err(_) => {
                 let (mut uncertain, _, _) = self
                     .anti_bloat_transaction(context, TransactionMode::ReadWrite)
@@ -143,21 +147,53 @@ impl WorkspaceService {
         seal_anti_bloat_response(
             seal.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
             &permit,
-            &observation.raw,
+            &observation,
         )
         .await?;
         seal.commit().await?;
 
-        let (mut usage_read, _, _) = self
+        self.finish_anti_bloat_response(context, review_id).await
+    }
+
+    async fn finish_anti_bloat_response(
+        &self,
+        context: &RequestContext,
+        review_id: Uuid,
+    ) -> Result<AntiBloatAttemptState> {
+        let (mut usage_read, workspace, _) = self
             .anti_bloat_transaction(context, TransactionMode::ReadOnly)
             .await?;
+        let store = usage_read
+            .anti_bloat_store()
+            .ok_or(Error::StorageUnavailable)?;
+        let review = store.review(review_id).await?.ok_or(Error::NotFound)?;
+        if review.workspace_id != workspace {
+            return Err(Error::Forbidden);
+        }
+        if review.state != AntiBloatAttemptState::Sending {
+            let state = review.state;
+            usage_read.commit().await?;
+            return Ok(state);
+        }
+        let Some(response) = super::recovery::load_saved_response(
+            store,
+            self.anti_bloat_provider.as_ref(),
+            review_id,
+        )
+        .await?
+        else {
+            usage_read.commit().await?;
+            return Ok(AntiBloatAttemptState::Sending);
+        };
+        let permit = response.permit;
+        let original = response.observation;
         let (observation, usage_invalid) = observe_sealed_usage(
             usage_read
                 .anti_bloat_store()
                 .ok_or(Error::StorageUnavailable)?,
             self.anti_bloat_provider.as_ref(),
             &permit,
-            &observation,
+            &original,
         )
         .await?;
         usage_read.commit().await?;
@@ -171,7 +207,11 @@ impl WorkspaceService {
             .consume_budget(&permit, &observation)
             .await?;
         consume.commit().await?;
-        if usage_invalid {
+        if usage_invalid
+            || observation
+                .http_status
+                .is_some_and(|n| !(200..=299).contains(&n))
+        {
             let (mut invalid, _, _) = self
                 .anti_bloat_transaction(context, TransactionMode::ReadWrite)
                 .await?;

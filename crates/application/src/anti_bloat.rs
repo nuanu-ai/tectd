@@ -45,8 +45,12 @@ impl<S: AntiBloatStore, P: AntiBloatRankingProvider> AntiBloatApplication<S, P> 
     }
 
     /// Seal raw transport bytes in a separate transaction before interpreting them.
-    pub async fn seal_response(&mut self, permit: &AntiBloatSendPermit, raw: &[u8]) -> Result<()> {
-        seal_anti_bloat_response(&mut self.store, permit, raw).await
+    pub async fn seal_response(
+        &mut self,
+        permit: &AntiBloatSendPermit,
+        observation: &AntiBloatProviderObservation,
+    ) -> Result<()> {
+        seal_anti_bloat_response(&mut self.store, permit, observation).await
     }
 
     pub async fn finalize_response(
@@ -253,10 +257,18 @@ async fn preflight_no_call(
 pub async fn seal_anti_bloat_response(
     store: &mut dyn AntiBloatStore,
     permit: &crate::AntiBloatSendPermit,
-    raw: &[u8],
+    observation: &AntiBloatProviderObservation,
 ) -> Result<()> {
-    let response_sha256 = format!("{:x}", Sha256::digest(raw));
-    store.seal_response(permit, raw, &response_sha256).await
+    if observation
+        .http_status
+        .is_some_and(|n| !(100..=599).contains(&n))
+    {
+        return Err(Error::InputConflict);
+    }
+    let response_sha256 = format!("{:x}", Sha256::digest(&observation.raw));
+    store
+        .seal_response(permit, observation, &response_sha256)
+        .await
 }
 
 pub async fn finalize_anti_bloat_response(
@@ -278,8 +290,17 @@ pub async fn finalize_anti_bloat_response(
         return Err(Error::InputConflict);
     }
     let sealed = store.authorized_sealed_response(permit).await?;
-    if sealed != raw {
+    if sealed.raw != raw {
         return Err(Error::InputConflict);
+    }
+    if sealed
+        .http_status
+        .is_some_and(|n| !(200..=299).contains(&n))
+    {
+        store
+            .seal_terminal(permit, AntiBloatAttemptState::InvalidResponse)
+            .await?;
+        return Ok(AntiBloatAttemptState::InvalidResponse);
     }
     let eligible = saved
         .review
@@ -344,17 +365,10 @@ async fn observe_sealed_usage(
         return Err(Error::InputConflict);
     }
     let sealed = store.sealed_response_for_usage(permit).await?;
-    if sealed != observation.raw {
+    if sealed != *observation {
         return Err(Error::InputConflict);
     }
-    let decoded = provider.usage_sealed(
-        permit,
-        &sealed,
-        &crate::AntiBloatUsage {
-            input_tokens: observation.input_tokens,
-            output_tokens: observation.output_tokens,
-        },
-    );
+    let decoded = provider.usage_sealed(permit, &sealed);
     if let Err(error) = &decoded {
         if *error != Error::InputConflict {
             return Err(error.clone());
@@ -368,6 +382,7 @@ async fn observe_sealed_usage(
     Ok((
         AntiBloatProviderObservation {
             raw: observation.raw.clone(),
+            http_status: observation.http_status,
             elapsed_monotonic_ms: observation.elapsed_monotonic_ms,
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
@@ -389,9 +404,14 @@ async fn rank_after_committed_fence<F: Future<Output = Result<()>>>(
     }
     commit.await?;
     let started = crate::AntiBloatStartedDispatchPermit::after_committed_fence(permit)?;
-    Ok(provider.rank(&started).await)
+    let start = std::time::Instant::now();
+    Ok(provider.rank(&started).await.map(|mut observation| {
+        observation.elapsed_monotonic_ms = i64::try_from(start.elapsed().as_millis()).ok();
+        observation
+    }))
 }
 
+mod recovery;
 mod service;
 #[cfg(test)]
 mod tests;

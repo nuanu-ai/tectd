@@ -3,8 +3,8 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tect_application::{
     AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall, AntiBloatPreparedRequest,
-    AntiBloatProviderObservation, AntiBloatSendPermit, AntiBloatStore, Sha256ScopeDigest,
-    StoredAntiBloatReview,
+    AntiBloatProviderObservation, AntiBloatSealedResponse, AntiBloatSendPermit, AntiBloatStore,
+    Sha256ScopeDigest, StoredAntiBloatReview,
 };
 use tect_domain::{
     AdvisoryBudgetPolicy, AntiBloatApplyReceipt, AntiBloatDisposition, AntiBloatInput,
@@ -182,10 +182,10 @@ impl AntiBloatStore for PgUnitOfWork {
     async fn seal_response(
         &mut self,
         permit: &AntiBloatSendPermit,
-        raw_response: &[u8],
+        observation: &AntiBloatProviderObservation,
         response_sha256: &str,
     ) -> Result<()> {
-        send::seal_response(self, permit, raw_response, response_sha256).await
+        send::seal_response(self, permit, observation, response_sha256).await
     }
 
     async fn consume_budget(
@@ -199,7 +199,7 @@ impl AntiBloatStore for PgUnitOfWork {
     async fn authorized_sealed_response(
         &mut self,
         permit: &AntiBloatSendPermit,
-    ) -> Result<Vec<u8>> {
+    ) -> Result<AntiBloatProviderObservation> {
         send::authorized_sealed_response(self, permit).await
     }
 
@@ -207,8 +207,17 @@ impl AntiBloatStore for PgUnitOfWork {
         send::seal_ranked(self, review_id, ranked_ids).await
     }
 
-    async fn sealed_response_for_usage(&mut self, permit: &AntiBloatSendPermit) -> Result<Vec<u8>> {
+    async fn sealed_response_for_usage(
+        &mut self,
+        permit: &AntiBloatSendPermit,
+    ) -> Result<AntiBloatProviderObservation> {
         response::sealed_response_for_usage(self, permit).await
+    }
+    async fn saved_sealed_response(
+        &mut self,
+        review_id: Uuid,
+    ) -> Result<Option<AntiBloatSealedResponse>> {
+        response::saved_sealed_response(self, review_id).await
     }
 
     async fn seal_terminal(

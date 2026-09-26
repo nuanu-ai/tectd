@@ -20,10 +20,11 @@ impl AntiBloatRankingProvider for WireProvider {
     fn parse_sealed(
         &self,
         _: &AntiBloatSendPermit,
-        raw: &[u8],
+        observation: &AntiBloatProviderObservation,
     ) -> Result<crate::AntiBloatRankingOutcome> {
         self.parses.fetch_add(1, Ordering::SeqCst);
-        let payload = raw
+        let payload = observation
+            .raw
             .strip_prefix(b"untouched transport:")
             .ok_or(Error::InputConflict)?;
         serde_json::from_slice(payload)
@@ -97,18 +98,19 @@ async fn provider_preparation_and_parse_are_fenced_by_durable_authorization() {
         app.finalize_response(&permit, &raw).await,
         Err(Error::InputConflict)
     );
-    app.seal_response(&permit, &raw).await.unwrap();
-    assert_eq!(
-        app.finalize_response(&permit, &raw).await,
-        Err(Error::InputConflict)
-    );
-    assert_eq!(app.provider.parses.load(Ordering::SeqCst), 0);
     let mut observation = AntiBloatProviderObservation {
+        http_status: None,
         raw: raw.clone(),
         input_tokens: Some(101),
         output_tokens: Some(1),
         elapsed_monotonic_ms: Some(1),
     };
+    app.seal_response(&permit, &observation).await.unwrap();
+    assert_eq!(
+        app.finalize_response(&permit, &raw).await,
+        Err(Error::InputConflict)
+    );
+    assert_eq!(app.provider.parses.load(Ordering::SeqCst), 0);
     assert!(
         app.store
             .consume_budget(&permit, &observation)

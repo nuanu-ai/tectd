@@ -4,6 +4,25 @@ const VERIFIER: &str =
     include_str!("../migrations/0079_scope_anti_bloat_preservation_attestation.sql");
 const ADAPTER: &str = include_str!("../migrations/0093_anti_bloat_adapter_identity.sql");
 const TERMINALS: &str = include_str!("../migrations/0094_anti_bloat_terminal_outcomes.sql");
+const OBSERVATION: &str = include_str!("../migrations/0095_anti_bloat_sealed_observation.sql");
+
+#[test]
+fn sealed_transport_metadata_is_nullable_immutable_and_runtime_writable() {
+    for column in [
+        "response_http_status",
+        "response_original_input_tokens",
+        "response_original_output_tokens",
+        "response_original_elapsed_ms",
+    ] {
+        assert!(OBSERVATION.contains(column));
+        assert!(include_str!("admin/migration.rs").contains(column));
+    }
+    assert!(!OBSERVATION.contains("DEFAULT"));
+    assert!(!OBSERVATION.contains("UPDATE public.scope_anti_bloat_reviews"));
+    assert!(OBSERVATION.contains("OLD.raw_response IS NOT NULL"));
+    assert!(OBSERVATION.contains("SECURITY INVOKER SET search_path=pg_catalog,public,pg_temp"));
+    assert!(OBSERVATION.contains("BEFORE UPDATE ON public.scope_anti_bloat_reviews"));
+}
 
 #[test]
 fn adapter_identity_backfills_generic_and_freezes_with_exact_request() {
