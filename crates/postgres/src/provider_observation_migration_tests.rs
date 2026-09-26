@@ -2,6 +2,7 @@ const SQL: &str = include_str!("../migrations/0097_provider_raw_observation.sql"
 const PARTIAL: &str = include_str!("../migrations/0098_provider_partial_observation.sql");
 const STORE: &str = include_str!("advisory/provider_observation.rs");
 const FAMILIES: &str = include_str!("../migrations/0099_provider_observation_families.sql");
+const CONTEXT: &str = include_str!("../migrations/0100_provider_transport_context.sql");
 const APP: &str = include_str!("../../application/src/matrix_advisory_dispatch.rs");
 const RECOVERY: &str = include_str!("../../application/src/matrix_advisory_dispatch/recovery.rs");
 
@@ -48,6 +49,11 @@ fn immutable_raw_observation_is_tenant_scoped_and_bound_to_committed_bytes() {
     assert!(PARTIAL.contains("d.state='sending'"));
     assert!(PARTIAL.contains("d.payload_digest=NEW.request_sha256"));
     assert!(!PARTIAL.contains("NEW.response_complete=(NEW.response_payload IS NOT NULL)"));
+    assert!(CONTEXT.contains("ADD COLUMN original_transport_context jsonb"));
+    assert!(!CONTEXT.contains("CREATE TABLE"));
+    assert!(!CONTEXT.contains("CREATE OR REPLACE"));
+    assert!(STORE.contains("apply_scope_transport_context"));
+    assert!(STORE.contains("seal.raw_response_ref = context.raw_response_ref.clone()"));
 }
 
 #[test]

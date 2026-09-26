@@ -52,12 +52,14 @@ mod ports;
 mod provider_receipt_ports;
 pub use provider_receipt_ports::{
     AdvisoryDispatchContinuation, AdvisoryProviderReceiptObservation, AdvisoryProviderReceiptUsage,
-    StoredAdvisoryProviderReceipt,
+    AdvisoryProviderTransportContext, StoredAdvisoryProviderReceipt,
 };
 mod programs;
 mod scope_advisory_orchestration;
 mod scope_advisory_ports;
+mod scope_advisory_provider_receipt;
 mod scope_advisory_runtime;
+pub use scope_advisory_provider_receipt::ScopeAdviceRawObservation;
 mod service;
 
 #[doc(hidden)]

@@ -1,7 +1,7 @@
 use sha2::{Digest, Sha256};
 use tect_application::{
     AdvisoryDispatchContinuation, AdvisoryProviderReceiptObservation, AdvisoryProviderReceiptUsage,
-    StoredAdvisoryProviderReceipt,
+    AdvisoryProviderTransportContext, StoredAdvisoryProviderReceipt,
 };
 
 type ProviderObservationRow = (
@@ -11,6 +11,7 @@ type ProviderObservationRow = (
     Option<String>,
     i64,
     bool,
+    Option<serde_json::Value>,
 );
 
 async fn read_provider_observation(
@@ -20,10 +21,10 @@ async fn read_provider_observation(
     dispatch: Uuid,
 ) -> Result<Option<(AdvisoryProviderReceiptObservation, i64)>> {
     let row: Option<ProviderObservationRow> = sqlx::query_as(
-        "SELECT response_payload,http_status,original_input_tokens,original_output_tokens,elapsed_ms,response_complete \
+        "SELECT response_payload,http_status,original_input_tokens,original_output_tokens,elapsed_ms,response_complete,original_transport_context \
          FROM advisory_provider_observations WHERE tenant_id=$1 AND workspace_id=$2 AND dispatch_id=$3"
     ).bind(tenant).bind(workspace).bind(dispatch).fetch_optional(&mut **tx).await.map_err(storage_error)?;
-    row.map(|(raw, status, input, output, elapsed, complete)| {
+    row.map(|(raw, status, input, output, elapsed, complete, context)| {
         Ok((
             AdvisoryProviderReceiptObservation {
                 response_payload: raw,
@@ -40,6 +41,10 @@ async fn read_provider_observation(
                     .transpose()
                     .map_err(|_| Error::StorageUnavailable)?,
                 response_complete: complete,
+                original_transport_context: context
+                    .map(decode_transport_context)
+                    .transpose()
+                    .map_err(storage_error)?,
             },
             elapsed,
         ))
@@ -152,6 +157,9 @@ pub(crate) async fn seal_provider_raw_observation(
     {
         return Err(Error::InvalidArguments);
     }
+    if let Some(context) = observation.original_transport_context.as_ref() {
+        context.validate_for(&observation.response_payload)?;
+    }
     let saved = provider_receipt_for_continuation(tx, continuation).await?;
     if let Some(existing) = saved.observation.as_ref() {
         if existing != observation || saved.original_elapsed_ms != Some(elapsed) {
@@ -162,14 +170,16 @@ pub(crate) async fn seal_provider_raw_observation(
     if saved.dispatch.state != AdvisoryDispatchState::Sending {
         return Err(Error::InputConflict);
     }
-    sqlx::query("INSERT INTO advisory_provider_observations (tenant_id,workspace_id,opportunity_id,dispatch_id,configuration_digest,request_sha256,response_payload,response_sha256,http_status,original_input_tokens,original_output_tokens,elapsed_ms,original_transport_outcome,response_complete) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)")
+    sqlx::query("INSERT INTO advisory_provider_observations (tenant_id,workspace_id,opportunity_id,dispatch_id,configuration_digest,request_sha256,response_payload,response_sha256,http_status,original_input_tokens,original_output_tokens,elapsed_ms,original_transport_outcome,response_complete,original_transport_context) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
         .bind(continuation.tenant_id()).bind(continuation.workspace_id()).bind(continuation.opportunity_id()).bind(continuation.dispatch_id())
         .bind(continuation.configuration_digest()).bind(continuation.request_sha256()).bind(&observation.response_payload)
         .bind(observation.response_payload.as_ref().map(|bytes| format!("{:x}", Sha256::digest(bytes))))
         .bind(observation.http_status.map(i32::from)).bind(observation.input_tokens.map(|n| n.to_string()))
         .bind(observation.output_tokens.map(|n| n.to_string())).bind(elapsed)
         .bind(if observation.response_payload.is_none() { "transport_failure" } else if observation.response_complete { "received" } else { "partial_received" })
-        .bind(observation.response_complete).execute(&mut **tx).await.map_err(storage_error)?;
+        .bind(observation.response_complete)
+        .bind(observation.original_transport_context.as_ref().map(encode_transport_context).transpose()?)
+        .execute(&mut **tx).await.map_err(storage_error)?;
     provider_receipt_for_continuation(tx, continuation).await
 }
 
@@ -179,18 +189,21 @@ pub(crate) async fn seal_provider_observation_usage(
     usage: AdvisoryProviderReceiptUsage,
 ) -> Result<()> {
     let saved = provider_receipt_for_continuation(tx, continuation).await?;
-    // Scope's failure metadata and Pipeline's seal guard need their vertical updates.
-    if saved.opportunity.capability != AdvisoryCapability::EngineeringProfile {
+    // Pipeline's seal guard awaits its own vertical integration.
+    if saved.opportunity.capability == AdvisoryCapability::PipelineRecommendation {
         return Err(Error::TransportUnavailable);
     }
     let observation = saved.observation.ok_or(Error::InputConflict)?;
-    let seal = provider_usage_seal(
+    let mut seal = provider_usage_seal(
         continuation.dispatch_id(),
         observation.response_payload,
         usage,
         saved.original_elapsed_ms,
         observation.response_complete,
     );
+    if saved.opportunity.capability == AdvisoryCapability::ScopeDecomposition {
+        apply_scope_transport_context(&mut seal, observation.original_transport_context.as_ref())?;
+    }
     seal_dispatch(
         tx,
         continuation.tenant_id(),
@@ -201,9 +214,57 @@ pub(crate) async fn seal_provider_observation_usage(
     Ok(())
 }
 
+fn apply_scope_transport_context(
+    seal: &mut AdvisoryDispatchSeal,
+    context: Option<&AdvisoryProviderTransportContext>,
+) -> Result<()> {
+    let context = context.ok_or(Error::InputConflict)?;
+    context.validate_for(&seal.response_payload)?;
+    seal.send_certainty = context.send_certainty;
+    seal.outcome = context.outcome;
+    seal.raw_response_ref = context.raw_response_ref.clone();
+    seal.validate()
+}
+
 #[cfg(test)]
 mod provider_observation_tests {
     use super::*;
+
+    #[test]
+    fn scope_transport_failure_preserves_classification_ref_and_partial_unknown_usage() {
+        let context = AdvisoryProviderTransportContext {
+            send_certainty: AdvisorySendCertainty::Sent,
+            outcome: AdvisoryDispatchOutcome::ProviderFailure,
+            raw_response_ref: Some("exact-original-ref".to_owned()),
+            provider_failure_code: Some("opaque-provider-code".to_owned()),
+        };
+        let mut seal = provider_usage_seal(
+            Uuid::new_v4(),
+            Some(b"prefix".to_vec()),
+            AdvisoryProviderReceiptUsage {
+                input_tokens: Some(3),
+                output_tokens: Some(4),
+            },
+            Some(19),
+            false,
+        );
+        apply_scope_transport_context(&mut seal, Some(&context)).unwrap();
+        assert_eq!(seal.send_certainty, AdvisorySendCertainty::Sent);
+        assert_eq!(seal.outcome, AdvisoryDispatchOutcome::ProviderFailure);
+        assert_eq!(seal.raw_response_ref, context.raw_response_ref);
+        assert_eq!((seal.input_tokens, seal.output_tokens), (None, None));
+        assert_eq!(seal.latency_ms, Some(19));
+        assert_eq!(
+            apply_scope_transport_context(&mut seal, None),
+            Err(Error::InputConflict)
+        );
+        let mut contradictory = context;
+        contradictory.send_certainty = AdvisorySendCertainty::SentUnknown;
+        assert_eq!(
+            apply_scope_transport_context(&mut seal, Some(&contradictory)),
+            Err(Error::InvalidArguments)
+        );
+    }
 
     #[test]
     fn received_empty_or_malformed_bytes_remain_known_received_with_original_elapsed() {
@@ -242,6 +303,8 @@ mod provider_observation_tests {
             input_tokens: Some(1),
             output_tokens: Some(2),
         };
+        let absent = provider_usage_seal(Uuid::new_v4(), None, supplied, Some(7), true);
+        assert_eq!((absent.input_tokens, absent.output_tokens), (None, None));
         let partial = provider_usage_seal(
             Uuid::new_v4(),
             Some(b"prefix".to_vec()),
@@ -280,7 +343,7 @@ fn provider_usage_seal(
     complete: bool,
 ) -> AdvisoryDispatchSeal {
     let received = raw.is_some();
-    let usage = if complete {
+    let usage = if complete && received {
         usage
     } else {
         AdvisoryProviderReceiptUsage::default()

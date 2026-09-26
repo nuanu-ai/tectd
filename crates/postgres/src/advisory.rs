@@ -5,6 +5,7 @@ include!("advisory/dispatch.rs");
 include!("advisory/pipeline_dispatch.rs");
 include!("advisory/matrix_dispatch_read.rs");
 include!("advisory/provider_observation.rs");
+include!("advisory/provider_transport_context.rs");
 include!("advisory/matrix_observation.rs");
 include!("advisory/audit_store.rs");
 include!("advisory/tests.rs");

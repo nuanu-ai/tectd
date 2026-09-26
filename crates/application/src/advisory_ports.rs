@@ -353,6 +353,7 @@ impl From<&MatrixProviderObservation> for crate::AdvisoryProviderReceiptObservat
             input_tokens: value.input_tokens,
             output_tokens: value.output_tokens,
             response_complete: value.response_complete,
+            original_transport_context: None,
         }
     }
 }

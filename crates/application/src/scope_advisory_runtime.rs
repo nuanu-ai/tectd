@@ -192,7 +192,7 @@ impl ScopeAdviceProviderRequest {
 /// Immutable, application-owned representation of the exact request body and
 /// provider target prepared before dispatch authorization. It contains no
 /// credentials and can only be consumed, not mutated.
-#[derive(PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct PreparedScopeAdviceAttempt {
     request: ScopeAdviceRequest,
     body: Vec<u8>,
@@ -354,6 +354,34 @@ pub trait ScopeAdviceProvider: Send + Sync {
         prepared: PreparedScopeAdviceAttempt,
         permit: crate::scope_advisory_orchestration::StartedScopeDispatchPermit,
     ) -> std::result::Result<ScopeAdviceProviderObservation, ScopeAdviceProviderError>;
+    /// Compatibility bridge only. Native implementations return no typed answers.
+    async fn observe_prepared(
+        &self,
+        request: &ScopeAdviceProviderRequest,
+        prepared: PreparedScopeAdviceAttempt,
+        permit: crate::scope_advisory_orchestration::StartedScopeDispatchPermit,
+    ) -> std::result::Result<crate::ScopeAdviceRawObservation, ScopeAdviceProviderError> {
+        self.attempt_prepared(request, prepared, permit)
+            .await
+            .map(crate::ScopeAdviceRawObservation::from_legacy)
+    }
+    /// Pure accounting from already durable, complete evidence.
+    fn usage_from_sealed_response(
+        &self,
+        saved: &crate::StoredAdvisoryProviderReceipt,
+    ) -> Result<crate::AdvisoryProviderReceiptUsage> {
+        Ok(crate::scope_advisory_provider_receipt::original_usage(
+            saved,
+        ))
+    }
+    /// Pure native interpretation. Legacy answers exist only in the fresh bridge.
+    fn parse_sealed_response(
+        &self,
+        _prepared: &PreparedScopeAdviceAttempt,
+        _saved: &crate::StoredAdvisoryProviderReceipt,
+    ) -> Result<NormalizedScopeAdviceAnswers> {
+        Err(tect_domain::Error::TransportUnavailable)
+    }
 }
 
 #[async_trait]

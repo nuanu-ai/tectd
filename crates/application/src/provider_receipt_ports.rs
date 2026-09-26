@@ -1,8 +1,8 @@
 use sha2::{Digest, Sha256};
 use tect_domain::{
     AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryDispatch, AdvisoryDispatchAuthorization,
-    AdvisoryDispatchStart, AdvisoryDispatchState, AdvisoryOpportunity, AdvisorySendCertainty,
-    Error, Result,
+    AdvisoryDispatchOutcome, AdvisoryDispatchSeal, AdvisoryDispatchStart, AdvisoryDispatchState,
+    AdvisoryOpportunity, AdvisorySendCertainty, Error, Result,
 };
 use uuid::Uuid;
 
@@ -183,6 +183,42 @@ pub struct AdvisoryProviderReceiptObservation {
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub response_complete: bool,
+    pub original_transport_context: Option<AdvisoryProviderTransportContext>,
+}
+
+/// Original transport facts, never post-seal answer interpretation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdvisoryProviderTransportContext {
+    pub send_certainty: AdvisorySendCertainty,
+    pub outcome: AdvisoryDispatchOutcome,
+    pub raw_response_ref: Option<String>,
+    pub provider_failure_code: Option<String>,
+}
+
+impl AdvisoryProviderTransportContext {
+    pub fn validate_for(&self, raw: &Option<Vec<u8>>) -> Result<()> {
+        AdvisoryDispatchSeal {
+            dispatch_id: Uuid::from_u128(1),
+            send_certainty: self.send_certainty,
+            outcome: self.outcome,
+            response_payload: raw.clone(),
+            input_tokens: None,
+            output_tokens: None,
+            latency_ms: None,
+            raw_response_ref: self.raw_response_ref.clone(),
+        }
+        .validate()?;
+        if self
+            .provider_failure_code
+            .as_ref()
+            .is_some_and(|code| code.is_empty() || code.len() > 256 || code.contains('\0'))
+            || raw.is_some() && self.send_certainty != AdvisorySendCertainty::Sent
+            || raw.is_none() && self.send_certainty == AdvisorySendCertainty::Sent
+        {
+            return Err(Error::InvalidArguments);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
