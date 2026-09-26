@@ -328,6 +328,8 @@ mod tests {
     #[test]
     fn immutable_replay_result_is_reused_and_mismatch_is_rejected() {
         let observation = ModelRouteProviderObservation {
+            response_complete: None,
+            original_transport_context: None,
             raw: vec![],
             http_status: None,
             input_tokens: Some(3),

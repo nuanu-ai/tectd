@@ -67,6 +67,7 @@ async fn attempt_row(
     sqlx::query(
         "SELECT a.id,a.invoking_session_id,a.invoking_principal_id,a.state,a.no_call_reason,a.adviser_model, \
          a.request_payload,a.typed_request_payload,a.adapter_identity,a.request_sha256,a.response_payload,a.response_sha256,a.parsed_outcome, \
+         a.response_complete,a.original_transport_context, \
          a.response_http_status,a.response_original_input_tokens,a.response_original_output_tokens,a.response_original_elapsed_ms, \
          r.policy_id,r.policy_version,r.policy_digest,c.exhausted_after_response \
          FROM model_route_advisory_attempts a LEFT JOIN model_route_budget_reservations r \

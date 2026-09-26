@@ -133,6 +133,8 @@ async fn no_trusted_policy_blocks_send_and_unknown_or_overrun_usage_blocks_ranki
             .await
             .unwrap();
         let observation = ModelRouteProviderObservation {
+            response_complete: None,
+            original_transport_context: None,
             raw: raw.clone(),
             http_status: None,
             input_tokens,
@@ -207,6 +209,8 @@ async fn malformed_sealed_raw_and_uncertain_send_never_retry() {
             .consume_budget(
                 &permit,
                 &ModelRouteProviderObservation {
+                    response_complete: None,
+                    original_transport_context: None,
                     raw: b"{malformed".to_vec(),
                     http_status: None,
                     input_tokens: Some(1),

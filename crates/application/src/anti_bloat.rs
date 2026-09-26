@@ -308,9 +308,11 @@ pub async fn finalize_anti_bloat_response(
     if sealed.raw != raw {
         return Err(Error::InputConflict);
     }
-    if sealed
-        .http_status
-        .is_some_and(|n| !(200..=299).contains(&n))
+    if sealed.response_complete == Some(false)
+        || (provider.required_profile().is_some() && sealed.response_complete != Some(true))
+        || sealed
+            .http_status
+            .is_some_and(|n| !(200..=299).contains(&n))
     {
         store
             .seal_terminal(permit, AntiBloatAttemptState::InvalidResponse)
@@ -383,7 +385,13 @@ async fn observe_sealed_usage(
     if sealed != *observation {
         return Err(Error::InputConflict);
     }
-    let decoded = provider.usage_sealed(permit, &sealed);
+    let decoded = if sealed.response_complete == Some(false)
+        || (provider.required_profile().is_some() && sealed.response_complete != Some(true))
+    {
+        Err(Error::InvalidArguments)
+    } else {
+        provider.usage_sealed(permit, &sealed)
+    };
     // This pure decoder runs only after the store and frozen-request guards.
     // Any decoder failure makes usage unknown; the committed response must
     // still consume its reservation before the invalid terminal outcome.
@@ -394,6 +402,8 @@ async fn observe_sealed_usage(
     });
     Ok((
         AntiBloatProviderObservation {
+            response_complete: observation.response_complete,
+            original_transport_context: observation.original_transport_context.clone(),
             raw: observation.raw.clone(),
             http_status: observation.http_status,
             elapsed_monotonic_ms: observation.elapsed_monotonic_ms,

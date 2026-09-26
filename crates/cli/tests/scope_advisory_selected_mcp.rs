@@ -59,6 +59,8 @@ impl AntiBloatRankingProvider for CommittedFakeProvider {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let request: Value = serde_json::from_slice(&permit.request.bytes).unwrap();
         Ok(tect_application::AntiBloatProviderObservation {
+            response_complete: None,
+            original_transport_context: None,
             http_status: None,
             raw: serde_json::to_vec(&request["eligible_ids"]).unwrap(),
             input_tokens: Some(1),

@@ -85,10 +85,12 @@ pub(super) async fn saved_sealed_response(
         Option<i64>,
         Option<i64>,
         Option<i64>,
+        Option<bool>,
+        Option<serde_json::Value>,
     );
     let row: Option<Row> = sqlx::query_as(
         "SELECT request_bytes,request_sha256,request_adapter_identity,raw_response,response_sha256, \
-         response_http_status,response_original_input_tokens,response_original_output_tokens,response_original_elapsed_ms \
+         response_http_status,response_original_input_tokens,response_original_output_tokens,response_original_elapsed_ms,response_complete,original_transport_context \
          FROM public.scope_anti_bloat_reviews WHERE tenant_id=$1 AND review_id=$2 AND actor_id=$3 \
          AND state='sending' AND response_sealed_at IS NOT NULL AND raw_response IS NOT NULL",
     ).bind(uow.tenant_id()?).bind(review_id).bind(uow.principal_id()?)
@@ -104,6 +106,8 @@ pub(super) async fn saved_sealed_response(
             input_tokens,
             output_tokens,
             elapsed,
+            complete,
+            context,
         )| {
             if digest(&bytes) != sha256 || digest(&raw) != response_sha256 {
                 return Err(Error::InputConflict);
@@ -119,6 +123,10 @@ pub(super) async fn saved_sealed_response(
                     },
                 },
                 observation: AntiBloatProviderObservation {
+                    response_complete: complete,
+                    original_transport_context: context
+                        .map(crate::advisory::decode_transport_context)
+                        .transpose()?,
                     raw,
                     http_status: status
                         .map(u16::try_from)

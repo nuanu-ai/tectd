@@ -104,6 +104,9 @@ impl AntiBloatRankingProvider for JevAntiBloatProvider {
         observation: &AntiBloatProviderObservation,
     ) -> Result<AntiBloatUsage> {
         self.restore(permit)?;
+        if observation.response_complete != Some(true) {
+            return Err(Error::InvalidArguments);
+        }
         choice::decode_choice_usage(&observation.raw, self.config.maximum_response_bytes)
     }
 
@@ -113,9 +116,10 @@ impl AntiBloatRankingProvider for JevAntiBloatProvider {
         observation: &AntiBloatProviderObservation,
     ) -> Result<AntiBloatRankingOutcome> {
         let prepared = self.restore(permit)?;
-        if !observation
-            .http_status
-            .is_some_and(|status| (200..300).contains(&status))
+        if observation.response_complete != Some(true)
+            || !observation
+                .http_status
+                .is_some_and(|status| (200..300).contains(&status))
         {
             return Ok(AntiBloatRankingOutcome::InvalidResponse);
         }
@@ -135,6 +139,8 @@ impl AntiBloatRankingProvider for JevAntiBloatProvider {
         let start = Instant::now();
         let response = self.transport.post_once(&permit.request.bytes).await?;
         Ok(AntiBloatProviderObservation {
+            response_complete: Some(response.response_complete),
+            original_transport_context: Some(response.original_transport_context),
             raw: response.body,
             input_tokens: None,
             output_tokens: None,

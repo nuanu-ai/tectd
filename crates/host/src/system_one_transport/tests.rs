@@ -18,6 +18,42 @@ fn config(url: &str) -> SystemOneTransportConfig {
     }
 }
 
+#[tokio::test]
+async fn postheader_truncated_body_retains_status_and_received_prefix() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+    let handle = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0; 2048];
+        assert!(stream.read(&mut request).unwrap() > 0);
+        stream.write_all(b"HTTP/1.1 500 Internal Server Error\r\nContent-Length: 100\r\nConnection: close\r\n\r\nprefix").unwrap();
+        // Keep the complete chunk available before inducing a body read timeout.
+        stream.flush().unwrap();
+        thread::sleep(Duration::from_millis(350));
+    });
+    let transport = SystemOneTransport::new(config(&url), "local-test").unwrap();
+    let response = transport.post_once(b"{}").await.unwrap();
+    assert_eq!(response.status, 500);
+    assert_eq!(response.body, b"prefix");
+    assert!(!response.response_complete);
+    assert_eq!(
+        response
+            .original_transport_context
+            .provider_failure_code
+            .as_deref(),
+        Some("response-body-read")
+    );
+    assert_eq!(
+        response.original_transport_context.outcome,
+        AdvisoryDispatchOutcome::ProviderFailure
+    );
+    assert_eq!(
+        response.original_transport_context.raw_response_ref,
+        Some(format!("sha256:{:x}", Sha256::digest(b"prefix")))
+    );
+    handle.join().unwrap();
+}
+
 fn server(
     status: &str,
     body: &[u8],
@@ -83,6 +119,23 @@ async fn sends_exact_bytes_and_sensitive_bearer_once_preserving_status_and_raw()
         let response = transport.post_once(exact).await.unwrap();
         assert_eq!(response.status, status[..3].parse::<u16>().unwrap());
         assert_eq!(response.body, b"malformed { bytes");
+        assert!(response.response_complete);
+        assert_eq!(
+            response.original_transport_context.send_certainty,
+            AdvisorySendCertainty::Sent
+        );
+        assert_eq!(
+            response.original_transport_context.outcome,
+            if status.starts_with("200") {
+                AdvisoryDispatchOutcome::ProviderResponse
+            } else {
+                AdvisoryDispatchOutcome::ProviderFailure
+            }
+        );
+        assert_eq!(
+            response.original_transport_context.raw_response_ref,
+            Some(format!("sha256:{:x}", Sha256::digest(&response.body)))
+        );
         let request = handle.join().unwrap();
         let end = request.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
         assert_eq!(&request[end + 4..], exact);
@@ -124,7 +177,7 @@ fn rejects_invalid_configuration_and_credentials() {
 }
 
 #[tokio::test]
-async fn byte_bounds_and_timeout_return_no_partial_response() {
+async fn byte_bounds_capture_actual_prefix_and_preheader_timeout_remains_error() {
     let transport =
         SystemOneTransport::new(config("http://127.0.0.1:1/v1/systemone"), "local-test").unwrap();
     assert!(matches!(
@@ -139,10 +192,21 @@ async fn byte_bounds_and_timeout_return_no_partial_response() {
     let mut c = config(&url);
     c.maximum_response_bytes = 5;
     let t = SystemOneTransport::new(c, "local-test").unwrap();
-    assert!(matches!(
-        t.post_once(b"{}").await,
-        Err(Error::RequestTooLarge)
-    ));
+    let response = t.post_once(b"{}").await.unwrap();
+    assert_eq!(response.body, b"12345");
+    assert_eq!(response.status, 200);
+    assert!(!response.response_complete);
+    assert_eq!(
+        response
+            .original_transport_context
+            .provider_failure_code
+            .as_deref(),
+        Some("response-oversize")
+    );
+    assert_eq!(
+        response.original_transport_context.raw_response_ref,
+        Some(format!("sha256:{:x}", Sha256::digest(b"12345")))
+    );
     handle.join().unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 1);
     let (url, handle, count) = server("200 OK", b"{}", Duration::from_millis(100));
@@ -164,6 +228,7 @@ async fn empty_response_is_preserved_as_complete_raw_evidence() {
     let response = transport.post_once(b"{}").await.unwrap();
     assert_eq!(response.status, 204);
     assert!(response.body.is_empty());
+    assert!(response.response_complete);
     handle.join().unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 1);
 }

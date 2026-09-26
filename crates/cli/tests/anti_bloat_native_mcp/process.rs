@@ -70,6 +70,7 @@ pub(super) async fn response(
     status: u16,
     abstain: bool,
     duplicate: bool,
+    partial: u8,
 ) -> (Vec<u8>, Vec<u8>, TcpListener) {
     let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
         .await
@@ -149,6 +150,11 @@ pub(super) async fn response(
     }
     probabilities.insert("ABSTAIN".into(), json!(abstain_weight / sum));
     let mut body=serde_json::to_vec(&json!({"model":"fixture-choice-model","answers":{"anti_bloat_order_v1":{"type":"choice","choice":if abstain{"ABSTAIN"}else{"R0"},"probabilities":probabilities,"confidence":0.01}},"usage":{"input_tokens":7,"output_tokens":3}})).unwrap();
+    if status == 500 {
+        let mut value: Value = serde_json::from_slice(&body).unwrap();
+        value["usage"] = json!({"input_tokens":20,"output_tokens":30});
+        body = serde_json::to_vec(&value).unwrap();
+    }
     if duplicate {
         body = String::from_utf8(body)
             .unwrap()
@@ -158,12 +164,22 @@ pub(super) async fn response(
             )
             .into_bytes();
     }
+    if partial == 1 {
+        body.resize(64 * 1024, b' ');
+    }
     let header = format!(
         "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
+        body.len() + usize::from(partial > 0)
     );
     stream.write_all(header.as_bytes()).await.unwrap();
     stream.write_all(&body).await.unwrap();
+    stream.flush().await.unwrap();
+    if partial == 1 {
+        stream.write_all(b"x").await.unwrap();
+    }
+    if partial == 2 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     stream.shutdown().await.unwrap();
     (request, body, listener)
 }

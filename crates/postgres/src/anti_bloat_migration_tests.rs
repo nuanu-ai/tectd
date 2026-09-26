@@ -7,6 +7,34 @@ const TERMINALS: &str = include_str!("../migrations/0094_anti_bloat_terminal_out
 const OBSERVATION: &str = include_str!("../migrations/0095_anti_bloat_sealed_observation.sql");
 
 #[test]
+fn response_transport_metadata_preserves_historical_null_and_seal_binding() {
+    let sql = include_str!("../migrations/0104_s04_s05_response_transport_metadata.sql");
+    assert!(!sql.contains("DEFAULT"));
+    assert!(!sql.contains("UPDATE public."));
+    assert!(sql.contains("scope_anti_bloat_response_transport_requires_raw CHECK"));
+    assert!(sql.contains("response_complete IS NULL AND original_transport_context IS NULL"));
+    assert!(sql.contains("OLD.raw_response IS NOT NULL"));
+    assert!(sql.contains("NEW.response_complete,NEW.original_transport_context) IS DISTINCT FROM"));
+    assert!(sql.contains("OLD.response_complete,OLD.original_transport_context"));
+    assert!(sql.contains(
+        "OR NEW.response_complete IS NOT NULL OR NEW.original_transport_context IS NOT NULL"
+    ));
+    let seal = include_str!("anti_bloat_store/send.rs");
+    let read = include_str!("anti_bloat_store/response.rs");
+    assert!(seal.contains("response_complete=$12,original_transport_context=$13"));
+    assert!(seal.contains("context.validate_for(&Some(observation.raw.clone()))?"));
+    assert!(
+        read.contains("response_original_elapsed_ms,response_complete,original_transport_context")
+    );
+    assert!(read.contains("response_complete: complete"));
+    assert!(read.contains(".map(crate::advisory::decode_transport_context)"));
+    assert!(
+        include_str!("admin/migration.rs")
+            .contains("response_complete,original_transport_context,send_started_at")
+    );
+}
+
+#[test]
 fn sealed_transport_metadata_is_nullable_immutable_and_runtime_writable() {
     for column in [
         "response_http_status",

@@ -421,10 +421,14 @@ pub(super) async fn seal_response(
     {
         return Err(Error::InputConflict);
     }
+    if let Some(context) = observation.original_transport_context.as_ref() {
+        context.validate_for(&Some(observation.raw.clone()))?;
+    }
     let result = sqlx::query(
         "UPDATE scope_anti_bloat_reviews SET raw_response=$5,response_sha256=$6, \
          response_sealed_at=pg_catalog.clock_timestamp(), response_http_status=$8, \
-         response_original_input_tokens=$9,response_original_output_tokens=$10,response_original_elapsed_ms=$11 \
+         response_original_input_tokens=$9,response_original_output_tokens=$10,response_original_elapsed_ms=$11, \
+         response_complete=$12,original_transport_context=$13 \
          WHERE tenant_id=$1 AND review_id=$2 AND actor_id=$3 AND state='sending' \
            AND request_bytes=$4 AND request_sha256=$7 AND raw_response IS NULL",
     )
@@ -439,6 +443,8 @@ pub(super) async fn seal_response(
     .bind(observation.input_tokens)
     .bind(observation.output_tokens)
     .bind(observation.elapsed_monotonic_ms)
+    .bind(observation.response_complete)
+    .bind(observation.original_transport_context.as_ref().map(crate::advisory::encode_transport_context).transpose()?)
     .execute(&mut **uow.transaction()?)
     .await
     .map_err(storage_error)?;

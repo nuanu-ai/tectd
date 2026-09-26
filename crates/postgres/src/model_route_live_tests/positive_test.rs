@@ -295,6 +295,8 @@ impl ModelRouteRankingProvider for FakeJevRanker {
         permit: ModelRouteSendPermit,
     ) -> tect_domain::Result<ModelRouteProviderObservation> {
         Ok(ModelRouteProviderObservation {
+            response_complete: None,
+            original_transport_context: None,
             raw: self.attempt_prepared(attempted, permit).await?,
             http_status: None,
             input_tokens: Some(4),

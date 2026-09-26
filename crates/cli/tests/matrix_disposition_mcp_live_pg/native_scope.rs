@@ -359,7 +359,7 @@ async fn audit(
     tx.commit().await.unwrap();
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires explicitly owned disposable PG18.6 migration103; no real JEV"]
+#[ignore = "requires explicitly owned disposable PG18.6 migration104; no real JEV"]
 async fn public_native_scope_preserves_receipts_and_never_selects_caller_effects() {
     for case in [
         Case::Preferred,

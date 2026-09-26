@@ -513,6 +513,8 @@ impl AntiBloatRankingProvider for CommitObservingProvider {
             Err(Error::TransportUnavailable)
         } else {
             Ok(AntiBloatProviderObservation {
+                response_complete: None,
+                original_transport_context: None,
                 http_status: None,
                 raw: b"[]".to_vec(),
                 input_tokens: Some(1),
@@ -587,6 +589,8 @@ impl AntiBloatRankingProvider for FakeProvider {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if self.invent {
             Ok(AntiBloatProviderObservation {
+                response_complete: None,
+                original_transport_context: None,
                 http_status: None,
                 raw: br#"["invented"]"#.to_vec(),
                 input_tokens: Some(1),
@@ -596,6 +600,8 @@ impl AntiBloatRankingProvider for FakeProvider {
         } else {
             let request: serde_json::Value = serde_json::from_slice(&permit.request.bytes).unwrap();
             Ok(AntiBloatProviderObservation {
+                response_complete: None,
+                original_transport_context: None,
                 http_status: None,
                 raw: serde_json::to_vec(&request["eligible_ids"]).unwrap(),
                 input_tokens: Some(1),

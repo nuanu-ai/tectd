@@ -99,6 +99,8 @@ async fn provider_preparation_and_parse_are_fenced_by_durable_authorization() {
         Err(Error::InputConflict)
     );
     let mut observation = AntiBloatProviderObservation {
+        response_complete: None,
+        original_transport_context: None,
         http_status: None,
         raw: raw.clone(),
         input_tokens: Some(101),

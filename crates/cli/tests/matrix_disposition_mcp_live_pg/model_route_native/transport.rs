@@ -86,7 +86,7 @@ pub(super) async fn response(
     pool: PgPool,
     workspace: Uuid,
     key: String,
-    duplicate: bool,
+    case: Case,
 ) -> (Vec<u8>, Vec<u8>, TcpListener) {
     let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
         .await
@@ -160,7 +160,12 @@ pub(super) async fn response(
     assert_eq!(question["type"], "choice");
     assert_eq!(question["criteria"].as_object().unwrap().len(), 3);
     let mut raw=serde_json::to_vec(&json!({"model":"fixture-choice-adviser","answers":{"model_route_order_v1":{"type":"choice","choice":"R1","probabilities":{"R0":0.2,"R1":0.7,"ABSTAIN":0.1},"confidence":0.01}},"usage":{"input_tokens":7,"output_tokens":3}})).unwrap();
-    if duplicate {
+    if matches!(case, Case::Http500) {
+        let mut body: Value = serde_json::from_slice(&raw).unwrap();
+        body["usage"] = json!({"input_tokens":20,"output_tokens":30});
+        raw = serde_json::to_vec(&body).unwrap();
+    }
+    if matches!(case, Case::Duplicate) {
         // Escaped spelling is the same key after JSON decoding, not a second
         // independent counter. Preserve these exact ambiguous bytes.
         raw = String::from_utf8(raw)
@@ -171,17 +176,28 @@ pub(super) async fn response(
             )
             .into_bytes();
     }
+    if matches!(case, Case::Oversize) {
+        raw.resize(64 * 1024, b' ');
+    }
     stream
         .write_all(
             format!(
-                "HTTP/1.1 200 Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                raw.len()
+                "HTTP/1.1 {} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                case.status(),
+                raw.len() + usize::from(case.partial())
             )
             .as_bytes(),
         )
         .await
         .unwrap();
     stream.write_all(&raw).await.unwrap();
+    stream.flush().await.unwrap();
+    if matches!(case, Case::Oversize) {
+        stream.write_all(b"x").await.unwrap();
+    }
+    if matches!(case, Case::Truncated) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     stream.shutdown().await.unwrap();
     (request, raw, listener)
 }

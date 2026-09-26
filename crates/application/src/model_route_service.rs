@@ -262,16 +262,11 @@ impl WorkspaceService {
             .sealed_observation(&permit)
             .await?
             .ok_or(Error::StaleContext)?;
-        let usage = self
-            .model_route_ranking_provider
-            .sealed_usage(&attempted, &observation);
-        let invalid_usage = usage.is_err();
-        let usage = usage.unwrap_or(crate::ModelRouteUsage {
-            input_tokens: None,
-            output_tokens: None,
-        });
-        observation.input_tokens = usage.input_tokens;
-        observation.output_tokens = usage.output_tokens;
+        let invalid_usage = crate::model_route_provider::observe_model_route_sealed_usage(
+            &*self.model_route_ranking_provider,
+            &attempted,
+            &mut observation,
+        );
         let exhausted = store.consume_budget(&permit, &observation).await?;
         if exhausted {
             tx.commit().await?;

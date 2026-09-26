@@ -17,6 +17,8 @@ pub(super) async fn immutable(
         "response_http_status=201",
         "response_original_elapsed_ms=response_original_elapsed_ms+1",
         "request_adapter_identity='different/1'",
+        "response_complete=NOT response_complete",
+        "original_transport_context=original_transport_context || '{\"provider_failure_code\":\"changed\"}'::jsonb",
     ] {
         identity(pool).await;
         let mut tx = runtime_pool.begin().await.unwrap();

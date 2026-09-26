@@ -149,6 +149,9 @@ impl AntiBloatStartedDispatchPermit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AntiBloatProviderObservation {
     pub raw: Vec<u8>,
+    /// None preserves historical and legacy observations without an EOF fact.
+    pub response_complete: Option<bool>,
+    pub original_transport_context: Option<crate::AdvisoryProviderTransportContext>,
     pub http_status: Option<u16>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,

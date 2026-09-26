@@ -7,6 +7,41 @@ const ATTEMPT_BUDGET: &str = include_str!("model_route_attempt_store/budget.rs")
 const ATTEMPT_READS: &str = include_str!("model_route_attempt_store/reads.rs");
 
 #[test]
+fn response_transport_metadata_is_nullable_immutable_and_stored() {
+    let sql = include_str!("../migrations/0104_s04_s05_response_transport_metadata.sql");
+    let guard = sql
+        .split("CREATE OR REPLACE FUNCTION public.model_route_native_observation_guard()")
+        .nth(1)
+        .unwrap();
+    assert!(guard.contains("(NEW.typed_request_payload,NEW.adapter_identity) IS DISTINCT FROM"));
+    assert!(guard.contains("OLD.response_payload IS NOT NULL"));
+    assert!(
+        guard.contains("NEW.response_complete,NEW.original_transport_context) IS DISTINCT FROM")
+    );
+    assert!(guard.contains("OLD.response_complete,OLD.original_transport_context"));
+    assert!(guard.contains(
+        "OR NEW.response_complete IS NOT NULL OR NEW.original_transport_context IS NOT NULL"
+    ));
+    assert_eq!(
+        sql.matches("ADD COLUMN response_complete boolean").count(),
+        2
+    );
+    assert_eq!(
+        sql.matches("pg_catalog.jsonb_typeof(original_transport_context)='object'")
+            .count(),
+        2
+    );
+    let seal = include_str!("model_route_attempt_store/response.rs");
+    assert!(seal.contains("response_complete=$11,original_transport_context=$12"));
+    assert!(seal.contains("context.validate_for(&Some(observation.raw.clone()))?"));
+    assert!(ATTEMPT_READS.contains("row.try_get(\"response_complete\")"));
+    assert!(ATTEMPT_READS.contains(".map(crate::advisory::decode_transport_context)"));
+    assert!(GRANTS.contains(
+        "response_complete,original_transport_context) ON TABLE model_route_advisory_attempts"
+    ));
+}
+
+#[test]
 fn receipts_are_tenant_scoped_immutable_and_bound_to_exact_native_save() {
     for required in [
         "CREATE TABLE model_route_preparations",

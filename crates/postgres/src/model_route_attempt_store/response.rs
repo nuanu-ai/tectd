@@ -8,6 +8,9 @@ pub(super) async fn seal(
     if !uow.is_read_write() {
         return Err(Error::Forbidden);
     }
+    if let Some(context) = observation.original_transport_context.as_ref() {
+        context.validate_for(&Some(observation.raw.clone()))?;
+    }
     let row = permit_row(uow, permit).await?;
     if let Some(existing) = reads::observation_from_row(&row)? {
         return if existing == *observation {
@@ -20,10 +23,12 @@ pub(super) async fn seal(
         return Err(Error::InputConflict);
     }
     let tenant = uow.tenant_id()?;
-    let affected = sqlx::query("UPDATE model_route_advisory_attempts SET state='raw_sealed',response_payload=$5,response_sha256=$6,raw_sealed_at=pg_catalog.clock_timestamp(),response_http_status=$7,response_original_input_tokens=$8,response_original_output_tokens=$9,response_original_elapsed_ms=$10 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND request_sha256=$4 AND state='send_unknown'")
+    let affected = sqlx::query("UPDATE model_route_advisory_attempts SET state='raw_sealed',response_payload=$5,response_sha256=$6,raw_sealed_at=pg_catalog.clock_timestamp(),response_http_status=$7,response_original_input_tokens=$8,response_original_output_tokens=$9,response_original_elapsed_ms=$10,response_complete=$11,original_transport_context=$12 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND request_sha256=$4 AND state='send_unknown'")
         .bind(tenant).bind(permit.workspace_id).bind(permit.attempt_id).bind(&permit.request_sha256)
         .bind(&observation.raw).bind(model_route_wire_sha256(&observation.raw)).bind(observation.http_status.map(i32::from))
         .bind(observation.input_tokens).bind(observation.output_tokens).bind(observation.elapsed_monotonic_ms)
+        .bind(observation.response_complete)
+        .bind(observation.original_transport_context.as_ref().map(crate::advisory::encode_transport_context).transpose()?)
         .execute(&mut **uow.transaction()?).await.map_err(write_error)?.rows_affected();
     if affected != 1 {
         return Err(Error::InputConflict);

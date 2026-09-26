@@ -140,6 +140,16 @@ async fn native_exact_seal_restores_and_rederives_before_immutable_capture() {
         .unwrap();
     tx.commit().await.unwrap();
     let observation = ModelRouteProviderObservation {
+        response_complete: Some(true),
+        original_transport_context: Some(tect_application::AdvisoryProviderTransportContext {
+            send_certainty: tect_domain::AdvisorySendCertainty::Sent,
+            outcome: tect_domain::AdvisoryDispatchOutcome::ProviderResponse,
+            raw_response_ref: Some(format!(
+                "sha256:{}",
+                model_route_wire_sha256(b"native provider exact response")
+            )),
+            provider_failure_code: None,
+        }),
         raw: b"native provider exact response".to_vec(),
         http_status: Some(200),
         input_tokens: Some(4),
@@ -329,6 +339,8 @@ async fn native_exact_seal_restores_and_rederives_before_immutable_capture() {
         .unwrap();
     assert_eq!(restored.elapsed_monotonic_ms, None);
     assert_eq!(restored.http_status, None);
+    assert_eq!(restored.response_complete, None);
+    assert_eq!(restored.original_transport_context, None);
     restored.input_tokens = Some(4);
     restored.output_tokens = Some(3);
     let mut backfill = restored.clone();

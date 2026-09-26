@@ -32,6 +32,8 @@ type SealedAudit = (
     Option<i64>,
     Option<i64>,
     Option<i64>,
+    Option<bool>,
+    Option<Value>,
 );
 
 // This guard is intentionally tied to the explicitly owned disposable cluster.
@@ -41,7 +43,7 @@ async fn identity(pool: &PgPool) {
         .fetch_one(pool).await.unwrap();
     assert_eq!(
         row,
-        ("tect_test".into(), 16385, "7689676854994613066".into(), 103)
+        ("tect_test".into(), 16385, "7689676854994613066".into(), 104)
     );
 }
 async fn call(pool: &PgPool, client: &mut Mcp, kind: &str, route: &str, params: Value) -> Value {
@@ -120,13 +122,15 @@ async fn native_anti_bloat_public_mcp_is_sealed_once_and_default_disabled() {
     let runtime = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
     let pool = PgPool::connect(&admin_url).await.unwrap();
     identity(&pool).await;
-    for (enabled, status, abstain, duplicate, expected) in [
-        (true, 200, false, false, "ranked"),
-        (true, 200, true, false, "provider_abstained"),
-        (true, 500, false, false, "invalid_response"),
-        (true, 200, false, true, "invalid_response"),
-        (false, 200, false, false, "no_call"),
-        (true, 200, false, false, "no_call"),
+    for (enabled, status, abstain, duplicate, partial, expected) in [
+        (true, 200, false, false, 0, "ranked"),
+        (true, 200, true, false, 0, "provider_abstained"),
+        (true, 500, false, false, 0, "invalid_response"),
+        (true, 200, false, true, 0, "invalid_response"),
+        (true, 200, false, false, 1, "invalid_response"),
+        (true, 200, false, false, 2, "invalid_response"),
+        (false, 200, false, false, 0, "no_call"),
+        (true, 200, false, false, 0, "no_call"),
     ] {
         let temp = private_temp();
         let root = temp.path().canonicalize().unwrap();
@@ -214,6 +218,7 @@ async fn native_anti_bloat_public_mcp_is_sealed_once_and_default_disabled() {
                     status,
                     abstain,
                     duplicate,
+                    partial,
                 ))),
                 None,
             )
@@ -262,7 +267,7 @@ async fn native_anti_bloat_public_mcp_is_sealed_once_and_default_disabled() {
                     .is_err(),
                 "replay must not POST"
             );
-            let row:SealedAudit=sqlx::query_as("SELECT request_bytes,request_sha256,raw_response,response_sha256,response_http_status,request_adapter_identity,response_original_input_tokens,response_original_output_tokens,response_original_elapsed_ms FROM scope_anti_bloat_reviews WHERE review_id=$1").bind(review).fetch_one(&pool).await.unwrap();
+            let row:SealedAudit=sqlx::query_as("SELECT request_bytes,request_sha256,raw_response,response_sha256,response_http_status,request_adapter_identity,response_original_input_tokens,response_original_output_tokens,response_original_elapsed_ms,response_complete,original_transport_context FROM scope_anti_bloat_reviews WHERE review_id=$1").bind(review).fetch_one(&pool).await.unwrap();
             assert_eq!(row.0, request);
             assert_eq!(row.1, format!("{:x}", Sha256::digest(&request)));
             assert_eq!(row.2, raw);
@@ -271,11 +276,42 @@ async fn native_anti_bloat_public_mcp_is_sealed_once_and_default_disabled() {
             assert_eq!(row.5, "tect.anti-bloat-typesafe-choice/1");
             assert_eq!((row.6, row.7), (None, None));
             assert!(row.8.is_some_and(|v| v >= 0));
+            assert_eq!(row.9, Some(partial == 0));
+            let context = row.10.unwrap();
+            let failure = match partial {
+                1 => Some("response-oversize"),
+                2 => Some("response-body-read"),
+                _ if status == 500 => Some("http-status"),
+                _ => None,
+            };
+            assert_eq!(context["send_certainty"], "sent");
+            assert_eq!(
+                context["outcome"],
+                if failure.is_some() {
+                    "provider_failure"
+                } else {
+                    "provider_response"
+                }
+            );
+            assert_eq!(context["provider_failure_code"], json!(failure));
+            assert_eq!(
+                context["raw_response_ref"],
+                format!("sha256:{:x}", Sha256::digest(&raw))
+            );
+            if partial > 0 {
+                let prefix: Value = serde_json::from_slice(&raw).unwrap();
+                assert_eq!(prefix["usage"], json!({"input_tokens":7,"output_tokens":3}));
+                if partial == 1 {
+                    assert_eq!(raw.len(), 64 * 1024);
+                }
+            }
             let usage:(Option<i64>,Option<i64>,bool,bool)=sqlx::query_as("SELECT input_tokens,output_tokens,unknown_usage,exhausted_after_response FROM scope_anti_bloat_budget_consumptions WHERE review_id=$1").bind(review).fetch_one(&pool).await.unwrap();
             assert_eq!(
                 usage,
-                if duplicate {
+                if duplicate || partial > 0 {
                     (None, None, true, true)
+                } else if status == 500 {
+                    (Some(20), Some(30), false, false)
                 } else {
                     (Some(7), Some(3), false, false)
                 }
@@ -288,6 +324,9 @@ async fn native_anti_bloat_public_mcp_is_sealed_once_and_default_disabled() {
                 review,
             )
             .await;
+        } else {
+            let metadata:(Option<bool>,Option<Value>,Option<Vec<u8>>)=sqlx::query_as("SELECT response_complete,original_transport_context,raw_response FROM scope_anti_bloat_reviews WHERE review_id=$1").bind(review).fetch_one(&pool).await.unwrap();
+            assert_eq!(metadata, (None, None, None));
         }
         let scope_fixture: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM advisory_dispatch WHERE workspace_id=$1 AND provider='fixture'",

@@ -197,9 +197,11 @@ pub async fn finalize_model_route_provider_response(
     if store.consumption_healthy(permit).await? != Some(true) {
         return Err(Error::BudgetPolicyInvalid);
     }
-    if observation
-        .http_status
-        .is_some_and(|s| !(200..300).contains(&s))
+    if observation.response_complete == Some(false)
+        || (attempted.adapter_identity.is_some() && observation.response_complete != Some(true))
+        || observation
+            .http_status
+            .is_some_and(|s| !(200..300).contains(&s))
     {
         return Err(Error::InvalidArguments);
     }
@@ -215,6 +217,29 @@ pub async fn finalize_model_route_provider_response(
     evidence.validate_material(prepared)?;
     store.capture_provider_outcome(&evidence, provider).await?;
     Ok(outcome)
+}
+
+/// Pure usage extraction after the caller has loaded the committed raw seal.
+pub(crate) fn observe_model_route_sealed_usage(
+    provider: &dyn ModelRouteRankingProvider,
+    attempted: &ModelRoutePreparedAttempt,
+    observation: &mut ModelRouteProviderObservation,
+) -> bool {
+    let usage = if observation.response_complete == Some(false)
+        || (attempted.adapter_identity.is_some() && observation.response_complete != Some(true))
+    {
+        Err(Error::InvalidArguments)
+    } else {
+        provider.sealed_usage(attempted, observation)
+    };
+    let invalid = usage.is_err();
+    let usage = usage.unwrap_or(crate::ModelRouteUsage {
+        input_tokens: None,
+        output_tokens: None,
+    });
+    observation.input_tokens = usage.input_tokens;
+    observation.output_tokens = usage.output_tokens;
+    invalid
 }
 
 #[cfg(test)]

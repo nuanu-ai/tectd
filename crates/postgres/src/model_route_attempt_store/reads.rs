@@ -18,6 +18,12 @@ pub(super) fn observation_from_row(
     }
     let status: Option<i32> = row.try_get("response_http_status").map_err(storage_error)?;
     Ok(Some(ModelRouteProviderObservation {
+        response_complete: row.try_get("response_complete").map_err(storage_error)?,
+        original_transport_context: row
+            .try_get::<Option<Value>, _>("original_transport_context")
+            .map_err(storage_error)?
+            .map(crate::advisory::decode_transport_context)
+            .transpose()?,
         raw,
         http_status: status
             .map(u16::try_from)

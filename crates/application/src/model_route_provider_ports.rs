@@ -94,6 +94,9 @@ pub struct ModelRouteSendPermit {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRouteProviderObservation {
     pub raw: Vec<u8>,
+    /// None preserves historical and legacy observations without an EOF fact.
+    pub response_complete: Option<bool>,
+    pub original_transport_context: Option<crate::AdvisoryProviderTransportContext>,
     pub http_status: Option<u16>,
     pub input_tokens: Option<i64>,
     pub output_tokens: Option<i64>,
@@ -216,6 +219,8 @@ pub trait ModelRouteRankingProvider: Send + Sync {
         let raw = self.attempt_prepared(attempted, permit).await?;
         let elapsed_monotonic_ms = i64::try_from(start.elapsed().as_millis()).ok();
         Ok(ModelRouteProviderObservation {
+            response_complete: None,
+            original_transport_context: None,
             raw,
             http_status: None,
             input_tokens: None,
@@ -319,6 +324,8 @@ pub trait ModelRouteAttemptStore: Send {
             .sealed_response(permit)
             .await?
             .map(|raw| ModelRouteProviderObservation {
+                response_complete: None,
+                original_transport_context: None,
                 raw,
                 http_status: None,
                 input_tokens: None,

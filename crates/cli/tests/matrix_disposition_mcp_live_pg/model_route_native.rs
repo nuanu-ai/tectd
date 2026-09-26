@@ -21,7 +21,32 @@ type NativeAudit = (
     Option<i32>,
     String,
     Option<i64>,
+    Option<bool>,
+    Option<Value>,
 );
+#[derive(Clone, Copy, Debug)]
+enum Case {
+    Ranked,
+    Duplicate,
+    Http500,
+    Oversize,
+    Truncated,
+}
+impl Case {
+    fn unknown(self) -> bool {
+        matches!(self, Self::Duplicate | Self::Oversize | Self::Truncated)
+    }
+    fn partial(self) -> bool {
+        matches!(self, Self::Oversize | Self::Truncated)
+    }
+    fn status(self) -> u16 {
+        if matches!(self, Self::Http500) {
+            500
+        } else {
+            200
+        }
+    }
+}
 
 async fn identity(pool: &PgPool) {
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
@@ -66,13 +91,20 @@ fn catalogue() -> ModelRouteCatalogue {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires explicitly owned disposable PG18.6, migration103"]
+#[ignore = "requires explicitly owned disposable PG18.6, migration104"]
 async fn native_public_model_route_recommends_once_without_candidate_execution() {
-    exercise(false).await;
-    exercise(true).await;
+    for case in [
+        Case::Ranked,
+        Case::Duplicate,
+        Case::Http500,
+        Case::Oversize,
+        Case::Truncated,
+    ] {
+        exercise(case).await;
+    }
 }
 
-async fn exercise(duplicate: bool) {
+async fn exercise(case: Case) {
     let pool = PgPool::connect(&std::env::var("TECT_TEST_ADMIN_URL").unwrap())
         .await
         .unwrap();
@@ -149,18 +181,44 @@ async fn exercise(duplicate: bool) {
         pool.clone(),
         workspace,
         key.to_owned(),
-        duplicate,
+        case,
     ));
+    let run_request = json!({"preparation_request_key":key});
+    let original_error = if matches!(case, Case::Http500) {
+        identity(&pool).await;
+        let error = route_error(
+            &mut owner,
+            "command",
+            "model.route.run",
+            run_request.clone(),
+        )
+        .await;
+        assert_error(&error, &["invalid_arguments"]);
+        Some(error)
+    } else {
+        None
+    };
     let run = call(
         &pool,
         &mut owner,
-        "command",
-        "model.route.run",
-        json!({"preparation_request_key":key}),
+        if original_error.is_some() {
+            "query"
+        } else {
+            "command"
+        },
+        if original_error.is_some() {
+            "model.route.get"
+        } else {
+            "model.route.run"
+        },
+        run_request.clone(),
     )
     .await;
-    if duplicate {
+    if case.unknown() {
         assert_eq!(run["attempt"]["state"], "budget_exhausted", "{run}");
+        assert!(run["decision"].is_null(), "{run}");
+    } else if matches!(case, Case::Http500) {
+        assert_eq!(run["attempt"]["state"], "raw_sealed", "{run}");
         assert!(run["decision"].is_null(), "{run}");
     } else {
         assert_eq!(run["attempt"]["state"], "parsed", "{run}");
@@ -172,12 +230,31 @@ async fn exercise(duplicate: bool) {
             json!(["route-b", "route-a"])
         );
     }
+    if let Some(error) = original_error {
+        identity(&pool).await;
+        let replay = route_error(
+            &mut owner,
+            "command",
+            "model.route.run",
+            run_request.clone(),
+        )
+        .await;
+        assert_eq!(error, replay);
+    }
     let replay = call(
         &pool,
         &mut owner,
-        "command",
-        "model.route.run",
-        json!({"preparation_request_key":key}),
+        if matches!(case, Case::Http500) {
+            "query"
+        } else {
+            "command"
+        },
+        if matches!(case, Case::Http500) {
+            "model.route.get"
+        } else {
+            "model.route.run"
+        },
+        run_request,
     )
     .await;
     assert_eq!(
@@ -193,25 +270,60 @@ async fn exercise(duplicate: bool) {
         "replay must not POST"
     );
     let attempt = Uuid::parse_str(run["attempt"]["attempt_id"].as_str().unwrap()).unwrap();
-    let audit:NativeAudit=sqlx::query_as("SELECT request_payload,request_sha256,response_payload,response_sha256,response_http_status,adapter_identity,response_original_elapsed_ms FROM model_route_advisory_attempts WHERE id=$1").bind(attempt).fetch_one(&pool).await.unwrap();
+    let audit:NativeAudit=sqlx::query_as("SELECT request_payload,request_sha256,response_payload,response_sha256,response_http_status,adapter_identity,response_original_elapsed_ms,response_complete,original_transport_context FROM model_route_advisory_attempts WHERE id=$1").bind(attempt).fetch_one(&pool).await.unwrap();
     assert_eq!(audit.0, request_bytes);
     assert_eq!(audit.1, format!("{:x}", Sha256::digest(&request_bytes)));
     assert_eq!(audit.2, raw);
     assert_eq!(audit.3, format!("{:x}", Sha256::digest(&raw)));
-    assert_eq!(audit.4, Some(200));
+    assert_eq!(audit.4, Some(case.status().into()));
     assert_eq!(audit.5, "tect.model-route-typesafe-choice/1");
     assert!(audit.6.is_some_and(|n| n >= 0));
+    assert_eq!(audit.7, Some(!case.partial()));
+    let context = audit.8.unwrap();
+    let failure = match case {
+        Case::Http500 => Some("http-status"),
+        Case::Oversize => Some("response-oversize"),
+        Case::Truncated => Some("response-body-read"),
+        _ => None,
+    };
+    assert_eq!(context["send_certainty"], "sent");
+    assert_eq!(
+        context["outcome"],
+        if failure.is_some() {
+            "provider_failure"
+        } else {
+            "provider_response"
+        }
+    );
+    assert_eq!(context["provider_failure_code"], json!(failure));
+    assert_eq!(
+        context["raw_response_ref"],
+        format!("sha256:{:x}", Sha256::digest(&raw))
+    );
+    if case.partial() {
+        let prefix: Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(prefix["usage"], json!({"input_tokens":7,"output_tokens":3}));
+        if matches!(case, Case::Oversize) {
+            assert_eq!(raw.len(), 64 * 1024);
+        }
+    }
     let usage:(i64,i64,Option<i64>,Option<i64>,bool)=sqlx::query_as("SELECT (SELECT count(*) FROM model_route_budget_reservations WHERE attempt_id=$1),(SELECT count(*) FROM model_route_budget_consumptions WHERE attempt_id=$1),input_tokens,output_tokens,unknown_usage FROM model_route_budget_consumptions WHERE attempt_id=$1").bind(attempt).fetch_one(&pool).await.unwrap();
     assert_eq!(
         usage,
-        if duplicate {
+        if case.unknown() {
             (1, 1, None, None, true)
+        } else if matches!(case, Case::Http500) {
+            (1, 1, Some(20), Some(30), false)
         } else {
             (1, 1, Some(7), Some(3), false)
         }
     );
     let originals:(Option<i64>,Option<i64>)=sqlx::query_as("SELECT response_original_input_tokens,response_original_output_tokens FROM model_route_advisory_attempts WHERE id=$1").bind(attempt).fetch_one(&pool).await.unwrap();
     assert_eq!(originals, (None, None));
+    println!(
+        "native ModelRoute {case:?}: one POST, exact raw metadata, one consumption, replay zero HTTP; state={}",
+        run["attempt"]["state"]
+    );
     let matrix_calls: i64 =
         sqlx::query_scalar("SELECT count(*) FROM advisory_dispatch WHERE workspace_id=$1")
             .bind(workspace)

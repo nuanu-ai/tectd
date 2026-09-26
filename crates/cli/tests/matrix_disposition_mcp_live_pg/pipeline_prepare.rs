@@ -140,7 +140,7 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
     assert!(expected_system_id.parse::<u64>().is_ok());
     let expected_database_oid: i64 = 16385;
     assert!(expected_database_oid > 0);
-    let expected_migration: i64 = 103;
+    let expected_migration: i64 = 104;
     assert!(expected_migration >= 92);
     assert_eq!(
         std::env::var("TECT_TEST_RUNTIME_ROLE").as_deref(),
@@ -223,6 +223,13 @@ async fn disposable_pair_for_prepare() -> (PgPool, String) {
             103,
             include_bytes!(
                 "../../../postgres/migrations/0103_pipeline_interpretation_option_ids.sql"
+            )
+            .as_slice(),
+        ),
+        (
+            104,
+            include_bytes!(
+                "../../../postgres/migrations/0104_s04_s05_response_transport_metadata.sql"
             )
             .as_slice(),
         ),
@@ -345,7 +352,7 @@ async fn public_prepare_and_run_guarded_pipeline_recommendation() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires exact owned PG18.6 migration103; synthetic native HTTP only"]
+#[ignore = "requires exact owned PG18.6 migration104; synthetic native HTTP only"]
 async fn public_native_pipeline_ranking_requires_explicit_caller_and_distinct_verifier() {
     exercise_public_pipeline(true, None).await;
     for case in native_cases::CASES {

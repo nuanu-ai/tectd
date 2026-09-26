@@ -102,6 +102,8 @@ impl JevModelRouteProvider {
         let start = Instant::now();
         let response = self.transport.post_once(&attempted.request_bytes).await?;
         Ok(ModelRouteProviderObservation {
+            response_complete: Some(response.response_complete),
+            original_transport_context: Some(response.original_transport_context),
             raw: response.body,
             http_status: Some(response.status),
             input_tokens: None,
@@ -158,6 +160,9 @@ impl ModelRouteRankingProvider for JevModelRouteProvider {
         observation: &ModelRouteProviderObservation,
     ) -> Result<ModelRouteUsage> {
         self.restore(attempted)?;
+        if observation.response_complete != Some(true) {
+            return Err(Error::InvalidArguments);
+        }
         wire::usage(&observation.raw, self.config.maximum_response_bytes)
     }
     fn parse_sealed(
@@ -166,9 +171,10 @@ impl ModelRouteRankingProvider for JevModelRouteProvider {
         observation: &ModelRouteProviderObservation,
     ) -> Result<ModelRouteRankingWireOutcome> {
         self.restore(attempted)?;
-        if !observation
-            .http_status
-            .is_some_and(|s| (200..300).contains(&s))
+        if observation.response_complete != Some(true)
+            || !observation
+                .http_status
+                .is_some_and(|s| (200..300).contains(&s))
         {
             return Err(Error::InvalidArguments);
         }

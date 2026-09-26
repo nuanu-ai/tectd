@@ -72,12 +72,42 @@ fn response() -> Value {
 }
 fn observation(value: Value, status: Option<u16>) -> AntiBloatProviderObservation {
     AntiBloatProviderObservation {
+        response_complete: Some(true), // Fixture explicitly models a complete HTTP frame.
+        original_transport_context: None,
         raw: serde_json::to_vec(&value).unwrap(),
         http_status: status,
         input_tokens: None,
         output_tokens: None,
         elapsed_monotonic_ms: Some(5),
     }
+}
+
+#[test]
+fn incomplete_or_historical_native_frame_has_no_usage_or_advice_even_if_json_valid() {
+    let p = provider(config());
+    let permit = permit(&p);
+    for complete in [None, Some(false)] {
+        let mut observed = observation(response(), Some(200));
+        observed.response_complete = complete;
+        let original = observed.clone();
+        assert!(p.usage_sealed(&permit, &observed).is_err());
+        assert_eq!(
+            p.parse_sealed(&permit, &observed).unwrap(),
+            AntiBloatRankingOutcome::InvalidResponse
+        );
+        assert_eq!(observed, original);
+    }
+    let complete_error = observation(response(), Some(500));
+    assert_eq!(
+        p.usage_sealed(&permit, &complete_error)
+            .unwrap()
+            .input_tokens,
+        Some(20)
+    );
+    assert_eq!(
+        p.parse_sealed(&permit, &complete_error).unwrap(),
+        AntiBloatRankingOutcome::InvalidResponse
+    );
 }
 
 #[test]

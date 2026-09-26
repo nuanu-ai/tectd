@@ -116,7 +116,7 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
         ),
         format!("GRANT SELECT, INSERT ON TABLE model_route_advisory_attempts TO {quoted_role}"),
         format!(
-            "GRANT UPDATE(state,response_payload,response_sha256,raw_sealed_at,parsed_outcome,parsed_at,response_http_status,response_original_input_tokens,response_original_output_tokens,response_original_elapsed_ms) ON TABLE model_route_advisory_attempts TO {quoted_role}"
+            "GRANT UPDATE(state,response_payload,response_sha256,raw_sealed_at,parsed_outcome,parsed_at,response_http_status,response_original_input_tokens,response_original_output_tokens,response_original_elapsed_ms,response_complete,original_transport_context) ON TABLE model_route_advisory_attempts TO {quoted_role}"
         ),
         format!("GRANT SELECT ON TABLE advisory_call_audit TO {quoted_role}"),
         format!("GRANT SELECT, INSERT ON TABLE advisory_budget_policies TO {quoted_role}"),
@@ -132,7 +132,7 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
             "GRANT SELECT, INSERT ON TABLE scope_anti_bloat_budget_consumptions TO {quoted_role}"
         ),
         format!(
-            "GRANT UPDATE(state,request_bytes,request_sha256,request_adapter_identity,ranked_ids,raw_response,response_sha256,response_sealed_at,response_http_status,response_original_input_tokens,response_original_output_tokens,response_original_elapsed_ms,send_started_at,sealed_at) \
+            "GRANT UPDATE(state,request_bytes,request_sha256,request_adapter_identity,ranked_ids,raw_response,response_sha256,response_sealed_at,response_http_status,response_original_input_tokens,response_original_output_tokens,response_original_elapsed_ms,response_complete,original_transport_context,send_started_at,sealed_at) \
              ON TABLE scope_anti_bloat_reviews TO {quoted_role}"
         ),
         format!(

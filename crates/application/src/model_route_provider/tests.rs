@@ -177,6 +177,8 @@ impl ModelRouteRankingProvider for FakeProvider {
     ) -> Result<ModelRouteProviderObservation> {
         let raw = self.attempt_prepared(attempted, permit).await?;
         Ok(ModelRouteProviderObservation {
+            response_complete: None,
+            original_transport_context: None,
             raw,
             http_status: None,
             input_tokens: Some(4),
@@ -338,6 +340,8 @@ impl ModelRouteAttemptStore for Memory {
             .sealed_response(permit)
             .await?
             .map(|raw| ModelRouteProviderObservation {
+                response_complete: None,
+                original_transport_context: None,
                 raw,
                 http_status: None,
                 input_tokens: None,

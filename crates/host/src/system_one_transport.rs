@@ -3,7 +3,10 @@ use reqwest::{
     Url,
     header::{AUTHORIZATION, CONTENT_TYPE, HeaderValue},
 };
+use sha2::{Digest, Sha256};
 use std::{net::IpAddr, time::Duration};
+use tect_application::AdvisoryProviderTransportContext;
+use tect_domain::{AdvisoryDispatchOutcome, AdvisorySendCertainty};
 use tect_domain::{Error, Result};
 
 #[derive(Clone)]
@@ -48,6 +51,37 @@ impl SystemOneTransportConfig {
 pub(crate) struct RawSystemOneResponse {
     pub status: u16,
     pub body: Vec<u8>,
+    pub response_complete: bool,
+    pub original_transport_context: AdvisoryProviderTransportContext,
+}
+
+impl RawSystemOneResponse {
+    fn captured(
+        status: u16,
+        body: Vec<u8>,
+        response_complete: bool,
+        failure: Option<&str>,
+    ) -> Self {
+        let failed = !response_complete || !(200..300).contains(&status);
+        let original_transport_context = AdvisoryProviderTransportContext {
+            send_certainty: AdvisorySendCertainty::Sent,
+            outcome: if failed {
+                AdvisoryDispatchOutcome::ProviderFailure
+            } else {
+                AdvisoryDispatchOutcome::ProviderResponse
+            },
+            raw_response_ref: Some(format!("sha256:{:x}", Sha256::digest(&body))),
+            provider_failure_code: failure
+                .map(str::to_owned)
+                .or_else(|| failed.then(|| "http-status".into())),
+        };
+        Self {
+            status,
+            body,
+            response_complete,
+            original_transport_context,
+        }
+    }
 }
 
 pub(crate) struct SystemOneTransport {
@@ -78,7 +112,7 @@ impl SystemOneTransport {
         })
     }
 
-    /// One POST of frozen bytes. Errors never contain a partial response body.
+    /// One POST of frozen bytes. Once headers arrive, retain bounded raw evidence.
     pub(crate) async fn post_once(&self, exact_body: &[u8]) -> Result<RawSystemOneResponse> {
         if exact_body.is_empty() || exact_body.len() > self.config.maximum_request_bytes {
             return Err(Error::RequestTooLarge);
@@ -94,17 +128,31 @@ impl SystemOneTransport {
             .map_err(|_| Error::TransportUnavailable)?;
         let status = response.status().as_u16();
         let mut body = Vec::new();
-        while let Some(chunk) = response
-            .chunk()
-            .await
-            .map_err(|_| Error::TransportUnavailable)?
-        {
+        loop {
+            let chunk = match response.chunk().await {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => return Ok(RawSystemOneResponse::captured(status, body, true, None)),
+                Err(_) => {
+                    return Ok(RawSystemOneResponse::captured(
+                        status,
+                        body,
+                        false,
+                        Some("response-body-read"),
+                    ));
+                }
+            };
             if body.len().saturating_add(chunk.len()) > self.config.maximum_response_bytes {
-                return Err(Error::RequestTooLarge);
+                let retained = self.config.maximum_response_bytes - body.len();
+                body.extend_from_slice(&chunk[..retained]);
+                return Ok(RawSystemOneResponse::captured(
+                    status,
+                    body,
+                    false,
+                    Some("response-oversize"),
+                ));
             }
             body.extend_from_slice(&chunk);
         }
-        Ok(RawSystemOneResponse { status, body })
     }
 }
 
