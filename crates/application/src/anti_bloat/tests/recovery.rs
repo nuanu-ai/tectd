@@ -1,7 +1,7 @@
 use super::*;
 
 // FakeStore operations represent committed stages; faults occur before writes.
-async fn resume<S: AntiBloatRankingProvider>(
+pub(super) async fn resume<S: AntiBloatRankingProvider>(
     app: &mut AntiBloatApplication<FakeStore, S>,
     id: Uuid,
 ) -> Result<AntiBloatAttemptState> {

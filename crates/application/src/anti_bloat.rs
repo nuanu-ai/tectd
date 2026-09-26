@@ -384,11 +384,9 @@ async fn observe_sealed_usage(
         return Err(Error::InputConflict);
     }
     let decoded = provider.usage_sealed(permit, &sealed);
-    if let Err(error) = &decoded
-        && *error != Error::InputConflict
-    {
-        return Err(error.clone());
-    }
+    // This pure decoder runs only after the store and frozen-request guards.
+    // Any decoder failure makes usage unknown; the committed response must
+    // still consume its reservation before the invalid terminal outcome.
     let invalid = decoded.is_err();
     let usage = decoded.unwrap_or(crate::AntiBloatUsage {
         input_tokens: None,

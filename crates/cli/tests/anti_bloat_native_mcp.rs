@@ -120,12 +120,13 @@ async fn native_anti_bloat_public_mcp_is_sealed_once_and_default_disabled() {
     let runtime = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
     let pool = PgPool::connect(&admin_url).await.unwrap();
     identity(&pool).await;
-    for (enabled, status, abstain, expected) in [
-        (true, 200, false, "ranked"),
-        (true, 200, true, "provider_abstained"),
-        (true, 500, false, "invalid_response"),
-        (false, 200, false, "no_call"),
-        (true, 200, false, "no_call"),
+    for (enabled, status, abstain, duplicate, expected) in [
+        (true, 200, false, false, "ranked"),
+        (true, 200, true, false, "provider_abstained"),
+        (true, 500, false, false, "invalid_response"),
+        (true, 200, false, true, "invalid_response"),
+        (false, 200, false, false, "no_call"),
+        (true, 200, false, false, "no_call"),
     ] {
         let temp = private_temp();
         let root = temp.path().canonicalize().unwrap();
@@ -212,6 +213,7 @@ async fn native_anti_bloat_public_mcp_is_sealed_once_and_default_disabled() {
                     review,
                     status,
                     abstain,
+                    duplicate,
                 ))),
                 None,
             )
@@ -270,7 +272,14 @@ async fn native_anti_bloat_public_mcp_is_sealed_once_and_default_disabled() {
             assert_eq!((row.6, row.7), (None, None));
             assert!(row.8.is_some_and(|v| v >= 0));
             let usage:(Option<i64>,Option<i64>,bool,bool)=sqlx::query_as("SELECT input_tokens,output_tokens,unknown_usage,exhausted_after_response FROM scope_anti_bloat_budget_consumptions WHERE review_id=$1").bind(review).fetch_one(&pool).await.unwrap();
-            assert_eq!(usage, (Some(7), Some(3), false, false));
+            assert_eq!(
+                usage,
+                if duplicate {
+                    (None, None, true, true)
+                } else {
+                    (Some(7), Some(3), false, false)
+                }
+            );
             audit::immutable(
                 &pool,
                 &runtime,

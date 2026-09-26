@@ -11,6 +11,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use uuid::Uuid;
 
+#[path = "jev_pipeline_duplicate_tests.rs"]
+mod duplicate_tests;
+
 async fn http_fixture(
     status: u16,
     body: Vec<u8>,

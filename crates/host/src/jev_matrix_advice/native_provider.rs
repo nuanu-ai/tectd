@@ -317,7 +317,7 @@ impl MatrixAdviceProvider for JevNativeMatrixProvider {
         let Some(bytes) = saved.response_payload.as_ref() else {
             return unknown;
         };
-        let Ok(value) = serde_json::from_slice::<Value>(bytes) else {
+        let Ok(value) = crate::jev_json::decode_unique_json(bytes) else {
             return unknown;
         };
         let Some(usage) = value.get("usage").and_then(Value::as_object) else {

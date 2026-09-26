@@ -9,6 +9,7 @@ mod frame;
 mod git;
 pub mod jev_anti_bloat_choice;
 mod jev_anti_bloat_provider;
+mod jev_json;
 pub mod jev_matrix_advice;
 mod jev_model_route_provider;
 pub mod jev_pipeline_recommendation;

@@ -180,6 +180,17 @@ fn native_usage_is_read_only_after_durable_raw_seal() {
         Some(br#"{"usage":{"input_tokens":-1,"output_tokens":null}}"#.to_vec());
     let usage = provider.sealed_response_usage(&saved);
     assert_eq!((usage.input_tokens, usage.output_tokens), (None, None));
+    for raw in [
+        br#"{"usage":{"input_tokens":999999,"input_tokens":0,"output_tokens":30}}"#.as_slice(),
+        br#"{"usage":{"input_tokens":999999},"usage":{"input_tokens":0,"output_tokens":30}}"#.as_slice(),
+        br#"{"answers":{"choice":"ABSTAIN","choice":"C0"},"usage":{"input_tokens":20,"output_tokens":30}}"#.as_slice(),
+    ] {
+        saved.response_payload = Some(raw.to_vec());
+        let original = saved.clone();
+        let usage = provider.sealed_response_usage(&saved);
+        assert_eq!((usage.input_tokens, usage.output_tokens), (None, None));
+        assert!(saved == original);
+    }
 }
 
 #[tokio::test]

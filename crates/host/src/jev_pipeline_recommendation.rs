@@ -213,7 +213,8 @@ pub(crate) fn parse_native_response(
     {
         return Err(Error::InvalidArguments);
     }
-    let response: Value = serde_json::from_slice(bytes).map_err(|_| Error::InvalidArguments)?;
+    let response =
+        crate::jev_json::decode_unique_json(bytes).map_err(|_| Error::InvalidArguments)?;
     let root = exact_object(&response, &["model", "answers", "usage"])?;
     let response_model = root
         .get("model")

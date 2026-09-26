@@ -2,6 +2,34 @@ use super::*;
 use serde_json::{Value, json};
 use tect_application::{AntiBloatPreparedRequest, anti_bloat_material_sha256};
 
+#[test]
+fn duplicate_json_is_unusable_without_changing_observation() {
+    let p = provider(config());
+    let permit = permit(&p);
+    let valid = serde_json::to_string(&response()).unwrap();
+    for raw in [
+        valid.replace(
+            "\"input_tokens\":20",
+            "\"input_tokens\":999999,\"input_tokens\":0",
+        ),
+        valid.replace("\"usage\":", "\"usage\":{},\"usage\":"),
+        valid.replace(
+            "\"choice\":\"R0\"",
+            "\"choice\":\"ABSTAIN\",\"choice\":\"R0\"",
+        ),
+    ] {
+        let mut observed = observation(response(), Some(200));
+        observed.raw = raw.into_bytes();
+        let original = observed.clone();
+        assert!(p.usage_sealed(&permit, &observed).is_err());
+        assert_eq!(
+            p.parse_sealed(&permit, &observed).unwrap(),
+            AntiBloatRankingOutcome::InvalidResponse
+        );
+        assert_eq!(observed, original);
+    }
+}
+
 fn config() -> JevAntiBloatConfig {
     JevAntiBloatConfig {
         profile: "local-test".into(),

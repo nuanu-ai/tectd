@@ -166,7 +166,7 @@ fn raw_value(raw: &[u8], maximum_bytes: usize) -> Result<Value> {
     if maximum_bytes == 0 || raw.len() > maximum_bytes {
         return Err(Error::RequestTooLarge);
     }
-    serde_json::from_slice(raw).map_err(|_| Error::InvalidArguments)
+    crate::jev_json::decode_unique_json(raw).map_err(|_| Error::InvalidArguments)
 }
 
 /// Invalid provider content is a typed terminal outcome, never a partial ranking.

@@ -98,6 +98,15 @@ pub(super) async fn serve_once(
         )
     };
     // A valid ranking/usage JSON prefix cannot authorize parsing or known cost
+    if matches!(case, Case::DuplicateUsage) {
+        raw = String::from_utf8(raw)
+            .unwrap()
+            .replace(
+                "\"input_tokens\":20",
+                "\"input_tokens\":999999,\"input_tokens\":0",
+            )
+            .into_bytes();
+    }
     // when the HTTP entity is incomplete, even if the retained prefix parses.
     if matches!(case, Case::Oversize) {
         raw.resize(64 * 1024, b' ');

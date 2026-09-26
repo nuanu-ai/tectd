@@ -2,6 +2,24 @@ use super::*;
 use serde_json::{Value, json};
 use tect_domain::{EngineeringCandidate, EngineeringChoiceSet, MATRIX_CHOICE_SET_SCHEMA};
 
+#[test]
+fn duplicate_json_counters_and_answers_are_rejected() {
+    let valid = serde_json::to_string(&response()).unwrap();
+    for raw in [
+        valid.replace(
+            "\"input_tokens\":20",
+            "\"input_tokens\":999999,\"input_tokens\":0",
+        ),
+        valid.replace("\"usage\":", "\"usage\":{},\"usage\":"),
+        valid.replace(
+            "\"choice\":\"C0\"",
+            "\"choice\":\"ABSTAIN\",\"choice\":\"C0\"",
+        ),
+    ] {
+        assert!(parse_native_response(raw.as_bytes(), &prepared(), 16_384).is_err());
+    }
+}
+
 fn prepared() -> PreparedNativeMatrixRequest {
     PreparedNativeMatrixRequest {
         body: Vec::new(),

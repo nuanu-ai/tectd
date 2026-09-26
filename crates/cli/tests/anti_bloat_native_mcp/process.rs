@@ -69,6 +69,7 @@ pub(super) async fn response(
     review: Uuid,
     status: u16,
     abstain: bool,
+    duplicate: bool,
 ) -> (Vec<u8>, Vec<u8>, TcpListener) {
     let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
         .await
@@ -147,7 +148,16 @@ pub(super) async fn response(
         probabilities.insert(format!("R{index}"), json!(weight / sum));
     }
     probabilities.insert("ABSTAIN".into(), json!(abstain_weight / sum));
-    let body=serde_json::to_vec(&json!({"model":"fixture-choice-model","answers":{"anti_bloat_order_v1":{"type":"choice","choice":if abstain{"ABSTAIN"}else{"R0"},"probabilities":probabilities,"confidence":0.01}},"usage":{"input_tokens":7,"output_tokens":3}})).unwrap();
+    let mut body=serde_json::to_vec(&json!({"model":"fixture-choice-model","answers":{"anti_bloat_order_v1":{"type":"choice","choice":if abstain{"ABSTAIN"}else{"R0"},"probabilities":probabilities,"confidence":0.01}},"usage":{"input_tokens":7,"output_tokens":3}})).unwrap();
+    if duplicate {
+        body = String::from_utf8(body)
+            .unwrap()
+            .replace(
+                "\"input_tokens\":7",
+                "\"input_tokens\":999999,\"input_tokens\":0",
+            )
+            .into_bytes();
+    }
     let header = format!(
         "HTTP/1.1 {status} Fixture\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()

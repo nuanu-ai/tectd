@@ -13,6 +13,7 @@ enum Case {
     Abstained,
     Http500,
     Malformed,
+    DuplicateUsage,
     Revoked,
     Oversize,
     Truncated,
@@ -343,7 +344,10 @@ async fn audit(
         "SELECT (SELECT count(*) FROM advisory_dispatch WHERE workspace_id=$1),(SELECT count(*) FROM advisory_budget_reservations WHERE workspace_id=$1),(SELECT count(*) FROM advisory_budget_consumptions WHERE workspace_id=$1),input_tokens,output_tokens,unknown_usage FROM advisory_budget_consumptions WHERE workspace_id=$1")
         .bind(workspace).fetch_one(&mut *tx).await.unwrap();
     assert_eq!((accounting.0, accounting.1, accounting.2), (1, 1, 1));
-    if matches!(case, Case::Malformed | Case::Oversize | Case::Truncated) {
+    if matches!(
+        case,
+        Case::Malformed | Case::DuplicateUsage | Case::Oversize | Case::Truncated
+    ) {
         assert_eq!(
             (accounting.3, accounting.4, accounting.5),
             (None, None, true)
@@ -436,6 +440,7 @@ async fn public_native_matrix_retains_raw_before_ranking_and_after_revocation() 
         Case::Abstained,
         Case::Http500,
         Case::Malformed,
+        Case::DuplicateUsage,
         Case::Revoked,
         Case::Oversize,
         Case::Truncated,

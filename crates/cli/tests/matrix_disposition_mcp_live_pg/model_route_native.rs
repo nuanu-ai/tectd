@@ -68,6 +68,11 @@ fn catalogue() -> ModelRouteCatalogue {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires explicitly owned disposable PG18.6, migration100"]
 async fn native_public_model_route_recommends_once_without_candidate_execution() {
+    exercise(false).await;
+    exercise(true).await;
+}
+
+async fn exercise(duplicate: bool) {
     let pool = PgPool::connect(&std::env::var("TECT_TEST_ADMIN_URL").unwrap())
         .await
         .unwrap();
@@ -144,6 +149,7 @@ async fn native_public_model_route_recommends_once_without_candidate_execution()
         pool.clone(),
         workspace,
         key.to_owned(),
+        duplicate,
     ));
     let run = call(
         &pool,
@@ -153,14 +159,19 @@ async fn native_public_model_route_recommends_once_without_candidate_execution()
         json!({"preparation_request_key":key}),
     )
     .await;
-    assert_eq!(run["attempt"]["state"], "parsed", "{run}");
-    assert_eq!(run["decision"]["routes"]["requested_route_id"], "route-a");
-    assert_eq!(run["decision"]["routes"]["recommended_route_id"], "route-b");
-    assert!(run["decision"]["routes"]["observed_actual"].is_null());
-    assert_eq!(
-        run["decision"]["input"]["Ranking"]["ranked_route_ids"],
-        json!(["route-b", "route-a"])
-    );
+    if duplicate {
+        assert_eq!(run["attempt"]["state"], "budget_exhausted", "{run}");
+        assert!(run["decision"].is_null(), "{run}");
+    } else {
+        assert_eq!(run["attempt"]["state"], "parsed", "{run}");
+        assert_eq!(run["decision"]["routes"]["requested_route_id"], "route-a");
+        assert_eq!(run["decision"]["routes"]["recommended_route_id"], "route-b");
+        assert!(run["decision"]["routes"]["observed_actual"].is_null());
+        assert_eq!(
+            run["decision"]["input"]["Ranking"]["ranked_route_ids"],
+            json!(["route-b", "route-a"])
+        );
+    }
     let replay = call(
         &pool,
         &mut owner,
@@ -191,7 +202,16 @@ async fn native_public_model_route_recommends_once_without_candidate_execution()
     assert_eq!(audit.5, "tect.model-route-typesafe-choice/1");
     assert!(audit.6.is_some_and(|n| n >= 0));
     let usage:(i64,i64,Option<i64>,Option<i64>,bool)=sqlx::query_as("SELECT (SELECT count(*) FROM model_route_budget_reservations WHERE attempt_id=$1),(SELECT count(*) FROM model_route_budget_consumptions WHERE attempt_id=$1),input_tokens,output_tokens,unknown_usage FROM model_route_budget_consumptions WHERE attempt_id=$1").bind(attempt).fetch_one(&pool).await.unwrap();
-    assert_eq!(usage, (1, 1, Some(7), Some(3), false));
+    assert_eq!(
+        usage,
+        if duplicate {
+            (1, 1, None, None, true)
+        } else {
+            (1, 1, Some(7), Some(3), false)
+        }
+    );
+    let originals:(Option<i64>,Option<i64>)=sqlx::query_as("SELECT response_original_input_tokens,response_original_output_tokens FROM model_route_advisory_attempts WHERE id=$1").bind(attempt).fetch_one(&pool).await.unwrap();
+    assert_eq!(originals, (None, None));
     let matrix_calls: i64 =
         sqlx::query_scalar("SELECT count(*) FROM advisory_dispatch WHERE workspace_id=$1")
             .bind(workspace)

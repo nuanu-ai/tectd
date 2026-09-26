@@ -86,6 +86,7 @@ pub(super) async fn response(
     pool: PgPool,
     workspace: Uuid,
     key: String,
+    duplicate: bool,
 ) -> (Vec<u8>, Vec<u8>, TcpListener) {
     let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
         .await
@@ -158,7 +159,18 @@ pub(super) async fn response(
     let question = &questions["model_route_order_v1"];
     assert_eq!(question["type"], "choice");
     assert_eq!(question["criteria"].as_object().unwrap().len(), 3);
-    let raw=serde_json::to_vec(&json!({"model":"fixture-choice-adviser","answers":{"model_route_order_v1":{"type":"choice","choice":"R1","probabilities":{"R0":0.2,"R1":0.7,"ABSTAIN":0.1},"confidence":0.01}},"usage":{"input_tokens":7,"output_tokens":3}})).unwrap();
+    let mut raw=serde_json::to_vec(&json!({"model":"fixture-choice-adviser","answers":{"model_route_order_v1":{"type":"choice","choice":"R1","probabilities":{"R0":0.2,"R1":0.7,"ABSTAIN":0.1},"confidence":0.01}},"usage":{"input_tokens":7,"output_tokens":3}})).unwrap();
+    if duplicate {
+        // Escaped spelling is the same key after JSON decoding, not a second
+        // independent counter. Preserve these exact ambiguous bytes.
+        raw = String::from_utf8(raw)
+            .unwrap()
+            .replace(
+                "\"input_tokens\":7",
+                "\"input_tokens\":999999,\"input_\\u0074okens\":0",
+            )
+            .into_bytes();
+    }
     stream
         .write_all(
             format!(

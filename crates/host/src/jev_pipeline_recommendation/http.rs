@@ -137,7 +137,7 @@ impl JevPipelineProvider {
         }
         // Usage is advisory accounting data. Invalid or absent fields stay unknown;
         // ranking validation happens only after raw bytes are durably sealed.
-        let usage = serde_json::from_slice::<Value>(&bytes)
+        let usage = crate::jev_json::decode_unique_json(&bytes)
             .ok()
             .and_then(|value| value.get("usage").cloned());
         let tokens = usage.as_ref().and_then(Value::as_object);

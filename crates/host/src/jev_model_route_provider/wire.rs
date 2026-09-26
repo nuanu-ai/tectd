@@ -51,7 +51,7 @@ fn value(raw: &[u8], maximum_bytes: usize) -> Result<Value> {
     if maximum_bytes == 0 || raw.len() > maximum_bytes {
         return Err(Error::RequestTooLarge);
     }
-    serde_json::from_slice(raw).map_err(|_| Error::InvalidArguments)
+    crate::jev_json::decode_unique_json(raw).map_err(|_| Error::InvalidArguments)
 }
 fn probability(value: &Value) -> Result<f64> {
     let number = value.as_f64().ok_or(Error::InvalidArguments)?;

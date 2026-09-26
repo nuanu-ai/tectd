@@ -3,6 +3,31 @@ use serde_json::{Value, json};
 use tect_domain::*;
 use uuid::Uuid;
 
+#[test]
+fn duplicate_json_is_unusable_without_changing_observation() {
+    let p = provider(config());
+    let attempted = attempted(&p, 7);
+    let valid = serde_json::to_string(&response()).unwrap();
+    for raw in [
+        valid.replace(
+            "\"input_tokens\":20",
+            "\"input_tokens\":999999,\"input_tokens\":0",
+        ),
+        valid.replace("\"usage\":", "\"usage\":{},\"usage\":"),
+        valid.replace(
+            "\"choice\":\"R0\"",
+            "\"choice\":\"ABSTAIN\",\"choice\":\"R0\"",
+        ),
+    ] {
+        let mut observed = observation(response(), Some(200));
+        observed.raw = raw.into_bytes();
+        let original = observed.clone();
+        assert!(p.sealed_usage(&attempted, &observed).is_err());
+        assert!(p.parse_sealed(&attempted, &observed).is_err());
+        assert_eq!(observed, original);
+    }
+}
+
 fn request(count: usize) -> ModelRouteRankingWireRequest {
     let id = Uuid::from_u128(1);
     fn caller<T>(value: T) -> ModelRouteFact<T> {

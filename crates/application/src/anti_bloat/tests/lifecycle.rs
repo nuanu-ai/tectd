@@ -2,7 +2,7 @@ use super::*;
 use crate::{AntiBloatRankingOutcome, AntiBloatUsage};
 
 struct LifecycleProvider {
-    usage_invalid: bool,
+    usage_error: Option<Error>,
     outcome: AntiBloatRankingOutcome,
     usages: AtomicUsize,
     parses: AtomicUsize,
@@ -16,8 +16,8 @@ impl AntiBloatRankingProvider for LifecycleProvider {
     ) -> Result<AntiBloatUsage> {
         self.usages.fetch_add(1, Ordering::SeqCst);
         assert_eq!(observation.raw, b"true HTTP raw body");
-        if self.usage_invalid {
-            return Err(Error::InputConflict);
+        if let Some(error) = &self.usage_error {
+            return Err(error.clone());
         }
         Ok(AntiBloatUsage {
             input_tokens: Some(2),
@@ -58,7 +58,7 @@ async fn usage_requires_seal_and_preserves_transport_raw_elapsed_and_terminal_re
         let mut app = AntiBloatApplication {
             store: generic.store,
             provider: LifecycleProvider {
-                usage_invalid: false,
+                usage_error: None,
                 outcome: outcome.clone(),
                 usages: AtomicUsize::new(0),
                 parses: AtomicUsize::new(0),
@@ -124,64 +124,74 @@ async fn usage_requires_seal_and_preserves_transport_raw_elapsed_and_terminal_re
 
 #[tokio::test]
 async fn invalid_usage_is_unknown_consumption_and_invalid_terminal_without_ranking() {
-    let mut generic = app(true, false);
-    let saved = prepare(
-        &mut generic,
-        WorkspaceAdvisoryMode::Optional,
-        AdvisoryRequestPreference::UseWorkspace,
-    )
-    .await;
-    let mut app = AntiBloatApplication {
-        store: generic.store,
-        provider: LifecycleProvider {
-            usage_invalid: true,
-            outcome: AntiBloatRankingOutcome::Abstained,
-            usages: AtomicUsize::new(0),
-            parses: AtomicUsize::new(0),
-        },
-    };
-    let permit = app
-        .prepare_send(saved.review_id)
-        .await
-        .unwrap()
-        .permit
-        .unwrap();
-    let transport = AntiBloatProviderObservation {
-        http_status: None,
-        raw: b"true HTTP raw body".to_vec(),
-        input_tokens: None,
-        output_tokens: None,
-        elapsed_monotonic_ms: Some(7),
-    };
-    app.seal_response(&permit, &transport).await.unwrap();
-    let (observation, invalid) =
-        observe_sealed_usage(&mut app.store, &app.provider, &permit, &transport)
-            .await
-            .unwrap();
-    assert!(invalid);
-    assert_eq!(observation.input_tokens, None);
-    assert_eq!(observation.output_tokens, None);
-    assert!(
-        app.store
-            .consume_budget(&permit, &observation)
-            .await
-            .unwrap()
-    );
-    assert_eq!(
-        app.finalize_response(&permit, &observation.raw).await,
-        Err(Error::InputConflict)
-    );
-    app.store
-        .seal_terminal(&permit, AntiBloatAttemptState::InvalidResponse)
-        .await
-        .unwrap();
-    assert!(
-        app.prepare_send(saved.review_id)
+    for error in [Error::InputConflict, Error::InvalidArguments] {
+        let mut generic = app(true, false);
+        let saved = prepare(
+            &mut generic,
+            WorkspaceAdvisoryMode::Optional,
+            AdvisoryRequestPreference::UseWorkspace,
+        )
+        .await;
+        let mut app = AntiBloatApplication {
+            store: generic.store,
+            provider: LifecycleProvider {
+                usage_error: Some(error),
+                outcome: AntiBloatRankingOutcome::Abstained,
+                usages: AtomicUsize::new(0),
+                parses: AtomicUsize::new(0),
+            },
+        };
+        let permit = app
+            .prepare_send(saved.review_id)
             .await
             .unwrap()
             .permit
-            .is_none()
-    );
-    assert_eq!(app.provider.parses.load(Ordering::SeqCst), 0);
-    assert_eq!(app.store.seals, 0);
+            .unwrap();
+        let transport = AntiBloatProviderObservation {
+            http_status: Some(200),
+            raw: b"true HTTP raw body".to_vec(),
+            input_tokens: None,
+            output_tokens: None,
+            elapsed_monotonic_ms: Some(7),
+        };
+        app.seal_response(&permit, &transport).await.unwrap();
+        let (observation, invalid) =
+            observe_sealed_usage(&mut app.store, &app.provider, &permit, &transport)
+                .await
+                .unwrap();
+        assert!(invalid);
+        assert_eq!(observation.input_tokens, None);
+        assert_eq!(observation.output_tokens, None);
+        assert!(app.store.consumed.is_none());
+        assert_eq!(
+            app.finalize_response(&permit, &observation.raw).await,
+            Err(Error::InputConflict)
+        );
+        assert_eq!(
+            super::recovery::resume(&mut app, saved.review_id)
+                .await
+                .unwrap(),
+            AntiBloatAttemptState::InvalidResponse
+        );
+        assert!(
+            app.prepare_send(saved.review_id)
+                .await
+                .unwrap()
+                .permit
+                .is_none()
+        );
+        assert_eq!(app.provider.parses.load(Ordering::SeqCst), 0);
+        assert_eq!(app.store.seals, 0);
+        assert_eq!(app.store.raw_response, Some(transport.raw.clone()));
+        assert_eq!(app.store.sealed_observation, Some(transport));
+        assert_eq!(app.store.consumed, Some(observation));
+        assert_eq!(app.store.consumption_count, 1);
+        assert_eq!(
+            super::recovery::resume(&mut app, saved.review_id)
+                .await
+                .unwrap(),
+            AntiBloatAttemptState::InvalidResponse
+        );
+        assert_eq!(app.store.consumption_count, 1);
+    }
 }
