@@ -1,7 +1,9 @@
 //! Explicit mismatch follow-up; synthetic facts, no provider or HTTP adapter.
 use super::*;
 
-async fn guard(pool: &PgPool) {
+pub(super) const OWNED_MIGRATION: i64 = 98;
+
+pub(super) async fn guard(pool: &PgPool) {
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
     let identity: (i32, String, String, i64, String, i64, i64, bool) = sqlx::query_as(
         "SELECT current_setting('server_version_num')::integer,current_database(),current_user,\
@@ -21,8 +23,8 @@ async fn guard(pool: &PgPool) {
             "postgres".into(),
             16385,
             "7689676854994613066".into(),
-            96,
-            96,
+            OWNED_MIGRATION,
+            OWNED_MIGRATION,
             true
         )
     );
@@ -42,7 +44,7 @@ async fn counts(pool: &PgPool, workspace: Uuid) -> (i64, i64, i64) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires the owned PG18.6 system7689676854994613066 at migration96"]
+#[ignore = "requires the owned PG18.6 system7689676854994613066 at migration98"]
 async fn public_matrix_mismatch_requires_explicit_revision_bound_decomposition() {
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
     let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();

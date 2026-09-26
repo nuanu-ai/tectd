@@ -89,7 +89,7 @@ pub(super) async fn lineage(
     json!({"disposition_id":chosen["disposition_id"],"expected_task_id":task,"expected_task_revision":1,"expected_candidate_set_id":set,"expected_caller_request_id":caller,"expected_mapped_work_node_id":work["id"],"expected_mapped_work_node_revision":work["revision"],"request_key":format!("native-model-route-{}",Uuid::new_v4()),"requested_route_id":"route-a"})
 }
 
-pub(super) async fn budget(
+pub(crate) async fn budget(
     pool: &PgPool,
     store: &PgStore,
     auth: &tect_domain::HostAuth,

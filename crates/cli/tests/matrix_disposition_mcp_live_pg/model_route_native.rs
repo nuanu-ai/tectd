@@ -1,7 +1,7 @@
 //! One native S05 POST against a loopback server, never a candidate-model call.
 use super::*;
 #[path = "model_route_native/setup.rs"]
-mod setup;
+pub(super) mod setup;
 #[path = "../anti_bloat_native_mcp/source.rs"]
 mod source;
 #[path = "model_route_native/transport.rs"]
@@ -29,7 +29,12 @@ async fn identity(pool: &PgPool) {
         .fetch_one(pool).await.unwrap();
     assert_eq!(
         row,
-        ("tect_test".into(), 16385, "7689676854994613066".into(), 96)
+        (
+            "tect_test".into(),
+            16385,
+            "7689676854994613066".into(),
+            decomposition_parent::OWNED_MIGRATION
+        )
     );
 }
 async fn call(pool: &PgPool, client: &mut Mcp, kind: &str, name: &str, params: Value) -> Value {
@@ -61,7 +66,7 @@ fn catalogue() -> ModelRouteCatalogue {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires explicitly owned disposable PG18.6, migration96"]
+#[ignore = "requires explicitly owned disposable PG18.6, migration98"]
 async fn native_public_model_route_recommends_once_without_candidate_execution() {
     let pool = PgPool::connect(&std::env::var("TECT_TEST_ADMIN_URL").unwrap())
         .await

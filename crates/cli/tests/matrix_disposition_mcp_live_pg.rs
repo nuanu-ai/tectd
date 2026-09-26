@@ -8,6 +8,8 @@ mod full_support;
 mod model_route_native;
 #[path = "matrix_disposition_mcp_live_pg/model_route_positive.rs"]
 mod model_route_positive;
+#[path = "matrix_disposition_mcp_live_pg/native_matrix.rs"]
+mod native_matrix;
 #[path = "matrix_disposition_mcp_live_pg/pipeline_prepare.rs"]
 mod pipeline_prepare;
 #[path = "matrix_disposition_mcp_live_pg/planning_effect.rs"]
