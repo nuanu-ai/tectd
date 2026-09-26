@@ -8,6 +8,7 @@ mod context;
 mod frame;
 mod git;
 pub mod jev_anti_bloat_choice;
+mod jev_anti_bloat_provider;
 pub mod jev_matrix_advice;
 pub mod jev_pipeline_recommendation;
 mod jev_scope_advice;
@@ -66,6 +67,7 @@ mod workspace_output;
 
 pub use context::{HostContext, host_context_from_env, read_host_auth_file};
 pub use git::GitSourceInspector;
+pub use jev_anti_bloat_provider::{JevAntiBloatConfig, JevAntiBloatProvider};
 pub use jev_scope_advice::{JevScopeAdviceConfig, JevScopeAdviceProvider};
 pub use knowledge_embedding::{LocalEmbeddingConfig, LocalKnowledgeEmbeddingWorker};
 pub use mcp::run_stdio;

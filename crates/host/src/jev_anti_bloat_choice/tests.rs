@@ -1,6 +1,6 @@
 use super::*;
 
-fn saved() -> tect_application::StoredAntiBloatReview {
+pub(crate) fn saved() -> tect_application::StoredAntiBloatReview {
     use tect_domain::*;
     use uuid::Uuid;
     let id = Uuid::from_u128(1);
@@ -87,6 +87,7 @@ fn canonical_full_request_and_persisted_binding_restore() {
         .collect::<Vec<_>>();
     let p = prepare_choice_request(
         "jev-1.13.0",
+        &"f".repeat(64),
         &AntiBloatRankingMaterial {
             saved: &saved,
             eligible_ids: &ids,
@@ -101,6 +102,7 @@ fn canonical_full_request_and_persisted_binding_restore() {
         p,
         prepare_choice_request(
             "jev-1.13.0",
+            &"f".repeat(64),
             &AntiBloatRankingMaterial {
                 saved: &saved,
                 eligible_ids: &reversed
@@ -122,22 +124,29 @@ fn canonical_full_request_and_persisted_binding_restore() {
         },
     };
     assert_eq!(
-        restore_choice_request(&permit, "jev-1.13.0", "test", 100000).unwrap(),
+        restore_choice_request(&permit, "jev-1.13.0", "test", &"f".repeat(64), 100000).unwrap(),
         p
     );
-    assert!(restore_choice_request(&permit, "jev-latest", "test", 100000).is_err());
+    assert!(
+        restore_choice_request(&permit, "jev-latest", "test", &"f".repeat(64), 100000).is_err()
+    );
     let mut changed = permit.clone();
     changed.request.material_sha256 = "b".repeat(64);
-    assert!(restore_choice_request(&changed, "jev-1.13.0", "test", 100000).is_err());
+    assert!(
+        restore_choice_request(&changed, "jev-1.13.0", "test", &"f".repeat(64), 100000).is_err()
+    );
     let mut changed = permit.clone();
     changed.request.bytes.push(b' ');
     changed.request.sha256 = format!("{:x}", Sha256::digest(&changed.request.bytes));
-    assert!(restore_choice_request(&changed, "jev-1.13.0", "test", 100000).is_err());
+    assert!(
+        restore_choice_request(&changed, "jev-1.13.0", "test", &"f".repeat(64), 100000).is_err()
+    );
     let mut incomplete = ids;
     incomplete.pop();
     assert!(
         prepare_choice_request(
             "jev-1.13.0",
+            &"f".repeat(64),
             &AntiBloatRankingMaterial {
                 saved: &saved,
                 eligible_ids: &incomplete

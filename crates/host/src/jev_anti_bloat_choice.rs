@@ -35,6 +35,7 @@ pub fn restore_choice_request(
     permit: &tect_application::AntiBloatSendPermit,
     expected_model: &str,
     expected_adapter_identity: &str,
+    provider_binding_digest: &str,
     maximum_bytes: usize,
 ) -> Result<PreparedChoiceRequest> {
     use sha2::{Digest, Sha256};
@@ -64,6 +65,7 @@ pub fn restore_choice_request(
         .map_err(|_| Error::InvalidArguments)?;
     let prepared = prepare_choice_request(
         expected_model,
+        provider_binding_digest,
         &AntiBloatRankingMaterial {
             saved: &saved,
             eligible_ids: &eligible_ids,
@@ -82,6 +84,7 @@ pub fn restore_choice_request(
 
 pub fn prepare_choice_request(
     model: &str,
+    provider_binding_digest: &str,
     material: &AntiBloatRankingMaterial<'_>,
     maximum_bytes: usize,
 ) -> Result<PreparedChoiceRequest> {
@@ -89,6 +92,10 @@ pub fn prepare_choice_request(
         || model.len() > 128
         || model.chars().any(char::is_control)
         || maximum_bytes == 0
+        || provider_binding_digest.len() != 64
+        || !provider_binding_digest
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit())
     {
         return Err(Error::InvalidArguments);
     }
@@ -137,6 +144,7 @@ pub fn prepare_choice_request(
         "model": model,
         "state": {
             "contract": CHOICE_WIRE_VERSION,
+            "provider_binding_digest": provider_binding_digest,
             "binding": {"review_id": material.saved.review_id, "workspace_id": material.saved.workspace_id, "actor_id": material.saved.actor_id, "material_sha256": material_sha256},
             "input": material.saved.input, "review": material.saved.review,
             "eligible_ids": eligible, "finding_tokens": token_to_finding_id,
@@ -291,4 +299,4 @@ pub fn decode_choice_usage(raw: &[u8], maximum_bytes: usize) -> Result<AntiBloat
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
