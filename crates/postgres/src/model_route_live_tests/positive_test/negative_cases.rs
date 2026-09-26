@@ -156,6 +156,7 @@ async fn policy_install_and_model_route_reservation_linearize_both_orders() {
                 },
                 &attempted,
                 &v1,
+                None,
             )
             .await;
         tx.commit().await.unwrap();
@@ -196,6 +197,7 @@ async fn policy_install_and_model_route_reservation_linearize_both_orders() {
             },
             &attempted,
             &v1,
+            None,
         )
         .await
         .unwrap()
@@ -317,7 +319,7 @@ async fn superseded_model_route_policy_cannot_reserve_or_call_provider() {
         stale
             .model_route_attempt_store()
             .unwrap()
-            .begin_send(&prepared, invocation, &attempted, &old)
+            .begin_send(&prepared, invocation, &attempted, &old, None)
             .await,
         Err(Error::BudgetPolicyInvalid)
     );
@@ -337,7 +339,7 @@ async fn superseded_model_route_policy_cannot_reserve_or_call_provider() {
     let permit = active
         .model_route_attempt_store()
         .unwrap()
-        .begin_send(&prepared, invocation, &attempted, &current)
+        .begin_send(&prepared, invocation, &attempted, &current, None)
         .await
         .unwrap()
         .unwrap();
@@ -347,7 +349,7 @@ async fn superseded_model_route_policy_cannot_reserve_or_call_provider() {
         replay
             .model_route_attempt_store()
             .unwrap()
-            .begin_send(&prepared, invocation, &attempted, &current)
+            .begin_send(&prepared, invocation, &attempted, &current, None)
             .await,
         Ok(None)
     );

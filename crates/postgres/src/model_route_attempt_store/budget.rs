@@ -7,8 +7,17 @@ pub(super) async fn begin_send(
     invocation: ModelRouteInvocation,
     attempted: &ModelRoutePreparedAttempt,
     policy: &AdvisoryBudgetPolicy,
+    required_profile: Option<&str>,
 ) -> Result<Option<ModelRouteSendPermit>> {
     stored_preparation(uow, prepared).await?;
+    if attempted.adapter_identity.is_some() && required_profile.is_none() {
+        return Err(Error::TransportUnavailable);
+    }
+    if let Some(profile) = required_profile
+        && !uow.provider_profile_matches(prepared, profile).await?
+    {
+        return Err(Error::TransportUnavailable);
+    }
     if prepared.preparation != tect_application::ModelRoutePreparation::Prepared {
         return Err(Error::InputConflict);
     }

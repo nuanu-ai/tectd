@@ -113,6 +113,9 @@ impl JevModelRouteProvider {
 
 #[async_trait]
 impl ModelRouteRankingProvider for JevModelRouteProvider {
+    fn required_profile(&self) -> Option<&str> {
+        Some(&self.config.profile)
+    }
     fn available(&self) -> bool {
         true
     }

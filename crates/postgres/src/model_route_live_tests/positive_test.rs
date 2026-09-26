@@ -52,6 +52,13 @@ impl<'a> TrustedTestRouteStore<'a> {
 
 #[async_trait]
 impl ModelRouteAttemptStore for TrustedTestRouteStore<'_> {
+    async fn provider_profile_matches(
+        &mut self,
+        prepared: &tect_application::PreparedModelRouteRecommendation,
+        profile: &str,
+    ) -> tect_domain::Result<bool> {
+        self.inner.provider_profile_matches(prepared, profile).await
+    }
     async fn authorized_budget_policy(
         &mut self,
         workspace: Uuid,
@@ -96,9 +103,10 @@ impl ModelRouteAttemptStore for TrustedTestRouteStore<'_> {
         invocation: ModelRouteInvocation,
         attempted: &ModelRoutePreparedAttempt,
         policy: &AdvisoryBudgetPolicy,
+        required_profile: Option<&str>,
     ) -> tect_domain::Result<Option<ModelRouteSendPermit>> {
         self.inner
-            .begin_send(prepared, invocation, attempted, policy)
+            .begin_send(prepared, invocation, attempted, policy, required_profile)
             .await
     }
     async fn seal_raw_response(

@@ -244,6 +244,7 @@ impl ModelRouteAttemptStore for Memory {
         _: ModelRouteInvocation,
         attempted: &ModelRoutePreparedAttempt,
         policy: &AdvisoryBudgetPolicy,
+        _required_profile: Option<&str>,
     ) -> Result<Option<ModelRouteSendPermit>> {
         attempted.verify(saved)?;
         if self.sent.is_some() {

@@ -3,8 +3,39 @@ use tect_application::{ModelRouteSealedRankingEvidence, finalize_model_route_pro
 use tect_domain::{ModelRouteRankingWireOutcome, model_route_wire_sha256};
 
 struct NativeCodec;
+
+pub(super) async fn choose_profile(
+    store: &PgStore,
+    created: &super::super::positive::Fixture,
+    profile: &str,
+) {
+    let mut tx = store.begin(TransactionMode::ReadWrite).await.unwrap();
+    tx.authenticate(&created.owner.auth).await.unwrap();
+    tx.set_tenant(created.tenant).await.unwrap();
+    tx.configure_advisory(
+        created.workspace,
+        created.owner.principal_id,
+        created.invocation_session,
+        &tect_domain::ConfigureWorkspaceAdvisory {
+            expected_revision: 0,
+            mode: tect_domain::WorkspaceAdvisoryMode::Optional,
+            provider_profile_ref: Some(tect_domain::AdvisoryProviderProfileRef {
+                id: profile.into(),
+            }),
+            model_configuration: Some(tect_domain::AdvisoryModelConfiguration {
+                model: "native-model".into(),
+            }),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
 #[async_trait]
 impl ModelRouteRankingProvider for NativeCodec {
+    fn required_profile(&self) -> Option<&str> {
+        Some("native-test")
+    }
     fn prepare(
         &self,
         saved: &tect_application::PreparedModelRouteRecommendation,
@@ -76,6 +107,7 @@ async fn native_exact_seal_restores_and_rederives_before_immutable_capture() {
     assert_eq!(migration, 96);
     let created = fixture(&admin, &runtime).await;
     let store = PgStore::from_pool(runtime.clone());
+    choose_profile(&store, &created, "native-test").await;
     let prepared = negative_cases::prepare_case(&store, &runtime, &created, "native-seal").await;
     let policy =
         install_synthetic_policy(&store, created.workspace, created.tenant, &created.owner).await;
@@ -86,10 +118,23 @@ async fn native_exact_seal_restores_and_rederives_before_immutable_capture() {
     let mut tx = store.begin(TransactionMode::ReadWrite).await.unwrap();
     tx.authenticate(&created.owner.auth).await.unwrap();
     tx.set_tenant(created.tenant).await.unwrap();
+    assert_eq!(
+        tx.model_route_attempt_store()
+            .unwrap()
+            .begin_send(&prepared, invocation, &attempted, &policy, None)
+            .await,
+        Err(Error::TransportUnavailable)
+    );
     let permit = tx
         .model_route_attempt_store()
         .unwrap()
-        .begin_send(&prepared, invocation, &attempted, &policy)
+        .begin_send(
+            &prepared,
+            invocation,
+            &attempted,
+            &policy,
+            Some("native-test"),
+        )
         .await
         .unwrap()
         .unwrap();
@@ -195,7 +240,13 @@ async fn native_exact_seal_restores_and_rederives_before_immutable_capture() {
     let permit_bad = tx
         .model_route_attempt_store()
         .unwrap()
-        .begin_send(&prepared_bad, invocation, &attempted_bad, &policy)
+        .begin_send(
+            &prepared_bad,
+            invocation,
+            &attempted_bad,
+            &policy,
+            Some("native-test"),
+        )
         .await
         .unwrap()
         .unwrap();
@@ -238,6 +289,7 @@ async fn native_exact_seal_restores_and_rederives_before_immutable_capture() {
     assert_eq!(state, "raw_sealed");
     // Historical raw-only seals retain unknown elapsed; callers cannot backfill it.
     let unknown = fixture(&admin, &runtime).await;
+    choose_profile(&store, &unknown, "native-test").await;
     let prepared_unknown =
         negative_cases::prepare_case(&store, &runtime, &unknown, "unknown-elapsed").await;
     let policy_unknown =
@@ -256,6 +308,7 @@ async fn native_exact_seal_restores_and_rederives_before_immutable_capture() {
             },
             &attempted_unknown,
             &policy_unknown,
+            Some("native-test"),
         )
         .await
         .unwrap()

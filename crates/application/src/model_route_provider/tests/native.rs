@@ -2,6 +2,23 @@ use super::*;
 
 struct Native;
 struct PreparationFailure;
+struct UndeclaredNative;
+#[async_trait]
+impl ModelRouteRankingProvider for UndeclaredNative {
+    fn prepare(
+        &self,
+        saved: &PreparedModelRouteRecommendation,
+    ) -> Result<ModelRoutePreparedAttempt> {
+        Native.prepare(saved)
+    }
+    async fn attempt_prepared(
+        &self,
+        _: ModelRoutePreparedAttempt,
+        _: ModelRouteSendPermit,
+    ) -> Result<Vec<u8>> {
+        panic!("undeclared native profile must not send")
+    }
+}
 #[async_trait]
 impl ModelRouteRankingProvider for PreparationFailure {
     fn prepare(&self, _: &PreparedModelRouteRecommendation) -> Result<ModelRoutePreparedAttempt> {
@@ -22,6 +39,7 @@ async fn provider_unavailable_or_preparation_failure_is_durable_no_call_before_b
     for provider in [
         &DisabledModelRouteRankingProvider as &dyn ModelRouteRankingProvider,
         &PreparationFailure,
+        &UndeclaredNative,
     ] {
         let mut store = Memory::default();
         let started = prepare_model_route_send(&mut store, provider, &saved, invocation())
@@ -38,6 +56,9 @@ async fn provider_unavailable_or_preparation_failure_is_durable_no_call_before_b
 }
 #[async_trait]
 impl ModelRouteRankingProvider for Native {
+    fn required_profile(&self) -> Option<&str> {
+        Some("native-test")
+    }
     fn prepare(
         &self,
         saved: &PreparedModelRouteRecommendation,
@@ -86,7 +107,13 @@ async fn native_exact_wire_seal_and_typed_outcome_without_raw_rewrite() {
     assert_ne!(attempted.request_bytes, attempted.request.bytes().unwrap());
     let mut store = Memory::default();
     let permit = store
-        .begin_send(&saved, invocation(), &attempted, &test_policy())
+        .begin_send(
+            &saved,
+            invocation(),
+            &attempted,
+            &test_policy(),
+            Some("native-test"),
+        )
         .await
         .unwrap()
         .unwrap();
@@ -120,7 +147,13 @@ async fn non2xx_valid_native_result_is_accounted_but_never_parsed() {
     let attempted = Native.prepare(&saved).unwrap();
     let mut store = Memory::default();
     let permit = store
-        .begin_send(&saved, invocation(), &attempted, &test_policy())
+        .begin_send(
+            &saved,
+            invocation(),
+            &attempted,
+            &test_policy(),
+            Some("native-test"),
+        )
         .await
         .unwrap()
         .unwrap();

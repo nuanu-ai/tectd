@@ -28,6 +28,12 @@ pub async fn prepare_model_route_send(
         Some(ModelRouteRunNoCall::Preparation(prepared.preparation))
     } else if !provider.available() {
         Some(ModelRouteRunNoCall::ProviderUnavailable)
+    } else if let Some(profile) = provider.required_profile() {
+        if !store.provider_profile_matches(prepared, profile).await? {
+            Some(ModelRouteRunNoCall::ProviderUnavailable)
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -50,7 +56,9 @@ pub async fn prepare_model_route_send(
             ));
         }
     };
-    if attempted.verify(prepared).is_err() {
+    if attempted.verify(prepared).is_err()
+        || (attempted.adapter_identity.is_some() && provider.required_profile().is_none())
+    {
         store
             .record_no_call(
                 prepared,
@@ -88,7 +96,13 @@ pub async fn prepare_model_route_send(
         return Err(Error::BudgetPolicyInvalid);
     }
     match store
-        .begin_send(prepared, invocation, &attempted, &policy)
+        .begin_send(
+            prepared,
+            invocation,
+            &attempted,
+            &policy,
+            provider.required_profile(),
+        )
         .await?
     {
         Some(permit)

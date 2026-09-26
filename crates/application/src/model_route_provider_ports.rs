@@ -165,6 +165,9 @@ impl ModelRouteSealedRankingEvidence {
 /// The default is disabled. A fake or trusted host adapter must be explicitly installed.
 #[async_trait]
 pub trait ModelRouteRankingProvider: Send + Sync {
+    fn required_profile(&self) -> Option<&str> {
+        None
+    }
     /// Pure hooks run only on an authorized persisted seal.
     fn sealed_usage(
         &self,
@@ -245,6 +248,13 @@ impl ModelRouteRankingProvider for DisabledModelRouteRankingProvider {
 /// seal raw bytes before parsing, and recheck currentness on every transition.
 #[async_trait]
 pub trait ModelRouteAttemptStore: Send {
+    async fn provider_profile_matches(
+        &mut self,
+        _prepared: &PreparedModelRouteRecommendation,
+        _profile: &str,
+    ) -> Result<bool> {
+        Ok(false)
+    }
     /// Trusted owner-approval verification seam. Stored signature syntax alone
     /// never authorizes a send.
     async fn authorized_budget_policy(
@@ -280,6 +290,7 @@ pub trait ModelRouteAttemptStore: Send {
         invocation: ModelRouteInvocation,
         attempted: &ModelRoutePreparedAttempt,
         policy: &AdvisoryBudgetPolicy,
+        required_profile: Option<&str>,
     ) -> Result<Option<ModelRouteSendPermit>>;
     async fn seal_raw_response(
         &mut self,

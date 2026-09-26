@@ -245,6 +245,19 @@ impl WorkspaceService {
             )
             .await?
             .ok_or(Error::StaleContext)?;
+        if attempted.adapter_identity.is_some()
+            && self
+                .model_route_ranking_provider
+                .required_profile()
+                .is_none()
+        {
+            return Err(Error::TransportUnavailable);
+        }
+        if let Some(profile) = self.model_route_ranking_provider.required_profile()
+            && !store.provider_profile_matches(&prepared, profile).await?
+        {
+            return Err(Error::TransportUnavailable);
+        }
         let mut observation = store
             .sealed_observation(&permit)
             .await?

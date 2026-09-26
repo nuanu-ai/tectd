@@ -2,6 +2,26 @@ use super::*;
 use ring::signature::{Ed25519KeyPair, KeyPair};
 
 struct InvalidPreparation;
+struct DeclaredProfile(&'static str);
+#[async_trait]
+impl ModelRouteRankingProvider for DeclaredProfile {
+    fn required_profile(&self) -> Option<&str> {
+        Some(self.0)
+    }
+    fn prepare(
+        &self,
+        _: &tect_application::PreparedModelRouteRecommendation,
+    ) -> tect_domain::Result<ModelRoutePreparedAttempt> {
+        panic!("profile mismatch must precede prepare")
+    }
+    async fn attempt_prepared(
+        &self,
+        _: ModelRoutePreparedAttempt,
+        _: ModelRouteSendPermit,
+    ) -> tect_domain::Result<Vec<u8>> {
+        panic!("profile mismatch must not send")
+    }
+}
 #[async_trait]
 impl ModelRouteRankingProvider for InvalidPreparation {
     fn prepare(
@@ -52,6 +72,7 @@ async fn signed_positive_budget_unconfigured_and_bad_preflight_make_no_reservati
         .collect();
     let keys = crate::BudgetOwnerKeys::from_json(&serde_json::json!([{ "workspace_id": created.workspace, "owner_id": created.owner.principal_id, "public_key_hex": public_key_hex }]).to_string()).unwrap();
     let store = PgStore::from_pool(runtime.clone()).with_budget_owner_keys(keys);
+    native_seal::choose_profile(&store, &created, "profile-a").await;
     let now = i64::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -112,6 +133,7 @@ async fn signed_positive_budget_unconfigured_and_bad_preflight_make_no_reservati
     for (index, provider) in [
         &tect_application::DisabledModelRouteRankingProvider as &dyn ModelRouteRankingProvider,
         &InvalidPreparation,
+        &DeclaredProfile("profile-b"),
     ]
     .into_iter()
     .enumerate()
@@ -148,5 +170,5 @@ async fn signed_positive_budget_unconfigured_and_bad_preflight_make_no_reservati
         tx.commit().await.unwrap();
     }
     let counts: (i64,i64,i64) = sqlx::query_as("SELECT (SELECT count(*) FROM model_route_advisory_attempts WHERE workspace_id=$1 AND state='no_call'),(SELECT count(*) FROM model_route_budget_reservations WHERE workspace_id=$1),(SELECT count(*) FROM model_route_budget_consumptions WHERE workspace_id=$1)").bind(created.workspace).fetch_one(&admin).await.unwrap();
-    assert_eq!(counts, (2, 0, 0));
+    assert_eq!(counts, (3, 0, 0));
 }

@@ -47,6 +47,16 @@ pub(super) async fn capture(
         .await?
         .ok_or(Error::StaleContext)?;
     current_preparation(uow, &prepared).await?;
+    if let Some(provider) = provider {
+        if evidence.attempted.adapter_identity.is_some() && provider.required_profile().is_none() {
+            return Err(Error::TransportUnavailable);
+        }
+        if let Some(profile) = provider.required_profile()
+            && !uow.provider_profile_matches(&prepared, profile).await?
+        {
+            return Err(Error::TransportUnavailable);
+        }
+    }
     evidence.validate_material(&prepared)?;
     let row = permit_row(uow, &evidence.permit).await?;
     let tenant = uow.tenant_id()?;

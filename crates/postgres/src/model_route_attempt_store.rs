@@ -188,6 +188,20 @@ async fn permit_row(
 
 #[async_trait]
 impl ModelRouteAttemptStore for PgUnitOfWork {
+    async fn provider_profile_matches(
+        &mut self,
+        prepared: &PreparedModelRouteRecommendation,
+        profile: &str,
+    ) -> Result<bool> {
+        let tenant = self.tenant_id()?;
+        let row: Option<(i64,String,Option<String>)> = sqlx::query_as("SELECT revision,mode,provider_profile_ref FROM advisory_workspace_config WHERE tenant_id=$1 AND workspace_id=$2")
+            .bind(tenant).bind(prepared.workspace_id).fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?;
+        Ok(row.is_some_and(|(revision, mode, selected)| {
+            revision == prepared.advisory_config_revision
+                && mode == "optional"
+                && selected.as_deref() == Some(profile)
+        }))
+    }
     async fn authorized_budget_policy(
         &mut self,
         workspace_id: Uuid,
@@ -331,8 +345,17 @@ impl ModelRouteAttemptStore for PgUnitOfWork {
         invocation: ModelRouteInvocation,
         attempted: &ModelRoutePreparedAttempt,
         policy: &AdvisoryBudgetPolicy,
+        required_profile: Option<&str>,
     ) -> Result<Option<ModelRouteSendPermit>> {
-        budget::begin_send(self, prepared, invocation, attempted, policy).await
+        budget::begin_send(
+            self,
+            prepared,
+            invocation,
+            attempted,
+            policy,
+            required_profile,
+        )
+        .await
     }
 
     async fn seal_raw_response(
