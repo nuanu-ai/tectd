@@ -16,6 +16,28 @@ pub enum TransactionMode {
 pub trait Store: Send + Sync {
     async fn begin(&self, mode: TransactionMode) -> Result<Box<dyn UnitOfWork>>;
 
+    async fn seal_committed_matrix_observation(
+        &self,
+        _tenant_id: Uuid,
+        _continuation: &crate::MatrixDispatchContinuation,
+        _observation: &crate::MatrixProviderObservation,
+        _elapsed_ms: i64,
+    ) -> Result<crate::StoredMatrixDispatch> {
+        Err(tect_domain::Error::Forbidden)
+    }
+
+    async fn consume_committed_matrix_observation(
+        &self,
+        _tenant_id: Uuid,
+        _continuation: &crate::MatrixDispatchContinuation,
+        _usage: crate::MatrixProviderUsage,
+    ) -> Result<(
+        crate::StoredMatrixDispatch,
+        tect_domain::AdvisoryBudgetConsumption,
+    )> {
+        Err(tect_domain::Error::Forbidden)
+    }
+
     /// Internal continuation after a committed model-route send. The caller
     /// supplies only the server-held permit and returned raw bytes; adapters
     /// must verify the exact tenant/attempt/request binding before sealing.

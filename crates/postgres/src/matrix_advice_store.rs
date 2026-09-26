@@ -15,7 +15,7 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
-use crate::{advisory::finalize_opportunity, storage_error, store::PgUnitOfWork};
+use crate::{advisory::finalize_matrix_response, storage_error, store::PgUnitOfWork};
 
 fn decode_advice(
     row: PgRow,

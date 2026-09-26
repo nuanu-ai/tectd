@@ -1,10 +1,11 @@
 use super::*;
 
-const MATRIX_ADVISORY_TABLES: [&str; 4] = [
+const MATRIX_ADVISORY_TABLES: [&str; 5] = [
     "advisory_matrix_advice",
     "advisory_matrix_disposition",
     "matrix_planning_selection_links",
     "matrix_planning_effect_attestations",
+    "advisory_provider_observations",
 ];
 
 pub(super) async fn grant_matrix_advisory_runtime(
@@ -29,7 +30,7 @@ pub(super) async fn validate_matrix_advisory_schema(
     runtime_role: &str,
 ) -> Result<()> {
     let tables_ready: bool = sqlx::query_scalar(
-        "SELECT pg_catalog.count(*)=4 AND pg_catalog.bool_and( \
+        "SELECT pg_catalog.count(*)=5 AND pg_catalog.bool_and( \
              c.relrowsecurity AND c.relforcerowsecurity \
              AND NOT pg_catalog.pg_has_role(r.oid,c.relowner,'MEMBER')) \
          FROM pg_catalog.pg_class c \
@@ -43,7 +44,7 @@ pub(super) async fn validate_matrix_advisory_schema(
     .await
     .map_err(storage_error)?;
     let policies_ready: bool = sqlx::query_scalar(
-        "SELECT pg_catalog.count(*)=4 AND pg_catalog.bool_and(COALESCE( \
+        "SELECT pg_catalog.count(*)=5 AND pg_catalog.bool_and(COALESCE( \
              p.policyname=p.tablename||'_tenant_scope' \
              AND p.permissive='PERMISSIVE' AND p.roles='{public}'::name[] \
              AND p.cmd='ALL' AND p.qual=p.with_check \

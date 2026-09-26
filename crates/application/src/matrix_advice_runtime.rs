@@ -135,6 +135,66 @@ pub struct MatrixStartedDispatchPermit {
     body_sha256: String,
 }
 
+/// Internal persistence continuation for an already committed one-use send.
+#[derive(Debug, Clone)]
+pub struct MatrixDispatchContinuation {
+    workspace_id: Uuid,
+    actor_id: Uuid,
+    opportunity_id: Uuid,
+    dispatch_id: Uuid,
+    configuration_digest: String,
+    request_sha256: String,
+}
+
+impl MatrixDispatchContinuation {
+    pub(crate) fn from_started(
+        permit: &MatrixStartedDispatchPermit,
+        workspace_id: Uuid,
+        actor_id: Uuid,
+    ) -> Self {
+        Self {
+            workspace_id,
+            actor_id,
+            opportunity_id: permit.opportunity_id,
+            dispatch_id: permit.dispatch_id,
+            configuration_digest: permit.configuration_digest.clone(),
+            request_sha256: permit.body_sha256.clone(),
+        }
+    }
+    pub(crate) fn from_saved(
+        saved: &crate::StoredMatrixDispatch,
+        workspace_id: Uuid,
+        actor_id: Uuid,
+    ) -> Self {
+        Self {
+            workspace_id,
+            actor_id,
+            opportunity_id: saved.dispatch.opportunity_id,
+            dispatch_id: saved.dispatch.id,
+            configuration_digest: saved.dispatch.configuration_digest.clone(),
+            request_sha256: saved.request_payload_sha256.clone(),
+        }
+    }
+    pub fn workspace_id(&self) -> Uuid {
+        self.workspace_id
+    }
+    pub fn actor_id(&self) -> Uuid {
+        self.actor_id
+    }
+    pub fn opportunity_id(&self) -> Uuid {
+        self.opportunity_id
+    }
+    pub fn dispatch_id(&self) -> Uuid {
+        self.dispatch_id
+    }
+    pub fn configuration_digest(&self) -> &str {
+        &self.configuration_digest
+    }
+    pub fn request_sha256(&self) -> &str {
+        &self.request_sha256
+    }
+}
+
 impl MatrixStartedDispatchPermit {
     /// `opportunity` and `request` must come from the accepted saved Matrix
     /// revision used to prepare the body, after dispatch-start commits.

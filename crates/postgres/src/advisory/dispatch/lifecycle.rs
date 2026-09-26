@@ -138,11 +138,20 @@ async fn start_dispatch(
                     });
                 }
             }
-            let budget_reservation = reserve_before_dispatch(tx, tenant, workspace, &row,
+            let budget_reservation = reserve_before_dispatch(
+                tx,
+                tenant,
+                workspace,
+                &row,
                 authorized_policy,
-                matches!(opportunity.capability, AdvisoryCapability::ScopeDecomposition | AdvisoryCapability::EngineeringProfile)
-                    .then_some(&row.configuration_snapshot),
-                monotonic_elapsed_ms).await?;
+                matches!(
+                    opportunity.capability,
+                    AdvisoryCapability::ScopeDecomposition | AdvisoryCapability::EngineeringProfile
+                )
+                .then_some(&row.configuration_snapshot),
+                monotonic_elapsed_ms,
+            )
+            .await?;
             let dispatch_update = sqlx::query("UPDATE advisory_dispatch SET state='sending',send_certainty='sent_unknown',send_started_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND state='authorized'")
                 .bind(tenant).bind(workspace).bind(dispatch_id).execute(&mut **tx).await.map_err(storage_error)?;
             let opportunity_update = sqlx::query("UPDATE advisory_opportunity SET state='awaiting_response',primary_reason='send_unknown',updated_at=pg_catalog.clock_timestamp() WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND state IN ('prepared','failed')")
@@ -154,9 +163,10 @@ async fn start_dispatch(
             row.send_certainty = "sent_unknown".into();
             (true, Some(budget_reservation))
         }
-        AdvisoryDispatchState::Sending | AdvisoryDispatchState::Sealed => {
-            (false, reservation_for_dispatch(tx, tenant, workspace, dispatch_id).await?)
-        },
+        AdvisoryDispatchState::Sending | AdvisoryDispatchState::Sealed => (
+            false,
+            reservation_for_dispatch(tx, tenant, workspace, dispatch_id).await?,
+        ),
         AdvisoryDispatchState::Cancelled => return Err(Error::InputConflict),
     };
     Ok(AdvisoryDispatchStart {
@@ -298,6 +308,31 @@ pub(crate) async fn finalize_opportunity(
     dispatch: &AdvisoryDispatch,
     verification_stale: bool,
 ) -> Result<AdvisoryOpportunity> {
+    finalize_matrix_response(
+        tx,
+        tenant,
+        workspace,
+        opportunity_id,
+        expected_config_revision,
+        dispatch,
+        verification_stale,
+        true,
+    )
+    .await
+}
+
+// Preserve the generic dispatch contract while adding Matrix parse validity.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn finalize_matrix_response(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    opportunity_id: Uuid,
+    expected_config_revision: i64,
+    dispatch: &AdvisoryDispatch,
+    verification_stale: bool,
+    provider_response_valid: bool,
+) -> Result<AdvisoryOpportunity> {
     if dispatch.opportunity_id != opportunity_id {
         return Err(Error::InputConflict);
     }
@@ -353,9 +388,14 @@ pub(crate) async fn finalize_opportunity(
         "SELECT r.dispatch_id,c.exhausted_after_response \
          FROM advisory_budget_reservations r LEFT JOIN advisory_budget_consumptions c \
          ON (c.tenant_id,c.workspace_id,c.dispatch_id)=(r.tenant_id,r.workspace_id,r.dispatch_id) \
-         WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.dispatch_id=$3"
-    ).bind(tenant).bind(workspace).bind(persisted.id)
-        .fetch_optional(&mut **tx).await.map_err(storage_error)?;
+         WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.dispatch_id=$3",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(persisted.id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(storage_error)?;
     let budget_exhausted = match budget_row {
         None => false, // Historical pre-budget dispatches have no reservation.
         Some((_, Some(exhausted))) => exhausted,
@@ -387,9 +427,15 @@ pub(crate) async fn finalize_opportunity(
         None
     };
     let (state, reason) = if persisted_certainty == AdvisorySendCertainty::SentUnknown {
-        (AdvisoryOpportunityState::Unresolved, AdvisoryReason::SendUnknown)
+        (
+            AdvisoryOpportunityState::Unresolved,
+            AdvisoryReason::SendUnknown,
+        )
     } else if budget_exhausted {
-        (AdvisoryOpportunityState::Failed, AdvisoryReason::BudgetExhaustedAfterResponse)
+        (
+            AdvisoryOpportunityState::Failed,
+            AdvisoryReason::BudgetExhaustedAfterResponse,
+        )
     } else if current.0 != expected_config_revision || current.1 != "optional" {
         (
             AdvisoryOpportunityState::Invalidated,
@@ -397,7 +443,9 @@ pub(crate) async fn finalize_opportunity(
         )
     } else if let Some(reason) = matrix_stale {
         (AdvisoryOpportunityState::Invalidated, reason)
-    } else if persisted_outcome == Some(AdvisoryDispatchOutcome::ProviderResponse) {
+    } else if provider_response_valid
+        && persisted_outcome == Some(AdvisoryDispatchOutcome::ProviderResponse)
+    {
         (
             AdvisoryOpportunityState::Advised,
             AdvisoryReason::ProviderResponse,

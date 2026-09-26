@@ -164,7 +164,7 @@ impl MatrixAdviceStore for PgUnitOfWork {
         .map_err(storage_error)?
         .ok_or(Error::NotFound)?;
         let _ = capability;
-        let result = finalize_opportunity(
+        let result = finalize_matrix_response(
             self.transaction()?,
             tenant,
             workspace_id,
@@ -172,6 +172,7 @@ impl MatrixAdviceStore for PgUnitOfWork {
             expected_config_revision,
             dispatch,
             verification_stale,
+            record.is_some(),
         )
         .await?;
         if result.state == AdvisoryOpportunityState::Advised {

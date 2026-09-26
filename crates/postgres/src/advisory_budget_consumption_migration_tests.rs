@@ -35,10 +35,18 @@ fn consumption_is_append_only_bound_to_seal_and_gates_finalization() {
     );
     assert!(CONSUME.contains("crate::budget_policy_usage::policy_usage("));
     assert!(CONSUME.contains("usage.pending != 1"));
-    for path in [SCOPE, MATRIX] {
-        let seal_commit = path.find("seal_tx.commit().await?").unwrap();
-        let consume = path.find(".consume_advisory_budget(").unwrap();
+    {
+        let seal_commit = SCOPE.find("seal_tx.commit().await?").unwrap();
+        let consume = SCOPE.find(".consume_advisory_budget(").unwrap();
         assert!(seal_commit < consume);
-        assert!(path.contains("monotonic_start.elapsed().as_millis()"));
+        assert!(SCOPE.contains("monotonic_start.elapsed().as_millis()"));
     }
+    let raw = MATRIX.find(".seal_committed_matrix_observation(").unwrap();
+    let usage = MATRIX.find(".sealed_response_usage(").unwrap();
+    let consume = MATRIX
+        .find(".consume_committed_matrix_observation(")
+        .unwrap();
+    let parse = MATRIX.find(".parse_sealed_response(").unwrap();
+    assert!(raw < usage && usage < consume && consume < parse);
+    assert!(MATRIX.contains("!consumption.exhausted_after_response"));
 }

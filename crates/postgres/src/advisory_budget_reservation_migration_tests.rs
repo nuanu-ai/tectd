@@ -18,7 +18,7 @@ fn reservation_is_bound_to_dispatch_policy_bytes_and_tenant() {
     ] {
         assert!(MIGRATION.contains(clause), "missing {clause}");
     }
-    let reserve = START.find("reserve_before_dispatch(tx").unwrap();
+    let reserve = START.find("reserve_before_dispatch(").unwrap();
     let send = START
         .find("UPDATE advisory_dispatch SET state='sending'")
         .unwrap();

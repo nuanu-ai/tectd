@@ -130,8 +130,50 @@ impl WorkspaceService {
         context: &RequestContext,
         workspace_id: Uuid,
         opportunity: AdvisoryOpportunity,
-        saved: StoredMatrixDispatch,
+        mut saved: StoredMatrixDispatch,
     ) -> Result<AdvisoryOpportunity> {
+        let mut exhausted = false;
+        if saved.raw_observation_sealed
+            && opportunity.state == AdvisoryOpportunityState::AwaitingResponse
+        {
+            let (read, identity) = self
+                .authenticated(context, TransactionMode::ReadOnly)
+                .await?;
+            read.commit().await?;
+            let continuation = crate::MatrixDispatchContinuation::from_saved(
+                &saved,
+                workspace_id,
+                opportunity.authorized_actor_id,
+            );
+            let usage = if saved.response_complete {
+                self.matrix_advice_provider.sealed_response_usage(&saved)
+            } else {
+                crate::MatrixProviderUsage::default()
+            };
+            let (consumed, consumption) = self
+                .consume_committed_matrix_observation(identity.tenant_id, &continuation, usage)
+                .await?;
+            saved = consumed;
+            exhausted = consumption.exhausted_after_response;
+            if saved.dispatch.send_certainty == AdvisorySendCertainty::SentUnknown {
+                let (mut finalize, _) = self
+                    .authenticated(context, TransactionMode::ReadWrite)
+                    .await?;
+                let result = finalize
+                    .finalize_guarded_matrix_advice(
+                        &AdvisoryLifecycleCapability::internal(),
+                        workspace_id,
+                        opportunity.id,
+                        opportunity.config_revision,
+                        &saved.dispatch,
+                        None,
+                        false,
+                    )
+                    .await?;
+                finalize.commit().await?;
+                return Ok(result);
+            }
+        }
         let dispatch = &saved.dispatch;
         if dispatch.opportunity_id != opportunity.id
             || dispatch.attempt_number != 1
@@ -339,45 +381,80 @@ impl WorkspaceService {
                     .current_saved_matrix_request(context, workspace_id, &saved)
                     .await?;
                 let current = if let Some(request) = request.as_ref() {
-                    self.matrix_request_is_current(context, workspace_id, request)
-                        .await?
+                    self.matrix_request_is_current(
+                        context,
+                        workspace_id,
+                        request,
+                        opportunity.config_revision,
+                    )
+                    .await?
                 } else {
                     false
                 };
-                let guarded = if current {
-                    let request = request.as_ref().ok_or(Error::StaleContext)?;
-                    let response = self
-                        .matrix_advice_provider
-                        .parse_sealed_response(request, &saved)?;
-                    response.validate_for(request)?;
-                    if saved.response_payload.as_deref()
-                        != Some(response.raw_response_payload.as_slice())
-                        || saved.response_payload_sha256.as_deref()
-                            != Some(response.response_payload_sha256.as_str())
-                        || dispatch.input_tokens
-                            != response
-                                .input_tokens
-                                .map(i64::try_from)
-                                .transpose()
-                                .map_err(|_| Error::InputConflict)?
-                        || dispatch.output_tokens
-                            != response
-                                .output_tokens
-                                .map(i64::try_from)
-                                .transpose()
-                                .map_err(|_| Error::InputConflict)?
-                    {
-                        return Err(Error::InputConflict);
-                    }
-                    Some(GuardedMatrixAdviceRecord::from_provider_response(
-                        opportunity.id,
-                        dispatch.id,
-                        request,
-                        response,
-                    )?)
-                } else {
-                    None
-                };
+                let lifecycle = AdvisoryLifecycleCapability::internal();
+                if !saved.raw_observation_sealed {
+                    let (mut consume, _) = self
+                        .authenticated(context, TransactionMode::ReadWrite)
+                        .await?;
+                    exhausted = consume
+                        .consume_advisory_budget(&lifecycle, workspace_id, dispatch.id)
+                        .await?
+                        .exhausted_after_response;
+                    consume.commit().await?;
+                }
+                let guarded =
+                    if current && !exhausted && super::matrix_observation_allows_parse(&saved) {
+                        let request = request.as_ref().ok_or(Error::StaleContext)?;
+                        let response = self
+                            .matrix_advice_provider
+                            .parse_sealed_response(request, &saved);
+                        let Ok(response) = response else {
+                            let (mut finalize, _) = self
+                                .authenticated(context, TransactionMode::ReadWrite)
+                                .await?;
+                            let result = finalize
+                                .finalize_guarded_matrix_advice(
+                                    &lifecycle,
+                                    workspace_id,
+                                    opportunity.id,
+                                    opportunity.config_revision,
+                                    dispatch,
+                                    None,
+                                    !current,
+                                )
+                                .await?;
+                            finalize.commit().await?;
+                            return Ok(result);
+                        };
+                        response.validate_for(request)?;
+                        if saved.response_payload.as_deref()
+                            != Some(response.raw_response_payload.as_slice())
+                            || saved.response_payload_sha256.as_deref()
+                                != Some(response.response_payload_sha256.as_str())
+                            || dispatch.input_tokens
+                                != response
+                                    .input_tokens
+                                    .map(i64::try_from)
+                                    .transpose()
+                                    .map_err(|_| Error::InputConflict)?
+                            || dispatch.output_tokens
+                                != response
+                                    .output_tokens
+                                    .map(i64::try_from)
+                                    .transpose()
+                                    .map_err(|_| Error::InputConflict)?
+                        {
+                            return Err(Error::InputConflict);
+                        }
+                        Some(GuardedMatrixAdviceRecord::from_provider_response(
+                            opportunity.id,
+                            dispatch.id,
+                            request,
+                            response,
+                        )?)
+                    } else {
+                        None
+                    };
                 let lifecycle = AdvisoryLifecycleCapability::internal();
                 let (mut finalize, _) = self
                     .authenticated(context, TransactionMode::ReadWrite)

@@ -64,6 +64,45 @@ impl PgUnitOfWork {
 
 #[async_trait]
 impl Store for PgStore {
+    async fn seal_committed_matrix_observation(
+        &self,
+        tenant: Uuid,
+        continuation: &tect_application::MatrixDispatchContinuation,
+        observation: &tect_application::MatrixProviderObservation,
+        elapsed: i64,
+    ) -> Result<tect_application::StoredMatrixDispatch> {
+        let mut tx = self.matrix_continuation_transaction(tenant).await?;
+        let saved = crate::advisory::seal_matrix_raw_observation(
+            &mut tx,
+            tenant,
+            continuation,
+            observation,
+            elapsed,
+        )
+        .await?;
+        tx.commit().await.map_err(storage_error)?;
+        Ok(saved)
+    }
+
+    async fn consume_committed_matrix_observation(
+        &self,
+        tenant: Uuid,
+        continuation: &tect_application::MatrixDispatchContinuation,
+        usage: tect_application::MatrixProviderUsage,
+    ) -> Result<(
+        tect_application::StoredMatrixDispatch,
+        AdvisoryBudgetConsumption,
+    )> {
+        let mut tx = self.matrix_continuation_transaction(tenant).await?;
+        crate::advisory::seal_matrix_observation_usage(&mut tx, tenant, continuation, usage)
+            .await?;
+        tx.commit().await.map_err(storage_error)?;
+        let mut tx = self.matrix_continuation_transaction(tenant).await?;
+        let result =
+            crate::advisory::consume_matrix_observation(&mut tx, tenant, continuation).await?;
+        tx.commit().await.map_err(storage_error)?;
+        Ok(result)
+    }
     async fn seal_committed_model_route_observation(
         &self,
         tenant_id: Uuid,
@@ -201,6 +240,24 @@ impl Store for PgStore {
             tenant_id: None,
             budget_owner_keys: self.budget_owner_keys.clone(),
         }))
+    }
+}
+
+impl PgStore {
+    async fn matrix_continuation_transaction(
+        &self,
+        tenant: Uuid,
+    ) -> Result<Transaction<'static, Postgres>> {
+        if tenant.is_nil() {
+            return Err(Error::InputConflict);
+        }
+        let mut tx = self.pool.begin().await.map_err(storage_error)?;
+        sqlx::query("SELECT pg_catalog.set_config('tect.tenant_id', $1, true)")
+            .bind(tenant.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_error)?;
+        Ok(tx)
     }
 }
 

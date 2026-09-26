@@ -4,10 +4,12 @@ use crate::{
     PreparedMatrixAdviceAttempt, StoredMatrixDispatch, TransactionMode, WorkspaceService,
 };
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use tect_domain::AdvisoryDispatchSeal;
 use tect_domain::{
     AdvisoryBudgetPolicy, AdvisoryDispatchAuthorization, AdvisoryDispatchOutcome,
-    AdvisoryDispatchSeal, AdvisoryDispatchState, AdvisoryOpportunity, AdvisoryOpportunityState,
-    AdvisoryReason, AdvisoryRetryBasis, AdvisorySendCertainty, Error, RequestContext, Result,
+    AdvisoryDispatchState, AdvisoryOpportunity, AdvisoryOpportunityState, AdvisoryReason,
+    AdvisoryRetryBasis, AdvisorySendCertainty, Error, RequestContext, Result,
     WorkspaceAdvisoryMode,
 };
 use uuid::Uuid;
@@ -20,6 +22,7 @@ pub(crate) struct PreparedMatrixDispatch {
     pub prepared: PreparedMatrixAdviceAttempt,
 }
 
+#[cfg(test)]
 pub(crate) fn seal_matrix_provider_observation(
     opportunity_id: Uuid,
     dispatch_id: Uuid,
@@ -167,12 +170,22 @@ fn matrix_recovery_window(
 
 mod recovery;
 
+fn matrix_observation_allows_parse(saved: &StoredMatrixDispatch) -> bool {
+    saved.response_complete
+        && saved.response_payload.is_some()
+        && match saved.response_http_status {
+            Some(status) => (200..=299).contains(&status),
+            None => saved.wire_version != "tect.matrix-typesafe-native/1",
+        }
+}
+
 impl WorkspaceService {
     async fn matrix_request_is_current(
         &self,
         context: &RequestContext,
         workspace_id: Uuid,
         provider_request: &MatrixProviderRequest,
+        expected_config_revision: i64,
     ) -> Result<bool> {
         // External evidence validation runs without holding write locks. The
         // write transaction rechecks database task and verification bindings
@@ -194,6 +207,12 @@ impl WorkspaceService {
         let current = read
             .matrix_task(workspace_id, provider_request.revision().task_id)
             .await?;
+        let config = read.advisory_config(workspace_id).await?;
+        let configured = config.revision == expected_config_revision
+            && config.mode == WorkspaceAdvisoryMode::Optional
+            && config.provider_profile_ref.as_ref()
+                == Some(provider_request.provider_profile_ref())
+            && config.model_configuration.as_ref() == Some(provider_request.model_configuration());
         let fresh = crate::matrix_tasks::matrix_request_still_current(
             read.matrix_verification_store(),
             self.matrix_evidence_validator.as_ref(),
@@ -203,7 +222,7 @@ impl WorkspaceService {
         )
         .await;
         read.commit().await?;
-        Ok(fresh)
+        Ok(fresh && configured)
     }
 
     pub(crate) async fn dispatch_prepared_matrix_advisory(
@@ -221,7 +240,7 @@ impl WorkspaceService {
         } = dispatch;
         let lifecycle = AdvisoryLifecycleCapability::internal();
         let verification_current = self
-            .matrix_request_is_current(context, workspace_id, &provider_request)
+            .matrix_request_is_current(context, workspace_id, &provider_request, config_revision)
             .await?
             && prepared.validate_for(&provider_request).is_ok()
             && authorization.payload_digest == prepared.body_sha256()
@@ -277,40 +296,71 @@ impl WorkspaceService {
             &provider_request,
             &prepared,
         )?;
+        let continuation = crate::MatrixDispatchContinuation::from_started(
+            &permit,
+            workspace_id,
+            opportunity.authorized_actor_id,
+        );
         // The committed Sending row is the one-use boundary. A transport error
         // remains uncertain and is never retried by this request or its replay.
         let monotonic_start = std::time::Instant::now();
         let observed = self
             .matrix_advice_provider
-            .attempt_prepared(prepared, permit)
-            .await;
+            .observe_prepared(prepared, permit)
+            .await
+            .unwrap_or(crate::MatrixProviderObservation {
+                response_payload: None,
+                http_status: None,
+                input_tokens: None,
+                output_tokens: None,
+                legacy_response: None,
+                response_complete: false,
+            });
         let monotonic_elapsed_ms =
             i64::try_from(monotonic_start.elapsed().as_millis()).unwrap_or(i64::MAX);
-        let (mut seal, guarded) = seal_matrix_provider_observation(
-            opportunity.id,
-            authorization.dispatch_id,
-            &provider_request,
-            observed,
-        );
-        seal.latency_ms = Some(monotonic_elapsed_ms);
-        seal.validate()?;
-        let (mut seal_tx, _) = self
-            .authenticated(context, TransactionMode::ReadWrite)
+        let saved = self
+            .seal_committed_matrix_observation(
+                identity.tenant_id,
+                &continuation,
+                &observed,
+                monotonic_elapsed_ms,
+            )
             .await?;
-        let dispatch = seal_tx
-            .seal_advisory_dispatch(&lifecycle, workspace_id, &seal)
+        let usage = if saved.response_complete {
+            self.matrix_advice_provider.sealed_response_usage(&saved)
+        } else {
+            crate::MatrixProviderUsage::default()
+        };
+        let (saved, consumption) = self
+            .consume_committed_matrix_observation(identity.tenant_id, &continuation, usage)
             .await?;
-        seal_tx.commit().await?;
-        let (mut consume_tx, _) = self
-            .authenticated(context, TransactionMode::ReadWrite)
-            .await?;
-        let consumption = consume_tx
-            .consume_advisory_budget(&lifecycle, workspace_id, dispatch.id)
-            .await?;
-        consume_tx.commit().await?;
+        let dispatch = &saved.dispatch;
         let verification_stale = !self
-            .matrix_request_is_current(context, workspace_id, &provider_request)
+            .matrix_request_is_current(context, workspace_id, &provider_request, config_revision)
             .await?;
+        let guarded = if !consumption.exhausted_after_response
+            && !verification_stale
+            && matrix_observation_allows_parse(&saved)
+        {
+            observed
+                .legacy_response
+                .map(Ok)
+                .unwrap_or_else(|| {
+                    self.matrix_advice_provider
+                        .parse_sealed_response(&provider_request, &saved)
+                })
+                .and_then(|response| {
+                    GuardedMatrixAdviceRecord::from_provider_response(
+                        opportunity.id,
+                        dispatch.id,
+                        &provider_request,
+                        response,
+                    )
+                })
+                .ok()
+        } else {
+            None
+        };
         let (mut finalize, _) = self
             .authenticated(context, TransactionMode::ReadWrite)
             .await?;
@@ -320,7 +370,7 @@ impl WorkspaceService {
                 workspace_id,
                 opportunity.id,
                 config_revision,
-                &dispatch,
+                dispatch,
                 if consumption.exhausted_after_response {
                     None
                 } else {

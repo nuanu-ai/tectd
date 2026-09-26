@@ -140,6 +140,12 @@ async fn positive_binding_requires_revalidated_exact_record() {
         request_payload_sha256: "b".repeat(64),
         response_payload: Some(b"opaque".to_vec()),
         response_payload_sha256: Some("c".repeat(64)),
+        response_http_status: None,
+        original_input_tokens: None,
+        original_output_tokens: None,
+        original_elapsed_ms: None,
+        raw_observation_sealed: false,
+        response_complete: true,
     };
     assert_eq!(
         fake_provider.parse_sealed_response(&provider, &saved),

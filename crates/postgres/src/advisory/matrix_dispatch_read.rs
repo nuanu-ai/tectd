@@ -103,7 +103,9 @@ pub(crate) async fn matrix_dispatch_for_recovery(
     {
         return Err(Error::NotFound);
     }
-    stored_matrix_dispatch(dispatch, binding)
+    let mut saved = stored_matrix_dispatch(dispatch, binding)?;
+    attach_matrix_observation(tx, tenant, workspace, &mut saved).await?;
+    Ok(saved)
 }
 
 fn stored_matrix_dispatch(
@@ -168,31 +170,36 @@ fn stored_matrix_dispatch(
     {
         return Err(Error::StorageUnavailable);
     }
-    let body: serde_json::Value =
-        serde_json::from_slice(&row.request_payload).map_err(|_| Error::StorageUnavailable)?;
-    let request_binding = body
-        .pointer("/state/binding")
-        .ok_or(Error::StorageUnavailable)?;
-    let mut expected_binding = serde_json::json!({
-        "task_id": binding.task_id.to_string(),
-        "task_revision": binding.task_revision.to_string(),
-        "input_digest": binding.input_digest,
-        "choice_set_id": binding.choice_set_id,
-        "choice_set_version": binding.choice_set_version,
-        "choice_set_digest": binding.choice_set_digest,
-        "evaluation_digest": binding.evaluation_digest,
-        "verification_digest": binding.verification_digest,
-    });
-    if binding.verification_digest.is_none() {
-        expected_binding
-            .as_object_mut()
-            .unwrap()
-            .remove("verification_digest");
-    }
-    if body.get("model") != Some(&serde_json::json!(model.model))
-        || request_binding != &expected_binding
-    {
-        return Err(Error::StorageUnavailable);
+    if matches!(
+        wire_version.as_str(),
+        "tect.matrix-typesafe-native/1" | "jev-matrix-ranking-json/2" | "matrix-ranking/2"
+    ) {
+        let body: serde_json::Value =
+            serde_json::from_slice(&row.request_payload).map_err(|_| Error::StorageUnavailable)?;
+        let request_binding = body
+            .pointer("/state/binding")
+            .ok_or(Error::StorageUnavailable)?;
+        let mut expected_binding = serde_json::json!({
+            "task_id": binding.task_id.to_string(),
+            "task_revision": binding.task_revision.to_string(),
+            "input_digest": binding.input_digest,
+            "choice_set_id": binding.choice_set_id,
+            "choice_set_version": binding.choice_set_version,
+            "choice_set_digest": binding.choice_set_digest,
+            "evaluation_digest": binding.evaluation_digest,
+            "verification_digest": binding.verification_digest,
+        });
+        if binding.verification_digest.is_none() {
+            expected_binding
+                .as_object_mut()
+                .unwrap()
+                .remove("verification_digest");
+        }
+        if body.get("model") != Some(&serde_json::json!(model.model))
+            || request_binding != &expected_binding
+        {
+            return Err(Error::StorageUnavailable);
+        }
     }
     let response_sha = row
         .response_payload
@@ -209,6 +216,7 @@ fn stored_matrix_dispatch(
     {
         return Err(Error::StorageUnavailable);
     }
+    let response_complete = row.response_payload.is_some();
     Ok(StoredMatrixDispatch {
         dispatch,
         binding,
@@ -221,6 +229,12 @@ fn stored_matrix_dispatch(
         request_payload_sha256: request_sha,
         response_payload: row.response_payload,
         response_payload_sha256: response_sha,
+        response_http_status: None,
+        original_input_tokens: row.input_tokens.and_then(|n| u64::try_from(n).ok()),
+        original_output_tokens: row.output_tokens.and_then(|n| u64::try_from(n).ok()),
+        original_elapsed_ms: row.latency_ms,
+        raw_observation_sealed: false,
+        response_complete,
     })
 }
 

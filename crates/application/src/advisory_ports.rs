@@ -169,6 +169,12 @@ pub struct StoredMatrixDispatch {
     pub request_payload_sha256: String,
     pub response_payload: Option<Vec<u8>>,
     pub response_payload_sha256: Option<String>,
+    pub response_http_status: Option<u16>,
+    pub original_input_tokens: Option<u64>,
+    pub original_output_tokens: Option<u64>,
+    pub original_elapsed_ms: Option<i64>,
+    pub raw_observation_sealed: bool,
+    pub response_complete: bool,
 }
 
 impl std::fmt::Debug for StoredMatrixDispatch {
@@ -325,6 +331,24 @@ pub struct MatrixProviderResponse {
     pub output_tokens: Option<u64>,
 }
 
+/// Opaque transport evidence. No ranking interpretation occurs at this seam.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatrixProviderObservation {
+    pub response_payload: Option<Vec<u8>>,
+    pub http_status: Option<u16>,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    /// Compatibility only: native transports leave this absent. Never persisted.
+    pub legacy_response: Option<MatrixProviderResponse>,
+    pub response_complete: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MatrixProviderUsage {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+}
+
 impl MatrixProviderResponse {
     pub fn validate_for(&self, request: &MatrixProviderRequest) -> Result<()> {
         if self.binding != request.binding
@@ -360,6 +384,30 @@ pub trait MatrixAdviceProvider: Send + Sync {
         _saved: &StoredMatrixDispatch,
     ) -> Result<MatrixProviderResponse> {
         Err(Error::TransportUnavailable)
+    }
+
+    fn sealed_response_usage(&self, saved: &StoredMatrixDispatch) -> MatrixProviderUsage {
+        MatrixProviderUsage {
+            input_tokens: saved.original_input_tokens,
+            output_tokens: saved.original_output_tokens,
+        }
+    }
+
+    async fn observe_prepared(
+        &self,
+        prepared: crate::PreparedMatrixAdviceAttempt,
+        permit: crate::MatrixStartedDispatchPermit,
+    ) -> Result<MatrixProviderObservation> {
+        self.attempt_prepared(prepared, permit)
+            .await
+            .map(|response| MatrixProviderObservation {
+                response_payload: Some(response.raw_response_payload.clone()),
+                http_status: None,
+                input_tokens: response.input_tokens,
+                output_tokens: response.output_tokens,
+                legacy_response: Some(response),
+                response_complete: true,
+            })
     }
 
     /// Transport consumes the exact bytes that were prepared before authorization.

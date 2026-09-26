@@ -86,6 +86,8 @@ mod pipeline_recommendation_store;
 mod planning_knowledge;
 mod planning_knowledge_store;
 mod programs;
+#[cfg(test)]
+mod provider_observation_migration_tests;
 mod runtime;
 mod scope_advisory;
 #[cfg(test)]
