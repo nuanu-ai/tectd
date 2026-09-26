@@ -7,6 +7,7 @@ mod api;
 mod context;
 mod frame;
 mod git;
+pub mod jev_anti_bloat_choice;
 pub mod jev_matrix_advice;
 pub mod jev_pipeline_recommendation;
 mod jev_scope_advice;
