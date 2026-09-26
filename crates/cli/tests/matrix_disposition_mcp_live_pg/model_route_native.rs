@@ -66,7 +66,7 @@ fn catalogue() -> ModelRouteCatalogue {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires explicitly owned disposable PG18.6, migration98"]
+#[ignore = "requires explicitly owned disposable PG18.6, migration99"]
 async fn native_public_model_route_recommends_once_without_candidate_execution() {
     let pool = PgPool::connect(&std::env::var("TECT_TEST_ADMIN_URL").unwrap())
         .await

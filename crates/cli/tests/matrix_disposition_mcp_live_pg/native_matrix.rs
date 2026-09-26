@@ -5,10 +5,7 @@ use tect_host::jev_matrix_advice::native_provider::{
     JevNativeMatrixConfig, JevNativeMatrixProvider,
 };
 use tect_postgres::BudgetOwnerKeys;
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
-};
+use tokio::net::TcpListener;
 
 #[derive(Clone, Copy, Debug)]
 enum Case {
@@ -17,6 +14,8 @@ enum Case {
     Http500,
     Malformed,
     Revoked,
+    Oversize,
+    Truncated,
 }
 
 type RawAudit = (
@@ -39,112 +38,9 @@ async fn guarded(pool: &PgPool, client: &mut Mcp, name: &str, params: Value) -> 
     route(client, "command", name, params).await
 }
 
-fn response(request: &Value, abstain: bool) -> Vec<u8> {
-    let mut answers = serde_json::Map::new();
-    for (token, level) in [("C0", 4), ("C1", 8)] {
-        let question = format!("score_v1_{token}");
-        let legend = request["questions"][&question]["criteria"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .enumerate()
-            .map(|(i, value)| (i.to_string(), value.clone()))
-            .collect::<serde_json::Map<_, _>>();
-        let probabilities = (0..10)
-            .map(|i| (i.to_string(), json!(if i == level { 1.0 } else { 0.0 })))
-            .collect::<serde_json::Map<_, _>>();
-        answers.insert(
-            question,
-            json!({"type":"score","score":level,"legend":legend,
-            "probabilities":probabilities,"confidence":0.9}),
-        );
-    }
-    answers.insert(
-        "choice_v1".into(),
-        json!({"type":"choice",
-        "choice":if abstain {"ABSTAIN"} else {"C1"},
-        "probabilities":if abstain {json!({"C0":0.05,"C1":0.05,"ABSTAIN":0.9})}
-            else {json!({"C0":0.1,"C1":0.8,"ABSTAIN":0.1})},"confidence":0.9}),
-    );
-    serde_json::to_vec(&json!({"model":request["model"],"answers":answers,
-        "usage":{"input_tokens":20,"output_tokens":30}}))
-    .unwrap()
-}
-
-async fn serve_once(
-    listener: TcpListener,
-    pool: PgPool,
-    workspace: Uuid,
-    host: Uuid,
-    native: String,
-    case: Case,
-) -> (TcpListener, Vec<u8>, Vec<u8>) {
-    let (mut connection, _) = listener.accept().await.unwrap();
-    let mut bytes = Vec::new();
-    let head_end;
-    let length;
-    loop {
-        let mut chunk = [0u8; 4096];
-        let read = connection.read(&mut chunk).await.unwrap();
-        assert!(read > 0);
-        bytes.extend_from_slice(&chunk[..read]);
-        if let Some(index) = bytes.windows(4).position(|v| v == b"\r\n\r\n") {
-            head_end = index + 4;
-            let headers = std::str::from_utf8(&bytes[..head_end]).unwrap();
-            assert!(headers.starts_with("POST /v1/systemone HTTP/1.1\r\n"));
-            assert!(headers.lines().any(|line| {
-                line.split_once(':').is_some_and(|(key, value)| {
-                    key.eq_ignore_ascii_case("authorization")
-                        && value.trim() == "Bearer synthetic-fixture-only"
-                })
-            }));
-            length = headers
-                .lines()
-                .find_map(|line| {
-                    line.split_once(':')
-                        .filter(|(key, _)| key.eq_ignore_ascii_case("content-length"))
-                        .map(|(_, value)| value.trim().parse::<usize>().unwrap())
-                })
-                .unwrap();
-            break;
-        }
-    }
-    while bytes.len() < head_end + length {
-        let mut chunk = [0u8; 4096];
-        let read = connection.read(&mut chunk).await.unwrap();
-        assert!(read > 0);
-        bytes.extend_from_slice(&chunk[..read]);
-    }
-    let body = bytes[head_end..head_end + length].to_vec();
-    let sent: (String, String, i64) = sqlx::query_as("SELECT state,send_certainty,(SELECT count(*) FROM advisory_budget_reservations WHERE workspace_id=$1) FROM advisory_dispatch WHERE workspace_id=$1")
-        .bind(workspace).fetch_one(&pool).await.unwrap();
-    assert_eq!(sent, ("sending".into(), "sent_unknown".into(), 1));
-    if matches!(case, Case::Revoked) {
-        // Explicitly authorized disposable-fixture ACL change. No immutable
-        // Matrix source, lineage or raw-evidence row is modified.
-        decomposition_parent::guard(&pool).await;
-        let changed = sqlx::query("UPDATE agent_sessions SET revoked=true WHERE host_id=$1 AND native_session_id=$2 AND workspace_id=$3 AND NOT revoked")
-            .bind(host).bind(native).bind(workspace).execute(&pool).await.unwrap();
-        assert_eq!(changed.rows_affected(), 1);
-    }
-    let raw = if matches!(case, Case::Malformed) {
-        b"{".to_vec()
-    } else {
-        response(
-            &serde_json::from_slice(&body).unwrap(),
-            matches!(case, Case::Abstained),
-        )
-    };
-    let status = if matches!(case, Case::Http500) {
-        "500 Internal Server Error"
-    } else {
-        "200 OK"
-    };
-    connection.write_all(format!("HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", raw.len()).as_bytes()).await.unwrap();
-    connection.write_all(&raw).await.unwrap();
-    (listener, body, raw)
-}
-
+#[path = "native_matrix/transport.rs"]
+mod transport;
+use transport::serve_once;
 async fn no_http(listener: &TcpListener) {
     assert!(
         tokio::time::timeout(Duration::from_millis(100), listener.accept())
@@ -384,8 +280,26 @@ async fn audit(
     );
     assert_eq!((row.5, row.6), (None, None));
     assert!(row.7 >= 0);
-    assert_eq!(row.8, "received");
-    assert!(row.9);
+    let partial = matches!(case, Case::Oversize | Case::Truncated);
+    if partial {
+        let prefix: Value = serde_json::from_slice(raw).unwrap();
+        assert_eq!(
+            prefix["usage"],
+            json!({"input_tokens":20,"output_tokens":30})
+        );
+        if matches!(case, Case::Oversize) {
+            assert_eq!(raw.len(), 64 * 1024);
+        }
+    }
+    assert_eq!(
+        row.8,
+        if partial {
+            "partial_received"
+        } else {
+            "received"
+        }
+    );
+    assert_eq!(row.9, !partial);
     assert_eq!(row.10, row.11);
     let identity: (String, String, Value, String) = sqlx::query_as(
         "SELECT provider,model,configuration_snapshot,configuration_digest \
@@ -429,7 +343,7 @@ async fn audit(
         "SELECT (SELECT count(*) FROM advisory_dispatch WHERE workspace_id=$1),(SELECT count(*) FROM advisory_budget_reservations WHERE workspace_id=$1),(SELECT count(*) FROM advisory_budget_consumptions WHERE workspace_id=$1),input_tokens,output_tokens,unknown_usage FROM advisory_budget_consumptions WHERE workspace_id=$1")
         .bind(workspace).fetch_one(&mut *tx).await.unwrap();
     assert_eq!((accounting.0, accounting.1, accounting.2), (1, 1, 1));
-    if matches!(case, Case::Malformed) {
+    if matches!(case, Case::Malformed | Case::Oversize | Case::Truncated) {
         assert_eq!(
             (accounting.3, accounting.4, accounting.5),
             (None, None, true)
@@ -443,6 +357,24 @@ async fn audit(
     let effects:(i64,i64,i64)=sqlx::query_as("SELECT (SELECT count(*) FROM advisory_matrix_disposition WHERE workspace_id=$1),(SELECT count(*) FROM scope_candidate_sets WHERE workspace_id=$1),(SELECT count(*) FROM matrix_planning_selection_links WHERE workspace_id=$1)")
         .bind(workspace).fetch_one(&mut *tx).await.unwrap();
     assert_eq!(effects, (0, 0, 0));
+    let family: (String, String, String, i64) = sqlx::query_as(
+        "SELECT capability,decision_point,work_item_kind,\
+         (SELECT count(*) FROM advisory_provider_observations WHERE workspace_id=$1) \
+         FROM advisory_opportunity WHERE workspace_id=$1",
+    )
+    .bind(workspace)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(
+        family,
+        (
+            "engineering_profile".into(),
+            "engineering.profile.before_selection".into(),
+            "matrix_task".into(),
+            1
+        )
+    );
     let advice: i64 =
         sqlx::query_scalar("SELECT count(*) FROM advisory_matrix_advice WHERE workspace_id=$1")
             .bind(workspace)
@@ -458,10 +390,46 @@ async fn audit(
         }
     );
     tx.commit().await.unwrap();
+    // Runtime has no UPDATE privilege on raw receipts; independently exercise
+    // the immutable trigger as the guarded disposable fixture administrator.
+    let mut immutable = runtime.begin().await.unwrap();
+    sqlx::query("SELECT set_config('tect.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *immutable)
+        .await
+        .unwrap();
+    let rejected = sqlx::query(
+        "UPDATE advisory_provider_observations SET elapsed_ms=elapsed_ms+1 WHERE workspace_id=$1",
+    )
+    .bind(workspace)
+    .execute(&mut *immutable)
+    .await
+    .unwrap_err();
+    let database = rejected.as_database_error().unwrap();
+    assert_eq!(database.code().as_deref(), Some("42501"));
+    immutable.rollback().await.unwrap();
+    decomposition_parent::guard(pool).await;
+    let mut owner = pool.begin().await.unwrap();
+    sqlx::query("SELECT set_config('tect.tenant_id',$1,true)")
+        .bind(tenant.to_string())
+        .execute(&mut *owner)
+        .await
+        .unwrap();
+    let rejected = sqlx::query(
+        "UPDATE advisory_provider_observations SET elapsed_ms=elapsed_ms+1 WHERE workspace_id=$1",
+    )
+    .bind(workspace)
+    .execute(&mut *owner)
+    .await
+    .unwrap_err();
+    let database = rejected.as_database_error().unwrap();
+    assert_eq!(database.code().as_deref(), Some("23514"));
+    assert!(database.message().contains("immutable"));
+    owner.rollback().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires explicitly owned disposable PG18.6 migration98; no real JEV"]
+#[ignore = "requires explicitly owned disposable PG18.6 migration99; no real JEV"]
 async fn public_native_matrix_retains_raw_before_ranking_and_after_revocation() {
     for case in [
         Case::Ranked,
@@ -469,6 +437,8 @@ async fn public_native_matrix_retains_raw_before_ranking_and_after_revocation() 
         Case::Http500,
         Case::Malformed,
         Case::Revoked,
+        Case::Oversize,
+        Case::Truncated,
     ] {
         exercise(case).await;
     }
