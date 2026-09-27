@@ -192,6 +192,8 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "model.route.prepare",
             "model.route.run",
             "model.route.disposition",
+            "engineering.matrix.context.propose",
+            "engineering.matrix.context.confirm",
             "slice.pipeline.evidence_artifact.register",
             "slice.pipeline.evidence_artifact.finalize"
         ])
