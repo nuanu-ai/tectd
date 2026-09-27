@@ -101,7 +101,7 @@ pub use matrix_planning_effect_ports::{
 pub use matrix_planning_selection_ports::{
     MatrixPlanningMappedNode, MatrixPlanningSelectionLink, MatrixPlanningSelectionStore,
 };
-pub use matrix_task_ports::MatrixTaskStore;
+pub use matrix_task_ports::{BoundMatrixTaskRecord, MatrixTaskStore};
 pub use matrix_tasks::{
     CurrentMatrixAdvice, EngineeringAdvisoryRead, MATRIX_INPUT_SCHEMA,
     MatrixTaskRequirementsBinding, MatrixTaskRevision, MatrixTaskSource, RecordMatrixTask,

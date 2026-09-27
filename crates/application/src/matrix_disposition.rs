@@ -137,8 +137,8 @@ impl WorkspaceService {
                     .ok_or(Error::StaleContext)?;
                 Some(MatrixDispositionVerification::ContextV2 {
                     binding: binding.clone(),
-                    composition,
-                    record,
+                    composition: Box::new(composition),
+                    record: Box::new(record),
                 })
             } else {
                 let (composition, verification) =

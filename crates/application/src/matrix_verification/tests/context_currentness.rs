@@ -131,9 +131,12 @@ impl MatrixRequirementsContextStore for ContextStore {
 #[tokio::test]
 async fn same_semantics_refresh_remains_current_but_source_revision_drift_does_not() {
     let first = revision(1, EngineeringMode::Mvp);
-    let original =
-        resolve_matrix_requirements(&[anchor()], &[first.clone()], MATRIX_REQUIREMENTS_SCHEMA)
-            .unwrap();
+    let original = resolve_matrix_requirements(
+        &[anchor()],
+        std::slice::from_ref(&first),
+        MATRIX_REQUIREMENTS_SCHEMA,
+    )
+    .unwrap();
     let snapshot_id = Uuid::from_u128(2);
     let frozen = FrozenMatrixRequirementsContext {
         id: snapshot_id,
@@ -183,9 +186,12 @@ async fn same_semantics_refresh_remains_current_but_source_revision_drift_does_n
 #[tokio::test]
 async fn task_source_freeze_locks_context_before_snapshot_append() {
     let first = revision(1, EngineeringMode::Mvp);
-    let effective =
-        resolve_matrix_requirements(&[anchor()], &[first.clone()], MATRIX_REQUIREMENTS_SCHEMA)
-            .unwrap();
+    let effective = resolve_matrix_requirements(
+        &[anchor()],
+        std::slice::from_ref(&first),
+        MATRIX_REQUIREMENTS_SCHEMA,
+    )
+    .unwrap();
     let mut store = ContextStore {
         frozen: FrozenMatrixRequirementsContext {
             id: Uuid::from_u128(2),

@@ -1,5 +1,7 @@
 use super::*;
 
+mod helpers;
+
 #[async_trait]
 impl UnitOfWork for PgUnitOfWork {
     fn context_matrix_verification_store(
@@ -96,37 +98,7 @@ impl UnitOfWork for PgUnitOfWork {
     }
 
     async fn authenticate(&mut self, auth: &HostAuth) -> Result<HostIdentity> {
-        let digest = runtime::credential_digest(&auth.credential);
-        let for_write = self.mode == TransactionMode::ReadWrite;
-        let row: Option<(Uuid, Uuid, String, serde_json::Value, serde_json::Value)> = sqlx::query_as(
-            "SELECT tenant_id, principal_id, principal_role, allowed_source_roots, allowed_setup_roots \
-             FROM public.tect_authenticate_host($1, $2, $3)",
-        )
-        .bind(auth.host_id)
-        .bind(digest)
-        .bind(for_write)
-        .fetch_optional(&mut **self.transaction()?)
-        .await
-        .map_err(storage_error)?;
-        let (tenant_id, principal_id, role, source_roots, setup_roots) =
-            row.ok_or(Error::Unauthorized)?;
-        let role = match role.as_str() {
-            "owner" => PrincipalRole::Owner,
-            "verifier" => PrincipalRole::Verifier,
-            _ => return Err(Error::Unauthorized),
-        };
-        let allowed_source_roots = serde_json::from_value(source_roots).map_err(storage_error)?;
-        let allowed_setup_roots = serde_json::from_value(setup_roots).map_err(storage_error)?;
-        let identity = HostIdentity {
-            host_id: auth.host_id,
-            tenant_id,
-            principal_id,
-            role,
-            allowed_source_roots,
-            allowed_setup_roots,
-        };
-        self.identity = Some(identity.clone());
-        Ok(identity)
+        helpers::authenticate_host(self, auth).await
     }
 
     async fn set_tenant(&mut self, tenant_id: Uuid) -> Result<()> {
@@ -202,15 +174,7 @@ impl UnitOfWork for PgUnitOfWork {
     }
 
     async fn workspace_by_key(&mut self, key: &str) -> Result<Option<Workspace>> {
-        let tenant_id = self.tenant_id()?;
-        let row: Option<(Uuid, String)> =
-            sqlx::query_as("SELECT id, key FROM workspaces WHERE tenant_id=$1 AND key=$2")
-                .bind(tenant_id)
-                .bind(key)
-                .fetch_optional(&mut **self.transaction()?)
-                .await
-                .map_err(storage_error)?;
-        Ok(row.map(|(id, key)| Workspace { id, key }))
+        helpers::workspace_by_key(self, key).await
     }
 
     async fn is_member(&mut self, workspace_id: Uuid, principal_id: Uuid) -> Result<bool> {
@@ -255,41 +219,7 @@ impl UnitOfWork for PgUnitOfWork {
         workspace_id: Uuid,
         native_id: &str,
     ) -> Result<Created<Session>> {
-        let tenant_id = self.tenant_id()?;
-        let inserted: Option<Uuid> = sqlx::query_scalar(
-            "INSERT INTO agent_sessions \
-                 (id, tenant_id, host_id, workspace_id, native_session_id) \
-             VALUES (pg_catalog.gen_random_uuid(), $1, $2, $3, $4) \
-             ON CONFLICT (host_id, native_session_id) DO NOTHING RETURNING id",
-        )
-        .bind(tenant_id)
-        .bind(host_id)
-        .bind(workspace_id)
-        .bind(native_id)
-        .fetch_optional(&mut **self.transaction()?)
-        .await
-        .map_err(storage_error)?;
-        let row: (Uuid, Uuid, Uuid, String, bool) = sqlx::query_as(
-            "SELECT id, workspace_id, host_id, native_session_id, revoked \
-             FROM agent_sessions \
-             WHERE tenant_id=$1 AND host_id=$2 AND native_session_id=$3",
-        )
-        .bind(tenant_id)
-        .bind(host_id)
-        .bind(native_id)
-        .fetch_one(&mut **self.transaction()?)
-        .await
-        .map_err(storage_error)?;
-        Ok(Created {
-            value: Session {
-                id: row.0,
-                workspace_id: row.1,
-                host_id: row.2,
-                native_session_id: row.3,
-                revoked: row.4,
-            },
-            created: inserted.is_some(),
-        })
+        helpers::ensure_session_record(self, host_id, workspace_id, native_id).await
     }
 
     async fn append_creation_event(

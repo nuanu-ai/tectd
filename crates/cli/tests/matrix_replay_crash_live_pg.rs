@@ -126,7 +126,7 @@ impl MatrixAdviceProvider for Provider {
             "choice_set_digest": binding.choice_set_digest,
             "evaluation_digest": binding.evaluation_digest,
         });
-        if let Some(digest) = &binding.verification_digest {
+        if let Some(digest) = binding.verification.digest() {
             saved_binding["verification_digest"] = serde_json::json!(digest);
         }
         let body = serde_json::to_vec(&serde_json::json!({

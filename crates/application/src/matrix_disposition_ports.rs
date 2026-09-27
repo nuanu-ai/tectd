@@ -16,8 +16,8 @@ pub enum MatrixDispositionVerification {
     },
     ContextV2 {
         binding: MatrixTaskRequirementsBinding,
-        composition: tect_domain::ContextEngineeringMatrixComposition,
-        record: tect_domain::ContextMatrixVerificationRecord,
+        composition: Box<tect_domain::ContextEngineeringMatrixComposition>,
+        record: Box<tect_domain::ContextMatrixVerificationRecord>,
     },
 }
 

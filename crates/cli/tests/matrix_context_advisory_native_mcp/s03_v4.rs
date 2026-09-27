@@ -635,7 +635,7 @@ async fn public_s03_v4_context_bound_pipeline_happy_path() {
         assert!(
             headers
                 .lines()
-                .any(|line| line.to_ascii_lowercase() == "authorization: bearer fixture-secret")
+                .any(|line| line.eq_ignore_ascii_case("authorization: bearer fixture-secret"))
         );
         assert_eq!(&request[head_end..], frozen.body);
         let head = format!(

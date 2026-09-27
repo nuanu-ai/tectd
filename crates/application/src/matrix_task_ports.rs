@@ -6,6 +6,15 @@ use crate::{
     MatrixTaskRequirementsBinding, MatrixTaskRevision, MatrixTaskSource, RecordMatrixTask,
 };
 
+/// The immutable material persisted with a requirements-bound task revision.
+pub struct BoundMatrixTaskRecord<'a> {
+    pub request: &'a RecordMatrixTask,
+    pub canonical_input: &'a serde_json::Value,
+    pub input_digest: &'a str,
+    pub original_request_digest: &'a str,
+    pub binding: &'a MatrixTaskRequirementsBinding,
+}
+
 #[async_trait]
 pub trait MatrixTaskStore: Send {
     /// Read the immutable receipt by request ID before resolving a possibly
@@ -27,11 +36,7 @@ pub trait MatrixTaskStore: Send {
         _workspace_id: Uuid,
         _principal_id: Uuid,
         _session_id: Uuid,
-        _bound_request: &RecordMatrixTask,
-        _canonical_bound_input: &serde_json::Value,
-        _bound_input_digest: &str,
-        _original_request_digest: &str,
-        _binding: &MatrixTaskRequirementsBinding,
+        _record: BoundMatrixTaskRecord<'_>,
     ) -> Result<MatrixTaskSource> {
         Err(Error::Forbidden)
     }

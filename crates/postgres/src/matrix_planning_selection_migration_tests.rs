@@ -2,7 +2,10 @@ const MIGRATION: &str = include_str!("../migrations/0059_matrix_planning_selecti
 const MAPPING_MIGRATION: &str = include_str!("../migrations/0060_matrix_planning_mapped_nodes.sql");
 const CONTEXT_MIGRATION: &str =
     include_str!("../migrations/0109_matrix_planning_context_selection.sql");
-const STORE: &str = include_str!("matrix_planning_selection_store.rs");
+const STORE: &str = concat!(
+    include_str!("matrix_planning_selection_store.rs"),
+    include_str!("matrix_planning_selection_store/context.rs")
+);
 const GRANTS: &str = include_str!("admin/matrix_advisory.rs");
 
 #[test]

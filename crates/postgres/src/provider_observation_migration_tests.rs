@@ -4,7 +4,10 @@ const STORE: &str = include_str!("advisory/provider_observation.rs");
 const FAMILIES: &str = include_str!("../migrations/0099_provider_observation_families.sql");
 const CONTEXT: &str = include_str!("../migrations/0100_provider_transport_context.sql");
 const APP: &str = include_str!("../../application/src/matrix_advisory_dispatch.rs");
-const RECOVERY: &str = include_str!("../../application/src/matrix_advisory_dispatch/recovery.rs");
+const RECOVERY: &str = concat!(
+    include_str!("../../application/src/matrix_advisory_dispatch/recovery.rs"),
+    include_str!("../../application/src/matrix_advisory_dispatch/recovery/execute.rs")
+);
 
 #[test]
 fn pipeline_receipt_and_interpretation_forward_contracts_preserve_transport() {

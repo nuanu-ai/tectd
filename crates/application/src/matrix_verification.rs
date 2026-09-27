@@ -211,12 +211,14 @@ impl WorkspaceService {
                 verify_locked_context_revision(
                     store,
                     self.matrix_evidence_validator.as_ref(),
-                    actor,
-                    &locked,
-                    binding.snapshot_id,
-                    context,
-                    request,
-                    &current_epoch_seconds,
+                    LockedContextVerification {
+                        actor,
+                        revision: &locked,
+                        frozen_snapshot_id: binding.snapshot_id,
+                        context,
+                        request,
+                        clock: &current_epoch_seconds,
+                    },
                 )
                 .await?,
             )
@@ -341,16 +343,28 @@ pub(crate) async fn verify_locked_revision(
     Ok(record)
 }
 
-pub(crate) async fn verify_locked_context_revision(
+struct LockedContextVerification<'a> {
+    actor: MatrixVerificationActor,
+    revision: &'a MatrixTaskRevision,
+    frozen_snapshot_id: Uuid,
+    context: &'a EffectiveMatrixRequirements,
+    request: &'a VerifyMatrixTask,
+    clock: &'a (dyn Fn() -> Result<i64> + Sync),
+}
+
+async fn verify_locked_context_revision(
     store: &mut dyn ContextMatrixVerificationStore,
     validator: &dyn MatrixEvidenceValidator,
-    actor: MatrixVerificationActor,
-    revision: &MatrixTaskRevision,
-    frozen_snapshot_id: Uuid,
-    context: &EffectiveMatrixRequirements,
-    request: &VerifyMatrixTask,
-    clock: &(dyn Fn() -> Result<i64> + Sync),
+    input: LockedContextVerification<'_>,
 ) -> Result<ContextMatrixVerificationRecord> {
+    let LockedContextVerification {
+        actor,
+        revision,
+        frozen_snapshot_id,
+        context,
+        request,
+        clock,
+    } = input;
     if revision.task_id != request.task_id {
         return Err(Error::NotFound);
     }
