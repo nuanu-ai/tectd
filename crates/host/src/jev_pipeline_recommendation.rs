@@ -19,6 +19,7 @@ pub const MAX_REQUEST_BYTES: usize = 512 * 1024;
 pub const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
 mod http;
+mod score_rounding;
 pub use http::{JevPipelineConfig, JevPipelineProvider};
 
 /// Pure saved-response adapter. The active transport remains a separate
@@ -109,7 +110,7 @@ pub struct ParsedPipelineNativeResponse {
     pub output_tokens: u64,
     pub selected_probability: f64,
     pub choice_confidence: f64,
-    /// Weighted means, in canonical manifest order.
+    /// Validated provider scores, in canonical manifest order.
     pub scores: Vec<(String, f64)>,
 }
 
@@ -274,17 +275,28 @@ pub(crate) fn parse_native_response(
             return Err(Error::InvalidArguments);
         }
         let support = (0..10).map(|level| level.to_string()).collect();
-        let probabilities = probabilities(
+        let probabilities = bounded_probabilities(
             answer.get("probabilities").ok_or(Error::InvalidArguments)?,
             &support,
         )?;
-        let weighted = (0..10)
-            .map(|level| level as f64 * probabilities[&level.to_string()])
-            .sum::<f64>();
-        if (weighted - score).abs() > TOLERANCE {
-            return Err(Error::InvalidArguments);
-        }
-        scores.push((id.clone(), weighted));
+        let levels = (0..10)
+            .map(|level| (level as f64, probabilities[&level.to_string()]))
+            .collect::<Vec<_>>();
+        let ranking_score = if response_model == "jev-1.13.0" {
+            // Jev 1.13 compatibility assumption: displayed probabilities and
+            // scores are rounded to 0.01. TypeSafe does not specify precision.
+            score_rounding::validate_jev_113_score(&levels, score)?;
+            score
+        } else {
+            let weighted = levels.iter().map(|(value, mass)| value * mass).sum::<f64>();
+            if (probabilities.values().sum::<f64>() - 1.0).abs() > TOLERANCE
+                || (weighted - score).abs() > TOLERANCE
+            {
+                return Err(Error::InvalidArguments);
+            }
+            weighted
+        };
+        scores.push((id.clone(), ranking_score));
     }
     let choice = exact_object(
         answers.get(CHOICE_ID).ok_or(Error::InvalidArguments)?,
@@ -374,6 +386,17 @@ fn number(value: &Value, maximum: f64) -> Result<f64> {
 }
 
 fn probabilities(value: &Value, support: &BTreeSet<String>) -> Result<BTreeMap<String, f64>> {
+    let result = bounded_probabilities(value, support)?;
+    if (result.values().sum::<f64>() - 1.0).abs() > TOLERANCE {
+        return Err(Error::InvalidArguments);
+    }
+    Ok(result)
+}
+
+fn bounded_probabilities(
+    value: &Value,
+    support: &BTreeSet<String>,
+) -> Result<BTreeMap<String, f64>> {
     let object = value.as_object().ok_or(Error::InvalidArguments)?;
     if object.len() != support.len() || object.keys().any(|key| !support.contains(key)) {
         return Err(Error::InvalidArguments);
@@ -384,9 +407,6 @@ fn probabilities(value: &Value, support: &BTreeSet<String>) -> Result<BTreeMap<S
             key.clone(),
             number(object.get(key).ok_or(Error::InvalidArguments)?, 1.0)?,
         );
-    }
-    if (result.values().sum::<f64>() - 1.0).abs() > TOLERANCE {
-        return Err(Error::InvalidArguments);
     }
     Ok(result)
 }

@@ -390,6 +390,34 @@ async fn signed_fixture_budget(
     enrolled: &tect_postgres::admin::Enrollment,
     workspace_key: &str,
 ) -> (Uuid, BudgetOwnerKeys) {
+    signed_fixture_budget_with_calls(store, enrolled, workspace_key, 8).await
+}
+
+async fn signed_fixture_budget_with_calls(
+    store: &PgStore,
+    enrolled: &tect_postgres::admin::Enrollment,
+    workspace_key: &str,
+    provider_calls: i64,
+) -> (Uuid, BudgetOwnerKeys) {
+    signed_fixture_budget_with_token_ceilings(
+        store,
+        enrolled,
+        workspace_key,
+        provider_calls,
+        1_000,
+        1_000,
+    )
+    .await
+}
+
+async fn signed_fixture_budget_with_token_ceilings(
+    store: &PgStore,
+    enrolled: &tect_postgres::admin::Enrollment,
+    workspace_key: &str,
+    provider_calls: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+) -> (Uuid, BudgetOwnerKeys) {
     let keypair = Ed25519KeyPair::from_seed_unchecked(&[91_u8; 32]).unwrap();
     let mut tx = store.begin(TransactionMode::ReadWrite).await.unwrap();
     tx.authenticate(&enrolled.auth).await.unwrap();
@@ -415,9 +443,9 @@ async fn signed_fixture_budget(
     let until = now + 600_000;
     let id = Uuid::new_v4();
     let ceilings = AdvisoryBudgetCeilings {
-        provider_calls: 8,
-        input_tokens: 1_000,
-        output_tokens: 1_000,
+        provider_calls,
+        input_tokens,
+        output_tokens,
         request_utf8_bytes: 2_000_000,
         elapsed_monotonic_ms: 120_000,
         retry_dispatches: 1,

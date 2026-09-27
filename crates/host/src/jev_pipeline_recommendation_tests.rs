@@ -13,6 +13,8 @@ use uuid::Uuid;
 
 #[path = "jev_pipeline_duplicate_tests.rs"]
 mod duplicate_tests;
+#[path = "jev_pipeline_recommendation_rounding_tests.rs"]
+mod rounding_tests;
 
 pub(super) async fn http_fixture(
     status: u16,

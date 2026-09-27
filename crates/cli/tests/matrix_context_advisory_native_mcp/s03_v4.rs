@@ -8,7 +8,7 @@ use tect_application::{
 };
 use tect_domain::{
     EngineeringMode, PIPELINE_COMPATIBILITY_POLICY_VERSION, PipelineCardCoverage,
-    PipelineCompatibilityPolicy, PipelineCompatibilityRule, PipelineKind,
+    PipelineCompatibilityPolicy, PipelineCompatibilityRule, PipelineExclusionReason, PipelineKind,
     PipelineRecommendationManifest, PipelineVerificationObligation, VerifiedEngineeringMatrixFacts,
     compose_engineering_matrix, matrix_input_digest, pipeline_obligation_digest,
 };
@@ -22,6 +22,8 @@ use tokio::{
 };
 use url::Url;
 
+#[path = "s03_v4/s03_live.rs"]
+mod s03_live;
 #[path = "s05_public_v2.rs"]
 mod s05_public_v2;
 
@@ -170,59 +172,58 @@ fn policy(task: Uuid, matrix: &EngineeringMatrixInput) -> PipelineCompatibilityP
         task_id: task.to_string(),
         task_revision: "1".into(),
         catalogue_revision: "4".into(),
-        rules: PipelineKind::CURRENT_SLICE_RUN_KINDS
-            .into_iter()
-            .map(|kind| {
-                let definition = definitions.definition("4", kind).unwrap().unwrap();
-                let phase = definition
-                    .phases
+        // The selected synthetic work can either establish its design through
+        // brainstorming or implement the bounded change with focused TDD.
+        // Every other catalogue kind has no rule and is recorded as excluded.
+        rules: [
+            PipelineKind::LightweightTddDevelopment,
+            PipelineKind::DeepBrainstorming,
+        ]
+        .into_iter()
+        .map(|kind| {
+            let definition = definitions.definition("4", kind).unwrap().unwrap();
+            let phase = definition
+                .phases
+                .iter()
+                .find(|phase| {
+                    phase.required
+                        && (!phase.required_fields.is_empty()
+                            || !phase.required_artifacts.is_empty()
+                            || !phase.validator_contracts.is_empty()
+                            || !phase.output_constraints.is_empty()
+                            || phase.fresh_reviewer_input)
+                })
+                .unwrap();
+            let obligation = PipelineVerificationObligation {
+                phase_id: phase.id.clone(),
+                required_fields: phase.required_fields.clone(),
+                required_artifacts: phase.required_artifacts.clone(),
+                validator_contracts: phase.validator_contracts.clone(),
+                output_constraints: phase.output_constraints.clone(),
+                allowed_verdicts: phase.allowed_verdicts.clone(),
+                verdict_routes: phase.verdict_routes.clone(),
+                disposition_required: phase.disposition_required,
+                required_dispositions: phase.required_dispositions.clone(),
+                fresh_reviewer_input: phase.fresh_reviewer_input,
+                output_contract: phase.output_contract.clone(),
+            };
+            let digest = pipeline_obligation_digest(&obligation).unwrap();
+            PipelineCompatibilityRule {
+                kind,
+                matrix_input_digest: matrix_input_digest(matrix).unwrap(),
+                allowed_modes: vec![EngineeringMode::Demo],
+                selected_candidate_ids: vec!["b".into()],
+                card_coverage: cards
                     .iter()
-                    .find(|phase| {
-                        phase.required
-                            && (!phase.required_fields.is_empty()
-                                || !phase.required_artifacts.is_empty()
-                                || !phase.validator_contracts.is_empty()
-                                || !phase.output_constraints.is_empty()
-                                || phase.fresh_reviewer_input)
+                    .map(|card_id| PipelineCardCoverage {
+                        card_id: card_id.clone(),
+                        phase_id: phase.id.clone(),
+                        obligation_digest: digest.clone(),
                     })
-                    .unwrap();
-                let obligation = PipelineVerificationObligation {
-                    phase_id: phase.id.clone(),
-                    required_fields: phase.required_fields.clone(),
-                    required_artifacts: phase.required_artifacts.clone(),
-                    validator_contracts: phase.validator_contracts.clone(),
-                    output_constraints: phase.output_constraints.clone(),
-                    allowed_verdicts: phase.allowed_verdicts.clone(),
-                    verdict_routes: phase.verdict_routes.clone(),
-                    disposition_required: phase.disposition_required,
-                    required_dispositions: phase.required_dispositions.clone(),
-                    fresh_reviewer_input: phase.fresh_reviewer_input,
-                    output_contract: phase.output_contract.clone(),
-                };
-                let digest = pipeline_obligation_digest(&obligation).unwrap();
-                PipelineCompatibilityRule {
-                    kind,
-                    matrix_input_digest: matrix_input_digest(matrix).unwrap(),
-                    allowed_modes: vec![EngineeringMode::Demo],
-                    selected_candidate_ids: vec![
-                        if kind == PipelineKind::DebugRootCause {
-                            "a"
-                        } else {
-                            "b"
-                        }
-                        .into(),
-                    ],
-                    card_coverage: cards
-                        .iter()
-                        .map(|card_id| PipelineCardCoverage {
-                            card_id: card_id.clone(),
-                            phase_id: phase.id.clone(),
-                            obligation_digest: digest.clone(),
-                        })
-                        .collect(),
-                }
-            })
-            .collect(),
+                    .collect(),
+            }
+        })
+        .collect(),
     }
 }
 
@@ -236,12 +237,12 @@ fn save_request(planning: &Value, selection: Value) -> Value {
         "request_id":Uuid::new_v4(),
         "draft":{"coverage_summary":"Selected Matrix choice b bounds this synthetic work",
             "nodes":[{"kind":"work","identity":{"local":"choice-b"},
-                "title":"Investigate selected approach b",
+                "title":"Develop selected approach b",
                 "outcome":"The selected approach has a documented result",
                 "includes":["selected approach b"],"excludes":["deployment"],
                 "dependencies":[],"proof":["Synthetic result is recorded"],
-                "pipeline":"slice.debug-root-cause",
-                "pipeline_reason":"The selected approach needs bounded diagnosis",
+                "pipeline":"slice.lightweight-tdd-development",
+                "pipeline_reason":"A bounded implementation with focused proof is the deterministic route; unresolved design can use deep brainstorming",
                 "source_result_ids":[]}],"supersessions":[]},
         "matrix_selection":selection
     });
