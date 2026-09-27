@@ -41,10 +41,17 @@ async fn identity(pool: &PgPool) {
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
     let row:(String,i64,String,i64)=sqlx::query_as("SELECT current_database(),d.oid::bigint,(SELECT system_identifier::text FROM pg_control_system()),(SELECT max(version) FROM _sqlx_migrations) FROM pg_database d WHERE datname=current_database()")
         .fetch_one(pool).await.unwrap();
-    assert_eq!(
-        row,
-        ("tect_test".into(), 16385, "7689676854994613066".into(), 104)
+    let expected = (
+        std::env::var("TECT_TEST_EXPECTED_DB_NAME").unwrap(),
+        std::env::var("TECT_TEST_EXPECTED_DB_OID")
+            .unwrap()
+            .parse::<i64>()
+            .unwrap(),
+        std::env::var("TECT_TEST_EXPECTED_PG_SYSTEM_ID").unwrap(),
+        110,
     );
+    assert!(expected.0.starts_with("tect_s04_live_"));
+    assert_eq!(row, expected);
 }
 async fn call(pool: &PgPool, client: &mut Mcp, kind: &str, route: &str, params: Value) -> Value {
     identity(pool).await;
@@ -194,6 +201,40 @@ async fn native_anti_bloat_public_mcp_is_sealed_once_and_default_disabled() {
         .await;
         assert_eq!(prepared["state"]["status"], "prepared", "{prepared}");
         let review = id(&prepared["review_id"]);
+        let required = prepared["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["rankable"] == false)
+            .unwrap();
+        let draft: Value = sqlx::query_scalar(
+            "SELECT payload FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision=$2")
+            .bind(candidate).bind(revision).fetch_one(&pool).await.unwrap();
+        let required_candidate = draft["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == required["candidate_id"])
+            .unwrap();
+        let rejected = support::route_error(
+            &mut client,
+            "command",
+            "scope.anti_bloat.apply",
+            json!({"review_id":review,"finding_id":required["id"],"disposition":"narrow",
+                "delta":{"candidate_set_id":candidate,"expected_revision":revision,
+                    "idempotency_key":format!("reject-required-{review}"),"operations":[
+                        {"operation":"candidate.remove","candidate_id":required["candidate_id"],
+                         "expected_revision":required_candidate["revision"]}]}}),
+        )
+        .await;
+        assert_eq!(rejected["error"]["code"], "input_conflict");
+        let unchanged: i64 =
+            sqlx::query_scalar("SELECT revision FROM scope_candidate_sets WHERE id=$1")
+                .bind(candidate)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(unchanged, revision);
         client.finish().await;
         server.abort();
         drop(server);

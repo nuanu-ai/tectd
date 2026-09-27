@@ -1,0 +1,19 @@
+# S05 one-shot adviser exercise
+
+`s05_live.rs` is an ignored, test-only public MCP fixture. It seeds a synthetic source and exact V2 Matrix, saves mapped Work, prepares a route recommendation, and serializes the native TypeSafe Choice request. Both eligible candidate providers are `synthetic.invalid`; only the adviser endpoint is `https://api.typesafe.ai/v1/systemone`, model `jev-1.13.0`. The candidates intentionally have almost identical capabilities. An adviser abstention is a valid observation, not a failed attempt to force a winner.
+
+Use a fresh, empty, isolated PostgreSQL 18.6 database with a dedicated `tect_ci` runtime role. Set `TECT_TEST_DISPOSABLE_PG=1`, `TECT_TEST_EXPECTED_DB_NAME` (prefix `tect_s05_live_`), `TECT_TEST_EXPECTED_DB_OID`, `TECT_TEST_EXPECTED_PG_SYSTEM_ID`, `TECT_TEST_EXPECTED_PG_PORT`, `TECT_TEST_RUNTIME_ROLE=tect_ci`, `TECT_TEST_ADMIN_URL`, and `TECT_TEST_RUNTIME_URL`. The test checks every identity before migrations. Keep its database and artifacts for audit.
+
+For a zero-send preflight, use a unique numeric suffix in `S05_ONE_SHOT_CALL_ID=tectd-jev-s05-v2-2026-09-28-N`, set `S05_ONE_SHOT_MODE=preflight`, and run:
+
+```sh
+cargo test -p tect-cli --test matrix_context_advisory_native_mcp s05_real_adviser_one_shot -- --ignored --nocapture
+```
+
+The preflight writes `CALL_ID.request.json` and `CALL_ID.manifest.json` with mode `0600`, prints the byte count and SHA-256, reads no provider key, records zero route attempts, and creates no `.used` marker. It signs a policy with two total provider calls (one local synthetic Matrix call and at most one route adviser call), 24,000 input and 2,000 output tokens, a 45,000-byte request ceiling, and 60,000 ms elapsed ceiling. The native adapter has a 10-second timeout, 64 KiB response ceiling, and no retry transport. The policy's retry-dispatch field is one because its schema has that floor; the harness has no retry operation.
+
+For each no-network native HTTP case, use another fresh database under the same identity rules, set `S05_ONE_SHOT_MODE=loopback` and `S05_LOOPBACK_CASE` to `ranked`, `abstain`, `error`, or `budget`, and run the same ignored test. The adviser endpoint binds numeric `127.0.0.1`; a dummy credential is used. Each case checks one committed POST, its exact request and response seals, budget reservation and consumption, audit transport metadata, and replay without another send. `ranked` then records a disposition from a fresh Owner session. `abstain` must save an explicit abstained decision and zero dispositions. `error` preserves HTTP 500 raw audit without a decision. `budget` preserves an over-budget response without a decision. These are synthetic transport and state tests; they do not establish Jev's live judgment.
+
+The send mode requires another fresh database and another unique call ID. It writes that run's exact request and manifest, then waits for `SEND JEV <printed SHA-256>` on stdin. Review those exact saved bytes and the manifest while it waits. The TypeSafe key is read only after confirmation. The one-use `.used` file is created exclusively and synced before the single native run. If the send or response is ambiguous, keep the marker and audit and stop. Do not reuse a call ID or retry the request.
+
+After a valid recommendation, a fresh Owner session records an explicit accept disposition; abstention records no disposition. Requested, recommended, and observed actual remain distinct, with actual `null`. A separate read-only database connection checks one route attempt, its budget reservation and consumption, raw hashes, transport metadata, and the audit ledger. This fixture has no model execution dispatch port. The `.invalid` candidate providers and the observed adviser audit establish only this test's configured path; packet-level egress proof needs an independent network observer during a send. No production, promotion, or release acceptance follows from this exercise.

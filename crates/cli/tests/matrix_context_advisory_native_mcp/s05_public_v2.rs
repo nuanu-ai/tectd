@@ -1,5 +1,7 @@
 //! S05 public MCP proof against exact V2 Matrix Work; synthetic adviser only.
 use super::*;
+#[path = "s05_public_v2/s05_live.rs"]
+mod s05_live;
 use tect_application::{
     ModelRouteCatalogueProvider, ModelRouteHostCapabilitiesProvider, ModelRoutePreparedAttempt,
     ModelRouteProviderObservation, ModelRouteRankingProvider, ModelRouteSendPermit,

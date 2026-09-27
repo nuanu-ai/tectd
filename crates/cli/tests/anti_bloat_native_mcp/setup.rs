@@ -37,11 +37,27 @@ pub(super) async fn selected_rankable(
         "proof":candidate["proof"],"includes":candidate["includes"],"excludes":candidate["excludes"],
         "dependencies":[],"coverage_goals":[{"id":goal["id"]}],"evidence":[]
     }],"blockers":[],"protected_changes":[]});
-    for suffix in ["a", "b"] {
-        draft["candidates"].as_array_mut().unwrap().push(json!({"identity":{"local":format!("exploratory-{suffix}")},
+    for (local, title, behavior, proof) in [
+        (
+            "responsive-toggle",
+            "Optional 375/600px comparison toggle with synchronized scrolling",
+            "Allow comparison between 375px and 600px previews with synchronized scrolling",
+            "Both widths and scroll positions can be inspected",
+        ),
+        (
+            "copy-advice",
+            "Optional nonblocking copy-advice checklist",
+            "Show a nonblocking checklist about campaign copy beside Preview",
+            "The checklist remains optional and never blocks Preview",
+        ),
+    ] {
+        draft["candidates"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"identity":{"local":local},
             "grounding":{"kind":"exploratory_unrequested","provenance":"source_authored_v2"},
-            "title":format!("Unrequested dashboard {suffix}"),"outcome":"Optional dashboard","trigger":"Exploration",
-            "delivered_behavior":"Show a dashboard","proof":"Optional visual check","coverage_goals":[]}));
+            "title":title,"outcome":"Optional editor aid","trigger":"Preview exploration",
+            "delivered_behavior":behavior,"proof":proof,"coverage_goals":[]}));
     }
     let revision = context["candidate_set"]["revision"].as_i64().unwrap();
     let mut refs = context["snapshot"]["source_refs"]

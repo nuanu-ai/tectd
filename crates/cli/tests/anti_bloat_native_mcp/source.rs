@@ -25,11 +25,11 @@ pub(super) async fn ready(
         json!({"worktree_ids":[registered["id"]]}),
     )
     .await;
-    let begun=tool(pool,client,"begin_program",json!({"request_id":Uuid::new_v4(),"input":"Diagnose the incorrect preview, then select the smallest correction."})).await;
-    let mut params = json!({"program_id":begun["program"]["id"],"revision":1,"input_cursor":1,"name":"Notification preview","intent":"Correct preview behavior from demonstrated evidence","basis":"The preview differs from saved settings","boundaries":"Preview diagnosis and bounded correction","constraints":"No deployment or adjacent notification work","success":"The cause and correction are verified","complete":true});
+    let begun=tool(pool,client,"begin_program",json!({"request_id":Uuid::new_v4(),"input":"In the email campaign editor, Preview the current unsaved subject and body for the selected sample recipient using the existing renderer in a 600px panel. Mark unresolved variables. Do not save or send the campaign."})).await;
+    let mut params = json!({"program_id":begun["program"]["id"],"revision":1,"input_cursor":1,"name":"Campaign preview","intent":"Preview the current unsaved campaign for the selected sample recipient","basis":"The editor's unsaved subject and body, the selected sample recipient, and the existing renderer","boundaries":"A 600px preview panel with unresolved variables marked","constraints":"No save or send","success":"The rendered unsaved subject and body appear for the selected recipient with unresolved variables marked","complete":true});
     knowledge(&mut params, &begun["program"]);
     let program = tool(pool, client, "save_program", params).await;
-    let candidates=tool(pool,client,"begin_candidate_set",json!({"request_id":Uuid::new_v4(),"program_id":program["program"]["id"],"program_revision":program["program"]["revision"],"boundary":"ongoing","input":"Open one native Scope for diagnosis and its result-driven correction decision."})).await;
+    let candidates=tool(pool,client,"begin_candidate_set",json!({"request_id":Uuid::new_v4(),"program_id":program["program"]["id"],"program_revision":program["program"]["revision"],"boundary":"ongoing","input":"Deliver the requested campaign preview without save or send."})).await;
     let context = &candidates["context"];
     let inputs = tool(
         pool,
@@ -40,7 +40,7 @@ pub(super) async fn ready(
     .await;
     let reference = &inputs["items"][0]["input"]["source_ref_id"];
     let mut params = json!({"kind":"draft","candidate_set_id":context["candidate_set"]["id"],"revision":1,"snapshot_id":context["snapshot"]["id"],"input_cursor":1,"request_id":Uuid::new_v4(),
-        "draft":{"boundary":"ongoing","goals":[{"identity":{"local":"goal"},"text":"Explain preview deviation and bound correction","source_ref_id":reference,"resolution":{"kind":"candidate","reference":{"local":"scope"}}}],"evidence":[],"candidates":[{"identity":{"local":"scope"},"title":"Preview diagnosis and correction decision","outcome":"The cause is demonstrated and the correction path selected","trigger":"Preview differs","delivered_behavior":"Cause and bounded follow-up are available","proof":"Direct evidence is retained","includes":["diagnosis","decision"],"excludes":["deployment"],"dependencies":[],"coverage_goals":[{"local":"goal"}],"evidence":[]}],"blockers":[],"protected_changes":[]}});
+        "draft":{"boundary":"ongoing","goals":[{"identity":{"local":"goal"},"text":"Preview the unsaved campaign for the selected recipient and mark unresolved variables","source_ref_id":reference,"resolution":{"kind":"candidate","reference":{"local":"scope"}}}],"evidence":[],"candidates":[{"identity":{"local":"scope"},"title":"Required 600px campaign Preview","outcome":"The selected recipient sees the unsaved subject and body in Preview","trigger":"Preview is opened in the editor","delivered_behavior":"Use the existing renderer in a 600px panel and mark unresolved variables","proof":"The unsaved subject and body render for the selected sample recipient; no save or send occurs","includes":["existing renderer","unsaved subject and body","selected sample recipient","600px panel","unresolved-variable marking"],"excludes":["save","send"],"dependencies":[],"coverage_goals":[{"local":"goal"}],"evidence":[]}],"blockers":[],"protected_changes":[]}});
     knowledge(&mut params, context);
     let saved = tool(pool, client, "save_candidate_set", params).await;
     let candidate = saved["draft"]["candidates"][0].clone();
