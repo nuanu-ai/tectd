@@ -9,7 +9,7 @@ mod support;
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use support::route;
+use support::{ready_source_candidate, repository, route};
 use tect_postgres::admin;
 use uuid::Uuid;
 
@@ -522,5 +522,104 @@ async fn task_source_revisions_replay_conflict_staleness_and_workspace_isolation
     assert_eq!(hidden_advisory["error"]["code"], "not_found");
 
     other.finish().await;
+    owner.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MIGRATES AND WRITES FIXTURES; requires disposable PostgreSQL 18 and TECT_TEST_DISPOSABLE_PG=1 plus TECT_TEST_* URLs/role"]
+async fn bound_source_cannot_replay_as_unbound() {
+    assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
+    let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
+    let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
+    let role = std::env::var("TECT_TEST_RUNTIME_ROLE").unwrap();
+    let pool = disposable_pg18_pair(&admin_url, &runtime_url, &role).await;
+    admin::migrate(&pool, &role).await.unwrap();
+
+    let temp = private_temp();
+    let root = temp.path().canonicalize().unwrap();
+    let repo = root.join("source");
+    repository(&repo);
+    let socket = root.join("bound-source.sock");
+    let runtime = tagged_url(&runtime_url, &format!("bound-source-{}", Uuid::new_v4()));
+    let _daemon = Daemon::start(&runtime, socket.clone()).await;
+    let enrollment = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+    let config = root.join("host.json");
+    host_file(&config, &enrollment.auth);
+    let mut owner = Mcp::start(
+        &socket,
+        &config,
+        &Uuid::new_v4().to_string(),
+        &format!("bound-source-{}", Uuid::new_v4()),
+    )
+    .await;
+    let (source, _) = ready_source_candidate(&mut owner, &repo).await;
+    let program_id =
+        Uuid::parse_str(source["candidate_set"]["program_id"].as_str().unwrap()).unwrap();
+    let locator = json!({"level":"program","program_id":program_id});
+    let proposal = route(
+        &mut owner,
+        "command",
+        "engineering.matrix.context.propose",
+        json!({
+            "request_id":Uuid::new_v4(),"locator":locator,
+            "expected_context_revision":0,
+            "patches":[
+                {"operation":"set","value":{"kind":"mode","value":"mvp"}},
+                {"operation":"set","value":{"kind":"intent","value":{"kind":"other","description":"synthetic preview"}}},
+                {"operation":"set","value":{"kind":"urgency","value":"ordinary"}},
+                {"operation":"set","value":{"kind":"promised_behavior","value":"synthetic behavior"}},
+                {"operation":"set","value":{"kind":"promised_proof","value":"synthetic check"}},
+                {"operation":"set","value":{"kind":"no_demand_commitment"}},
+                {"operation":"set","value":{"kind":"no_latency_commitment"}}
+            ]
+        }),
+    )
+    .await;
+    route(
+        &mut owner,
+        "command",
+        "engineering.matrix.context.confirm",
+        json!({
+            "request_id":Uuid::new_v4(),"locator":locator,
+            "proposal_revision":proposal["proposal"]["revision"],
+            "proposal_digest":proposal["proposal"]["digest"],
+            "owner_response_ref":"fixture:synthetic-owner-response"
+        }),
+    )
+    .await;
+
+    let task_id = Uuid::new_v4();
+    let request_id = Uuid::new_v4();
+    let input = source_input("mvp", "Synthetic preview");
+    let mut params = record(task_id, 1, request_id, input.clone());
+    params["requirements_locator"] = locator;
+    let bound = route(&mut owner, "command", "task.source.record", params.clone()).await;
+    assert_eq!(bound["input"]["mode"], input["mode"]);
+    assert_eq!(bound["input"]["intent"]["state"], "known");
+    assert!(bound["requirements_snapshot_id"].as_str().is_some());
+    assert_eq!(
+        route(&mut owner, "command", "task.source.record", params).await,
+        bound,
+        "same bound request must retain its receipt"
+    );
+
+    let unbound_params = record(task_id, 1, request_id, bound["input"].clone());
+    let conflict = owner
+        .call_error(
+            "command",
+            json!({"route":"task.source.record","params":unbound_params}),
+        )
+        .await;
+    assert_eq!(conflict["error"]["code"], "input_conflict");
+    let current = route(
+        &mut owner,
+        "query",
+        "task.source.get",
+        json!({"task_id":task_id}),
+    )
+    .await;
+    assert_eq!(current, bound, "rejected replay must preserve the binding");
     owner.finish().await;
 }

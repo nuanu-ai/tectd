@@ -46,11 +46,47 @@ impl PgUnitOfWork {
             .matrix_receipt_by_request(workspace_id, request.request_id)
             .await?
         {
-            Some(prior) if same_request(&prior, request, canonical_input, input_digest)? => {
-                Ok(prior)
+            Some(prior) => {
+                self.matrix_unbound_replay(
+                    workspace_id,
+                    prior,
+                    request,
+                    canonical_input,
+                    input_digest,
+                )
+                .await
             }
-            Some(_) => Err(Error::InputConflict),
             None => Err(fallback),
+        }
+    }
+
+    async fn matrix_unbound_replay(
+        &mut self,
+        workspace_id: Uuid,
+        prior: MatrixTaskRevision,
+        request: &RecordMatrixTask,
+        canonical_input: &serde_json::Value,
+        input_digest: &str,
+    ) -> Result<MatrixTaskRevision> {
+        if !same_request(&prior, request, canonical_input, input_digest)? {
+            return Err(Error::InputConflict);
+        }
+        let bound: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM matrix_task_requirements_bindings \
+             WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 AND revision=$4 AND request_id=$5)",
+        )
+        .bind(self.tenant_id()?)
+        .bind(workspace_id)
+        .bind(prior.task_id)
+        .bind(prior.revision)
+        .bind(prior.request_id)
+        .fetch_one(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
+        if bound {
+            Err(Error::InputConflict)
+        } else {
+            Ok(prior)
         }
     }
 }
@@ -235,11 +271,9 @@ impl MatrixTaskStore for PgUnitOfWork {
             .matrix_receipt_by_request(workspace_id, request.request_id)
             .await?
         {
-            return if same_request(&prior, request, canonical_input, input_digest)? {
-                Ok(prior)
-            } else {
-                Err(Error::InputConflict)
-            };
+            return self
+                .matrix_unbound_replay(workspace_id, prior, request, canonical_input, input_digest)
+                .await;
         }
         if request.revision == 1 {
             let inserted = sqlx::query(

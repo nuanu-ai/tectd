@@ -81,17 +81,28 @@ fn source_budget_and_response_capacity_fail_before_write() {
     else {
         panic!("record")
     };
-    let projected = revision(MatrixTaskRevision {
-        task_id: request.task_id,
-        revision: request.revision,
-        request_id: request.request_id,
-        input: request.input.clone(),
-        input_digest: "0".repeat(64),
-        choice_set: request.choice_set.clone(),
-        choice_set_digest: request.choice_set.as_ref().map(|_| "0".repeat(64)),
-        recorded_by_principal_id: Uuid::nil(),
-        recorded_by_session_id: Uuid::nil(),
+    let projected = source(MatrixTaskSource {
+        revision: MatrixTaskRevision {
+            task_id: request.task_id,
+            revision: request.revision,
+            request_id: request.request_id,
+            input: request.input.clone(),
+            input_digest: "0".repeat(64),
+            choice_set: request.choice_set.clone(),
+            choice_set_digest: request.choice_set.as_ref().map(|_| "0".repeat(64)),
+            recorded_by_principal_id: Uuid::nil(),
+            recorded_by_session_id: Uuid::nil(),
+        },
+        requirements_binding: None,
     });
+    for field in [
+        "requirements_snapshot_id",
+        "requirements_semantic_digest",
+        "context_authority_schema",
+        "requirements_locator",
+    ] {
+        assert_eq!(projected.get(field), Some(&Value::Null));
+    }
     let size =
         crate::responses::encoded_len(&crate::responses::with_actions(projected, Vec::new(), None))
             .unwrap();
@@ -196,16 +207,19 @@ fn choice_set_accepts_zero_one_and_two_candidates_and_absence() {
             panic!("record")
         };
         assert_eq!(request.choice_set.as_ref().unwrap().candidates.len(), count);
-        let projected = revision(MatrixTaskRevision {
-            task_id: request.task_id,
-            revision: request.revision,
-            request_id: request.request_id,
-            input: request.input.clone(),
-            input_digest: "0".repeat(64),
-            choice_set: request.choice_set.clone(),
-            choice_set_digest: Some("0".repeat(64)),
-            recorded_by_principal_id: Uuid::nil(),
-            recorded_by_session_id: Uuid::nil(),
+        let projected = source(MatrixTaskSource {
+            revision: MatrixTaskRevision {
+                task_id: request.task_id,
+                revision: request.revision,
+                request_id: request.request_id,
+                input: request.input.clone(),
+                input_digest: "0".repeat(64),
+                choice_set: request.choice_set.clone(),
+                choice_set_digest: Some("0".repeat(64)),
+                recorded_by_principal_id: Uuid::nil(),
+                recorded_by_session_id: Uuid::nil(),
+            },
+            requirements_binding: None,
         });
         assert_eq!(projected["choice_set"], params["choice_set"]);
         assert_eq!(projected["choice_set_digest"].as_str().unwrap().len(), 64);

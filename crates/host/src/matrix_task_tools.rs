@@ -158,16 +158,19 @@ pub(crate) fn guard_record_output(request: &RecordMatrixTask, capacity: usize) -
     // This projection has the same JSON width as a committed revision: UUIDs
     // are fixed-width and the digest is always 64 lowercase hex characters.
     // Check the complete MCP tool response before making the durable write.
-    let projected = revision(MatrixTaskRevision {
-        task_id: request.task_id,
-        revision: request.revision,
-        request_id: request.request_id,
-        input: request.input.clone(),
-        input_digest: "0".repeat(64),
-        choice_set: request.choice_set.clone(),
-        choice_set_digest: request.choice_set.as_ref().map(|_| "0".repeat(64)),
-        recorded_by_principal_id: Uuid::nil(),
-        recorded_by_session_id: Uuid::nil(),
+    let projected = source(MatrixTaskSource {
+        revision: MatrixTaskRevision {
+            task_id: request.task_id,
+            revision: request.revision,
+            request_id: request.request_id,
+            input: request.input.clone(),
+            input_digest: "0".repeat(64),
+            choice_set: request.choice_set.clone(),
+            choice_set_digest: request.choice_set.as_ref().map(|_| "0".repeat(64)),
+            recorded_by_principal_id: Uuid::nil(),
+            recorded_by_session_id: Uuid::nil(),
+        },
+        requirements_binding: None,
     });
     let response = crate::responses::with_actions(projected, Vec::new(), None);
     if crate::responses::encoded_len(&response)? > capacity {

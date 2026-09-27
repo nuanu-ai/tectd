@@ -83,7 +83,10 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 let output = match invocation {
                     crate::matrix_task_tools::MatrixTaskInvocation::Record(request) => {
                         crate::matrix_task_tools::guard_record_output(&request, capacity)?;
-                        crate::matrix_task_tools::revision(service.record_matrix_task(context, &request).await?)
+                        crate::matrix_task_tools::source(tect_application::MatrixTaskSource {
+                            revision: service.record_matrix_task(context, &request).await?,
+                            requirements_binding: None,
+                        })
                     }
                     crate::matrix_task_tools::MatrixTaskInvocation::BoundRecord(request, locator) => {
                         crate::matrix_task_tools::guard_bound_record_output(&request, capacity)?;
