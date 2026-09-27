@@ -2,6 +2,34 @@ use crate::{EngineeringCandidate, Error, PipelineKind, Result, SliceCandidateNod
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+/// Server-derived declaration provenance for a context-bound Matrix selection.
+/// Absent only on historical V1 effect records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatrixPlanningContextProvenance {
+    pub frozen_snapshot_id: Uuid,
+    pub authority_schema: String,
+    pub requirements_semantic_digest: String,
+}
+
+impl MatrixPlanningContextProvenance {
+    pub fn validate(&self) -> Result<()> {
+        if self.frozen_snapshot_id.is_nil()
+            || self.authority_schema != crate::MATRIX_REQUIREMENTS_SCHEMA
+            || !valid_digest(&self.requirements_semantic_digest)
+        {
+            return Err(Error::StaleContext);
+        }
+        Ok(())
+    }
+}
+
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 /// Exact saved content attributed to one selected Matrix choice.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatrixPlanningEffectNode {
@@ -25,6 +53,8 @@ pub struct MatrixPlanningEffectMaterial {
     pub input_digest: String,
     pub choice_set_digest: String,
     pub verification_digest: String,
+    /// None denotes a historical V1 effect; new effects carry V2 provenance.
+    pub context_provenance: Option<MatrixPlanningContextProvenance>,
     pub evaluation_digest: String,
     pub catalogue_version: String,
     pub caller_principal_id: Uuid,
@@ -36,6 +66,9 @@ pub struct MatrixPlanningEffectMaterial {
 
 impl MatrixPlanningEffectMaterial {
     pub fn canonical_digest(&self) -> Result<String> {
+        if let Some(source) = &self.context_provenance {
+            source.validate()?;
+        }
         if self.workspace_id.is_nil()
             || self.candidate_set_id.is_nil()
             || self.caller_request_id.is_nil()
@@ -64,7 +97,11 @@ impl MatrixPlanningEffectMaterial {
             }
         }
         let mut hash = CanonicalHash(Sha256::new());
-        hash.string("tect.matrix-planning-effect/1");
+        hash.string(if self.context_provenance.is_some() {
+            "tect.matrix-planning-effect/2"
+        } else {
+            "tect.matrix-planning-effect/1"
+        });
         hash.uuid(self.workspace_id);
         hash.uuid(self.candidate_set_id);
         hash.uuid(self.caller_request_id);
@@ -76,6 +113,11 @@ impl MatrixPlanningEffectMaterial {
         hash.string(&self.input_digest);
         hash.string(&self.choice_set_digest);
         hash.string(&self.verification_digest);
+        if let Some(source) = &self.context_provenance {
+            hash.uuid(source.frozen_snapshot_id);
+            hash.string(&source.authority_schema);
+            hash.string(&source.requirements_semantic_digest);
+        }
         hash.string(&self.evaluation_digest);
         hash.string(&self.catalogue_version);
         hash.uuid(self.caller_principal_id);
@@ -271,6 +313,7 @@ mod tests {
             input_digest: "a".repeat(64),
             choice_set_digest: "b".repeat(64),
             verification_digest: "c".repeat(64),
+            context_provenance: None,
             evaluation_digest: "d".repeat(64),
             catalogue_version: "v1".into(),
             caller_principal_id: Uuid::new_v4(),
@@ -293,6 +336,20 @@ mod tests {
         assert_eq!(digest, material.canonical_digest().unwrap());
         material.selected_choice.approach.push_str(" and replicate");
         assert_ne!(digest, material.canonical_digest().unwrap());
+        let historical = material.canonical_digest().unwrap();
+        material.context_provenance = Some(MatrixPlanningContextProvenance {
+            frozen_snapshot_id: Uuid::new_v4(),
+            authority_schema: crate::MATRIX_REQUIREMENTS_SCHEMA.into(),
+            requirements_semantic_digest: "e".repeat(64),
+        });
+        let version_two = material.canonical_digest().unwrap();
+        assert_ne!(historical, version_two);
+        material
+            .context_provenance
+            .as_mut()
+            .unwrap()
+            .requirements_semantic_digest = "f".repeat(64);
+        assert_ne!(version_two, material.canonical_digest().unwrap());
         let digest = material.canonical_digest().unwrap();
         if let SliceCandidateNode::Decision { question, .. } = &mut material.nodes[0].body {
             question.push_str(" Now?");
@@ -315,6 +372,7 @@ mod tests {
             input_digest: "a".repeat(64),
             choice_set_digest: "b".repeat(64),
             verification_digest: "c".repeat(64),
+            context_provenance: None,
             evaluation_digest: "d".repeat(64),
             catalogue_version: "EM@1".into(),
             caller_principal_id: Uuid::from_u128(7),

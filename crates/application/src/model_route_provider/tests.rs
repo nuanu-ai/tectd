@@ -46,11 +46,14 @@ fn test_policy() -> AdvisoryBudgetPolicy {
     .unwrap()
 }
 
-fn caller<T>(value: T, node: Uuid) -> ModelRouteFact<T> {
+fn observed<T>(value: T, node: Uuid) -> ModelRouteFact<T> {
     ModelRouteFact::Known {
         value,
-        provenance: ModelRouteFactProvenance::Caller {
-            source_ref: "receipt#/facts".into(),
+        provenance: ModelRouteFactProvenance::OperatingEvidence {
+            source_ref: "synthetic-test-observation".into(),
+            content_digest: "e".repeat(64),
+            observed_at_epoch_ms: 1,
+            expires_at_epoch_ms: i64::MAX,
             work_node_id: node,
             work_node_revision: 1,
         },
@@ -77,9 +80,15 @@ fn prepared(state: ModelRoutePreparation) -> PreparedModelRouteRecommendation {
             mapped_work_node_id: node,
             mapped_work_node_revision: 1,
         },
-        role: caller("agent".into(), node),
-        tool: caller("code".into(), node),
-        data_class: caller("internal".into(), node),
+        context_authority: Some(tect_domain::ModelRouteContextAuthority {
+            frozen_snapshot_id: Uuid::from_u128(106),
+            authority_schema: tect_domain::MATRIX_REQUIREMENTS_SCHEMA.into(),
+            requirements_semantic_digest: "d".repeat(64),
+            operating_verification_digest: "c".repeat(64),
+        }),
+        role: observed("agent".into(), node),
+        tool: observed("code".into(), node),
+        data_class: observed("internal".into(), node),
         host_capabilities: ModelRouteHostCapabilities {
             schema: MODEL_ROUTE_HOST_CAPABILITIES_SCHEMA.into(),
             version: 1,
@@ -87,8 +96,8 @@ fn prepared(state: ModelRoutePreparation) -> PreparedModelRouteRecommendation {
         }
         .fact()
         .unwrap(),
-        remaining_budget_units: caller(20, node),
-        available_latency_ms: caller(100, node),
+        remaining_budget_units: observed(20, node),
+        available_latency_ms: observed(100, node),
     };
     if state == ModelRoutePreparation::UnknownWorkFacts {
         work.role = ModelRouteFact::Unknown;

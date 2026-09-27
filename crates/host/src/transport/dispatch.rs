@@ -80,17 +80,21 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 crate::knowledge_search_dispatch::execute(context, query, service, capacity).await
             }
             Invocation::MatrixTask(invocation) => {
-                let revision = match invocation {
+                let output = match invocation {
                     crate::matrix_task_tools::MatrixTaskInvocation::Record(request) => {
                         crate::matrix_task_tools::guard_record_output(&request, capacity)?;
-                        service.record_matrix_task(context, &request).await?
+                        crate::matrix_task_tools::revision(service.record_matrix_task(context, &request).await?)
+                    }
+                    crate::matrix_task_tools::MatrixTaskInvocation::BoundRecord(request, locator) => {
+                        crate::matrix_task_tools::guard_bound_record_output(&request, capacity)?;
+                        crate::matrix_task_tools::source(service.record_matrix_task_with_requirements(context, &request, &locator).await?)
                     }
                     crate::matrix_task_tools::MatrixTaskInvocation::Get(task_id) => {
-                        service.get_matrix_task(context, task_id).await?
+                        crate::matrix_task_tools::source(service.get_matrix_task_source(context, task_id).await?)
                     }
                 };
                 Ok(responses::with_actions(
-                    crate::matrix_task_tools::revision(revision),
+                    output,
                     Vec::new(),
                     None,
                 ))
@@ -162,6 +166,17 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                         service.disposition_model_route(context, decision_id, disposition_id, action, rationale).await?
                     ).map_err(Error::invalid_arguments_from)?,
                 };
+                let response = responses::with_actions(value, Vec::new(), None);
+                if responses::encoded_len(&response)? > capacity { return Err(Error::RequestTooLarge); }
+                Ok(response)
+            }
+            Invocation::MatrixRequirementsContext(invocation) => {
+                use crate::matrix_requirements_context_tools::MatrixRequirementsContextInvocation;
+                let value = match invocation {
+                    MatrixRequirementsContextInvocation::Propose(request) => Ok(crate::matrix_requirements_context_tools::proposal_output(service.propose_matrix_requirements_context(context, &request).await?)),
+                    MatrixRequirementsContextInvocation::Confirm(request) => Ok(crate::matrix_requirements_context_tools::confirmation_output(service.confirm_matrix_requirements_context(context, &request).await?)),
+                    MatrixRequirementsContextInvocation::Get(locator) => serde_json::to_value(service.get_effective_matrix_requirements_context(context, &locator).await?),
+                }.map_err(Error::invalid_arguments_from)?;
                 let response = responses::with_actions(value, Vec::new(), None);
                 if responses::encoded_len(&response)? > capacity { return Err(Error::RequestTooLarge); }
                 Ok(response)

@@ -68,6 +68,7 @@ fn validate_saved(
         || opportunity.target_id != Some(saved.context.work_node_id)
         || opportunity.work_revision != Some(saved.context.work_node_revision)
         || saved.context.verification_contract_digest != saved.manifest.digest
+        || saved.context.matrix_authority != saved.manifest.matrix_authority
         || saved.context.compatibility_policy_digest != saved.manifest.compatibility_policy_digest
         || saved.context.eligible_option_ids
             != saved
@@ -166,6 +167,14 @@ impl WorkspaceService {
             return Ok(PipelineRecommendationRun::NoCall {
                 opportunity_id: saved.opportunity.id,
                 reason: saved.opportunity.primary_reason,
+            });
+        }
+        // Historical V1 captures remain readable and recoverable above, but
+        // no new provider send may use a manifest without evaluated V2 context.
+        if !saved.manifest.has_bound_v2_authority() {
+            tx.commit().await?;
+            return Ok(PipelineRecommendationRun::Stale {
+                opportunity_id: saved.opportunity.id,
             });
         }
         if self

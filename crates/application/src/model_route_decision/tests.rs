@@ -11,12 +11,8 @@ use tect_domain::{
 };
 
 #[derive(Default)]
-struct PreparationMemory {
-    prepared: Option<PreparedModelRouteRecommendation>,
-}
-
-#[derive(Default)]
 struct Memory {
+    prepared: Option<PreparedModelRouteRecommendation>,
     evidence: Option<crate::ModelRouteSealedRankingEvidence>,
     decisions: BTreeMap<Uuid, CapturedModelRouteDecision>,
     dispositions: BTreeMap<Uuid, CapturedModelRouteDisposition>,
@@ -25,7 +21,17 @@ struct Memory {
 }
 
 #[async_trait]
-impl ModelRouteRecommendationStore for PreparationMemory {
+impl crate::ModelRouteRecommendationStore for Memory {
+    async fn validate_current(
+        &mut self,
+        prepared: &PreparedModelRouteRecommendation,
+    ) -> Result<()> {
+        if self.prepared.as_ref() == Some(prepared) {
+            Ok(())
+        } else {
+            Err(Error::StaleContext)
+        }
+    }
     async fn by_request(
         &mut self,
         workspace_id: Uuid,
@@ -54,6 +60,16 @@ impl ModelRouteRecommendationStore for PreparationMemory {
 
 #[async_trait]
 impl ModelRouteDecisionStore for Memory {
+    async fn validate_current_decision(
+        &mut self,
+        decision: &CapturedModelRouteDecision,
+    ) -> Result<()> {
+        if self.decisions.get(&decision.id) == Some(decision) {
+            Ok(())
+        } else {
+            Err(Error::StaleContext)
+        }
+    }
     async fn sealed_provider_ranking(
         &mut self,
         workspace_id: Uuid,
@@ -138,11 +154,14 @@ impl ModelRouteDecisionStore for Memory {
     }
 }
 
-fn caller<T>(value: T, node_id: Uuid) -> ModelRouteFact<T> {
+fn observed<T>(value: T, node_id: Uuid) -> ModelRouteFact<T> {
     ModelRouteFact::Known {
         value,
-        provenance: ModelRouteFactProvenance::Caller {
-            source_ref: "native_planning_receipts:exact#/draft/nodes/0/model_route_facts".into(),
+        provenance: ModelRouteFactProvenance::OperatingEvidence {
+            source_ref: "synthetic-test-observation".into(),
+            content_digest: "e".repeat(64),
+            observed_at_epoch_ms: 1,
+            expires_at_epoch_ms: i64::MAX,
             work_node_id: node_id,
             work_node_revision: 1,
         },
@@ -173,9 +192,15 @@ fn prepared(preparation: ModelRoutePreparation) -> PreparedModelRouteRecommendat
             mapped_work_node_id: node_id,
             mapped_work_node_revision: 1,
         },
-        role: caller("agent".into(), node_id),
-        tool: caller("code".into(), node_id),
-        data_class: caller("internal".into(), node_id),
+        context_authority: Some(tect_domain::ModelRouteContextAuthority {
+            frozen_snapshot_id: Uuid::new_v4(),
+            authority_schema: tect_domain::MATRIX_REQUIREMENTS_SCHEMA.into(),
+            requirements_semantic_digest: "d".repeat(64),
+            operating_verification_digest: "c".repeat(64),
+        }),
+        role: observed("agent".into(), node_id),
+        tool: observed("code".into(), node_id),
+        data_class: observed("internal".into(), node_id),
         host_capabilities: ModelRouteHostCapabilities {
             schema: MODEL_ROUTE_HOST_CAPABILITIES_SCHEMA.into(),
             version: 1,
@@ -183,8 +208,8 @@ fn prepared(preparation: ModelRoutePreparation) -> PreparedModelRouteRecommendat
         }
         .fact()
         .unwrap(),
-        remaining_budget_units: caller(10, node_id),
-        available_latency_ms: caller(50, node_id),
+        remaining_budget_units: observed(10, node_id),
+        available_latency_ms: observed(50, node_id),
     };
     if preparation == ModelRoutePreparation::UnknownWorkFacts {
         work.role = ModelRouteFact::Unknown;
@@ -278,11 +303,11 @@ mod provider_cases;
 
 #[tokio::test]
 async fn ranked_recommendation_and_explicit_disposition_replay_without_dispatch() {
-    let mut preparations = PreparationMemory {
+    let mut memory = Memory {
         prepared: Some(prepared(ModelRoutePreparation::Prepared)),
+        ..Memory::default()
     };
-    let mut memory = Memory::default();
-    let prepared = preparations.prepared.as_ref().unwrap();
+    let prepared = memory.prepared.as_ref().unwrap();
     memory.evidence = Some(evidence(prepared, &["route-a", "route-b"]));
     let decision = DecideModelRouteRecommendation {
         id: Uuid::new_v4(),
@@ -299,10 +324,7 @@ async fn ranked_recommendation_and_explicit_disposition_replay_without_dispatch(
             ranked_route_ids: vec!["route-a".into(), "route-b".into()],
         }),
     };
-    let saved = decision
-        .decide(&mut preparations, &mut memory)
-        .await
-        .unwrap();
+    let saved = decision.decide(&mut memory).await.unwrap();
     assert_eq!(
         saved.routes.recommended_route_id.as_deref(),
         Some("route-a")
@@ -310,13 +332,7 @@ async fn ranked_recommendation_and_explicit_disposition_replay_without_dispatch(
     assert_eq!(saved.routes.requested_route_id.as_deref(), Some("route-b"));
     assert_eq!(saved.routes.observed_actual, None);
     assert_eq!(memory.decision_writes, 1);
-    assert_eq!(
-        decision
-            .decide(&mut preparations, &mut memory)
-            .await
-            .unwrap(),
-        saved
-    );
+    assert_eq!(decision.decide(&mut memory).await.unwrap(), saved);
     assert_eq!(memory.decision_writes, 1);
     let differently_ranked = DecideModelRouteRecommendation {
         input: ModelRouteDecisionInput::Ranking(ModelRouteRanking {
@@ -339,9 +355,7 @@ async fn ranked_recommendation_and_explicit_disposition_replay_without_dispatch(
         ..decision
     };
     assert_eq!(
-        differently_ranked
-            .decide(&mut preparations, &mut memory)
-            .await,
+        differently_ranked.decide(&mut memory).await,
         Err(Error::InputConflict)
     );
     assert_eq!(memory.decision_writes, 1);
@@ -352,9 +366,7 @@ async fn ranked_recommendation_and_explicit_disposition_replay_without_dispatch(
         input: differently_ranked.input.clone(),
     };
     assert_eq!(
-        conflicting_decision
-            .decide(&mut preparations, &mut memory)
-            .await,
+        conflicting_decision.decide(&mut memory).await,
         Err(Error::InputConflict)
     );
 
@@ -391,21 +403,18 @@ async fn ranked_recommendation_and_explicit_disposition_replay_without_dispatch(
 
 #[tokio::test]
 async fn no_route_and_abstain_are_explicit_and_cannot_be_dispositioned() {
-    let mut preparations = PreparationMemory {
+    let mut memory = Memory {
         prepared: Some(prepared(ModelRoutePreparation::UnknownWorkFacts)),
+        ..Memory::default()
     };
-    let mut memory = Memory::default();
-    let p = preparations.prepared.as_ref().unwrap();
+    let p = memory.prepared.as_ref().unwrap();
     let no_route = DecideModelRouteRecommendation {
         id: Uuid::new_v4(),
         workspace_id: p.workspace_id,
         preparation_request_key: p.request_key.clone(),
         input: ModelRouteDecisionInput::NoCall,
     };
-    let saved = no_route
-        .decide(&mut preparations, &mut memory)
-        .await
-        .unwrap();
+    let saved = no_route.decide(&mut memory).await.unwrap();
     assert_eq!(
         saved.outcome,
         ModelRouteDecisionOutcome::NoRoute {
@@ -426,18 +435,15 @@ async fn no_route_and_abstain_are_explicit_and_cannot_be_dispositioned() {
         Err(Error::InputConflict)
     );
 
-    preparations.prepared = Some(prepared(ModelRoutePreparation::Prepared));
-    let p = preparations.prepared.as_ref().unwrap();
+    memory.prepared = Some(prepared(ModelRoutePreparation::Prepared));
+    let p = memory.prepared.as_ref().unwrap();
     let abstain = DecideModelRouteRecommendation {
         id: Uuid::new_v4(),
         workspace_id: p.workspace_id,
         preparation_request_key: p.request_key.clone(),
         input: ModelRouteDecisionInput::Abstain,
     };
-    let saved = abstain
-        .decide(&mut preparations, &mut memory)
-        .await
-        .unwrap();
+    let saved = abstain.decide(&mut memory).await.unwrap();
     assert_eq!(
         saved.outcome,
         ModelRouteDecisionOutcome::Abstained {
@@ -449,11 +455,11 @@ async fn no_route_and_abstain_are_explicit_and_cannot_be_dispositioned() {
 
 #[tokio::test]
 async fn stale_or_unapproved_ranking_cannot_be_captured() {
-    let mut preparations = PreparationMemory {
+    let mut decisions = Memory {
         prepared: Some(prepared(ModelRoutePreparation::Prepared)),
+        ..Memory::default()
     };
-    let mut decisions = Memory::default();
-    let p = preparations.prepared.as_ref().unwrap();
+    let p = decisions.prepared.as_ref().unwrap();
     let input = DecideModelRouteRecommendation {
         id: Uuid::new_v4(),
         workspace_id: p.workspace_id,
@@ -465,13 +471,13 @@ async fn stale_or_unapproved_ranking_cannot_be_captured() {
         }),
     };
     assert_eq!(
-        input.decide(&mut preparations, &mut decisions).await,
+        input.decide(&mut decisions).await,
         Err(Error::StaleRevision)
     );
     assert_eq!(decisions.decision_writes, 0);
     let mut unapproved = input;
     if let ModelRouteDecisionInput::Ranking(ranking) = &mut unapproved.input {
-        ranking.catalogue_digest = preparations
+        ranking.catalogue_digest = decisions
             .prepared
             .as_ref()
             .unwrap()
@@ -483,7 +489,7 @@ async fn stale_or_unapproved_ranking_cannot_be_captured() {
         ranking.ranked_route_ids = vec!["unconfigured".into()];
     }
     assert_eq!(
-        unapproved.decide(&mut preparations, &mut decisions).await,
+        unapproved.decide(&mut decisions).await,
         Err(Error::InvalidArguments)
     );
     assert_eq!(decisions.decision_writes, 0);

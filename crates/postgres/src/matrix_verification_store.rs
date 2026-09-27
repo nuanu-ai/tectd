@@ -39,12 +39,13 @@ impl PgUnitOfWork {
         task_id: Uuid,
         revision: i64,
         digest: &str,
-    ) -> Result<Option<MatrixVerificationRecord>> {
+    ) -> Result<Option<(MatrixVerificationRecord, i64)>> {
         let tenant_id = self.tenant_id()?;
         let row = sqlx::query(
-            "SELECT id,input_digest,schema,owner_principal_id,verifier_principal_id,policy_version,record_digest,verification_reason \
+            "SELECT id,input_digest,schema,owner_principal_id,verifier_principal_id,policy_version,record_digest,verification_reason, \
+                    FLOOR(EXTRACT(EPOCH FROM verified_at))::bigint AS verified_epoch \
              FROM matrix_verifications WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 \
-             AND task_revision=$4 AND record_digest=$5",
+             AND task_revision=$4 AND record_digest=$5 AND schema='tect.matrix-verification/1'",
         )
         .bind(tenant_id)
         .bind(workspace_id)
@@ -55,10 +56,13 @@ impl PgUnitOfWork {
         .await
         .map_err(storage_error)?;
         match row {
-            Some(row) => self
-                .decode_verification(workspace_id, task_id, revision, row)
-                .await
-                .map(Some),
+            Some(row) => {
+                let epoch = row.try_get("verified_epoch").map_err(storage_error)?;
+                let record = self
+                    .decode_verification(workspace_id, task_id, revision, row)
+                    .await?;
+                Ok(Some((record, epoch)))
+            }
             None => Ok(None),
         }
     }
@@ -138,6 +142,24 @@ impl PgUnitOfWork {
 
 #[async_trait]
 impl MatrixVerificationStore for PgUnitOfWork {
+    async fn historical_matrix_verification_by_digest(
+        &mut self,
+        workspace_id: Uuid,
+        task_id: Uuid,
+        revision: i64,
+        record_digest: &str,
+    ) -> Result<Option<(MatrixVerificationRecord, i64)>> {
+        if task_id.is_nil()
+            || revision < 1
+            || record_digest.len() != 64
+            || !record_digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(Error::InvalidArguments);
+        }
+        self.verification_by_digest(workspace_id, task_id, revision, record_digest)
+            .await
+    }
+
     async fn matrix_verification_for_revision(
         &mut self,
         workspace_id: Uuid,
@@ -154,6 +176,7 @@ impl MatrixVerificationStore for PgUnitOfWork {
                AND v.workspace_id=t.workspace_id AND v.task_id=t.id \
              WHERE t.tenant_id=$1 AND t.workspace_id=$2 AND t.id=$3 \
                AND t.current_revision=$4 AND v.task_revision=$4 AND v.input_digest=$5 \
+               AND v.schema='tect.matrix-verification/1' \
              ORDER BY v.verified_at DESC,v.id DESC LIMIT 1",
         )
         .bind(tenant_id)
@@ -232,7 +255,7 @@ impl MatrixVerificationStore for PgUnitOfWork {
             epoch_seconds()?,
         )?;
 
-        if let Some(prior) = self
+        if let Some((prior, _)) = self
             .verification_by_digest(workspace_id, task_id, expected_revision, &record.digest)
             .await?
         {

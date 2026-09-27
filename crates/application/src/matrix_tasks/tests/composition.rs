@@ -139,6 +139,95 @@ fn canonical_digest_is_independent_of_json_object_key_order() {
 }
 
 #[test]
+fn original_source_digest_binds_all_replay_fields_and_locator() {
+    let saved = stored_revision();
+    let mut request = RecordMatrixTask {
+        task_id: saved.task_id,
+        revision: 2,
+        expected_current_revision: 1,
+        request_id: saved.request_id,
+        input: saved.input,
+        choice_set: None,
+    };
+    let program = MatrixRequirementsLocator::Program {
+        program_id: Uuid::new_v4(),
+    };
+    let original = canonical_matrix_source_request_digest(&request, &program).unwrap();
+    assert_eq!(
+        original,
+        canonical_matrix_source_request_digest(&request, &program).unwrap()
+    );
+    request.revision += 1;
+    assert_ne!(
+        original,
+        canonical_matrix_source_request_digest(&request, &program).unwrap()
+    );
+    request.revision -= 1;
+    request.input.criticality = known("changed".into());
+    assert_ne!(
+        original,
+        canonical_matrix_source_request_digest(&request, &program).unwrap()
+    );
+    request.input.criticality = MatrixFact::Absent;
+    assert_ne!(
+        original,
+        canonical_matrix_source_request_digest(
+            &request,
+            &MatrixRequirementsLocator::Program {
+                program_id: Uuid::new_v4()
+            }
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn exact_retry_keeps_persisted_snapshot_after_context_changes() {
+    let revision = stored_revision();
+    let request = RecordMatrixTask {
+        task_id: revision.task_id,
+        revision: revision.revision,
+        expected_current_revision: revision.revision - 1,
+        request_id: revision.request_id,
+        input: revision.input.clone(),
+        choice_set: None,
+    };
+    let locator = MatrixRequirementsLocator::Program {
+        program_id: Uuid::new_v4(),
+    };
+    let digest = canonical_matrix_source_request_digest(&request, &locator).unwrap();
+    let source = MatrixTaskSource {
+        revision,
+        requirements_binding: Some(MatrixTaskRequirementsBinding {
+            locator: locator.clone(),
+            snapshot_id: Uuid::new_v4(),
+            semantic_digest: "old-accepted-context".into(),
+            authority_schema: tect_domain::MATRIX_REQUIREMENTS_SCHEMA.into(),
+        }),
+    };
+    let replay =
+        validated_bound_replay(source.clone(), &digest, &digest, &request, &locator).unwrap();
+    assert_eq!(replay, source);
+    assert_eq!(
+        validated_bound_replay(
+            source.clone(),
+            "other-original-request",
+            &digest,
+            &request,
+            &locator
+        ),
+        Err(Error::InputConflict)
+    );
+    let different_locator = MatrixRequirementsLocator::Program {
+        program_id: Uuid::new_v4(),
+    };
+    assert_eq!(
+        validated_bound_replay(source, &digest, &digest, &request, &different_locator),
+        Err(Error::InputConflict)
+    );
+}
+
+#[test]
 fn choice_set_must_bind_to_exact_revision_and_input() {
     let stored = stored_revision();
     let mut request = RecordMatrixTask {

@@ -14,7 +14,7 @@ fn committed_permit_matches_only_its_prepared_attempt() {
         choice_set_version: 1,
         choice_set_digest: "b".repeat(64),
         evaluation_digest: "c".repeat(64),
-        verification_digest: None,
+        verification: crate::MatrixVerificationAuthority::Unverified,
     };
     let identity = MatrixProviderIdentity {
         provider_profile_ref: AdvisoryProviderProfileRef { id: "test".into() },
@@ -73,7 +73,7 @@ fn dispatch_permit_binding_rejects_different_evaluation_material() {
         choice_set_version: 1,
         choice_set_digest: "b".repeat(64),
         evaluation_digest: "c".repeat(64),
-        verification_digest: None,
+        verification: crate::MatrixVerificationAuthority::Unverified,
     };
     let mut opportunity = AdvisoryOpportunity {
         id: Uuid::new_v4(),
@@ -89,7 +89,7 @@ fn dispatch_permit_binding_rejects_different_evaluation_material() {
         work_revision: Some(binding.task_revision),
         matrix_task_revision: Some(binding.task_revision),
         matrix_choice_set_digest: Some(binding.choice_set_digest.clone()),
-        matrix_verification_digest: binding.verification_digest.clone(),
+        matrix_verification_digest: binding.verification.digest().map(str::to_owned),
         source_ref: None,
         session_preference: AdvisoryRequestPreference::UseWorkspace,
         request_preference: AdvisoryRequestPreference::UseWorkspace,
@@ -120,7 +120,7 @@ async fn disabled_identity_and_explicit_budget_deny() {
             choice_set_version: 1,
             choice_set_digest: "choice-digest".into(),
             evaluation_digest: "evaluation".into(),
-            verification_digest: None,
+            verification: crate::MatrixVerificationAuthority::Unverified,
         },
         provider_profile_ref: AdvisoryProviderProfileRef { id: "test".into() },
         model_configuration: AdvisoryModelConfiguration {

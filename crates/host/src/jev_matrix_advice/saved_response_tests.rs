@@ -41,7 +41,9 @@ pub(super) fn stored_dispatch(
             choice_set_version: 1,
             choice_set_digest: String::new(),
             evaluation_digest: String::new(),
-            verification_digest: Some(String::new()),
+            verification: tect_application::MatrixVerificationAuthority::LegacyV1 {
+                digest: String::new(),
+            },
         },
         provider_profile_ref: AdvisoryProviderProfileRef {
             id: "profile".into(),

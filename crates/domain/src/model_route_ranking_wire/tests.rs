@@ -1,14 +1,17 @@
 use super::*;
 use crate::{
     MODEL_ROUTE_CATALOGUE_SCHEMA, MODEL_ROUTE_HOST_CAPABILITIES_SCHEMA, MatrixPlanningSelection,
-    ModelRouteSelectionLink,
+    ModelRouteContextAuthority, ModelRouteSelectionLink,
 };
 
-fn caller<T>(value: T, node: Uuid) -> ModelRouteFact<T> {
+fn observed<T>(value: T, node: Uuid) -> ModelRouteFact<T> {
     ModelRouteFact::Known {
         value,
-        provenance: ModelRouteFactProvenance::Caller {
-            source_ref: "receipt#/draft/nodes/0/model_route_facts".into(),
+        provenance: ModelRouteFactProvenance::OperatingEvidence {
+            source_ref: "synthetic-test-observation".into(),
+            content_digest: "e".repeat(64),
+            observed_at_epoch_ms: 1,
+            expires_at_epoch_ms: i64::MAX,
             work_node_id: node,
             work_node_revision: 1,
         },
@@ -35,9 +38,15 @@ fn request() -> ModelRouteRankingWireRequest {
             mapped_work_node_id: node,
             mapped_work_node_revision: 1,
         },
-        role: caller("agent".into(), node),
-        tool: caller("code".into(), node),
-        data_class: caller("internal".into(), node),
+        context_authority: Some(ModelRouteContextAuthority {
+            frozen_snapshot_id: Uuid::new_v4(),
+            authority_schema: crate::MATRIX_REQUIREMENTS_SCHEMA.into(),
+            requirements_semantic_digest: "d".repeat(64),
+            operating_verification_digest: "c".repeat(64),
+        }),
+        role: observed("agent".into(), node),
+        tool: observed("code".into(), node),
+        data_class: observed("internal".into(), node),
         host_capabilities: ModelRouteHostCapabilities {
             schema: MODEL_ROUTE_HOST_CAPABILITIES_SCHEMA.into(),
             version: 1,
@@ -45,8 +54,8 @@ fn request() -> ModelRouteRankingWireRequest {
         }
         .fact()
         .unwrap(),
-        remaining_budget_units: caller(20, node),
-        available_latency_ms: caller(100, node),
+        remaining_budget_units: observed(20, node),
+        available_latency_ms: observed(100, node),
     };
     let route = ModelRoute {
         id: "route-a".into(),

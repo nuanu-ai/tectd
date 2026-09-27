@@ -1,4 +1,6 @@
 use super::*;
+#[path = "tests/context_currentness.rs"]
+mod context_currentness;
 use crate::{
     MatrixAdviceProvider, MatrixBudgetAuthorization, MatrixBudgetPolicy, MatrixBudgetRequest,
     MatrixProviderIdentity, MatrixProviderRequest, MatrixProviderResponse,

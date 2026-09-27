@@ -1,6 +1,17 @@
 const MIGRATION: &str = include_str!("../migrations/0062_pipeline_advice_contexts.sql");
 const ADMIN: &str = include_str!("admin/pipeline_advice.rs");
 const ROLE: &str = include_str!("admin/migration.rs");
+const MATRIX_AUTHORITY_MIGRATION: &str =
+    include_str!("../migrations/0110_pipeline_context_matrix_authority.sql");
+
+#[test]
+fn pipeline_advice_admin_accepts_the_matrix_authority_foreign_key() {
+    assert!(
+        MATRIX_AUTHORITY_MIGRATION
+            .contains("ADD CONSTRAINT pipeline_context_matrix_snapshot_fk FOREIGN KEY")
+    );
+    assert!(ADMIN.contains("pg_catalog.count(*)=6 FROM pg_catalog.pg_constraint con"));
+}
 
 #[test]
 fn pipeline_decision_is_exact_and_pre_open() {

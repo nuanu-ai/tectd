@@ -16,6 +16,7 @@ pub(super) async fn load_pipeline_recommendation_basis(
                 l.caller_request_id,l.disposition_id,l.task_id,l.task_revision, \
                 l.selected_choice_id,l.input_digest,l.choice_set_digest, \
                 l.verification_digest,l.evaluation_digest,l.catalogue_version, \
+                l.frozen_snapshot_id,l.authority_schema,l.requirements_semantic_digest, \
                 a.id AS attestation_id,a.effect_digest,a.verifier_principal_id, \
                 a.verdict \
          FROM slice_candidate_sets c \
@@ -139,29 +140,101 @@ pub(super) async fn load_pipeline_recommendation_basis(
     };
     let work_revision = *work_revision;
     let task_id: Uuid = row.try_get("task_id").map_err(storage_error)?;
+    let source_task = uow
+        .matrix_task_source(workspace_id, task_id)
+        .await?
+        .ok_or(Error::StaleContext)?;
+    let binding = source_task
+        .requirements_binding
+        .as_ref()
+        .ok_or(Error::StaleContext)?;
+    let frozen_snapshot_id: Uuid = row
+        .try_get::<Option<Uuid>, _>("frozen_snapshot_id")
+        .map_err(storage_error)?
+        .ok_or(Error::StaleContext)?;
+    let authority_schema: String = row
+        .try_get::<Option<String>, _>("authority_schema")
+        .map_err(storage_error)?
+        .ok_or(Error::StaleContext)?;
+    let semantic_digest: String = row
+        .try_get::<Option<String>, _>("requirements_semantic_digest")
+        .map_err(storage_error)?
+        .ok_or(Error::StaleContext)?;
+    if binding.snapshot_id != frozen_snapshot_id
+        || binding.authority_schema != authority_schema
+        || binding.semantic_digest != semantic_digest
+        || authority_schema != MATRIX_REQUIREMENTS_SCHEMA
+    {
+        return Err(Error::StaleContext);
+    }
     let task = if for_update {
         uow.lock_matrix_task(workspace_id, task_id).await?
     } else {
         uow.matrix_task(workspace_id, task_id).await?
     }
     .ok_or(Error::StaleContext)?;
+    if task != source_task.revision {
+        return Err(Error::StaleContext);
+    }
     let task_revision: i64 = row.try_get("task_revision").map_err(storage_error)?;
     let input_digest: String = row.try_get("input_digest").map_err(storage_error)?;
     let choice_set_digest: String = row.try_get("choice_set_digest").map_err(storage_error)?;
     let verification_digest: String = row.try_get("verification_digest").map_err(storage_error)?;
     if task.revision != task_revision
         || task.input_digest != input_digest
+        || matrix_input_digest(&task.input).map_err(|_| Error::StaleContext)? != input_digest
         || task.choice_set_digest.as_deref() != Some(choice_set_digest.as_str())
     {
         return Err(Error::StaleContext);
     }
+    let actor = uow.principal_id()?;
+    let lineage = uow
+        .matrix_requirements_lineage(workspace_id, actor, &binding.locator, false)
+        .await
+        .map_err(|_| Error::StaleContext)?;
+    if for_update {
+        for anchor in &lineage {
+            uow.lock_matrix_requirements_head(workspace_id, *anchor)
+                .await
+                .map_err(|_| Error::StaleContext)?;
+        }
+    }
+    let frozen = uow
+        .frozen_matrix_requirements_by_id(workspace_id, frozen_snapshot_id)
+        .await?
+        .ok_or(Error::StaleContext)?;
+    if lineage.last().copied() != Some(frozen.anchor)
+        || frozen.effective.schema() != authority_schema
+        || frozen.effective.semantic_digest() != semantic_digest
+    {
+        return Err(Error::StaleContext);
+    }
+    let revisions = uow
+        .matrix_requirements_revisions(workspace_id, &lineage)
+        .await
+        .map_err(|_| Error::StaleContext)?;
+    let effective = resolve_matrix_requirements(&lineage, &revisions, MATRIX_REQUIREMENTS_SCHEMA)
+        .map_err(|_| Error::StaleContext)?;
+    if effective.semantic_digest() != semantic_digest {
+        return Err(Error::StaleContext);
+    }
     let verification = uow
-        .matrix_verification_for_revision(workspace_id, task_id, task_revision, &input_digest)
+        .context_matrix_verification_for_revision(
+            workspace_id,
+            task_id,
+            task_revision,
+            &input_digest,
+            frozen_snapshot_id,
+        )
         .await?
         .ok_or(Error::StaleContext)?;
     if verification.digest != verification_digest
         || verification.owner_principal != task.recorded_by_principal_id.to_string()
         || verification.verifier_principal == verification.owner_principal
+        || verification.input_digest != input_digest
+        || verification.frozen_snapshot_id != frozen_snapshot_id.to_string()
+        || verification.authority_schema != authority_schema
+        || verification.requirements_semantic_digest != semantic_digest
     {
         return Err(Error::StaleContext);
     }
@@ -171,24 +244,32 @@ pub(super) async fn load_pipeline_recommendation_basis(
     .fetch_one(&mut **uow.transaction()?)
     .await
     .map_err(storage_error)?;
-    let validated = evaluate_matrix_verification(
+    let validated = evaluate_context_matrix_verification(
         &task_id.to_string(),
         &task_revision.to_string(),
+        &frozen_snapshot_id.to_string(),
         &task.input,
+        &frozen.effective,
         &verification,
         now,
     )
     .map_err(|_| Error::StaleContext)?;
-    let reported = OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
-        task_id.to_string(),
-        task_revision.to_string(),
-        task.input.clone(),
+    let confirmed = compose_confirmed_requirements_matrix(
+        &task_id.to_string(),
+        &task_revision.to_string(),
+        &frozen_snapshot_id.to_string(),
+        &task.input,
+        &frozen.effective,
+        &validated,
+        now,
     )
     .map_err(|_| Error::StaleContext)?;
-    let composition = compose_independently_verified_owner_matrix(&reported, &validated)
-        .map_err(|_| Error::StaleContext)?;
+    let composition = confirmed.composition();
     let choice_set = task.choice_set.as_ref().ok_or(Error::StaleContext)?;
-    if matrix_verified_disposition_digest(&task.input, &composition, choice_set, &validated)
+    choice_set
+        .validate(&task.input)
+        .map_err(|_| Error::StaleContext)?;
+    if context_matrix_verified_evaluation_digest(&task.input, &confirmed, choice_set, &verification)
         .map_err(|_| Error::StaleContext)?
         != row
             .try_get::<String, _>("evaluation_digest")
@@ -226,7 +307,7 @@ pub(super) async fn load_pipeline_recommendation_basis(
         matrix: PipelineMatrixBasis {
             input: task.input.clone(),
             choice_set: choice_set.clone(),
-            composition,
+            composition: composition.clone(),
             selected_choice_id: selected_choice_id.clone(),
             current_selected_choice_id: selected_choice_id,
             current_task_revision: task_revision.to_string(),
@@ -235,7 +316,10 @@ pub(super) async fn load_pipeline_recommendation_basis(
             verification_digest: verification_digest.clone(),
             current_verification_digest: verification_digest,
             saved_mandatory_card_ids,
-        },
+            authority: None,
+        }
+        .with_confirmed_context(&confirmed)
+        .map_err(|_| Error::StaleContext)?,
         catalogue,
         definitions: Vec::new(),
         compatibility_policy: PipelineCompatibilityPolicy::unavailable(),

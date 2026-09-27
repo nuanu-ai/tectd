@@ -1,5 +1,8 @@
 use serde::{Deserialize, Deserializer, Serialize};
-use tect_application::{MatrixProviderRequest, MatrixTaskRevision, canonical_matrix_input_digest};
+use tect_application::{
+    MatrixProviderRequest, MatrixTaskRevision, MatrixVerificationAuthority,
+    canonical_matrix_input_digest,
+};
 use tect_domain::{
     EngineeringChoiceSet, EngineeringMatrixComposition, EngineeringMatrixInput, Error,
     MATRIX_EVALUATION_CONTRACT_VERSION, MATRIX_VERIFIED_EVALUATION_CONTRACT_VERSION,
@@ -20,6 +23,17 @@ pub struct MatrixRankingBinding {
     pub evaluation_digest: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verification_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<MatrixRankingContextProvenance>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MatrixRankingContextProvenance {
+    pub schema: String,
+    pub frozen_snapshot_id: String,
+    pub authority_schema: String,
+    pub requirements_semantic_digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,15 +128,26 @@ pub fn prepare_verified_request(
 ) -> Result<PreparedMatrixRankingRequest> {
     let binding = request.binding();
     let digest = binding
-        .verification_digest
-        .as_deref()
+        .verification
+        .digest()
         .ok_or(Error::InvalidArguments)?;
     if digest.len() != 64
         || !digest
             .bytes()
             .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        || request.composition().source_verification_status
-            != MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported
+        || !matches!(
+            (
+                &binding.verification,
+                request.composition().source_verification_status
+            ),
+            (
+                MatrixVerificationAuthority::LegacyV1 { .. },
+                MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported
+            ) | (
+                MatrixVerificationAuthority::ContextV2 { .. },
+                MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification
+            )
+        )
     {
         return Err(Error::InvalidArguments);
     }
@@ -130,7 +155,7 @@ pub fn prepare_verified_request(
         model,
         request.revision(),
         request.composition(),
-        Some((digest, binding.evaluation_digest.as_str())),
+        Some((&binding.verification, binding.evaluation_digest.as_str())),
         maximum_request_bytes,
     )?;
     if prepared.binding.task_id != binding.task_id.to_string()
@@ -140,6 +165,7 @@ pub fn prepare_verified_request(
         || prepared.binding.choice_set_version != binding.choice_set_version
         || prepared.binding.choice_set_digest != binding.choice_set_digest
         || prepared.binding.evaluation_digest != binding.evaluation_digest
+        || prepared.binding.context != context_provenance(&binding.verification)
     {
         return Err(Error::InputConflict);
     }
@@ -150,7 +176,7 @@ fn prepare_request_inner(
     model: &str,
     revision: &MatrixTaskRevision,
     composition: &EngineeringMatrixComposition,
-    verified: Option<(&str, &str)>,
+    verified: Option<(&MatrixVerificationAuthority, &str)>,
     maximum_request_bytes: usize,
 ) -> Result<PreparedMatrixRankingRequest> {
     if model.trim().is_empty()
@@ -188,10 +214,12 @@ fn prepare_request_inner(
         None => matrix_evaluation_digest(&revision.input, composition, choice_set)?
             .ok_or(Error::InvalidArguments)?,
     };
-    let contract = if verified.is_some() {
-        MATRIX_VERIFIED_EVALUATION_CONTRACT_VERSION
-    } else {
-        MATRIX_EVALUATION_CONTRACT_VERSION
+    let contract = match verified.map(|(authority, _)| authority) {
+        Some(MatrixVerificationAuthority::ContextV2 { .. }) => {
+            "tect.context-matrix-verified-evaluation/1"
+        }
+        Some(_) => MATRIX_VERIFIED_EVALUATION_CONTRACT_VERSION,
+        None => MATRIX_EVALUATION_CONTRACT_VERSION,
     };
     let binding = MatrixRankingBinding {
         task_id: choice_set.task_id.clone(),
@@ -201,7 +229,9 @@ fn prepare_request_inner(
         choice_set_version: choice_set.version,
         choice_set_digest,
         evaluation_digest,
-        verification_digest: verified.map(|(digest, _)| digest.to_owned()),
+        verification_digest: verified
+            .and_then(|(authority, _)| authority.digest().map(str::to_owned)),
+        context: verified.and_then(|(authority, _)| context_provenance(authority)),
     };
     let body = serde_json::to_vec(&RequestBody {
         model,
@@ -230,6 +260,26 @@ fn prepare_request_inner(
         binding,
         eligibility,
         contract,
+    })
+}
+
+pub(super) fn context_provenance(
+    authority: &MatrixVerificationAuthority,
+) -> Option<MatrixRankingContextProvenance> {
+    let MatrixVerificationAuthority::ContextV2 {
+        snapshot_id,
+        authority_schema,
+        semantic_digest,
+        ..
+    } = authority
+    else {
+        return None;
+    };
+    Some(MatrixRankingContextProvenance {
+        schema: "tect.context-matrix-verification/1".into(),
+        frozen_snapshot_id: snapshot_id.to_string(),
+        authority_schema: authority_schema.clone(),
+        requirements_semantic_digest: semantic_digest.clone(),
     })
 }
 

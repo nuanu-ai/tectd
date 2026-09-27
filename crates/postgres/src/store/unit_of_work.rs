@@ -2,6 +2,16 @@ use super::*;
 
 #[async_trait]
 impl UnitOfWork for PgUnitOfWork {
+    fn context_matrix_verification_store(
+        &mut self,
+    ) -> Option<&mut dyn tect_application::ContextMatrixVerificationStore> {
+        Some(self)
+    }
+    fn matrix_requirements_context_store(
+        &mut self,
+    ) -> Option<&mut dyn tect_application::MatrixRequirementsContextStore> {
+        Some(self)
+    }
     fn advisory_budget_policy_store(
         &mut self,
     ) -> Option<&mut dyn tect_application::AdvisoryBudgetPolicyStore> {
@@ -37,6 +47,11 @@ impl UnitOfWork for PgUnitOfWork {
     ) -> Option<&mut dyn tect_application::ModelRouteSelectionRead> {
         Some(self)
     }
+    fn model_route_preparation_store(
+        &mut self,
+    ) -> Option<&mut dyn tect_application::ModelRoutePreparationStore> {
+        Some(self)
+    }
     fn model_route_recommendation_store(
         &mut self,
     ) -> Option<&mut dyn tect_application::ModelRouteRecommendationStore> {
@@ -45,6 +60,11 @@ impl UnitOfWork for PgUnitOfWork {
     fn model_route_decision_store(
         &mut self,
     ) -> Option<&mut dyn tect_application::ModelRouteDecisionStore> {
+        Some(self)
+    }
+    fn model_route_decision_capture_store(
+        &mut self,
+    ) -> Option<&mut dyn tect_application::ModelRouteDecisionCaptureStore> {
         Some(self)
     }
     fn model_route_attempt_store(

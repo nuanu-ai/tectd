@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use tect_domain::{MatrixPlanningSelection, Result};
+use tect_domain::{MatrixPlanningContextProvenance, MatrixPlanningSelection, Result};
 use uuid::Uuid;
 
 use crate::MatrixDispositionRecord;
@@ -16,6 +16,8 @@ pub struct MatrixPlanningMappedNode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatrixPlanningSelectionLink {
     pub selection: MatrixPlanningSelection,
+    /// Server-derived V2 source; absent only when reading a historical V1 link.
+    pub context_provenance: Option<MatrixPlanningContextProvenance>,
     pub evaluation_digest: String,
     pub catalogue_version: String,
     pub caller_principal_id: Uuid,

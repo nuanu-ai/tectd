@@ -11,7 +11,8 @@ use std::{
 };
 use tect_application::{
     MatrixEvidenceReference, MatrixEvidenceValidator, RecordMatrixTask, SetupFiles,
-    SourceInspector, Store, TransactionMode, VerifyMatrixTask, WorkspaceService,
+    SourceInspector, Store, TransactionMode, VerifiedMatrixTask, VerifyMatrixTask,
+    WorkspaceService,
 };
 use tect_domain::{
     CommitmentEvidence, EngineeringIntent, EngineeringMatrixInput, EngineeringMode, Error,
@@ -21,8 +22,9 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
-const SYSTEM_ID: &str = "7689109430044371904";
-const DATABASE_OID: i64 = 16384;
+const APPROVED_SYSTEM_ID: &str = "7689676854994613066";
+const APPROVED_DATABASE_OID: i64 = 16385;
+const APPROVED_PORT: u16 = 64775;
 
 struct UnusedHostAdapters;
 
@@ -129,12 +131,20 @@ async fn guarded_pools() -> (PgPool, PgPool, String) {
     assert_eq!(runtime_options.get_username(), role);
     for options in [&admin_options, &runtime_options] {
         assert_eq!(options.get_database(), Some("tect_test"));
-        assert_eq!(
-            options.get_socket().map(|path| path.to_str().unwrap()),
-            Some("/tmp/tectd-matrix-pg18.6-Ry8kWr/socket")
-        );
-        assert_eq!(options.get_port(), 55586);
+        assert!(options.get_socket().is_none());
+        assert_eq!(options.get_host(), "127.0.0.1");
+        assert_eq!(options.get_port(), APPROVED_PORT);
     }
+    assert_eq!(admin_options.get_host(), runtime_options.get_host());
+    assert_eq!(admin_options.get_port(), runtime_options.get_port());
+    let expected_system_id = std::env::var("TECT_TEST_EXPECTED_PG_SYSTEM_ID")
+        .expect("explicit disposable PostgreSQL system ID required");
+    let expected_database_oid: i64 = std::env::var("TECT_TEST_EXPECTED_DB_OID")
+        .expect("explicit disposable PostgreSQL database OID required")
+        .parse()
+        .expect("numeric database OID required");
+    assert_eq!(expected_system_id, APPROVED_SYSTEM_ID);
+    assert_eq!(expected_database_oid, APPROVED_DATABASE_OID);
     let admin_pool = PgPool::connect_with(admin_options).await.unwrap();
     let runtime_pool = PgPool::connect_with(runtime_options).await.unwrap();
     let identity: (i32, String, String, i64, String) = sqlx::query_as(
@@ -153,7 +163,12 @@ async fn guarded_pools() -> (PgPool, PgPool, String) {
             identity.3,
             identity.4.as_str()
         ),
-        ("tect_test", "postgres", DATABASE_OID, SYSTEM_ID)
+        (
+            "tect_test",
+            "postgres",
+            expected_database_oid,
+            expected_system_id.as_str()
+        )
     );
     let runtime_identity: (String, String, i64) = sqlx::query_as(
         "SELECT current_database(),current_user,\
@@ -164,7 +179,7 @@ async fn guarded_pools() -> (PgPool, PgPool, String) {
     .unwrap();
     assert_eq!(
         runtime_identity,
-        ("tect_test".into(), role.clone(), DATABASE_OID)
+        ("tect_test".into(), role.clone(), expected_database_oid)
     );
     (admin_pool, runtime_pool, role)
 }
@@ -285,10 +300,13 @@ async fn owner_recorded_matrix_verification_round_trips_and_rejects_conflicts() 
         service.verify_matrix_task(&verifier_context, &stale).await,
         Err(Error::StaleRevision)
     );
-    let record = service
+    let result = service
         .verify_matrix_task(&verifier_context, &request)
         .await
         .unwrap();
+    let VerifiedMatrixTask::Legacy(record) = result else {
+        panic!("historical unbound verification must use V1");
+    };
     assert_eq!(record.owner_principal, owner.principal_id.to_string());
     assert_eq!(record.verifier_principal, verifier.principal_id.to_string());
     assert_eq!(record.input_digest, revision.input_digest);
@@ -306,7 +324,7 @@ async fn owner_recorded_matrix_verification_round_trips_and_rejects_conflicts() 
         .verify_matrix_task(&verifier_context, &request)
         .await
         .unwrap();
-    assert_eq!(replay, record);
+    assert_eq!(replay, VerifiedMatrixTask::Legacy(record.clone()));
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM matrix_verifications WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3")
         .bind(owner.tenant_id).bind(workspace_id).bind(task_id)
@@ -321,7 +339,38 @@ async fn owner_recorded_matrix_verification_round_trips_and_rejects_conflicts() 
         .matrix_verification_for_revision(workspace_id, task_id, 1, &revision.input_digest)
         .await
         .unwrap();
-    assert_eq!(persisted, Some(record));
+    assert_eq!(persisted, Some(record.clone()));
+    tx.commit().await.unwrap();
+    let mut replacement_request = request.clone();
+    for evidence in &mut replacement_request.evidence {
+        evidence.evidence_ref.push_str("-replacement");
+    }
+    let VerifiedMatrixTask::Legacy(replacement) = service
+        .verify_matrix_task(&verifier_context, &replacement_request)
+        .await
+        .unwrap()
+    else {
+        panic!("unbound replacement must remain V1");
+    };
+    assert_ne!(replacement.digest, record.digest);
+    let mut tx = store.begin(TransactionMode::ReadOnly).await.unwrap();
+    tx.authenticate(&verifier.auth).await.unwrap();
+    tx.set_tenant(owner.tenant_id).await.unwrap();
+    let verification_store = tx.matrix_verification_store().unwrap();
+    let historical = verification_store
+        .historical_matrix_verification_by_digest(workspace_id, task_id, 1, &record.digest)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(historical.0, record);
+    assert!(historical.1 > 0);
+    assert_eq!(
+        verification_store
+            .historical_matrix_verification_by_digest(workspace_id, task_id, 1, &"f".repeat(64))
+            .await
+            .unwrap(),
+        None,
+    );
     tx.commit().await.unwrap();
     let denied = sqlx::query("UPDATE matrix_verifications SET policy_version='changed' WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3")
         .bind(owner.tenant_id).bind(workspace_id).bind(task_id)

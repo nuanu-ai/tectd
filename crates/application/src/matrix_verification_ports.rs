@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use tect_domain::{MatrixEvidenceBinding, MatrixVerificationRecord, RequiredMatrixFact, Result};
+use tect_domain::{
+    Error, MatrixEvidenceBinding, MatrixVerificationRecord, RequiredMatrixFact, Result,
+};
 use uuid::Uuid;
 
 /// A host-owned validator must resolve immutable content, its SHA-256, source,
@@ -59,6 +61,17 @@ impl MatrixEvidenceValidator for DisabledMatrixEvidenceValidator {
 /// Implementations must append atomically and reject a changed task head.
 #[async_trait]
 pub trait MatrixVerificationStore: Send {
+    /// Exact immutable V1 record and original verification time for completing
+    /// an already-sent historical dispatch. Never use this to authorize a send.
+    async fn historical_matrix_verification_by_digest(
+        &mut self,
+        _workspace_id: Uuid,
+        _task_id: Uuid,
+        _revision: i64,
+        _record_digest: &str,
+    ) -> Result<Option<(MatrixVerificationRecord, i64)>> {
+        Err(Error::Forbidden)
+    }
     /// Returns an exact persisted record; callers must re-evaluate time-bound
     /// evidence at use time. None never implies verified.
     async fn matrix_verification_for_revision(

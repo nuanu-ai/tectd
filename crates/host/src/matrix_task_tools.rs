@@ -1,6 +1,8 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tect_application::{MatrixTaskRevision, RecordMatrixTask};
+use tect_application::{
+    MatrixRequirementsLocator, MatrixTaskRevision, MatrixTaskSource, RecordMatrixTask,
+};
 use tect_domain::{EngineeringChoiceSet, Error, Result};
 use uuid::Uuid;
 
@@ -9,6 +11,7 @@ const MAX_OPERATIONAL_FACTS: usize = 1024;
 
 pub(crate) enum MatrixTaskInvocation {
     Record(Box<RecordMatrixTask>),
+    BoundRecord(Box<RecordMatrixTask>, MatrixRequirementsLocator),
     Get(Uuid),
 }
 
@@ -22,6 +25,8 @@ struct RecordArguments {
     input: tect_domain::EngineeringMatrixInput,
     #[serde(default)]
     choice_set: Option<EngineeringChoiceSet>,
+    #[serde(default)]
+    requirements_locator: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -43,6 +48,9 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<MatrixTaskInvocation
                     .len(),
                 None => 0,
             };
+            if arguments.get("requirements_locator") == Some(&Value::Null) {
+                return Err(Error::InvalidArguments);
+            }
             if input_bytes + choice_bytes > MAX_MATRIX_INPUT_BYTES {
                 return Err(Error::InvalidArguments);
             }
@@ -73,7 +81,13 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<MatrixTaskInvocation
                 }
                 choice_set.validate(&request.input)?;
             }
-            Ok(MatrixTaskInvocation::Record(Box::new(request)))
+            match args.requirements_locator {
+                Some(value) => Ok(MatrixTaskInvocation::BoundRecord(
+                    Box::new(request),
+                    crate::matrix_requirements_context_tools::parse_locator(value)?,
+                )),
+                None => Ok(MatrixTaskInvocation::Record(Box::new(request))),
+            }
         }
         "get_matrix_task" => {
             let args: GetArguments =
@@ -162,6 +176,12 @@ pub(crate) fn guard_record_output(request: &RecordMatrixTask, capacity: usize) -
     Ok(())
 }
 
+pub(crate) fn guard_bound_record_output(request: &RecordMatrixTask, capacity: usize) -> Result<()> {
+    // Bound declarations can inject at most seven short fields with a digest
+    // provenance. Reserve room for those and the immutable context locator.
+    guard_record_output(request, capacity.saturating_sub(4096))
+}
+
 fn reject_unknown_input_fields(input: &Value) -> Result<()> {
     fields(
         input,
@@ -219,6 +239,22 @@ pub(crate) fn revision(revision: MatrixTaskRevision) -> Value {
     output
 }
 
+pub(crate) fn source(source: MatrixTaskSource) -> Value {
+    let mut output = revision(source.revision);
+    if let Some(binding) = source.requirements_binding {
+        output["requirements_snapshot_id"] = json!(binding.snapshot_id);
+        output["requirements_semantic_digest"] = json!(binding.semantic_digest);
+        output["context_authority_schema"] = json!(binding.authority_schema);
+        output["requirements_locator"] = binding.locator.as_json();
+    } else {
+        output["requirements_snapshot_id"] = Value::Null;
+        output["requirements_semantic_digest"] = Value::Null;
+        output["context_authority_schema"] = Value::Null;
+        output["requirements_locator"] = Value::Null;
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,6 +263,56 @@ mod tests {
         crate::api::route_contract("command", "task.source.record").unwrap()["example"]["arguments"]
             ["params"]
             .clone()
+    }
+
+    #[test]
+    fn bound_source_wire_requires_strict_locator_and_projects_immutable_binding() {
+        let mut params = example_params();
+        let program_id = Uuid::new_v4();
+        params["requirements_locator"] = json!({"level":"program","program_id":program_id});
+        let MatrixTaskInvocation::BoundRecord(request, locator) =
+            parse("record_matrix_task", params.clone()).unwrap()
+        else {
+            panic!("bound record")
+        };
+        assert_eq!(locator, MatrixRequirementsLocator::Program { program_id });
+        let binding = tect_application::MatrixTaskRequirementsBinding {
+            locator: locator.clone(),
+            snapshot_id: Uuid::new_v4(),
+            semantic_digest: "a".repeat(64),
+            authority_schema: tect_domain::MATRIX_REQUIREMENTS_SCHEMA.into(),
+        };
+        let output = source(MatrixTaskSource {
+            revision: MatrixTaskRevision {
+                task_id: request.task_id,
+                revision: request.revision,
+                request_id: request.request_id,
+                input: request.input.clone(),
+                input_digest: "b".repeat(64),
+                choice_set: request.choice_set.clone(),
+                choice_set_digest: None,
+                recorded_by_principal_id: Uuid::new_v4(),
+                recorded_by_session_id: Uuid::new_v4(),
+            },
+            requirements_binding: Some(binding.clone()),
+        });
+        assert_eq!(
+            output["requirements_snapshot_id"],
+            json!(binding.snapshot_id)
+        );
+        assert_eq!(
+            output["requirements_semantic_digest"],
+            binding.semantic_digest
+        );
+        assert_eq!(output["context_authority_schema"], binding.authority_schema);
+        assert_eq!(output["requirements_locator"], locator.as_json());
+        params["requirements_locator"] = Value::Null;
+        assert!(parse("record_matrix_task", params.clone()).is_err());
+        params["requirements_locator"] =
+            json!({"level":"program","program_id":program_id,"actor_is_human":true});
+        assert!(parse("record_matrix_task", params.clone()).is_err());
+        params["requirements_locator"] = json!({"level":"program","program_id":Uuid::nil()});
+        assert!(parse("record_matrix_task", params).is_err());
     }
 
     #[test]

@@ -17,10 +17,10 @@ fn post_response_verification_drift_is_terminal_and_matrix_only() {
     );
     assert!(STALE_REASON.contains("NOT VALID"));
     assert!(ADVICE_DISPATCH_LIFECYCLE.contains("Some(AdvisoryReason::MatrixVerificationStale)"));
+    assert!(ADVICE_STORE.contains("record.binding.verification != authority"));
     assert!(
-        ADVICE_STORE.contains(
-            "record.binding.verification_digest.as_deref() != Some(latest_digest.as_str())"
-        )
+        ADVICE_STORE
+            .contains("record.binding.verification.digest() != Some(latest_digest.as_str())")
     );
     assert!(ADVICE_STORE.contains("EXTRACT(EPOCH FROM pg_catalog.clock_timestamp())"));
 }
@@ -37,7 +37,7 @@ fn positive_matrix_advice_requires_exact_immutable_verification() {
         assert!(ADVICE_LINK.contains(required), "missing {required}");
     }
     for required in [
-        "ORDER BY verified_at DESC,id DESC LIMIT 1",
+        "ORDER BY v.verified_at DESC,v.id DESC LIMIT 1",
         "verification_digest != expected_verification",
         "verified_input_digest != input_digest",
         "expires_at <=",
@@ -47,7 +47,10 @@ fn positive_matrix_advice_requires_exact_immutable_verification() {
             "missing {required}"
         );
     }
-    assert!(ADVICE_STORE.contains("verification_digest != record.binding.verification_digest"));
+    assert!(
+        ADVICE_STORE
+            .contains("verification_digest.as_deref() != record.binding.verification.digest()")
+    );
     assert!(ADVICE_STORE.contains("o.matrix_verification_digest"));
 }
 

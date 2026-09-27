@@ -87,6 +87,8 @@ pub(super) async fn pipeline_recommendation_is_current(
         || saved.manifest.validate_digest().is_err()
         || old.material_digest != saved.manifest.digest
         || saved.context.verification_contract_digest != saved.manifest.digest
+        || saved.context.matrix_authority != saved.manifest.matrix_authority
+        || !saved.manifest.has_bound_v2_authority()
         || saved.context.work_node_id != saved.manifest.work_id
         || saved.context.work_node_revision != saved.manifest.work_revision
         || saved.context.catalogue_revision != saved.manifest.catalogue_revision
@@ -159,6 +161,7 @@ pub(super) async fn pipeline_recommendation_is_current(
         && source.work.revision() == context.work_node_revision
         && basis.matrix_disposition_id == context.matrix_disposition_id
         && basis.match_effect_attestation_id == context.match_effect_attestation_id
+        && source.matrix.authority == context.matrix_authority
         && source.catalogue.revision == context.catalogue_revision
         && source.catalogue.digest == context.catalogue_digest
         && context.compatibility_policy_digest == manifest.compatibility_policy_digest

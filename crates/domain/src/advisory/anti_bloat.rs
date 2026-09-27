@@ -16,6 +16,43 @@ pub struct AntiBloatObligationLink {
     pub goal_id: Uuid,
 }
 
+/// One exact obligation in the phase-aware preservation universe. The identity
+/// is stable across revisions; a changed body retains the identity and changes
+/// its digest, so two different bodies cannot silently collapse into one item.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AntiBloatProtectedObligation {
+    pub id: String,
+    pub content_digest: String,
+    pub origin: AntiBloatObligationOrigin,
+    /// Present when a persisted downstream effect belongs to this Scope
+    /// candidate. It prevents removing a candidate with a live child graph.
+    pub scope_candidate_id: Option<Uuid>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AntiBloatObligationOrigin {
+    ScopeSource,
+    NativeScope,
+    MatrixDeclaration,
+    MatrixSelectedChoice,
+    MatrixMappedNode,
+    PipelineSelectedOption,
+    MandatoryPolicy,
+}
+
+pub fn anti_bloat_protected_obligations_digest(
+    digest: &impl ScopeDigest,
+    obligations: &[AntiBloatProtectedObligation],
+) -> Result<String> {
+    canonical_digest(
+        digest,
+        "tect.anti-bloat-protected-obligations/1",
+        &obligations,
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AntiBloatInput {
@@ -36,6 +73,11 @@ pub struct AntiBloatInput {
     /// Mandatory policy is part of the frozen obligation universe, never an
     /// exemption from it.
     pub mandatory_policy_obligation_ids: Vec<String>,
+    /// Canonical union of obligations that already exist at preparation time.
+    /// Downstream Matrix and pipeline effects are absent until their own saved
+    /// and verified transitions occur.
+    pub protected_obligations: Vec<AntiBloatProtectedObligation>,
+    pub protected_obligations_digest: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,6 +109,7 @@ pub struct AntiBloatReview {
     pub candidate_set_id: Uuid,
     pub plan_revision: i64,
     pub dependency_digest: String,
+    pub protected_obligations_digest: String,
     pub selected_id: ScopeAlternativeId,
     pub findings: Vec<AntiBloatFinding>,
 }
@@ -162,7 +205,10 @@ fn selected(input: &AntiBloatInput) -> Result<&crate::ScopeDecompositionAlternat
         .ok_or(Error::InvalidArguments)
 }
 
-fn validate_links(input: &AntiBloatInput) -> Result<BTreeMap<String, BTreeSet<Uuid>>> {
+fn validate_links(
+    digest: &impl ScopeDigest,
+    input: &AntiBloatInput,
+) -> Result<BTreeMap<String, BTreeSet<Uuid>>> {
     let material = &selected(input)?.material;
     let obligations = input
         .manifest
@@ -180,6 +226,50 @@ fn validate_links(input: &AntiBloatInput) -> Result<BTreeMap<String, BTreeSet<Uu
         .iter()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
+    let mut protected = BTreeMap::new();
+    for obligation in &input.protected_obligations {
+        if obligation.id.trim().is_empty()
+            || obligation.id.len() > 512
+            || obligation.id.chars().any(|c| c == '\0')
+            || !valid_digest(&obligation.content_digest)
+            || obligation.scope_candidate_id == Some(Uuid::nil())
+            || obligation.scope_candidate_id.is_some_and(|id| {
+                !material
+                    .candidates
+                    .iter()
+                    .any(|candidate| candidate.id == id)
+            })
+            || (obligation.origin == AntiBloatObligationOrigin::ScopeSource
+                && (obligation.scope_candidate_id.is_some()
+                    || !input.manifest.obligations.iter().any(|source| {
+                        obligation.id == format!("scope-ref:{}", source.id)
+                            && obligation.content_digest == source.statement_digest
+                    })))
+            || protected
+                .insert(obligation.id.clone(), obligation)
+                .is_some()
+        {
+            return Err(Error::InvalidArguments);
+        }
+    }
+    if input
+        .protected_obligations
+        .windows(2)
+        .any(|pair| pair[0].id >= pair[1].id)
+        || input.protected_obligations_digest
+            != anti_bloat_protected_obligations_digest(digest, &input.protected_obligations)?
+        || input.manifest.obligations.iter().any(|source| {
+            protected
+                .get(&format!("scope-ref:{}", source.id))
+                .is_none_or(|item| {
+                    item.origin != AntiBloatObligationOrigin::ScopeSource
+                        || item.content_digest != source.statement_digest
+                        || item.scope_candidate_id.is_some()
+                })
+        })
+    {
+        return Err(Error::InvalidSource);
+    }
     if input.graph_provenance.trim().is_empty()
         || input.selected_revision <= input.manifest.source.candidate_set_revision
         || policy.len() != input.mandatory_policy_obligation_ids.len()
@@ -231,7 +321,7 @@ pub fn review_anti_bloat(
     input: &AntiBloatInput,
 ) -> Result<AntiBloatReview> {
     input.manifest.validate(digest)?;
-    let links = validate_links(input)?;
+    let links = validate_links(digest, input)?;
     let alternative = selected(input)?;
     let material = &alternative.material;
     let required_goals = links.values().flatten().copied().collect::<BTreeSet<_>>();
@@ -249,6 +339,10 @@ pub fn review_anti_bloat(
             change.prior_candidate_id == Some(candidate.id)
                 || change.target_candidate_id == Some(candidate.id)
         });
+        let downstream_protected = input
+            .protected_obligations
+            .iter()
+            .any(|obligation| obligation.scope_candidate_id == Some(candidate.id));
         let duplicate = material.candidates.iter().any(|other| {
             other.id != candidate.id
                 && other.outcome == candidate.outcome
@@ -266,7 +360,7 @@ pub fn review_anti_bloat(
                 AntiBloatClass::NecessaryEnabler,
                 "another candidate depends on it",
             )
-        } else if protected || !candidate.evidence_ids.is_empty() {
+        } else if protected || downstream_protected || !candidate.evidence_ids.is_empty() {
             (
                 AntiBloatClass::Unknown,
                 "protected or evidence-bound work needs review",
@@ -294,6 +388,7 @@ pub fn review_anti_bloat(
                 &input.manifest.whole_set_digest,
                 &alternative.material_digest,
                 &input.dependency_digest,
+                &input.protected_obligations_digest,
                 candidate.id,
                 class,
             ),
@@ -314,6 +409,7 @@ pub fn review_anti_bloat(
         candidate_set_id: input.manifest.source.candidate_set_id,
         plan_revision: input.selected_revision,
         dependency_digest: input.dependency_digest.clone(),
+        protected_obligations_digest: input.protected_obligations_digest.clone(),
         selected_id: input.selected_id.clone(),
         findings,
     })
@@ -398,6 +494,10 @@ pub fn derive_anti_bloat_delta(
             change.prior_candidate_id == Some(*candidate_id)
                 || change.target_candidate_id == Some(*candidate_id)
         })
+        || input
+            .protected_obligations
+            .iter()
+            .any(|obligation| obligation.scope_candidate_id == Some(*candidate_id))
     {
         return Err(AntiBloatRefusal::CoupledEditRequired);
     }

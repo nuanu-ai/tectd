@@ -118,6 +118,7 @@ pub(crate) async fn current_preparation(
     prepared: &PreparedModelRouteRecommendation,
 ) -> Result<(String, Option<String>)> {
     let work = &prepared.work;
+    work.require_current_authority()?;
     let link = &work.selection_link;
     let selection = &work.approved_matrix_selection;
     let tenant = uow.tenant_id()?;
@@ -188,6 +189,43 @@ include!("model_route_store/recommendation.rs");
 
 #[async_trait]
 impl ModelRouteDecisionStore for PgUnitOfWork {
+    async fn validate_current_decision(
+        &mut self,
+        decision: &CapturedModelRouteDecision,
+    ) -> Result<()> {
+        if !self.is_read_write() || !self.is_owner() {
+            return Err(Error::Forbidden);
+        }
+        let saved = self
+            .decision_by_id(decision.prepared.workspace_id, decision.id)
+            .await?
+            .ok_or(Error::StaleContext)?;
+        if saved != *decision
+            || !matches!(
+                decision.outcome,
+                ModelRouteDecisionOutcome::Recommended { .. }
+            )
+            || decision.routes.observed_actual.is_some()
+            || decision.prepared.routes.observed_actual.is_some()
+        {
+            return Err(Error::InputConflict);
+        }
+        let prepared = self
+            .by_request(
+                decision.prepared.workspace_id,
+                &decision.prepared.request_key,
+            )
+            .await?
+            .ok_or(Error::StaleContext)?;
+        if prepared != decision.prepared {
+            return Err(Error::InputConflict);
+        }
+        // Historical selected-save ownership is part of the immutable Work
+        // proof. Disposition authority belongs to the current invoking owner
+        // session, which the public service locks and validates before record.
+        current_preparation(self, &prepared).await.map(|_| ())
+    }
+
     async fn sealed_provider_ranking(
         &mut self,
         workspace_id: Uuid,

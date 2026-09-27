@@ -104,6 +104,9 @@ impl WorkspaceService {
         }
         let manifest = build_pipeline_recommendation_manifest(&source)?;
         manifest.validate_against_definitions(&source.definitions)?;
+        if !manifest.has_bound_v2_authority() {
+            return Err(Error::StaleContext);
+        }
         let config = tx.advisory_config(workspace.id).await?;
         let (state, primary_reason) = preparation_decision(
             config.mode,
@@ -173,6 +176,7 @@ impl PipelineRecommendationContext {
             work_node_revision: manifest.work_revision,
             matrix_disposition_id: basis.matrix_disposition_id,
             match_effect_attestation_id: basis.match_effect_attestation_id,
+            matrix_authority: manifest.matrix_authority.clone(),
             catalogue_revision: manifest.catalogue_revision.clone(),
             catalogue_digest: manifest.catalogue_digest.clone(),
             compatibility_policy_digest: manifest.compatibility_policy_digest.clone(),
@@ -228,6 +232,12 @@ fn validate_basis(
         || basis.source_candidate_set_revision < 1
         || !valid_digest(&basis.selected_sources_digest)
         || !valid_digest(&basis.source.catalogue.digest)
+        || basis
+            .source
+            .matrix
+            .authority
+            .as_ref()
+            .is_some_and(|authority| authority.validate().is_err())
     {
         return Err(Error::StaleContext);
     }
@@ -290,6 +300,7 @@ fn replay_matches(
         && saved.context.work_node_id == request.work_node_id
         && saved.context.work_node_revision == request.expected_work_node_revision
         && saved.context.verification_contract_digest == saved.manifest.digest
+        && saved.context.matrix_authority == saved.manifest.matrix_authority
         && saved.context.compatibility_policy_digest == saved.manifest.compatibility_policy_digest)
 }
 
@@ -300,6 +311,7 @@ fn verify_capture(
     manifest: &tect_domain::PipelineRecommendationManifest,
 ) -> Result<()> {
     if saved.context != *context
+        || saved.context.matrix_authority != manifest.matrix_authority
         || saved.context.compatibility_policy_digest != manifest.compatibility_policy_digest
         || saved.manifest != *manifest
         || saved.opportunity.workflow_occurrence_key != input.workflow_occurrence_key

@@ -64,6 +64,19 @@ fn trusted_graph_links_every_goal_so_even_duplicate_candidates_are_not_rankable(
     let (links, dependency_digest, graph_provenance) =
         authored_graph_binding(&authored, &[]).unwrap();
     assert_eq!(links.len(), 2);
+    let protected_obligations = authored
+        .obligations
+        .iter()
+        .map(|source| AntiBloatProtectedObligation {
+            id: format!("scope-ref:{}", source.id),
+            content_digest: source.statement_digest.clone(),
+            origin: AntiBloatObligationOrigin::ScopeSource,
+            scope_candidate_id: None,
+        })
+        .collect::<Vec<_>>();
+    let protected_obligations_digest =
+        anti_bloat_protected_obligations_digest(&Sha256ScopeDigest, &protected_obligations)
+            .unwrap();
     let input = AntiBloatInput {
         selected_revision: authored.source.candidate_set_revision + 1,
         selected_id: authored.baseline_id.clone(),
@@ -73,6 +86,8 @@ fn trusted_graph_links_every_goal_so_even_duplicate_candidates_are_not_rankable(
         obligation_links: links,
         non_goal_source_obligation_ids: vec![],
         mandatory_policy_obligation_ids: vec![],
+        protected_obligations,
+        protected_obligations_digest,
     };
     let review = review_anti_bloat(&Sha256ScopeDigest, &input).unwrap();
     assert_eq!(review.findings.len(), 2);
@@ -787,6 +802,18 @@ async fn selected_save_activates_exact_source_bound_anti_bloat_review() {
         .await
         .unwrap();
     assert!(observed.source_fragments_match);
+    assert_eq!(
+        observed.input.protected_obligations_digest,
+        observed.review.protected_obligations_digest
+    );
+    assert_eq!(
+        anti_bloat_protected_obligations_digest(
+            &Sha256ScopeDigest,
+            &observed.input.protected_obligations
+        )
+        .unwrap(),
+        observed.input.protected_obligations_digest
+    );
     assert_eq!(observed.after_saved, after);
     assert_eq!(observed.receipt, receipt);
     assert_eq!(observed.verdict().0, AntiBloatVerificationVerdict::Pass);
@@ -860,6 +887,18 @@ async fn selected_save_activates_exact_source_bound_anti_bloat_review() {
         .unwrap();
     assert_eq!(later.context.candidate_set.revision, 6);
     ordinary_writer.commit().await.unwrap();
+    let (stale_material, _) = service
+        .get_anti_bloat_verification_material(&verifier_context, prepared.review_id)
+        .await
+        .unwrap();
+    assert!(!stale_material.source_fragments_match);
+    assert_eq!(
+        stale_material.verdict(),
+        (
+            AntiBloatVerificationVerdict::Unknown,
+            AntiBloatVerificationReason::SourceEvidenceUnavailable
+        )
+    );
     let mut stale_verify = verify.clone();
     stale_verify.request_id = Uuid::new_v4();
     assert_eq!(

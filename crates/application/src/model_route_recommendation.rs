@@ -1,7 +1,7 @@
 //! Prepare a durable recommendation opportunity without ranking or dispatch.
 use crate::{
     ModelRouteCatalogueProvider, ModelRouteHostCapabilitiesProvider, ModelRoutePreparation,
-    ModelRouteRecommendationStore, ModelRouteSelectionRead, PreparedModelRouteRecommendation,
+    ModelRoutePreparationStore, PreparedModelRouteRecommendation,
 };
 use tect_domain::{
     AdvisoryRequestPreference, Error, ModelRouteRecord, Result, WorkspaceAdvisoryMode,
@@ -45,8 +45,7 @@ impl PrepareModelRouteRecommendation {
 
     pub async fn prepare(
         &self,
-        store: &mut dyn ModelRouteRecommendationStore,
-        selection_reader: &mut dyn ModelRouteSelectionRead,
+        store: &mut dyn ModelRoutePreparationStore,
         host_capabilities: &dyn ModelRouteHostCapabilitiesProvider,
         catalogue_provider: &dyn ModelRouteCatalogueProvider,
     ) -> Result<PreparedModelRouteRecommendation> {
@@ -75,7 +74,7 @@ impl PrepareModelRouteRecommendation {
         if basis.advisory_config_revision < 0 {
             return Err(Error::StaleContext);
         }
-        let mut work = selection_reader
+        let mut work = store
             .approved_work_context(
                 self.workspace_id,
                 self.disposition_id,
@@ -95,6 +94,7 @@ impl PrepareModelRouteRecommendation {
         {
             return Err(Error::StaleContext);
         }
+        work.require_current_authority()?;
         work.host_capabilities = host_capabilities.host_capabilities()?;
         work.digest()?;
         let catalogue = catalogue_provider.catalogue()?;

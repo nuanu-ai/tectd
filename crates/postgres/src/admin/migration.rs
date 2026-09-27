@@ -15,6 +15,16 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
     .await
     .map_err(storage_error)?;
     let statements = [
+        format!(
+            "REVOKE ALL PRIVILEGES ON TABLE matrix_task_requirements_bindings FROM {quoted_role}"
+        ),
+        format!("GRANT SELECT,INSERT ON TABLE matrix_task_requirements_bindings TO {quoted_role}"),
+        format!(
+            "REVOKE ALL PRIVILEGES ON TABLE matrix_requirements_proposals,matrix_requirements_confirmations,matrix_requirements_snapshots FROM {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT,INSERT ON TABLE matrix_requirements_proposals,matrix_requirements_confirmations,matrix_requirements_snapshots TO {quoted_role}"
+        ),
         format!("GRANT USAGE ON SCHEMA public TO {quoted_role}"),
         format!("REVOKE ALL PRIVILEGES ON TABLE tenants, principals, hosts FROM {quoted_role}"),
         format!(
@@ -34,6 +44,10 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
             "GRANT SELECT, INSERT ON TABLE advisory_workspace_config_history, \
              advisory_opportunity, advisory_dispatch TO {quoted_role}"
         ),
+        format!(
+            "REVOKE ALL PRIVILEGES ON TABLE matrix_v1_dispatch_cutover_allowlist FROM {quoted_role}"
+        ),
+        format!("GRANT SELECT ON TABLE matrix_v1_dispatch_cutover_allowlist TO {quoted_role}"),
         format!(
             "GRANT UPDATE(state,primary_reason,updated_at) ON TABLE advisory_opportunity TO {quoted_role}"
         ),
@@ -400,7 +414,7 @@ pub async fn validate_runtime_role(pool: &PgPool, runtime_role: &str) -> Result<
                          'pipeline_phase_effect_attestations',
                          'scope_anti_bloat_preservation_attestations',
                          'pipeline_advice_contexts',
-                         'matrix_tasks', 'matrix_task_revisions',
+                         'matrix_tasks', 'matrix_task_revisions', 'matrix_task_requirements_bindings',
                          'matrix_verifications', 'matrix_verification_bindings',
                          'advisory_scope_source_snapshot', 'advisory_scope_manifest',
                          'advisory_scope_advice', 'advisory_scope_disposition',

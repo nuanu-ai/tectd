@@ -3,19 +3,20 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use tect_application::{
-    AdvisoryStore, MatrixPlanningEffectSnapshot, MatrixPlanningEffectStore, MatrixTaskStore,
-    MatrixVerificationStore, PipelineDispositionBasis, PipelineRecommendationBasis,
-    PipelineRecommendationContext, PipelineRecommendationStore, PreparedPipelineRecommendation,
-    pipeline_recommendation_source_digest,
+    AdvisoryStore, ContextMatrixVerificationStore, MatrixPlanningEffectSnapshot,
+    MatrixPlanningEffectStore, MatrixRequirementsContextStore, MatrixTaskStore,
+    PipelineDispositionBasis, PipelineRecommendationBasis, PipelineRecommendationContext,
+    PipelineRecommendationStore, PreparedPipelineRecommendation,
+    context_matrix_verified_evaluation_digest, pipeline_recommendation_source_digest,
 };
 use tect_domain::{
     ADVISORY_POLICY_VERSION, AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryOpportunityInput,
     AdvisoryOpportunityState, AdvisoryReason, AdvisoryRequestPreference, Error,
-    MatrixPlanningEffectMaterial, MatrixPlanningEffectNode, OwnerReportedEngineeringMatrixFacts,
+    MATRIX_REQUIREMENTS_SCHEMA, MatrixPlanningEffectMaterial, MatrixPlanningEffectNode,
     PipelineCatalogueSnapshot, PipelineCompatibilityPolicy, PipelineDispositionResult,
     PipelineMatrixBasis, PipelineRecommendationManifest, PipelineRecommendationSource, Result,
-    SliceCandidateNode, compose_independently_verified_owner_matrix, evaluate_matrix_verification,
-    matrix_input_digest, matrix_verified_disposition_digest,
+    SliceCandidateNode, compose_confirmed_requirements_matrix,
+    evaluate_context_matrix_verification, matrix_input_digest, resolve_matrix_requirements,
 };
 use uuid::Uuid;
 
@@ -103,6 +104,7 @@ fn reviewed_effect_digest(
         input_digest: link.selection.expected_input_digest.clone(),
         choice_set_digest: link.selection.expected_choice_set_digest.clone(),
         verification_digest: link.selection.expected_verification_digest.clone(),
+        context_provenance: link.context_provenance.clone(),
         evaluation_digest: link.evaluation_digest.clone(),
         catalogue_version: link.catalogue_version.clone(),
         caller_principal_id: link.caller_principal_id,

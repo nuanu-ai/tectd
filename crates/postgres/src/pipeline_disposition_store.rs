@@ -187,8 +187,27 @@ pub(crate) async fn load_basis(
     workspace_id: Uuid,
     opportunity_id: Uuid,
 ) -> Result<Option<PipelineDispositionBasis>> {
+    load_basis_with_lock(store, workspace_id, opportunity_id, true).await
+}
+
+pub(crate) async fn load_basis_for_verifier(
+    store: &mut PgUnitOfWork,
+    workspace_id: Uuid,
+    opportunity_id: Uuid,
+) -> Result<Option<PipelineDispositionBasis>> {
+    // The independent verifier may read the same saved basis but must not
+    // acquire owner-side locks while preparing its attestation.
+    load_basis_with_lock(store, workspace_id, opportunity_id, false).await
+}
+
+async fn load_basis_with_lock(
+    store: &mut PgUnitOfWork,
+    workspace_id: Uuid,
+    opportunity_id: Uuid,
+    lock_authority: bool,
+) -> Result<Option<PipelineDispositionBasis>> {
     let tenant = store.tenant_id()?;
-    let row = sqlx::query(
+    let mut query = String::from(
         "SELECT o.state,d.id AS dispatch_id,d.state AS dispatch_state, \
                 d.send_certainty,d.outcome,d.response_payload, \
                 d.pipeline_response_sha256 \
@@ -196,14 +215,18 @@ pub(crate) async fn load_basis(
               (d.tenant_id,d.workspace_id,d.opportunity_id)= \
               (o.tenant_id,o.workspace_id,o.id) \
          WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.id=$3 \
-           AND o.capability='pipeline_recommendation' FOR UPDATE OF o",
-    )
-    .bind(tenant)
-    .bind(workspace_id)
-    .bind(opportunity_id)
-    .fetch_optional(&mut **store.transaction()?)
-    .await
-    .map_err(storage_error)?;
+           AND o.capability='pipeline_recommendation'",
+    );
+    if lock_authority {
+        query.push_str(" FOR UPDATE OF o");
+    }
+    let row = sqlx::query(&query)
+        .bind(tenant)
+        .bind(workspace_id)
+        .bind(opportunity_id)
+        .fetch_optional(&mut **store.transaction()?)
+        .await
+        .map_err(storage_error)?;
     let Some(row) = row else { return Ok(None) };
     let prepared = store
         .pipeline_recommendation_by_opportunity(workspace_id, opportunity_id)
@@ -232,7 +255,7 @@ pub(crate) async fn load_basis(
                 .try_get::<Option<String>, _>("pipeline_response_sha256")
                 .map_err(storage_error)?
                 .ok_or(Error::InputConflict)?;
-            if let Some(advice) =
+            let interpretation = if lock_authority {
                 crate::pipeline_recommendation_store::interpretation::disposition_advice(
                     store,
                     workspace_id,
@@ -241,7 +264,17 @@ pub(crate) async fn load_basis(
                     &digest,
                 )
                 .await?
-            {
+            } else {
+                crate::pipeline_recommendation_store::interpretation::disposition_advice_for_verifier(
+                    store,
+                    workspace_id,
+                    opportunity_id,
+                    dispatch_id,
+                    &digest,
+                )
+                .await?
+            };
+            if let Some(advice) = interpretation {
                 advice
             } else {
                 sealed_advice(dispatch_id, &bytes, &digest, &prepared.manifest)?
@@ -255,7 +288,7 @@ pub(crate) async fn load_basis(
             workspace_id,
             context.candidate_set_id,
             context.work_node_id,
-            true,
+            lock_authority,
         )
         .await?
         .ok_or(Error::StaleContext)?;
@@ -271,6 +304,23 @@ pub(crate) async fn is_current(
     store: &mut PgUnitOfWork,
     workspace_id: Uuid,
     saved: &PipelineDispositionBasis,
+) -> Result<bool> {
+    is_current_with_lock(store, workspace_id, saved, true).await
+}
+
+pub(crate) async fn is_current_for_verifier(
+    store: &mut PgUnitOfWork,
+    workspace_id: Uuid,
+    saved: &PipelineDispositionBasis,
+) -> Result<bool> {
+    is_current_with_lock(store, workspace_id, saved, false).await
+}
+
+async fn is_current_with_lock(
+    store: &mut PgUnitOfWork,
+    workspace_id: Uuid,
+    saved: &PipelineDispositionBasis,
+    lock_authority: bool,
 ) -> Result<bool> {
     let opportunity = &saved.prepared.opportunity;
     let context = &saved.prepared.context;
@@ -307,15 +357,19 @@ pub(crate) async fn is_current(
         return Ok(false);
     }
     let tenant = store.tenant_id()?;
-    let revision: Option<i64> = sqlx::query_scalar(
+    let mut config_query = String::from(
         "SELECT revision FROM advisory_workspace_config \
-         WHERE tenant_id=$1 AND workspace_id=$2 FOR SHARE",
-    )
-    .bind(tenant)
-    .bind(workspace_id)
-    .fetch_optional(&mut **store.transaction()?)
-    .await
-    .map_err(storage_error)?;
+         WHERE tenant_id=$1 AND workspace_id=$2",
+    );
+    if lock_authority {
+        config_query.push_str(" FOR SHARE");
+    }
+    let revision: Option<i64> = sqlx::query_scalar(&config_query)
+        .bind(tenant)
+        .bind(workspace_id)
+        .fetch_optional(&mut **store.transaction()?)
+        .await
+        .map_err(storage_error)?;
     if revision != Some(opportunity.config_revision) {
         return Ok(false);
     }
@@ -324,7 +378,7 @@ pub(crate) async fn is_current(
             workspace_id,
             context.candidate_set_id,
             context.work_node_id,
-            true,
+            lock_authority,
         )
         .await
     {
@@ -463,6 +517,7 @@ mod tests {
             selected_choice_id: String::new(),
             matrix_choice_set_digest: String::new(),
             matrix_verification_digest: String::new(),
+            matrix_authority: None,
             matrix_input_digest: String::new(),
             selected_candidate_digest: String::new(),
             compatibility_policy_digest: String::new(),

@@ -67,6 +67,7 @@ impl MatrixPlanningEffectSnapshot {
             input_digest: link.selection.expected_input_digest.clone(),
             choice_set_digest: link.selection.expected_choice_set_digest.clone(),
             verification_digest: link.selection.expected_verification_digest.clone(),
+            context_provenance: link.context_provenance.clone(),
             evaluation_digest: link.evaluation_digest.clone(),
             catalogue_version: link.catalogue_version.clone(),
             caller_principal_id: link.caller_principal_id,

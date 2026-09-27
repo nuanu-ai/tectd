@@ -88,10 +88,31 @@ pub trait ModelRouteSelectionRead: Send {
     ) -> Result<Option<ModelRouteWorkContext>>;
 }
 
+/// One transactional preparation boundary. Selection and capture must use the
+/// same unit of work so currentness locks cannot be held by a second session.
+pub trait ModelRoutePreparationStore:
+    ModelRouteRecommendationStore + ModelRouteSelectionRead
+{
+}
+
+impl<T: ModelRouteRecommendationStore + ModelRouteSelectionRead + ?Sized> ModelRoutePreparationStore
+    for T
+{
+}
+
 /// Implementations must lock/recheck the immutable preparation and exact
 /// Matrix/Work/catalogue basis before insert. Replay is exact; conflicts fail.
 #[async_trait]
 pub trait ModelRouteDecisionStore: Send {
+    /// Recheck the selected V2 Matrix link, frozen semantic context, operating
+    /// verification currentness and exact Work revision before disposition.
+    /// Default deny prevents an old adapter from accepting stale decisions.
+    async fn validate_current_decision(
+        &mut self,
+        _decision: &CapturedModelRouteDecision,
+    ) -> Result<()> {
+        Err(tect_domain::Error::Forbidden)
+    }
     /// Only a sealed raw provider response for the exact saved preparation may
     /// authorize a Ranking. Default deny keeps old adapters from laundering
     /// caller-supplied IDs as Jev advice.
@@ -130,4 +151,16 @@ pub trait ModelRouteDecisionStore: Send {
         &mut self,
         value: &CapturedModelRouteDisposition,
     ) -> Result<CapturedModelRouteDisposition>;
+}
+
+/// One transactional decision boundary. Preparation currentness and decision
+/// capture must share a unit of work so their locks cannot block each other.
+pub trait ModelRouteDecisionCaptureStore:
+    ModelRouteRecommendationStore + ModelRouteDecisionStore
+{
+}
+
+impl<T: ModelRouteRecommendationStore + ModelRouteDecisionStore + ?Sized>
+    ModelRouteDecisionCaptureStore for T
+{
 }

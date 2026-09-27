@@ -272,7 +272,7 @@ fn independent_verifier_rederives_full_graph_not_receipt_claim() {
     assert_eq!(serde_json::to_string(&material).unwrap(), golden);
     assert_eq!(
         material.digest().unwrap(),
-        "d554eeed3caffa9ea36a4271ba0b8b28b14e02a19f937a7d3edee6616f42c92f"
+        "0bf46892ab666d74e29ca965e1c1ef80fa945ce1d0df6ff3da4908cfc7e70bb5"
     );
     let round_trip: crate::AntiBloatVerificationMaterial = serde_json::from_str(golden).unwrap();
     assert_eq!(round_trip, material);

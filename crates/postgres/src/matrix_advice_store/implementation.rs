@@ -28,6 +28,36 @@ impl MatrixAdviceStore for PgUnitOfWork {
         let Some(row) = row else {
             return Ok(None);
         };
+        let verification_digest: Option<String> = row
+            .try_get("matrix_verification_digest")
+            .map_err(storage_error)?;
+        let task_id: Uuid = row.try_get("task_id").map_err(storage_error)?;
+        let task_revision: i64 = row.try_get("matrix_task_revision").map_err(storage_error)?;
+        let verification_row = if let Some(digest) = verification_digest.as_deref() {
+            Some(sqlx::query(
+                "SELECT id,input_digest,schema,owner_principal_id,verifier_principal_id,policy_version,record_digest,verification_reason, \
+                        frozen_snapshot_id,requirements_semantic_digest,authority_schema, \
+                        FLOOR(EXTRACT(EPOCH FROM verified_at))::bigint AS verified_epoch \
+                 FROM matrix_verifications WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 \
+                   AND task_revision=$4 AND record_digest=$5",
+            )
+            .bind(tenant)
+            .bind(workspace_id)
+            .bind(task_id)
+            .bind(task_revision)
+            .bind(digest)
+            .fetch_optional(&mut **self.transaction()?)
+            .await
+            .map_err(storage_error)?
+            .ok_or(Error::InternalInvariant)?)
+        } else {
+            None
+        };
+        let verification = verification_row
+            .as_ref()
+            .map(verification_authority)
+            .transpose()?
+            .unwrap_or(MatrixVerificationAuthority::Unverified);
         let (advice, input, choice) = {
             let choice_json: serde_json::Value =
                 row.try_get("choice_set").map_err(storage_error)?;
@@ -51,9 +81,7 @@ impl MatrixAdviceStore for PgUnitOfWork {
                     .try_get("matrix_choice_set_digest")
                     .map_err(storage_error)?,
                 evaluation_digest: row.try_get("material_digest").map_err(storage_error)?,
-                verification_digest: row
-                    .try_get("matrix_verification_digest")
-                    .map_err(storage_error)?,
+                verification,
             };
             if canonical_matrix_input_digest(&input_json)? != binding.input_digest
                 || choice.canonical_digest(&input)? != binding.choice_set_digest
@@ -77,56 +105,125 @@ impl MatrixAdviceStore for PgUnitOfWork {
                 .map_err(|_| Error::InternalInvariant)?;
             (advice, input, choice)
         };
-        if let Some(verification_digest) = advice.record.binding.verification_digest.as_deref() {
+        if let Some(verification_row) = verification_row {
             // Read historical advice against its immutable verification at the
             // instant it was recorded. Expiration after advice was saved must
             // not make an otherwise intact receipt unreadable.
-            let verification_row = sqlx::query(
-                "SELECT id,input_digest,schema,owner_principal_id,verifier_principal_id,policy_version,record_digest,verification_reason, \
-                        FLOOR(EXTRACT(EPOCH FROM verified_at))::bigint AS verified_epoch \
-                 FROM matrix_verifications WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 \
-                   AND task_revision=$4 AND record_digest=$5",
-            )
-            .bind(tenant)
-            .bind(workspace_id)
-            .bind(advice.record.binding.task_id)
-            .bind(advice.record.binding.task_revision)
-            .bind(verification_digest)
-            .fetch_optional(&mut **self.transaction()?)
-            .await
-            .map_err(storage_error)?
-            .ok_or(Error::InternalInvariant)?;
             let verified_epoch: i64 = verification_row
                 .try_get("verified_epoch")
                 .map_err(storage_error)?;
-            let verification = self
-                .decode_verification(
-                    workspace_id,
-                    advice.record.binding.task_id,
-                    advice.record.binding.task_revision,
-                    verification_row,
-                )
-                .await?;
-            let validated = evaluate_matrix_verification(
-                &advice.record.binding.task_id.to_string(),
-                &advice.record.binding.task_revision.to_string(),
-                &input,
-                &verification,
-                verified_epoch,
-            )
-            .map_err(|_| Error::InternalInvariant)?;
-            let reported = OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
-                advice.record.binding.task_id.to_string(),
-                advice.record.binding.task_revision.to_string(),
-                input.clone(),
-            )
-            .map_err(|_| Error::InternalInvariant)?;
-            let composition = compose_independently_verified_owner_matrix(&reported, &validated)
-                .map_err(|_| Error::InternalInvariant)?;
-            if matrix_verified_evaluation_digest(&input, &composition, &choice, &validated)
-                .map_err(|_| Error::InternalInvariant)?
-                != advice.record.binding.evaluation_digest
-            {
+            let actual_digest = match &advice.record.binding.verification {
+                MatrixVerificationAuthority::LegacyV1 { .. } => {
+                    let verification = self
+                        .decode_verification(workspace_id, task_id, task_revision, verification_row)
+                        .await?;
+                    let validated = evaluate_matrix_verification(
+                        &task_id.to_string(),
+                        &task_revision.to_string(),
+                        &input,
+                        &verification,
+                        verified_epoch,
+                    )
+                    .map_err(|_| Error::InternalInvariant)?;
+                    let reported =
+                        OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
+                            task_id.to_string(),
+                            task_revision.to_string(),
+                            input.clone(),
+                        )
+                        .map_err(|_| Error::InternalInvariant)?;
+                    let composition =
+                        compose_independently_verified_owner_matrix(&reported, &validated)
+                            .map_err(|_| Error::InternalInvariant)?;
+                    matrix_verified_evaluation_digest(&input, &composition, &choice, &validated)
+                        .map_err(|_| Error::InternalInvariant)?
+                }
+                MatrixVerificationAuthority::ContextV2 {
+                    snapshot_id,
+                    authority_schema,
+                    semantic_digest,
+                    ..
+                } => {
+                    let verification = self
+                        .decode_context_verification(
+                            task_id,
+                            task_revision,
+                            workspace_id,
+                            verification_row,
+                        )
+                        .await?;
+                    if verification.frozen_snapshot_id != snapshot_id.to_string()
+                        || verification.authority_schema != *authority_schema
+                        || verification.requirements_semantic_digest != *semantic_digest
+                    {
+                        return Err(Error::InternalInvariant);
+                    }
+                    let binding = sqlx::query(
+                        "SELECT snapshot_id,semantic_digest,authority_schema \
+                         FROM matrix_task_requirements_bindings \
+                         WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 AND revision=$4",
+                    )
+                    .bind(tenant)
+                    .bind(workspace_id)
+                    .bind(task_id)
+                    .bind(task_revision)
+                    .fetch_optional(&mut **self.transaction()?)
+                    .await
+                    .map_err(storage_error)?
+                    .ok_or(Error::InternalInvariant)?;
+                    if binding
+                        .try_get::<Uuid, _>("snapshot_id")
+                        .map_err(storage_error)?
+                        != *snapshot_id
+                        || binding
+                            .try_get::<String, _>("semantic_digest")
+                            .map_err(storage_error)?
+                            != *semantic_digest
+                        || binding
+                            .try_get::<String, _>("authority_schema")
+                            .map_err(storage_error)?
+                            != *authority_schema
+                    {
+                        return Err(Error::InternalInvariant);
+                    }
+                    let frozen = MatrixRequirementsContextStore::frozen_matrix_requirements_by_id(
+                        self,
+                        workspace_id,
+                        *snapshot_id,
+                    )
+                    .await?
+                    .ok_or(Error::InternalInvariant)?;
+                    let validated = evaluate_context_matrix_verification(
+                        &task_id.to_string(),
+                        &task_revision.to_string(),
+                        &snapshot_id.to_string(),
+                        &input,
+                        &frozen.effective,
+                        &verification,
+                        verified_epoch,
+                    )
+                    .map_err(|_| Error::InternalInvariant)?;
+                    let composition = compose_confirmed_requirements_matrix(
+                        &task_id.to_string(),
+                        &task_revision.to_string(),
+                        &snapshot_id.to_string(),
+                        &input,
+                        &frozen.effective,
+                        &validated,
+                        verified_epoch,
+                    )
+                    .map_err(|_| Error::InternalInvariant)?;
+                    context_matrix_verified_evaluation_digest(
+                        &input,
+                        &composition,
+                        &choice,
+                        &verification,
+                    )
+                    .map_err(|_| Error::InternalInvariant)?
+                }
+                MatrixVerificationAuthority::Unverified => return Err(Error::InternalInvariant),
+            };
+            if actual_digest != advice.record.binding.evaluation_digest {
                 return Err(Error::InternalInvariant);
             }
         }
@@ -248,7 +345,7 @@ impl PgUnitOfWork {
         if task_id != Some(record.binding.task_id)
             || revision != Some(record.binding.task_revision)
             || digest.as_deref() != Some(record.binding.choice_set_digest.as_str())
-            || verification_digest != record.binding.verification_digest
+            || verification_digest.as_deref() != record.binding.verification.digest()
             || material != record.binding.evaluation_digest
             || material != record.opportunity_material_digest
             || opportunity
@@ -340,6 +437,138 @@ impl PgUnitOfWork {
             return Err(Error::InputConflict);
         }
 
+        // A sealed receipt already persisted for this opportunity is immutable.
+        // Reconciliation must remain readable after the context or evidence
+        // becomes stale; freshness gates only a new advice insert.
+        if let Some(prior) = self
+            .guarded_matrix_advice(workspace_id, record.opportunity_id)
+            .await?
+        {
+            return if prior.record == *record {
+                Ok(prior)
+            } else {
+                Err(Error::InputConflict)
+            };
+        }
+
+        if let MatrixVerificationAuthority::LegacyV1 {
+            digest: saved_digest,
+        } = &record.binding.verification
+        {
+            // A first V1 receipt is reconciliation only when 0108 captured the
+            // exact sealed response before cutover. No current-head or config
+            // check belongs here: they can change after the provider send.
+            let cutover: Option<String> = sqlx::query_scalar(
+                "SELECT fingerprint FROM public.matrix_v1_dispatch_cutover_allowlist \
+                 WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3 \
+                   AND dispatch_id=$4 AND task_id=$5 AND task_revision=$6 \
+                   AND verification_digest=$7",
+            )
+            .bind(tenant)
+            .bind(workspace_id)
+            .bind(record.opportunity_id)
+            .bind(record.dispatch_id)
+            .bind(record.binding.task_id)
+            .bind(record.binding.task_revision)
+            .bind(saved_digest)
+            .fetch_optional(&mut **self.transaction()?)
+            .await
+            .map_err(storage_error)?;
+            let Some(cutover) = cutover else {
+                return Err(Error::StaleRevision);
+            };
+            let current_fingerprint: Option<String> =
+                sqlx::query_scalar("SELECT public.matrix_v1_cutover_fingerprint($1,$2,$3,$4)")
+                    .bind(tenant)
+                    .bind(workspace_id)
+                    .bind(record.opportunity_id)
+                    .bind(record.dispatch_id)
+                    .fetch_one(&mut **self.transaction()?)
+                    .await
+                    .map_err(storage_error)?;
+            if current_fingerprint.as_deref() != Some(cutover.as_str()) {
+                return Err(Error::InputConflict);
+            }
+            let historical = sqlx::query(
+                "SELECT canonical_input,input_digest,choice_set,choice_set_digest \
+                 FROM matrix_task_revisions WHERE tenant_id=$1 AND workspace_id=$2 \
+                   AND task_id=$3 AND revision=$4",
+            )
+            .bind(tenant)
+            .bind(workspace_id)
+            .bind(record.binding.task_id)
+            .bind(record.binding.task_revision)
+            .fetch_optional(&mut **self.transaction()?)
+            .await
+            .map_err(storage_error)?
+            .ok_or(Error::InputConflict)?;
+            let input_json: serde_json::Value = historical
+                .try_get("canonical_input")
+                .map_err(storage_error)?;
+            let input: EngineeringMatrixInput =
+                serde_json::from_value(input_json.clone()).map_err(|_| Error::InputConflict)?;
+            let choice_json: serde_json::Value =
+                historical.try_get("choice_set").map_err(storage_error)?;
+            let choice: EngineeringChoiceSet =
+                serde_json::from_value(choice_json).map_err(|_| Error::InputConflict)?;
+            let (verification, verified_epoch) = self
+                .historical_matrix_verification_by_digest(
+                    workspace_id,
+                    record.binding.task_id,
+                    record.binding.task_revision,
+                    saved_digest,
+                )
+                .await?
+                .ok_or(Error::InputConflict)?;
+            let validated = evaluate_matrix_verification(
+                &record.binding.task_id.to_string(),
+                &record.binding.task_revision.to_string(),
+                &input,
+                &verification,
+                verified_epoch,
+            )
+            .map_err(|_| Error::InputConflict)?;
+            let reported = OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
+                record.binding.task_id.to_string(),
+                record.binding.task_revision.to_string(),
+                input.clone(),
+            )
+            .map_err(|_| Error::InputConflict)?;
+            let composition = compose_independently_verified_owner_matrix(&reported, &validated)
+                .map_err(|_| Error::InputConflict)?;
+            let evaluation_digest =
+                matrix_verified_evaluation_digest(&input, &composition, &choice, &validated)
+                    .map_err(|_| Error::InputConflict)?;
+            if canonical_matrix_input_digest(&input_json)? != record.binding.input_digest
+                || historical
+                    .try_get::<String, _>("input_digest")
+                    .map_err(storage_error)?
+                    != record.binding.input_digest
+                || historical
+                    .try_get::<String, _>("choice_set_digest")
+                    .map_err(storage_error)?
+                    != record.binding.choice_set_digest
+                || choice.choice_set_id != record.binding.choice_set_id
+                || choice.version != record.binding.choice_set_version
+                || choice.canonical_digest(&input)? != record.binding.choice_set_digest
+                || evaluation_digest != record.binding.evaluation_digest
+            {
+                return Err(Error::InputConflict);
+            }
+            let eligibility = choice.validate(&input)?;
+            record.validate_for(
+                record.opportunity_id,
+                record.dispatch_id,
+                &record.binding,
+                &record.provider_profile_ref,
+                &record.model_configuration,
+                &eligibility,
+            )?;
+            return self
+                .insert_matrix_advice_receipt(workspace_id, record)
+                .await;
+        }
+
         let config = sqlx::query("SELECT revision,mode,provider_profile_ref,model_configuration FROM advisory_workspace_config WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE")
             .bind(tenant).bind(workspace_id).fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?
             .ok_or(Error::StaleRevision)?;
@@ -372,6 +601,7 @@ impl PgUnitOfWork {
         // changed input, or expired evidence must reject direct store callers.
         let latest = sqlx::query(
             "SELECT id,input_digest,schema,owner_principal_id,verifier_principal_id,policy_version,record_digest,verification_reason, \
+                    frozen_snapshot_id,requirements_semantic_digest,authority_schema, \
                     FLOOR(EXTRACT(EPOCH FROM verified_at))::bigint AS verified_epoch \
              FROM matrix_verifications \
              WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 AND task_revision=$4 \
@@ -392,7 +622,9 @@ impl PgUnitOfWork {
         let latest_digest: String = latest.try_get("record_digest").map_err(storage_error)?;
         let verified_input_digest: String =
             latest.try_get("input_digest").map_err(storage_error)?;
-        if record.binding.verification_digest.as_deref() != Some(latest_digest.as_str())
+        let authority = verification_authority(&latest)?;
+        if record.binding.verification != authority
+            || record.binding.verification.digest() != Some(latest_digest.as_str())
             || verification_digest.as_deref() != Some(latest_digest.as_str())
             || verified_input_digest != current.input_digest
         {
@@ -416,16 +648,6 @@ impl PgUnitOfWork {
         if !bindings_valid {
             return Err(Error::StaleRevision);
         }
-        if let Some(prior) = self
-            .guarded_matrix_advice(workspace_id, record.opportunity_id)
-            .await?
-        {
-            return if prior.record == *record {
-                Ok(prior)
-            } else {
-                Err(Error::InputConflict)
-            };
-        }
         let choice = current.choice_set.as_ref().ok_or(Error::InputConflict)?;
         let eligibility = choice.validate(&current.input)?;
         let canonical = serde_json::to_value(&current.input).map_err(storage_error)?;
@@ -436,38 +658,108 @@ impl PgUnitOfWork {
         {
             return Err(Error::InputConflict);
         }
-        let verification = self
-            .decode_verification(workspace_id, current.task_id, current.revision, latest)
-            .await?;
-        // Finalize already checked expiry under this task lock before it
-        // terminalized the opportunity. A second clock read can cross the
-        // expiry boundary and roll that transition back after a sent reply.
-        // The immutable verified_at checks canonical record structure in
-        // that path; direct writes and later replays still require fresh time.
+        // Finalize checked expiry under this task lock before terminalizing
+        // an already sent response. Direct writes use the current clock.
         let current_epoch: i64 = sqlx::query_scalar(
             "SELECT FLOOR(EXTRACT(EPOCH FROM pg_catalog.clock_timestamp()))::bigint",
         )
         .fetch_one(&mut **self.transaction()?)
         .await
         .map_err(storage_error)?;
-        let validated = validated_for_guarded_advice(
-            current.task_id,
-            current.revision,
-            &current.input,
-            &verification,
-            verified_fresh_under_lock,
-            verified_epoch,
-            current_epoch,
-        )?;
-        let reported = OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
-            current.task_id.to_string(),
-            current.revision.to_string(),
-            current.input.clone(),
-        )?;
-        let composition = compose_independently_verified_owner_matrix(&reported, &validated)?;
-        if matrix_verified_evaluation_digest(&current.input, &composition, choice, &validated)?
-            != record.binding.evaluation_digest
-        {
+        let evaluation_digest = match &record.binding.verification {
+            MatrixVerificationAuthority::LegacyV1 { .. } => {
+                // Only previously persisted V1 advice can be replayed.
+                return Err(Error::StaleRevision);
+            }
+            MatrixVerificationAuthority::ContextV2 {
+                snapshot_id,
+                authority_schema,
+                semantic_digest,
+                ..
+            } => {
+                let binding = sqlx::query(
+                    "SELECT snapshot_id,semantic_digest,authority_schema \
+                     FROM matrix_task_requirements_bindings \
+                     WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 AND revision=$4",
+                )
+                .bind(tenant)
+                .bind(workspace_id)
+                .bind(current.task_id)
+                .bind(current.revision)
+                .fetch_optional(&mut **self.transaction()?)
+                .await
+                .map_err(storage_error)?
+                .ok_or(Error::StaleRevision)?;
+                if binding
+                    .try_get::<Uuid, _>("snapshot_id")
+                    .map_err(storage_error)?
+                    != *snapshot_id
+                    || binding
+                        .try_get::<String, _>("semantic_digest")
+                        .map_err(storage_error)?
+                        != *semantic_digest
+                    || binding
+                        .try_get::<String, _>("authority_schema")
+                        .map_err(storage_error)?
+                        != *authority_schema
+                {
+                    return Err(Error::StaleRevision);
+                }
+                let frozen = MatrixRequirementsContextStore::frozen_matrix_requirements_by_id(
+                    self,
+                    workspace_id,
+                    *snapshot_id,
+                )
+                .await?
+                .ok_or(Error::StaleRevision)?;
+                if frozen.effective.schema() != authority_schema
+                    || frozen.effective.semantic_digest() != semantic_digest
+                {
+                    return Err(Error::StaleRevision);
+                }
+                let verification = self
+                    .decode_context_verification(
+                        current.task_id,
+                        current.revision,
+                        workspace_id,
+                        latest,
+                    )
+                    .await?;
+                let validation_epoch = if verified_fresh_under_lock {
+                    verified_epoch
+                } else {
+                    current_epoch
+                };
+                let validated = evaluate_context_matrix_verification(
+                    &current.task_id.to_string(),
+                    &current.revision.to_string(),
+                    &snapshot_id.to_string(),
+                    &current.input,
+                    &frozen.effective,
+                    &verification,
+                    validation_epoch,
+                )
+                .map_err(|_| Error::StaleRevision)?;
+                let composition = compose_confirmed_requirements_matrix(
+                    &current.task_id.to_string(),
+                    &current.revision.to_string(),
+                    &snapshot_id.to_string(),
+                    &current.input,
+                    &frozen.effective,
+                    &validated,
+                    validation_epoch,
+                )
+                .map_err(|_| Error::StaleRevision)?;
+                context_matrix_verified_evaluation_digest(
+                    &current.input,
+                    &composition,
+                    choice,
+                    &verification,
+                )?
+            }
+            MatrixVerificationAuthority::Unverified => return Err(Error::StaleRevision),
+        };
+        if evaluation_digest != record.binding.evaluation_digest {
             return Err(Error::InputConflict);
         }
         record.validate_for(
@@ -478,20 +770,7 @@ impl PgUnitOfWork {
             &record.model_configuration,
             &eligibility,
         )?;
-        let (kind, ranks, reason) = outcome_columns(&record.outcome);
-        let inserted: Option<Uuid> = sqlx::query_scalar(
-            "INSERT INTO advisory_matrix_advice (tenant_id,workspace_id,opportunity_id,task_id,matrix_task_revision,matrix_choice_set_digest,dispatch_id,kind,ranked_choice_ids,reason,advice_digest,provider_profile_ref,model_configuration,response_payload_sha256) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT DO NOTHING RETURNING advice_id"
-        ).bind(tenant).bind(workspace_id).bind(record.opportunity_id).bind(record.binding.task_id)
-            .bind(record.binding.task_revision).bind(&record.binding.choice_set_digest)
-            .bind(record.dispatch_id).bind(kind).bind(ranks).bind(reason)
-            .bind(&record.advice_digest).bind(&record.provider_profile_ref.id)
-            .bind(serde_json::json!(record.model_configuration)).bind(&record.response_payload_sha256)
-            .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?;
-        let advice_id = inserted.ok_or(Error::InputConflict)?;
-        Ok(StoredGuardedMatrixAdviceRecord {
-            advice_id,
-            record: record.clone(),
-        })
+        self.insert_matrix_advice_receipt(workspace_id, record)
+            .await
     }
 }

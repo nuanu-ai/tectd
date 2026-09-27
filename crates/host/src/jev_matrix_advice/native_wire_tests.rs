@@ -33,6 +33,7 @@ fn prepared() -> PreparedNativeMatrixRequest {
             choice_set_digest: "b".repeat(64),
             evaluation_digest: "c".repeat(64),
             verification_digest: Some("d".repeat(64)),
+            context: None,
         },
         eligibility: MatrixAdviceEligibility::EligibleForAdvice {
             candidate_ids: vec!["id-a".into(), "id-b".into()],

@@ -33,11 +33,17 @@ pub(crate) async fn prepare_eligible_matrix_opportunity(
     let Some(request) = request else {
         return Ok(PreparedMatrixOpportunity::NoCall);
     };
-    if request.binding().verification_digest.is_none()
+    if request.binding().verification.digest().is_none()
         || input.matrix_task_revision != Some(request.revision().revision)
         || input.matrix_choice_set_digest.as_deref()
             != Some(request.binding().choice_set_digest.as_str())
-        || !request.composition().is_resolved()
+        || match request.binding().verification {
+            crate::MatrixVerificationAuthority::Unverified => true,
+            crate::MatrixVerificationAuthority::LegacyV1 { .. } => {
+                !request.composition().is_resolved()
+            }
+            crate::MatrixVerificationAuthority::ContextV2 { .. } => false,
+        }
     {
         return Err(Error::InternalInvariant);
     }
@@ -73,7 +79,8 @@ pub(crate) async fn prepare_eligible_matrix_opportunity(
             // Positive opportunities bind the exact Matrix evaluation. The
             // legacy no-call digest remains unchanged for existing receipts.
             input.material_digest = request.binding().evaluation_digest.clone();
-            input.matrix_verification_digest = request.binding().verification_digest.clone();
+            input.matrix_verification_digest =
+                request.binding().verification.digest().map(str::to_owned);
             input.state = AdvisoryOpportunityState::Prepared;
             input.primary_reason = AdvisoryReason::DispatchAuthorized;
             PreparedMatrixOpportunity::Authorized {

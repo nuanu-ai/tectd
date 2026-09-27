@@ -19,6 +19,9 @@ mod anti_bloat_store;
 mod anti_bloat_verification_store;
 mod budget_owner_keys;
 mod budget_policy_usage;
+#[cfg(test)]
+mod context_matrix_verification_migration_tests;
+mod context_matrix_verification_store;
 mod durable_knowledge;
 mod durable_knowledge_admin;
 mod durable_knowledge_store;
@@ -49,10 +52,15 @@ mod matrix_planning_effect_store;
 mod matrix_planning_selection_migration_tests;
 mod matrix_planning_selection_store;
 #[cfg(test)]
+mod matrix_requirements_context_migration_tests;
+mod matrix_requirements_context_store;
+#[cfg(test)]
 mod matrix_task_migration_tests;
 #[cfg(test)]
 mod matrix_task_pg_tests;
 mod matrix_task_store;
+#[cfg(test)]
+mod matrix_v1_cutover_migration_tests;
 #[cfg(test)]
 mod matrix_verification_migration_tests;
 #[cfg(test)]

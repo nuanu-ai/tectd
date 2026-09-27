@@ -181,6 +181,7 @@ fn manifest(count: usize) -> PipelineRecommendationManifest {
         work_revision: 1,
         matrix_task_id: "task".into(),
         matrix_task_revision: "1".into(),
+        matrix_authority: None,
         selected_choice_id: "matrix-choice".into(),
         matrix_choice_set_digest: "a".repeat(64),
         matrix_verification_digest: "b".repeat(64),

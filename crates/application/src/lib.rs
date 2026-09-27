@@ -29,7 +29,12 @@ mod matrix_disposition_ports;
 mod matrix_planning_effect;
 mod matrix_planning_effect_ports;
 mod matrix_planning_selection_ports;
+mod matrix_requirements_context;
+mod matrix_requirements_context_ports;
 mod matrix_task_ports;
+pub use matrix_requirements_context::freeze_effective_matrix_requirements_context;
+pub use matrix_requirements_context_ports::*;
+mod context_matrix_verification_ports;
 mod matrix_tasks;
 mod matrix_verification;
 mod matrix_verification_ports;
@@ -69,8 +74,10 @@ pub(crate) use advisory_ports::{AdvisoryProvider, DisabledAdvisoryProvider};
 pub use advisory_ports::{
     DisabledMatrixAdviceProvider, MatrixAdviceProvider, MatrixProviderBinding,
     MatrixProviderObservation, MatrixProviderRequest, MatrixProviderResponse, MatrixProviderUsage,
-    RevalidatedMatrixVerification, StoredMatrixDispatch,
+    MatrixVerificationAuthority, RevalidatedMatrixVerification, StoredMatrixDispatch,
+    context_matrix_verified_evaluation_digest,
 };
+pub use context_matrix_verification_ports::ContextMatrixVerificationStore;
 #[doc(hidden)]
 pub use matrix_advice_ports::canonical_matrix_advice_digest;
 pub use matrix_advice_ports::{
@@ -83,7 +90,8 @@ pub use matrix_advice_runtime::{
     MatrixStartedDispatchPermit, PreparedMatrixAdviceAttempt, SignedMatrixBudgetPreflight,
 };
 pub use matrix_disposition_ports::{
-    MatrixDispositionRecord, MatrixDispositionStore, RecordMatrixDisposition,
+    MatrixDispositionRecord, MatrixDispositionStore, MatrixDispositionVerification,
+    RecordMatrixDisposition,
 };
 pub use matrix_planning_effect::{MatrixPlanningEffectRead, VerifyMatrixPlanningEffect};
 pub use matrix_planning_effect_ports::{
@@ -95,10 +103,12 @@ pub use matrix_planning_selection_ports::{
 };
 pub use matrix_task_ports::MatrixTaskStore;
 pub use matrix_tasks::{
-    CurrentMatrixAdvice, EngineeringAdvisoryRead, MATRIX_INPUT_SCHEMA, MatrixTaskRevision,
-    RecordMatrixTask, RequestEngineeringAdvisory, canonical_matrix_input_digest,
+    CurrentMatrixAdvice, EngineeringAdvisoryRead, MATRIX_INPUT_SCHEMA,
+    MatrixTaskRequirementsBinding, MatrixTaskRevision, MatrixTaskSource, RecordMatrixTask,
+    RequestEngineeringAdvisory, canonical_matrix_input_digest,
+    canonical_matrix_source_request_digest,
 };
-pub use matrix_verification::{MatrixEvidenceReference, VerifyMatrixTask};
+pub use matrix_verification::{MatrixEvidenceReference, VerifiedMatrixTask, VerifyMatrixTask};
 pub use matrix_verification_ports::{
     DisabledMatrixEvidenceValidator, MatrixEvidenceValidator, MatrixVerificationStore,
 };
@@ -119,10 +129,11 @@ pub use model_route_provider_ports::{
 pub use model_route_recommendation::PrepareModelRouteRecommendation;
 pub use model_route_recommendation_ports::{
     CapturedModelRouteDecision, CapturedModelRouteDisposition, ModelRouteAbstainReason,
-    ModelRouteCatalogueProvider, ModelRouteDecisionInput, ModelRouteDecisionOutcome,
-    ModelRouteDecisionStore, ModelRouteDispositionAction, ModelRouteHostCapabilitiesProvider,
-    ModelRoutePreparation, ModelRouteRecommendationBasis, ModelRouteRecommendationStore,
-    ModelRouteSelectionRead, PreparedModelRouteRecommendation, UnavailableModelRouteCatalogue,
+    ModelRouteCatalogueProvider, ModelRouteDecisionCaptureStore, ModelRouteDecisionInput,
+    ModelRouteDecisionOutcome, ModelRouteDecisionStore, ModelRouteDispositionAction,
+    ModelRouteHostCapabilitiesProvider, ModelRoutePreparation, ModelRoutePreparationStore,
+    ModelRouteRecommendationBasis, ModelRouteRecommendationStore, ModelRouteSelectionRead,
+    PreparedModelRouteRecommendation, UnavailableModelRouteCatalogue,
     UnavailableModelRouteHostCapabilities,
 };
 pub use model_route_service::ModelRouteView;

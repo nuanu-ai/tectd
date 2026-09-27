@@ -3,7 +3,7 @@ use tect_application::{DisabledModelRouteRankingProvider, PreparedModelRouteReco
 
 pub(super) async fn prepare_case(
     store: &PgStore,
-    runtime_pool: &PgPool,
+    _runtime_pool: &PgPool,
     created: &super::super::positive::Fixture,
     label: &str,
 ) -> PreparedModelRouteRecommendation {
@@ -24,11 +24,9 @@ pub(super) async fn prepare_case(
     let mut writer = store.begin(TransactionMode::ReadWrite).await.unwrap();
     writer.authenticate(&created.owner.auth).await.unwrap();
     writer.set_tenant(created.tenant).await.unwrap();
-    let mut reader = PgUnitOfWork::test_begin(runtime_pool, created.tenant).await;
     let prepared = request
         .prepare(
-            writer.model_route_recommendation_store().unwrap(),
-            &mut reader,
+            writer.model_route_preparation_store().unwrap(),
             &TestHost,
             &TestCatalogue,
         )

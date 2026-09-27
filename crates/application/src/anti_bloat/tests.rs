@@ -150,6 +150,19 @@ fn input(extra: bool) -> AntiBloatInput {
     manifest.eligible_set_digest = manifest.canonical_eligible_set_digest(&digest).unwrap();
     manifest.whole_set_digest = manifest.canonical_whole_set_digest(&digest).unwrap();
     manifest.validate(&digest).unwrap();
+    let protected_obligations = manifest
+        .obligations
+        .iter()
+        .map(|source| tect_domain::AntiBloatProtectedObligation {
+            id: format!("scope-ref:{}", source.id),
+            content_digest: source.statement_digest.clone(),
+            origin: tect_domain::AntiBloatObligationOrigin::ScopeSource,
+            scope_candidate_id: None,
+        })
+        .collect::<Vec<_>>();
+    let protected_obligations_digest =
+        tect_domain::anti_bloat_protected_obligations_digest(&digest, &protected_obligations)
+            .unwrap();
     AntiBloatInput {
         selected_revision: manifest.source.candidate_set_revision + 1,
         manifest,
@@ -162,6 +175,8 @@ fn input(extra: bool) -> AntiBloatInput {
         }],
         non_goal_source_obligation_ids: vec![],
         mandatory_policy_obligation_ids: vec![Uuid::from_u128(50).to_string()],
+        protected_obligations,
+        protected_obligations_digest,
     }
 }
 

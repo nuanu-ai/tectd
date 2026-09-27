@@ -13,7 +13,7 @@ pub(super) fn advisory_audit_schema(scope: bool) -> Value {
         ),
         (
             "decision_point".into(),
-            json!({"type":"string","enum":["scope.decomposition.before_selection","engineering.profile.before_selection"]}),
+            json!({"type":"string","enum":["scope.decomposition.before_selection","engineering.profile.before_selection","pipeline_recommendation_before_slice_open"]}),
         ),
         (
             "reason".into(),

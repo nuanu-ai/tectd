@@ -3,15 +3,100 @@ use async_trait::async_trait;
 use sqlx::Row;
 use tect_application::{
     AntiBloatVerificationEvidence, AntiBloatVerificationMaterial, AntiBloatVerificationStore,
+    Sha256ScopeDigest,
 };
 use tect_domain::{
     AntiBloatDisposition, AntiBloatInput, AntiBloatPreservationAttestation,
-    AntiBloatVerificationReason, AntiBloatVerificationVerdict, Error, Result,
+    AntiBloatVerificationReason, AntiBloatVerificationVerdict, Error, ResolvedCandidateDraft,
+    Result, anti_bloat_protected_obligations_digest,
 };
 use uuid::Uuid;
 
 fn parse<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T> {
     serde_json::from_value(value).map_err(storage_error)
+}
+
+/// The selected-save revision is historical after the narrow operation, so
+/// `authoritative_input` cannot be used here. Recheck the frozen source against
+/// the current source cursor and Program lineage instead.
+async fn source_is_current(
+    uow: &mut PgUnitOfWork,
+    tenant: Uuid,
+    workspace: Uuid,
+    input: &AntiBloatInput,
+) -> Result<bool> {
+    let source = &input.manifest.source;
+    let row = sqlx::query(
+        "SELECT c.current_snapshot_id,c.input_cursor,c.latest_input AS candidate_latest_input, \
+                c.program_id,p.revision AS program_revision,p.latest_input AS program_current_latest, \
+                s.program_latest_input,s.planning_latest_input,s.selected_sources_digest, \
+                s.method_revision,s.method_digest,s.registry_revision,s.registry_digest \
+         FROM scope_candidate_sets c JOIN programs p \
+           ON (p.tenant_id,p.workspace_id,p.id)=(c.tenant_id,c.workspace_id,c.program_id) \
+         JOIN scope_candidate_snapshots s \
+           ON (s.tenant_id,s.workspace_id,s.candidate_set_id,s.id)= \
+              (c.tenant_id,c.workspace_id,c.id,c.current_snapshot_id) \
+         WHERE c.tenant_id=$1 AND c.workspace_id=$2 AND c.id=$3",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(source.candidate_set_id)
+    .fetch_optional(&mut **uow.transaction()?)
+    .await
+    .map_err(storage_error)?;
+    let Some(row) = row else { return Ok(false) };
+    Ok(row
+        .try_get::<Option<Uuid>, _>("current_snapshot_id")
+        .map_err(storage_error)?
+        == Some(source.snapshot_id)
+        && row
+            .try_get::<i64, _>("input_cursor")
+            .map_err(storage_error)?
+            == source.input_cursor
+        && row
+            .try_get::<i64, _>("candidate_latest_input")
+            .map_err(storage_error)?
+            == source.planning_latest_input
+        && row
+            .try_get::<Uuid, _>("program_id")
+            .map_err(storage_error)?
+            == source.program_id
+        && row
+            .try_get::<i64, _>("program_revision")
+            .map_err(storage_error)?
+            == source.program_revision
+        && row
+            .try_get::<i64, _>("program_current_latest")
+            .map_err(storage_error)?
+            == source.program_latest_input
+        && row
+            .try_get::<i64, _>("program_latest_input")
+            .map_err(storage_error)?
+            == source.program_latest_input
+        && row
+            .try_get::<i64, _>("planning_latest_input")
+            .map_err(storage_error)?
+            == source.planning_latest_input
+        && row
+            .try_get::<String, _>("selected_sources_digest")
+            .map_err(storage_error)?
+            == source.selected_sources_digest
+        && row
+            .try_get::<String, _>("method_revision")
+            .map_err(storage_error)?
+            == source.method_revision
+        && row
+            .try_get::<String, _>("method_digest")
+            .map_err(storage_error)?
+            == source.method_digest
+        && row
+            .try_get::<String, _>("registry_revision")
+            .map_err(storage_error)?
+            == source.registry_revision
+        && row
+            .try_get::<String, _>("registry_digest")
+            .map_err(storage_error)?
+            == source.registry_digest)
 }
 
 #[async_trait]
@@ -80,8 +165,10 @@ impl AntiBloatVerificationStore for PgUnitOfWork {
             .map_err(storage_error)?;
         let Some(row) = row else { return Ok(None) };
         let input: AntiBloatInput = parse(row.try_get("input_payload").map_err(storage_error)?)?;
-        let source_fragments_match =
-            match crate::scope_advisory::trusted_non_goal_source_obligation_ids(
+        let before_saved: ResolvedCandidateDraft =
+            parse(row.try_get("before_saved").map_err(storage_error)?)?;
+        let source_fragments_match = source_is_current(self, tenant, workspace, &input).await?
+            && match crate::scope_advisory::trusted_non_goal_source_obligation_ids(
                 self.transaction()?,
                 tenant,
                 workspace,
@@ -97,6 +184,48 @@ impl AntiBloatVerificationStore for PgUnitOfWork {
             {
                 Ok(non_goal) => non_goal == input.non_goal_source_obligation_ids,
                 Err(Error::InvalidSource) => false,
+                Err(error) => return Err(error),
+            }
+            && match crate::scope_advisory::require_persisted_fragments(
+                self.transaction()?,
+                tenant,
+                workspace,
+                &input.manifest.source,
+                &input.manifest.obligations,
+            )
+            .await
+            {
+                Ok(()) => true,
+                Err(Error::InvalidSource) => false,
+                Err(error) => return Err(error),
+            }
+            && match crate::anti_bloat_store::input::protected_obligations(
+                self,
+                workspace,
+                &input.manifest,
+                &before_saved,
+                true,
+            )
+            .await
+            {
+                Ok(current) => {
+                    current == input.protected_obligations
+                        && anti_bloat_protected_obligations_digest(&Sha256ScopeDigest, &current)?
+                            == input.protected_obligations_digest
+                        && input.protected_obligations_digest
+                            == parse::<tect_domain::AntiBloatReview>(
+                                row.try_get("review_payload").map_err(storage_error)?,
+                            )?
+                            .protected_obligations_digest
+                }
+                Err(
+                    Error::StaleContext
+                    | Error::StaleRevision
+                    | Error::InvalidSource
+                    | Error::InputConflict
+                    | Error::NotFound
+                    | Error::KnowledgePayloadErased,
+                ) => false,
                 Err(error) => return Err(error),
             };
         let disposition: String = row.try_get("disposition").map_err(storage_error)?;
@@ -124,7 +253,7 @@ impl AntiBloatVerificationStore for PgUnitOfWork {
             delta: parse(row.try_get("delta_payload").map_err(storage_error)?)?,
             claimed_after: parse(row.try_get("after_payload").map_err(storage_error)?)?,
             receipt: parse(row.try_get("caller_receipt").map_err(storage_error)?)?,
-            before_saved: parse(row.try_get("before_saved").map_err(storage_error)?)?,
+            before_saved,
             after_saved: parse(row.try_get("after_saved").map_err(storage_error)?)?,
             current_revision: row.try_get("current_revision").map_err(storage_error)?,
             source_fragments_match,

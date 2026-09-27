@@ -120,7 +120,7 @@ pub(super) async fn validate_pipeline_advice_schema(
                   'match_effect_attestation_id','catalogue_revision','catalogue_digest', \
                   'eligible_option_ids','verification_contract_digest', \
                   'manifest_payload','manifest_digest','verification_plan_bindings'])) \
-         AND (SELECT pg_catalog.count(*)=5 FROM pg_catalog.pg_constraint con \
+         AND (SELECT pg_catalog.count(*)=6 FROM pg_catalog.pg_constraint con \
               WHERE con.conrelid='public.pipeline_advice_contexts'::regclass \
                 AND con.contype='f' AND con.convalidated) \
          AND (SELECT pg_catalog.count(*)=2 FROM pg_catalog.pg_constraint con \

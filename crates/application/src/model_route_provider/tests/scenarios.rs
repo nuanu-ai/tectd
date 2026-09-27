@@ -236,7 +236,10 @@ async fn malformed_sealed_raw_and_uncertain_send_never_retry() {
 
 #[test]
 fn model_route_wire_and_digest_golden_vectors() {
-    let eligible = prepared(ModelRoutePreparation::Prepared);
+    // Historical V1 bytes remain readable and hash-stable after the V2
+    // authority and observed-fact additions.
+    let eligible: PreparedModelRouteRecommendation =
+        serde_json::from_str(include_str!("eligible_golden.json")).unwrap();
     let no_call = ModelRouteAttemptSnapshot {
         attempt_id: Uuid::from_u128(107),
         state: crate::ModelRouteAttemptState::NoCall,

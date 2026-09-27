@@ -11,10 +11,8 @@ use tect_domain::{
 
 struct Catalogue(Option<ModelRouteCatalogue>);
 
-struct Reader(Option<ModelRouteWorkContext>);
-
 #[async_trait]
-impl ModelRouteSelectionRead for Reader {
+impl ModelRouteSelectionRead for Store {
     async fn approved_work_context(
         &mut self,
         _workspace_id: Uuid,
@@ -24,7 +22,7 @@ impl ModelRouteSelectionRead for Reader {
         _mapped_work_node_id: Uuid,
         _mapped_work_node_revision: i64,
     ) -> Result<Option<ModelRouteWorkContext>> {
-        Ok(self.0.clone())
+        Ok(self.work.clone())
     }
 }
 
@@ -46,6 +44,7 @@ impl ModelRouteCatalogueProvider for Catalogue {
 struct Store {
     basis: Option<ModelRouteRecommendationBasis>,
     saved: Option<PreparedModelRouteRecommendation>,
+    work: Option<ModelRouteWorkContext>,
     captures: usize,
 }
 
@@ -77,13 +76,7 @@ impl ModelRouteRecommendationStore for Store {
     }
 }
 
-fn fixture() -> (
-    PrepareModelRouteRecommendation,
-    Store,
-    Reader,
-    Host,
-    Catalogue,
-) {
+fn fixture() -> (PrepareModelRouteRecommendation, Store, Host, Catalogue) {
     let selection = MatrixPlanningSelection {
         task_id: Uuid::new_v4(),
         task_revision: 3,
@@ -117,12 +110,18 @@ fn fixture() -> (
             mapped_work_node_id: request.expected_mapped_work_node_id,
             mapped_work_node_revision: request.expected_mapped_work_node_revision,
         },
-        role: caller("agent".into()),
-        tool: caller("code".into()),
-        data_class: caller("internal".into()),
+        context_authority: Some(tect_domain::ModelRouteContextAuthority {
+            frozen_snapshot_id: Uuid::new_v4(),
+            authority_schema: tect_domain::MATRIX_REQUIREMENTS_SCHEMA.into(),
+            requirements_semantic_digest: "d".repeat(64),
+            operating_verification_digest: "c".repeat(64),
+        }),
+        role: observed("agent".into()),
+        tool: observed("code".into()),
+        data_class: observed("internal".into()),
         host_capabilities: ModelRouteFact::Unknown,
-        remaining_budget_units: caller(20),
-        available_latency_ms: caller(100),
+        remaining_budget_units: observed(20),
+        available_latency_ms: observed(100),
     };
     let basis = ModelRouteRecommendationBasis {
         advisory_mode: WorkspaceAdvisoryMode::Optional,
@@ -160,9 +159,9 @@ fn fixture() -> (
         request,
         Store {
             basis: Some(basis),
+            work: Some(work),
             ..Store::default()
         },
-        Reader(Some(work)),
         host,
         catalogue,
     )
@@ -179,11 +178,25 @@ fn caller<T>(value: T) -> ModelRouteFact<T> {
     }
 }
 
+fn observed<T>(value: T) -> ModelRouteFact<T> {
+    ModelRouteFact::Known {
+        value,
+        provenance: ModelRouteFactProvenance::OperatingEvidence {
+            source_ref: "synthetic-test-observation".into(),
+            content_digest: "e".repeat(64),
+            observed_at_epoch_ms: 1,
+            expires_at_epoch_ms: i64::MAX,
+            work_node_id: Uuid::from_u128(2),
+            work_node_revision: 2,
+        },
+    }
+}
+
 #[tokio::test]
 async fn prepare_keeps_requested_ineligible_and_actual_unknown_without_execution_evidence() {
-    let (request, mut store, mut reader, host, catalogue) = fixture();
+    let (request, mut store, host, catalogue) = fixture();
     let prepared = request
-        .prepare(&mut store, &mut reader, &host, &catalogue)
+        .prepare(&mut store, &host, &catalogue)
         .await
         .unwrap();
     assert_eq!(prepared.preparation, ModelRoutePreparation::Prepared);
@@ -200,7 +213,7 @@ async fn prepare_keeps_requested_ineligible_and_actual_unknown_without_execution
     assert_eq!(store.captures, 1);
     assert_eq!(
         request
-            .prepare(&mut store, &mut reader, &host, &catalogue)
+            .prepare(&mut store, &host, &catalogue)
             .await
             .unwrap(),
         prepared
@@ -210,21 +223,17 @@ async fn prepare_keeps_requested_ineligible_and_actual_unknown_without_execution
 
 #[tokio::test]
 async fn unknown_request_and_stale_selection_are_rejected() {
-    let (mut request, mut store, mut reader, host, catalogue) = fixture();
+    let (mut request, mut store, host, catalogue) = fixture();
     request.requested_route_id = Some("unknown".into());
     assert_eq!(
-        request
-            .prepare(&mut store, &mut reader, &host, &catalogue)
-            .await,
+        request.prepare(&mut store, &host, &catalogue).await,
         Err(Error::InvalidArguments)
     );
     assert_eq!(store.captures, 0);
     request.requested_route_id = None;
     request.expected_task_revision += 1;
     assert_eq!(
-        request
-            .prepare(&mut store, &mut reader, &host, &catalogue)
-            .await,
+        request.prepare(&mut store, &host, &catalogue).await,
         Err(Error::StaleContext)
     );
 }
@@ -239,17 +248,17 @@ async fn no_call_outcomes_are_durable_and_never_dispatch() {
         (4, ModelRoutePreparation::NoEligibleRoutes),
     ];
     for (case, expected) in cases {
-        let (mut request, mut store, mut reader, host, mut catalogue) = fixture();
+        let (mut request, mut store, host, mut catalogue) = fixture();
         request.requested_route_id = None;
         match case {
             0 => store.basis.as_mut().unwrap().advisory_mode = WorkspaceAdvisoryMode::Disabled,
             1 => request.session_preference = AdvisoryRequestPreference::Skip,
             2 => request.request_preference = AdvisoryRequestPreference::Skip,
             3 => catalogue.0 = None,
-            _ => reader.0.as_mut().unwrap().remaining_budget_units = caller(0),
+            _ => store.work.as_mut().unwrap().remaining_budget_units = observed(0),
         }
         let prepared = request
-            .prepare(&mut store, &mut reader, &host, &catalogue)
+            .prepare(&mut store, &host, &catalogue)
             .await
             .unwrap();
         assert_eq!(prepared.preparation, expected);
@@ -261,20 +270,22 @@ async fn no_call_outcomes_are_durable_and_never_dispatch() {
 
 #[tokio::test]
 async fn exact_saved_link_and_unknown_facts_gate_preparation() {
-    let (mut request, mut store, mut reader, host, catalogue) = fixture();
+    let (mut request, mut store, host, catalogue) = fixture();
     request.expected_caller_request_id = Uuid::new_v4();
     assert_eq!(
-        request
-            .prepare(&mut store, &mut reader, &host, &catalogue)
-            .await,
+        request.prepare(&mut store, &host, &catalogue).await,
         Err(Error::StaleContext)
     );
     assert_eq!(store.captures, 0);
-    request.expected_caller_request_id =
-        reader.0.as_ref().unwrap().selection_link.caller_request_id;
-    reader.0.as_mut().unwrap().role = ModelRouteFact::Unknown;
+    request.expected_caller_request_id = store
+        .work
+        .as_ref()
+        .unwrap()
+        .selection_link
+        .caller_request_id;
+    store.work.as_mut().unwrap().role = ModelRouteFact::Unknown;
     let prepared = request
-        .prepare(&mut store, &mut reader, &host, &catalogue)
+        .prepare(&mut store, &host, &catalogue)
         .await
         .unwrap();
     assert_eq!(
@@ -286,11 +297,11 @@ async fn exact_saved_link_and_unknown_facts_gate_preparation() {
 
 #[tokio::test]
 async fn absent_host_capability_evidence_is_unknown_even_with_typed_work() {
-    let (mut request, mut store, mut reader, mut host, catalogue) = fixture();
+    let (mut request, mut store, mut host, catalogue) = fixture();
     request.requested_route_id = None;
     host.0 = ModelRouteFact::Unknown;
     let prepared = request
-        .prepare(&mut store, &mut reader, &host, &catalogue)
+        .prepare(&mut store, &host, &catalogue)
         .await
         .unwrap();
     assert_eq!(
@@ -298,5 +309,42 @@ async fn absent_host_capability_evidence_is_unknown_even_with_typed_work() {
         ModelRoutePreparation::UnknownWorkFacts
     );
     assert!(prepared.eligible.unwrap().route_ids.is_empty());
+    assert_eq!(prepared.routes.observed_actual, None);
+}
+
+#[tokio::test]
+async fn v1_selection_cannot_prepare_and_caller_budget_keeps_receipt_provenance() {
+    let (request, mut store, host, catalogue) = fixture();
+    store.work.as_mut().unwrap().context_authority = None;
+    assert_eq!(
+        request.prepare(&mut store, &host, &catalogue).await,
+        Err(Error::StaleContext)
+    );
+    assert_eq!(store.captures, 0);
+
+    store.work.as_mut().unwrap().context_authority =
+        Some(tect_domain::ModelRouteContextAuthority {
+            frozen_snapshot_id: Uuid::new_v4(),
+            authority_schema: tect_domain::MATRIX_REQUIREMENTS_SCHEMA.into(),
+            requirements_semantic_digest: "d".repeat(64),
+            operating_verification_digest: "c".repeat(64),
+        });
+    store.work.as_mut().unwrap().remaining_budget_units = caller(20);
+    let prepared = request
+        .prepare(&mut store, &host, &catalogue)
+        .await
+        .unwrap();
+    assert_eq!(prepared.preparation, ModelRoutePreparation::Prepared);
+    assert_eq!(
+        prepared.eligible.as_ref().unwrap().route_ids,
+        ["route-eligible"]
+    );
+    assert_eq!(prepared.work.role, observed("agent".into()));
+    assert_eq!(prepared.work.tool, observed("code".into()));
+    assert_eq!(prepared.work.data_class, observed("internal".into()));
+    assert_eq!(prepared.work.host_capabilities, host.0);
+    assert_eq!(prepared.work.remaining_budget_units, caller(20));
+    assert_eq!(prepared.work.available_latency_ms, observed(100));
+    assert_eq!(prepared.routes.recommended_route_id, None);
     assert_eq!(prepared.routes.observed_actual, None);
 }

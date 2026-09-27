@@ -237,6 +237,7 @@ mod tests {
                 expected_verification_digest: "c".repeat(64),
                 mapped_draft_node_indices: vec![0],
             },
+            context_provenance: None,
             evaluation_digest: "d".repeat(64),
             catalogue_version: "EM@1".into(),
             caller_principal_id: Uuid::new_v4(),

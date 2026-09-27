@@ -1,6 +1,6 @@
 //! Read-only Slice 05 bridge from an approved Matrix-selected native save.
-//! Only explicit caller-authored fields in the exact save receipt are promoted;
-//! prose and host capability assertions are never promoted.
+//! The exact saved Work and V2 Matrix context are rechecked before advice.
+//! Caller-authored fields are receipt assertions, not trusted route policy facts.
 use async_trait::async_trait;
 use serde_json::Value;
 use sqlx::Row;
@@ -8,12 +8,39 @@ use tect_application::{
     MatrixPlanningEffectStore, MatrixPlanningSelectionStore, ModelRouteSelectionRead,
 };
 use tect_domain::{
-    Error, MatrixDispositionDecision, ModelRouteFact, ModelRouteFactProvenance,
-    ModelRouteSelectionLink, ModelRouteWorkContext, Result, SliceCandidateNode,
+    Error, MatrixDispositionDecision, ModelRouteContextAuthority, ModelRouteFact,
+    ModelRouteFactProvenance, ModelRouteSelectionLink, ModelRouteWorkContext, Result,
+    SliceCandidateNode,
 };
 use uuid::Uuid;
 
-use crate::{storage_error, store::PgUnitOfWork};
+use crate::{
+    matrix_planning_selection_store::current_context_evaluation, storage_error, store::PgUnitOfWork,
+};
+
+fn caller_assertion<T>(
+    value: Option<T>,
+    field: &str,
+    candidate_set_id: Uuid,
+    caller_request_id: Uuid,
+    draft_index: usize,
+    work_node_id: Uuid,
+    work_node_revision: i64,
+) -> ModelRouteFact<T> {
+    match value {
+        Some(value) => ModelRouteFact::Known {
+            value,
+            provenance: ModelRouteFactProvenance::Caller {
+                source_ref: format!(
+                    "native_planning_receipt/{candidate_set_id}/{caller_request_id}#/draft/nodes/{draft_index}/model_route_facts/{field}"
+                ),
+                work_node_id,
+                work_node_revision,
+            },
+        },
+        None => ModelRouteFact::Unknown,
+    }
+}
 
 fn exact_work_context(
     snapshot: tect_application::MatrixPlanningEffectSnapshot,
@@ -62,13 +89,34 @@ fn exact_work_context(
     if let Some(facts) = model_route_facts {
         facts.validate().map_err(|_| Error::StaleContext)?;
     }
-    let facts = model_route_facts.as_ref();
-    let source_ref = |field: &str| {
-        format!(
-            "native_planning_receipts:{}:save_slice_draft:{}#/draft/nodes/{}/model_route_facts/{field}",
-            material.candidate_set_id, material.caller_request_id, selected.draft_index
-        )
-    };
+    let context_authority =
+        snapshot
+            .link
+            .context_provenance
+            .as_ref()
+            .map(|provenance| ModelRouteContextAuthority {
+                frozen_snapshot_id: provenance.frozen_snapshot_id,
+                authority_schema: provenance.authority_schema.clone(),
+                requirements_semantic_digest: provenance.requirements_semantic_digest.clone(),
+                operating_verification_digest: snapshot
+                    .link
+                    .selection
+                    .expected_verification_digest
+                    .clone(),
+            });
+    macro_rules! asserted {
+        ($value:expr, $field:literal) => {
+            caller_assertion(
+                $value,
+                $field,
+                material.candidate_set_id,
+                material.caller_request_id,
+                selected.draft_index,
+                mapped_work_node_id,
+                mapped_work_node_revision,
+            )
+        };
+    }
     let work = ModelRouteWorkContext {
         approved_matrix_selection: snapshot.link.selection,
         selection_link: ModelRouteSelectionLink {
@@ -78,59 +126,41 @@ fn exact_work_context(
             mapped_work_node_id,
             mapped_work_node_revision,
         },
-        role: caller_fact(
-            facts.and_then(|facts| facts.role.clone()),
-            source_ref("role"),
-            mapped_work_node_id,
-            mapped_work_node_revision,
+        context_authority,
+        role: asserted!(
+            model_route_facts
+                .as_ref()
+                .and_then(|facts| facts.role.clone()),
+            "role"
         ),
-        tool: caller_fact(
-            facts.and_then(|facts| facts.tool.clone()),
-            source_ref("tool"),
-            mapped_work_node_id,
-            mapped_work_node_revision,
+        tool: asserted!(
+            model_route_facts
+                .as_ref()
+                .and_then(|facts| facts.tool.clone()),
+            "tool"
         ),
-        data_class: caller_fact(
-            facts.and_then(|facts| facts.data_class.clone()),
-            source_ref("data_class"),
-            mapped_work_node_id,
-            mapped_work_node_revision,
+        data_class: asserted!(
+            model_route_facts
+                .as_ref()
+                .and_then(|facts| facts.data_class.clone()),
+            "data_class"
         ),
         host_capabilities: ModelRouteFact::Unknown,
-        remaining_budget_units: caller_fact(
-            facts.and_then(|facts| facts.remaining_budget_units),
-            source_ref("remaining_budget_units"),
-            mapped_work_node_id,
-            mapped_work_node_revision,
+        remaining_budget_units: asserted!(
+            model_route_facts
+                .as_ref()
+                .and_then(|facts| facts.remaining_budget_units),
+            "remaining_budget_units"
         ),
-        available_latency_ms: caller_fact(
-            facts.and_then(|facts| facts.available_latency_ms),
-            source_ref("available_latency_ms"),
-            mapped_work_node_id,
-            mapped_work_node_revision,
+        available_latency_ms: asserted!(
+            model_route_facts
+                .as_ref()
+                .and_then(|facts| facts.available_latency_ms),
+            "available_latency_ms"
         ),
     };
     work.digest().map_err(|_| Error::StaleContext)?;
     Ok(work)
-}
-
-fn caller_fact<T>(
-    value: Option<T>,
-    source_ref: String,
-    work_node_id: Uuid,
-    work_node_revision: i64,
-) -> ModelRouteFact<T> {
-    match value {
-        Some(value) => ModelRouteFact::Known {
-            value,
-            provenance: ModelRouteFactProvenance::Caller {
-                source_ref,
-                work_node_id,
-                work_node_revision,
-            },
-        },
-        None => ModelRouteFact::Unknown,
-    }
 }
 
 #[async_trait]
@@ -158,7 +188,7 @@ impl ModelRouteSelectionRead for PgUnitOfWork {
                 workspace_id,
                 candidate_set_id,
                 caller_request_id,
-                false,
+                true,
             )
             .await?
         else {
@@ -167,6 +197,15 @@ impl ModelRouteSelectionRead for PgUnitOfWork {
         let link = &snapshot.link;
         if link.selection.disposition_id != disposition_id {
             return Err(Error::StaleContext);
+        }
+        if link.context_provenance.is_some() {
+            let (evaluation_digest, catalogue_version) =
+                current_context_evaluation(self, workspace_id, link).await?;
+            if evaluation_digest != link.evaluation_digest
+                || catalogue_version != link.catalogue_version
+            {
+                return Err(Error::StaleContext);
+            }
         }
         let disposition = self
             .matrix_disposition_by_id(workspace_id, disposition_id)
@@ -232,7 +271,8 @@ mod tests {
         MatrixPlanningEffectSnapshot, MatrixPlanningMappedNode, MatrixPlanningSelectionLink,
     };
     use tect_domain::{
-        EngineeringCandidate, MatrixPlanningSelection, ModelRouteCallerFacts, PipelineKind,
+        EngineeringCandidate, MatrixPlanningContextProvenance, MatrixPlanningSelection,
+        ModelRouteCallerFacts, PipelineKind,
     };
 
     fn request(snapshot: &MatrixPlanningEffectSnapshot) -> Value {
@@ -270,6 +310,7 @@ mod tests {
                 mapped_draft_node_indices: vec![0],
             },
             evaluation_digest: "d".repeat(64),
+            context_provenance: None,
             catalogue_version: "EM@1".into(),
             caller_principal_id: Uuid::new_v4(),
             caller_session_id: Uuid::new_v4(),
@@ -334,6 +375,7 @@ mod tests {
             snapshot.link.caller_request_id
         );
         assert_eq!(context.selection_link.mapped_work_node_id, node_id);
+        assert!(context.context_authority.is_none());
         assert!(context.has_unknown_facts());
         assert!(matches!(context.role, ModelRouteFact::Unknown));
         assert!(matches!(context.tool, ModelRouteFact::Unknown));
@@ -347,6 +389,36 @@ mod tests {
             context.available_latency_ms,
             ModelRouteFact::Unknown
         ));
+    }
+
+    #[test]
+    fn v2_selection_projects_saved_authority_tuple() {
+        let (workspace, mut snapshot, node_id) = snapshot();
+        let frozen_snapshot_id = Uuid::new_v4();
+        snapshot.link.context_provenance = Some(MatrixPlanningContextProvenance {
+            frozen_snapshot_id,
+            authority_schema: tect_domain::MATRIX_REQUIREMENTS_SCHEMA.into(),
+            requirements_semantic_digest: "e".repeat(64),
+        });
+        let request = request(&snapshot);
+        let context = exact_work_context(
+            snapshot.clone(),
+            snapshot.link.selection.disposition_id,
+            node_id,
+            1,
+            workspace,
+            &request,
+        )
+        .unwrap();
+        assert_eq!(
+            context.context_authority,
+            Some(ModelRouteContextAuthority {
+                frozen_snapshot_id,
+                authority_schema: tect_domain::MATRIX_REQUIREMENTS_SCHEMA.into(),
+                requirements_semantic_digest: "e".repeat(64),
+                operating_verification_digest: snapshot.link.selection.expected_verification_digest,
+            })
+        );
     }
 
     #[test]
@@ -408,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_typed_caller_facts_have_per_field_receipt_provenance() {
+    fn exact_typed_caller_facts_are_field_specific_assertions() {
         let (workspace, mut snapshot, node_id) = snapshot();
         let disposition_id = snapshot.link.selection.disposition_id;
         let old_effect_digest = snapshot.effect_digest(workspace).unwrap();
@@ -429,47 +501,59 @@ mod tests {
             old_effect_digest,
             snapshot.effect_digest(workspace).unwrap()
         );
-        let request = request(&snapshot);
+        let snapshot_request = request(&snapshot);
         let context = exact_work_context(
             snapshot.clone(),
             disposition_id,
             node_id,
             1,
             workspace,
-            &request,
+            &snapshot_request,
         )
         .unwrap();
-        assert!(!matches!(context.role, ModelRouteFact::Unknown));
-        assert!(!matches!(context.tool, ModelRouteFact::Unknown));
-        assert!(!matches!(context.data_class, ModelRouteFact::Unknown));
-        assert!(!matches!(
-            context.remaining_budget_units,
-            ModelRouteFact::Unknown
-        ));
-        assert!(!matches!(
-            context.available_latency_ms,
-            ModelRouteFact::Unknown
-        ));
-        assert!(matches!(context.host_capabilities, ModelRouteFact::Unknown));
-        if let ModelRouteFact::Known {
-            value,
-            provenance:
-                ModelRouteFactProvenance::Caller {
-                    source_ref,
-                    work_node_id,
-                    work_node_revision,
+        for (fact, field, value) in [
+            (&context.role, "role", "agent"),
+            (&context.tool, "tool", "code"),
+            (&context.data_class, "data_class", "internal"),
+        ] {
+            assert!(matches!(fact, ModelRouteFact::Known {
+                value: actual,
+                provenance: ModelRouteFactProvenance::Caller {
+                    source_ref, work_node_id, work_node_revision,
                 },
-        } = context.role
-        {
-            assert_eq!(value, "agent");
-            assert_eq!(work_node_id, node_id);
-            assert_eq!(work_node_revision, 1);
-            assert!(source_ref.contains(&snapshot.link.caller_request_id.to_string()));
-            assert!(source_ref.ends_with("#/draft/nodes/0/model_route_facts/role"));
-        } else {
-            panic!("expected caller role")
+            } if actual == value
+                && source_ref == &format!("native_planning_receipt/{}/{}#/draft/nodes/0/model_route_facts/{field}", snapshot.link.candidate_set_id, snapshot.link.caller_request_id)
+                && *work_node_id == node_id && *work_node_revision == 1));
         }
-        let mut conflict = request;
+        assert!(
+            matches!(context.remaining_budget_units, ModelRouteFact::Known { value: 10, provenance: ModelRouteFactProvenance::Caller { ref source_ref, .. } } if source_ref.ends_with("/remaining_budget_units"))
+        );
+        assert!(
+            matches!(context.available_latency_ms, ModelRouteFact::Known { value: 50, provenance: ModelRouteFactProvenance::Caller { ref source_ref, .. } } if source_ref.ends_with("/available_latency_ms"))
+        );
+        assert!(matches!(context.host_capabilities, ModelRouteFact::Unknown));
+        assert!(context.has_unknown_facts());
+        let mut partial = snapshot.clone();
+        if let SliceCandidateNode::Work {
+            model_route_facts: Some(facts),
+            ..
+        } = &mut partial.saved_nodes[0]
+        {
+            facts.tool = None;
+        }
+        let partial_request = request(&partial);
+        let partial_context = exact_work_context(
+            partial,
+            disposition_id,
+            node_id,
+            1,
+            workspace,
+            &partial_request,
+        )
+        .unwrap();
+        assert!(matches!(partial_context.tool, ModelRouteFact::Unknown));
+        assert!(matches!(partial_context.role, ModelRouteFact::Known { .. }));
+        let mut conflict = snapshot_request;
         conflict["draft"]["nodes"][0]["model_route_facts"]["role"] = serde_json::json!("owner");
         assert!(
             exact_work_context(snapshot, disposition_id, node_id, 1, workspace, &conflict).is_err()

@@ -24,6 +24,7 @@ pub async fn prepare_model_route_send(
     prepared: &PreparedModelRouteRecommendation,
     invocation: ModelRouteInvocation,
 ) -> Result<ModelRouteSendStart> {
+    prepared.work.require_current_authority()?;
     let reason = if prepared.preparation != ModelRoutePreparation::Prepared {
         Some(ModelRouteRunNoCall::Preparation(prepared.preparation))
     } else if !provider.available() {

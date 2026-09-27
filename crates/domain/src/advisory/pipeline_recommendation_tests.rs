@@ -209,6 +209,7 @@ fn source() -> PipelineRecommendationSource {
             verification_digest: "b".repeat(64),
             current_verification_digest: "b".repeat(64),
             saved_mandatory_card_ids: vec!["EM02-SCOPE@0.1".into()],
+            authority: None,
         },
         catalogue: PipelineCatalogueSnapshot {
             revision: "4".into(),
@@ -227,6 +228,8 @@ fn source() -> PipelineRecommendationSource {
 #[test]
 fn current_eight_are_closed_and_promotion_is_excluded() {
     let manifest = build_pipeline_recommendation_manifest(&source()).unwrap();
+    assert_eq!(manifest.schema, PIPELINE_RECOMMENDATION_SCHEMA);
+    assert!(!manifest.has_bound_v2_authority());
     assert!(manifest.should_call());
     assert_eq!(manifest.options.len(), 8);
     assert!(
@@ -253,6 +256,15 @@ fn current_eight_are_closed_and_promotion_is_excluded() {
     assert_eq!(manifest.mandatory_card_ids, ["EM02-SCOPE@0.1"]);
     assert_eq!(manifest.evidence_refs, ["evidence:1", "evidence:2"]);
     manifest.validate_digest().unwrap();
+}
+
+#[test]
+fn v2_manifest_cannot_claim_authority_without_a_typed_binding() {
+    let mut historical = build_pipeline_recommendation_manifest(&source()).unwrap();
+    historical.validate_digest().unwrap();
+    historical.schema = PIPELINE_RECOMMENDATION_CONTEXT_SCHEMA.into();
+    historical.digest = digest_json(&historical).unwrap();
+    assert_eq!(historical.validate_digest(), Err(Error::InputConflict));
 }
 
 #[test]

@@ -158,7 +158,7 @@ impl WorkspaceService {
             )
             .await?;
         let mut value = tx.save_slice_candidate_draft(workspace.id, request).await?;
-        if let (Some(selection), Some((evaluation_digest, catalogue_version))) =
+        if let (Some(selection), Some((evaluation_digest, catalogue_version, context_provenance))) =
             (&request.matrix_selection, matrix_binding)
         {
             let mapped_nodes = super::matrix_selection::resolve_selected_matrix_nodes(
@@ -172,6 +172,7 @@ impl WorkspaceService {
                     workspace.id,
                     &crate::MatrixPlanningSelectionLink {
                         selection: selection.clone(),
+                        context_provenance: Some(context_provenance),
                         evaluation_digest,
                         catalogue_version,
                         caller_principal_id: principal,

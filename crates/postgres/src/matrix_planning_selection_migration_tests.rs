@@ -1,5 +1,7 @@
 const MIGRATION: &str = include_str!("../migrations/0059_matrix_planning_selection_link.sql");
 const MAPPING_MIGRATION: &str = include_str!("../migrations/0060_matrix_planning_mapped_nodes.sql");
+const CONTEXT_MIGRATION: &str =
+    include_str!("../migrations/0109_matrix_planning_context_selection.sql");
 const STORE: &str = include_str!("matrix_planning_selection_store.rs");
 const GRANTS: &str = include_str!("admin/matrix_advisory.rs");
 
@@ -22,13 +24,36 @@ fn link_is_immutable_and_bound_to_exact_real_save_receipt() {
         "request.get(\"matrix_selection\") != Some(&expected_selection)",
         "result.pointer(\"/candidate_set/revision\")",
         ".lock_matrix_task(workspace_id, link.selection.task_id)",
-        ".matrix_verification_for_revision(",
-        "matrix_verified_disposition_digest(&current.input, &composition, set, &validated)",
+        ".context_matrix_verification_for_revision(",
+        "context_matrix_verified_evaluation_digest(&current.input, &composition, set, &record)",
         "ON CONFLICT DO NOTHING RETURNING caller_request_id",
         "Some(prior) if prior == *link => Ok(())",
     ] {
         assert!(STORE.contains(required), "missing {required}");
     }
+}
+
+#[test]
+fn context_link_has_exact_binding_and_new_write_guard() {
+    for required in [
+        "frozen_snapshot_id IS NULL",
+        "frozen_snapshot_id IS NOT NULL",
+        "authority_schema IS NOT NULL",
+        "requirements_semantic_digest IS NOT NULL",
+        "matrix_planning_selection_context_binding_fk",
+        "REFERENCES public.matrix_task_requirements_bindings",
+        "matrix_planning_selection_context_guard",
+        "new matrix selection requires V2 context",
+        "v.schema='tect.context-matrix-verification/1'",
+        "v.record_digest=NEW.verification_digest",
+        "matrix_planning_effect_context_guard",
+    ] {
+        assert!(CONTEXT_MIGRATION.contains(required), "missing {required}");
+    }
+    assert!(STORE.contains("current_context_evaluation(self, workspace_id, link).await?"));
+    assert!(
+        STORE.contains(".bind(link.context_provenance.as_ref().map(|p| p.frozen_snapshot_id))")
+    );
 }
 
 #[test]

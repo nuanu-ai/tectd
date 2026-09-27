@@ -8,7 +8,28 @@ pub(crate) async fn disposition_advice(
     dispatch: Uuid,
     digest: &str,
 ) -> Result<Option<tect_domain::PipelineDispositionAdvice>> {
-    let Some(value) = get(uow, workspace, opportunity).await? else {
+    disposition_advice_with_access(uow, workspace, opportunity, dispatch, digest, true).await
+}
+
+pub(crate) async fn disposition_advice_for_verifier(
+    uow: &mut PgUnitOfWork,
+    workspace: Uuid,
+    opportunity: Uuid,
+    dispatch: Uuid,
+    digest: &str,
+) -> Result<Option<tect_domain::PipelineDispositionAdvice>> {
+    disposition_advice_with_access(uow, workspace, opportunity, dispatch, digest, false).await
+}
+
+async fn disposition_advice_with_access(
+    uow: &mut PgUnitOfWork,
+    workspace: Uuid,
+    opportunity: Uuid,
+    dispatch: Uuid,
+    digest: &str,
+    require_actor: bool,
+) -> Result<Option<tect_domain::PipelineDispositionAdvice>> {
+    let Some(value) = get_with_access(uow, workspace, opportunity, require_actor).await? else {
         return Ok(None);
     };
     if value.dispatch_id != dispatch || value.response_sha256 != digest {
@@ -34,13 +55,22 @@ pub(crate) async fn get(
     workspace: Uuid,
     opportunity: Uuid,
 ) -> Result<Option<PipelineAdviceInterpretation>> {
+    get_with_access(uow, workspace, opportunity, true).await
+}
+
+async fn get_with_access(
+    uow: &mut PgUnitOfWork,
+    workspace: Uuid,
+    opportunity: Uuid,
+    require_actor: bool,
+) -> Result<Option<PipelineAdviceInterpretation>> {
     let tenant = uow.tenant_id()?;
     let actor = uow.principal_id()?;
     let saved = uow
         .pipeline_recommendation_by_opportunity(workspace, opportunity)
         .await?
         .ok_or(Error::NotFound)?;
-    if saved.opportunity.authorized_actor_id != actor {
+    if require_actor && saved.opportunity.authorized_actor_id != actor {
         return Err(Error::Forbidden);
     }
     let row = sqlx::query("SELECT dispatch_id,manifest_digest,response_sha256,contract_version,ranking FROM pipeline_advice_interpretations WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3")

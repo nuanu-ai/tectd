@@ -115,8 +115,19 @@ pub trait UnitOfWork:
     + crate::MatrixAdviceStore
     + crate::MatrixDispositionStore
 {
+    /// Optional declaration context adapter; unavailable adapters fail closed.
+    fn matrix_requirements_context_store(
+        &mut self,
+    ) -> Option<&mut dyn crate::MatrixRequirementsContextStore> {
+        None
+    }
     /// Optional append-only persistence seam. Unconfigured adapters deny use.
     fn matrix_verification_store(&mut self) -> Option<&mut dyn crate::MatrixVerificationStore> {
+        None
+    }
+    fn context_matrix_verification_store(
+        &mut self,
+    ) -> Option<&mut dyn crate::ContextMatrixVerificationStore> {
         None
     }
     /// Optional atomic link seam for an explicit Matrix-selected planning save.
@@ -135,12 +146,24 @@ pub trait UnitOfWork:
     fn model_route_selection_read(&mut self) -> Option<&mut dyn crate::ModelRouteSelectionRead> {
         None
     }
+    /// The preparation path requires selection and capture on one transaction.
+    fn model_route_preparation_store(
+        &mut self,
+    ) -> Option<&mut dyn crate::ModelRoutePreparationStore> {
+        None
+    }
     fn model_route_recommendation_store(
         &mut self,
     ) -> Option<&mut dyn crate::ModelRouteRecommendationStore> {
         None
     }
     fn model_route_decision_store(&mut self) -> Option<&mut dyn crate::ModelRouteDecisionStore> {
+        None
+    }
+    /// Preparation lookup/currentness and decision capture use one transaction.
+    fn model_route_decision_capture_store(
+        &mut self,
+    ) -> Option<&mut dyn crate::ModelRouteDecisionCaptureStore> {
         None
     }
     fn model_route_attempt_store(&mut self) -> Option<&mut dyn crate::ModelRouteAttemptStore> {

@@ -90,13 +90,14 @@ pub(crate) fn seal_matrix_provider_observation(
 }
 
 pub(crate) fn authorize_prepared_matrix(
+    dispatch_id: Uuid,
     opportunity_id: Uuid,
     opportunity: &AdvisoryOpportunity,
     prepared: &PreparedMatrixAdviceAttempt,
     budget: &MatrixBudgetAuthorization,
     verified_policy: &AdvisoryBudgetPolicy,
 ) -> Result<AdvisoryDispatchAuthorization> {
-    if budget.policy_id != verified_policy.id().to_string() {
+    if dispatch_id.is_nil() || budget.policy_id != verified_policy.id().to_string() {
         return Err(Error::BudgetPolicyInvalid);
     }
     let identity = prepared.identity();
@@ -113,6 +114,20 @@ pub(crate) fn authorize_prepared_matrix(
         },
         "request_body_length": prepared.body_length(),
         "request_body_sha256": prepared.body_sha256(),
+        "matrix_authority": match &prepared.binding().verification {
+            crate::MatrixVerificationAuthority::ContextV2 { digest, snapshot_id, authority_schema, semantic_digest } => serde_json::json!({
+                "schema": "tect.context-matrix-verification/1",
+                "verification_digest": digest,
+                "frozen_snapshot_id": snapshot_id,
+                "authority_schema": authority_schema,
+                "requirements_semantic_digest": semantic_digest,
+            }),
+            _ => return Err(Error::Forbidden),
+        },
+        "advisory_correlation": {
+            "opportunity_id": opportunity_id,
+            "dispatch_id": dispatch_id,
+        },
     });
     let configuration_digest = format!(
         "{:x}",
@@ -121,7 +136,7 @@ pub(crate) fn authorize_prepared_matrix(
         )
     );
     let authorization = AdvisoryDispatchAuthorization {
-        dispatch_id: Uuid::new_v4(),
+        dispatch_id,
         opportunity_id,
         predecessor_dispatch_id: None,
         attempt_number: 1,
@@ -168,7 +183,13 @@ fn matrix_recovery_window(
     }
 }
 
+fn legacy_reconciliation_allowed(window: MatrixRecoveryWindow) -> bool {
+    matches!(window, MatrixRecoveryWindow::SealedResponse)
+}
+
 mod recovery;
+#[cfg(test)]
+pub(crate) use recovery::reconstruct_historical_legacy_request;
 
 fn matrix_observation_allows_parse(saved: &StoredMatrixDispatch) -> bool {
     saved.response_complete
@@ -204,8 +225,8 @@ impl WorkspaceService {
         {
             return Err(Error::InputConflict);
         }
-        let current = read
-            .matrix_task(workspace_id, provider_request.revision().task_id)
+        let source = read
+            .matrix_task_source(workspace_id, provider_request.revision().task_id)
             .await?;
         let config = read.advisory_config(workspace_id).await?;
         let configured = config.revision == expected_config_revision
@@ -213,14 +234,72 @@ impl WorkspaceService {
             && config.provider_profile_ref.as_ref()
                 == Some(provider_request.provider_profile_ref())
             && config.model_configuration.as_ref() == Some(provider_request.model_configuration());
-        let fresh = crate::matrix_tasks::matrix_request_still_current(
-            read.matrix_verification_store(),
-            self.matrix_evidence_validator.as_ref(),
-            workspace_id,
-            current,
-            provider_request,
-        )
-        .await;
+        let fresh = if let (
+            Some(source),
+            crate::MatrixVerificationAuthority::ContextV2 {
+                snapshot_id,
+                authority_schema,
+                semantic_digest,
+                ..
+            },
+        ) = (source, &provider_request.binding().verification)
+        {
+            if source.revision != *provider_request.revision()
+                || source.requirements_binding.as_ref().is_none_or(|binding| {
+                    binding.snapshot_id != *snapshot_id
+                        || binding.authority_schema != *authority_schema
+                        || binding.semantic_digest != *semantic_digest
+                })
+            {
+                false
+            } else {
+                let binding = source
+                    .requirements_binding
+                    .as_ref()
+                    .ok_or(Error::InternalInvariant)?;
+                let context = if let Some(store) = read.matrix_requirements_context_store() {
+                    crate::matrix_verification::load_bound_matrix_context(
+                        store,
+                        workspace_id,
+                        identity.principal_id,
+                        binding,
+                    )
+                    .await
+                    .ok()
+                } else {
+                    None
+                };
+                if let Some(context) = context {
+                    let verified = crate::matrix_tasks::compose_bound_revision_with_verification(
+                        read.context_matrix_verification_store(),
+                        self.matrix_evidence_validator.as_ref(),
+                        workspace_id,
+                        &source.revision,
+                        *snapshot_id,
+                        &context,
+                        crate::matrix_verification::current_epoch_seconds()?,
+                    )
+                    .await?;
+                    verified
+                        .and_then(|(composition, record)| {
+                            crate::MatrixProviderRequest::new_context_verified(
+                                source.revision,
+                                &composition,
+                                &record,
+                                *snapshot_id,
+                                provider_request.provider_profile_ref().clone(),
+                                provider_request.model_configuration().clone(),
+                            )
+                            .ok()
+                        })
+                        .is_some_and(|rebuilt| rebuilt == *provider_request)
+                } else {
+                    false
+                }
+            }
+        } else {
+            false
+        };
         read.commit().await?;
         Ok(fresh && configured)
     }
@@ -259,12 +338,53 @@ impl WorkspaceService {
         {
             return Err(Error::InputConflict);
         }
+        // This is the final in-transaction currentness check. A confirmation
+        // cannot commit between this check and the one-use send-start commit.
+        let held_context_current = if let crate::MatrixVerificationAuthority::ContextV2 {
+            snapshot_id,
+            authority_schema,
+            semantic_digest,
+            ..
+        } = &provider_request.binding().verification
+        {
+            let source = start
+                .matrix_task_source(workspace_id, provider_request.revision().task_id)
+                .await?;
+            if let Some(source) =
+                source.filter(|source| source.revision == *provider_request.revision())
+            {
+                if let Some(binding) = source.requirements_binding.as_ref().filter(|binding| {
+                    binding.snapshot_id == *snapshot_id
+                        && binding.authority_schema == *authority_schema
+                        && binding.semantic_digest == *semantic_digest
+                }) {
+                    if let Some(store) = start.matrix_requirements_context_store() {
+                        crate::matrix_verification::lock_and_load_bound_matrix_context(
+                            store,
+                            workspace_id,
+                            identity.principal_id,
+                            binding,
+                        )
+                        .await
+                        .is_ok()
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         let started = start
             .start_verified_matrix_dispatch(
                 &lifecycle,
                 workspace_id,
                 authorization.dispatch_id,
-                verification_current,
+                verification_current && held_context_current,
             )
             .await?;
         start.commit().await?;
@@ -482,5 +602,18 @@ mod recovery_tests {
                 MatrixRecoveryWindow::ReceiptOnly,
             );
         }
+    }
+
+    #[test]
+    fn legacy_verification_only_reconciles_sealed_response() {
+        assert!(!legacy_reconciliation_allowed(
+            MatrixRecoveryWindow::Authorized
+        ));
+        assert!(legacy_reconciliation_allowed(
+            MatrixRecoveryWindow::SealedResponse
+        ));
+        assert!(!legacy_reconciliation_allowed(
+            MatrixRecoveryWindow::ReceiptOnly
+        ));
     }
 }

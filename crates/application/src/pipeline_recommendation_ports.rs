@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use tect_domain::{
     AdvisoryOpportunity, AdvisoryOpportunityInput, Error, PipelineCompatibilityPolicy,
     PipelineDefinitionSnapshot, PipelineDispositionAdvice, PipelineDispositionResult, PipelineKind,
-    PipelineRecommendationManifest, PipelineRecommendationSource, Result, SliceCandidateNode,
+    PipelineMatrixAuthorityBinding, PipelineRecommendationManifest, PipelineRecommendationSource,
+    Result, SliceCandidateNode,
 };
 use uuid::Uuid;
 
@@ -48,6 +49,9 @@ pub struct PipelineRecommendationContext {
     pub work_node_revision: i64,
     pub matrix_disposition_id: Uuid,
     pub match_effect_attestation_id: Uuid,
+    /// The exact V2 authority projected from an evaluated Domain token.
+    /// Historical V1 receipts have no binding and remain readable.
+    pub matrix_authority: Option<PipelineMatrixAuthorityBinding>,
     pub catalogue_revision: String,
     pub catalogue_digest: String,
     pub compatibility_policy_digest: String,

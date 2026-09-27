@@ -428,11 +428,9 @@ async fn current_selected_work_fake_jev_rank_has_sealed_pg_audit_and_disposition
     let mut writer = store.begin(TransactionMode::ReadWrite).await.unwrap();
     writer.authenticate(&created.owner.auth).await.unwrap();
     writer.set_tenant(created.tenant).await.unwrap();
-    let mut reader = PgUnitOfWork::test_begin(&runtime_pool, created.tenant).await;
     let prepared = request
         .prepare(
-            writer.model_route_recommendation_store().unwrap(),
-            &mut reader,
+            writer.model_route_preparation_store().unwrap(),
             &TestHost,
             &TestCatalogue,
         )
@@ -664,7 +662,6 @@ async fn current_selected_work_fake_jev_rank_has_sealed_pg_audit_and_disposition
         preparation_request_key: request.request_key.clone(),
         input: ModelRouteDecisionInput::Ranking(ranking),
     };
-    let mut prep_read = PgUnitOfWork::test_begin(&runtime_pool, created.tenant).await;
     let mut decision_write = store.begin(TransactionMode::ReadWrite).await.unwrap();
     decision_write
         .authenticate(&created.owner.auth)
@@ -672,10 +669,7 @@ async fn current_selected_work_fake_jev_rank_has_sealed_pg_audit_and_disposition
         .unwrap();
     decision_write.set_tenant(created.tenant).await.unwrap();
     let captured = decision
-        .decide(
-            &mut prep_read,
-            decision_write.model_route_decision_store().unwrap(),
-        )
+        .decide(decision_write.model_route_decision_capture_store().unwrap())
         .await
         .unwrap();
     assert_eq!(
@@ -784,11 +778,9 @@ async fn model_route_unknown_and_overrun_usage_have_no_visible_advice() {
         let mut writer = store.begin(TransactionMode::ReadWrite).await.unwrap();
         writer.authenticate(&created.owner.auth).await.unwrap();
         writer.set_tenant(created.tenant).await.unwrap();
-        let mut reader = PgUnitOfWork::test_begin(&runtime_pool, created.tenant).await;
         let prepared = request
             .prepare(
-                writer.model_route_recommendation_store().unwrap(),
-                &mut reader,
+                writer.model_route_preparation_store().unwrap(),
                 &TestHost,
                 &TestCatalogue,
             )

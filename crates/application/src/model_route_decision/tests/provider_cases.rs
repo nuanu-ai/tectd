@@ -19,10 +19,8 @@ async fn sealed_provider_abstain_is_not_labeled_owner_explicit() {
     proof.response_sha256 = tect_domain::model_route_wire_sha256(&proof.raw_response);
     let mut memory = Memory {
         evidence: Some(proof),
-        ..Memory::default()
-    };
-    let mut preparations = PreparationMemory {
         prepared: Some(saved.clone()),
+        ..Memory::default()
     };
     let decision = DecideModelRouteRecommendation {
         id: Uuid::new_v4(),
@@ -30,10 +28,7 @@ async fn sealed_provider_abstain_is_not_labeled_owner_explicit() {
         preparation_request_key: saved.request_key.clone(),
         input: ModelRouteDecisionInput::Abstain,
     };
-    let result = decision
-        .decide(&mut preparations, &mut memory)
-        .await
-        .unwrap();
+    let result = decision.decide(&mut memory).await.unwrap();
     assert_eq!(
         result.outcome,
         ModelRouteDecisionOutcome::Abstained {
@@ -57,19 +52,16 @@ async fn caller_rank_without_sealed_provider_evidence_is_denied() {
         preparation_request_key: saved.request_key.clone(),
         input: ModelRouteDecisionInput::Ranking(ranking),
     };
-    let mut preparations = PreparationMemory {
+    let mut memory = Memory {
         prepared: Some(saved.clone()),
+        ..Memory::default()
     };
-    let mut memory = Memory::default();
-    assert_eq!(
-        decision.decide(&mut preparations, &mut memory).await,
-        Err(Error::Forbidden)
-    );
+    assert_eq!(decision.decide(&mut memory).await, Err(Error::Forbidden));
     let mut forged = evidence(&saved, &["route-a", "route-b"]);
     forged.raw_response.push(b' ');
     memory.evidence = Some(forged);
     assert_eq!(
-        decision.decide(&mut preparations, &mut memory).await,
+        decision.decide(&mut memory).await,
         Err(Error::InputConflict)
     );
     assert_eq!(memory.decision_writes, 0);

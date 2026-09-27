@@ -23,6 +23,8 @@ pub(super) async fn pipeline_recommendation_by_request(
                 context.catalogue_revision,context.catalogue_digest,context.eligible_option_ids, \
                 context.compatibility_policy_digest, \
                 context.verification_contract_digest,context.manifest_payload, \
+                context.frozen_snapshot_id,context.requirements_semantic_digest, \
+                context.authority_schema,context.operating_verification_digest, \
                 context.manifest_digest,o.source_revision \
          FROM pipeline_advice_contexts context \
          JOIN advisory_opportunity o ON \
@@ -49,6 +51,31 @@ pub(super) async fn pipeline_recommendation_by_request(
         .try_get::<Option<String>, _>("source_revision")
         .map_err(storage_error)?
         .ok_or(Error::InputConflict)?;
+    let matrix_authority = match (
+        row.try_get::<Option<Uuid>, _>("frozen_snapshot_id")
+            .map_err(storage_error)?,
+        row.try_get::<Option<String>, _>("requirements_semantic_digest")
+            .map_err(storage_error)?,
+        row.try_get::<Option<String>, _>("authority_schema")
+            .map_err(storage_error)?,
+        row.try_get::<Option<String>, _>("operating_verification_digest")
+            .map_err(storage_error)?,
+    ) {
+        (Some(snapshot), Some(semantic), Some(schema), Some(verification)) => {
+            let value: tect_domain::PipelineMatrixAuthorityBinding =
+                serde_json::from_value(serde_json::json!({
+                    "frozen_snapshot_id": snapshot.to_string(),
+                    "requirements_semantic_digest": semantic,
+                    "authority_schema": schema,
+                    "operating_verification_digest": verification,
+                }))
+                .map_err(|_| Error::InputConflict)?;
+            value.validate().map_err(|_| Error::InputConflict)?;
+            Some(value)
+        }
+        (None, None, None, None) => None,
+        _ => return Err(Error::InputConflict),
+    };
     let context = PipelineRecommendationContext {
         scope_id: row.try_get("scope_id").map_err(storage_error)?,
         candidate_set_id: row.try_get("candidate_set_id").map_err(storage_error)?,
@@ -69,6 +96,7 @@ pub(super) async fn pipeline_recommendation_by_request(
         match_effect_attestation_id: row
             .try_get("match_effect_attestation_id")
             .map_err(storage_error)?,
+        matrix_authority,
         catalogue_revision: row.try_get("catalogue_revision").map_err(storage_error)?,
         catalogue_digest: row.try_get("catalogue_digest").map_err(storage_error)?,
         compatibility_policy_digest: row
@@ -82,6 +110,7 @@ pub(super) async fn pipeline_recommendation_by_request(
     let stored_digest: Option<String> = row.try_get("manifest_digest").map_err(storage_error)?;
     if stored_digest.as_deref() != Some(manifest.digest.as_str())
         || context.verification_contract_digest != manifest.digest
+        || context.matrix_authority != manifest.matrix_authority
         || context.compatibility_policy_digest != manifest.compatibility_policy_digest
         || opportunity.material_digest != manifest.digest
     {
@@ -113,6 +142,8 @@ pub(super) async fn capture_pipeline_recommendation(
         || input.work_revision != Some(context.work_node_revision)
         || input.material_digest != manifest.digest
         || context.verification_contract_digest != manifest.digest
+        || context.matrix_authority != manifest.matrix_authority
+        || !manifest.has_bound_v2_authority()
         || manifest.work_id != context.work_node_id
         || manifest.work_revision != context.work_node_revision
         || manifest.catalogue_revision != context.catalogue_revision
@@ -168,6 +199,7 @@ pub(super) async fn capture_pipeline_recommendation(
         || current.source.work.revision() != context.work_node_revision
         || current.matrix_disposition_id != context.matrix_disposition_id
         || current.match_effect_attestation_id != context.match_effect_attestation_id
+        || current.source.matrix.authority != context.matrix_authority
         || current.source.catalogue.revision != context.catalogue_revision
         || current.source.catalogue.digest != context.catalogue_digest
         || context.compatibility_policy_digest != manifest.compatibility_policy_digest
@@ -323,8 +355,11 @@ pub(super) async fn capture_pipeline_recommendation(
               matrix_disposition_id,match_effect_attestation_id, \
               catalogue_revision,catalogue_digest,eligible_option_ids, \
               compatibility_policy_digest, \
-              verification_contract_digest,manifest_payload,manifest_digest) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)",
+              verification_contract_digest,manifest_payload,manifest_digest, \
+              frozen_snapshot_id,requirements_semantic_digest,authority_schema, \
+              operating_verification_digest) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19, \
+                 $20,$21,$22,$23)",
     )
     .bind(tenant)
     .bind(workspace_id)
@@ -345,6 +380,32 @@ pub(super) async fn capture_pipeline_recommendation(
     .bind(&context.verification_contract_digest)
     .bind(serde_json::to_value(manifest).map_err(storage_error)?)
     .bind(&manifest.digest)
+    .bind(
+        context
+            .matrix_authority
+            .as_ref()
+            .map(|authority| Uuid::parse_str(authority.frozen_snapshot_id()))
+            .transpose()
+            .map_err(|_| Error::InputConflict)?,
+    )
+    .bind(
+        context
+            .matrix_authority
+            .as_ref()
+            .map(|authority| authority.requirements_semantic_digest()),
+    )
+    .bind(
+        context
+            .matrix_authority
+            .as_ref()
+            .map(|authority| authority.authority_schema()),
+    )
+    .bind(
+        context
+            .matrix_authority
+            .as_ref()
+            .map(|authority| authority.operating_verification_digest()),
+    )
     .execute(&mut **uow.transaction()?)
     .await
     .map_err(write_error)?;

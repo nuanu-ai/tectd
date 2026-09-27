@@ -1,6 +1,7 @@
 use sqlx::Row;
 use tect_application::{
-    MAX_PREPARED_MATRIX_BODY_BYTES, MatrixProviderBinding, StoredMatrixDispatch,
+    MAX_PREPARED_MATRIX_BODY_BYTES, MatrixProviderBinding, MatrixVerificationAuthority,
+    StoredMatrixDispatch,
 };
 
 const MAX_RECOVERED_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
@@ -25,11 +26,16 @@ pub(crate) async fn matrix_dispatch_for_recovery(
     let row = sqlx::query(
         "SELECT o.work_item_id,o.matrix_task_revision,o.matrix_choice_set_digest,\
                 o.matrix_verification_digest,o.material_digest,r.input_digest,r.canonical_input,\
-                r.choice_set,r.choice_set_digest AS revision_choice_digest \
+                r.choice_set,r.choice_set_digest AS revision_choice_digest, \
+                v.schema,v.record_digest,v.frozen_snapshot_id, \
+                v.requirements_semantic_digest,v.authority_schema \
          FROM advisory_opportunity o \
          JOIN matrix_task_revisions r ON \
            (r.tenant_id,r.workspace_id,r.task_id,r.revision)=\
            (o.tenant_id,o.workspace_id,o.work_item_id,o.matrix_task_revision) \
+         LEFT JOIN matrix_verifications v ON \
+           (v.tenant_id,v.workspace_id,v.task_id,v.task_revision,v.record_digest)=\
+           (o.tenant_id,o.workspace_id,o.work_item_id,o.matrix_task_revision,o.matrix_verification_digest) \
          WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.authorized_actor_id=$3 \
            AND o.id=$4 AND o.scope_id IS NULL AND o.work_item_kind='matrix_task' \
            AND o.capability='engineering_profile' \
@@ -50,6 +56,14 @@ pub(crate) async fn matrix_dispatch_for_recovery(
         row.try_get("canonical_input").map_err(storage_error)?;
     let input: EngineeringMatrixInput =
         serde_json::from_value(canonical_input.clone()).map_err(|_| Error::StorageUnavailable)?;
+    let saved_verification: Option<String> = row
+        .try_get("matrix_verification_digest")
+        .map_err(storage_error)?;
+    let verification = match saved_verification {
+        Some(_) => crate::matrix_advice_store::verification_authority(&row)
+            .map_err(|_| Error::StorageUnavailable)?,
+        None => MatrixVerificationAuthority::Unverified,
+    };
     let binding = MatrixProviderBinding {
         task_id: row.try_get("work_item_id").map_err(storage_error)?,
         task_revision: row.try_get("matrix_task_revision").map_err(storage_error)?,
@@ -60,9 +74,7 @@ pub(crate) async fn matrix_dispatch_for_recovery(
             .try_get("matrix_choice_set_digest")
             .map_err(storage_error)?,
         evaluation_digest: row.try_get("material_digest").map_err(storage_error)?,
-        verification_digest: row
-            .try_get("matrix_verification_digest")
-            .map_err(storage_error)?,
+        verification,
     };
     if binding.task_id.is_nil()
         || binding.task_revision < 1
@@ -186,13 +198,39 @@ fn stored_matrix_dispatch(
             "choice_set_version": binding.choice_set_version,
             "choice_set_digest": binding.choice_set_digest,
             "evaluation_digest": binding.evaluation_digest,
-            "verification_digest": binding.verification_digest,
         });
-        if binding.verification_digest.is_none() {
-            expected_binding
-                .as_object_mut()
-                .unwrap()
-                .remove("verification_digest");
+        if let Some(digest) = binding.verification.digest() {
+            expected_binding["verification_digest"] = serde_json::json!(digest);
+        }
+        if let MatrixVerificationAuthority::ContextV2 {
+            snapshot_id,
+            authority_schema,
+            semantic_digest,
+            ..
+        } = &binding.verification
+        {
+            expected_binding["context"] = serde_json::json!({
+                "schema": "tect.context-matrix-verification/1",
+                "frozen_snapshot_id": snapshot_id,
+                "authority_schema": authority_schema,
+                "requirements_semantic_digest": semantic_digest,
+            });
+            if snapshot.get("matrix_authority")
+                != Some(&serde_json::json!({
+                    "schema": "tect.context-matrix-verification/1",
+                    "verification_digest": binding.verification.digest(),
+                    "frozen_snapshot_id": snapshot_id,
+                    "authority_schema": authority_schema,
+                    "requirements_semantic_digest": semantic_digest,
+                }))
+                || snapshot.get("advisory_correlation")
+                    != Some(&serde_json::json!({
+                        "opportunity_id": dispatch.opportunity_id,
+                        "dispatch_id": dispatch.id,
+                    }))
+            {
+                return Err(Error::StorageUnavailable);
+            }
         }
         if body.get("model") != Some(&serde_json::json!(model.model))
             || request_binding != &expected_binding
@@ -255,7 +293,9 @@ mod matrix_dispatch_read_tests {
             choice_set_version: 1,
             choice_set_digest: "b".repeat(64),
             evaluation_digest: "c".repeat(64),
-            verification_digest: Some("d".repeat(64)),
+            verification: MatrixVerificationAuthority::LegacyV1 {
+                digest: "d".repeat(64),
+            },
         };
         let request_payload = serde_json::to_vec(&serde_json::json!({
             "model": "model", "state": {"binding": {
@@ -266,7 +306,7 @@ mod matrix_dispatch_read_tests {
                 "choice_set_version": 1,
                 "choice_set_digest": binding.choice_set_digest,
                 "evaluation_digest": binding.evaluation_digest,
-                "verification_digest": binding.verification_digest,
+                "verification_digest": binding.verification.digest(),
             }}
         }))
         .unwrap();
@@ -331,6 +371,63 @@ mod matrix_dispatch_read_tests {
             );
             assert!(!format!("{saved:?}").contains("private-raw-response"));
         }
+    }
+
+    fn v2_fixture() -> (DispatchRow, MatrixProviderBinding) {
+        let (mut row, mut binding) = fixture("sealed", "sent", Some("provider_response"));
+        let snapshot_id = Uuid::new_v4();
+        binding.verification = MatrixVerificationAuthority::ContextV2 {
+            digest: "d".repeat(64),
+            snapshot_id,
+            authority_schema: "tect.matrix-requirements/1".into(),
+            semantic_digest: "e".repeat(64),
+        };
+        let authority = serde_json::json!({
+            "schema": "tect.context-matrix-verification/1",
+            "verification_digest": binding.verification.digest(),
+            "frozen_snapshot_id": snapshot_id,
+            "authority_schema": "tect.matrix-requirements/1",
+            "requirements_semantic_digest": "e".repeat(64),
+        });
+        let mut body: serde_json::Value = serde_json::from_slice(&row.request_payload).unwrap();
+        body["state"]["binding"]["context"] = serde_json::json!({
+            "schema": "tect.context-matrix-verification/1",
+            "frozen_snapshot_id": snapshot_id,
+            "authority_schema": "tect.matrix-requirements/1",
+            "requirements_semantic_digest": "e".repeat(64),
+        });
+        row.request_payload = serde_json::to_vec(&body).unwrap();
+        row.payload_digest = format!("{:x}", Sha256::digest(&row.request_payload));
+        row.configuration_snapshot["matrix_authority"] = authority;
+        row.configuration_snapshot["advisory_correlation"] = serde_json::json!({
+            "opportunity_id": row.opportunity_id,
+            "dispatch_id": row.id,
+        });
+        row.configuration_snapshot["request_body_length"] =
+            serde_json::json!(row.request_payload.len());
+        row.configuration_snapshot["request_body_sha256"] = serde_json::json!(&row.payload_digest);
+        row.configuration_digest = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&row.configuration_snapshot).unwrap())
+        );
+        (row, binding)
+    }
+
+    #[test]
+    fn v2_recovery_requires_exact_authority_and_correlation() {
+        let (row, binding) = v2_fixture();
+        assert!(stored_matrix_dispatch(row, binding).is_ok());
+        let (mut row, binding) = v2_fixture();
+        row.configuration_snapshot["advisory_correlation"]["dispatch_id"] =
+            serde_json::json!(Uuid::new_v4());
+        row.configuration_digest = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&row.configuration_snapshot).unwrap())
+        );
+        assert_eq!(
+            stored_matrix_dispatch(row, binding).err(),
+            Some(Error::StorageUnavailable),
+        );
     }
 
     #[test]

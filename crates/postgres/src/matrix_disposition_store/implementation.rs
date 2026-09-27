@@ -36,7 +36,7 @@ impl MatrixDispositionStore for PgUnitOfWork {
         session_id: Uuid,
         request: &RecordMatrixDisposition,
         current_advice: Option<&CurrentMatrixAdvice>,
-        current_verification: Option<&RevalidatedMatrixVerification>,
+        current_verification: Option<&MatrixDispositionVerification>,
     ) -> Result<MatrixDispositionRecord> {
         request.validate()?;
         if workspace_id.is_nil()
@@ -157,47 +157,169 @@ impl MatrixDispositionStore for PgUnitOfWork {
                 return Err(Error::InvalidArguments);
             }
             let token = current_verification.ok_or(Error::StaleContext)?;
-            let digest = token.record_digest();
-            let saved = self
-                .matrix_verification_for_revision(
-                    workspace_id,
-                    request.task_id,
-                    revision,
-                    &request.expected_input_digest,
-                )
-                .await?
-                .ok_or(Error::StaleContext)?;
-            if saved.digest != digest
-                || saved.owner_principal != current.recorded_by_principal_id.to_string()
-                || saved.verifier_principal == saved.owner_principal
-            {
-                return Err(Error::StaleContext);
-            }
             let now: i64 = sqlx::query_scalar(
                 "SELECT FLOOR(EXTRACT(EPOCH FROM pg_catalog.clock_timestamp()))::bigint",
             )
             .fetch_one(&mut **self.transaction()?)
             .await
             .map_err(storage_error)?;
-            let validated = evaluate_matrix_verification(
-                &request.task_id.to_string(),
-                &revision.to_string(),
-                &current.input,
-                &saved,
-                now,
-            )
-            .map_err(|_| Error::StaleContext)?;
-            let reported = OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
-                request.task_id.to_string(),
-                revision.to_string(),
-                current.input.clone(),
-            )
-            .map_err(|_| Error::StaleContext)?;
-            let composition = compose_independently_verified_owner_matrix(&reported, &validated)
-                .map_err(|_| Error::StaleContext)?;
-            let evaluation =
-                matrix_verified_disposition_digest(&current.input, &composition, set, &validated)
+            let evaluation = match token {
+                MatrixDispositionVerification::LegacyV1 { verification, .. } => {
+                    // Preserve the historical V1 preimage and its saved-record authority.
+                    let source = self
+                        .matrix_task_source(workspace_id, request.task_id)
+                        .await?
+                        .ok_or(Error::StaleContext)?;
+                    if source.revision != current || source.requirements_binding.is_some() {
+                        return Err(Error::StaleContext);
+                    }
+                    let saved = self
+                        .matrix_verification_for_revision(
+                            workspace_id,
+                            request.task_id,
+                            revision,
+                            &request.expected_input_digest,
+                        )
+                        .await?
+                        .ok_or(Error::StaleContext)?;
+                    if saved.digest != verification.record_digest()
+                        || saved.owner_principal != current.recorded_by_principal_id.to_string()
+                        || saved.verifier_principal == saved.owner_principal
+                    {
+                        return Err(Error::StaleContext);
+                    }
+                    let validated = evaluate_matrix_verification(
+                        &request.task_id.to_string(),
+                        &revision.to_string(),
+                        &current.input,
+                        &saved,
+                        now,
+                    )
                     .map_err(|_| Error::StaleContext)?;
+                    let reported =
+                        OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
+                            request.task_id.to_string(),
+                            revision.to_string(),
+                            current.input.clone(),
+                        )
+                        .map_err(|_| Error::StaleContext)?;
+                    let composition =
+                        compose_independently_verified_owner_matrix(&reported, &validated)
+                            .map_err(|_| Error::StaleContext)?;
+                    matrix_verified_disposition_digest(
+                        &current.input,
+                        &composition,
+                        set,
+                        &validated,
+                    )
+                    .map_err(|_| Error::StaleContext)?
+                }
+                MatrixDispositionVerification::ContextV2 {
+                    binding,
+                    composition: expected,
+                    record,
+                } => {
+                    let source = self
+                        .matrix_task_source(workspace_id, request.task_id)
+                        .await?
+                        .ok_or(Error::StaleContext)?;
+                    if source.revision != current
+                        || source.requirements_binding.as_ref() != Some(binding)
+                        || binding.authority_schema != MATRIX_REQUIREMENTS_SCHEMA
+                    {
+                        return Err(Error::StaleContext);
+                    }
+                    let lineage = self
+                        .matrix_requirements_lineage(
+                            workspace_id,
+                            actor_id,
+                            &binding.locator,
+                            false,
+                        )
+                        .await
+                        .map_err(|_| Error::StaleContext)?;
+                    for anchor in &lineage {
+                        self.lock_matrix_requirements_head(workspace_id, *anchor)
+                            .await
+                            .map_err(|_| Error::StaleContext)?;
+                    }
+                    let frozen = self
+                        .frozen_matrix_requirements_by_id(workspace_id, binding.snapshot_id)
+                        .await?
+                        .ok_or(Error::StaleContext)?;
+                    if lineage.last().copied() != Some(frozen.anchor)
+                        || frozen.effective.schema() != binding.authority_schema
+                        || frozen.effective.semantic_digest() != binding.semantic_digest
+                    {
+                        return Err(Error::StaleContext);
+                    }
+                    let revisions = self
+                        .matrix_requirements_revisions(workspace_id, &lineage)
+                        .await
+                        .map_err(|_| Error::StaleContext)?;
+                    let effective = resolve_matrix_requirements(
+                        &lineage,
+                        &revisions,
+                        MATRIX_REQUIREMENTS_SCHEMA,
+                    )
+                    .map_err(|_| Error::StaleContext)?;
+                    if effective.semantic_digest() != binding.semantic_digest
+                        || effective != frozen.effective
+                    {
+                        return Err(Error::StaleContext);
+                    }
+                    let saved = self
+                        .context_matrix_verification_for_revision(
+                            workspace_id,
+                            request.task_id,
+                            revision,
+                            &current.input_digest,
+                            binding.snapshot_id,
+                        )
+                        .await?
+                        .ok_or(Error::StaleContext)?;
+                    if saved != *record
+                        || saved.owner_principal != current.recorded_by_principal_id.to_string()
+                        || saved.verifier_principal == saved.owner_principal
+                        || saved.input_digest != current.input_digest
+                        || saved.frozen_snapshot_id != binding.snapshot_id.to_string()
+                        || saved.authority_schema != binding.authority_schema
+                        || saved.requirements_semantic_digest != binding.semantic_digest
+                    {
+                        return Err(Error::StaleContext);
+                    }
+                    let validated = evaluate_context_matrix_verification(
+                        &request.task_id.to_string(),
+                        &revision.to_string(),
+                        &binding.snapshot_id.to_string(),
+                        &current.input,
+                        &effective,
+                        &saved,
+                        now,
+                    )
+                    .map_err(|_| Error::StaleContext)?;
+                    let composition = compose_confirmed_requirements_matrix(
+                        &request.task_id.to_string(),
+                        &revision.to_string(),
+                        &binding.snapshot_id.to_string(),
+                        &current.input,
+                        &effective,
+                        &validated,
+                        now,
+                    )
+                    .map_err(|_| Error::StaleContext)?;
+                    if &composition != expected {
+                        return Err(Error::StaleContext);
+                    }
+                    context_matrix_verified_evaluation_digest(
+                        &current.input,
+                        &composition,
+                        set,
+                        &saved,
+                    )
+                    .map_err(|_| Error::StaleContext)?
+                }
+            };
             let reason: String = opportunity
                 .try_get("primary_reason")
                 .map_err(storage_error)?;
@@ -210,7 +332,7 @@ impl MatrixDispositionStore for PgUnitOfWork {
             if !selected_receipt_matches(
                 &reason,
                 captured_verification.as_deref(),
-                digest,
+                token.record_digest(),
                 &captured_material,
                 &evaluation,
             ) {
@@ -385,10 +507,44 @@ impl MatrixDispositionStore for PgUnitOfWork {
             {
                 return Err(Error::StaleContext);
             }
+            let verification = current_verification.ok_or(Error::StaleContext)?;
+            if verification.record_digest() != token.verification_digest {
+                return Err(Error::StaleContext);
+            }
+            let source = self
+                .matrix_task_source(workspace_id, request.task_id)
+                .await?
+                .ok_or(Error::StaleContext)?;
+            if source.revision != current
+                || match verification {
+                    MatrixDispositionVerification::LegacyV1 { .. } => {
+                        source.requirements_binding.is_some()
+                    }
+                    MatrixDispositionVerification::ContextV2 { binding, .. } => {
+                        source.requirements_binding.as_ref() != Some(binding)
+                    }
+                }
+            {
+                return Err(Error::StaleContext);
+            }
+            let (schema, snapshot, semantic, authority) = match verification {
+                MatrixDispositionVerification::LegacyV1 { .. } => {
+                    (MATRIX_VERIFICATION_SCHEMA, None, None, None)
+                }
+                MatrixDispositionVerification::ContextV2 { binding, .. } => (
+                    CONTEXT_MATRIX_VERIFICATION_SCHEMA,
+                    Some(binding.snapshot_id),
+                    Some(binding.semantic_digest.as_str()),
+                    Some(binding.authority_schema.as_str()),
+                ),
+            };
             let fresh: Option<bool> = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM matrix_verifications v \
                  WHERE v.tenant_id=$1 AND v.workspace_id=$2 AND v.task_id=$3 \
                    AND v.task_revision=$4 AND v.input_digest=$5 AND v.record_digest=$6 \
+                   AND v.schema=$7 AND v.frozen_snapshot_id IS NOT DISTINCT FROM $8 \
+                   AND v.requirements_semantic_digest IS NOT DISTINCT FROM $9 \
+                   AND v.authority_schema IS NOT DISTINCT FROM $10 \
                    AND EXISTS(SELECT 1 FROM matrix_verification_bindings b \
                      WHERE b.tenant_id=v.tenant_id AND b.workspace_id=v.workspace_id \
                        AND b.verification_id=v.id) \
@@ -398,6 +554,7 @@ impl MatrixDispositionStore for PgUnitOfWork {
                        AND b.expires_at<=FLOOR(EXTRACT(EPOCH FROM pg_catalog.clock_timestamp()))::bigint))",
             ).bind(tenant).bind(workspace_id).bind(request.task_id).bind(revision)
              .bind(&request.expected_input_digest).bind(&token.verification_digest)
+             .bind(schema).bind(snapshot).bind(semantic).bind(authority)
              .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?;
             if fresh != Some(true) {
                 return Err(Error::StaleContext);

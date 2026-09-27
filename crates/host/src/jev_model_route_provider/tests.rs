@@ -30,11 +30,14 @@ fn duplicate_json_is_unusable_without_changing_observation() {
 
 fn request(count: usize) -> ModelRouteRankingWireRequest {
     let id = Uuid::from_u128(1);
-    fn caller<T>(value: T) -> ModelRouteFact<T> {
+    fn observed<T>(value: T) -> ModelRouteFact<T> {
         ModelRouteFact::Known {
             value,
-            provenance: ModelRouteFactProvenance::Caller {
-                source_ref: "receipt#/draft/nodes/0/model_route_facts".into(),
+            provenance: ModelRouteFactProvenance::OperatingEvidence {
+                source_ref: "synthetic-test-observation".into(),
+                content_digest: "e".repeat(64),
+                observed_at_epoch_ms: 1,
+                expires_at_epoch_ms: i64::MAX,
                 work_node_id: Uuid::from_u128(1),
                 work_node_revision: 1,
             },
@@ -58,9 +61,15 @@ fn request(count: usize) -> ModelRouteRankingWireRequest {
             mapped_work_node_id: id,
             mapped_work_node_revision: 1,
         },
-        role: caller("agent".into()),
-        tool: caller("code".into()),
-        data_class: caller("internal".into()),
+        context_authority: Some(tect_domain::ModelRouteContextAuthority {
+            frozen_snapshot_id: Uuid::from_u128(2),
+            authority_schema: tect_domain::MATRIX_REQUIREMENTS_SCHEMA.into(),
+            requirements_semantic_digest: "d".repeat(64),
+            operating_verification_digest: "c".repeat(64),
+        }),
+        role: observed("agent".into()),
+        tool: observed("code".into()),
+        data_class: observed("internal".into()),
         host_capabilities: ModelRouteHostCapabilities {
             schema: MODEL_ROUTE_HOST_CAPABILITIES_SCHEMA.into(),
             version: 1,
@@ -68,8 +77,8 @@ fn request(count: usize) -> ModelRouteRankingWireRequest {
         }
         .fact()
         .unwrap(),
-        remaining_budget_units: caller(20),
-        available_latency_ms: caller(100),
+        remaining_budget_units: observed(20),
+        available_latency_ms: observed(100),
     };
     let routes = (0..count)
         .map(|i| ModelRoute {

@@ -6,8 +6,8 @@ use sqlx::{PgPool, Row, postgres::PgConnectOptions};
 use std::str::FromStr;
 use tect_application::{
     AdvisoryStore, GuardedMatrixAdviceOutcome, GuardedMatrixAdviceRecord, MatrixAdviceStore,
-    MatrixProviderBinding, UnitOfWork, canonical_matrix_advice_digest,
-    canonical_matrix_input_digest,
+    MatrixProviderBinding, MatrixVerificationAuthority, StoredGuardedMatrixAdviceRecord,
+    UnitOfWork, canonical_matrix_advice_digest, canonical_matrix_input_digest,
 };
 use tect_domain::{
     AdvisoryAuditQuery, AdvisoryCapability, AdvisoryModelConfiguration, AdvisoryProviderProfileRef,
@@ -218,7 +218,9 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
         choice_set_version: 1,
         choice_set_digest: choice_digest.clone(),
         evaluation_digest: evaluation_digest.clone(),
-        verification_digest: Some(verification_digest.clone()),
+        verification: MatrixVerificationAuthority::LegacyV1 {
+            digest: verification_digest.clone(),
+        },
     };
     let profile = AdvisoryProviderProfileRef {
         id: "synthetic-provider".into(),
@@ -237,7 +239,7 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
             "choice_set_version": binding.choice_set_version,
             "choice_set_digest": binding.choice_set_digest,
             "evaluation_digest": binding.evaluation_digest,
-            "verification_digest": binding.verification_digest,
+            "verification_digest": binding.verification.digest(),
         }}
     }))
     .unwrap();
@@ -471,12 +473,39 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
     assert_eq!(count, 0);
 
     let mut unit = PgUnitOfWork::test_begin(&runtime_pool, tenant_id).await;
-    let saved = unit
-        .persist_guarded_matrix_advice(workspace_id, &record)
-        .await
-        .unwrap();
-    assert_eq!(saved.record, record);
+    assert_eq!(
+        unit.persist_guarded_matrix_advice(workspace_id, &record)
+            .await,
+        Err(Error::StaleRevision),
+    );
     Box::new(unit).commit().await.unwrap();
+    // Simulate a pre-V2 receipt to prove its immutable bytes and digest remain
+    // readable and replayable, without granting new V1 advice write authority.
+    let advice_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO advisory_matrix_advice \
+         (tenant_id,workspace_id,opportunity_id,task_id,matrix_task_revision, \
+          matrix_choice_set_digest,dispatch_id,kind,ranked_choice_ids,reason, \
+          advice_digest,provider_profile_ref,model_configuration,response_payload_sha256) \
+         VALUES ($1,$2,$3,$4,1,$5,$6,'ranked',$7,NULL,$8,$9,$10,$11) RETURNING advice_id",
+    )
+    .bind(tenant_id)
+    .bind(workspace_id)
+    .bind(opportunity_id)
+    .bind(task_id)
+    .bind(&choice_digest)
+    .bind(dispatch_id)
+    .bind(serde_json::json!(["a", "b"]))
+    .bind(&record.advice_digest)
+    .bind(&record.provider_profile_ref.id)
+    .bind(serde_json::json!(&record.model_configuration))
+    .bind(&record.response_payload_sha256)
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    let saved = StoredGuardedMatrixAdviceRecord {
+        advice_id,
+        record: record.clone(),
+    };
 
     let mut unit = PgUnitOfWork::test_begin(&runtime_pool, tenant_id).await;
     let read = unit
@@ -589,9 +618,7 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
             .get("response_payload");
     assert_eq!(dispatch_raw, raw);
 
-    // A newer immutable verification supersedes the bound header. Replaying
-    // an otherwise exact advice record now fails closed, including when the
-    // replacement's evidence has already expired.
+    // A newer verification cannot invalidate a prior immutable receipt.
     let replacement_digest = sha(format!("replacement-{task_id}").as_bytes());
     let mut replacement = runtime_pool.begin().await.unwrap();
     sqlx::query("SELECT pg_catalog.set_config('tect.tenant_id',$1,true)")
@@ -611,8 +638,10 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
     let mut unit = PgUnitOfWork::test_begin(&runtime_pool, tenant_id).await;
     assert_eq!(
         unit.persist_guarded_matrix_advice(workspace_id, &record)
-            .await,
-        Err(Error::StaleRevision)
+            .await
+            .unwrap()
+            .advice_id,
+        saved.advice_id,
     );
     Box::new(unit).commit().await.unwrap();
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM advisory_matrix_advice WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3")

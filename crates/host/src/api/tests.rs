@@ -132,6 +132,34 @@ fn advisory_audit_routes_expose_engineering_profile_decision_point() {
 }
 
 #[test]
+fn workspace_advisory_audit_exposes_pipeline_recommendation_decision_point() {
+    let route = routes()
+        .iter()
+        .find(|spec| spec.route == "workspace.advisory.audit")
+        .unwrap();
+    let choices = &route.schema["properties"]["decision_point"]["enum"];
+    assert!(
+        choices
+            .as_array()
+            .unwrap()
+            .contains(&json!("pipeline_recommendation_before_slice_open"))
+    );
+
+    let described = help(
+        parse_help(json!({"mode":"describe","tool":"query","route":"workspace.advisory.audit"}))
+            .unwrap(),
+    )
+    .unwrap();
+    let public_choices = &described["params_schema"]["properties"]["decision_point"]["enum"];
+    assert!(
+        public_choices
+            .as_array()
+            .unwrap()
+            .contains(&json!("pipeline_recommendation_before_slice_open"))
+    );
+}
+
+#[test]
 fn matrix_task_routes_are_discoverable_and_strict() {
     let definitions = definitions();
     assert_eq!(definitions["tools"].as_array().unwrap().len(), 5);

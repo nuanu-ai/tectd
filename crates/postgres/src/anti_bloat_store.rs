@@ -15,7 +15,7 @@ use tect_domain::{
 use uuid::Uuid;
 
 mod apply;
-mod input;
+pub(crate) mod input;
 mod response;
 mod review;
 mod send;

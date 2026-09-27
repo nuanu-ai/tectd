@@ -66,17 +66,23 @@ fn work() -> ModelRouteWorkContext {
             mapped_work_node_id: Uuid::from_u128(1),
             mapped_work_node_revision: 1,
         },
-        role: caller("agent".into()),
-        tool: caller("code".into()),
-        data_class: caller("internal".into()),
+        context_authority: Some(ModelRouteContextAuthority {
+            frozen_snapshot_id: Uuid::new_v4(),
+            authority_schema: MATRIX_REQUIREMENTS_SCHEMA.into(),
+            requirements_semantic_digest: "d".repeat(64),
+            operating_verification_digest: "c".repeat(64),
+        }),
+        role: observed("agent".into()),
+        tool: observed("code".into()),
+        data_class: observed("internal".into()),
         host_capabilities: ModelRouteFact::Known {
             value: vec!["model-api".into()],
             provenance: ModelRouteFactProvenance::Host {
                 evidence_ref: "host/capabilities/1".into(),
             },
         },
-        remaining_budget_units: caller(10),
-        available_latency_ms: caller(50),
+        remaining_budget_units: observed(10),
+        available_latency_ms: observed(50),
     }
 }
 
@@ -85,6 +91,20 @@ fn caller<T>(value: T) -> ModelRouteFact<T> {
         value,
         provenance: ModelRouteFactProvenance::Caller {
             source_ref: "work/node/1".into(),
+            work_node_id: Uuid::from_u128(1),
+            work_node_revision: 1,
+        },
+    }
+}
+
+fn observed<T>(value: T) -> ModelRouteFact<T> {
+    ModelRouteFact::Known {
+        value,
+        provenance: ModelRouteFactProvenance::OperatingEvidence {
+            source_ref: "synthetic-test-evidence".into(),
+            content_digest: "e".repeat(64),
+            observed_at_epoch_ms: 1,
+            expires_at_epoch_ms: i64::MAX,
             work_node_id: Uuid::from_u128(1),
             work_node_revision: 1,
         },
@@ -267,6 +287,120 @@ fn unknown_facts_fail_closed_and_have_distinct_digest() {
         },
     };
     assert_eq!(bad.digest(), Err(Error::InvalidArguments));
+}
+
+#[test]
+fn caller_assertions_enable_only_matching_advisory_routes() {
+    let mut asserted = work();
+    asserted.role = caller("agent".into());
+    asserted.tool = caller("code".into());
+    asserted.data_class = caller("internal".into());
+    asserted.remaining_budget_units = caller(10);
+    asserted.available_latency_ms = caller(50);
+    assert!(!asserted.has_unknown_facts());
+    let eligible = catalogue().eligible_at(&asserted, 10).unwrap();
+    assert_eq!(eligible.route_ids, vec!["route-a", "route-b"]);
+    let ranking = ModelRouteRanking {
+        catalogue_digest: eligible.catalogue_digest.clone(),
+        work_context_digest: eligible.work_context_digest.clone(),
+        ranked_route_ids: vec!["route-b".into()],
+    };
+    assert_eq!(
+        eligible.recommendation(&ranking).unwrap(),
+        Some("route-b".into())
+    );
+    assert_eq!(
+        eligible
+            .record(None, Some("route-b".into()), None)
+            .unwrap()
+            .observed_actual,
+        None
+    );
+
+    asserted.remaining_budget_units = caller(9);
+    assert!(
+        catalogue()
+            .eligible_at(&asserted, 10)
+            .unwrap()
+            .route_ids
+            .is_empty()
+    );
+    asserted.remaining_budget_units = caller(10);
+    asserted.available_latency_ms = caller(49);
+    assert!(
+        catalogue()
+            .eligible_at(&asserted, 10)
+            .unwrap()
+            .route_ids
+            .is_empty()
+    );
+    asserted.available_latency_ms = caller(50);
+    asserted.host_capabilities = ModelRouteHostCapabilities {
+        schema: MODEL_ROUTE_HOST_CAPABILITIES_SCHEMA.into(),
+        version: 1,
+        capabilities: vec![],
+    }
+    .fact()
+    .unwrap();
+    assert!(
+        catalogue()
+            .eligible_at(&asserted, 10)
+            .unwrap()
+            .route_ids
+            .is_empty()
+    );
+    asserted.host_capabilities = ModelRouteFact::Unknown;
+    assert!(
+        catalogue()
+            .eligible_at(&asserted, 10)
+            .unwrap()
+            .route_ids
+            .is_empty()
+    );
+}
+
+#[test]
+fn expired_operating_evidence_never_makes_routes_eligible() {
+    let mut expired = work();
+    expired.available_latency_ms = ModelRouteFact::Known {
+        value: 1000,
+        provenance: ModelRouteFactProvenance::OperatingEvidence {
+            source_ref: "synthetic-test-deadline".into(),
+            content_digest: "e".repeat(64),
+            observed_at_epoch_ms: 1,
+            expires_at_epoch_ms: 10,
+            work_node_id: Uuid::from_u128(1),
+            work_node_revision: 1,
+        },
+    };
+    assert!(
+        catalogue()
+            .eligible_at(&expired, 10)
+            .unwrap()
+            .route_ids
+            .is_empty()
+    );
+}
+
+#[test]
+fn v2_authority_changes_digest_and_historical_context_cannot_prepare() {
+    let current = work();
+    current.require_current_authority().unwrap();
+    let digest = current.digest().unwrap();
+    let mut changed = current.clone();
+    changed
+        .context_authority
+        .as_mut()
+        .unwrap()
+        .requirements_semantic_digest = "f".repeat(64);
+    assert_ne!(changed.digest().unwrap(), digest);
+    changed = current;
+    changed.context_authority = None;
+    assert_eq!(
+        changed.require_current_authority(),
+        Err(Error::StaleContext)
+    );
+    assert!(changed.digest().is_ok());
 }
 
 #[test]

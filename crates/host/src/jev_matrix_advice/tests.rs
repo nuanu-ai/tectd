@@ -161,7 +161,12 @@ fn verified_wire_binds_record_digest_and_v2_contract() {
         MODEL,
         &revision,
         &composition,
-        Some((&"d".repeat(64), &"e".repeat(64))),
+        Some((
+            &tect_application::MatrixVerificationAuthority::LegacyV1 {
+                digest: "d".repeat(64),
+            },
+            &"e".repeat(64),
+        )),
         32_768,
     )
     .unwrap();
@@ -186,7 +191,12 @@ fn verified_wire_binds_record_digest_and_v2_contract() {
         MODEL,
         &revision,
         &composition,
-        Some((&"f".repeat(64), &"e".repeat(64))),
+        Some((
+            &tect_application::MatrixVerificationAuthority::LegacyV1 {
+                digest: "f".repeat(64),
+            },
+            &"e".repeat(64),
+        )),
         32_768,
     )
     .unwrap();
@@ -211,6 +221,52 @@ fn verified_wire_binds_record_digest_and_v2_contract() {
 }
 
 #[test]
+fn context_wire_carries_versioned_snapshot_provenance() {
+    let (revision, composition) = fixture();
+    let authority = tect_application::MatrixVerificationAuthority::ContextV2 {
+        digest: "d".repeat(64),
+        snapshot_id: Uuid::from_u128(22),
+        authority_schema: tect_domain::MATRIX_REQUIREMENTS_SCHEMA.into(),
+        semantic_digest: "f".repeat(64),
+    };
+    let prepared = prepare_request_inner(
+        MODEL,
+        &revision,
+        &composition,
+        Some((&authority, &"e".repeat(64))),
+        32_768,
+    )
+    .unwrap();
+    let body: Value = serde_json::from_slice(&prepared.body).unwrap();
+    assert_eq!(
+        prepared.contract,
+        "tect.context-matrix-verified-evaluation/1"
+    );
+    assert_eq!(
+        body["state"]["binding"]["context"]["frozen_snapshot_id"],
+        Uuid::from_u128(22).to_string()
+    );
+    assert_eq!(
+        body["state"]["binding"]["context"]["requirements_semantic_digest"],
+        "f".repeat(64)
+    );
+    assert_eq!(
+        body["state"]["binding"]["verification_digest"],
+        "d".repeat(64)
+    );
+    let mut response = json!({
+        "contract": prepared.contract,
+        "model": MODEL,
+        "binding": prepared.binding,
+        "ranking": {"status":"abstained","ranked_candidate_ids":[],"recommended_candidate_id":null},
+        "usage": null,
+    });
+    assert!(parsed(&response, &prepared).is_ok());
+    response["binding"]["context"]["requirements_semantic_digest"] = json!("0".repeat(64));
+    assert_eq!(parsed(&response, &prepared), Err(Error::InvalidArguments));
+}
+
+#[test]
 fn saved_v2_response_parser_accepts_rank_and_abstention_and_rejects_tampering() {
     let (revision, mut composition) = fixture();
     composition.source_verification_status =
@@ -219,7 +275,12 @@ fn saved_v2_response_parser_accepts_rank_and_abstention_and_rejects_tampering() 
         MODEL,
         &revision,
         &composition,
-        Some((&"d".repeat(64), &"e".repeat(64))),
+        Some((
+            &tect_application::MatrixVerificationAuthority::LegacyV1 {
+                digest: "d".repeat(64),
+            },
+            &"e".repeat(64),
+        )),
         32_768,
     )
     .unwrap();

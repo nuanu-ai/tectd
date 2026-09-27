@@ -20,6 +20,9 @@ pub(crate) enum Invocation {
     PipelineRecommendationRun(tect_application::RunPipelineRecommendation),
     PipelineRecommendationDisposition(tect_domain::PipelineDispositionRequest),
     MatrixTask(crate::matrix_task_tools::MatrixTaskInvocation),
+    MatrixRequirementsContext(
+        crate::matrix_requirements_context_tools::MatrixRequirementsContextInvocation,
+    ),
     MatrixVerification(tect_application::VerifyMatrixTask),
     MatrixPlanningEffect(crate::matrix_planning_effect_tools::MatrixPlanningEffectInvocation),
     PipelineOpenEffect(crate::pipeline_open_effect_tools::PipelineOpenEffectInvocation),
@@ -29,9 +32,16 @@ pub(crate) enum Invocation {
     Help(crate::api::HelpRequest),
     OpenWorkspace,
     GetState,
-    RegisterSource { path: String },
-    SelectWorktrees { worktree_ids: Vec<Uuid> },
-    ListSources { after: Option<Uuid>, limit: u32 },
+    RegisterSource {
+        path: String,
+    },
+    SelectWorktrees {
+        worktree_ids: Vec<Uuid>,
+    },
+    ListSources {
+        after: Option<Uuid>,
+        limit: u32,
+    },
 }
 
 #[derive(Deserialize)]
@@ -111,6 +121,10 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
         }
         "record_matrix_task" | "get_matrix_task" => {
             crate::matrix_task_tools::parse(name, arguments).map(Invocation::MatrixTask)
+        }
+        "matrix_context_propose" | "matrix_context_confirm" | "matrix_context_effective_get" => {
+            crate::matrix_requirements_context_tools::parse(name, arguments)
+                .map(Invocation::MatrixRequirementsContext)
         }
         "verify_matrix_task" => {
             crate::matrix_verification_tools::parse(arguments).map(Invocation::MatrixVerification)

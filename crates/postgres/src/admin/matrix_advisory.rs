@@ -138,6 +138,26 @@ pub(super) async fn validate_matrix_advisory_schema(
     .fetch_one(&mut **transaction)
     .await
     .map_err(storage_error)?;
+    let context_guards_ready: bool = sqlx::query_scalar(
+        "SELECT pg_catalog.count(*)=2 FROM pg_catalog.pg_trigger t \
+         JOIN pg_catalog.pg_class c ON c.oid=t.tgrelid \
+         JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace \
+         JOIN pg_catalog.pg_proc p ON p.oid=t.tgfoid \
+         JOIN pg_catalog.pg_roles r ON r.rolname=$1 \
+         WHERE n.nspname='public' AND t.tgenabled='O' AND NOT t.tgisinternal \
+           AND ((c.relname='matrix_planning_selection_links' \
+                 AND t.tgname='matrix_planning_selection_context_guard' \
+                 AND p.proname='matrix_planning_selection_require_context') \
+             OR (c.relname='matrix_planning_effect_attestations' \
+                 AND t.tgname='matrix_planning_effect_context_guard' \
+                 AND p.proname='matrix_planning_effect_require_context')) \
+           AND p.prosecdef AND NOT pg_catalog.pg_has_role(r.oid,p.proowner,'MEMBER') \
+           AND NOT pg_catalog.has_function_privilege($1,p.oid,'EXECUTE')",
+    )
+    .bind(runtime_role)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(storage_error)?;
     if !tables_ready
         || !policies_ready
         || !public_revoked
@@ -145,6 +165,7 @@ pub(super) async fn validate_matrix_advisory_schema(
         || !disposition_guard_ready
         || !selection_guard_ready
         || !effect_guard_ready
+        || !context_guards_ready
     {
         return Err(Error::InvalidConfiguration);
     }

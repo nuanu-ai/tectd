@@ -1,8 +1,8 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::future::Future;
-use tect_application::{MatrixEvidenceReference, VerifyMatrixTask};
-use tect_domain::{Error, MatrixVerificationRecord, Result};
+use tect_application::{MatrixEvidenceReference, VerifiedMatrixTask, VerifyMatrixTask};
+use tect_domain::{Error, Result};
 use uuid::Uuid;
 
 const MAX_EVIDENCE: usize = 1040;
@@ -59,21 +59,43 @@ pub(crate) fn parse(arguments: Value) -> Result<VerifyMatrixTask> {
     })
 }
 
-pub(crate) fn receipt(record: MatrixVerificationRecord) -> Value {
-    // The service returns a sealed record, not the database row ID.
-    json!({
-        "verification_digest":record.digest,
-        "task_id":record.task_id,
-        "task_revision":record.task_revision,
-        "input_digest":record.input_digest,
-        "policy_version":record.policy_version,
-        "facts":record.bindings.into_iter().map(|binding| json!({
-            "fact_path":binding.fact_path,
-            "status":binding.validation_outcome,
-            "value_digest":binding.value_digest,
-            "content_digest":binding.content_digest,
-        })).collect::<Vec<_>>()
-    })
+pub(crate) fn receipt(record: VerifiedMatrixTask) -> Value {
+    match record {
+        VerifiedMatrixTask::Legacy(record) => json!({
+            "verification_digest":record.digest,
+            "task_id":record.task_id,
+            "task_revision":record.task_revision,
+            "input_digest":record.input_digest,
+            "policy_version":record.policy_version,
+            "facts":facts(record.bindings),
+        }),
+        VerifiedMatrixTask::Context(record) => json!({
+            "schema":record.schema,
+            "verification_digest":record.digest,
+            "task_id":record.task_id,
+            "task_revision":record.task_revision,
+            "frozen_snapshot_id":record.frozen_snapshot_id,
+            "authority_schema":record.authority_schema,
+            "requirements_semantic_digest":record.requirements_semantic_digest,
+            "input_digest":record.input_digest,
+            "policy_version":record.policy_version,
+            "facts":facts(record.bindings),
+        }),
+    }
+}
+
+fn facts(bindings: Vec<tect_domain::MatrixEvidenceBinding>) -> Vec<Value> {
+    bindings
+        .into_iter()
+        .map(|binding| {
+            json!({
+                "fact_path":binding.fact_path,
+                "status":binding.validation_outcome,
+                "value_digest":binding.value_digest,
+                "content_digest":binding.content_digest,
+            })
+        })
+        .collect()
 }
 
 /// Reserve space for the complete response before the service can append a
@@ -88,6 +110,10 @@ pub(crate) fn guard_verify_output(request: &VerifyMatrixTask, capacity: usize) -
         "input_digest": request.input_digest,
         // Quotes require the widest JSON escaping allowed by domain text().
         "policy_version": "\"".repeat(256),
+        "schema": "tect.context-matrix-verification/1",
+        "frozen_snapshot_id": Uuid::nil().to_string(),
+        "authority_schema": "tect.matrix-requirements/1",
+        "requirements_semantic_digest": "0".repeat(64),
         "facts": request.evidence.iter().map(|item| json!({
             "fact_path": item.fact_path,
             "status": "accepted",
@@ -106,10 +132,10 @@ pub(crate) async fn guarded_verify<F, Fut>(
     request: &VerifyMatrixTask,
     capacity: usize,
     send: F,
-) -> Result<MatrixVerificationRecord>
+) -> Result<VerifiedMatrixTask>
 where
     F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<MatrixVerificationRecord>>,
+    Fut: Future<Output = Result<VerifiedMatrixTask>>,
 {
     guard_verify_output(request, capacity)?;
     send().await

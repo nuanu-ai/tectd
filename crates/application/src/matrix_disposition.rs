@@ -1,6 +1,6 @@
 use crate::{
-    CurrentMatrixAdvice, MatrixDispositionRecord, RecordMatrixDisposition, TransactionMode,
-    WorkspaceService,
+    CurrentMatrixAdvice, MatrixDispositionRecord, MatrixDispositionVerification,
+    RecordMatrixDisposition, TransactionMode, WorkspaceService,
 };
 use tect_domain::{
     AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryOpportunity, AdvisoryOpportunityState,
@@ -39,10 +39,37 @@ impl WorkspaceService {
             return Ok(existing);
         }
 
+        // Declaration locks precede the task lock, matching task recording and
+        // advisory capture. A changed task head is rejected after both reads.
+        let source = tx.matrix_task_source(workspace.id, request.task_id).await?;
+        let bound_context = if let Some(binding) = source
+            .as_ref()
+            .and_then(|source| source.requirements_binding.as_ref())
+        {
+            Some(
+                crate::matrix_verification::lock_and_load_bound_matrix_context(
+                    tx.matrix_requirements_context_store()
+                        .ok_or(Error::StaleContext)?,
+                    workspace.id,
+                    identity.principal_id,
+                    binding,
+                )
+                .await
+                .map_err(|_| Error::StaleContext)?,
+            )
+        } else {
+            None
+        };
         let revision = tx
             .lock_matrix_task(workspace.id, request.task_id)
             .await?
             .ok_or(Error::NotFound)?;
+        if source
+            .as_ref()
+            .is_none_or(|source| source.revision != revision)
+        {
+            return Err(Error::StaleRevision);
+        }
         if revision.revision != request.expected_task_revision
             || revision.input_digest != request.expected_input_digest
             || revision.choice_set_digest != request.expected_choice_set_digest
@@ -88,31 +115,70 @@ impl WorkspaceService {
         );
         let validated_snapshot = if selected || request.basis == MatrixDispositionBasis::AfterAdvice
         {
-            let (composition, verification) =
-                super::matrix_tasks::compose_current_revision_with_validated_verification(
-                    tx.matrix_verification_store(),
-                    self.matrix_evidence_validator.as_ref(),
-                    workspace.id,
-                    revision.clone(),
-                    request.expected_task_revision,
-                    crate::matrix_verification::current_epoch_seconds()?,
-                )
-                .await
-                .map_err(|_| Error::StaleContext)?;
-            Some((composition, verification.ok_or(Error::StaleContext)?))
+            let now = crate::matrix_verification::current_epoch_seconds()?;
+            if let (Some(binding), Some(context)) = (
+                source
+                    .as_ref()
+                    .and_then(|source| source.requirements_binding.as_ref()),
+                bound_context.as_ref(),
+            ) {
+                let (composition, record) =
+                    super::matrix_tasks::compose_bound_revision_with_verification(
+                        tx.context_matrix_verification_store(),
+                        self.matrix_evidence_validator.as_ref(),
+                        workspace.id,
+                        &revision,
+                        binding.snapshot_id,
+                        context,
+                        now,
+                    )
+                    .await
+                    .map_err(|_| Error::StaleContext)?
+                    .ok_or(Error::StaleContext)?;
+                Some(MatrixDispositionVerification::ContextV2 {
+                    binding: binding.clone(),
+                    composition,
+                    record,
+                })
+            } else {
+                let (composition, verification) =
+                    super::matrix_tasks::compose_current_revision_with_validated_verification(
+                        tx.matrix_verification_store(),
+                        self.matrix_evidence_validator.as_ref(),
+                        workspace.id,
+                        revision.clone(),
+                        request.expected_task_revision,
+                        now,
+                    )
+                    .await
+                    .map_err(|_| Error::StaleContext)?;
+                Some(MatrixDispositionVerification::LegacyV1 {
+                    composition,
+                    verification: verification.ok_or(Error::StaleContext)?,
+                })
+            }
         } else {
             None
         };
         if selected {
-            let (composition, verification) =
-                validated_snapshot.as_ref().ok_or(Error::StaleContext)?;
-            selected_snapshot_current(&opportunity, composition, verification.record_digest())?;
+            let verification = validated_snapshot.as_ref().ok_or(Error::StaleContext)?;
+            selected_snapshot_current(
+                &opportunity,
+                verification.composition(),
+                verification.record_digest(),
+                matches!(
+                    verification,
+                    MatrixDispositionVerification::ContextV2 { .. }
+                ),
+            )?;
             let choice_set = revision
                 .choice_set
                 .as_ref()
                 .ok_or(Error::InvalidArguments)?;
             if opportunity.material_digest
-                != verification.disposition_digest(&revision.input, composition, choice_set)?
+                != verification
+                    .disposition_digest(&revision.input, choice_set)
+                    .map_err(|_| Error::StaleContext)?
             {
                 return Err(Error::StaleContext);
             }
@@ -142,15 +208,31 @@ impl WorkspaceService {
                     .await?
                     .ok_or(Error::StaleContext)?;
                 let config = tx.advisory_config(workspace.id).await?;
-                let (composition, verification) =
-                    validated_snapshot.as_ref().ok_or(Error::StaleContext)?;
-                let fresh = crate::MatrixProviderRequest::new_verified(
-                    revision.clone(),
-                    composition.clone(),
-                    verification,
-                    stored.record.provider_profile_ref.clone(),
-                    stored.record.model_configuration.clone(),
-                )
+                let verification = validated_snapshot.as_ref().ok_or(Error::StaleContext)?;
+                let fresh = match verification {
+                    MatrixDispositionVerification::LegacyV1 {
+                        composition,
+                        verification,
+                    } => crate::MatrixProviderRequest::new_verified(
+                        revision.clone(),
+                        composition.clone(),
+                        verification,
+                        stored.record.provider_profile_ref.clone(),
+                        stored.record.model_configuration.clone(),
+                    ),
+                    MatrixDispositionVerification::ContextV2 {
+                        binding,
+                        composition,
+                        record,
+                    } => crate::MatrixProviderRequest::new_context_verified(
+                        revision.clone(),
+                        composition,
+                        record,
+                        binding.snapshot_id,
+                        stored.record.provider_profile_ref.clone(),
+                        stored.record.model_configuration.clone(),
+                    ),
+                }
                 .map_err(|_| Error::StaleContext)?;
                 let advice = super::matrix_tasks::current_public_matrix_advice(
                     &opportunity,
@@ -176,9 +258,7 @@ impl WorkspaceService {
                 request,
                 current_advice.as_ref(),
                 if selected {
-                    validated_snapshot
-                        .as_ref()
-                        .map(|(_, verification)| verification)
+                    validated_snapshot.as_ref()
                 } else {
                     None
                 },
@@ -216,14 +296,20 @@ fn selected_snapshot_current(
     opportunity: &AdvisoryOpportunity,
     composition: &EngineeringMatrixComposition,
     verification_digest: &str,
+    context_v2: bool,
 ) -> Result<()> {
     if matches!(
         opportunity.primary_reason,
         AdvisoryReason::MatrixEvidenceUnresolved | AdvisoryReason::MatrixSourceUnverified
     ) || opportunity.matrix_verification_digest.as_deref() != Some(verification_digest)
-        || composition.source_verification_status
-            != MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported
-        || !composition.is_resolved()
+        || (!context_v2
+            && composition.source_verification_status
+                != MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported)
+        || if context_v2 {
+            !composition.unresolved_evidence.is_empty()
+        } else {
+            !composition.is_resolved()
+        }
         || composition.catalogue_version != ENGINEERING_MATRIX_CATALOGUE_VERSION
         || !composition
             .mandatory_cards
@@ -297,7 +383,7 @@ mod tests {
             receipt: &AdvisoryOpportunity,
             cards: &EngineeringMatrixComposition,
         ) -> Result<()> {
-            selected_snapshot_current(receipt, cards, &"a".repeat(64))?;
+            selected_snapshot_current(receipt, cards, &"a".repeat(64), false)?;
             self.inserts += 1;
             Ok(())
         }
@@ -340,5 +426,30 @@ mod tests {
             Err(Error::StaleContext)
         );
         assert_eq!(port.inserts, 1);
+    }
+
+    #[test]
+    fn context_authority_accepts_confirmed_requirements_without_legacy_owner_report_status() {
+        let receipt = opportunity();
+        let mut confirmed = composition();
+        confirmed.source_verification_status =
+            MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification;
+        assert_eq!(
+            selected_snapshot_current(&receipt, &confirmed, &"a".repeat(64), false),
+            Err(Error::StaleContext)
+        );
+        selected_snapshot_current(&receipt, &confirmed, &"a".repeat(64), true).unwrap();
+
+        let mut stale = receipt;
+        stale.matrix_verification_digest = Some("d".repeat(64));
+        assert_eq!(
+            selected_snapshot_current(&stale, &confirmed, &"a".repeat(64), true),
+            Err(Error::StaleContext)
+        );
+        confirmed.mandatory_cards.clear();
+        assert_eq!(
+            selected_snapshot_current(&opportunity(), &confirmed, &"a".repeat(64), true),
+            Err(Error::StaleContext)
+        );
     }
 }

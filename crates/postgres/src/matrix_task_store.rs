@@ -1,7 +1,8 @@
 use async_trait::async_trait;
 use sqlx::{Row, postgres::PgRow};
 use tect_application::{
-    MATRIX_INPUT_SCHEMA, MatrixTaskRevision, MatrixTaskStore, RecordMatrixTask,
+    MATRIX_INPUT_SCHEMA, MatrixRequirementsLocator, MatrixTaskRequirementsBinding,
+    MatrixTaskRevision, MatrixTaskSource, MatrixTaskStore, RecordMatrixTask,
     canonical_matrix_input_digest,
 };
 use tect_domain::{
@@ -158,6 +159,57 @@ fn decode_input(
     Ok(input)
 }
 
+fn decode_locator(value: serde_json::Value) -> Result<MatrixRequirementsLocator> {
+    let uuid = |key: &str| -> Result<Uuid> {
+        value
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .ok_or(Error::InternalInvariant)?
+            .parse()
+            .map_err(|_| Error::InternalInvariant)
+    };
+    let locator = match value.get("level").and_then(serde_json::Value::as_str) {
+        Some("program") => MatrixRequirementsLocator::Program {
+            program_id: uuid("program_id")?,
+        },
+        Some("scope") => MatrixRequirementsLocator::Scope {
+            program_id: uuid("program_id")?,
+            scope_id: uuid("scope_id")?,
+        },
+        Some("slice") => MatrixRequirementsLocator::Slice {
+            program_id: uuid("program_id")?,
+            scope_id: uuid("scope_id")?,
+            candidate_set_id: uuid("candidate_set_id")?,
+            work_candidate_id: uuid("work_candidate_id")?,
+            expected_work_revision: value
+                .get("expected_work_revision")
+                .and_then(serde_json::Value::as_i64)
+                .ok_or(Error::InternalInvariant)?,
+        },
+        Some("opened_slice") => MatrixRequirementsLocator::OpenedSlice {
+            slice_id: uuid("slice_id")?,
+        },
+        _ => return Err(Error::InternalInvariant),
+    };
+    if locator.as_json() != value {
+        return Err(Error::InternalInvariant);
+    }
+    Ok(locator)
+}
+
+fn decode_binding(row: PgRow) -> Result<(MatrixTaskRequirementsBinding, String)> {
+    let binding = MatrixTaskRequirementsBinding {
+        locator: decode_locator(row.try_get("requirements_locator").map_err(storage_error)?)?,
+        snapshot_id: row.try_get("snapshot_id").map_err(storage_error)?,
+        semantic_digest: row.try_get("semantic_digest").map_err(storage_error)?,
+        authority_schema: row.try_get("authority_schema").map_err(storage_error)?,
+    };
+    let digest = row
+        .try_get("original_request_digest")
+        .map_err(storage_error)?;
+    Ok((binding, digest))
+}
+
 fn matrix_write_error(error: sqlx::Error) -> Error {
     if error
         .as_database_error()
@@ -172,6 +224,149 @@ fn matrix_write_error(error: sqlx::Error) -> Error {
 
 #[async_trait]
 impl MatrixTaskStore for PgUnitOfWork {
+    async fn matrix_task_source_by_request(
+        &mut self,
+        workspace_id: Uuid,
+        request_id: Uuid,
+    ) -> Result<Option<(MatrixTaskSource, String)>> {
+        let prior = self
+            .matrix_receipt_by_request(workspace_id, request_id)
+            .await?;
+        let Some(revision) = prior else {
+            return Ok(None);
+        };
+        let tenant = self.tenant_id()?;
+        let row = sqlx::query("SELECT requirements_locator,snapshot_id,semantic_digest,authority_schema,original_request_digest FROM matrix_task_requirements_bindings WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 AND revision=$4 AND request_id=$5")
+            .bind(tenant).bind(workspace_id).bind(revision.task_id).bind(revision.revision).bind(request_id)
+            .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?;
+        let (binding, digest) = row.ok_or(Error::InputConflict).and_then(decode_binding)?;
+        Ok(Some((
+            MatrixTaskSource {
+                revision,
+                requirements_binding: Some(binding),
+            },
+            digest,
+        )))
+    }
+
+    async fn record_matrix_task_bound(
+        &mut self,
+        workspace_id: Uuid,
+        principal_id: Uuid,
+        session_id: Uuid,
+        request: &RecordMatrixTask,
+        canonical_input: &serde_json::Value,
+        input_digest: &str,
+        original_request_digest: &str,
+        binding: &MatrixTaskRequirementsBinding,
+    ) -> Result<MatrixTaskSource> {
+        if !self.is_read_write()
+            || self.principal_id()? != principal_id
+            || original_request_digest.len() != 64
+            || !original_request_digest
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || canonical_matrix_input_digest(canonical_input)? != input_digest
+            || serde_json::to_value(&request.input).map_err(storage_error)? != *canonical_input
+        {
+            return Err(Error::InputConflict);
+        }
+        if let Some((prior, digest)) = self
+            .matrix_task_source_by_request(workspace_id, request.request_id)
+            .await?
+        {
+            return if digest == original_request_digest
+                && prior.revision.task_id == request.task_id
+                && prior.revision.revision == request.revision
+                && prior.requirements_binding.as_ref().map(|b| &b.locator) == Some(&binding.locator)
+            {
+                Ok(prior)
+            } else {
+                Err(Error::InputConflict)
+            };
+        }
+        let tenant = self.tenant_id()?;
+        let snapshot:Option<(serde_json::Value,String,String)>=sqlx::query_as("SELECT anchor,semantic_digest,schema_version FROM matrix_requirements_snapshots WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
+            .bind(tenant).bind(workspace_id).bind(binding.snapshot_id)
+            .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?;
+        let (anchor, semantic, schema) = snapshot.ok_or(Error::InputConflict)?;
+        if semantic != binding.semantic_digest
+            || schema != binding.authority_schema
+            || anchor.get("program_id").is_none()
+        {
+            return Err(Error::InputConflict);
+        }
+        let revision = match self
+            .record_matrix_task(
+                workspace_id,
+                principal_id,
+                session_id,
+                request,
+                canonical_input,
+                input_digest,
+            )
+            .await
+        {
+            Ok(value) => value,
+            Err(error @ (Error::InputConflict | Error::StaleRevision)) => {
+                if let Some((prior, digest)) = self
+                    .matrix_task_source_by_request(workspace_id, request.request_id)
+                    .await?
+                {
+                    return if digest == original_request_digest
+                        && prior.revision.task_id == request.task_id
+                        && prior.revision.revision == request.revision
+                        && prior.requirements_binding.as_ref().map(|b| &b.locator)
+                            == Some(&binding.locator)
+                    {
+                        Ok(prior)
+                    } else {
+                        Err(Error::InputConflict)
+                    };
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        sqlx::query("INSERT INTO matrix_task_requirements_bindings(tenant_id,workspace_id,task_id,revision,request_id,requirements_locator,snapshot_id,semantic_digest,authority_schema,original_request_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING")
+            .bind(tenant).bind(workspace_id).bind(revision.task_id).bind(revision.revision).bind(revision.request_id)
+            .bind(binding.locator.as_json()).bind(binding.snapshot_id).bind(&binding.semantic_digest).bind(&binding.authority_schema).bind(original_request_digest)
+            .execute(&mut **self.transaction()?).await.map_err(matrix_write_error)?;
+        let (saved, digest) = self
+            .matrix_task_source_by_request(workspace_id, request.request_id)
+            .await?
+            .ok_or(Error::InternalInvariant)?;
+        if digest != original_request_digest
+            || saved.revision != revision
+            || saved.requirements_binding.as_ref() != Some(binding)
+        {
+            return Err(Error::InputConflict);
+        }
+        Ok(saved)
+    }
+
+    async fn matrix_task_source(
+        &mut self,
+        workspace_id: Uuid,
+        task_id: Uuid,
+    ) -> Result<Option<MatrixTaskSource>> {
+        let Some(revision) = self.matrix_task(workspace_id, task_id).await? else {
+            return Ok(None);
+        };
+        let tenant = self.tenant_id()?;
+        let row=sqlx::query("SELECT requirements_locator,snapshot_id,semantic_digest,authority_schema,original_request_digest FROM matrix_task_requirements_bindings WHERE tenant_id=$1 AND workspace_id=$2 AND task_id=$3 AND revision=$4")
+            .bind(tenant).bind(workspace_id).bind(task_id).bind(revision.revision)
+            .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?;
+        let requirements_binding = row
+            .map(decode_binding)
+            .transpose()?
+            .map(|(binding, _)| binding);
+        Ok(Some(MatrixTaskSource {
+            revision,
+            requirements_binding,
+        }))
+    }
+
     async fn record_matrix_task(
         &mut self,
         workspace_id: Uuid,

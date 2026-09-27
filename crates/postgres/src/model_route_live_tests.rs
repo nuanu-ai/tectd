@@ -88,6 +88,7 @@ fn missing_link_preparation(workspace_id: Uuid) -> PreparedModelRouteRecommendat
                 mapped_work_node_id: node_id,
                 mapped_work_node_revision: 1,
             },
+            context_authority: None,
             role: ModelRouteFact::Unknown,
             tool: ModelRouteFact::Unknown,
             data_class: ModelRouteFact::Unknown,

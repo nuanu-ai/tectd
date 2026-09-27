@@ -120,8 +120,8 @@ impl GuardedMatrixAdviceRecord {
             || !is_digest(&binding.choice_set_digest)
             || !is_digest(&binding.evaluation_digest)
             || binding
-                .verification_digest
-                .as_deref()
+                .verification
+                .digest()
                 .is_some_and(|digest| !is_digest(digest))
             || self.response_payload_sha256
                 != format!("{:x}", Sha256::digest(&self.raw_response_payload))
@@ -180,7 +180,11 @@ pub fn canonical_matrix_advice_digest(
         }
     };
     let mut material = serde_json::json!({
-        "schema_version": if binding.verification_digest.is_some() { 2 } else { 1 },
+        "schema_version": match binding.verification {
+            crate::MatrixVerificationAuthority::Unverified => 1,
+            crate::MatrixVerificationAuthority::LegacyV1 { .. } => 2,
+            crate::MatrixVerificationAuthority::ContextV2 { .. } => 3,
+        },
         "binding": {
             "task_id": binding.task_id,
             "task_revision": binding.task_revision,
@@ -192,11 +196,28 @@ pub fn canonical_matrix_advice_digest(
         },
         "outcome": outcome,
     });
-    if let Some(digest) = &binding.verification_digest {
+    if let Some(digest) = binding.verification.digest() {
         if !is_digest(digest) {
             return Err(Error::InvalidArguments);
         }
         material["binding"]["verification_digest"] = serde_json::json!(digest);
+    }
+    if let crate::MatrixVerificationAuthority::ContextV2 {
+        snapshot_id,
+        authority_schema,
+        semantic_digest,
+        ..
+    } = &binding.verification
+    {
+        if snapshot_id.is_nil()
+            || authority_schema != tect_domain::MATRIX_REQUIREMENTS_SCHEMA
+            || !is_digest(semantic_digest)
+        {
+            return Err(Error::InvalidArguments);
+        }
+        material["binding"]["frozen_snapshot_id"] = serde_json::json!(snapshot_id);
+        material["binding"]["authority_schema"] = serde_json::json!(authority_schema);
+        material["binding"]["requirements_semantic_digest"] = serde_json::json!(semantic_digest);
     }
     let encoded = serde_json::to_vec(&material).map_err(|_| Error::InternalInvariant)?;
     let mut hasher = Sha256::new();
@@ -287,7 +308,7 @@ mod tests {
             choice_set_version: 1,
             choice_set_digest: "b".repeat(64),
             evaluation_digest: "c".repeat(64),
-            verification_digest: None,
+            verification: crate::MatrixVerificationAuthority::Unverified,
         }
     }
 
@@ -424,15 +445,21 @@ mod tests {
         second.dispatch_id = Uuid::new_v4();
         assert_eq!(first.advice_digest, second.advice_digest);
         let mut verified_binding = binding.clone();
-        verified_binding.verification_digest = Some("d".repeat(64));
+        verified_binding.verification = crate::MatrixVerificationAuthority::LegacyV1 {
+            digest: "d".repeat(64),
+        };
         let verified = canonical_matrix_advice_digest(&verified_binding, &ranked).unwrap();
         assert_ne!(same, verified);
-        verified_binding.verification_digest = Some("e".repeat(64));
+        verified_binding.verification = crate::MatrixVerificationAuthority::LegacyV1 {
+            digest: "e".repeat(64),
+        };
         assert_ne!(
             verified,
             canonical_matrix_advice_digest(&verified_binding, &ranked).unwrap()
         );
-        verified_binding.verification_digest = Some("not-a-digest".into());
+        verified_binding.verification = crate::MatrixVerificationAuthority::LegacyV1 {
+            digest: "not-a-digest".into(),
+        };
         assert_eq!(
             canonical_matrix_advice_digest(&verified_binding, &ranked),
             Err(Error::InvalidArguments)

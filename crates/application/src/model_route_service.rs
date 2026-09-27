@@ -28,17 +28,13 @@ impl WorkspaceService {
             .await?
             .ok_or(Error::WorkspaceNotOpen)?;
         let workspace = Self::validate_binding(&mut *writer, context, &identity, &session).await?;
-        let (mut reader, _) = self.authorized(context, TransactionMode::ReadWrite).await?;
         let mut effective = request.clone();
         effective.workspace_id = workspace.id;
         let (host_capabilities, catalogue_provider) = self.model_route_advisory_inputs();
         let prepared = effective
             .prepare(
                 writer
-                    .model_route_recommendation_store()
-                    .ok_or(Error::Forbidden)?,
-                reader
-                    .model_route_selection_read()
+                    .model_route_preparation_store()
                     .ok_or(Error::Forbidden)?,
                 host_capabilities,
                 catalogue_provider,
@@ -75,10 +71,8 @@ impl WorkspaceService {
             .by_request(workspace.id, preparation_request_key)
             .await?
             .ok_or(Error::NotFound)?;
-        tx.model_route_recommendation_store()
-            .ok_or(Error::Forbidden)?
-            .validate_current(&prepared)
-            .await?;
+        // An authorized GET is an immutable historical audit read. Current
+        // authority is checked before any run, decision or disposition.
         let attempt = tx
             .model_route_attempt_store()
             .ok_or(Error::Forbidden)?
@@ -136,6 +130,7 @@ impl WorkspaceService {
             .by_request(workspace.id, preparation_request_key)
             .await?
             .ok_or(Error::NotFound)?;
+        prepared.work.require_current_authority()?;
         start
             .model_route_recommendation_store()
             .ok_or(Error::Forbidden)?
@@ -371,7 +366,6 @@ impl WorkspaceService {
             writer.commit().await?;
             return Ok(());
         }
-        let (mut reader, _) = self.authorized(context, TransactionMode::ReadWrite).await?;
         DecideModelRouteRecommendation {
             id: Uuid::new_v4(),
             workspace_id: workspace.id,
@@ -379,11 +373,8 @@ impl WorkspaceService {
             input,
         }
         .decide(
-            reader
-                .model_route_recommendation_store()
-                .ok_or(Error::Forbidden)?,
             writer
-                .model_route_decision_store()
+                .model_route_decision_capture_store()
                 .ok_or(Error::Forbidden)?,
         )
         .await?;

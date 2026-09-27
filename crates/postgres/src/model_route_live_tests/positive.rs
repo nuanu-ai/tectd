@@ -467,6 +467,7 @@ pub(super) async fn fixture(admin_pool: &PgPool, runtime_pool: &PgPool) -> Fixtu
             workspace,
             &MatrixPlanningSelectionLink {
                 selection: selection.clone(),
+                context_provenance: None,
                 evaluation_digest,
                 catalogue_version: composition.catalogue_version.into(),
                 caller_principal_id: owner.principal_id,

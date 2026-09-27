@@ -1,4 +1,7 @@
-use crate::{MatrixEvidenceValidator, MatrixVerificationStore, TransactionMode, WorkspaceService};
+use crate::{
+    MatrixEvidenceValidator, MatrixRequirementsLocator, MatrixVerificationStore, TransactionMode,
+    WorkspaceService,
+};
 use sha2::{Digest, Sha256};
 use tect_domain::{
     ADVISORY_DECISION_POINT_VERSION, ADVISORY_POLICY_VERSION, AdvisoryCapability,
@@ -64,6 +67,23 @@ pub struct MatrixTaskRevision {
     pub recorded_by_session_id: Uuid,
 }
 
+/// A source revision carries its frozen accepted declaration context when it
+/// was recorded through the context-aware route. None denotes historical
+/// unbound material and must not be promoted to context-aware authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatrixTaskSource {
+    pub revision: MatrixTaskRevision,
+    pub requirements_binding: Option<MatrixTaskRequirementsBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatrixTaskRequirementsBinding {
+    pub locator: MatrixRequirementsLocator,
+    pub snapshot_id: Uuid,
+    pub semantic_digest: String,
+    pub authority_schema: String,
+}
+
 /// Captures a Matrix advisory decision at the current saved task revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequestEngineeringAdvisory {
@@ -75,6 +95,124 @@ pub struct RequestEngineeringAdvisory {
 }
 
 impl WorkspaceService {
+    /// Record a source bound to accepted declarations at the exact authorized
+    /// Program/Scope/logical Work anchor. Replay is checked against the raw
+    /// caller request before reading current context, so later owner edits do
+    /// not change an already accepted receipt.
+    pub async fn record_matrix_task_with_requirements(
+        &self,
+        context: &RequestContext,
+        request: &RecordMatrixTask,
+        locator: &MatrixRequirementsLocator,
+    ) -> Result<MatrixTaskSource> {
+        validate_request(request)?;
+        let (mut tx, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
+        tx.lock_native_session(identity.host_id, &context.native_session_id)
+            .await?;
+        let (workspace, session) = Self::bound_session(&mut *tx, context, &identity).await?;
+        let original_request_digest = canonical_matrix_source_request_digest(request, locator)?;
+        if let Some((prior, prior_digest)) = tx
+            .matrix_task_source_by_request(workspace.id, request.request_id)
+            .await?
+        {
+            let prior = validated_bound_replay(
+                prior,
+                &prior_digest,
+                &original_request_digest,
+                request,
+                locator,
+            )?;
+            tx.commit().await?;
+            return Ok(prior);
+        }
+        let frozen = freeze_locked_matrix_requirements_context(
+            tx.matrix_requirements_context_store()
+                .ok_or(Error::Forbidden)?,
+            workspace.id,
+            identity.principal_id,
+            locator,
+        )
+        .await?;
+        let bound_input =
+            tect_domain::bind_matrix_requirements_input(&frozen.effective, &request.input)?;
+        let mut bound_request = request.clone();
+        bound_request.input = bound_input;
+        validate_request(&bound_request)?;
+        let canonical_bound_input =
+            serde_json::to_value(&bound_request.input).map_err(|_| Error::InvalidArguments)?;
+        let bound_input_digest = canonical_matrix_input_digest(&canonical_bound_input)?;
+        let binding = MatrixTaskRequirementsBinding {
+            locator: locator.clone(),
+            snapshot_id: frozen.id,
+            semantic_digest: frozen.effective.semantic_digest().to_owned(),
+            authority_schema: frozen.effective.schema().to_owned(),
+        };
+        let source = tx
+            .record_matrix_task_bound(
+                workspace.id,
+                identity.principal_id,
+                session.id,
+                &bound_request,
+                &canonical_bound_input,
+                &bound_input_digest,
+                &original_request_digest,
+                &binding,
+            )
+            .await?;
+        if source.revision.task_id != request.task_id
+            || source.revision.revision != request.revision
+            || source.revision.request_id != request.request_id
+        {
+            return Err(Error::InternalInvariant);
+        }
+        let source = if source.requirements_binding.as_ref() == Some(&binding) {
+            if source.revision.input_digest != bound_input_digest {
+                return Err(Error::InternalInvariant);
+            }
+            source
+        } else {
+            // A concurrent exact retry may have won under the earlier accepted
+            // context. Its frozen binding is authoritative only after reading
+            // the persisted original-request digest back in this transaction.
+            let (prior, prior_digest) = tx
+                .matrix_task_source_by_request(workspace.id, request.request_id)
+                .await?
+                .ok_or(Error::InternalInvariant)?;
+            if prior != source {
+                return Err(Error::InternalInvariant);
+            }
+            validated_bound_replay(
+                prior,
+                &prior_digest,
+                &original_request_digest,
+                request,
+                locator,
+            )?
+        };
+        tx.commit().await?;
+        Ok(source)
+    }
+
+    pub async fn get_matrix_task_source(
+        &self,
+        context: &RequestContext,
+        task_id: Uuid,
+    ) -> Result<MatrixTaskSource> {
+        if task_id.is_nil() {
+            return Err(Error::InvalidArguments);
+        }
+        let (mut tx, identity) = self
+            .authenticated(context, TransactionMode::ReadOnly)
+            .await?;
+        let (workspace, _) = Self::bound_session(&mut *tx, context, &identity).await?;
+        let source = tx
+            .matrix_task_source(workspace.id, task_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        tx.commit().await?;
+        Ok(source)
+    }
+
     /// Read a saved Matrix advisory receipt, including historical no-call
     /// decisions, for an authenticated member of the receipt's workspace.
     pub async fn get_engineering_advisory(
@@ -107,32 +245,72 @@ impl WorkspaceService {
             None
         };
         let current_advice = if let Some(advice) = advice {
-            let current = tx.matrix_task(workspace.id, task_id).await?;
+            let source = tx.matrix_task_source(workspace.id, task_id).await?;
             let config = tx.advisory_config(workspace.id).await?;
-            let fresh = if let Some(current) =
-                current.filter(|current| current.revision == advice.record.binding.task_revision)
+            let fresh = if let Some(source) = source
+                .filter(|source| source.revision.revision == advice.record.binding.task_revision)
             {
-                let validated = compose_current_revision_with_validated_verification(
-                    tx.matrix_verification_store(),
-                    self.matrix_evidence_validator.as_ref(),
-                    workspace.id,
-                    current.clone(),
-                    advice.record.binding.task_revision,
-                    crate::matrix_verification::current_epoch_seconds()?,
-                )
-                .await;
-                validated.ok().and_then(|(composition, verification)| {
-                    verification.and_then(|verification| {
-                        crate::MatrixProviderRequest::new_verified(
-                            current,
-                            composition,
-                            &verification,
-                            advice.record.provider_profile_ref.clone(),
-                            advice.record.model_configuration.clone(),
-                        )
-                        .ok()
-                    })
-                })
+                if let (
+                    Some(binding),
+                    crate::MatrixVerificationAuthority::ContextV2 {
+                        snapshot_id,
+                        authority_schema,
+                        semantic_digest,
+                        ..
+                    },
+                ) = (
+                    source.requirements_binding.as_ref(),
+                    &advice.record.binding.verification,
+                ) {
+                    if binding.snapshot_id != *snapshot_id
+                        || binding.authority_schema != *authority_schema
+                        || binding.semantic_digest != *semantic_digest
+                    {
+                        None
+                    } else {
+                        let context = if let Some(store) = tx.matrix_requirements_context_store() {
+                            crate::matrix_verification::load_bound_matrix_context(
+                                store,
+                                workspace.id,
+                                identity.principal_id,
+                                binding,
+                            )
+                            .await
+                            .ok()
+                        } else {
+                            None
+                        };
+                        if let Some(context) = context {
+                            let verified = binding::compose_bound_revision_with_verification(
+                                tx.context_matrix_verification_store(),
+                                self.matrix_evidence_validator.as_ref(),
+                                workspace.id,
+                                &source.revision,
+                                *snapshot_id,
+                                &context,
+                                crate::matrix_verification::current_epoch_seconds()?,
+                            )
+                            .await
+                            .ok()
+                            .flatten();
+                            verified.and_then(|(composition, record)| {
+                                crate::MatrixProviderRequest::new_context_verified(
+                                    source.revision,
+                                    &composition,
+                                    &record,
+                                    *snapshot_id,
+                                    advice.record.provider_profile_ref.clone(),
+                                    advice.record.model_configuration.clone(),
+                                )
+                                .ok()
+                            })
+                        } else {
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
             } else {
                 None
             };
@@ -211,23 +389,40 @@ impl WorkspaceService {
                 None => Ok(existing),
             };
         }
+        let source = tx
+            .matrix_task_source(workspace.id, request.task_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        // Bound task recording locks requirements before appending the task;
+        // keep that order here so concurrent edits cannot deadlock this gate.
+        let bound_context = if let Some(binding) = source.requirements_binding.as_ref() {
+            Some(
+                if let Some(store) = tx.matrix_requirements_context_store() {
+                    crate::matrix_verification::lock_and_load_bound_matrix_context(
+                        store,
+                        workspace.id,
+                        identity.principal_id,
+                        binding,
+                    )
+                    .await
+                } else {
+                    Err(crate::matrix_verification::BoundContextFailure::CurrentUnresolved)
+                },
+            )
+        } else {
+            None
+        };
         let revision = tx
             .lock_matrix_task(workspace.id, request.task_id)
             .await?
             .ok_or(Error::NotFound)?;
+        if source.revision != revision {
+            return Err(Error::StaleRevision);
+        }
         if revision.revision != request.expected_task_revision {
             return Err(Error::StaleRevision);
         }
         let config = tx.advisory_config(workspace.id).await?;
-        let (composition, verification) = compose_current_revision_with_validated_verification(
-            tx.matrix_verification_store(),
-            self.matrix_evidence_validator.as_ref(),
-            workspace.id,
-            revision.clone(),
-            request.expected_task_revision,
-            crate::matrix_verification::current_epoch_seconds()?,
-        )
-        .await?;
         let mut input = matrix_advisory_opportunity_input(
             &revision,
             request,
@@ -235,45 +430,62 @@ impl WorkspaceService {
             session.id,
             identity.principal_id,
         )?;
-        // A verified no-call (for example, explicit optional-JEV skip) must retain
-        // the exact evidence and mandatory-card snapshot. Historical v1 no-call
-        // receipts are immutable and retain their original material digest.
-        if let (Some(verification), Some(choice_set)) = (
-            verification.as_ref().filter(|_| composition.is_resolved()),
-            revision.choice_set.as_ref(),
-        ) {
-            input.material_digest =
-                verification.disposition_digest(&revision.input, &composition, choice_set)?;
-            input.matrix_verification_digest = Some(verification.record_digest().to_owned());
-            input.validate()?;
-        }
         let mut provider_request = None;
         if matches!(
             input.primary_reason,
-            AdvisoryReason::MatrixSourceUnverified | AdvisoryReason::MatrixEvidenceUnresolved
-        ) && let Some(verification) = verification.as_ref()
-        {
-            if !composition.unresolved_evidence.is_empty() {
-                input.primary_reason = AdvisoryReason::MatrixEvidenceUnresolved;
-            } else if !composition.is_resolved() {
-                input.primary_reason = AdvisoryReason::MatrixSourceUnverified;
-            } else if let (Some(profile), Some(model)) = (
-                config.provider_profile_ref.clone(),
-                config.model_configuration.clone(),
-            ) {
-                let verified = crate::MatrixProviderRequest::new_verified(
-                    revision.clone(),
-                    composition,
-                    verification,
-                    profile,
-                    model,
-                )?;
-                input.primary_reason = AdvisoryReason::CapabilityUnavailable;
-                provider_request = Some(verified);
+            AdvisoryReason::MatrixSourceUnverified
+                | AdvisoryReason::MatrixEvidenceUnresolved
+                | AdvisoryReason::CapabilityUnavailable
+        ) {
+            if let (Some(binding), Some(resolved)) =
+                (source.requirements_binding.as_ref(), bound_context)
+            {
+                match resolved {
+                    Err(failure) => input.primary_reason = match failure {
+                        crate::matrix_verification::BoundContextFailure::SnapshotMissing => AdvisoryReason::MatrixSnapshotMissing,
+                        crate::matrix_verification::BoundContextFailure::BindingMismatch => AdvisoryReason::MatrixBindingMismatch,
+                        crate::matrix_verification::BoundContextFailure::CurrentUnresolved => AdvisoryReason::MatrixContextUnresolved,
+                        crate::matrix_verification::BoundContextFailure::CurrentStale => AdvisoryReason::MatrixContextStale,
+                        crate::matrix_verification::BoundContextFailure::AuthoritySchemaUnsupported => AdvisoryReason::MatrixAuthoritySchemaUnsupported,
+                    },
+                    Ok(context) => {
+                        let verified = binding::compose_bound_revision_with_verification(
+                            tx.context_matrix_verification_store(),
+                            self.matrix_evidence_validator.as_ref(),
+                            workspace.id, &revision, binding.snapshot_id, &context,
+                            crate::matrix_verification::current_epoch_seconds()?,
+                        ).await?;
+                        if let Some((composition, record)) = verified {
+                            if let (Some(profile), Some(model)) = (
+                                config.provider_profile_ref.clone(), config.model_configuration.clone(),
+                            ) {
+                                let prepared = crate::MatrixProviderRequest::new_context_verified(
+                                    revision.clone(), &composition, &record, binding.snapshot_id,
+                                    profile, model,
+                                )?;
+                                input.primary_reason = AdvisoryReason::CapabilityUnavailable;
+                                provider_request = Some(prepared);
+                            } else { input.primary_reason = AdvisoryReason::ProviderUnconfigured; }
+                        } else { input.primary_reason = AdvisoryReason::MatrixOperatingEvidenceUnresolved; }
+                    }
+                }
             } else {
-                input.primary_reason = AdvisoryReason::ProviderUnconfigured;
+                input.primary_reason = AdvisoryReason::MatrixTaskUnbound;
             }
         }
+        if let Some(binding) = source.requirements_binding.as_ref() {
+            let no_call_material = serde_json::to_vec(&(
+                "tect.context-matrix-advisory-opportunity/1",
+                &input.material_digest,
+                binding.snapshot_id,
+                &binding.authority_schema,
+                &binding.semantic_digest,
+                input.primary_reason.as_str(),
+            ))
+            .map_err(|_| Error::InternalInvariant)?;
+            input.material_digest = format!("{:x}", Sha256::digest(no_call_material));
+        }
+        input.validate()?;
         let verified_policy = if provider_request.is_some() {
             crate::matrix_advisory_capture::lookup_verified_matrix_budget(
                 tx.advisory_budget_policy_store(),
@@ -307,6 +519,7 @@ impl WorkspaceService {
         let provider_request = provider_request.ok_or(Error::InternalInvariant)?;
         let prepared = *prepared;
         let authorization = crate::matrix_advisory_dispatch::authorize_prepared_matrix(
+            Uuid::new_v4(),
             opportunity.id,
             &opportunity,
             &prepared,
@@ -419,13 +632,33 @@ impl WorkspaceService {
     }
 }
 
+/// Lock inherited declarations before freezing the source, keeping those
+/// transaction-scoped locks until the caller appends and commits the task.
+pub(crate) async fn freeze_locked_matrix_requirements_context(
+    store: &mut dyn crate::MatrixRequirementsContextStore,
+    workspace_id: Uuid,
+    principal_id: Uuid,
+    locator: &MatrixRequirementsLocator,
+) -> Result<crate::FrozenMatrixRequirementsContext> {
+    let lineage = store
+        .matrix_requirements_lineage(workspace_id, principal_id, locator, true)
+        .await?;
+    for anchor in lineage {
+        store
+            .lock_matrix_requirements_head(workspace_id, anchor)
+            .await?;
+    }
+    crate::freeze_effective_matrix_requirements_context(store, workspace_id, principal_id, locator)
+        .await
+}
+
 mod binding;
 #[cfg(test)]
 use binding::compose_current_revision;
 pub(crate) use binding::{
-    compose_current_revision_with_validated_verification,
+    compose_bound_revision_with_verification, compose_current_revision_with_validated_verification,
     compose_current_revision_with_verification, current_public_matrix_advice,
-    matrix_advisory_opportunity_input, matrix_request_still_current,
+    matrix_advisory_opportunity_input,
 };
 use binding::{
     matrix_advisory_receipt_matches, matrix_advisory_replay_matches, valid_advisory_request_key,
@@ -435,6 +668,44 @@ use binding::{
 pub fn canonical_matrix_input_digest(input: &serde_json::Value) -> Result<String> {
     let encoded = serde_json::to_vec(input).map_err(|_| Error::InternalInvariant)?;
     Ok(format!("{:x}", Sha256::digest(encoded)))
+}
+
+pub fn canonical_matrix_source_request_digest(
+    request: &RecordMatrixTask,
+    locator: &MatrixRequirementsLocator,
+) -> Result<String> {
+    let raw = serde_json::json!({
+        "task_id": request.task_id,
+        "revision": request.revision,
+        "expected_current_revision": request.expected_current_revision,
+        "request_id": request.request_id,
+        "input": request.input,
+        "choice_set": request.choice_set,
+        "requirements_locator": locator.as_json(),
+    });
+    canonical_matrix_input_digest(&raw)
+}
+
+fn validated_bound_replay(
+    prior: MatrixTaskSource,
+    prior_digest: &str,
+    requested_digest: &str,
+    request: &RecordMatrixTask,
+    locator: &MatrixRequirementsLocator,
+) -> Result<MatrixTaskSource> {
+    if prior_digest != requested_digest
+        || prior.revision.task_id != request.task_id
+        || prior.revision.revision != request.revision
+        || prior.revision.request_id != request.request_id
+        || prior
+            .requirements_binding
+            .as_ref()
+            .map(|binding| &binding.locator)
+            != Some(locator)
+    {
+        return Err(Error::InputConflict);
+    }
+    Ok(prior)
 }
 
 fn validate_request(request: &RecordMatrixTask) -> Result<()> {

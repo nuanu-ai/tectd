@@ -1,6 +1,7 @@
 //! Pure identities, values and invariants. No environment, transport or persistence.
 mod advisory;
 mod anti_bloat_verification_material;
+mod context_matrix_verification;
 mod durable_knowledge;
 mod durable_knowledge_validation;
 mod engineering_choice_set;
@@ -27,6 +28,7 @@ mod knowledge_phase_validation;
 mod knowledge_profile_registry;
 mod knowledge_search;
 mod knowledge_time;
+mod matrix_declared_requirements;
 mod matrix_planning_effect;
 mod matrix_planning_selection;
 mod model_route_material;
@@ -45,6 +47,7 @@ pub use program_page::{ProgramCursor, ProgramInput, ProgramList, ProgramPage, Pr
 
 pub use advisory::*;
 pub use anti_bloat_verification_material::{AntiBloatVerificationMaterial, VerifyAntiBloatApply};
+pub use context_matrix_verification::*;
 pub use durable_knowledge::*;
 pub use engineering_choice_set::*;
 pub use engineering_matrix_composer::*;
@@ -68,6 +71,7 @@ pub use knowledge_lifecycle_execution::*;
 pub use knowledge_maintenance::*;
 pub use knowledge_profile_registry::*;
 pub use knowledge_search::*;
+pub use matrix_declared_requirements::*;
 pub use matrix_planning_effect::*;
 pub use matrix_planning_selection::*;
 pub use model_route_material::*;

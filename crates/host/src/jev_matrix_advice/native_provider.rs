@@ -406,7 +406,8 @@ fn native_from_prepared(
         || binding.choice_set_version != app_binding.choice_set_version
         || binding.choice_set_digest != app_binding.choice_set_digest
         || binding.evaluation_digest != app_binding.evaluation_digest
-        || binding.verification_digest != app_binding.verification_digest
+        || binding.verification_digest.as_deref() != app_binding.verification.digest()
+        || binding.context != super::wire::context_provenance(&app_binding.verification)
     {
         return Err(Error::InputConflict);
     }

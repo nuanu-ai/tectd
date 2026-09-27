@@ -2,8 +2,8 @@
 //! Neither operation invokes or schedules a model route.
 use crate::{
     CapturedModelRouteDecision, CapturedModelRouteDisposition, ModelRouteAbstainReason,
-    ModelRouteDecisionInput, ModelRouteDecisionOutcome, ModelRouteDecisionStore,
-    ModelRouteDispositionAction, ModelRoutePreparation, ModelRouteRecommendationStore,
+    ModelRouteDecisionCaptureStore, ModelRouteDecisionInput, ModelRouteDecisionOutcome,
+    ModelRouteDecisionStore, ModelRouteDispositionAction, ModelRoutePreparation,
 };
 use tect_domain::{Error, ModelRouteRankingWireOutcome, ModelRouteWireAbstainReason, Result};
 use uuid::Uuid;
@@ -18,14 +18,13 @@ pub struct DecideModelRouteRecommendation {
 impl DecideModelRouteRecommendation {
     pub async fn decide(
         &self,
-        preparations: &mut dyn ModelRouteRecommendationStore,
-        decisions: &mut dyn ModelRouteDecisionStore,
+        store: &mut dyn ModelRouteDecisionCaptureStore,
     ) -> Result<CapturedModelRouteDecision> {
         if self.id.is_nil() || self.workspace_id.is_nil() || self.preparation_request_key.is_empty()
         {
             return Err(Error::InvalidArguments);
         }
-        let prepared = preparations
+        let prepared = store
             .by_request(self.workspace_id, &self.preparation_request_key)
             .await?
             .ok_or(Error::NotFound)?;
@@ -36,6 +35,8 @@ impl DecideModelRouteRecommendation {
         {
             return Err(Error::InputConflict);
         }
+        prepared.work.require_current_authority()?;
+        store.validate_current(&prepared).await?;
         match (&prepared.catalogue, &prepared.eligible) {
             (Some(catalogue), Some(eligible))
                 if catalogue.eligible(&prepared.work)? == *eligible => {}
@@ -50,7 +51,7 @@ impl DecideModelRouteRecommendation {
             match &self.input {
                 ModelRouteDecisionInput::Ranking(ranking) => {
                     let recommended = eligible.recommendation(ranking)?;
-                    let evidence = decisions
+                    let evidence = store
                         .sealed_provider_ranking(self.workspace_id, &self.preparation_request_key)
                         .await?
                         .ok_or(Error::Forbidden)?;
@@ -65,7 +66,7 @@ impl DecideModelRouteRecommendation {
                     }
                 }
                 ModelRouteDecisionInput::Abstain => {
-                    let reason = match decisions
+                    let reason = match store
                         .sealed_provider_ranking(self.workspace_id, &self.preparation_request_key)
                         .await?
                     {
@@ -119,14 +120,14 @@ impl DecideModelRouteRecommendation {
             outcome,
             routes,
         };
-        if let Some(saved) = decisions.decision_by_id(self.workspace_id, self.id).await? {
+        if let Some(saved) = store.decision_by_id(self.workspace_id, self.id).await? {
             return if saved == value {
                 Ok(saved)
             } else {
                 Err(Error::InputConflict)
             };
         }
-        if let Some(saved) = decisions
+        if let Some(saved) = store
             .decision_by_preparation(self.workspace_id, &self.preparation_request_key)
             .await?
         {
@@ -136,7 +137,7 @@ impl DecideModelRouteRecommendation {
                 Err(Error::InputConflict)
             };
         }
-        let saved = decisions.capture_decision(&value).await?;
+        let saved = store.capture_decision(&value).await?;
         if saved != value {
             return Err(Error::InternalInvariant);
         }
@@ -180,6 +181,8 @@ impl DispositionModelRouteRecommendation {
         {
             return Err(Error::InputConflict);
         }
+        decision.prepared.work.require_current_authority()?;
+        decisions.validate_current_decision(&decision).await?;
         let value = CapturedModelRouteDisposition {
             id: self.id,
             decision_id: self.decision_id,

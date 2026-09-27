@@ -48,7 +48,7 @@ impl MatrixProviderRequest {
             choice_set_version: choice_set.version,
             choice_set_digest,
             evaluation_digest,
-            verification_digest: None,
+            verification: MatrixVerificationAuthority::Unverified,
         };
         Ok(Self {
             binding,
@@ -86,7 +86,55 @@ impl MatrixProviderRequest {
             choice_set,
             &verification.validated,
         )?;
-        request.binding.verification_digest = Some(verification.record_digest().to_owned());
+        request.binding.verification = MatrixVerificationAuthority::LegacyV1 {
+            digest: verification.record_digest().to_owned(),
+        };
+        Ok(request)
+    }
+
+    /// Only the application may mint a provider request from a freshly
+    /// revalidated, context-bound verification.
+    pub(crate) fn new_context_verified(
+        revision: MatrixTaskRevision,
+        composition: &tect_domain::ContextEngineeringMatrixComposition,
+        record: &tect_domain::ContextMatrixVerificationRecord,
+        snapshot_id: Uuid,
+        provider_profile_ref: AdvisoryProviderProfileRef,
+        model_configuration: AdvisoryModelConfiguration,
+    ) -> Result<Self> {
+        if record.task_id != revision.task_id.to_string()
+            || record.task_revision != revision.revision.to_string()
+            || record.frozen_snapshot_id != snapshot_id.to_string()
+            || record.input_digest != revision.input_digest
+            || record.digest != composition.operating_verification_digest()
+            || record.requirements_semantic_digest != composition.requirements_semantic_digest()
+            || !composition.is_resolved()
+        {
+            return Err(Error::InvalidArguments);
+        }
+        let mut request = Self::new(
+            revision,
+            composition.composition().clone(),
+            provider_profile_ref,
+            model_configuration,
+        )?;
+        let choice = request
+            .revision
+            .choice_set
+            .as_ref()
+            .ok_or(Error::InvalidArguments)?;
+        request.binding.evaluation_digest = context_matrix_verified_evaluation_digest(
+            &request.revision.input,
+            composition,
+            choice,
+            record,
+        )?;
+        request.binding.verification = MatrixVerificationAuthority::ContextV2 {
+            digest: record.digest.clone(),
+            snapshot_id,
+            authority_schema: record.authority_schema.clone(),
+            semantic_digest: record.requirements_semantic_digest.clone(),
+        };
         Ok(request)
     }
 
@@ -139,6 +187,36 @@ impl MatrixProviderRequest {
     pub fn eligibility(&self) -> &MatrixAdviceEligibility {
         &self.eligibility
     }
+}
+
+/// Versioned positive material; historical V1 digest preimages are unchanged.
+pub fn context_matrix_verified_evaluation_digest(
+    input: &tect_domain::EngineeringMatrixInput,
+    composition: &tect_domain::ContextEngineeringMatrixComposition,
+    choice_set: &tect_domain::EngineeringChoiceSet,
+    record: &tect_domain::ContextMatrixVerificationRecord,
+) -> Result<String> {
+    if !composition.is_resolved()
+        || record.digest != composition.operating_verification_digest()
+        || record.requirements_semantic_digest != composition.requirements_semantic_digest()
+        || record.task_id != choice_set.task_id
+        || record.task_revision != choice_set.task_revision
+    {
+        return Err(Error::InvalidArguments);
+    }
+    let material =
+        tect_domain::matrix_evaluation_digest(input, composition.composition(), choice_set)?
+            .ok_or(Error::InvalidArguments)?;
+    let bytes = serde_json::to_vec(&(
+        "tect.context-matrix-verified-evaluation/1",
+        material,
+        &record.digest,
+        &record.frozen_snapshot_id,
+        &record.authority_schema,
+        &record.requirements_semantic_digest,
+    ))
+    .map_err(|_| Error::InternalInvariant)?;
+    Ok(format!("{:x}", sha2::Sha256::digest(bytes)))
 }
 
 fn validate_saved_revision_source_provenance(

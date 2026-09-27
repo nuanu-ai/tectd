@@ -1,5 +1,5 @@
 //! Recommendation-only model routing. No provider client or execution operation lives here.
-use crate::{Error, MatrixPlanningSelection, Result};
+use crate::{Error, MATRIX_REQUIREMENTS_SCHEMA, MatrixPlanningSelection, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -88,12 +88,37 @@ pub struct ModelRouteWorkContext {
     pub approved_matrix_selection: MatrixPlanningSelection,
     /// Persisted native save receipt and one mapped Work node, never inferred from prose.
     pub selection_link: ModelRouteSelectionLink,
+    /// Server-derived V2 Matrix declaration binding. None is historical V1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_authority: Option<ModelRouteContextAuthority>,
     pub role: ModelRouteFact<String>,
     pub tool: ModelRouteFact<String>,
     pub data_class: ModelRouteFact<String>,
     pub host_capabilities: ModelRouteFact<Vec<String>>,
     pub remaining_budget_units: ModelRouteFact<u64>,
     pub available_latency_ms: ModelRouteFact<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ModelRouteContextAuthority {
+    pub frozen_snapshot_id: Uuid,
+    pub authority_schema: String,
+    pub requirements_semantic_digest: String,
+    pub operating_verification_digest: String,
+}
+
+impl ModelRouteContextAuthority {
+    pub fn validate_for(&self, selection: &MatrixPlanningSelection) -> Result<()> {
+        if self.frozen_snapshot_id.is_nil()
+            || self.authority_schema != MATRIX_REQUIREMENTS_SCHEMA
+            || !valid_sha256(&self.requirements_semantic_digest)
+            || self.operating_verification_digest != selection.expected_verification_digest
+        {
+            return Err(Error::StaleContext);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -119,6 +144,26 @@ pub enum ModelRouteFactProvenance {
     /// Explicit caller-authored fact attached to the exact saved Work node.
     Caller {
         source_ref: String,
+        work_node_id: Uuid,
+        work_node_revision: i64,
+    },
+    /// An exact owner-confirmed declaration inherited by this Work revision.
+    /// The adapter must resolve the declared path and ancestry; these fields
+    /// alone do not confer declaration authority.
+    ConfirmedWorkRequirement {
+        frozen_snapshot_id: Uuid,
+        requirements_semantic_digest: String,
+        source_ref: String,
+        work_node_id: Uuid,
+        work_node_revision: i64,
+    },
+    /// A trusted operating observation, resolved by its source adapter.
+    /// It must be current at each advisory transition.
+    OperatingEvidence {
+        source_ref: String,
+        content_digest: String,
+        observed_at_epoch_ms: i64,
+        expires_at_epoch_ms: i64,
         work_node_id: Uuid,
         work_node_revision: i64,
     },
@@ -164,8 +209,26 @@ pub struct ModelRouteRecord {
 
 include!("model_routing/catalogue.rs");
 impl ModelRouteWorkContext {
+    /// New preparations require V2 authority. Historical V1 receipts may still
+    /// deserialize for audit, but cannot authorize fresh advice.
+    pub fn require_current_authority(&self) -> Result<&ModelRouteContextAuthority> {
+        let authority = self.context_authority.as_ref().ok_or(Error::StaleContext)?;
+        authority.validate_for(&self.approved_matrix_selection)?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| Error::StaleContext)?
+            .as_millis();
+        if !self.operating_facts_current_at(i64::try_from(now).map_err(|_| Error::StaleContext)?) {
+            return Err(Error::StaleContext);
+        }
+        Ok(authority)
+    }
+
     pub fn digest(&self) -> Result<String> {
         self.approved_matrix_selection.validate()?;
+        if let Some(authority) = &self.context_authority {
+            authority.validate_for(&self.approved_matrix_selection)?;
+        }
         let link = &self.selection_link;
         if link.candidate_set_id.is_nil()
             || link.caller_request_id.is_nil()
@@ -179,19 +242,19 @@ impl ModelRouteWorkContext {
             return Err(Error::InvalidArguments);
         }
         for fact in [&self.role, &self.tool, &self.data_class] {
-            validate_fact(fact, false)?;
+            validate_work_fact(fact, self)?;
             if let ModelRouteFact::Known { value, .. } = fact
                 && !valid_id(value)
             {
                 return Err(Error::InvalidArguments);
             }
         }
-        validate_fact(&self.host_capabilities, true)?;
+        validate_host_fact(&self.host_capabilities)?;
         if let ModelRouteFact::Known { value, .. } = &self.host_capabilities {
             valid_set(value, true)?;
         }
-        validate_fact(&self.remaining_budget_units, false)?;
-        validate_fact(&self.available_latency_ms, false)?;
+        validate_operating_fact(&self.remaining_budget_units, self)?;
+        validate_operating_fact(&self.available_latency_ms, self)?;
         for provenance in [
             self.role.provenance(),
             self.tool.provenance(),
@@ -211,7 +274,14 @@ impl ModelRouteWorkContext {
             }
         }
         let mut hash = Sha256::new();
-        part(&mut hash, "tect.model-route-work/2");
+        part(
+            &mut hash,
+            if self.context_authority.is_some() {
+                "tect.model-route-work/3"
+            } else {
+                "tect.model-route-work/2"
+            },
+        );
         let selection = &self.approved_matrix_selection;
         part(&mut hash, &selection.task_id.to_string());
         number(&mut hash, selection.task_revision as u64);
@@ -223,6 +293,12 @@ impl ModelRouteWorkContext {
             &selection.expected_verification_digest,
         ] {
             part(&mut hash, digest);
+        }
+        if let Some(authority) = &self.context_authority {
+            part(&mut hash, &authority.frozen_snapshot_id.to_string());
+            part(&mut hash, &authority.authority_schema);
+            part(&mut hash, &authority.requirements_semantic_digest);
+            part(&mut hash, &authority.operating_verification_digest);
         }
         number(&mut hash, selection.mapped_draft_node_indices.len() as u64);
         for index in &selection.mapped_draft_node_indices {
@@ -254,79 +330,39 @@ impl ModelRouteWorkContext {
     }
 
     pub fn has_unknown_facts(&self) -> bool {
-        matches!(self.role, ModelRouteFact::Unknown)
-            || matches!(self.tool, ModelRouteFact::Unknown)
-            || matches!(self.data_class, ModelRouteFact::Unknown)
+        // Caller assertions are usable for advisory matching, with their
+        // provenance retained. They do not become observed operating facts.
+        !available_work_fact(&self.role)
+            || !available_work_fact(&self.tool)
+            || !available_work_fact(&self.data_class)
             || matches!(self.host_capabilities, ModelRouteFact::Unknown)
-            || matches!(self.remaining_budget_units, ModelRouteFact::Unknown)
-            || matches!(self.available_latency_ms, ModelRouteFact::Unknown)
+            || !available_numeric_fact(&self.remaining_budget_units)
+            || !available_numeric_fact(&self.available_latency_ms)
+    }
+
+    pub fn operating_facts_current_at(&self, now_epoch_ms: i64) -> bool {
+        [&self.role, &self.tool, &self.data_class]
+            .into_iter()
+            .filter_map(ModelRouteFact::provenance)
+            .chain(self.remaining_budget_units.provenance())
+            .chain(self.available_latency_ms.provenance())
+            .all(|provenance| match provenance {
+                ModelRouteFactProvenance::OperatingEvidence {
+                    observed_at_epoch_ms,
+                    expires_at_epoch_ms,
+                    ..
+                } => *observed_at_epoch_ms <= now_epoch_ms && now_epoch_ms < *expires_at_epoch_ms,
+                _ => true,
+            })
     }
 }
 
-impl<T> ModelRouteFact<T> {
-    fn provenance(&self) -> Option<&ModelRouteFactProvenance> {
-        match self {
-            Self::Known { provenance, .. } => Some(provenance),
-            Self::Unknown => None,
-        }
-    }
-}
-
-fn validate_fact<T>(fact: &ModelRouteFact<T>, host_owned: bool) -> Result<()> {
-    match fact {
-        ModelRouteFact::Unknown => Ok(()),
-        ModelRouteFact::Known {
-            provenance: ModelRouteFactProvenance::Host { evidence_ref },
-            ..
-        } if host_owned && valid_ref(evidence_ref) => Ok(()),
-        ModelRouteFact::Known {
-            provenance:
-                ModelRouteFactProvenance::Caller {
-                    source_ref,
-                    work_node_id,
-                    work_node_revision,
-                },
-            ..
-        } if !host_owned
-            && valid_ref(source_ref)
-            && !work_node_id.is_nil()
-            && *work_node_revision >= 1 =>
-        {
-            Ok(())
-        }
-        _ => Err(Error::InvalidArguments),
-    }
-}
-
-fn hash_fact<T>(
-    hash: &mut Sha256,
-    fact: &ModelRouteFact<T>,
-    value_hash: impl FnOnce(&mut Sha256, &T),
-) {
-    match fact {
-        ModelRouteFact::Unknown => part(hash, "unknown"),
-        ModelRouteFact::Known { value, provenance } => {
-            part(hash, "known");
-            match provenance {
-                ModelRouteFactProvenance::Caller {
-                    source_ref,
-                    work_node_id,
-                    work_node_revision,
-                } => {
-                    part(hash, "caller");
-                    part(hash, source_ref);
-                    part(hash, &work_node_id.to_string());
-                    number(hash, *work_node_revision as u64);
-                }
-                ModelRouteFactProvenance::Host { evidence_ref } => {
-                    part(hash, "host");
-                    part(hash, evidence_ref);
-                }
-            }
-            value_hash(hash, value);
-        }
-    }
-}
+#[path = "model_routing/fact_validation.rs"]
+mod fact_validation;
+use fact_validation::{
+    available_numeric_fact, available_work_fact, hash_fact, valid_sha256, validate_host_fact,
+    validate_operating_fact, validate_work_fact,
+};
 
 impl EligibleModelRoutes {
     /// A provider reply cannot add, duplicate, or refer to stale route IDs.

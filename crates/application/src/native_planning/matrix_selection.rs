@@ -2,7 +2,7 @@ use crate::{MatrixPlanningMappedNode, MatrixProviderRequest, UnitOfWork, Workspa
 use tect_domain::{
     AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryOpportunityState, AdvisoryReason,
     ENGINEERING_MATRIX_CATALOGUE_VERSION, Error, MatrixDispositionBasis, MatrixDispositionDecision,
-    MatrixPlanningSelection, MatrixSourceVerificationStatus, Result, SliceCandidateContext,
+    MatrixPlanningContextProvenance, MatrixPlanningSelection, Result, SliceCandidateContext,
     SliceCandidateDraft, SliceCandidateDraftNode, SliceCandidateNode,
 };
 use uuid::Uuid;
@@ -71,7 +71,7 @@ pub(super) async fn validate_selected_matrix_plan(
     workspace_id: Uuid,
     principal_id: Uuid,
     selection: &MatrixPlanningSelection,
-) -> Result<(String, String)> {
+) -> Result<(String, String, MatrixPlanningContextProvenance)> {
     selection.validate()?;
     let disposition = tx
         .matrix_planning_selection_store()
@@ -93,11 +93,26 @@ pub(super) async fn validate_selected_matrix_plan(
     {
         return Err(Error::StaleContext);
     }
+    let source = tx
+        .matrix_task_source(workspace_id, selection.task_id)
+        .await?
+        .ok_or(Error::NotFound)?;
+    let binding = source.requirements_binding.ok_or(Error::StaleContext)?;
+    let context = crate::matrix_verification::lock_and_load_bound_matrix_context(
+        tx.matrix_requirements_context_store()
+            .ok_or(Error::StorageUnavailable)?,
+        workspace_id,
+        principal_id,
+        &binding,
+    )
+    .await
+    .map_err(|_| Error::StaleContext)?;
     let revision = tx
         .lock_matrix_task(workspace_id, selection.task_id)
         .await?
         .ok_or(Error::NotFound)?;
-    if revision.revision != selection.task_revision
+    if revision != source.revision
+        || revision.revision != selection.task_revision
         || revision.input_digest != selection.expected_input_digest
         || revision.choice_set_digest.as_deref()
             != Some(selection.expected_choice_set_digest.as_str())
@@ -114,41 +129,52 @@ pub(super) async fn validate_selected_matrix_plan(
         return Err(Error::StaleContext);
     }
     let (composition, verification) =
-        crate::matrix_tasks::compose_current_revision_with_validated_verification(
-            tx.matrix_verification_store(),
+        crate::matrix_tasks::compose_bound_revision_with_verification(
+            tx.context_matrix_verification_store(),
             service.matrix_evidence_validator.as_ref(),
             workspace_id,
-            revision.clone(),
-            selection.task_revision,
+            &revision,
+            binding.snapshot_id,
+            &context,
             crate::matrix_verification::current_epoch_seconds()?,
         )
         .await
-        .map_err(|_| Error::StaleContext)?;
-    let verification = verification.ok_or(Error::StaleContext)?;
-    if verification.record_digest() != selection.expected_verification_digest
-        || composition.source_verification_status
-            != MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported
+        .map_err(|_| Error::StaleContext)?
+        .ok_or(Error::StaleContext)?;
+    if verification.digest != selection.expected_verification_digest
+        || verification.frozen_snapshot_id != binding.snapshot_id.to_string()
+        || verification.authority_schema != binding.authority_schema
+        || verification.requirements_semantic_digest != binding.semantic_digest
         || !composition.is_resolved()
-        || composition.catalogue_version != ENGINEERING_MATRIX_CATALOGUE_VERSION
+        || composition.composition().catalogue_version != ENGINEERING_MATRIX_CATALOGUE_VERSION
         || !composition
+            .composition()
             .mandatory_cards
             .iter()
             .any(|card| card.id == "EM02-SCOPE@0.1")
-        || composition.mandatory_cards.iter().any(|card| {
-            !matches!(
-                card.id,
-                "EM02-SCOPE@0.1"
-                    | "EM02-PROTECT@0.1"
-                    | "EM02-OPERATE@0.1"
-                    | "EM02-CAPACITY@0.1"
-                    | "EM02-HOTFIX@0.1"
-            )
-        })
+        || composition
+            .composition()
+            .mandatory_cards
+            .iter()
+            .any(|card| {
+                !matches!(
+                    card.id,
+                    "EM02-SCOPE@0.1"
+                        | "EM02-PROTECT@0.1"
+                        | "EM02-OPERATE@0.1"
+                        | "EM02-CAPACITY@0.1"
+                        | "EM02-HOTFIX@0.1"
+                )
+            })
     {
         return Err(Error::StaleContext);
     }
-    let evaluation_digest =
-        verification.disposition_digest(&revision.input, &composition, choice_set)?;
+    let evaluation_digest = crate::context_matrix_verified_evaluation_digest(
+        &revision.input,
+        &composition,
+        choice_set,
+        &verification,
+    )?;
     let opportunity = tx
         .advisory_opportunity_for_dispatch(workspace_id, disposition.request.opportunity_id)
         .await?;
@@ -182,10 +208,11 @@ pub(super) async fn validate_selected_matrix_plan(
                 .await?
                 .ok_or(Error::StaleContext)?;
             let config = tx.advisory_config(workspace_id).await?;
-            let fresh = MatrixProviderRequest::new_verified(
+            let fresh = MatrixProviderRequest::new_context_verified(
                 revision,
-                composition.clone(),
+                &composition,
                 &verification,
+                binding.snapshot_id,
                 stored.record.provider_profile_ref.clone(),
                 stored.record.model_configuration.clone(),
             )
@@ -215,5 +242,13 @@ pub(super) async fn validate_selected_matrix_plan(
             ) => {}
         _ => return Err(Error::StaleContext),
     }
-    Ok((evaluation_digest, composition.catalogue_version.into()))
+    Ok((
+        evaluation_digest,
+        composition.composition().catalogue_version.into(),
+        MatrixPlanningContextProvenance {
+            frozen_snapshot_id: binding.snapshot_id,
+            authority_schema: binding.authority_schema,
+            requirements_semantic_digest: binding.semantic_digest,
+        },
+    ))
 }

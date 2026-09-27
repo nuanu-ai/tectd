@@ -207,6 +207,11 @@ pub trait AntiBloatStore: Send {
         Ok(false)
     }
 
+    /// Resolve the selected saved Scope draft and freeze every currently
+    /// applicable protected obligation from persisted source, confirmed Matrix
+    /// declarations and any already selected downstream effect. A downstream
+    /// phase with no rows is absent; an existing incomplete or stale chain is
+    /// an error. This input is re-derived before a send or mutation.
     async fn authoritative_input(
         &mut self,
         workspace_id: Uuid,

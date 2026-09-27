@@ -60,6 +60,12 @@ impl PgUnitOfWork {
     pub(crate) fn is_read_write(&self) -> bool {
         self.mode == TransactionMode::ReadWrite
     }
+
+    pub(crate) fn is_owner(&self) -> bool {
+        self.identity
+            .as_ref()
+            .is_some_and(|identity| identity.role == PrincipalRole::Owner)
+    }
 }
 
 #[async_trait]

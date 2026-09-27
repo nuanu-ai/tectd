@@ -3,19 +3,56 @@ use sha2::{Digest, Sha256};
 use sqlx::{Row, postgres::PgRow};
 use tect_application::{
     AdvisoryLifecycleCapability, GuardedMatrixAdviceOutcome, GuardedMatrixAdviceRecord,
-    MatrixAdviceStore, MatrixProviderBinding, MatrixTaskStore, StoredGuardedMatrixAdviceRecord,
+    MatrixAdviceStore, MatrixProviderBinding, MatrixRequirementsContextStore, MatrixTaskStore,
+    MatrixVerificationAuthority, MatrixVerificationStore, StoredGuardedMatrixAdviceRecord,
     canonical_matrix_advice_digest, canonical_matrix_input_digest,
+    context_matrix_verified_evaluation_digest,
 };
 use tect_domain::{
     AdvisoryDispatch, AdvisoryModelConfiguration, AdvisoryOpportunity, AdvisoryOpportunityState,
-    AdvisoryProviderProfileRef, EngineeringChoiceSet, EngineeringMatrixInput, Error,
-    MatrixVerificationRecord, OwnerReportedEngineeringMatrixFacts, Result,
-    ValidatedMatrixVerification, compose_independently_verified_owner_matrix,
-    evaluate_matrix_verification, matrix_verified_evaluation_digest,
+    AdvisoryProviderProfileRef, CONTEXT_MATRIX_VERIFICATION_SCHEMA, EngineeringChoiceSet,
+    EngineeringMatrixInput, Error, MATRIX_VERIFICATION_SCHEMA, OwnerReportedEngineeringMatrixFacts,
+    Result, compose_confirmed_requirements_matrix, compose_independently_verified_owner_matrix,
+    evaluate_context_matrix_verification, evaluate_matrix_verification,
+    matrix_verified_evaluation_digest,
 };
 use uuid::Uuid;
 
+#[cfg(test)]
+use tect_domain::{MatrixVerificationRecord, ValidatedMatrixVerification};
+
 use crate::{advisory::finalize_matrix_response, storage_error, store::PgUnitOfWork};
+
+pub(crate) fn verification_authority(row: &PgRow) -> Result<MatrixVerificationAuthority> {
+    let digest: String = row.try_get("record_digest").map_err(storage_error)?;
+    let schema: String = row.try_get("schema").map_err(storage_error)?;
+    let snapshot: Option<Uuid> = row.try_get("frozen_snapshot_id").map_err(storage_error)?;
+    let semantic: Option<String> = row
+        .try_get("requirements_semantic_digest")
+        .map_err(storage_error)?;
+    let authority_schema: Option<String> =
+        row.try_get("authority_schema").map_err(storage_error)?;
+    match schema.as_str() {
+        MATRIX_VERIFICATION_SCHEMA
+            if snapshot.is_none() && semantic.is_none() && authority_schema.is_none() =>
+        {
+            Ok(MatrixVerificationAuthority::LegacyV1 { digest })
+        }
+        CONTEXT_MATRIX_VERIFICATION_SCHEMA => {
+            let snapshot_id = snapshot.ok_or(Error::InternalInvariant)?;
+            if snapshot_id.is_nil() {
+                return Err(Error::InternalInvariant);
+            }
+            Ok(MatrixVerificationAuthority::ContextV2 {
+                digest,
+                snapshot_id,
+                authority_schema: authority_schema.ok_or(Error::InternalInvariant)?,
+                semantic_digest: semantic.ok_or(Error::InternalInvariant)?,
+            })
+        }
+        _ => Err(Error::InternalInvariant),
+    }
+}
 
 fn decode_advice(
     row: PgRow,
@@ -86,6 +123,32 @@ fn outcome_columns(
     }
 }
 
+impl PgUnitOfWork {
+    async fn insert_matrix_advice_receipt(
+        &mut self,
+        workspace_id: Uuid,
+        record: &GuardedMatrixAdviceRecord,
+    ) -> Result<StoredGuardedMatrixAdviceRecord> {
+        let tenant = self.tenant_id()?;
+        let (kind, ranks, reason) = outcome_columns(&record.outcome);
+        let inserted: Option<Uuid> = sqlx::query_scalar(
+            "INSERT INTO advisory_matrix_advice (tenant_id,workspace_id,opportunity_id,task_id,matrix_task_revision,matrix_choice_set_digest,dispatch_id,kind,ranked_choice_ids,reason,advice_digest,provider_profile_ref,model_configuration,response_payload_sha256) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT DO NOTHING RETURNING advice_id"
+        ).bind(tenant).bind(workspace_id).bind(record.opportunity_id).bind(record.binding.task_id)
+            .bind(record.binding.task_revision).bind(&record.binding.choice_set_digest)
+            .bind(record.dispatch_id).bind(kind).bind(ranks).bind(reason)
+            .bind(&record.advice_digest).bind(&record.provider_profile_ref.id)
+            .bind(serde_json::json!(record.model_configuration)).bind(&record.response_payload_sha256)
+            .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?;
+        let advice_id = inserted.ok_or(Error::InputConflict)?;
+        Ok(StoredGuardedMatrixAdviceRecord {
+            advice_id,
+            record: record.clone(),
+        })
+    }
+}
+
+#[cfg(test)]
 fn validated_for_guarded_advice(
     task_id: Uuid,
     revision: i64,

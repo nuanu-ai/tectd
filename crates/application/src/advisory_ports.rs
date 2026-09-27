@@ -278,6 +278,29 @@ impl AdvisoryProvider for DisabledAdvisoryProvider {
 /// Exact, immutable material offered to a Matrix ranking provider. This is a
 /// separate port from the Scope advisory dispatch protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MatrixVerificationAuthority {
+    Unverified,
+    LegacyV1 {
+        digest: String,
+    },
+    ContextV2 {
+        digest: String,
+        snapshot_id: Uuid,
+        authority_schema: String,
+        semantic_digest: String,
+    },
+}
+
+impl MatrixVerificationAuthority {
+    pub fn digest(&self) -> Option<&str> {
+        match self {
+            Self::Unverified => None,
+            Self::LegacyV1 { digest } | Self::ContextV2 { digest, .. } => Some(digest),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatrixProviderBinding {
     pub task_id: Uuid,
     pub task_revision: i64,
@@ -286,8 +309,7 @@ pub struct MatrixProviderBinding {
     pub choice_set_version: u64,
     pub choice_set_digest: String,
     pub evaluation_digest: String,
-    /// Present only for a v2 positive request built from revalidated evidence.
-    pub verification_digest: Option<String>,
+    pub verification: MatrixVerificationAuthority,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

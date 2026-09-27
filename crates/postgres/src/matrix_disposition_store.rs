@@ -2,14 +2,17 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use sqlx::{Row, postgres::PgRow};
 use tect_application::{
-    CurrentMatrixAdvice, GuardedMatrixAdviceOutcome, MatrixDispositionRecord,
-    MatrixDispositionStore, MatrixTaskStore, MatrixVerificationStore, RecordMatrixDisposition,
-    RevalidatedMatrixVerification,
+    ContextMatrixVerificationStore, CurrentMatrixAdvice, GuardedMatrixAdviceOutcome,
+    MatrixDispositionRecord, MatrixDispositionStore, MatrixDispositionVerification,
+    MatrixRequirementsContextStore, MatrixTaskStore, MatrixVerificationStore,
+    RecordMatrixDisposition, context_matrix_verified_evaluation_digest,
 };
 use tect_domain::{
-    Error, MatrixDispositionBasis, MatrixDispositionDecision, OwnerReportedEngineeringMatrixFacts,
-    Result, compose_independently_verified_owner_matrix, evaluate_matrix_verification,
-    matrix_verified_disposition_digest,
+    CONTEXT_MATRIX_VERIFICATION_SCHEMA, Error, MATRIX_REQUIREMENTS_SCHEMA,
+    MATRIX_VERIFICATION_SCHEMA, MatrixDispositionBasis, MatrixDispositionDecision,
+    OwnerReportedEngineeringMatrixFacts, Result, compose_confirmed_requirements_matrix,
+    compose_independently_verified_owner_matrix, evaluate_context_matrix_verification,
+    evaluate_matrix_verification, matrix_verified_disposition_digest, resolve_matrix_requirements,
 };
 use uuid::Uuid;
 
@@ -101,7 +104,15 @@ fn selected_receipt_matches(
 ) -> bool {
     !matches!(
         reason,
-        "matrix_evidence_unresolved" | "matrix_source_unverified"
+        "matrix_evidence_unresolved"
+            | "matrix_source_unverified"
+            | "matrix_task_unbound"
+            | "matrix_snapshot_missing"
+            | "matrix_binding_mismatch"
+            | "matrix_context_unresolved"
+            | "matrix_context_stale"
+            | "matrix_authority_schema_unsupported"
+            | "matrix_operating_evidence_unresolved"
     ) && captured_verification_digest == Some(current_verification_digest)
         && captured_material_digest == recomposed_material_digest
 }
@@ -190,6 +201,20 @@ mod tests {
         ));
         assert!(!selected_receipt_matches(
             "matrix_evidence_unresolved",
+            Some(&verification),
+            &verification,
+            &singleton_material,
+            &singleton_material,
+        ));
+        assert!(!selected_receipt_matches(
+            "matrix_context_stale",
+            Some(&verification),
+            &verification,
+            &singleton_material,
+            &singleton_material,
+        ));
+        assert!(!selected_receipt_matches(
+            "matrix_operating_evidence_unresolved",
             Some(&verification),
             &verification,
             &singleton_material,

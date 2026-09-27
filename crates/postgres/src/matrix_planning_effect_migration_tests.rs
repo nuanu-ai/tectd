@@ -1,4 +1,6 @@
 const MIGRATION: &str = include_str!("../migrations/0061_matrix_planning_effect_attestations.sql");
+const CONTEXT_MIGRATION: &str =
+    include_str!("../migrations/0109_matrix_planning_context_selection.sql");
 const ADMIN: &str = include_str!("admin/matrix_advisory.rs");
 const ROLE: &str = include_str!("admin/migration.rs");
 
@@ -56,4 +58,22 @@ fn runtime_only_gets_select_and_insert_on_forced_rls_attestations() {
     assert!(ADMIN.contains("AND NOT pg_catalog.has_table_privilege($1,pg_catalog.format('public.%I',table_name),'UPDATE')"));
     assert!(ADMIN.contains("matrix_planning_effect_active_verifier"));
     assert!(ROLE.contains("'matrix_planning_effect_attestations'"));
+}
+
+#[test]
+fn new_effect_write_rechecks_v2_context_without_rewriting_history() {
+    for required in [
+        "CREATE FUNCTION public.matrix_planning_effect_require_context()",
+        "l.frozen_snapshot_id IS NOT NULL",
+        "t.current_revision=l.task_revision",
+        "v.record_digest=l.verification_digest",
+        "FOR SHARE OF l,t,r,b,v",
+    ] {
+        assert!(CONTEXT_MIGRATION.contains(required), "missing {required}");
+    }
+    assert!(ADMIN.contains("matrix_planning_effect_context_guard"));
+    assert!(
+        include_str!("matrix_planning_effect_store.rs")
+            .contains("current_context_evaluation(self, workspace_id, &snapshot.link).await?")
+    );
 }

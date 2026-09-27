@@ -2,19 +2,60 @@
 //! The caller loads current records; this module cannot open a Slice or verify a phase.
 
 use crate::{
-    EngineeringChoiceSet, EngineeringMatrixComposition, EngineeringMatrixInput, Error,
-    MatrixSourceVerificationStatus, OwnerReportedEngineeringMatrixFacts,
-    PIPELINE_RECOMMENDATION_CATALOGUE_REVISION, PipelineCatalogueSnapshot,
-    PipelineCompatibilityContext, PipelineCompatibilityPolicy, PipelineDefinitionSnapshot,
-    PipelineExcludedKind, PipelineExclusionReason, PipelineExecutionOwner, PipelineKind,
-    PipelineVerificationPlan, Result, SliceCandidateNode, VerifiedEngineeringMatrixFacts,
-    compose_engineering_matrix, compose_owner_reported_engineering_matrix, matrix_input_digest,
+    ContextEngineeringMatrixComposition, EngineeringChoiceSet, EngineeringMatrixComposition,
+    EngineeringMatrixInput, Error, MatrixSourceVerificationStatus,
+    OwnerReportedEngineeringMatrixFacts, PIPELINE_RECOMMENDATION_CATALOGUE_REVISION,
+    PipelineCatalogueSnapshot, PipelineCompatibilityContext, PipelineCompatibilityPolicy,
+    PipelineDefinitionSnapshot, PipelineExcludedKind, PipelineExclusionReason,
+    PipelineExecutionOwner, PipelineKind, PipelineVerificationPlan, Result, SliceCandidateNode,
+    VerifiedEngineeringMatrixFacts, compose_engineering_matrix,
+    compose_owner_reported_engineering_matrix, matrix_input_digest,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const PIPELINE_RECOMMENDATION_SCHEMA: &str = "tect.pipeline-recommendation/3";
+pub const PIPELINE_RECOMMENDATION_CONTEXT_SCHEMA: &str = "tect.pipeline-recommendation/4";
+
+/// A projection of the independently evaluated V2 Matrix context. Only the
+/// typed composition constructor below can mint this value for a new basis.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineMatrixAuthorityBinding {
+    frozen_snapshot_id: String,
+    requirements_semantic_digest: String,
+    authority_schema: String,
+    operating_verification_digest: String,
+}
+
+impl PipelineMatrixAuthorityBinding {
+    pub fn frozen_snapshot_id(&self) -> &str {
+        &self.frozen_snapshot_id
+    }
+    pub fn requirements_semantic_digest(&self) -> &str {
+        &self.requirements_semantic_digest
+    }
+    pub fn authority_schema(&self) -> &str {
+        &self.authority_schema
+    }
+    pub fn operating_verification_digest(&self) -> &str {
+        &self.operating_verification_digest
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if !uuid::Uuid::parse_str(&self.frozen_snapshot_id)
+            .is_ok_and(|id| !id.is_nil() && id.to_string() == self.frozen_snapshot_id)
+            || self.authority_schema.trim().is_empty()
+            || self.authority_schema.len() > 256
+            || !valid_sha256(&self.requirements_semantic_digest)
+            || !valid_sha256(&self.operating_verification_digest)
+        {
+            return Err(Error::StaleContext);
+        }
+        Ok(())
+    }
+}
 
 /// Server-loaded Matrix provenance. Current values must be read again before
 /// dispatch and disposition; a client-supplied copy has no authority.
@@ -31,6 +72,36 @@ pub struct PipelineMatrixBasis {
     pub verification_digest: String,
     pub current_verification_digest: String,
     pub saved_mandatory_card_ids: Vec<String>,
+    pub authority: Option<PipelineMatrixAuthorityBinding>,
+}
+
+impl PipelineMatrixBasis {
+    /// Bind the V2 authority and card projection only from the evaluated
+    /// context composition, never from a raw tuple or a legacy status label.
+    pub fn with_confirmed_context(
+        mut self,
+        confirmed: &ContextEngineeringMatrixComposition,
+    ) -> Result<Self> {
+        if self.authority.is_some()
+            || !confirmed.is_resolved()
+            || confirmed.composition().task_id != self.composition.task_id
+            || confirmed.composition().task_revision != self.composition.task_revision
+            || self.verification_digest != confirmed.operating_verification_digest()
+            || self.current_verification_digest != confirmed.operating_verification_digest()
+        {
+            return Err(Error::StaleContext);
+        }
+        let authority = PipelineMatrixAuthorityBinding {
+            frozen_snapshot_id: confirmed.frozen_snapshot_id().to_owned(),
+            requirements_semantic_digest: confirmed.requirements_semantic_digest().to_owned(),
+            authority_schema: confirmed.authority_schema().to_owned(),
+            operating_verification_digest: confirmed.operating_verification_digest().to_owned(),
+        };
+        authority.validate()?;
+        self.composition = confirmed.composition().clone();
+        self.authority = Some(authority);
+        Ok(self)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +148,8 @@ pub struct PipelineRecommendationManifest {
     pub selected_choice_id: String,
     pub matrix_choice_set_digest: String,
     pub matrix_verification_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix_authority: Option<PipelineMatrixAuthorityBinding>,
     pub matrix_input_digest: String,
     pub selected_candidate_digest: String,
     pub compatibility_policy_digest: String,
@@ -92,6 +165,14 @@ pub struct PipelineRecommendationManifest {
 }
 
 impl PipelineRecommendationManifest {
+    pub fn has_bound_v2_authority(&self) -> bool {
+        self.schema == PIPELINE_RECOMMENDATION_CONTEXT_SCHEMA
+            && self
+                .matrix_authority
+                .as_ref()
+                .is_some_and(|authority| authority.validate().is_ok())
+    }
+
     pub fn should_call(&self) -> bool {
         self.options.len() >= 2
     }
@@ -99,7 +180,16 @@ impl PipelineRecommendationManifest {
     pub fn validate_digest(&self) -> Result<()> {
         let mut unsigned = self.clone();
         unsigned.digest.clear();
-        if self.schema != PIPELINE_RECOMMENDATION_SCHEMA
+        if !matches!(
+            self.schema.as_str(),
+            PIPELINE_RECOMMENDATION_SCHEMA | PIPELINE_RECOMMENDATION_CONTEXT_SCHEMA
+        ) || (self.schema == PIPELINE_RECOMMENDATION_SCHEMA && self.matrix_authority.is_some())
+            || (self.schema == PIPELINE_RECOMMENDATION_CONTEXT_SCHEMA
+                && self.matrix_authority.is_none())
+            || self
+                .matrix_authority
+                .as_ref()
+                .is_some_and(|binding| binding.validate().is_err())
             || self.work_id.is_nil()
             || self.work_revision < 1
             || self.mandatory_card_ids.is_empty()
@@ -220,15 +310,17 @@ pub fn build_pipeline_recommendation_manifest(
         || !valid_sha256(&matrix.verification_digest)
         || matrix.choice_set_digest != matrix.current_choice_set_digest
         || matrix.verification_digest != matrix.current_verification_digest
-        || !matrix.composition.is_resolved()
+        || (matrix.authority.is_none() && !matrix.composition.is_resolved())
     {
         return Err(Error::StaleContext);
     }
-    if !matches!(
-        matrix.composition.source_verification_status,
-        MatrixSourceVerificationStatus::VerifiedByCaller
-            | MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported
-    ) {
+    if matrix.authority.is_none()
+        && !matches!(
+            matrix.composition.source_verification_status,
+            MatrixSourceVerificationStatus::VerifiedByCaller
+                | MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported
+        )
+    {
         return Err(Error::StaleContext);
     }
     matrix.input.validate()?;
@@ -264,9 +356,27 @@ pub fn build_pipeline_recommendation_manifest(
             expected
         }
         MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification => {
-            return Err(Error::StaleContext);
+            if matrix.authority.is_none() || !matrix.composition.unresolved_evidence.is_empty() {
+                return Err(Error::StaleContext);
+            }
+            compose_owner_reported_engineering_matrix(
+                &OwnerReportedEngineeringMatrixFacts::bind_recorded_task_revision(
+                    matrix.composition.task_id.clone(),
+                    matrix.composition.task_revision.clone(),
+                    matrix.input.clone(),
+                )?,
+            )
         }
     };
+    if let Some(authority) = &matrix.authority {
+        authority.validate()?;
+        if matrix.composition.source_verification_status
+            != MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification
+            || authority.operating_verification_digest != matrix.verification_digest
+        {
+            return Err(Error::StaleContext);
+        }
+    }
     if matrix.composition != expected_composition {
         return Err(Error::StaleContext);
     }
@@ -390,7 +500,12 @@ pub fn build_pipeline_recommendation_manifest(
         return Err(Error::InvalidArguments);
     }
     let mut manifest = PipelineRecommendationManifest {
-        schema: PIPELINE_RECOMMENDATION_SCHEMA.into(),
+        schema: if matrix.authority.is_some() {
+            PIPELINE_RECOMMENDATION_CONTEXT_SCHEMA
+        } else {
+            PIPELINE_RECOMMENDATION_SCHEMA
+        }
+        .into(),
         work_id: *id,
         work_revision: *revision,
         matrix_task_id: matrix.composition.task_id.clone(),
@@ -398,6 +513,7 @@ pub fn build_pipeline_recommendation_manifest(
         selected_choice_id: matrix.selected_choice_id.clone(),
         matrix_choice_set_digest: matrix.choice_set_digest.clone(),
         matrix_verification_digest: matrix.verification_digest.clone(),
+        matrix_authority: matrix.authority.clone(),
         matrix_input_digest: input_digest,
         selected_candidate_digest,
         compatibility_policy_digest: source.compatibility_policy.digest()?,

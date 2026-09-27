@@ -1,5 +1,91 @@
 use super::*;
 
+/// Revalidate only operating facts for the exact bound source. The caller has
+/// already compared its immutable snapshot with current effective context.
+pub(crate) async fn compose_bound_revision_with_verification(
+    store: Option<&mut dyn crate::ContextMatrixVerificationStore>,
+    validator: &dyn MatrixEvidenceValidator,
+    workspace_id: Uuid,
+    revision: &MatrixTaskRevision,
+    snapshot_id: Uuid,
+    context: &tect_domain::EffectiveMatrixRequirements,
+    now: i64,
+) -> Result<
+    Option<(
+        tect_domain::ContextEngineeringMatrixComposition,
+        tect_domain::ContextMatrixVerificationRecord,
+    )>,
+> {
+    let Some(store) = store else { return Ok(None) };
+    let Some(record) = store
+        .context_matrix_verification_for_revision(
+            workspace_id,
+            revision.task_id,
+            revision.revision,
+            &revision.input_digest,
+            snapshot_id,
+        )
+        .await?
+    else {
+        return Ok(None);
+    };
+    if record.owner_principal != revision.recorded_by_principal_id.to_string()
+        || record.verifier_principal == record.owner_principal
+        || record.policy_version != validator.policy_version()
+        || record.input_digest != revision.input_digest
+    {
+        return Ok(None);
+    }
+    let Ok(validated) = tect_domain::evaluate_context_matrix_verification(
+        &revision.task_id.to_string(),
+        &revision.revision.to_string(),
+        &snapshot_id.to_string(),
+        &revision.input,
+        context,
+        &record,
+        now,
+    ) else {
+        return Ok(None);
+    };
+    let Ok(required) = tect_domain::required_matrix_operating_facts(context, &revision.input)
+    else {
+        return Ok(None);
+    };
+    for fact in &required {
+        let Some(binding) = record
+            .bindings
+            .iter()
+            .find(|binding| binding.fact_path == fact.path)
+        else {
+            return Ok(None);
+        };
+        if validator
+            .revalidate(
+                workspace_id,
+                revision.task_id,
+                revision.revision,
+                fact,
+                binding,
+                now,
+            )
+            .await
+            .is_err()
+        {
+            return Ok(None);
+        }
+    }
+    let composition = tect_domain::compose_confirmed_requirements_matrix(
+        &revision.task_id.to_string(),
+        &revision.revision.to_string(),
+        &snapshot_id.to_string(),
+        &revision.input,
+        context,
+        &validated,
+        now,
+    )?;
+    Ok(Some((composition, record)))
+}
+
 pub(crate) fn current_public_matrix_advice(
     receipt: &AdvisoryOpportunity,
     stored: &crate::StoredGuardedMatrixAdviceRecord,
@@ -16,7 +102,7 @@ pub(crate) fn current_public_matrix_advice(
         || receipt.target_id != Some(binding.task_id)
         || receipt.matrix_task_revision != Some(binding.task_revision)
         || receipt.matrix_choice_set_digest.as_deref() != Some(binding.choice_set_digest.as_str())
-        || receipt.matrix_verification_digest.as_deref() != binding.verification_digest.as_deref()
+        || receipt.matrix_verification_digest.as_deref() != binding.verification.digest()
         || receipt.material_digest != binding.evaluation_digest
         || receipt.config_revision != config.revision
         || config.mode == WorkspaceAdvisoryMode::Disabled
@@ -40,7 +126,7 @@ pub(crate) fn current_public_matrix_advice(
         choice_set_version: binding.choice_set_version,
         choice_set_digest: binding.choice_set_digest.clone(),
         evaluation_digest: binding.evaluation_digest.clone(),
-        verification_digest: binding.verification_digest.clone()?,
+        verification_digest: binding.verification.digest()?.to_owned(),
         provider_profile_ref: record.provider_profile_ref.clone(),
         model_configuration: record.model_configuration.clone(),
         response_payload_sha256: record.response_payload_sha256.clone(),
@@ -308,42 +394,4 @@ pub(crate) async fn compose_current_revision_with_validated_verification(
             validated,
         )),
     ))
-}
-
-/// Rebuild the exact positive request from the current task head and newest
-/// independently revalidated evidence. A changed or missing binding is stale.
-pub(crate) async fn matrix_request_still_current(
-    store: Option<&mut dyn MatrixVerificationStore>,
-    validator: &dyn MatrixEvidenceValidator,
-    workspace_id: Uuid,
-    current: Option<MatrixTaskRevision>,
-    expected: &crate::MatrixProviderRequest,
-) -> bool {
-    let Some(current) = current else { return false };
-    let Ok(now) = crate::matrix_verification::current_epoch_seconds() else {
-        return false;
-    };
-    let Ok((composition, Some(verification))) =
-        compose_current_revision_with_validated_verification(
-            store,
-            validator,
-            workspace_id,
-            current.clone(),
-            expected.revision().revision,
-            now,
-        )
-        .await
-    else {
-        return false;
-    };
-    let Ok(fresh) = crate::MatrixProviderRequest::new_verified(
-        current,
-        composition,
-        &verification,
-        expected.provider_profile_ref().clone(),
-        expected.model_configuration().clone(),
-    ) else {
-        return false;
-    };
-    &fresh == expected
 }

@@ -12,6 +12,11 @@ fn link(node_id: Uuid) -> MatrixPlanningSelectionLink {
             expected_verification_digest: "c".repeat(64),
             mapped_draft_node_indices: vec![1],
         },
+        context_provenance: Some(MatrixPlanningContextProvenance {
+            frozen_snapshot_id: Uuid::new_v4(),
+            authority_schema: MATRIX_REQUIREMENTS_SCHEMA.into(),
+            requirements_semantic_digest: "e".repeat(64),
+        }),
         evaluation_digest: "d".repeat(64),
         catalogue_version: "v1".into(),
         caller_principal_id: Uuid::new_v4(),

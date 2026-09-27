@@ -81,7 +81,9 @@ fn public_guarded_advice_requires_exact_current_bindings() {
         choice_set_version: 1,
         choice_set_digest: "b".repeat(64),
         evaluation_digest: "c".repeat(64),
-        verification_digest: Some("d".repeat(64)),
+        verification: crate::MatrixVerificationAuthority::LegacyV1 {
+            digest: "d".repeat(64),
+        },
     };
     let profile = tect_domain::AdvisoryProviderProfileRef {
         id: "provider".into(),
@@ -106,7 +108,7 @@ fn public_guarded_advice_requires_exact_current_bindings() {
         work_revision: Some(2),
         matrix_task_revision: Some(2),
         matrix_choice_set_digest: Some(binding.choice_set_digest.clone()),
-        matrix_verification_digest: binding.verification_digest.clone(),
+        matrix_verification_digest: binding.verification.digest().map(str::to_owned),
         source_ref: None,
         session_preference: AdvisoryRequestPreference::UseWorkspace,
         request_preference: AdvisoryRequestPreference::UseWorkspace,
@@ -151,7 +153,9 @@ fn public_guarded_advice_requires_exact_current_bindings() {
                 .is_none()
         );
         changed_binding = binding.clone();
-        changed_binding.verification_digest = Some("0".repeat(64));
+        changed_binding.verification = crate::MatrixVerificationAuthority::LegacyV1 {
+            digest: "0".repeat(64),
+        };
         assert!(
             current_public_matrix_advice(&receipt, &stored, &config, Some(&changed_binding))
                 .is_none()

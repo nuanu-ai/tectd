@@ -59,6 +59,13 @@ pub enum AdvisoryReason {
     ChoiceSetNotApplicable,
     MatrixEvidenceUnresolved,
     MatrixSourceUnverified,
+    MatrixTaskUnbound,
+    MatrixSnapshotMissing,
+    MatrixBindingMismatch,
+    MatrixContextUnresolved,
+    MatrixContextStale,
+    MatrixAuthoritySchemaUnsupported,
+    MatrixOperatingEvidenceUnresolved,
     DeterministicInputInvalid,
     CapabilityUnavailable,
     ProviderUnconfigured,
@@ -83,6 +90,13 @@ impl AdvisoryReason {
             Self::ChoiceSetNotApplicable => "choice_set_not_applicable",
             Self::MatrixEvidenceUnresolved => "matrix_evidence_unresolved",
             Self::MatrixSourceUnverified => "matrix_source_unverified",
+            Self::MatrixTaskUnbound => "matrix_task_unbound",
+            Self::MatrixSnapshotMissing => "matrix_snapshot_missing",
+            Self::MatrixBindingMismatch => "matrix_binding_mismatch",
+            Self::MatrixContextUnresolved => "matrix_context_unresolved",
+            Self::MatrixContextStale => "matrix_context_stale",
+            Self::MatrixAuthoritySchemaUnsupported => "matrix_authority_schema_unsupported",
+            Self::MatrixOperatingEvidenceUnresolved => "matrix_operating_evidence_unresolved",
             Self::DeterministicInputInvalid => "deterministic_input_invalid",
             Self::CapabilityUnavailable => "capability_unavailable",
             Self::ProviderUnconfigured => "provider_unconfigured",
@@ -113,6 +127,13 @@ pub const fn advisory_reason_matches_state(
                 | AdvisoryReason::ChoiceSetNotApplicable
                 | AdvisoryReason::MatrixEvidenceUnresolved
                 | AdvisoryReason::MatrixSourceUnverified
+                | AdvisoryReason::MatrixTaskUnbound
+                | AdvisoryReason::MatrixSnapshotMissing
+                | AdvisoryReason::MatrixBindingMismatch
+                | AdvisoryReason::MatrixContextUnresolved
+                | AdvisoryReason::MatrixContextStale
+                | AdvisoryReason::MatrixAuthoritySchemaUnsupported
+                | AdvisoryReason::MatrixOperatingEvidenceUnresolved
                 | AdvisoryReason::DeterministicInputInvalid
                 | AdvisoryReason::CapabilityUnavailable
                 | AdvisoryReason::ProviderUnconfigured
@@ -330,7 +351,15 @@ impl AdvisoryOpportunityInput {
             ) && self.capability != AdvisoryCapability::EngineeringProfile
             || matches!(
                 self.primary_reason,
-                AdvisoryReason::MatrixEvidenceUnresolved | AdvisoryReason::MatrixSourceUnverified
+                AdvisoryReason::MatrixEvidenceUnresolved
+                    | AdvisoryReason::MatrixSourceUnverified
+                    | AdvisoryReason::MatrixTaskUnbound
+                    | AdvisoryReason::MatrixSnapshotMissing
+                    | AdvisoryReason::MatrixBindingMismatch
+                    | AdvisoryReason::MatrixContextUnresolved
+                    | AdvisoryReason::MatrixContextStale
+                    | AdvisoryReason::MatrixAuthoritySchemaUnsupported
+                    | AdvisoryReason::MatrixOperatingEvidenceUnresolved
             ) && self.capability != AdvisoryCapability::EngineeringProfile
             || matches!(self.primary_reason, AdvisoryReason::SessionSkip)
                 && self.session_preference != AdvisoryRequestPreference::Skip

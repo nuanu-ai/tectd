@@ -6,11 +6,14 @@ use tect_application::{
     MatrixPlanningEffectVerdict, MatrixPlanningMappedNode, MatrixPlanningSelectionLink,
 };
 use tect_domain::{
-    EngineeringChoiceSet, Error, MatrixPlanningSelection, ResolvedSliceCandidateDraft, Result,
+    EngineeringChoiceSet, Error, MatrixPlanningContextProvenance, MatrixPlanningSelection,
+    ResolvedSliceCandidateDraft, Result,
 };
 use uuid::Uuid;
 
-use crate::{storage_error, store::PgUnitOfWork};
+use crate::{
+    matrix_planning_selection_store::current_context_evaluation, storage_error, store::PgUnitOfWork,
+};
 
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -63,6 +66,7 @@ impl MatrixPlanningEffectStore for PgUnitOfWork {
                 l.selected_choice_id,l.input_digest,l.choice_set_digest, \
                 l.verification_digest,l.evaluation_digest,l.catalogue_version, \
                 l.caller_principal_id,l.caller_session_id,l.result_revision,l.mapped_nodes, \
+                l.frozen_snapshot_id,l.authority_schema,l.requirements_semantic_digest, \
                 c.revision AS current_result_revision,c.scope_id AS current_scope_id, \
                 r.recorded_by_principal_id,r.choice_set,r.choice_set_digest AS stored_choice_set_digest, \
                 receipt.payload_erased,receipt.request_payload,receipt.result_payload, \
@@ -105,6 +109,18 @@ impl MatrixPlanningEffectStore for PgUnitOfWork {
         let Some(row) = row else { return Ok(None) };
         let mapped_nodes =
             decode_mapped_nodes(row.try_get("mapped_nodes").map_err(storage_error)?)?;
+        let snapshot: Option<Uuid> = row.try_get("frozen_snapshot_id").map_err(storage_error)?;
+        let context_provenance = snapshot
+            .map(|frozen_snapshot_id| -> Result<_> {
+                Ok(MatrixPlanningContextProvenance {
+                    frozen_snapshot_id,
+                    authority_schema: row.try_get("authority_schema").map_err(storage_error)?,
+                    requirements_semantic_digest: row
+                        .try_get("requirements_semantic_digest")
+                        .map_err(storage_error)?,
+                })
+            })
+            .transpose()?;
         let link = MatrixPlanningSelectionLink {
             selection: MatrixPlanningSelection {
                 task_id: row.try_get("task_id").map_err(storage_error)?,
@@ -124,6 +140,7 @@ impl MatrixPlanningEffectStore for PgUnitOfWork {
                     .collect(),
             },
             evaluation_digest: row.try_get("evaluation_digest").map_err(storage_error)?,
+            context_provenance,
             catalogue_version: row.try_get("catalogue_version").map_err(storage_error)?,
             caller_principal_id: row.try_get("caller_principal_id").map_err(storage_error)?,
             caller_session_id: row.try_get("caller_session_id").map_err(storage_error)?,
@@ -256,6 +273,16 @@ impl MatrixPlanningEffectStore for PgUnitOfWork {
             )
             .await?
             .ok_or(Error::NotFound)?;
+        if snapshot.link.context_provenance.is_none() {
+            return Err(Error::StaleContext);
+        }
+        let (evaluation_digest, catalogue_version) =
+            current_context_evaluation(self, workspace_id, &snapshot.link).await?;
+        if evaluation_digest != snapshot.link.evaluation_digest
+            || catalogue_version != snapshot.link.catalogue_version
+        {
+            return Err(Error::StaleContext);
+        }
         if snapshot.current_result_revision != attestation.expected_result_revision {
             return Err(Error::StaleRevision);
         }

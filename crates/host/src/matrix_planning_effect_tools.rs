@@ -78,7 +78,7 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<MatrixPlanningEffect
 
 pub(crate) fn read(read: MatrixPlanningEffectRead) -> Value {
     let material = read.material;
-    json!({
+    let mut response = json!({
         "material": {
             "workspace_id": material.workspace_id,
             "candidate_set_id": material.candidate_set_id,
@@ -107,7 +107,15 @@ pub(crate) fn read(read: MatrixPlanningEffectRead) -> Value {
         "effect_digest": read.effect_digest,
         "verifier_principal_id": read.verifier_principal_id,
         "verifier_session_id": read.verifier_session_id,
-    })
+    });
+    if let Some(source) = material.context_provenance {
+        response["material"]["context_provenance"] = json!({
+            "frozen_snapshot_id": source.frozen_snapshot_id,
+            "authority_schema": source.authority_schema,
+            "requirements_semantic_digest": source.requirements_semantic_digest,
+        });
+    }
+    response
 }
 
 pub(crate) fn receipt(attestation: MatrixPlanningEffectAttestation) -> Value {
@@ -185,6 +193,7 @@ mod tests {
             input_digest: "a".repeat(64),
             choice_set_digest: "b".repeat(64),
             verification_digest: "c".repeat(64),
+            context_provenance: None,
             evaluation_digest: "d".repeat(64),
             catalogue_version: "v1".into(),
             caller_principal_id: Uuid::new_v4(),

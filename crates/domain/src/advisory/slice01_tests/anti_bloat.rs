@@ -52,6 +52,18 @@ fn corpus(dependent: bool) -> (AntiBloatInput, Uuid) {
     manifest.eligible_set_digest = manifest.canonical_eligible_set_digest(&digest()).unwrap();
     manifest.whole_set_digest = manifest.canonical_whole_set_digest(&digest()).unwrap();
     manifest.validate(&digest()).unwrap();
+    let protected_obligations = manifest
+        .obligations
+        .iter()
+        .map(|source| AntiBloatProtectedObligation {
+            id: format!("scope-ref:{}", source.id),
+            content_digest: source.statement_digest.clone(),
+            origin: AntiBloatObligationOrigin::ScopeSource,
+            scope_candidate_id: None,
+        })
+        .collect::<Vec<_>>();
+    let protected_obligations_digest =
+        anti_bloat_protected_obligations_digest(&digest(), &protected_obligations).unwrap();
     (
         AntiBloatInput {
             selected_revision: manifest.source.candidate_set_revision + 1,
@@ -65,6 +77,8 @@ fn corpus(dependent: bool) -> (AntiBloatInput, Uuid) {
             }],
             non_goal_source_obligation_ids: vec![],
             mandatory_policy_obligation_ids: vec![Uuid::from_u128(50).to_string()],
+            protected_obligations,
+            protected_obligations_digest,
         },
         extra_id,
     )
@@ -269,4 +283,50 @@ fn stale_revision_or_unexpected_whole_plan_change_is_refused() {
         ),
         Err(AntiBloatRefusal::PlanMismatch)
     );
+}
+
+#[test]
+fn persisted_descendant_protects_candidate_and_conflicting_identity_is_refused() {
+    let (mut input, extra_id) = corpus(false);
+    input.protected_obligations.insert(
+        0,
+        AntiBloatProtectedObligation {
+            id: format!("native-scope:{}", Uuid::from_u128(90)),
+            content_digest: "c".repeat(64),
+            origin: AntiBloatObligationOrigin::NativeScope,
+            scope_candidate_id: Some(extra_id),
+        },
+    );
+    input.protected_obligations_digest =
+        anti_bloat_protected_obligations_digest(&digest(), &input.protected_obligations).unwrap();
+    let review = review_anti_bloat(&digest(), &input).unwrap();
+    let finding = review
+        .findings
+        .iter()
+        .find(|item| item.candidate_id == extra_id)
+        .unwrap();
+    assert_eq!(finding.class, AntiBloatClass::Unknown);
+    assert!(!finding.rankable);
+    let (delta, after) = removal(&input, extra_id);
+    assert_eq!(
+        check_anti_bloat_delta(
+            &digest(),
+            &input,
+            &review,
+            &finding.id,
+            AntiBloatDisposition::Narrow,
+            &delta,
+            &after,
+        ),
+        Err(AntiBloatRefusal::NotNarrowable)
+    );
+
+    let mut conflicting = input.clone();
+    let mut duplicate = conflicting.protected_obligations[0].clone();
+    duplicate.content_digest = "d".repeat(64);
+    conflicting.protected_obligations.insert(1, duplicate);
+    conflicting.protected_obligations_digest =
+        anti_bloat_protected_obligations_digest(&digest(), &conflicting.protected_obligations)
+            .unwrap();
+    assert!(review_anti_bloat(&digest(), &conflicting).is_err());
 }

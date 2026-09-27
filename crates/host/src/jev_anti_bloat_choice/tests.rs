@@ -46,6 +46,8 @@ pub(crate) fn saved() -> tect_application::StoredAntiBloatReview {
         obligation_links: vec![],
         non_goal_source_obligation_ids: vec![],
         mandatory_policy_obligation_ids: vec![],
+        protected_obligations: vec![],
+        protected_obligations_digest: digest.clone(),
     };
     tect_application::StoredAntiBloatReview {
         review_id: id,
@@ -59,6 +61,7 @@ pub(crate) fn saved() -> tect_application::StoredAntiBloatReview {
             candidate_set_id: id,
             plan_revision: 1,
             dependency_digest: digest,
+            protected_obligations_digest: "a".repeat(64),
             selected_id,
             findings: (0..7)
                 .rev()

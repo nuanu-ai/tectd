@@ -3,7 +3,64 @@ use sha2::{Digest, Sha256};
 use tect_domain::{Error, MatrixDispositionBasis, MatrixDispositionDecision, Result};
 use uuid::Uuid;
 
-use crate::{CurrentMatrixAdvice, RevalidatedMatrixVerification};
+use crate::{CurrentMatrixAdvice, MatrixTaskRequirementsBinding, RevalidatedMatrixVerification};
+
+/// Current authority passed to the atomic disposition insert. The adapter
+/// must re-read the corresponding saved version and binding before accepting
+/// a selected choice; this token alone is not persistence authority.
+#[derive(Debug, Clone)]
+pub enum MatrixDispositionVerification {
+    LegacyV1 {
+        composition: tect_domain::EngineeringMatrixComposition,
+        verification: RevalidatedMatrixVerification,
+    },
+    ContextV2 {
+        binding: MatrixTaskRequirementsBinding,
+        composition: tect_domain::ContextEngineeringMatrixComposition,
+        record: tect_domain::ContextMatrixVerificationRecord,
+    },
+}
+
+impl MatrixDispositionVerification {
+    pub fn composition(&self) -> &tect_domain::EngineeringMatrixComposition {
+        match self {
+            Self::LegacyV1 { composition, .. } => composition,
+            Self::ContextV2 { composition, .. } => composition.composition(),
+        }
+    }
+
+    pub fn record_digest(&self) -> &str {
+        match self {
+            Self::LegacyV1 { verification, .. } => verification.record_digest(),
+            Self::ContextV2 { record, .. } => &record.digest,
+        }
+    }
+
+    /// Selected V2 dispositions currently require the advice-eligible choice
+    /// set, whose digest is the same versioned material sent to the provider.
+    pub fn disposition_digest(
+        &self,
+        input: &tect_domain::EngineeringMatrixInput,
+        choice_set: &tect_domain::EngineeringChoiceSet,
+    ) -> Result<String> {
+        match self {
+            Self::LegacyV1 {
+                composition,
+                verification,
+            } => verification.disposition_digest(input, composition, choice_set),
+            Self::ContextV2 {
+                composition,
+                record,
+                ..
+            } => crate::context_matrix_verified_evaluation_digest(
+                input,
+                composition,
+                choice_set,
+                record,
+            ),
+        }
+    }
+}
 
 /// Agent-authored decision over an exact saved Matrix task and opportunity.
 /// Actor identity is deliberately absent; it comes from the authenticated session.
@@ -135,7 +192,7 @@ pub trait MatrixDispositionStore: Send {
         session_id: Uuid,
         request: &RecordMatrixDisposition,
         current_advice: Option<&CurrentMatrixAdvice>,
-        current_verification: Option<&RevalidatedMatrixVerification>,
+        current_verification: Option<&MatrixDispositionVerification>,
     ) -> Result<MatrixDispositionRecord>;
 }
 
@@ -232,7 +289,7 @@ mod tests {
             session_id: Uuid,
             request: &RecordMatrixDisposition,
             current_advice: Option<&CurrentMatrixAdvice>,
-            current_verification: Option<&RevalidatedMatrixVerification>,
+            current_verification: Option<&MatrixDispositionVerification>,
         ) -> Result<MatrixDispositionRecord> {
             request.validate()?;
             if request.basis == MatrixDispositionBasis::AfterAdvice && current_advice.is_none() {

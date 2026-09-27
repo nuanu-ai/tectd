@@ -195,6 +195,7 @@ mod tests {
             selected_choice_id: "choice".into(),
             matrix_choice_set_digest: "a".repeat(64),
             matrix_verification_digest: "b".repeat(64),
+            matrix_authority: None,
             matrix_input_digest: "c".repeat(64),
             selected_candidate_digest: "d".repeat(64),
             compatibility_policy_digest: "e".repeat(64),

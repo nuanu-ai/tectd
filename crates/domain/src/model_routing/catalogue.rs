@@ -64,8 +64,30 @@ impl ModelRouteCatalogue {
     }
 
     pub fn eligible(&self, work: &ModelRouteWorkContext) -> Result<EligibleModelRoutes> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| Error::StaleContext)?
+            .as_millis();
+        self.eligible_at(work, i64::try_from(now).map_err(|_| Error::StaleContext)?)
+    }
+
+    pub fn eligible_at(&self, work: &ModelRouteWorkContext, now_epoch_ms: i64) -> Result<EligibleModelRoutes> {
         let catalogue_digest = self.digest()?;
         let work_context_digest = work.digest()?;
+        // Caller numbers constrain this advisory evaluation only; they do not
+        // prove an account balance, a real deadline, or an actual invocation.
+        if work.has_unknown_facts() || !work.operating_facts_current_at(now_epoch_ms) {
+            let mut configured_route_ids: Vec<_> =
+                self.routes.iter().map(|route| route.id.clone()).collect();
+            configured_route_ids.sort();
+            return Ok(EligibleModelRoutes {
+                catalogue_version: self.version,
+                catalogue_digest,
+                work_context_digest,
+                configured_route_ids,
+                route_ids: Vec::new(),
+            });
+        }
         let (role, tool, data_class, capabilities, budget, latency) = match (
             &work.role,
             &work.tool,
