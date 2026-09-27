@@ -230,6 +230,7 @@ async fn signed_fixture_budget(
     store: &PgStore,
     enrolled: &tect_postgres::admin::Enrollment,
     workspace_key: &str,
+    ceilings: AdvisoryBudgetCeilings,
 ) -> (Uuid, BudgetOwnerKeys) {
     let keypair = Ed25519KeyPair::from_seed_unchecked(&[91_u8; 32]).unwrap();
     let mut tx = store.begin(TransactionMode::ReadWrite).await.unwrap();
@@ -254,14 +255,6 @@ async fn signed_fixture_budget(
     .unwrap();
     let from = now - 60_000;
     let until = now + 600_000;
-    let ceilings = AdvisoryBudgetCeilings {
-        provider_calls: 2,
-        input_tokens: 1_000,
-        output_tokens: 1_000,
-        request_utf8_bytes: 2_000_000,
-        elapsed_monotonic_ms: 120_000,
-        retry_dispatches: 1,
-    };
     let id = Uuid::new_v4();
     let digest = AdvisoryBudgetPolicy::digest_for(id, 1, from, until, ceilings);
     let unsigned = AdvisoryBudgetPolicy::new(
@@ -326,8 +319,20 @@ async fn public_s01_request_decision_caller_and_distinct_verifier() {
         .await
         .unwrap();
     let workspace_key = format!("scope-s01-{}", Uuid::new_v4());
-    let (expected_workspace, keys) =
-        signed_fixture_budget(&store, &enrollment, &workspace_key).await;
+    let (expected_workspace, keys) = signed_fixture_budget(
+        &store,
+        &enrollment,
+        &workspace_key,
+        AdvisoryBudgetCeilings {
+            provider_calls: 2,
+            input_tokens: 1_000,
+            output_tokens: 1_000,
+            request_utf8_bytes: 2_000_000,
+            elapsed_monotonic_ms: 120_000,
+            retry_dispatches: 1,
+        },
+    )
+    .await;
     let trusted = store.with_budget_owner_keys(keys);
     let authority = Arc::new(PgScopeAuthorityObserver::new(
         trusted.clone(),
@@ -696,3 +701,6 @@ async fn public_s01_request_decision_caller_and_distinct_verifier() {
     server.abort();
     let _ = server.await;
 }
+
+#[path = "scope_decomposition_public_ledger110/s01_live.rs"]
+mod s01_live;
