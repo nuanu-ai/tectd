@@ -76,6 +76,52 @@ async fn disposable_pair() -> (PgPool, String) {
     (pool, runtime_url)
 }
 
+async fn fresh_s02_disposable_pair() -> (PgPool, String) {
+    assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
+    assert_eq!(
+        std::env::var("TECT_TEST_RUNTIME_ROLE").as_deref(),
+        Ok("tect_ci")
+    );
+    let expected_system_id = std::env::var("TECT_S02_EXPECTED_PG_SYSTEM_ID").unwrap();
+    assert!(!expected_system_id.is_empty());
+    let admin_url = std::env::var("TECT_S02_ADMIN_URL").unwrap();
+    let runtime_url = std::env::var("TECT_S02_RUNTIME_URL").unwrap();
+    let admin_options = PgConnectOptions::from_str(&admin_url).unwrap();
+    let runtime_options = PgConnectOptions::from_str(&runtime_url).unwrap();
+    for (options, user) in [(&admin_options, "postgres"), (&runtime_options, "tect_ci")] {
+        assert_eq!(options.get_username(), user);
+        assert_eq!(options.get_database(), Some("tect_s02_approved"));
+        assert_eq!(options.get_host(), "127.0.0.1");
+        assert_eq!(options.get_port(), 64920);
+        assert!(options.get_socket().is_none());
+    }
+    let pool = PgPool::connect_with(admin_options).await.unwrap();
+    let identity: (i32, String, String, String, bool) = sqlx::query_as(
+        "SELECT current_setting('server_version_num')::integer,current_database(),current_user,\
+         (SELECT system_identifier::text FROM pg_control_system()),\
+         to_regclass('public._sqlx_migrations') IS NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        identity,
+        (
+            180006,
+            "tect_s02_approved".into(),
+            "postgres".into(),
+            expected_system_id,
+            true,
+        )
+    );
+    let runtime: (String, String) = sqlx::query_as("SELECT current_database(),current_user")
+        .fetch_one(&PgPool::connect_with(runtime_options).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(runtime, ("tect_s02_approved".into(), "tect_ci".into()));
+    (pool, runtime_url)
+}
+
 fn locator_program(program: Uuid) -> Value {
     json!({"level":"program","program_id":program})
 }
@@ -444,6 +490,181 @@ async fn public_context_rejects_caller_authorship_and_operating_facts() {
             .as_object()
             .unwrap()
             .is_empty()
+    );
+    owner.finish().await;
+    drop(daemon);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "writes only exact owned disposable PostgreSQL 18.6 fixture"]
+async fn approved_s02_declarations_bind_to_public_task_source() {
+    let (pool, runtime_url) = fresh_s02_disposable_pair().await;
+    admin::migrate(&pool, "tect_ci").await.unwrap();
+    let temp = private_temp();
+    let root = temp.path().canonicalize().unwrap();
+    let repo = root.join("source");
+    repository(&repo);
+    let socket = root.join("approved-s02-declarations.sock");
+    let daemon = Daemon::start(&runtime_url, socket.clone()).await;
+    let enrollment = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+    let host = root.join("host.json");
+    host_file(&host, &enrollment.auth);
+    let mut owner = Mcp::start(
+        &socket,
+        &host,
+        &Uuid::new_v4().to_string(),
+        &format!("approved-s02-{}", Uuid::new_v4()),
+    )
+    .await;
+    let (source, _) = ready_source_candidate(&mut owner, &repo).await;
+    let program: Uuid =
+        sqlx::query_scalar("SELECT program_id FROM scope_candidate_sets WHERE id=$1")
+            .bind(id(&source["candidate_set"]["id"]))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let locator = locator_program(program);
+    let patches = vec![
+        mode("mvp"),
+        json!({"operation":"set","value":{"kind":"intent","value":{
+            "kind":"other","description":"Active JEV as optional TectD V2 advisor"}}}),
+        json!({"operation":"set","value":{"kind":"urgency","value":
+            "Finish and verify this sprint; not an emergency production repair"}}),
+        json!({"operation":"set","value":{"kind":"promised_behavior","value":
+            "JEV is optional; skip/off prevents provider send; actual JEV calls are durably auditable; advice never auto-applies."}}),
+        json!({"operation":"set","value":{"kind":"promised_proof","value":
+            "PG/CI tests plus real JEV outcomes; agent disposition; separate effect verification where selected"}}),
+        json!({"operation":"set","value":{"kind":"no_demand_commitment"}}),
+        json!({"operation":"set","value":{"kind":"no_latency_commitment"}}),
+    ];
+    let proposal = route(
+        &mut owner,
+        "command",
+        "engineering.matrix.context.propose",
+        proposed(locator.clone(), 0, patches.clone()),
+    )
+    .await;
+    assert_eq!(proposal["proposal"]["revision"], 1);
+    let digest = proposal["proposal"]["digest"].clone();
+    assert!(digest.as_str().is_some_and(|value| !value.is_empty()));
+    let bad_digest = route_error(
+        &mut owner,
+        "command",
+        "engineering.matrix.context.confirm",
+        json!({"request_id":Uuid::new_v4(),"locator":locator,
+            "proposal_revision":1,"proposal_digest":"0".repeat(64),
+            "owner_response_ref":OWNER_RESPONSE}),
+    )
+    .await;
+    assert_code(&bad_digest, &["input_conflict", "invalid_arguments"]);
+    let bad_revision = route_error(
+        &mut owner,
+        "command",
+        "engineering.matrix.context.confirm",
+        json!({"request_id":Uuid::new_v4(),"locator":locator,
+            "proposal_revision":2,"proposal_digest":digest,
+            "owner_response_ref":OWNER_RESPONSE}),
+    )
+    .await;
+    assert_code(&bad_revision, &["stale_revision"]);
+    let confirmation = confirm(&mut owner, locator.clone(), &proposal).await;
+    assert_eq!(confirmation["confirmation"]["proposal_revision"], 1);
+    assert_eq!(confirmation["confirmation"]["proposal_digest"], digest);
+    let effective = get(&mut owner, locator.clone()).await;
+    let paths = [
+        ("mode", json!({"kind":"mode","value":"mvp"})),
+        (
+            "intent",
+            json!({"kind":"intent","value":{"kind":"other",
+            "description":"Active JEV as optional TectD V2 advisor"}}),
+        ),
+        (
+            "urgency",
+            json!({"kind":"urgency","value":
+            "Finish and verify this sprint; not an emergency production repair"}),
+        ),
+        (
+            "promised_behavior",
+            json!({"kind":"promised_behavior","value":
+            "JEV is optional; skip/off prevents provider send; actual JEV calls are durably auditable; advice never auto-applies."}),
+        ),
+        (
+            "promised_proof",
+            json!({"kind":"promised_proof","value":
+            "PG/CI tests plus real JEV outcomes; agent disposition; separate effect verification where selected"}),
+        ),
+        ("demand_commitment", json!({"kind":"no_demand_commitment"})),
+        (
+            "latency_commitment",
+            json!({"kind":"no_latency_commitment"}),
+        ),
+    ];
+    assert_eq!(effective["values"].as_object().unwrap().len(), paths.len());
+    for (path, expected) in &paths {
+        assert_eq!(effective["values"][path]["value"], *expected, "{path}");
+    }
+
+    // Declarations fill only their seven fields; actual operating facts are not supplied here.
+    let absent = json!({"state":"absent"});
+    let input = json!({
+        "mode":absent,"intent":absent,"urgency":absent,
+        "promised_behavior":absent,"promised_proof":absent,
+        "demand_commitment":absent,"latency_commitment":absent,
+        "envelope":{"scale":absent,"operational_facts":{"state":"absent"}},
+        "criticality":absent,"affected_guarantees":absent,
+        "actual_exposure":absent,"urgent_repair":absent
+    });
+    let task = Uuid::new_v4();
+    let params = json!({"task_id":task,"revision":1,"expected_current_revision":0,
+        "request_id":Uuid::new_v4(),"input":input,"requirements_locator":locator});
+    let mut conflicting = params.clone();
+    conflicting["input"]["mode"] = json!({"state":"known","value":"production",
+        "provenance":"caller claim"});
+    assert_code(
+        &route_error(&mut owner, "command", "task.source.record", conflicting).await,
+        &["input_conflict", "invalid_arguments"],
+    );
+    let recorded = route(&mut owner, "command", "task.source.record", params).await;
+    assert_eq!(recorded["revision"], 1);
+    assert_eq!(
+        recorded["requirements_semantic_digest"],
+        effective["semantic_digest"]
+    );
+    assert!(recorded["requirements_snapshot_id"].as_str().is_some());
+    for (path, _) in &paths {
+        assert_eq!(recorded["input"][path]["state"], "known", "{path}");
+    }
+    assert_eq!(recorded["input"]["mode"]["value"], "mvp");
+    assert_eq!(
+        recorded["input"]["intent"]["value"]["description"],
+        "Active JEV as optional TectD V2 advisor"
+    );
+    assert_eq!(
+        recorded["input"]["demand_commitment"]["value"],
+        "no_commitment"
+    );
+    assert_eq!(
+        recorded["input"]["latency_commitment"]["value"],
+        "no_commitment"
+    );
+    assert_eq!(recorded["input"]["envelope"]["scale"], absent);
+    assert_eq!(
+        recorded["input"]["envelope"]["operational_facts"]["state"],
+        "absent"
+    );
+    for path in [
+        "criticality",
+        "affected_guarantees",
+        "actual_exposure",
+        "urgent_repair",
+    ] {
+        assert_eq!(recorded["input"][path], absent, "{path}");
+    }
+    assert_eq!(
+        get(&mut owner, locator).await["semantic_digest"],
+        recorded["requirements_semantic_digest"]
     );
     owner.finish().await;
     drop(daemon);
