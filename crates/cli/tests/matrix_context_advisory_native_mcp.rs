@@ -777,3 +777,225 @@ async fn public_context_v2_binding_verification_and_advisory_currentness() {
     owner.finish().await;
     server.abort();
 }
+
+/// A separate, fresh fixture for the session-preference authorization path.
+/// The original checkpoint test above remains pinned to its own historical DB.
+async fn session_positive_disposable_pair() -> (PgPool, String) {
+    const DATABASE: &str = "tect_matrix_session_positive";
+    assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
+    let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
+    let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
+    let admin_options = PgConnectOptions::from_str(&admin_url).unwrap();
+    let runtime_options = PgConnectOptions::from_str(&runtime_url).unwrap();
+    assert_eq!(admin_options.get_username(), "postgres");
+    assert_eq!(runtime_options.get_username(), "tect_ci");
+    assert_eq!(admin_options.get_database(), Some(DATABASE));
+    assert_eq!(runtime_options.get_database(), Some(DATABASE));
+    assert_eq!(admin_options.get_host(), "127.0.0.1");
+    assert_eq!(runtime_options.get_host(), "127.0.0.1");
+    assert_eq!(admin_options.get_port(), 65527);
+    assert_eq!(runtime_options.get_port(), 65527);
+    let pool = PgPool::connect_with(admin_options).await.unwrap();
+    let identity: (i32, String, String, String, bool) = sqlx::query_as(
+        "SELECT current_setting('server_version_num')::integer,current_database(),current_user,\
+         (SELECT system_identifier::text FROM pg_control_system()),\
+         to_regclass('public._sqlx_migrations') IS NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        identity,
+        (
+            180006,
+            DATABASE.into(),
+            "postgres".into(),
+            "7690404534065724697".into(),
+            true,
+        )
+    );
+    let runtime: (String, String) = sqlx::query_as("SELECT current_database(),current_user")
+        .fetch_one(&PgPool::connect_with(runtime_options).await.unwrap())
+        .await
+        .unwrap();
+    assert_eq!(runtime, (DATABASE.into(), "tect_ci".into()));
+    (pool, runtime_url)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "writes only exact owned disposable PostgreSQL 18.6 fixture"]
+async fn two_owner_sessions_skip_before_matrix_authorization_and_default_sends_once() {
+    let (pool, runtime_url) = session_positive_disposable_pair().await;
+    admin::migrate(&pool, "tect_ci").await.unwrap();
+    let temp = private_temp();
+    let root = temp.path().canonicalize().unwrap();
+    let repo = root.join("source");
+    repository(&repo);
+    let socket = root.join("matrix-session-positive.sock");
+    let enrolled = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+    let workspace_key = format!("matrix-session-positive-{}", Uuid::new_v4());
+    let store = PgStore::connect(&runtime_url, 4).await.unwrap();
+    let (workspace, owner_keys) = signed_fixture_budget(&store, &enrolled, &workspace_key).await;
+    let calls = Arc::new(AtomicUsize::new(0));
+    let budgets = Arc::new(AtomicUsize::new(0));
+    let service = Arc::new(
+        WorkspaceService::new(
+            Arc::new(store.with_budget_owner_keys(owner_keys)),
+            Arc::new(tect_host::GitSourceInspector),
+            Arc::new(tect_host::LocalSetupFiles),
+        )
+        .with_matrix_evidence_validator(Arc::new(Evidence))
+        .with_matrix_advisory_adapters(
+            Arc::new(Provider(calls.clone())),
+            Arc::new(Budget(budgets.clone())),
+        ),
+    );
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let server = tokio::spawn(tect_host::serve(listener, service));
+    let owner_host = root.join("owner.json");
+    host_file(&owner_host, &enrolled.auth);
+    let mut owner_a = Mcp::start(
+        &socket,
+        &owner_host,
+        &Uuid::new_v4().to_string(),
+        &workspace_key,
+    )
+    .await;
+    let mut owner_b = Mcp::start(
+        &socket,
+        &owner_host,
+        &Uuid::new_v4().to_string(),
+        &workspace_key,
+    )
+    .await;
+    let (source, _) = ready_source_candidate(&mut owner_a, &repo).await;
+    let opened_b = owner_b.call("open_workspace", json!({})).await;
+    assert_eq!(id(&opened_b["workspace"]["id"]), workspace);
+    let program: Uuid =
+        sqlx::query_scalar("SELECT program_id FROM scope_candidate_sets WHERE id=$1")
+            .bind(id(&source["candidate_set"]["id"]))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    propose_confirm(&mut owner_a, program, 0, declarations("demo")).await;
+    let effective = route(
+        &mut owner_a,
+        "query",
+        "engineering.matrix.context.effective.get",
+        json!({"locator":locator(program)}),
+    )
+    .await;
+    let task = Uuid::new_v4();
+    let recorded = record(&mut owner_a, task, Uuid::new_v4(), Some(locator(program))).await;
+    route(
+        &mut owner_a,
+        "command",
+        "workspace.advisory.configure",
+        json!({"expected_revision":0,"mode":"optional",
+            "provider_profile_ref":{"id":PROFILE},"model_configuration":{"model":MODEL}}),
+    )
+    .await;
+    let verifier = admin::prepare_verifier_enrollment(&pool, enrolled.tenant_id, workspace)
+        .await
+        .unwrap()
+        .try_commit()
+        .await
+        .unwrap();
+    let verifier_host = root.join("verifier.json");
+    host_file(&verifier_host, &verifier.auth);
+    let mut independent = Mcp::start(
+        &socket,
+        &verifier_host,
+        &Uuid::new_v4().to_string(),
+        &workspace_key,
+    )
+    .await;
+    independent.call("open_workspace", json!({})).await;
+    let parsed: EngineeringMatrixInput = serde_json::from_value(recorded["input"].clone()).unwrap();
+    let context: EffectiveMatrixRequirements = serde_json::from_value(effective).unwrap();
+    let evidence: Vec<_> = required_matrix_operating_facts(&context, &parsed)
+        .unwrap()
+        .iter()
+        .map(|fact| {
+            json!({"fact_path":fact.path,
+                "evidence_ref":format!("urn:synthetic:session:{}", fact.path)})
+        })
+        .collect();
+    route(
+        &mut independent,
+        "command",
+        "engineering.matrix.verify",
+        json!({"task_id":task,"expected_revision":1,
+            "input_digest":recorded["input_digest"],"evidence":evidence}),
+    )
+    .await;
+
+    route(
+        &mut owner_a,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":0,"preference":"skip"}),
+    )
+    .await;
+    let skipped_key = format!("session-a-skip-{}", Uuid::new_v4());
+    let skipped = advice(&mut owner_a, task, &skipped_key).await;
+    assert_eq!(skipped["state"], "no_call");
+    assert_eq!(skipped["reason"], "session_skip");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(budgets.load(Ordering::SeqCst), 0);
+    let no_dispatches: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM advisory_dispatch WHERE opportunity_id=$1")
+            .bind(id(&skipped["opportunity_id"]))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(no_dispatches, 0);
+
+    let sent_key = format!("session-b-default-{}", Uuid::new_v4());
+    let sent = advice(&mut owner_b, task, &sent_key).await;
+    assert_eq!(sent["state"], "advised", "{sent}");
+    assert_eq!(sent["provider_called"], true);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(budgets.load(Ordering::SeqCst), 1);
+    let snapshots: Vec<(Uuid, String, String, String)> = sqlx::query_as(
+        "SELECT session_id,request_key,session_preference,request_preference \
+         FROM advisory_opportunity WHERE id=$1 OR id=$2 ORDER BY request_key",
+    )
+    .bind(id(&skipped["opportunity_id"]))
+    .bind(id(&sent["opportunity_id"]))
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(snapshots.len(), 2);
+    assert_ne!(snapshots[0].0, snapshots[1].0);
+    assert!(
+        snapshots
+            .iter()
+            .any(|row| row.1 == skipped_key && row.2 == "skip")
+    );
+    assert!(
+        snapshots
+            .iter()
+            .any(|row| row.1 == sent_key && row.2 == "use_workspace")
+    );
+    assert!(snapshots.iter().all(|row| row.3 == "use_workspace"));
+
+    let replay = advice(&mut owner_b, task, &sent_key).await;
+    assert_eq!(replay["opportunity_id"], sent["opportunity_id"]);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let wrong_session = route_error(
+        &mut owner_a,
+        "command",
+        "engineering.advisory.request",
+        json!({"task_id":task,"expected_task_revision":1,"request_key":sent_key}),
+    )
+    .await;
+    assert_eq!(wrong_session["error"]["code"], "input_conflict");
+    independent.finish().await;
+    owner_a.finish().await;
+    owner_b.finish().await;
+    server.abort();
+}

@@ -29,14 +29,13 @@ mod s05_public_v2;
 
 async fn exact_fixture() -> (PgPool, String) {
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
-    assert_eq!(
-        std::env::var("TECT_TEST_EXPECTED_PG_SYSTEM_ID").as_deref(),
-        Ok(SYSTEM_ID)
-    );
-    assert_eq!(
-        std::env::var("TECT_TEST_EXPECTED_DB_OID").as_deref(),
-        Ok("16385")
-    );
+    let expected_system_id = std::env::var("TECT_TEST_SYSTEM_ID").unwrap();
+    let expected_oid: i64 = std::env::var("TECT_TEST_DATABASE_OID")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let expected_database = std::env::var("TECT_TEST_DB_NAME").unwrap();
+    let expected_port: u16 = std::env::var("TECT_TEST_PG_PORT").unwrap().parse().unwrap();
     assert_eq!(
         std::env::var("TECT_TEST_RUNTIME_ROLE").as_deref(),
         Ok("tect_ci")
@@ -51,14 +50,34 @@ async fn exact_fixture() -> (PgPool, String) {
     ] {
         assert!(matches!(url.scheme(), "postgres" | "postgresql"));
         assert_eq!(url.host_str(), Some("127.0.0.1"));
-        assert_eq!(url.port(), Some(64775));
-        assert_eq!(url.path(), "/tect_test");
+        assert_eq!(url.port(), Some(expected_port));
+        assert_eq!(url.path(), format!("/{expected_database}"));
         assert_eq!(url.username(), role);
         assert!(url.query().is_none() && url.fragment().is_none());
     }
     let pool = PgPool::connect_with(PgConnectOptions::from_str(&admin_url).unwrap())
         .await
         .unwrap();
+    let preflight: (i32, String, i64, String, bool) = sqlx::query_as(
+        "SELECT current_setting('server_version_num')::integer,current_database(),\
+         (SELECT oid::bigint FROM pg_database WHERE datname=current_database()),\
+         (SELECT system_identifier::text FROM pg_control_system()),\
+         to_regclass('public._sqlx_migrations') IS NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        preflight,
+        (
+            180006,
+            expected_database.clone(),
+            expected_oid,
+            expected_system_id.clone(),
+            true
+        )
+    );
+    admin::migrate(&pool, "tect_ci").await.unwrap();
     let identity: (i32, String, String, i64, String) = sqlx::query_as(
         "SELECT current_setting('server_version_num')::integer,current_database(),current_user,\
          (SELECT oid::bigint FROM pg_database WHERE datname=current_database()),\
@@ -71,10 +90,10 @@ async fn exact_fixture() -> (PgPool, String) {
         identity,
         (
             180006,
-            "tect_test".into(),
+            expected_database.clone(),
             "postgres".into(),
-            DATABASE_OID,
-            SYSTEM_ID.into()
+            expected_oid,
+            expected_system_id
         )
     );
     let ledger: Vec<(i64, bool, Vec<u8>)> =
@@ -84,8 +103,8 @@ async fn exact_fixture() -> (PgPool, String) {
             .unwrap();
     assert_eq!(
         ledger.len(),
-        110,
-        "fixture must have exactly migrations 1 through 110"
+        111,
+        "fixture must have exactly migrations 1 through 111"
     );
     for (index, (version, success, _)) in ledger.iter().enumerate() {
         assert_eq!(*version, index as i64 + 1);
@@ -132,6 +151,11 @@ async fn exact_fixture() -> (PgPool, String) {
             )
             .as_slice(),
         ),
+        (
+            111,
+            include_bytes!("../../../postgres/migrations/0111_session_advisory_preference.sql")
+                .as_slice(),
+        ),
     ] {
         assert_eq!(
             ledger[(version - 1) as usize].2,
@@ -147,7 +171,7 @@ async fn exact_fixture() -> (PgPool, String) {
     ).fetch_one(&runtime).await.unwrap();
     assert_eq!(
         runtime_identity,
-        ("tect_test".into(), "tect_ci".into(), DATABASE_OID)
+        (expected_database, "tect_ci".into(), expected_oid)
     );
     (pool, runtime_url)
 }
@@ -299,7 +323,7 @@ fn native_response(body: &[u8], eligible: &[String]) -> Vec<u8> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "writes only exact owned PostgreSQL 18.6 fixture at migration 110; synthetic loopback provider"]
+#[ignore = "writes only exact owned PostgreSQL 18.6 fixture at migration 111; synthetic loopback provider"]
 async fn public_s03_v4_context_bound_pipeline_happy_path() {
     let (pool, runtime_url) = exact_fixture().await;
     let temp = private_temp();
@@ -538,10 +562,11 @@ async fn public_s03_v4_context_bound_pipeline_happy_path() {
     let pipeline_server = tokio::spawn(tect_host::serve(unix, pipeline_service));
     owner.finish().await;
     independent.finish().await;
+    let pipeline_native = Uuid::new_v4().to_string();
     let mut owner = Mcp::start(
         &pipeline_socket,
         &owner_host,
-        &Uuid::new_v4().to_string(),
+        &pipeline_native,
         &workspace_key,
     )
     .await;
@@ -563,17 +588,167 @@ async fn public_s03_v4_context_bound_pipeline_happy_path() {
         "model_configuration":{"model":"jev-1.13.0"}}),
     )
     .await;
+    let prepare_request = json!({
+        "candidate_set_id":set,"expected_candidate_set_revision":ready["candidate_set"]["revision"],
+        "work_node_id":work["id"],"expected_work_node_revision":work["revision"],
+        "request_key":format!("s03-v4-pipeline-{}",Uuid::new_v4())});
     let prepared = route(
         &mut owner,
         "command",
         "pipeline.recommendation.prepare",
-        json!({
-        "candidate_set_id":set,"expected_candidate_set_revision":ready["candidate_set"]["revision"],
-        "work_node_id":work["id"],"expected_work_node_revision":work["revision"],
-        "request_key":format!("s03-v4-pipeline-{}",Uuid::new_v4())}),
+        prepare_request.clone(),
     )
     .await;
     assert_eq!(prepared["state"], "prepared", "{prepared}");
+    assert_eq!(
+        route_error(
+            &mut owner,
+            "command",
+            "pipeline.recommendation.prepare",
+            json!({"candidate_set_id":set,
+            "expected_candidate_set_revision":ready["candidate_set"]["revision"],
+            "work_node_id":work["id"],"expected_work_node_revision":work["revision"],
+            "request_key":format!("forged-{}",Uuid::new_v4()),
+            "session_preference":"skip"})
+        )
+        .await["error"]["code"],
+        "invalid_arguments"
+    );
+
+    let skipped_setting = route(
+        &mut owner,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":0,"preference":"skip"}),
+    )
+    .await;
+    assert_eq!(skipped_setting["preference"], "skip");
+    let replay = route(
+        &mut owner,
+        "command",
+        "pipeline.recommendation.prepare",
+        prepare_request.clone(),
+    )
+    .await;
+    assert_eq!(replay["opportunity_id"], prepared["opportunity_id"]);
+    let mut other_owner_session = Mcp::start(
+        &pipeline_socket,
+        &owner_host,
+        &Uuid::new_v4().to_string(),
+        &workspace_key,
+    )
+    .await;
+    other_owner_session.call("open_workspace", json!({})).await;
+    assert_eq!(
+        route_error(
+            &mut other_owner_session,
+            "command",
+            "pipeline.recommendation.prepare",
+            prepare_request.clone()
+        )
+        .await["error"]["code"],
+        "input_conflict"
+    );
+    let mut skipped_request = prepare_request.clone();
+    skipped_request["request_key"] = json!(format!("s03-session-skip-{}", Uuid::new_v4()));
+    let skipped = route(
+        &mut owner,
+        "command",
+        "pipeline.recommendation.prepare",
+        skipped_request,
+    )
+    .await;
+    assert_eq!(
+        (skipped["state"].as_str(), skipped["reason"].as_str()),
+        (Some("no_call"), Some("session_skip"))
+    );
+    route(
+        &mut owner,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":1,"preference":"use_workspace"}),
+    )
+    .await;
+    let mut pending_request = prepare_request.clone();
+    pending_request["request_key"] = json!(format!("s03-skip-before-send-{}", Uuid::new_v4()));
+    let pending = route(
+        &mut owner,
+        "command",
+        "pipeline.recommendation.prepare",
+        pending_request.clone(),
+    )
+    .await;
+    assert_eq!(pending["state"], "prepared");
+    assert_eq!(
+        route_error(
+            &mut other_owner_session,
+            "command",
+            "pipeline.recommendation.run",
+            json!({"opportunity_id":pending["opportunity_id"]})
+        )
+        .await["error"]["code"],
+        "forbidden"
+    );
+    other_owner_session.finish().await;
+    route(
+        &mut owner,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":2,"preference":"skip"}),
+    )
+    .await;
+    let no_send = route(
+        &mut owner,
+        "command",
+        "pipeline.recommendation.run",
+        json!({"opportunity_id":pending["opportunity_id"]}),
+    )
+    .await;
+    assert_eq!(
+        (no_send["status"].as_str(), no_send["reason"].as_str()),
+        (Some("no_call"), Some("session_skip"))
+    );
+    let pending_id = id(&pending["opportunity_id"]);
+    let skip_audit: (String, String, String, i64) = sqlx::query_as(
+        "SELECT state,primary_reason,session_preference,\
+         (SELECT count(*) FROM advisory_dispatch WHERE workspace_id=$1 AND opportunity_id=$2)\
+         FROM advisory_opportunity WHERE workspace_id=$1 AND id=$2",
+    )
+    .bind(workspace)
+    .bind(pending_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        skip_audit,
+        (
+            "no_call".into(),
+            "session_skip".into(),
+            "use_workspace".into(),
+            0
+        )
+    );
+    route(
+        &mut owner,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":3,"preference":"use_workspace"}),
+    )
+    .await;
+    assert_eq!(
+        route_error(
+            &mut owner,
+            "command",
+            "pipeline.recommendation.prepare",
+            json!({"candidate_set_id":set,
+            "expected_candidate_set_revision":ready["candidate_set"]["revision"],
+            "work_node_id":work["id"],"expected_work_node_revision":work["revision"],
+            "request_key":pending_request["request_key"],
+            "request_preference":"skip"})
+        )
+        .await["error"]["code"],
+        "input_conflict"
+    );
     let opportunity = id(&prepared["opportunity_id"]);
     let row: (Value, Option<Uuid>, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
         "SELECT manifest_payload,frozen_snapshot_id,requirements_semantic_digest,authority_schema,\
@@ -598,6 +773,10 @@ async fn public_s03_v4_context_bound_pipeline_happy_path() {
     let frozen = prepare_native_request("jev-1.13.0", &manifest, MAX_REQUEST_BYTES).unwrap();
     let response = native_response(&frozen.body, &frozen.eligible_ids);
     let audit_pool = pool.clone();
+    let preference_socket = pipeline_socket.clone();
+    let preference_host = owner_host.clone();
+    let preference_native = pipeline_native.clone();
+    let preference_workspace = workspace_key.clone();
     let stub = tokio::spawn(async move {
         let (mut stream, _) = tokio::time::timeout(Duration::from_secs(5), listener.accept())
             .await
@@ -639,6 +818,23 @@ async fn public_s03_v4_context_bound_pipeline_happy_path() {
                 .any(|line| line.eq_ignore_ascii_case("authorization: bearer fixture-secret"))
         );
         assert_eq!(&request[head_end..], frozen.body);
+        let mut same_session = Mcp::start(
+            &preference_socket,
+            &preference_host,
+            &preference_native,
+            &preference_workspace,
+        )
+        .await;
+        same_session.call("open_workspace", json!({})).await;
+        let changed = route(
+            &mut same_session,
+            "command",
+            "session.advisory.preference.set",
+            json!({"expected_revision":4,"preference":"skip"}),
+        )
+        .await;
+        assert_eq!(changed["preference"], "skip");
+        same_session.finish().await;
         let head = format!(
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             response.len()
@@ -665,6 +861,13 @@ async fn public_s03_v4_context_bound_pipeline_happy_path() {
     )
     .await;
     assert_eq!(replay, ranked);
+    route(
+        &mut owner,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":5,"preference":"use_workspace"}),
+    )
+    .await;
     assert!(
         tokio::time::timeout(Duration::from_millis(100), listener.accept())
             .await

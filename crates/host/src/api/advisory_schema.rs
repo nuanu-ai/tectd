@@ -27,7 +27,7 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
             "pipeline.recommendation.prepare",
             "pipeline_recommendation_prepare",
             "Prepare a durable pipeline and verification recommendation opportunity for one current saved Work node.",
-            "Requires an authenticated Owner with an active native session, exact current candidate-set and Work revisions, a saved Matrix disposition and independent match attestation. Preferences default to use_workspace; skip records a no-call.",
+            "Requires an authenticated Owner with an active native session, exact current candidate-set and Work revisions, a saved Matrix disposition and independent match attestation. The stored session preference and optional request preference narrow workspace permission; skip records a no-call.",
             "Records the opportunity, source context, and immutable eligible-choice manifest. Returns only the opportunity ID, state, reason, stable eligible IDs, and manifest digest. No provider call, pipeline execution, phase transition, or verification occurs.",
             "Repeat only the same request key and identical actor, session, revisions, and preferences. Changed material conflicts.",
             object_schema(
@@ -37,7 +37,6 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
                     "work_node_id":uuid(),
                     "expected_work_node_revision":{"type":"integer","minimum":1},
                     "request_key":{"type":"string","minLength":1,"maxLength":256,"x-maxUtf8Bytes":256,"description":"One to 256 UTF-8 bytes, no NUL or leading or trailing Unicode whitespace."},
-                    "session_preference":{"type":"string","enum":["use_workspace","skip"],"default":"use_workspace"},
                     "request_preference":{"type":"string","enum":["use_workspace","skip"],"default":"use_workspace"}
                 }),
                 json!([
@@ -93,7 +92,7 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
             "engineering.advisory.request",
             "request_engineering_advisory",
             "Record an optional Engineering Matrix advisory opportunity for one exact saved task revision.",
-            "Requires an authenticated open native session, workspace membership, the current positive task revision, and a request key unique to this opportunity. The optional session and request preferences each default to use_workspace; skip records a no-call. A saved choice set with fewer than two eligible candidates is not applicable.",
+            "Requires an authenticated open native session, workspace membership, the current positive task revision, and a request key unique to this opportunity. The stored session preference and optional request preference narrow workspace permission; skip records a no-call. A saved choice set with fewer than two eligible candidates is not applicable.",
             "Records a terminal no_call opportunity with its reason, task revision, optional choice-set digest, configuration revision, and material digest. The provider is never called; no advice, choice, release, or approval is established.",
             "Repeat the same request key with identical task revision, actor/session, and preferences. Changed material conflicts; inspect engineering.advisory.get after uncertainty.",
             object_schema(
@@ -101,7 +100,6 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
                     "task_id":uuid(),
                     "expected_task_revision":{"type":"integer","minimum":1},
                     "request_key":{"type":"string","minLength":1,"maxLength":256,"x-maxUtf8Bytes":256,"description":"One to 256 UTF-8 bytes, no NUL, and no leading or trailing Unicode whitespace. Host validation enforces byte and trim limits."},
-                    "session_preference":{"type":"string","enum":["use_workspace","skip"],"default":"use_workspace"},
                     "request_preference":{"type":"string","enum":["use_workspace","skip"],"default":"use_workspace"}
                 }),
                 json!(["task_id", "expected_task_revision", "request_key"]),

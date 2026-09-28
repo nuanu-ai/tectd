@@ -25,6 +25,16 @@ pub struct StoredPipelineRecommendationDispatch {
 
 #[async_trait]
 pub trait PipelineRecommendationDispatchStore: Send {
+    /// Convert a still-prepared capture into a durable no-call when its bound
+    /// native session commits a skip before dispatch authorization.
+    async fn skip_pipeline_dispatch_for_session(
+        &mut self,
+        _workspace_id: Uuid,
+        _opportunity_id: Uuid,
+        _session_id: Uuid,
+    ) -> Result<()> {
+        Err(tect_domain::Error::Forbidden)
+    }
     /// Historical typed raw fallback only when no normalized interpretation exists.
     async fn pipeline_dispatch_for_replay(
         &mut self,

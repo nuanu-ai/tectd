@@ -15,8 +15,6 @@ struct PrepareArguments {
     expected_work_node_revision: i64,
     request_key: String,
     #[serde(default)]
-    session_preference: AdvisoryRequestPreference,
-    #[serde(default)]
     request_preference: AdvisoryRequestPreference,
 }
 
@@ -40,7 +38,8 @@ pub(crate) fn parse(arguments: Value) -> Result<PreparePipelineRecommendation> {
         work_node_id: arguments.work_node_id,
         expected_work_node_revision: arguments.expected_work_node_revision,
         request_key: arguments.request_key,
-        session_preference: arguments.session_preference,
+        // The application binds this from the authenticated native session.
+        session_preference: AdvisoryRequestPreference::UseWorkspace,
         request_preference: arguments.request_preference,
     })
 }
@@ -105,7 +104,7 @@ mod tests {
             ("work_node_id", json!(Uuid::nil())),
             ("expected_work_node_revision", json!(0)),
             ("request_key", json!(" bad ")),
-            ("session_preference", json!("unknown")),
+            ("session_preference", json!("skip")),
             ("request_preference", json!(null)),
             ("actor_id", json!(id)),
         ] {

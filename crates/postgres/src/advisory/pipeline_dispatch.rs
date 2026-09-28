@@ -299,6 +299,42 @@ async fn seal_pipeline(
 
 #[async_trait]
 impl PipelineRecommendationDispatchStore for PgUnitOfWork {
+    async fn skip_pipeline_dispatch_for_session(
+        &mut self,
+        workspace_id: Uuid,
+        opportunity_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<()> {
+        let tenant = self.tenant_id()?;
+        let actor = self.principal_id()?;
+        let updated = sqlx::query(
+            "UPDATE advisory_opportunity SET state='no_call',primary_reason='session_skip' \
+             WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 \
+               AND session_id=$4 AND authorized_actor_id=$5 \
+               AND capability='pipeline_recommendation' \
+               AND decision_point='pipeline_recommendation_before_slice_open' \
+               AND state='prepared' AND primary_reason='recommendation_prepared' \
+               AND NOT EXISTS (SELECT 1 FROM advisory_dispatch d \
+                               WHERE d.tenant_id=$1 AND d.workspace_id=$2 \
+                                 AND d.opportunity_id=$3) \
+               AND EXISTS (SELECT 1 FROM agent_sessions s \
+                           WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.id=$4 \
+                             AND s.advisory_preference='skip' AND NOT s.revoked)",
+        )
+        .bind(tenant)
+        .bind(workspace_id)
+        .bind(opportunity_id)
+        .bind(session_id)
+        .bind(actor)
+        .execute(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
+        if updated.rows_affected() != 1 {
+            return Err(Error::InputConflict);
+        }
+        Ok(())
+    }
+
     async fn pipeline_dispatch_for_replay(
         &mut self,
         workspace_id: Uuid,

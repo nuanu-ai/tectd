@@ -9,9 +9,9 @@ use crate::{
 use sha2::{Digest, Sha256};
 use tect_domain::{
     AdvisoryCapability, AdvisoryDecisionPoint, AdvisoryDispatchAuthorization,
-    AdvisoryDispatchOutcome, AdvisoryOpportunityState, AdvisoryReason, AdvisoryRetryBasis,
-    AdvisorySendCertainty, Error, PipelineRecommendationRanking, RequestContext, Result,
-    WorkspaceAdvisoryMode,
+    AdvisoryDispatchOutcome, AdvisoryOpportunityState, AdvisoryReason, AdvisoryRequestPreference,
+    AdvisoryRetryBasis, AdvisorySendCertainty, Error, PipelineRecommendationRanking,
+    RequestContext, Result, WorkspaceAdvisoryMode,
 };
 use uuid::Uuid;
 
@@ -162,6 +162,9 @@ impl WorkspaceService {
                 .recover_pipeline_receipt(context, tenant, saved, receipt)
                 .await;
         }
+        if saved.opportunity.session_id != session.id {
+            return Err(Error::Forbidden);
+        }
         if saved.opportunity.state == AdvisoryOpportunityState::NoCall {
             tx.commit().await?;
             return Ok(PipelineRecommendationRun::NoCall {
@@ -198,6 +201,26 @@ impl WorkspaceService {
             return Err(Error::InputConflict);
         }
         let config = tx.advisory_config(workspace.id).await?;
+        // The native-session lock is shared with preference.set. A committed
+        // skip wins before authorization; an authorized send follows the
+        // durable receipt path above even if the preference changes later.
+        if config.mode == WorkspaceAdvisoryMode::Optional
+            && tx
+                .session_advisory_preference(workspace.id, session.id)
+                .await?
+                .preference
+                == AdvisoryRequestPreference::Skip
+        {
+            tx.pipeline_recommendation_dispatch_store()
+                .ok_or(Error::Forbidden)?
+                .skip_pipeline_dispatch_for_session(workspace.id, saved.opportunity.id, session.id)
+                .await?;
+            tx.commit().await?;
+            return Ok(PipelineRecommendationRun::NoCall {
+                opportunity_id: saved.opportunity.id,
+                reason: AdvisoryReason::SessionSkip,
+            });
+        }
         if config.revision != saved.opportunity.config_revision
             || config.mode != WorkspaceAdvisoryMode::Optional
             || !config.provider_configured()

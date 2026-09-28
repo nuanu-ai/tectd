@@ -57,11 +57,21 @@ impl WorkspaceService {
             .await?
             .ok_or(Error::WorkspaceNotOpen)?;
         let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
-        let store = tx.pipeline_recommendation_store().ok_or(Error::Forbidden)?;
-        if let Some(saved) = store
+        let existing = tx
+            .pipeline_recommendation_store()
+            .ok_or(Error::Forbidden)?
             .pipeline_recommendation_by_request(workspace.id, &request.request_key)
-            .await?
-        {
+            .await?;
+        let mut bound_request = request.clone();
+        bound_request.session_preference = if let Some(saved) = existing.as_ref() {
+            saved.opportunity.session_preference
+        } else {
+            tx.session_advisory_preference(workspace.id, session.id)
+                .await?
+                .preference
+        };
+        let request = &bound_request;
+        if let Some(saved) = existing {
             if !replay_matches(
                 &saved,
                 request,
@@ -78,7 +88,9 @@ impl WorkspaceService {
             tx.commit().await?;
             return Ok(saved);
         }
-        let basis = store
+        let basis = tx
+            .pipeline_recommendation_store()
+            .ok_or(Error::Forbidden)?
             .load_pipeline_recommendation_basis(
                 workspace.id,
                 request.candidate_set_id,

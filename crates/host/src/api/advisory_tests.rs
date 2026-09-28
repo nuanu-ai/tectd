@@ -141,7 +141,7 @@ fn pipeline_disposition_is_strict_planning_command() {
 #[test]
 fn matrix_advisory_routes_use_exact_task_and_request_key() {
     let task_id = uuid::Uuid::new_v4();
-    let request = json!({"task_id":task_id,"expected_task_revision":1,"request_key":"matrix-1","session_preference":"use_workspace","request_preference":"skip"});
+    let request = json!({"task_id":task_id,"expected_task_revision":1,"request_key":"matrix-1","request_preference":"skip"});
     let get = json!({"task_id":task_id,"request_key":"matrix-1"});
     for (tool, route, params) in [
         ("command", "engineering.advisory.request", request.clone()),
@@ -161,6 +161,7 @@ fn matrix_advisory_routes_use_exact_task_and_request_key() {
         json!({"task_id":task_id,"expected_task_revision":0,"request_key":"matrix-1"}),
         json!({"task_id":task_id,"expected_task_revision":1,"request_key":" matrix-1"}),
         json!({"task_id":task_id,"expected_task_revision":1,"request_key":"matrix-1","principal_id":task_id}),
+        json!({"task_id":task_id,"expected_task_revision":1,"request_key":"matrix-1","session_preference":"skip"}),
     ] {
         assert!(
             decode_public_call(

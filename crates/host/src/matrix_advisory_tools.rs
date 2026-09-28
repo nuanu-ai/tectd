@@ -14,8 +14,6 @@ struct RequestArguments {
     expected_task_revision: i64,
     request_key: String,
     #[serde(default)]
-    session_preference: AdvisoryRequestPreference,
-    #[serde(default)]
     request_preference: AdvisoryRequestPreference,
 }
 
@@ -47,7 +45,7 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<MatrixAdvisoryInvoca
                     task_id: args.task_id,
                     expected_task_revision: args.expected_task_revision,
                     request_key: args.request_key,
-                    session_preference: args.session_preference,
+                    session_preference: AdvisoryRequestPreference::UseWorkspace,
                     request_preference: args.request_preference,
                 },
             ))
@@ -252,6 +250,7 @@ mod tests {
             json!({"task_id":id,"expected_task_revision":1,"request_key":"x".repeat(257)}),
             json!({"task_id":id,"expected_task_revision":1,"request_key":"task-1","principal_id":id}),
             json!({"task_id":id,"expected_task_revision":1,"request_key":"task-1","request_preference":"force"}),
+            json!({"task_id":id,"expected_task_revision":1,"request_key":"task-1","session_preference":"skip"}),
         ] {
             assert!(parse("request_engineering_advisory", invalid).is_err());
         }

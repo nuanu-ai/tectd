@@ -142,6 +142,18 @@ impl WorkspaceService {
         let existing = tx
             .advisory_opportunity_by_request(workspace.id, &request.request_key)
             .await?;
+        // The native-session lock serializes preference changes with this
+        // preparation and its one-use dispatch authorization. Replays retain
+        // the original preference snapshot even if the session later changes.
+        let mut bound_request = request.clone();
+        bound_request.session_preference = if let Some(saved) = existing.as_ref() {
+            saved.session_preference
+        } else {
+            tx.session_advisory_preference(workspace.id, session.id)
+                .await?
+                .preference
+        };
+        let request = &bound_request;
         if let Some(existing) = existing {
             if !matrix_advisory_replay_matches(
                 &existing,
