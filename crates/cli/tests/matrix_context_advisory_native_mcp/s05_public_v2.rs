@@ -1,5 +1,7 @@
 //! S05 public MCP proof against exact V2 Matrix Work; synthetic adviser only.
 use super::*;
+#[path = "s05_public_v2/s05_historical.rs"]
+mod s05_historical;
 #[path = "s05_public_v2/s05_live.rs"]
 mod s05_live;
 use tect_application::{
@@ -11,9 +13,11 @@ use tect_domain::{
     Error, MODEL_ROUTE_CATALOGUE_SCHEMA, MODEL_ROUTE_HOST_CAPABILITIES_SCHEMA,
     MODEL_ROUTE_RANKING_WIRE_SCHEMA, ModelRoute, ModelRouteCatalogue, ModelRouteFact,
     ModelRouteFactProvenance, ModelRouteHostCapabilities, ModelRouteRankingWireRequest,
+    ModelRouteRecord, ModelRouteSelectionLink, ModelRouteWorkContext,
 };
 
-async fn s05_session_fixture() -> (PgPool, String) {
+async fn s05_session_fixture(target_version: i64) -> (PgPool, String) {
+    assert!(matches!(target_version, 104 | 113));
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
     let database = std::env::var("TECT_TEST_DB_NAME").unwrap();
     assert!(database.starts_with("tect_modelroute_session_"));
@@ -56,13 +60,36 @@ async fn s05_session_fixture() -> (PgPool, String) {
             true
         )
     );
-    admin::migrate(&pool, "tect_ci").await.unwrap();
+    if target_version == 104 {
+        let staged = tempfile::tempdir().unwrap();
+        let migrations =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../postgres/migrations");
+        let mut copied = 0;
+        for entry in std::fs::read_dir(migrations).unwrap() {
+            let entry = entry.unwrap();
+            let name = entry.file_name();
+            let version: i64 = name.to_str().unwrap()[..4].parse().unwrap();
+            if version <= 104 {
+                std::fs::copy(entry.path(), staged.path().join(name)).unwrap();
+                copied += 1;
+            }
+        }
+        assert_eq!(copied, 104);
+        sqlx::migrate::Migrator::new(staged.path())
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+    } else {
+        admin::migrate(&pool, "tect_ci").await.unwrap();
+    }
     let ledger: Vec<(i64, bool)> =
         sqlx::query_as("SELECT version,success FROM _sqlx_migrations ORDER BY version")
             .fetch_all(&pool)
             .await
             .unwrap();
-    assert_eq!(ledger.len(), 113);
+    assert_eq!(ledger.len(), target_version as usize);
     for (index, (version, success)) in ledger.iter().enumerate() {
         assert_eq!(*version, index as i64 + 1);
         assert!(*success);
@@ -207,7 +234,7 @@ fn assert_caller_fact<T: PartialEq + std::fmt::Debug>(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "writes only exact owned PostgreSQL 18.6 fixture at migration 113; synthetic adviser"]
 async fn public_s05_v2_work_caller_assertions_rank_eligible_ids_only() {
-    let (pool, runtime_url) = s05_session_fixture().await;
+    let (pool, runtime_url) = s05_session_fixture(113).await;
     let temp = private_temp();
     let root = temp.path().canonicalize().unwrap();
     let repo = root.join("source");
