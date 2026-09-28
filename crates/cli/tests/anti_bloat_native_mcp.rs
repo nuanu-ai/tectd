@@ -127,6 +127,205 @@ async fn policy(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires a fresh exact-owned disposable PostgreSQL 18 database"]
+async fn historical_s04_review_survives_0104_to_0113_public_get_and_run_fails_closed() {
+    use sqlx::postgres::PgConnectOptions;
+    use std::{fs, str::FromStr};
+
+    assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
+    let database = std::env::var("TECT_TEST_EXPECTED_DB_NAME").unwrap();
+    assert!(database.starts_with("tect_s04_upgrade_"));
+    let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
+    let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
+    let options = PgConnectOptions::from_str(&admin_url).unwrap();
+    let runtime_options = PgConnectOptions::from_str(&runtime_url).unwrap();
+    assert_eq!(options.get_host(), "127.0.0.1");
+    assert_eq!(options.get_database(), Some(database.as_str()));
+    assert_eq!(options.get_username(), "postgres");
+    assert_eq!(runtime_options.get_host(), "127.0.0.1");
+    assert_eq!(runtime_options.get_database(), Some(database.as_str()));
+    assert_eq!(runtime_options.get_username(), "tect_ci");
+    assert_eq!(runtime_options.get_port(), options.get_port());
+    let pool = PgPool::connect(&admin_url).await.unwrap();
+    let actual: (i32, String, i64, String, bool) = sqlx::query_as(
+        "SELECT current_setting('server_version_num')::integer,current_database(), \
+         (SELECT oid::bigint FROM pg_database WHERE datname=current_database()), \
+         (SELECT system_identifier::text FROM pg_control_system()), \
+         to_regclass('public._sqlx_migrations') IS NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(actual.0, 180006);
+    assert_eq!(actual.1, database);
+    assert_eq!(
+        actual.2,
+        std::env::var("TECT_TEST_EXPECTED_DB_OID")
+            .unwrap()
+            .parse::<i64>()
+            .unwrap()
+    );
+    assert_eq!(
+        actual.3,
+        std::env::var("TECT_TEST_EXPECTED_PG_SYSTEM_ID").unwrap()
+    );
+    assert!(actual.4, "fixture must be empty before staged migration");
+
+    let staged = tempfile::tempdir().unwrap();
+    let sources = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../postgres/migrations");
+    let mut copied = 0;
+    for entry in fs::read_dir(sources).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let name = name.to_str().unwrap();
+        let version: i64 = name.get(..4).unwrap().parse().unwrap();
+        if version <= 104 {
+            fs::copy(entry.path(), staged.path().join(name)).unwrap();
+            copied += 1;
+        }
+    }
+    assert_eq!(copied, 104);
+    sqlx::migrate::Migrator::new(staged.path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    let ledger: (i64, Option<i64>) =
+        sqlx::query_as("SELECT count(*),max(version) FROM _sqlx_migrations WHERE success")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(ledger, (104, Some(104)));
+
+    let temp = private_temp();
+    let root = temp.path().canonicalize().unwrap();
+    let enrolled = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+    let tenant = enrolled.tenant_id;
+    let actor: Uuid = sqlx::query_scalar("SELECT principal_id FROM hosts WHERE id=$1")
+        .bind(enrolled.auth.host_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let workspace = Uuid::new_v4();
+    let workspace_key = format!("s04-upgrade-{}", Uuid::new_v4());
+    let session = Uuid::new_v4();
+    let native_session = Uuid::new_v4().to_string();
+    let program = Uuid::new_v4();
+    let candidate = Uuid::new_v4();
+    let snapshot = Uuid::new_v4();
+    let opportunity = Uuid::new_v4();
+    let review = Uuid::new_v4();
+    let d = "a".repeat(64);
+    let b = "b".repeat(64);
+    sqlx::query("INSERT INTO workspaces(id,tenant_id,key) VALUES($1,$2,$3)")
+        .bind(workspace)
+        .bind(tenant)
+        .bind(&workspace_key)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO memberships(tenant_id,workspace_id,principal_id) VALUES($1,$2,$3)")
+        .bind(tenant)
+        .bind(workspace)
+        .bind(actor)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO agent_sessions(id,tenant_id,host_id,workspace_id,native_session_id) VALUES($1,$2,$3,$4,$5)")
+        .bind(session).bind(tenant).bind(enrolled.auth.host_id).bind(workspace)
+        .bind(&native_session).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO programs(id,tenant_id,workspace_id,status,revision,name,intent,basis,boundaries,constraints,success,current_step,input_cursor,latest_input,max_input_bytes) VALUES($1,$2,$3,'open',4,'Legacy program','Preserve intent','Legacy evidence','One Scope','No adjacent work','Review survives','ready',2,2,4096)")
+        .bind(program).bind(tenant).bind(workspace).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO scope_candidate_sets(id,tenant_id,workspace_id,program_id,origin_request_id,origin_input,origin_payload,origin_result,revision,status,boundary,input_cursor,latest_input,max_input_bytes) VALUES($1,$2,$3,$4,$5,'legacy planning','{}'::jsonb,'{}'::jsonb,2,'review_required','finite',1,1,4096)")
+        .bind(candidate).bind(tenant).bind(workspace).bind(program).bind(Uuid::new_v4())
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO scope_candidate_contents(tenant_id,workspace_id,digest,body) VALUES($1,$2,$3,'legacy source')")
+        .bind(tenant).bind(workspace).bind(&d).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO scope_candidate_snapshots(id,tenant_id,workspace_id,candidate_set_id,sequence,program_revision,program_latest_input,planning_latest_input,program_body_digest,selected_worktree_ids,selected_sources_digest,method_id,method_revision,method_digest,method_body,method_origin_refs,registry_revision,registry_digest,rules) VALUES($1,$2,$3,$4,1,4,2,1,$5,'{}'::uuid[],$5,'legacy-method','1',$5,'legacy method','[]'::jsonb,'1',$5,'[]'::jsonb)")
+        .bind(snapshot).bind(tenant).bind(workspace).bind(candidate).bind(&d)
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO advisory_opportunity(id,tenant_id,workspace_id,work_item_kind,work_item_id,session_id,authorized_actor_id,source_revision,capability,decision_point,config_revision,session_preference,request_preference,policy_version,request_key,material_digest,state,primary_reason) VALUES($1,$2,$3,'scope_candidate_set',$4,$5,$6,'2','scope_decomposition','scope.decomposition.before_selection',0,'use_workspace','use_workspace','fixture',$7,$8,'no_call','workspace_disabled')")
+        .bind(opportunity).bind(tenant).bind(workspace).bind(candidate).bind(session).bind(actor)
+        .bind(Uuid::new_v4().to_string()).bind(&d).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO advisory_scope_source_snapshot(tenant_id,workspace_id,opportunity_id,candidate_set_id,config_revision,opportunity_material_digest,candidate_set_revision,snapshot_id,source_digest,aggregate_schema,aggregate_payload) VALUES($1,$2,$3,$4,0,$5,2,$6,$5,'tect.scope-source-obligations/1','{}'::jsonb)")
+        .bind(tenant).bind(workspace).bind(opportunity).bind(candidate).bind(&d).bind(snapshot)
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO advisory_scope_manifest(tenant_id,workspace_id,opportunity_id,candidate_set_id,source_digest,constructor_id,constructor_version,constructor_digest,baseline_alternative_id,eligible_set_digest,whole_set_digest,aggregate_schema,aggregate_payload) VALUES($1,$2,$3,$4,$5,'legacy-constructor','1',$5,$5,$5,$5,'tect.scope-constructor-manifest/2','{}'::jsonb)")
+        .bind(tenant).bind(workspace).bind(opportunity).bind(candidate).bind(&d)
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO scope_anti_bloat_bindings(tenant_id,workspace_id,candidate_set_id,opportunity_id,candidate_set_revision,source_digest,dependency_digest,obligation_links,mandatory_policy_obligation_ids,provenance) VALUES($1,$2,$3,$4,2,$5,$6,'[]'::jsonb,'[]'::jsonb,'historical source')")
+        .bind(tenant).bind(workspace).bind(candidate).bind(opportunity).bind(&d).bind(&b)
+        .execute(&pool).await.unwrap();
+    let input = json!({"manifest":{"constructor":{"id":"legacy-constructor","version":"1","digest":d},"source":{"candidate_set_id":candidate,"candidate_set_revision":2,"snapshot_id":snapshot,"input_cursor":1,"program_id":program,"program_revision":4,"program_latest_input":2,"planning_latest_input":1,"selected_sources_digest":d,"method_revision":"1","method_digest":d,"registry_revision":"1","registry_digest":d,"inputs":[],"digest":d},"obligations":[],"emitted":[],"rejected":[],"baseline_id":d,"ordered_ids":[],"eligible_set_digest":d,"whole_set_digest":d},"selected_id":d,"selected_revision":2,"graph_provenance":"historical source","dependency_digest":b,"obligation_links":[],"non_goal_source_obligation_ids":[],"mandatory_policy_obligation_ids":[],"protected_obligations":[],"protected_obligations_digest":d});
+    let historical_review = json!({"source_digest":d,"whole_set_digest":d,"material_digest":b,"candidate_set_id":candidate,"plan_revision":2,"dependency_digest":b,"protected_obligations_digest":d,"selected_id":d,"findings":[]});
+    serde_json::from_value::<tect_domain::AntiBloatInput>(input.clone()).unwrap();
+    serde_json::from_value::<tect_domain::AntiBloatReview>(historical_review.clone()).unwrap();
+    sqlx::query("INSERT INTO scope_anti_bloat_reviews(tenant_id,workspace_id,review_id,candidate_set_id,candidate_set_revision,actor_id,input_payload,review_payload,state,eligible_ids) VALUES($1,$2,$3,$4,2,$5,$6,$7,'no_eligible','[]'::jsonb)")
+        .bind(tenant).bind(workspace).bind(review).bind(candidate).bind(actor).bind(input).bind(historical_review)
+        .execute(&pool).await.unwrap();
+    let before: (Value, Value, String, Vec<u8>) = sqlx::query_as(
+        "SELECT input_payload,review_payload,state,convert_to(input_payload::text || review_payload::text,'UTF8') FROM scope_anti_bloat_reviews WHERE review_id=$1")
+        .bind(review).fetch_one(&pool).await.unwrap();
+
+    admin::migrate(&pool, "tect_ci").await.unwrap();
+    let after: (Value, Value, String, Vec<u8>, Option<Uuid>) = sqlx::query_as(
+        "SELECT input_payload,review_payload,state,convert_to(input_payload::text || review_payload::text,'UTF8'),origin_session_id FROM scope_anti_bloat_reviews WHERE review_id=$1")
+        .bind(review).fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        (&after.0, &after.1, &after.2, &after.3),
+        (&before.0, &before.1, &before.2, &before.3)
+    );
+    assert_eq!(after.4, None);
+    let count: (i64, Option<i64>) =
+        sqlx::query_as("SELECT count(*),max(version) FROM _sqlx_migrations WHERE success")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, (113, Some(113)));
+
+    let socket = root.join("s04-upgrade.sock");
+    let store = PgStore::connect(&runtime_url, 4).await.unwrap();
+    let service = Arc::new(WorkspaceService::new(
+        Arc::new(store),
+        Arc::new(tect_host::GitSourceInspector),
+        Arc::new(tect_host::LocalSetupFiles),
+    ));
+    let listener = UnixListener::bind(&socket).unwrap();
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
+    let server = tokio::spawn(tect_host::serve(listener, service));
+    let owner_file = root.join("owner.json");
+    host_file(&owner_file, &enrolled.auth);
+    let mut owner = Mcp::start(&socket, &owner_file, &native_session, &workspace_key).await;
+    let got = support::route(
+        &mut owner,
+        "query",
+        "scope.anti_bloat.get",
+        json!({"review_id":review}),
+    )
+    .await;
+    assert_eq!(id(&got["review_id"]), review);
+    let denied = support::route_error(
+        &mut owner,
+        "command",
+        "scope.anti_bloat.run",
+        json!({"review_id":review}),
+    )
+    .await;
+    assert_eq!(denied["error"]["code"], "input_conflict");
+    let attempts: (i64, i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM scope_anti_bloat_budget_reservations WHERE review_id=$1),(SELECT count(*) FROM scope_anti_bloat_budget_consumptions WHERE review_id=$1),(SELECT count(*) FROM advisory_call_audit WHERE workspace_id=$2 AND capability='anti_bloat')")
+        .bind(review).bind(workspace).fetch_one(&pool).await.unwrap();
+    assert_eq!(attempts, (0, 0, 0));
+    let final_row: (Value, Value, String, Vec<u8>, Option<Uuid>) = sqlx::query_as("SELECT input_payload,review_payload,state,convert_to(input_payload::text || review_payload::text,'UTF8'),origin_session_id FROM scope_anti_bloat_reviews WHERE review_id=$1")
+        .bind(review).fetch_one(&pool).await.unwrap();
+    assert_eq!(final_row, after);
+    owner.finish().await;
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires the explicitly owned disposable PostgreSQL 18 fixture"]
 async fn native_anti_bloat_public_mcp_is_sealed_once_and_default_disabled() {
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
