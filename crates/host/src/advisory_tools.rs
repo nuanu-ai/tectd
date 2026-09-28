@@ -179,6 +179,8 @@ struct ScopeAdvisoryDispositionArguments {
 }
 
 pub(crate) enum AdvisoryInvocation {
+    SessionPreference,
+    SetSessionPreference(tect_domain::SetSessionAdvisoryPreference),
     MatrixCard {
         task_id: uuid::Uuid,
         expected_task_revision: i64,
@@ -232,6 +234,19 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<AdvisoryInvocation> 
         return Err(Error::InvalidArguments);
     }
     match name {
+        "get_session_advisory_preference" => {
+            if arguments.as_object().is_some_and(|value| value.is_empty()) {
+                Ok(AdvisoryInvocation::SessionPreference)
+            } else {
+                Err(Error::InvalidArguments)
+            }
+        }
+        "set_session_advisory_preference" => {
+            let request: tect_domain::SetSessionAdvisoryPreference =
+                serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
+            request.validate()?;
+            Ok(AdvisoryInvocation::SetSessionPreference(request))
+        }
         "scope_advisory_card" => {
             if ["card_id", "detail"]
                 .iter()

@@ -150,7 +150,9 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
         }
         _ if matches!(
             name,
-            "scope_advisory_request"
+            "get_session_advisory_preference"
+                | "set_session_advisory_preference"
+                | "scope_advisory_request"
                 | "candidate_advisory_verify"
                 | "scope_advisory_disposition"
                 | "get_advisory_config"

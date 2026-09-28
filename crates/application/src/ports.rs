@@ -206,6 +206,22 @@ pub trait UnitOfWork:
     async fn set_tenant(&mut self, tenant_id: Uuid) -> Result<()>;
     async fn lock_native_session(&mut self, host_id: Uuid, native_id: &str) -> Result<()>;
     async fn session(&mut self, host_id: Uuid, native_id: &str) -> Result<Option<Session>>;
+    async fn session_advisory_preference(
+        &mut self,
+        _workspace_id: Uuid,
+        _session_id: Uuid,
+    ) -> Result<tect_domain::SessionAdvisoryPreference> {
+        Err(tect_domain::Error::Forbidden)
+    }
+    async fn set_session_advisory_preference(
+        &mut self,
+        _workspace_id: Uuid,
+        _session_id: Uuid,
+        _principal_id: Uuid,
+        _request: &tect_domain::SetSessionAdvisoryPreference,
+    ) -> Result<tect_domain::SessionAdvisoryPreference> {
+        Err(tect_domain::Error::Forbidden)
+    }
     async fn workspace(&mut self, id: Uuid) -> Result<Option<Workspace>>;
     async fn workspace_by_key(&mut self, key: &str) -> Result<Option<Workspace>>;
     async fn is_member(&mut self, workspace_id: Uuid, principal_id: Uuid) -> Result<bool>;

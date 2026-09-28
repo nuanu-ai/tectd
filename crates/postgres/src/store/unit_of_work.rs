@@ -1,6 +1,7 @@
 use super::*;
 
 mod helpers;
+mod session_preference;
 
 #[async_trait]
 impl UnitOfWork for PgUnitOfWork {
@@ -159,6 +160,24 @@ impl UnitOfWork for PgUnitOfWork {
                 revoked,
             },
         ))
+    }
+
+    async fn session_advisory_preference(
+        &mut self,
+        workspace_id: Uuid,
+        session_id: Uuid,
+    ) -> Result<SessionAdvisoryPreference> {
+        session_preference::read(self, workspace_id, session_id).await
+    }
+
+    async fn set_session_advisory_preference(
+        &mut self,
+        workspace_id: Uuid,
+        session_id: Uuid,
+        principal_id: Uuid,
+        request: &SetSessionAdvisoryPreference,
+    ) -> Result<SessionAdvisoryPreference> {
+        session_preference::set(self, workspace_id, session_id, principal_id, request).await
     }
 
     async fn workspace(&mut self, id: Uuid) -> Result<Option<Workspace>> {

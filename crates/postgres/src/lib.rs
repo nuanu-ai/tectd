@@ -102,6 +102,8 @@ mod scope_advisory;
 mod scope_advisory_migration_tests;
 mod scope_candidate_store;
 mod scope_candidates;
+#[cfg(test)]
+mod session_advisory_preference_migration_tests;
 mod setup_store;
 mod setups;
 mod sources;

@@ -231,6 +231,31 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
             json!({}),
         ),
         route!(
+            "query",
+            "session.advisory.preference",
+            "get_session_advisory_preference",
+            "Read this authenticated native session's Jev advisory preference and revision.",
+            "Requires an open, non-revoked native session bound to the current workspace.",
+            "Reads the durable use_workspace default or the current session value.",
+            "Safe to repeat.",
+            object_schema(json!({}), json!([])),
+            json!({}),
+        ),
+        route!(
+            "command",
+            "session.advisory.preference.set",
+            "set_session_advisory_preference",
+            "Set this authenticated native session's Jev advisory preference with compare-and-set.",
+            "Requires the current session revision. Session and workspace identity come only from the authenticated context.",
+            "Appends one preference history revision. No provider request is made.",
+            "A repeated stale revision conflicts; read the current value before retrying.",
+            object_schema(
+                json!({"expected_revision":{"type":"integer","minimum":0},"preference":{"type":"string","enum":["use_workspace","skip"]}}),
+                json!(["expected_revision", "preference"])
+            ),
+            json!({"expected_revision":0,"preference":"skip"}),
+        ),
+        route!(
             "command",
             "workspace.advisory.configure",
             "configure_advisory",

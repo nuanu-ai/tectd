@@ -21,7 +21,7 @@ pub(crate) async fn verify_runtime_role(pool: &PgPool) -> Result<()> {
                    WHERE n.nspname = 'public'
                      AND c.relname IN (
                          'tenants', 'principals', 'hosts', 'workspaces', 'memberships',
-                         'agent_sessions', 'source_repositories', 'source_worktrees',
+                         'agent_sessions', 'session_advisory_preference_history', 'source_repositories', 'source_worktrees',
                          'session_worktrees', 'workspace_events', 'programs', 'program_inputs',
                          'advisory_workspace_config', 'advisory_workspace_config_history',
                          'advisory_opportunity', 'advisory_dispatch',

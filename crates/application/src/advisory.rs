@@ -46,6 +46,55 @@ impl tect_domain::ScopeDigest for Sha256ScopeDigest {
 }
 
 impl WorkspaceService {
+    async fn session_preference_transaction(
+        &self,
+        context: &tect_domain::RequestContext,
+        mode: TransactionMode,
+    ) -> Result<(
+        Box<dyn UnitOfWork>,
+        tect_domain::Workspace,
+        tect_domain::Session,
+        Uuid,
+    )> {
+        let (mut tx, identity) = self.authenticated(context, mode).await?;
+        if mode == TransactionMode::ReadWrite {
+            tx.lock_native_session(identity.host_id, &context.native_session_id)
+                .await?;
+        }
+        let (workspace, session) = Self::bound_session(&mut *tx, context, &identity).await?;
+        Ok((tx, workspace, session, identity.principal_id))
+    }
+
+    pub async fn session_advisory_preference(
+        &self,
+        context: &tect_domain::RequestContext,
+    ) -> Result<tect_domain::SessionAdvisoryPreference> {
+        let (mut tx, workspace, session, _) = self
+            .session_preference_transaction(context, TransactionMode::ReadOnly)
+            .await?;
+        let value = tx
+            .session_advisory_preference(workspace.id, session.id)
+            .await?;
+        tx.commit().await?;
+        Ok(value)
+    }
+
+    pub async fn set_session_advisory_preference(
+        &self,
+        context: &tect_domain::RequestContext,
+        request: &tect_domain::SetSessionAdvisoryPreference,
+    ) -> Result<tect_domain::SessionAdvisoryPreference> {
+        request.validate()?;
+        let (mut tx, workspace, session, principal) = self
+            .session_preference_transaction(context, TransactionMode::ReadWrite)
+            .await?;
+        let value = tx
+            .set_session_advisory_preference(workspace.id, session.id, principal, request)
+            .await?;
+        tx.commit().await?;
+        Ok(value)
+    }
+
     async fn verifier_candidate_transaction(
         &self,
         context: &tect_domain::RequestContext,

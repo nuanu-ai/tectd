@@ -47,6 +47,30 @@ impl AdvisoryRequestPreference {
     }
 }
 
+/// Durable preference of the authenticated native session. The session and
+/// workspace are selected by the host context, never by the request body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionAdvisoryPreference {
+    pub preference: AdvisoryRequestPreference,
+    pub revision: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SetSessionAdvisoryPreference {
+    pub expected_revision: i64,
+    pub preference: AdvisoryRequestPreference,
+}
+
+impl SetSessionAdvisoryPreference {
+    pub fn validate(&self) -> Result<()> {
+        if self.expected_revision < 0 {
+            return Err(Error::InvalidArguments);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AdvisoryCapability {

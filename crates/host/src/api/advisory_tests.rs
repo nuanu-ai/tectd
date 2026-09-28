@@ -39,6 +39,8 @@ fn public_surface_is_exactly_five_tools_with_scope_advisory_request() {
         ("query", "slice.pipeline.instruction"),
         ("command", "slice.pipeline.run.migrate"),
         ("query", "workspace.advisory.config"),
+        ("query", "session.advisory.preference"),
+        ("command", "session.advisory.preference.set"),
         ("query", "workspace.advisory.audit"),
         ("query", "scope.advisory.get"),
         ("query", "scope.advisory.card"),

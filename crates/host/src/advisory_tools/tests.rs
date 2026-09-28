@@ -4,6 +4,31 @@ use serde_json::json;
 #[test]
 fn advisory_routes_decode_only_their_strict_shapes() {
     assert!(matches!(
+        parse("get_session_advisory_preference", json!({})),
+        Ok(AdvisoryInvocation::SessionPreference)
+    ));
+    assert!(matches!(
+        parse(
+            "set_session_advisory_preference",
+            json!({"expected_revision":0,"preference":"skip"})
+        ),
+        Ok(AdvisoryInvocation::SetSessionPreference(_))
+    ));
+    for body in [
+        json!({"session_id":uuid::Uuid::new_v4()}),
+        json!({"workspace_id":uuid::Uuid::new_v4()}),
+    ] {
+        assert!(parse("get_session_advisory_preference", body).is_err());
+    }
+    for body in [
+        json!({"expected_revision":0,"preference":"skip","session_id":uuid::Uuid::new_v4()}),
+        json!({"expected_revision":0,"preference":"skip","workspace_id":uuid::Uuid::new_v4()}),
+        json!({"expected_revision":-1,"preference":"skip"}),
+        json!({"expected_revision":0,"preference":"allow"}),
+    ] {
+        assert!(parse("set_session_advisory_preference", body).is_err());
+    }
+    assert!(matches!(
         parse("get_advisory_config", json!({})),
         Ok(AdvisoryInvocation::Config)
     ));

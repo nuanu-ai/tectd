@@ -10,6 +10,14 @@ pub(crate) async fn execute(
     capacity: usize,
 ) -> Result<serde_json::Value> {
     let value = match invocation {
+        AdvisoryInvocation::SessionPreference => {
+            serde_json::to_value(service.session_advisory_preference(context).await?)
+        }
+        AdvisoryInvocation::SetSessionPreference(request) => serde_json::to_value(
+            service
+                .set_session_advisory_preference(context, &request)
+                .await?,
+        ),
         AdvisoryInvocation::MatrixCard {
             task_id,
             expected_task_revision,
