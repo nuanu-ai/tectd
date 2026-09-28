@@ -181,6 +181,7 @@ pub(super) fn answers(
                 score_confidence: ConfidenceBasisPoints(7_000),
             })
             .collect(),
+        comparative_disposition: None,
     }
 }
 

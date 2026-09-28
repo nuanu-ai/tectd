@@ -1141,6 +1141,7 @@ async fn fixture_provider_returns_normalized_answers_once() {
         outcome: AdvisoryDispatchOutcome::ProviderResponse,
         answers: Some(NormalizedScopeAdviceAnswers {
             answers: Vec::new(),
+            comparative_disposition: None,
         }),
         response_payload: Some(b"duplicate-aware adapter output".to_vec()),
         input_tokens: Some(1),

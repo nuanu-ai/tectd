@@ -184,6 +184,15 @@ pub struct NormalizedScopeAdviceAnswer {
 #[serde(deny_unknown_fields)]
 pub struct NormalizedScopeAdviceAnswers {
     pub answers: Vec<NormalizedScopeAdviceAnswer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparative_disposition: Option<ComparativeDisposition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ComparativeDisposition {
+    Selected(ScopeAlternativeId),
+    Abstain,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,6 +214,8 @@ pub struct GuardedScopeAdvice {
     pub manifest_digest: String,
     pub eligible_set_digest: String,
     pub normalized_answers_digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparative_disposition: Option<ComparativeDisposition>,
     pub items: Vec<GuardedScopeAdviceItem>,
     pub ranked_ids: Vec<ScopeAlternativeId>,
 }
@@ -253,13 +264,50 @@ pub fn guard_scope_advice(
         answer.choice_confidence.validate()?;
         answer.score_confidence.validate()?;
     }
+    match &normalized.comparative_disposition {
+        Some(ComparativeDisposition::Selected(selected_id)) => {
+            selected_id.validate()?;
+            if !expected.contains(selected_id)
+                || normalized
+                    .answers
+                    .iter()
+                    .filter(|answer| answer.choice == ScopeAdviceChoice::Preferred)
+                    .count()
+                    != 1
+                || normalized.answers.iter().any(|answer| {
+                    (answer.alternative_id == *selected_id)
+                        != (answer.choice == ScopeAdviceChoice::Preferred)
+                })
+            {
+                return Err(Error::InvalidArguments);
+            }
+        }
+        Some(ComparativeDisposition::Abstain) => {
+            if normalized
+                .answers
+                .iter()
+                .any(|answer| answer.choice != ScopeAdviceChoice::NonPreferred)
+            {
+                return Err(Error::InvalidArguments);
+            }
+        }
+        None => {}
+    }
     let mut canonical_answers = normalized.answers.clone();
     canonical_answers.sort_by(|left, right| left.alternative_id.cmp(&right.alternative_id));
-    let normalized_answers_digest = canonical_digest(
-        digest,
-        "tect.normalized-scope-advice-answers/1",
-        &canonical_answers,
-    )?;
+    let normalized_answers_digest = if let Some(disposition) = &normalized.comparative_disposition {
+        canonical_digest(
+            digest,
+            "tect.normalized-scope-advice-answers/1",
+            &(&canonical_answers, disposition),
+        )?
+    } else {
+        canonical_digest(
+            digest,
+            "tect.normalized-scope-advice-answers/1",
+            &canonical_answers,
+        )?
+    };
     let content_digest = canonical_digest(
         digest,
         "tect.guarded-scope-advice/1",
@@ -292,10 +340,21 @@ pub fn guard_scope_advice(
             .cmp(&left.score.ordinal())
             .then_with(|| left.alternative_id.cmp(&right.alternative_id))
     });
-    let ranked_ids = items
-        .iter()
-        .map(|value| value.alternative_id.clone())
-        .collect();
+    let ranked_ids = match &normalized.comparative_disposition {
+        Some(ComparativeDisposition::Selected(selected_id)) => std::iter::once(selected_id.clone())
+            .chain(
+                items
+                    .iter()
+                    .filter(|item| item.alternative_id != *selected_id)
+                    .map(|item| item.alternative_id.clone()),
+            )
+            .collect(),
+        Some(ComparativeDisposition::Abstain) => Vec::new(),
+        None => items
+            .iter()
+            .map(|item| item.alternative_id.clone())
+            .collect(),
+    };
     Ok(GuardedScopeAdvice {
         id,
         opportunity_id: Some(opportunity_id),
@@ -304,6 +363,7 @@ pub fn guard_scope_advice(
         manifest_digest: manifest.whole_set_digest.clone(),
         eligible_set_digest: manifest.eligible_set_digest.clone(),
         normalized_answers_digest,
+        comparative_disposition: normalized.comparative_disposition.clone(),
         items,
         ranked_ids,
     })
@@ -327,6 +387,7 @@ pub fn validate_guarded_advice_binding(
                 score_confidence: item.score_confidence,
             })
             .collect(),
+        comparative_disposition: advice.comparative_disposition.clone(),
     };
     let mut expected = guard_scope_advice(
         digest,

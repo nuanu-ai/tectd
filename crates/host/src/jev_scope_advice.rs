@@ -19,7 +19,8 @@ use tect_domain::{
 mod sealed;
 mod wire;
 
-const WIRE_FORMAT: &str = "jev-system-one-json/2";
+const WIRE_FORMAT: &str = "jev-system-one-json/3";
+const LEGACY_WIRE_FORMAT: &str = "jev-system-one-json/2";
 
 #[cfg(test)]
 mod tests;
@@ -105,6 +106,22 @@ impl JevScopeAdviceProvider {
             self.config.endpoint.as_str().to_owned(),
             WIRE_FORMAT.to_owned(),
         )
+    }
+
+    fn matches_legacy_prepared(
+        &self,
+        request: &ScopeAdviceRequest,
+        emitted: &[tect_domain::ScopeDecompositionAlternative],
+        prepared: &PreparedScopeAdviceAttempt,
+    ) -> bool {
+        prepared.wire_version() == LEGACY_WIRE_FORMAT
+            && prepared.request() == request
+            && prepared.profile() == self.config.profile
+            && prepared.model() == self.config.model
+            && prepared.destination() == self.config.endpoint.as_str()
+            && prepared.body_length() <= self.config.maximum_request_bytes
+            && wire::serialize_request_v2(&self.config.model, request, emitted)
+                .is_ok_and(|body| body.as_slice() == prepared.body())
     }
 
     #[cfg(test)]
@@ -357,6 +374,19 @@ impl ScopeAdviceProvider for JevScopeAdviceProvider {
         context: &ScopeAdviceProviderContext,
     ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError> {
         self.prepare_with_emitted(context.request(), context.emitted())
+    }
+
+    fn prepared_matches_context(
+        &self,
+        context: &ScopeAdviceProviderContext,
+        prepared: &PreparedScopeAdviceAttempt,
+    ) -> bool {
+        if prepared.wire_version() == WIRE_FORMAT {
+            return self
+                .prepare_context(context)
+                .is_ok_and(|current| current == *prepared);
+        }
+        self.matches_legacy_prepared(context.request(), context.emitted(), prepared)
     }
 
     async fn attempt_prepared(

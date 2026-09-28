@@ -157,6 +157,7 @@ pub(super) async fn selected_rankable(
                 choice_confidence: ConfidenceBasisPoints(9000),
                 score_confidence: ConfidenceBasisPoints(8000),
             }],
+            comparative_disposition: None,
         },
     )
     .unwrap();

@@ -1045,6 +1045,7 @@ async fn scope_vertical_fixture(recovery_only: bool) {
             choice_confidence: ConfidenceBasisPoints(9000),
             score_confidence: ConfidenceBasisPoints(8000),
         }],
+        comparative_disposition: None,
     };
     let advice = guard_scope_advice(
         &Sha256ScopeDigest,
@@ -1987,6 +1988,7 @@ async fn scope_vertical_fixture(recovery_only: bool) {
             choice_confidence: ConfidenceBasisPoints(9000),
             score_confidence: ConfidenceBasisPoints(8000),
         }],
+        comparative_disposition: None,
     };
     let selected_advice = guard_scope_advice(
         &Sha256ScopeDigest,

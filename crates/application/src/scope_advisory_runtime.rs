@@ -346,6 +346,17 @@ pub trait ScopeAdviceProvider: Send + Sync {
         &self,
         context: &ScopeAdviceProviderContext,
     ) -> std::result::Result<PreparedScopeAdviceAttempt, ScopeAdviceProviderError>;
+    /// Accept a sealed attempt only when its exact body still represents the
+    /// current authorized context. Providers may recognize an older wire
+    /// format here without changing the format used for new sends.
+    fn prepared_matches_context(
+        &self,
+        context: &ScopeAdviceProviderContext,
+        prepared: &PreparedScopeAdviceAttempt,
+    ) -> bool {
+        self.prepare_context(context)
+            .is_ok_and(|current| current == *prepared)
+    }
     /// `Ok` is reserved for a transport result proven sent, including typed
     /// provider/body failures. Pre-response uncertainty uses the error variant.
     async fn attempt_prepared(

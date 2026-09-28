@@ -141,8 +141,7 @@ impl WorkspaceService {
             crate::ScopeAdviceProviderContext::from_manifest(prepared.request(), manifest)?;
         let prepared_current = self
             .scope_advice_provider
-            .prepare_context(&provider_context)
-            .is_ok_and(|current| current == prepared);
+            .prepared_matches_context(&provider_context, &prepared);
         // All current effect/authority gates precede any normalized-answer interpretation.
         let answers = if budget_current && prepared_current {
             legacy_answers.or_else(|| {

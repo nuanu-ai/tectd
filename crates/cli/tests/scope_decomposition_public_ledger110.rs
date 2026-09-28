@@ -308,7 +308,10 @@ impl ScopeAdviceProvider for FakeJev {
         Ok(ScopeAdviceProviderObservation {
             send_certainty: AdvisorySendCertainty::Sent,
             outcome: AdvisoryDispatchOutcome::ProviderResponse,
-            answers: Some(NormalizedScopeAdviceAnswers { answers }),
+            answers: Some(NormalizedScopeAdviceAnswers {
+                answers,
+                comparative_disposition: None,
+            }),
             response_payload: Some(b"synthetic-provider-response".to_vec()),
             input_tokens: Some(11),
             output_tokens: Some(5),

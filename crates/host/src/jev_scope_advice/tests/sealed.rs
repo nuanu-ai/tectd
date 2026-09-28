@@ -121,6 +121,15 @@ fn fixture() -> (
 #[test]
 fn sealed_native_full_context_parses_without_mutation() {
     let (provider, prepared, saved) = fixture();
+    let body: Value = serde_json::from_slice(prepared.body()).unwrap();
+    let emitted: Vec<ScopeDecompositionAlternative> =
+        serde_json::from_value(body["state"]["emitted"].clone()).unwrap();
+    assert!(
+        provider
+            .prepare_with_emitted(&request(), &emitted)
+            .is_ok_and(|current| current == prepared)
+    );
+    assert!(!provider.matches_legacy_prepared(&request(), &emitted, &prepared));
     let before = saved.observation.clone();
     let answers = provider.parse_sealed_response(&prepared, &saved).unwrap();
     assert_eq!(answers.answers.len(), 1);
@@ -130,6 +139,106 @@ fn sealed_native_full_context_parses_without_mutation() {
         (Some(11), Some(5))
     );
     assert_eq!(saved.observation, before);
+}
+
+#[test]
+fn sealed_v2_receipt_keeps_legacy_binary_choice_interpretation() {
+    let (provider, prepared_v3, mut saved) = fixture();
+    let body: Value = serde_json::from_slice(prepared_v3.body()).unwrap();
+    let emitted: Vec<ScopeDecompositionAlternative> =
+        serde_json::from_value(body["state"]["emitted"].clone()).unwrap();
+    let v2_body = wire::serialize_request_v2("jev-1.13.0", &request(), &emitted).unwrap();
+    let prepared = PreparedScopeAdviceAttempt::new(
+        request(),
+        v2_body,
+        "fixture".into(),
+        "jev-1.13.0".into(),
+        prepared_v3.destination().into(),
+        LEGACY_WIRE_FORMAT.into(),
+    )
+    .unwrap();
+    saved.request_payload = prepared.body().to_vec();
+    saved.request_payload_sha256 = prepared.body_sha256().into();
+    saved.dispatch.payload_digest = prepared.body_sha256().into();
+    saved.configuration_snapshot["wire_version"] = json!(LEGACY_WIRE_FORMAT);
+    saved.configuration_snapshot["request_body_length"] = json!(prepared.body_length());
+    saved.configuration_snapshot["request_body_sha256"] = json!(prepared.body_sha256());
+    saved.dispatch.configuration_digest = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&saved.configuration_snapshot).unwrap())
+    );
+    saved.observation.as_mut().unwrap().response_payload = Some(serde_json::to_vec(&json!({
+        "model":"jev-1.13.0", "answers": {
+            format!("choice_{ID}"): {"type":"choice","choice":"PREFERRED","confidence":0.8,"probabilities":{"PREFERRED":0.8,"NON_PREFERRED":0.2}},
+            format!("score_{ID}"): {"type":"score","score":2.4,"confidence":0.7,"legend":{"0":"conflict","1":"weak_fit","2":"fit","3":"strong_fit"},"probabilities":{"0":0.05,"1":0.1,"2":0.55,"3":0.3}}
+        }, "usage":{"input_tokens":11,"output_tokens":5}
+    })).unwrap());
+    assert!(provider.matches_legacy_prepared(&request(), &emitted, &prepared));
+    assert_ne!(
+        provider.prepare_with_emitted(&request(), &emitted).unwrap(),
+        prepared
+    );
+    let answers = provider.parse_sealed_response(&prepared, &saved).unwrap();
+    assert_eq!(
+        answers.answers[0].choice,
+        tect_domain::ScopeAdviceChoice::Preferred
+    );
+    assert_eq!(answers.comparative_disposition, None);
+    assert!(
+        serde_json::to_value(&answers)
+            .unwrap()
+            .get("comparative_disposition")
+            .is_none()
+    );
+    let legacy_normalized = format!(
+        "{{\"answers\":[{{\"alternative_id\":\"{ID}\",\"choice\":\"preferred\",\"score\":\"fit\",\"choice_confidence\":8000,\"score_confidence\":7000}}]}}"
+    );
+    assert_eq!(
+        serde_json::to_vec(&answers).unwrap(),
+        legacy_normalized.as_bytes()
+    );
+    assert_eq!(
+        provider
+            .usage_from_sealed_response(&saved)
+            .unwrap()
+            .input_tokens,
+        Some(11)
+    );
+}
+
+#[test]
+fn sealed_v2_receipt_rejects_self_consistent_mismatched_emitted_material() {
+    let (provider, prepared_v3, mut saved) = fixture();
+    let body: Value = serde_json::from_slice(prepared_v3.body()).unwrap();
+    let emitted: Vec<ScopeDecompositionAlternative> =
+        serde_json::from_value(body["state"]["emitted"].clone()).unwrap();
+    let v2_body = wire::serialize_request_v2("jev-1.13.0", &request(), &emitted).unwrap();
+    let mut malformed: Value = serde_json::from_slice(&v2_body).unwrap();
+    malformed["state"]["emitted"][0]["material_digest"] = json!("0".repeat(64));
+    let prepared = PreparedScopeAdviceAttempt::new(
+        request(),
+        serde_json::to_vec(&malformed).unwrap(),
+        "fixture".into(),
+        "jev-1.13.0".into(),
+        prepared_v3.destination().into(),
+        LEGACY_WIRE_FORMAT.into(),
+    )
+    .unwrap();
+    saved.request_payload = prepared.body().to_vec();
+    saved.request_payload_sha256 = prepared.body_sha256().into();
+    saved.dispatch.payload_digest = prepared.body_sha256().into();
+    saved.configuration_snapshot["wire_version"] = json!(LEGACY_WIRE_FORMAT);
+    saved.configuration_snapshot["request_body_length"] = json!(prepared.body_length());
+    saved.configuration_snapshot["request_body_sha256"] = json!(prepared.body_sha256());
+    saved.dispatch.configuration_digest = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&saved.configuration_snapshot).unwrap())
+    );
+    assert!(!provider.matches_legacy_prepared(&request(), &emitted, &prepared));
+    assert_eq!(
+        provider.parse_sealed_response(&prepared, &saved),
+        Err(Error::InvalidArguments)
+    );
 }
 
 #[test]

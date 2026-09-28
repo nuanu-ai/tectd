@@ -155,6 +155,158 @@ fn ranking_uses_discrete_band_then_stable_id_and_identity_is_canonical() {
 }
 
 #[test]
+fn comparative_selection_leads_even_when_rounded_scores_tie() {
+    let manifest = fixture_manifest();
+    let request = ScopeAdviceRequest::from_manifest(&digest(), &manifest).unwrap();
+    let mut normalized = answers(
+        &manifest,
+        [ScopeAdviceScoreBand::Fit, ScopeAdviceScoreBand::Fit],
+    );
+    let selected = manifest.emitted[1].id.clone();
+    normalized.answers[0].choice = ScopeAdviceChoice::NonPreferred;
+    normalized.comparative_disposition = Some(ComparativeDisposition::Selected(selected.clone()));
+    let advice = guard_scope_advice(
+        &digest(),
+        uuid::Uuid::from_u128(200),
+        &manifest,
+        &request,
+        &normalized,
+    )
+    .unwrap();
+    assert_eq!(advice.ranked_ids[0], selected);
+    assert_eq!(advice.ranked_ids[1], manifest.emitted[0].id);
+    assert_eq!(
+        advice.comparative_disposition,
+        normalized.comparative_disposition
+    );
+    validate_guarded_advice_binding(&digest(), &manifest, &advice).unwrap();
+    let mut tampered = advice.clone();
+    tampered.ranked_ids.swap(0, 1);
+    assert!(validate_guarded_advice_binding(&digest(), &manifest, &tampered).is_err());
+    let mut tampered = advice;
+    tampered.comparative_disposition = Some(ComparativeDisposition::Abstain);
+    assert!(validate_guarded_advice_binding(&digest(), &manifest, &tampered).is_err());
+}
+
+#[test]
+fn comparative_abstain_has_no_ranking_but_keeps_scores() {
+    let manifest = fixture_manifest();
+    let request = ScopeAdviceRequest::from_manifest(&digest(), &manifest).unwrap();
+    let mut normalized = answers(
+        &manifest,
+        [
+            ScopeAdviceScoreBand::StrongFit,
+            ScopeAdviceScoreBand::WeakFit,
+        ],
+    );
+    for answer in &mut normalized.answers {
+        answer.choice = ScopeAdviceChoice::NonPreferred;
+    }
+    normalized.comparative_disposition = Some(ComparativeDisposition::Abstain);
+    let advice = guard_scope_advice(
+        &digest(),
+        uuid::Uuid::from_u128(200),
+        &manifest,
+        &request,
+        &normalized,
+    )
+    .unwrap();
+    assert!(advice.ranked_ids.is_empty());
+    assert_eq!(advice.items.len(), 2);
+    assert_eq!(
+        advice.comparative_disposition,
+        Some(ComparativeDisposition::Abstain)
+    );
+    validate_guarded_advice_binding(&digest(), &manifest, &advice).unwrap();
+}
+
+#[test]
+fn comparative_disposition_rejects_unknown_or_choice_mismatch() {
+    let manifest = fixture_manifest();
+    let request = ScopeAdviceRequest::from_manifest(&digest(), &manifest).unwrap();
+    let mut normalized = answers(
+        &manifest,
+        [ScopeAdviceScoreBand::Fit, ScopeAdviceScoreBand::Fit],
+    );
+    normalized.answers[0].choice = ScopeAdviceChoice::NonPreferred;
+    normalized.comparative_disposition = Some(ComparativeDisposition::Selected(
+        ScopeAlternativeId("a".repeat(64)),
+    ));
+    assert!(
+        guard_scope_advice(
+            &digest(),
+            uuid::Uuid::from_u128(200),
+            &manifest,
+            &request,
+            &normalized
+        )
+        .is_err()
+    );
+    normalized.comparative_disposition = Some(ComparativeDisposition::Selected(
+        manifest.emitted[0].id.clone(),
+    ));
+    assert!(
+        guard_scope_advice(
+            &digest(),
+            uuid::Uuid::from_u128(200),
+            &manifest,
+            &request,
+            &normalized
+        )
+        .is_err()
+    );
+    normalized.comparative_disposition = Some(ComparativeDisposition::Abstain);
+    assert!(
+        guard_scope_advice(
+            &digest(),
+            uuid::Uuid::from_u128(200),
+            &manifest,
+            &request,
+            &normalized
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn legacy_all_nonpreferred_retains_score_order_and_old_serialized_shape() {
+    let manifest = fixture_manifest();
+    let request = ScopeAdviceRequest::from_manifest(&digest(), &manifest).unwrap();
+    let mut normalized = answers(
+        &manifest,
+        [
+            ScopeAdviceScoreBand::WeakFit,
+            ScopeAdviceScoreBand::StrongFit,
+        ],
+    );
+    for answer in &mut normalized.answers {
+        answer.choice = ScopeAdviceChoice::NonPreferred;
+    }
+    let advice = guard_scope_advice(
+        &digest(),
+        uuid::Uuid::from_u128(200),
+        &manifest,
+        &request,
+        &normalized,
+    )
+    .unwrap();
+    assert_eq!(advice.ranked_ids[0], manifest.emitted[1].id);
+    assert!(
+        serde_json::to_value(&normalized)
+            .unwrap()
+            .get("comparative_disposition")
+            .is_none()
+    );
+    assert!(
+        serde_json::to_value(&advice)
+            .unwrap()
+            .get("comparative_disposition")
+            .is_none()
+    );
+    validate_guarded_advice_binding(&digest(), &manifest, &advice).unwrap();
+}
+
+#[test]
 fn identical_content_has_distinct_opportunity_identity_and_stable_replay() {
     let manifest = fixture_manifest();
     let request = ScopeAdviceRequest::from_manifest(&digest(), &manifest).unwrap();

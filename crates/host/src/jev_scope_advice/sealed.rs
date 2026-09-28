@@ -38,7 +38,7 @@ pub(super) fn usage(
             .configuration_snapshot
             .get("wire_version")
             .and_then(Value::as_str)
-            != Some(WIRE_FORMAT)
+            .is_none_or(|version| !matches!(version, WIRE_FORMAT | LEGACY_WIRE_FORMAT))
         || saved.request_payload_sha256 != saved.dispatch.payload_digest
         || saved.request_payload_sha256 != format!("{:x}", Sha256::digest(&saved.request_payload))
         || raw
@@ -123,7 +123,7 @@ pub(super) fn parse(
         || prepared.profile() != provider.config.profile
         || prepared.model() != provider.config.model
         || prepared.destination() != provider.config.endpoint.as_str()
-        || prepared.wire_version() != WIRE_FORMAT
+        || !matches!(prepared.wire_version(), WIRE_FORMAT | LEGACY_WIRE_FORMAT)
         || saved.request_payload != prepared.body()
         || saved.request_payload_sha256 != prepared.body_sha256()
         || saved.dispatch.payload_digest != prepared.body_sha256()
@@ -159,12 +159,21 @@ pub(super) fn parse(
     if emitted.is_empty() {
         return Err(Error::InvalidArguments);
     }
-    let canonical = wire::serialize_request(prepared.model(), prepared.request(), &emitted)
-        .map_err(|_| Error::InvalidArguments)?;
+    let canonical = if prepared.wire_version() == WIRE_FORMAT {
+        wire::serialize_request(prepared.model(), prepared.request(), &emitted)
+    } else {
+        wire::serialize_request_v2(prepared.model(), prepared.request(), &emitted)
+    }
+    .map_err(|_| Error::InvalidArguments)?;
     if canonical != prepared.body() {
         return Err(Error::InputConflict);
     }
-    wire::parse_response(bytes, prepared.model(), prepared.request())
+    let parsed = if prepared.wire_version() == WIRE_FORMAT {
+        wire::parse_response(bytes, prepared.model(), prepared.request())
+    } else {
+        wire::parse_response_v2(bytes, prepared.model(), prepared.request())
+    };
+    parsed
         .map(|v| v.answers)
         .map_err(|_| Error::InvalidArguments)
 }

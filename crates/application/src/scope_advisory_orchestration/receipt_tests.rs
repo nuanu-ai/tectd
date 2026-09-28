@@ -28,6 +28,7 @@ fn scope_raw_accounting_precedes_every_current_gate_and_ranking() {
         assert!(finish.find(gate).unwrap() < parse, "{gate}");
     }
     assert!(finish.contains(".finalize_scope_advisory_without_advice("));
+    assert!(finish.contains(".prepared_matches_context(&provider_context, &prepared)"));
     assert!(!finish.contains("seal_advisory_dispatch"));
 }
 

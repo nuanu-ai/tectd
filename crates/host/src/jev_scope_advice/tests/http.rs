@@ -157,7 +157,7 @@ async fn prepared_entity_is_the_received_entity_with_exact_digest_and_binding() 
     );
     assert_eq!(prepared.profile(), "fixture");
     assert_eq!(prepared.model(), "jev-1.13.0");
-    assert_eq!(prepared.wire_version(), "jev-system-one-json/2");
+    assert_eq!(prepared.wire_version(), "jev-system-one-json/3");
     assert_eq!(prepared.destination(), endpoint.as_str());
 
     let observation = provider
@@ -252,6 +252,29 @@ async fn serialized_request_one_byte_over_cap_is_proven_not_sent() {
     let rendered = format!("{result:?}");
     assert!(!rendered.contains("private-request-marker"));
     assert!(!rendered.contains("secret-fixture-credential"));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), listener.accept())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn no_eligible_alternatives_abstains_before_send() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = Url::parse(&format!(
+        "http://{}/v1/systemone",
+        listener.local_addr().unwrap()
+    ))
+    .unwrap();
+    let provider = provider(endpoint, Duration::from_secs(1), 16_384);
+    let mut empty = request();
+    empty.alternatives.clear();
+    empty.questions.clear();
+    assert_eq!(
+        provider.attempt_request(DISPATCH_ID, &empty).await,
+        Err(ScopeAdviceProviderError::ProvenNotSent)
+    );
     assert!(
         tokio::time::timeout(Duration::from_millis(50), listener.accept())
             .await

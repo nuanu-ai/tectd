@@ -391,6 +391,7 @@ async fn selected_save_activates_exact_source_bound_anti_bloat_review() {
                 choice_confidence: ConfidenceBasisPoints(9000),
                 score_confidence: ConfidenceBasisPoints(8000),
             }],
+            comparative_disposition: None,
         },
     )
     .unwrap();

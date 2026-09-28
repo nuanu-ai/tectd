@@ -361,6 +361,7 @@ async fn public_selected_advisory_save_is_durable_and_session_bound() {
                 choice_confidence: ConfidenceBasisPoints(9000),
                 score_confidence: ConfidenceBasisPoints(8000),
             }],
+            comparative_disposition: None,
         },
     )
     .unwrap();

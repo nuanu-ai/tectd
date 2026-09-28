@@ -16,10 +16,100 @@ use tect_domain::{NormalizedScopeAdviceAnswers, ScopeAdviceRequest};
 
 #[path = "s01_live/audit.rs"]
 mod audit;
-#[path = "s01_live/loopback.rs"]
-mod loopback;
+// Kept here so the S01 v3 live fixture is self-contained; the old v2
+// loopback response remains on disk as historical test evidence.
+mod loopback {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
-const CALL_ID: &str = "tectd-jev-s01-evidence-2026-09-28-2";
+    fn response(request: &ScopeAdviceRequest, selective: bool) -> Vec<u8> {
+        let mut answers = serde_json::Map::new();
+        let mut alternatives = request.alternatives.iter().collect::<Vec<_>>();
+        alternatives.sort_by(|a, b| a.id.0.cmp(&b.id.0));
+        assert_eq!(alternatives.len(), 2);
+        answers.insert(
+            "choice_v3".into(),
+            json!({
+                "type":"choice", "choice":if selective {"C0"} else {"ABSTAIN"},
+                "confidence":0.8,
+                "probabilities":if selective {
+                    json!({"C0":0.8,"C1":0.1,"ABSTAIN":0.1})
+                } else {
+                    json!({"C0":0.1,"C1":0.1,"ABSTAIN":0.8})
+                }
+            }),
+        );
+        for (index, alternative) in alternatives.iter().enumerate() {
+            answers.insert(
+                format!("score_{}", alternative.id.0),
+                json!({
+                    "type":"score", "score":if index == 0 {2.4} else {1.2},
+                    "confidence":0.7,
+                    "legend":{"0":"conflict","1":"weak_fit","2":"fit","3":"strong_fit"},
+                    "probabilities":{"0":0.05,"1":0.1,"2":0.55,"3":0.3}
+                }),
+            );
+        }
+        serde_json::to_vec(&json!({"model":MODEL,"answers":answers,
+            "usage":{"input_tokens":100,"output_tokens":40}}))
+        .unwrap()
+    }
+
+    pub(super) async fn start(
+        request: &ScopeAdviceRequest,
+        selective: bool,
+        fail_status: bool,
+    ) -> (String, tokio::task::JoinHandle<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+        let response_body = response(request, selective);
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0u8; 8192];
+            let (body_start, length) = loop {
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0, "request ended before complete HTTP entity");
+                bytes.extend_from_slice(&chunk[..count]);
+                assert!(bytes.len() <= MAX_REQUEST + 8192);
+                if let Some(header_end) = bytes.windows(4).position(|x| x == b"\r\n\r\n") {
+                    let body_start = header_end + 4;
+                    let headers = std::str::from_utf8(&bytes[..header_end]).unwrap();
+                    let length: usize = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|value| value.trim().parse().ok())
+                        })
+                        .expect("request Content-Length required");
+                    assert!(length <= MAX_REQUEST);
+                    if bytes.len() >= body_start + length {
+                        break (body_start, length);
+                    }
+                }
+            };
+            let captured = bytes[body_start..body_start + length].to_vec();
+            let status = if fail_status {
+                "500 Fixture Failure"
+            } else {
+                "200 OK"
+            };
+            let header = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                response_body.len()
+            );
+            stream.write_all(header.as_bytes()).await.unwrap();
+            stream.write_all(&response_body).await.unwrap();
+            stream.flush().await.unwrap();
+            captured
+        });
+        (endpoint, server)
+    }
+}
+
+const CALL_ID: &str = "tectd-jev-s01-vertical-path-2026-09-29-5";
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 const MODEL: &str = "jev-1.13.0";
 const ARTIFACT_DIR: &str =
@@ -251,22 +341,22 @@ async fn s01_source_candidate(client: &mut Mcp, source: &Path) -> (Value, Value)
         .await;
     let begun = client.call("begin_program", json!({
         "request_id":Uuid::new_v4(),
-        "input":"From the exact saved source, author complete cohesive and partitioned Scope alternatives. Preserve every applicable source fragment in each alternative and let Jev rank only the eligible authored set. Record an explicit caller disposition; before any selected save, recheck source, configuration, policy and preservation. Use the existing authorized caller and a distinct Verifier, retaining their separate audit receipts."
+        "input":"From the exact saved source, prioritize the earliest independently acceptable end-to-end vertical path. Minimize extra Scope handoffs while retaining clean hexagonal interfaces. Author complete cohesive and partitioned alternatives, each preserving every applicable source fragment. Durably log every JEV request, dispatch and raw response. Let JEV rank only the eligible authored set. Record explicit caller disposition; before any selected save, recheck source, configuration, policy and preservation. Use the existing authorized caller and a distinct Verifier, retaining separate audit receipts."
     })).await;
     let program = client.call("save_program", json!({
         "program_id":begun["program"]["id"],"revision":1,"input_cursor":1,
         "name":"Scope decomposition advice",
-        "intent":"Compare complete source-authored Scope alternatives through optional guarded ranking and explicit disposition",
+        "intent":"Select the earliest independently acceptable end-to-end vertical path through guarded ranking and explicit disposition",
         "basis":"The saved source and each applicable source fragment govern both authored alternatives",
         "boundaries":"Jev ranks only eligible alternatives; advice cannot select or mutate by itself",
-        "constraints":"Recheck source, configuration, policy and preservation before the existing caller; keep caller and distinct Verifier receipts",
-        "success":"A complete alternative can be explicitly selected, saved through the existing caller and independently observed by a Verifier; nonselective advice can be rejected",
+        "constraints":"Minimize Scope handoffs with clean hexagonal interfaces; durably log every JEV request; recheck source, configuration, policy and preservation before the existing caller; keep caller and distinct Verifier receipts",
+        "success":"The earliest independently acceptable complete vertical path can be explicitly selected, saved through the existing caller and independently observed by a Verifier; nonselective advice can be rejected",
         "complete":true
     })).await;
     let candidates = client.call("begin_candidate_set", json!({
         "request_id":Uuid::new_v4(),"program_id":program["program"]["id"],
         "program_revision":program["program"]["revision"],"boundary":"ongoing",
-        "input":"Compare one cohesive Scope with two dependent partitioned Scopes for the same complete S01 work."
+        "input":"Compare one Scope delivering the complete end-to-end path with two dependent Scopes where the first independently delivers reusable source-preserving preparation and durable audit, and the second delivers disposition, caller effect and distinct Verifier. Both complete the same S01 obligations."
     })).await;
     let context = &candidates["context"];
     let inputs = client
@@ -286,9 +376,9 @@ async fn s01_source_candidate(client: &mut Mcp, source: &Path) -> (Value, Value)
             "source_ref_id":source_ref,"resolution":{"kind":"candidate","reference":{"local":"scope"}}
         }],"evidence":[],"candidates":[{
             "identity":{"local":"scope"},"title":"Scope advice and disposition",
-            "outcome":"Complete alternatives can be ranked and explicitly disposed",
+            "outcome":"Complete alternatives can be ranked and explicitly disposed toward the earliest independently acceptable vertical path",
             "trigger":"An exact source and candidate set are available",
-            "delivered_behavior":"Guarded advice, explicit decision and existing caller path",
+            "delivered_behavior":"Clean hexagonal interfaces, durable request audit, guarded advice, explicit decision, existing caller and Verifier path",
             "proof":"Source coverage and separate caller and Verifier receipts",
             "includes":["authored alternatives","ranking","disposition","existing caller and Verifier"],
             "excludes":["automatic effect","new mutation engine"],"dependencies":[],
@@ -317,16 +407,16 @@ async fn s01_source_candidate(client: &mut Mcp, source: &Path) -> (Value, Value)
 fn cohesive_draft(source_ref: Uuid, prior: &Value) -> Value {
     json!({"boundary":"ongoing","goals":[{
         "identity":{"local":"complete"},
-        "text":"Preserve the complete authored set, ranking-only advice, explicit disposition and authorized save with separate Verifier observation",
+        "text":"Deliver the earliest independently acceptable complete vertical path with clean hexagonal interfaces, complete authored set, durable every-request audit, ranking-only advice, explicit disposition and authorized save with separate Verifier observation",
         "source_ref_id":source_ref,
         "resolution":{"kind":"candidate","reference":{"local":"scope"}}
     }],"evidence":[],"candidates":[{
-        "identity":{"local":"scope"},"title":"Scope decomposition advice and effect path",
+        "identity":{"local":"scope"},"title":"One-Scope end-to-end vertical path",
         "outcome":"A complete source-covering alternative is explicitly chosen or rejected, and any selected save has caller and Verifier evidence",
         "trigger":"An exact source and current candidate set are available",
-        "delivered_behavior":"Author and preserve complete alternatives; audit the exact request and optional provider ranking; record caller disposition; recheck source, configuration, policy and preservation before the existing caller; observe its result with a distinct Verifier",
+        "delivered_behavior":"Deliver the earliest independently acceptable end-to-end path in one Scope with clean hexagonal interfaces: author and preserve complete alternatives; durably log every exact JEV request, dispatch and raw response; record ranking-only advice and explicit caller disposition; recheck source, configuration, policy and preservation before the existing caller; observe its result with a distinct Verifier",
         "proof":"The manifest covers every applicable source fragment, the request and dispatch are auditable, and disposition, preservation, caller and Verifier receipts remain separate",
-        "includes":["complete source-authored alternatives and preservation","exact request and provider audit","ranking-only guarded advice and explicit disposition","source/configuration/policy/preservation recheck","existing caller and distinct Verifier"],
+        "includes":["earliest independently acceptable complete vertical path","clean hexagonal interfaces without extra Scope handoffs","complete source-authored alternatives and preservation","durable every-JEV-request, dispatch and raw-response audit","ranking-only guarded advice and explicit disposition","source/configuration/policy/preservation recheck","existing caller and distinct Verifier"],
         "excludes":["automatic selection","new mutation engine","unrelated deployment"],
         "dependencies":[],"coverage_goals":[{"local":"complete"}],"evidence":[]
     }],"blockers":[],"protected_changes":[],"supersessions":[{
@@ -338,24 +428,24 @@ fn cohesive_draft(source_ref: Uuid, prior: &Value) -> Value {
 
 fn partitioned_draft(source_ref: Uuid, prior: &Value) -> Value {
     json!({"boundary":"ongoing","goals":[
-        {"identity":{"local":"preparation"},"text":"Preserve complete authored alternatives and audit the exact ranking request", "source_ref_id":source_ref,
+        {"identity":{"local":"preparation"},"text":"Independently deliver reusable source-preserving preparation and durable every-JEV-request audit behind a clean interface", "source_ref_id":source_ref,
          "resolution":{"kind":"candidate","reference":{"local":"prepare"}}},
-        {"identity":{"local":"effect_goal"},"text":"Explicitly dispose guarded advice and use the existing authorized caller and distinct Verifier", "source_ref_id":source_ref,
+        {"identity":{"local":"effect_goal"},"text":"Complete the earliest independently acceptable end-to-end path with explicit disposition, existing authorized caller and distinct Verifier", "source_ref_id":source_ref,
          "resolution":{"kind":"candidate","reference":{"local":"effect"}}}
     ],"evidence":[],"candidates":[
-        {"identity":{"local":"prepare"},"title":"Source-preserving alternatives and request audit",
-         "outcome":"Complete eligible alternatives and their exact optional ranking request are auditable", "trigger":"An exact source and current candidate set are available",
-         "delivered_behavior":"Author and freeze complete alternatives, cover every applicable source fragment, build the exact request, and audit any single provider ranking attempt",
-         "proof":"The manifest covers every applicable fragment and retained request, digest, dispatch and provider response identify the attempted ranking",
-         "includes":["complete source-authored alternatives and preservation","exact request and provider audit"],
+        {"identity":{"local":"prepare"},"title":"Reusable preparation and durable audit boundary",
+         "outcome":"An independently useful, reusable preparation interface produces complete eligible alternatives and a durable audit of every optional JEV request", "trigger":"An exact source and current candidate set are available",
+         "delivered_behavior":"Behind a clean hexagonal interface, author and freeze complete alternatives covering every applicable source fragment; build each exact JEV request and durably retain its bytes, digest, dispatch and raw response, including failed attempts",
+         "proof":"The manifest covers every applicable fragment; exact retained request, digest, dispatch and raw response prove the reusable preparation and audit boundary independently of downstream effect",
+         "includes":["independently useful reusable preparation boundary","clean hexagonal interface","complete source-authored alternatives and preservation","durable every-JEV-request, dispatch and raw-response audit"],
          "excludes":["automatic selection","new mutation engine","unrelated deployment"],
          "dependencies":[],"coverage_goals":[{"local":"preparation"}],"evidence":[]},
-        {"identity":{"local":"effect"},"title":"Explicit disposition and existing effect path",
-         "outcome":"Guarded advice is explicitly accepted or rejected, and any selected save has caller and Verifier evidence",
+        {"identity":{"local":"effect"},"title":"End-to-end disposition, caller and Verifier path",
+         "outcome":"The earliest independently acceptable end-to-end path explicitly accepts or rejects guarded advice; any selected save has caller and distinct Verifier evidence",
          "trigger":"Complete alternatives and either an audited ranking result or an audited deterministic baseline for a disabled, skipped, or failed provider attempt are available",
-         "delivered_behavior":"Record explicit disposition; recheck source, configuration, policy and preservation before the existing authorized caller; observe its result with a distinct Verifier",
+         "delivered_behavior":"Consume the reusable preparation boundary without another Scope handoff; record explicit ranking-only advice disposition; recheck source, configuration, policy and preservation before the existing authorized caller; observe its result with a distinct Verifier",
          "proof":"Advice and disposition identify the selection or rejection, while preservation, caller and Verifier receipts remain separate",
-         "includes":["ranking-only guarded advice and explicit disposition","source/configuration/policy/preservation recheck","existing caller and distinct Verifier"],
+         "includes":["earliest independently acceptable complete vertical path","clean hexagonal interface with only one necessary Scope handoff","ranking-only guarded advice and explicit disposition","source/configuration/policy/preservation recheck","existing caller and distinct Verifier"],
          "excludes":["automatic effect","new mutation engine","unrelated deployment"],
          "dependencies":[{"local":"prepare"}],"coverage_goals":[{"local":"effect_goal"}],"evidence":[]}
     ],"blockers":[],"protected_changes":[],"supersessions":[{
@@ -402,13 +492,13 @@ async fn run_fixture(mode: &str) {
     let request_path = artifact(if mode == "preflight" {
         "preflight-native-verified.request.json"
     } else if mode == "loopback_selective" {
-        "loopback-selective.request.json"
+        "loopback-selective-v3.request.json"
     } else if mode == "loopback_nonselective" {
-        "loopback-nonselective-v2.request.json"
+        "loopback-nonselective-v3.request.json"
     } else if mode == "loopback_negative" {
-        "loopback-negative.request.json"
+        "loopback-negative-v3.request.json"
     } else if mode == "loopback_failure" {
-        "loopback-failure-v2.request.json"
+        "loopback-failure-v3.request.json"
     } else {
         "request.json"
     });
@@ -640,6 +730,27 @@ async fn run_fixture(mode: &str) {
         json_body["state"]["request"],
         serde_json::to_value(&request).unwrap()
     );
+    let questions = json_body["questions"].as_object().unwrap();
+    assert_eq!(questions.len(), request.alternatives.len() + 1);
+    let choice = &questions["choice_v3"];
+    assert_eq!(choice["type"], "choice");
+    let criteria = choice["criteria"].as_object().unwrap();
+    assert_eq!(criteria.len(), request.alternatives.len() + 1);
+    assert!(criteria.contains_key("ABSTAIN"));
+    let tokens = json_body["state"]["candidate_tokens"].as_object().unwrap();
+    assert_eq!(tokens.len(), request.alternatives.len());
+    let mut ordered = request.alternatives.iter().collect::<Vec<_>>();
+    ordered.sort_by(|a, b| a.id.0.cmp(&b.id.0));
+    for (index, alternative) in ordered.iter().enumerate() {
+        let token = format!("C{index}");
+        assert_eq!(tokens[&token]["id"], alternative.id.0.to_string());
+        assert!(criteria.contains_key(&token));
+        assert_eq!(
+            questions[&format!("score_{}", alternative.id.0)]["type"],
+            "score"
+        );
+        assert!(!questions.contains_key(&format!("choice_{}", alternative.id.0)));
+    }
     let no_call = route(
         &mut owner,
         "command",
@@ -836,6 +947,15 @@ async fn run_fixture(mode: &str) {
     }
     if mode == "loopback_nonselective" {
         assert!(!selective);
+        assert_eq!(advice["comparative_disposition"], "abstain");
+        assert_eq!(advice["ranked_ids"], json!([]));
+    }
+    if mode == "loopback_selective" {
+        assert_eq!(
+            advice["comparative_disposition"],
+            json!({"selected":preferred[0]["alternative_id"]})
+        );
+        assert_eq!(advice["ranked_ids"][0], preferred[0]["alternative_id"]);
     }
     let selected_id = if selective {
         Some(preferred[0]["alternative_id"].clone())
@@ -866,6 +986,15 @@ async fn run_fixture(mode: &str) {
     )
     .await;
     if !selective {
+        let caller_links: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM advisory_scope_caller_link WHERE workspace_id=$1 AND opportunity_id=$2",
+        )
+        .bind(workspace)
+        .bind(opportunity)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(caller_links, 0);
         println!(
             "S01 nonselective advice: reject_all disposition={} ; no selected save",
             disposition["id"]
