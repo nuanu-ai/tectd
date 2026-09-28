@@ -19,7 +19,7 @@ pub(super) async fn reconcile_unit(
     recovery::reconcile_unit_direct(tx, tenant, workspace, unit).await?;
     super::search::register_search_copies(tx, tenant, workspace, unit).await?;
     super::maintenance::register_maintenance_copies(tx, tenant, workspace, unit).await?;
-    let manifests:Vec<(Uuid,i64)>=sqlx::query_as("SELECT DISTINCT m.id,(item->>'revision')::bigint FROM pipeline_knowledge_manifests m CROSS JOIN LATERAL pg_catalog.jsonb_array_elements(COALESCE(m.selected,'[]'::jsonb)||COALESCE(m.selected_resources,'[]'::jsonb)) item WHERE m.tenant_id=$1 AND m.workspace_id=$2 AND item->>'unit_id'=$3::text ORDER BY 1,2")
+    let manifests:Vec<(Uuid,i64)>=sqlx::query_as("SELECT DISTINCT manifest_id,revision FROM (SELECT m.id AS manifest_id,(item->>'revision')::bigint AS revision FROM pipeline_knowledge_manifests m CROSS JOIN LATERAL pg_catalog.jsonb_array_elements(COALESCE(m.selected,'[]'::jsonb)||COALESCE(m.selected_resources,'[]'::jsonb)) item WHERE m.tenant_id=$1 AND m.workspace_id=$2 AND item->>'unit_id'=$3::text UNION ALL SELECT p.manifest_id,p.revision FROM pipeline_knowledge_manifest_resources p WHERE p.tenant_id=$1 AND p.workspace_id=$2 AND p.unit_id=$3) pins ORDER BY 1,2")
         .bind(tenant).bind(workspace).bind(unit).fetch_all(&mut **tx).await.map_err(storage_error)?;
     for (row, revision) in manifests {
         registry::register_propagated(

@@ -83,16 +83,18 @@ pub(crate) fn publish(value: PublishKnowledgeChangeOutcome, capacity: usize) -> 
 }
 
 pub(crate) fn refresh(value: RefreshPipelineKnowledgeOutcome, capacity: usize) -> Result<Value> {
-    let manifest = match &value {
+    let run_id = match &value {
         RefreshPipelineKnowledgeOutcome::Refreshed(manifest)
-        | RefreshPipelineKnowledgeOutcome::Replay(manifest) => manifest,
+        | RefreshPipelineKnowledgeOutcome::Replay(manifest) => manifest.run_id,
+        RefreshPipelineKnowledgeOutcome::PagedRefreshed(manifest)
+        | RefreshPipelineKnowledgeOutcome::PagedReplay(manifest) => manifest.run_id,
     };
     within(
         responses::with_actions(
             json!(value),
             vec![responses::action(
                 "slice_pipeline_context",
-                json!({"run_id":manifest.run_id}),
+                json!({"run_id":run_id}),
             )?],
             Some(0),
         ),

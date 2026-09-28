@@ -347,12 +347,21 @@ mod source_amendment_tests {
         for (field, path) in [
             ("consumed_outputs", "arguments.params.consumed_outputs"),
             ("consumed_inputs", "arguments.params.consumed_inputs"),
+            ("consumed_knowledge", "arguments.params.consumed_knowledge"),
         ] {
             let mut request = proof_test_completion();
-            if field == "consumed_outputs" {
-                request.consumed_inputs.clear();
-            } else {
-                request.consumed_outputs.clear();
+            match field {
+                "consumed_outputs" => request.consumed_inputs.clear(),
+                "consumed_inputs" => request.consumed_outputs.clear(),
+                "consumed_knowledge" => {
+                    request.consumed_outputs.clear();
+                    request.consumed_inputs.clear();
+                    request.consumed_knowledge = Some(crate::ConsumedKnowledgeManifestRef {
+                        manifest_id: Uuid::new_v4(),
+                        digest: "a".repeat(64),
+                    });
+                }
+                _ => unreachable!(),
             }
             let error = request.validate(&definition).unwrap_err();
             let refusal = error.refusal().expect("typed backend proof refusal");

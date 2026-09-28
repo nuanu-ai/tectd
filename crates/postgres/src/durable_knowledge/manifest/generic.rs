@@ -1,13 +1,18 @@
 use super::super::*;
 use crate::knowledge_lifecycle::rdf;
 use sqlx::Row;
+use std::collections::{HashMap, HashSet};
 
-mod resource;
+pub(super) mod resource;
 
-#[derive(Clone)]
-pub(super) struct Snapshot {
+pub(crate) struct Snapshot {
     pub manifest: PipelineKnowledgeResourceManifest,
+    pub publication_proofs:
+        HashMap<(Uuid, i64, Uuid), crate::knowledge_lifecycle::VerifiedPublicationEvent>,
+    pub has_dk2_selected: bool,
     pub blocking_gaps: Vec<String>,
+    pub captured_before: String,
+    pub temporal_boundaries: Vec<String>,
 }
 
 struct BindingRow {
@@ -168,6 +173,10 @@ pub(super) async fn snapshot(
     shared_digest: String,
 ) -> Result<Snapshot> {
     super::delivery::require_identity_ready(tx).await?;
+    let captured_before: String = sqlx::query_scalar("SELECT pg_catalog.clock_timestamp()::text")
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(storage_error)?;
     let projection = super::inquiry::load(tx, tenant, workspace, run).await?;
     let (generation, definition_version, definition_digest, definition): (i64, String, String, serde_json::Value) = sqlx::query_as(
         "SELECT k.generation,r.definition_version,r.definition_digest,r.definition FROM workspace_knowledge_state k JOIN slice_pipeline_runs r ON r.tenant_id=k.tenant_id AND r.workspace_id=k.workspace_id WHERE k.tenant_id=$1 AND k.workspace_id=$2 AND r.id=$3 AND r.scope_id=$4 AND r.slice_id=$5",
@@ -191,9 +200,67 @@ pub(super) async fn snapshot(
             revision_contract: row.try_get(16).map_err(storage_error)?, revision_access: row.try_get(17).map_err(storage_error)?, revision_payload_erased: row.try_get(18).map_err(storage_error)?, event_id: row.try_get(19).map_err(storage_error)?,
             event_payload: row.try_get(20).map_err(storage_error)?, rdf_digest: row.try_get(21).map_err(storage_error)?, lifecycle: row.try_get(22).map_err(storage_error)?, head_access: row.try_get(23).map_err(storage_error)?,
         })).collect::<Result<Vec<_>>>()?;
+    // Preserve the binding walk below (and its gap, warning, and digest order).
+    // Gather only DK2 revisions that would reach typed publication verification.
+    let mut superseded = HashSet::new();
+    let mut keys = Vec::new();
+    let mut seen = HashSet::new();
+    for row in &rows {
+        if projection
+            .as_ref()
+            .is_some_and(|value| !value.allows_binding(&row.binding_kind))
+            || (projection
+                .as_ref()
+                .and_then(|value| value.stage())
+                .is_some()
+                && row.revision_contract.as_deref() != Some("dk-2"))
+        {
+            continue;
+        }
+        if !row.binding_active && covered_supersession(tx, tenant, workspace, row).await? {
+            superseded.insert(row.binding_id);
+            continue;
+        }
+        let pin_matches = row.binding_kind != "slice_phase"
+            || (row.definition_kind.as_deref() == Some(definition.kind.as_str())
+                && row.definition_version.as_deref() == Some(&definition_version)
+                && row.definition_digest.as_deref() == Some(&definition_digest));
+        let inaccessible = (row.head_access == "owners_only"
+            || row.revision_access.as_deref() == Some("owners_only"))
+            && !owner;
+        let available = row.binding_active
+            && row.head_active
+            && !row.head_payload_erased
+            && row.revision_payload_erased == Some(false)
+            && row.lifecycle == "active"
+            && pin_matches
+            && row.event_id.is_some();
+        if !inaccessible && available && row.revision_contract.as_deref() == Some("dk-2") {
+            let key = (
+                row.unit_id,
+                row.revision,
+                row.event_id.ok_or(Error::InternalInvariant)?,
+            );
+            if seen.insert(key) {
+                keys.push(key);
+            }
+        }
+    }
+    let mut proofs = HashMap::new();
+    for (unit, revision, event) in keys {
+        let verified = crate::knowledge_lifecycle::verify_publication_event(
+            tx, tenant, workspace, unit, revision, event, true,
+        )
+        .await?;
+        if proofs.insert((unit, revision, event), verified).is_some() {
+            return Err(Error::InternalInvariant);
+        }
+    }
     let mut selected = Vec::new();
+    let mut has_dk2_selected = false;
     let mut gaps = Vec::new();
     let mut warnings = Vec::new();
+    let mut temporal_boundaries = Vec::new();
     for row in rows {
         if projection
             .as_ref()
@@ -209,7 +276,7 @@ pub(super) async fn snapshot(
         {
             continue;
         }
-        if !row.binding_active && covered_supersession(tx, tenant, workspace, &row).await? {
+        if superseded.contains(&row.binding_id) {
             continue;
         }
         let purpose: KnowledgeBindingPurpose =
@@ -278,33 +345,52 @@ pub(super) async fn snapshot(
             }
             continue;
         }
-        let (resource, valid_from, valid_until, review_due_at) = if row.revision_contract.as_deref()
-            == Some("dk-2")
-        {
-            let value =
-                resource::typed(tx, tenant, workspace, &row, projection.as_ref(), purpose).await?;
-            if value.needs_context && blocking(purpose) {
-                gaps.push("required_selector_context_missing".into());
-            }
-            let Some(resource) = value.resource else {
-                continue;
+        let (resource, valid_from, valid_until, review_due_at) =
+            if row.revision_contract.as_deref() == Some("dk-2") {
+                let key = (
+                    row.unit_id,
+                    row.revision,
+                    row.event_id.ok_or(Error::InternalInvariant)?,
+                );
+                let verified = proofs.get(&key).ok_or(Error::InternalInvariant)?;
+                let value = resource::typed(
+                    tx,
+                    tenant,
+                    workspace,
+                    &row,
+                    verified,
+                    projection.as_ref(),
+                    purpose,
+                )
+                .await?;
+                if value.needs_context && blocking(purpose) {
+                    gaps.push("required_selector_context_missing".into());
+                }
+                let Some(resource) = value.resource else {
+                    continue;
+                };
+                (
+                    resource,
+                    value.valid_from,
+                    value.valid_until,
+                    value.review_due_at,
+                )
+            } else {
+                (
+                    resource::legacy(tx, tenant, workspace, &row).await?,
+                    None,
+                    None,
+                    None,
+                )
             };
-            (
-                resource,
-                value.valid_from,
-                value.valid_until,
-                value.review_due_at,
-            )
-        } else {
-            (
-                resource::legacy(tx, tenant, workspace, &row).await?,
-                None,
-                None,
-                None,
-            )
-        };
         let (valid, review_due): (bool, bool) = sqlx::query_as("SELECT ($1::timestamptz IS NULL OR $1::timestamptz<=pg_catalog.clock_timestamp()) AND ($2::timestamptz IS NULL OR $2::timestamptz>=pg_catalog.clock_timestamp()),($3::timestamptz IS NOT NULL AND $3::timestamptz<pg_catalog.clock_timestamp())")
-            .bind(valid_from).bind(valid_until).bind(review_due_at).fetch_one(&mut **tx).await.map_err(storage_error)?;
+            .bind(valid_from.as_deref()).bind(valid_until.as_deref()).bind(review_due_at.as_deref()).fetch_one(&mut **tx).await.map_err(storage_error)?;
+        for boundary in [&valid_from, &valid_until, &review_due_at]
+            .into_iter()
+            .flatten()
+        {
+            temporal_boundaries.push(boundary.clone());
+        }
         if !valid {
             if blocking(purpose) {
                 gaps.push("resource_expired".into());
@@ -322,6 +408,16 @@ pub(super) async fn snapshot(
             resource.revision,
         )
         .await?;
+        for boundary in [
+            &review.valid_from,
+            &review.valid_until,
+            &review.review_due_at,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            temporal_boundaries.push(boundary.clone());
+        }
         if review.needs_review {
             if blocking(purpose) {
                 gaps.push(format!("knowledge_needs_review:{}", resource.unit_id));
@@ -335,6 +431,7 @@ pub(super) async fn snapshot(
         if review_due {
             warnings.push(format!("review_due:{}", resource.unit_id));
         }
+        has_dk2_selected |= row.revision_contract.as_deref() == Some("dk-2");
         selected.push(resource);
     }
     let base_semantic_digest = digest(&(
@@ -351,7 +448,11 @@ pub(super) async fn snapshot(
         base_semantic_digest
     };
     Ok(Snapshot {
+        publication_proofs: proofs,
+        has_dk2_selected,
         blocking_gaps: gaps.clone(),
+        captured_before,
+        temporal_boundaries,
         manifest: PipelineKnowledgeResourceManifest {
             id,
             digest: shared_digest,

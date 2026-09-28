@@ -38,6 +38,20 @@ pub struct PipelineRunContextQuery {
     pub refresh: bool,
 }
 
+/// Read one byte-bounded page of a pinned dk-2-paged manifest. The cursor is
+/// only a position hint; identity and access are checked on every read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineKnowledgePageQuery {
+    pub run_id: Uuid,
+    pub manifest_id: Uuid,
+    pub digest: String,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub byte_budget: Option<usize>,
+}
+
 /// Read one immutable method/skill/resource body from the definition pinned to
 /// a run.  The version and digest are caller supplied pins; `refresh` is an
 /// explicit request for the body and is never treated as delivery proof.
@@ -390,6 +404,7 @@ mod tests {
             knowledge: None,
             knowledge_status: None,
             knowledge_resources: None,
+            knowledge_resources_paged: None,
             knowledge_resource_status: None,
             delivery_receipt: None,
             delivery_fresh: false,

@@ -32,7 +32,11 @@ pub(crate) async fn execute(
             .await
             .and_then(|value| crate::knowledge_output::publish(value, capacity)),
         KnowledgeInvocation::Refresh(request) => service
-            .pipeline_knowledge_refresh(context, &request)
+            .pipeline_knowledge_refresh(
+                context,
+                &request,
+                &crate::pipeline_output::PipelineEncoding::new(capacity),
+            )
             .await
             .and_then(|value| crate::knowledge_output::refresh(value, capacity)),
     }

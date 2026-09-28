@@ -184,13 +184,19 @@ pub(crate) async fn register_manifest_consumers(
     .await
     .map_err(storage_error)?;
     let rows: Vec<(Uuid, i64, bool)> = sqlx::query_as(
-        "SELECT (item->>'unit_id')::uuid,(item->>'revision')::bigint, \
-         pg_catalog.bool_or(COALESCE(item#>>'{binding,purpose}','required')<>'reference') \
+        "SELECT unit_id,revision,pg_catalog.bool_or(required) FROM ( \
+         SELECT (item->>'unit_id')::uuid AS unit_id,(item->>'revision')::bigint AS revision, \
+          COALESCE(item#>>'{binding,purpose}','required')<>'reference' AS required \
          FROM pipeline_knowledge_manifests m CROSS JOIN LATERAL \
           pg_catalog.jsonb_array_elements(COALESCE(m.selected,'[]'::jsonb) \
            ||COALESCE(m.selected_resources,'[]'::jsonb)) item \
          WHERE m.tenant_id=$1 AND m.workspace_id=$2 AND m.id=$3 AND NOT m.payload_erased \
-          AND item?'unit_id' AND item?'revision' GROUP BY 1,2 ORDER BY 1,2 LIMIT 513",
+          AND item?'unit_id' AND item?'revision' \
+         UNION ALL SELECT p.unit_id,p.revision,COALESCE(p.binding_pin->>'purpose','required')<>'reference' \
+         FROM pipeline_knowledge_manifest_resources p JOIN pipeline_knowledge_manifests m \
+          ON m.tenant_id=p.tenant_id AND m.workspace_id=p.workspace_id AND m.id=p.manifest_id \
+         WHERE p.tenant_id=$1 AND p.workspace_id=$2 AND p.manifest_id=$3 AND NOT m.payload_erased \
+         ) pins GROUP BY 1,2 ORDER BY 1,2 LIMIT 513",
     )
     .bind(tenant)
     .bind(workspace)
@@ -228,13 +234,15 @@ pub(crate) async fn reconcile_unit_consumers(
     let manifests: Vec<Uuid> = sqlx::query_scalar(
         "SELECT DISTINCT m.id FROM pipeline_knowledge_manifests m \
           JOIN slice_pipeline_runs r ON r.tenant_id=m.tenant_id AND r.workspace_id=m.workspace_id \
-           AND r.id=m.run_id CROSS JOIN LATERAL \
-          pg_catalog.jsonb_array_elements(COALESCE(m.selected,'[]'::jsonb) \
-           ||COALESCE(m.selected_resources,'[]'::jsonb)) item \
+           AND r.id=m.run_id \
          WHERE m.tenant_id=$1 AND m.workspace_id=$2 AND NOT m.payload_erased \
           AND NOT r.payload_erased AND (r.knowledge_manifest_id=m.id OR (r.revision=m.run_revision \
            AND r.current_phase_id=m.phase_id)) \
-          AND item->>'unit_id'=$3::text ORDER BY m.id LIMIT 513",
+          AND (EXISTS (SELECT 1 FROM pg_catalog.jsonb_array_elements(COALESCE(m.selected,'[]'::jsonb) \
+           ||COALESCE(m.selected_resources,'[]'::jsonb)) item WHERE item->>'unit_id'=$3::text) \
+           OR EXISTS (SELECT 1 FROM pipeline_knowledge_manifest_resources p \
+            WHERE p.tenant_id=m.tenant_id AND p.workspace_id=m.workspace_id AND p.manifest_id=m.id \
+             AND p.unit_id=$3)) ORDER BY m.id LIMIT 513",
     )
     .bind(tenant)
     .bind(workspace)
@@ -249,4 +257,84 @@ pub(crate) async fn reconcile_unit_consumers(
         register_manifest_consumers(tx, tenant, workspace, manifest).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod paged_registration_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn paged_rows_drive_registration_and_reconciliation_requiredness() {
+        let Ok(url) = std::env::var("TECT_TEST_ADMIN_URL") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        for ddl in [
+            "CREATE TEMP TABLE pipeline_knowledge_manifests(tenant_id uuid,workspace_id uuid,id uuid,run_id uuid,run_revision bigint,phase_id text,payload_erased bool,selected jsonb,selected_resources jsonb)",
+            "CREATE TEMP TABLE slice_pipeline_runs(tenant_id uuid,workspace_id uuid,id uuid,knowledge_manifest_id uuid,revision bigint,current_phase_id text,payload_erased bool)",
+            "CREATE TEMP TABLE pipeline_knowledge_manifest_resources(tenant_id uuid,workspace_id uuid,manifest_id uuid,unit_id uuid,revision bigint,binding_pin jsonb)",
+            "CREATE TEMP TABLE knowledge_maintenance_consumers(id uuid,tenant_id uuid,workspace_id uuid,unit_id uuid,unit_revision bigint,consumer_ref text,required bool,relation_name text,row_id uuid,active bool DEFAULT true,UNIQUE(tenant_id,workspace_id,unit_id,unit_revision,consumer_ref,relation_name,row_id))",
+            "CREATE TEMP TABLE knowledge_owned_copies(id uuid,tenant_id uuid,workspace_id uuid,unit_id uuid,copy_kind text,relation_name text,row_id uuid,source_revision bigint)",
+        ] {
+            sqlx::query(ddl).execute(&mut *tx).await.unwrap();
+        }
+        let (tenant, workspace, run, manifest, required_unit, reference_unit) = (
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        );
+        sqlx::query(
+            "INSERT INTO pipeline_knowledge_manifests VALUES($1,$2,$3,$4,1,'P01',false,'[]','[]')",
+        )
+        .bind(tenant)
+        .bind(workspace)
+        .bind(manifest)
+        .bind(run)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO slice_pipeline_runs VALUES($1,$2,$3,$4,1,'P01',false)")
+            .bind(tenant)
+            .bind(workspace)
+            .bind(run)
+            .bind(manifest)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        for (unit, purpose) in [(required_unit, "required"), (reference_unit, "reference")] {
+            sqlx::query("INSERT INTO pipeline_knowledge_manifest_resources VALUES($1,$2,$3,$4,1,jsonb_build_object('purpose',$5::text))")
+                .bind(tenant).bind(workspace).bind(manifest).bind(unit).bind(purpose)
+                .execute(&mut *tx).await.unwrap();
+        }
+        register_manifest_consumers(&mut tx, tenant, workspace, manifest)
+            .await
+            .unwrap();
+        let required: Vec<(Uuid, bool)> = sqlx::query_as(
+            "SELECT unit_id,required FROM knowledge_maintenance_consumers ORDER BY unit_id",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .unwrap();
+        assert_eq!(required.len(), 2);
+        assert!(required.iter().find(|v| v.0 == required_unit).unwrap().1);
+        assert!(!required.iter().find(|v| v.0 == reference_unit).unwrap().1);
+        sqlx::query(r#"UPDATE pipeline_knowledge_manifest_resources SET binding_pin='{"purpose":"required"}'::jsonb WHERE unit_id=$1"#)
+            .bind(reference_unit).execute(&mut *tx).await.unwrap();
+        reconcile_unit_consumers(&mut tx, tenant, workspace, reference_unit)
+            .await
+            .unwrap();
+        let reconciled: bool = sqlx::query_scalar(
+            "SELECT required FROM knowledge_maintenance_consumers WHERE unit_id=$1",
+        )
+        .bind(reference_unit)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+        assert!(reconciled);
+        tx.rollback().await.unwrap();
+    }
 }

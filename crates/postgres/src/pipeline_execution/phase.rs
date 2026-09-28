@@ -31,7 +31,9 @@ pub(crate) async fn complete_phase(
     .fetch_optional(&mut **tx).await.map_err(storage_error)? {
         if erased{return Err(Error::KnowledgePayloadErased)}
         if stored != Some(payload.clone()) { return Err(Error::InputConflict) }
-        return decode(result.ok_or(Error::InternalInvariant)?);
+        let prior: PipelineMutationOutcome = decode(result.ok_or(Error::InternalInvariant)?)?;
+        authorize_phase_replay(tx, tenant, workspace, session, request.run_id, &prior).await?;
+        return Ok(prior);
     }
     // DK lock order: workspace knowledge state precedes the run lock.
     let _ = crate::durable_knowledge::lock_state(tx, tenant, workspace).await?;
@@ -45,7 +47,9 @@ pub(crate) async fn complete_phase(
     .fetch_optional(&mut **tx).await.map_err(storage_error)? {
         if erased{return Err(Error::KnowledgePayloadErased)}
         if stored != Some(payload.clone()) { return Err(Error::InputConflict) }
-        return decode(result.ok_or(Error::InternalInvariant)?);
+        let prior: PipelineMutationOutcome = decode(result.ok_or(Error::InternalInvariant)?)?;
+        authorize_phase_replay(tx, tenant, workspace, session, request.run_id, &prior).await?;
+        return Ok(prior);
     }
     if run_row.3 != request.run_revision {
         return Err(Error::StaleRevision);
@@ -153,6 +157,39 @@ pub(crate) async fn complete_phase(
     .await?;
     let knowledge =
         phase_validation::load_manifest(tx, tenant, workspace, session, run_row.11).await?;
+    // v0.7 owns the proof in the backend. Resolve the single pinned manifest
+    // after the run is locked and its caller-visible manifest is authorized.
+    let consumed_knowledge = if run_row.5.starts_with("0.7") {
+        match (knowledge.as_ref(), run_row.12.as_ref()) {
+            (Some(manifest), Some(digest)) if &manifest.digest == digest => {
+                let principal = session_principal(tx, session).await?;
+                let paged = crate::durable_knowledge::manifest::load_paged_resources(
+                    tx,
+                    tenant,
+                    workspace,
+                    Some(manifest.id),
+                    principal,
+                )
+                .await?;
+                let selected = if let Some((header, pins)) = paged.as_ref() {
+                    if header.digest != *digest || header.run_id != request.run_id {
+                        return Err(Error::StaleContext);
+                    }
+                    !pins.is_empty()
+                } else {
+                    !manifest.selected.is_empty()
+                };
+                selected.then(|| ConsumedKnowledgeManifestRef {
+                    manifest_id: manifest.id,
+                    digest: digest.clone(),
+                })
+            }
+            (None, None) => None,
+            _ => return Err(Error::StaleContext),
+        }
+    } else {
+        request.consumed_knowledge.clone()
+    };
     crate::durable_knowledge::manifest::validate_completion(
         tx,
         tenant,
@@ -163,7 +200,7 @@ pub(crate) async fn complete_phase(
         &phase.id,
         session,
         knowledge.as_ref(),
-        request.consumed_knowledge.as_ref(),
+        consumed_knowledge.as_ref(),
     )
     .await?;
     if !run_row.5.starts_with("0.7") {
@@ -208,7 +245,7 @@ pub(crate) async fn complete_phase(
         request.run_id,
         &request.phase_id,
         phase.ordinal,
-        &request.consumed_knowledge,
+        &consumed_knowledge,
     )
     .await?;
     validate_reviewer_boundary(tx, tenant, workspace, request.run_id, phase, request).await?;
@@ -284,7 +321,7 @@ pub(crate) async fn complete_phase(
         .bind(tenant).bind(workspace).bind(request.run_id).bind(next_revision).bind(status).bind(next_id.as_deref()).bind(next_ordinal.map(|value| value as i32))
         .execute(&mut **tx).await.map_err(storage_error)?;
     if let Some(next_phase) = next_id.as_deref() {
-        let manifest = crate::durable_knowledge::manifest::capture(
+        let captured = crate::durable_knowledge::manifest::capture_paged(
             tx,
             tenant,
             workspace,
@@ -296,8 +333,16 @@ pub(crate) async fn complete_phase(
             session,
         )
         .await?;
+        let pointer = captured.as_ref().map(|value| match value {
+            crate::durable_knowledge::manifest::PagedCapture::Paged(value) => {
+                (value.manifest.id, value.manifest.digest.as_str())
+            }
+            crate::durable_knowledge::manifest::PagedCapture::Inline(value) => {
+                (value.manifest.id, value.manifest.digest.as_str())
+            }
+        });
         sqlx::query("UPDATE slice_pipeline_runs SET knowledge_manifest_id=$4,knowledge_manifest_digest=$5 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
-            .bind(tenant).bind(workspace).bind(request.run_id).bind(manifest.as_ref().map(|v|v.id)).bind(manifest.as_ref().map(|v|v.digest.as_str())).execute(&mut **tx).await.map_err(storage_error)?;
+            .bind(tenant).bind(workspace).bind(request.run_id).bind(pointer.map(|v|v.0)).bind(pointer.map(|v|v.1)).execute(&mut **tx).await.map_err(storage_error)?;
     } else {
         sqlx::query("UPDATE slice_pipeline_runs SET knowledge_manifest_id=NULL,knowledge_manifest_digest=NULL WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
             .bind(tenant).bind(workspace).bind(request.run_id).execute(&mut **tx).await.map_err(storage_error)?;
@@ -389,6 +434,21 @@ pub(crate) async fn complete_phase(
 }
 
 pub(super) mod helpers;
+
+async fn authorize_phase_replay(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    session: Uuid,
+    run: Uuid,
+    prior: &PipelineMutationOutcome,
+) -> Result<()> {
+    if prior.context.run.id != run {
+        return Err(Error::InternalInvariant);
+    }
+    let principal = session_principal(tx, session).await?;
+    context::authorize_frozen_replay(tx, tenant, workspace, principal, run, &prior.context).await
+}
 
 async fn backend_evidence_refs(
     tx: &mut Transaction<'_, Postgres>,

@@ -58,6 +58,9 @@ impl RouteSpec {
             "slice.open" => &["open slice", "открыть slice"],
             "slice.result.record" => &["record slice result", "записать результат slice"],
             "slice.pipeline.context" => &["read slice pipeline", "прочитать pipeline slice"],
+            "slice.pipeline.knowledge_page" => {
+                &["read pipeline knowledge page", "страница знаний pipeline"]
+            }
             "slice.pipeline.begin" => &["begin slice pipeline", "начать pipeline slice"],
             "slice.pipeline.run.migrate" => &["migrate pipeline run", "перенести pipeline run"],
             "slice.pipeline.phase.complete" => {

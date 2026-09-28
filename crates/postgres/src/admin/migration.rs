@@ -206,6 +206,9 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
             "REVOKE ALL PRIVILEGES ON TABLE workspace_knowledge_state,knowledge_changes,knowledge_unit_heads,knowledge_publication_events,knowledge_revisions,knowledge_bindings,knowledge_command_receipts,pipeline_knowledge_manifests,knowledge_effect_outbox FROM {quoted_role}"
         ),
         format!(
+            "REVOKE ALL PRIVILEGES ON TABLE pipeline_knowledge_manifest_resources FROM {quoted_role}"
+        ),
+        format!(
             "GRANT SELECT ON TABLE workspace_knowledge_state,knowledge_changes,knowledge_unit_heads,knowledge_publication_events,knowledge_revisions,knowledge_bindings,knowledge_command_receipts,pipeline_knowledge_manifests,knowledge_effect_outbox TO {quoted_role}"
         ),
         format!(
@@ -220,6 +223,9 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
         ),
         format!(
             "GRANT INSERT ON TABLE knowledge_publication_events,knowledge_revisions,knowledge_command_receipts,pipeline_knowledge_manifests,knowledge_effect_outbox TO {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT,INSERT,DELETE ON TABLE pipeline_knowledge_manifest_resources TO {quoted_role}"
         ),
         format!("GRANT INSERT,UPDATE(active) ON TABLE knowledge_bindings TO {quoted_role}"),
         format!(
@@ -299,7 +305,7 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
             "GRANT UPDATE(request_payload,result_payload,payload_erased) ON TABLE knowledge_command_receipts TO {quoted_role}"
         ),
         format!(
-            "GRANT UPDATE(digest,semantic_digest,selected,unresolved_needs,definition_version,definition_digest,method_requirements,selected_resources,resource_unresolved_needs,freshness_warnings,resource_semantic_digest,resource_inquiry,resource_projection_policy,payload_erased) ON TABLE pipeline_knowledge_manifests TO {quoted_role}"
+            "GRANT UPDATE(digest,semantic_digest,selected,unresolved_needs,definition_version,definition_digest,method_requirements,selected_resources,resource_unresolved_needs,freshness_warnings,resource_semantic_digest,resource_inquiry,resource_projection_policy,resource_count,total_resource_bytes,resource_digest_algorithm,payload_erased) ON TABLE pipeline_knowledge_manifests TO {quoted_role}"
         ),
         format!(
             "GRANT UPDATE(reviewer_context,request_payload,result_payload,payload_erased) ON TABLE slice_pipeline_phase_attempts TO {quoted_role}"
@@ -447,7 +453,7 @@ pub async fn validate_runtime_role(pool: &PgPool, runtime_role: &str) -> Result<
                          'slice_pipeline_receipts','slice_pipeline_run_migrations','pipeline_delivery_receipts','pipeline_evidence_artifacts',
                          'durable_knowledge_capability','workspace_knowledge_state','knowledge_changes','knowledge_unit_heads',
                          'knowledge_publication_events','knowledge_revisions','knowledge_bindings',
-                         'knowledge_command_receipts','pipeline_knowledge_manifests','knowledge_effect_outbox',
+                         'knowledge_command_receipts','pipeline_knowledge_manifests','pipeline_knowledge_manifest_resources','knowledge_effect_outbox',
                          'knowledge_lifecycle_changes','knowledge_change_runs','knowledge_change_operations',
                          'knowledge_change_outputs','knowledge_change_attempts','knowledge_change_output_bindings',
                          'knowledge_change_inputs','knowledge_lifecycle_command_receipts','knowledge_validation_events',
@@ -484,4 +490,43 @@ pub async fn validate_runtime_role(pool: &PgPool, runtime_role: &str) -> Result<
         return Err(Error::InvalidConfiguration);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    const GRANTS: &str = include_str!("migration.rs");
+
+    #[test]
+    fn paged_manifest_runtime_grants_are_scoped_to_capture_read_and_erasure() {
+        assert!(GRANTS.contains(
+            "REVOKE ALL PRIVILEGES ON TABLE pipeline_knowledge_manifest_resources FROM {quoted_role}"
+        ));
+        assert!(GRANTS.contains(
+            "GRANT SELECT,INSERT,DELETE ON TABLE pipeline_knowledge_manifest_resources TO {quoted_role}"
+        ));
+        assert!(
+            !GRANTS.contains(
+                &[
+                    "GRANT UPDATE",
+                    " ON TABLE pipeline_knowledge_manifest_resources"
+                ]
+                .concat()
+            )
+        );
+        assert!(
+            !GRANTS.contains(
+                &[
+                    "GRANT ALL",
+                    " ON TABLE pipeline_knowledge_manifest_resources"
+                ]
+                .concat()
+            )
+        );
+        assert!(GRANTS.contains(
+            "resource_count,total_resource_bytes,resource_digest_algorithm,payload_erased) ON TABLE pipeline_knowledge_manifests"
+        ));
+        assert!(GRANTS.contains(
+            "'pipeline_knowledge_manifests','pipeline_knowledge_manifest_resources','knowledge_effect_outbox'"
+        ));
+    }
 }

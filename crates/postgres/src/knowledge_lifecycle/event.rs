@@ -12,6 +12,7 @@ type PublicationEventRow = (
     bool,
 );
 
+#[derive(Clone)]
 pub(crate) struct VerifiedPublicationEvent {
     pub input: rdf::RdfPublicationInput,
     pub rdf_digest: String,

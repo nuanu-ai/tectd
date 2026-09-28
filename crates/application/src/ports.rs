@@ -9,6 +9,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransactionMode {
     ReadOnly,
+    ReadOnlyRepeatableRead,
     ReadWrite,
 }
 

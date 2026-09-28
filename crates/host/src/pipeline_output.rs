@@ -30,6 +30,10 @@ impl tect_application::PipelineExecutionOutputGuard for PipelineEncoding {
     fn check_checkpoint_resolution(&self, value: &ResolvePipelineCheckpointOutcome) -> Result<()> {
         checkpoint_resolution(value.clone(), self.capacity).map(|_| ())
     }
+
+    fn check_refresh(&self, value: &tect_domain::RefreshPipelineKnowledgeOutcome) -> Result<()> {
+        crate::knowledge_output::refresh(value.clone(), self.capacity).map(|_| ())
+    }
 }
 
 /// How much of the run context a reply carries; see `response_diet`.
@@ -168,16 +172,22 @@ fn restrict_definition_delivery(context: &mut PipelineRunContext, explicit_rerea
 fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
     let run = &context.run;
     if run.status == PipelineRunStatus::Superseded {
-        return with_route_contracts(vec![responses::action(
-            "slice_pipeline_context",
-            json!({"run_id":run.id}),
-        )?]);
+        return context_actions(
+            context,
+            vec![responses::action(
+                "slice_pipeline_context",
+                json!({"run_id":run.id}),
+            )?],
+        );
     }
     let Some(phase_id) = &run.current_phase_id else {
-        return with_route_contracts(vec![responses::action(
-            "slice_context",
-            json!({"slice_id":run.slice_id}),
-        )?]);
+        return context_actions(
+            context,
+            vec![responses::action(
+                "slice_context",
+                json!({"slice_id":run.slice_id}),
+            )?],
+        );
     };
     if let Some(source_checkpoint) = &context.source_checkpoint
         && let Some(checkpoint) = context.checkpoints.iter().find(|checkpoint| {
@@ -185,16 +195,19 @@ fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
                 && checkpoint.status != PipelineCheckpointStatus::Open
         })
     {
-        return with_route_contracts(vec![
-            responses::action(
-                "slice_pipeline_context",
-                json!({"run_id":checkpoint.producer_run_id}),
-            )?,
-            responses::action(
-                "slice_candidate_context",
-                json!({"scope_id":run.scope_id,"view":"overview","limit":25}),
-            )?,
-        ]);
+        return context_actions(
+            context,
+            vec![
+                responses::action(
+                    "slice_pipeline_context",
+                    json!({"run_id":checkpoint.producer_run_id}),
+                )?,
+                responses::action(
+                    "slice_candidate_context",
+                    json!({"scope_id":run.scope_id,"view":"overview","limit":25}),
+                )?,
+            ],
+        );
     }
     if matches!(run.status, PipelineRunStatus::WaitingInput)
         && let Some(checkpoint) = context.checkpoints.iter().find(|checkpoint| {
@@ -203,13 +216,16 @@ fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
                 && checkpoint.producer_phase_id == *phase_id
         })
     {
-        return with_route_contracts(checkpoint_wait_actions(context, checkpoint)?);
+        return context_actions(context, checkpoint_wait_actions(context, checkpoint)?);
     }
     if knowledge_is_stale(context) {
-        return with_route_contracts(vec![
-            knowledge_refresh_action(context)?,
-            responses::action("slice_pipeline_context", json!({"run_id":run.id}))?,
-        ]);
+        return context_actions(
+            context,
+            vec![
+                knowledge_refresh_action(context)?,
+                responses::action("slice_pipeline_context", json!({"run_id":run.id}))?,
+            ],
+        );
     }
     let action = match run.status {
         PipelineRunStatus::Active => {
@@ -254,7 +270,12 @@ fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
                     .as_ref()
                     .filter(|manifest| !manifest.selected.is_empty())
                     .map(|manifest| (manifest.id, manifest.digest.as_str()));
-                if let Some((manifest_id, digest)) = legacy.or(generic) {
+                let paged = context
+                    .knowledge_resources_paged
+                    .as_ref()
+                    .filter(|manifest| manifest.resource_count > 0)
+                    .map(|manifest| (manifest.id, manifest.digest.as_str()));
+                if let Some((manifest_id, digest)) = legacy.or(generic).or(paged) {
                     params["consumed_knowledge"] =
                         json!({"manifest_id":manifest_id,"digest":digest});
                 }
@@ -317,10 +338,13 @@ fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
         | PipelineRunStatus::Escalated
         | PipelineRunStatus::Superseded => unreachable!(),
     };
-    with_route_contracts(vec![
-        action,
-        responses::action("slice_pipeline_context", json!({"run_id":run.id}))?,
-    ])
+    context_actions(
+        context,
+        vec![
+            action,
+            responses::action("slice_pipeline_context", json!({"run_id":run.id}))?,
+        ],
+    )
 }
 
 include!("pipeline_output/phase_completion_contract.rs");
@@ -330,6 +354,18 @@ fn with_route_contracts(mut actions: Vec<Value>) -> Result<Vec<Value>> {
         crate::api::attach_route_contract(action)?;
     }
     Ok(actions)
+}
+
+fn context_actions(context: &PipelineRunContext, mut actions: Vec<Value>) -> Result<Vec<Value>> {
+    if let Some(manifest) = context.knowledge_resources_paged.as_ref()
+        && manifest.resource_count > 0
+    {
+        actions.push(responses::action(
+            "slice_pipeline_knowledge_page",
+            json!({"run_id":context.run.id,"manifest_id":manifest.id,"digest":manifest.digest}),
+        )?);
+    }
+    with_route_contracts(actions)
 }
 
 fn knowledge_is_stale(context: &PipelineRunContext) -> bool {
@@ -416,12 +452,76 @@ fn encode<T: Serialize>(
             delivery.preserve_outputs,
         );
     }
+    if let Some(context) = response_diet::pipeline_context_mut(&mut data) {
+        project_paged_context(context);
+    }
+    if let Some(context) = response_diet::pipeline_context_mut(&mut data)
+        && let Some(paged) = context
+            .as_object_mut()
+            .and_then(|object| object.remove("knowledge_resources_paged"))
+    {
+        context["knowledge_resources"] = paged;
+    }
     let result = responses::with_actions(data, actions, Some(0));
     if responses::encoded_len(&result)? > capacity {
         Err(Error::RequestTooLarge)
     } else {
         Ok(result)
     }
+}
+
+fn project_paged_context(context: &mut Value) {
+    if context
+        .pointer("/knowledge_resources_paged/contract_version")
+        .and_then(Value::as_str)
+        != Some("dk-2-paged")
+    {
+        return;
+    }
+    let Some(run_id) = context.pointer("/run/id").cloned() else {
+        return;
+    };
+    context["response_contract_version"] = json!("slice.begin.paged.v1");
+    context["body_delivery"] = json!("pinned_references");
+    if let Some(overview) = context.pointer_mut("/definition/overview") {
+        project_instruction(overview, &run_id);
+    }
+    if let Some(phases) = context
+        .pointer_mut("/definition/phases")
+        .and_then(Value::as_array_mut)
+    {
+        for phase in phases {
+            for section in ["instructions", "skills", "resources"] {
+                if let Some(instructions) = phase.get_mut(section).and_then(Value::as_array_mut) {
+                    for instruction in instructions {
+                        project_instruction(instruction, &run_id);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(delivered) = context
+        .get_mut("delivered_phases")
+        .and_then(Value::as_array_mut)
+    {
+        for phase in delivered {
+            *phase = json!({"id":phase.get("id"),"ordinal":phase.get("ordinal"),"delivery":"pinned_references"});
+        }
+    }
+}
+
+fn project_instruction(instruction: &mut Value, run_id: &Value) {
+    let (Some(id), Some(version), Some(digest)) = (
+        instruction.get("id").cloned(),
+        instruction.get("version").cloned(),
+        instruction.get("digest").cloned(),
+    ) else {
+        return;
+    };
+    *instruction = json!({"id":id,"version":version,"digest":digest,
+    "read":{"route":"slice.pipeline.instruction","params":{
+        "run_id":run_id,"instruction_id":id,"version":version,"digest":digest,"refresh":true
+    }}});
 }
 
 fn encode_context(

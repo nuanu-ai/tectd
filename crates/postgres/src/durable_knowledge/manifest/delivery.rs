@@ -103,6 +103,15 @@ pub(crate) async fn authorize_manifest(
         }
         return Err(Error::KnowledgePayloadErased);
     }
+    if contract == PAGED_KNOWLEDGE_CONTRACT_VERSION {
+        let owner: bool = sqlx::query_scalar("SELECT tect_dk_is_owner($1)")
+            .bind(principal)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(storage_error)?;
+        authorize_paged_rows(tx, tenant, workspace, id, owner).await?;
+        return Ok(Some(contract));
+    }
     let missing_or_erased: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pipeline_knowledge_manifests m CROSS JOIN LATERAL (SELECT value AS resource FROM pg_catalog.jsonb_array_elements(m.selected) UNION ALL SELECT value FROM pg_catalog.jsonb_array_elements(COALESCE(m.selected_resources,'[]'::jsonb))) selected WHERE m.tenant_id=$1 AND m.workspace_id=$2 AND m.id=$3 AND NOT EXISTS(SELECT 1 FROM knowledge_unit_heads h JOIN knowledge_revisions r ON r.tenant_id=h.tenant_id AND r.workspace_id=h.workspace_id AND r.unit_id=h.unit_id AND r.revision=(selected.resource->>'revision')::bigint WHERE h.tenant_id=m.tenant_id AND h.workspace_id=m.workspace_id AND h.unit_id=(selected.resource->>'unit_id')::uuid AND NOT h.payload_erased AND NOT r.payload_erased))")
         .bind(tenant).bind(workspace).bind(id).fetch_one(&mut **tx).await.map_err(storage_error)?;
     if missing_or_erased {
@@ -121,6 +130,28 @@ pub(crate) async fn authorize_manifest(
         }
     }
     Ok(Some(contract))
+}
+
+async fn authorize_paged_rows(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    id: Uuid,
+    owner: bool,
+) -> Result<()> {
+    let missing_or_erased: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pipeline_knowledge_manifest_resources p LEFT JOIN knowledge_unit_heads h ON h.tenant_id=p.tenant_id AND h.workspace_id=p.workspace_id AND h.unit_id=p.unit_id LEFT JOIN knowledge_revisions r ON r.tenant_id=p.tenant_id AND r.workspace_id=p.workspace_id AND r.unit_id=p.unit_id AND r.revision=p.revision LEFT JOIN knowledge_publication_events e ON e.tenant_id=p.tenant_id AND e.workspace_id=p.workspace_id AND e.id=p.publication_event_id LEFT JOIN knowledge_validation_events v ON v.tenant_id=p.tenant_id AND v.workspace_id=p.workspace_id AND v.id=p.validation_event_id LEFT JOIN knowledge_bindings b ON b.tenant_id=p.tenant_id AND b.workspace_id=p.workspace_id AND b.id=p.binding_id AND b.unit_id=p.unit_id WHERE p.tenant_id=$1 AND p.workspace_id=$2 AND p.manifest_id=$3 AND (h.unit_id IS NULL OR h.payload_erased OR r.unit_id IS NULL OR r.payload_erased OR b.id IS NULL OR (p.entry_kind='dk2_event' AND (e.id IS NULL OR e.payload_erased OR e.unit_id<>p.unit_id OR e.unit_revision<>p.revision)) OR (p.validation_event_id IS NOT NULL AND (v.id IS NULL OR v.payload_erased OR v.unit_id<>p.unit_id OR v.unit_revision<>p.revision))))")
+            .bind(tenant).bind(workspace).bind(id).fetch_one(&mut **tx).await.map_err(storage_error)?;
+    if missing_or_erased {
+        return Err(Error::KnowledgePayloadErased);
+    }
+    if !owner {
+        let inaccessible: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pipeline_knowledge_manifest_resources p JOIN knowledge_unit_heads h ON h.tenant_id=p.tenant_id AND h.workspace_id=p.workspace_id AND h.unit_id=p.unit_id JOIN knowledge_revisions r ON r.tenant_id=p.tenant_id AND r.workspace_id=p.workspace_id AND r.unit_id=p.unit_id AND r.revision=p.revision WHERE p.tenant_id=$1 AND p.workspace_id=$2 AND p.manifest_id=$3 AND (h.access_scope='owners_only' OR r.access_scope='owners_only'))")
+                .bind(tenant).bind(workspace).bind(id).fetch_one(&mut **tx).await.map_err(storage_error)?;
+        if inaccessible {
+            return Err(Error::Forbidden);
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::type_complexity)]
@@ -247,8 +278,98 @@ pub(crate) async fn resource_status(
         manifest.map_or_else(String::new, |v| v.digest.clone()),
     )
     .await?;
-    let Some(old) = manifest else {
-        return Ok(Some(PipelineKnowledgeResourceStatus {
+    Ok(Some(project_resource_status(
+        generation,
+        run_revision,
+        manifest,
+        &current,
+    )))
+}
+
+type ResourceIdentity = (Uuid, i64, String, String);
+
+struct ResourceStatusBasis<'a> {
+    workspace_generation: i64,
+    run_revision: i64,
+    semantic_digest: &'a str,
+    definition_version: &'a str,
+    definition_digest: &'a str,
+    method_requirements: &'a [KnowledgeContractRef],
+    inquiry: Option<&'a PipelineInquiryContract>,
+    projection_policy: Option<PipelineKnowledgeProjectionPolicy>,
+    items: BTreeSet<ResourceIdentity>,
+}
+
+fn project_resource_status(
+    generation: i64,
+    run_revision: i64,
+    manifest: Option<&PipelineKnowledgeResourceManifest>,
+    current: &super::generic::Snapshot,
+) -> PipelineKnowledgeResourceStatus {
+    let basis = manifest.map(|old| ResourceStatusBasis {
+        workspace_generation: old.workspace_generation,
+        run_revision: old.run_revision,
+        semantic_digest: &old.semantic_digest,
+        definition_version: &old.definition_version,
+        definition_digest: &old.definition_digest,
+        method_requirements: &old.method_requirements,
+        inquiry: old.inquiry.as_ref(),
+        projection_policy: old.projection_policy,
+        items: old
+            .selected
+            .iter()
+            .map(|v| {
+                (
+                    v.unit_id,
+                    v.revision,
+                    v.rdf_digest.clone(),
+                    v.binding.binding_iri.clone(),
+                )
+            })
+            .collect(),
+    });
+    project_resource_status_from_basis(generation, run_revision, basis, current)
+}
+
+pub(super) fn project_paged_resource_status(
+    generation: i64,
+    run_revision: i64,
+    manifest: &PagedPipelineKnowledgeManifest,
+    pins: &[PagedPipelineKnowledgeResourcePin],
+    current: &super::generic::Snapshot,
+) -> PipelineKnowledgeResourceStatus {
+    let basis = ResourceStatusBasis {
+        workspace_generation: manifest.workspace_generation,
+        run_revision: manifest.run_revision,
+        semantic_digest: &manifest.semantic_digest,
+        definition_version: &manifest.definition_version,
+        definition_digest: &manifest.definition_digest,
+        method_requirements: &manifest.method_requirements,
+        inquiry: manifest.inquiry.as_ref(),
+        projection_policy: manifest.projection_policy,
+        items: pins
+            .iter()
+            .map(|pin| {
+                (
+                    pin.unit_id,
+                    pin.revision,
+                    pin.rdf_digest.clone(),
+                    pin.binding_pin.binding_iri.clone(),
+                )
+            })
+            .collect(),
+    };
+    project_resource_status_from_basis(generation, run_revision, Some(basis), current)
+}
+
+fn project_resource_status_from_basis(
+    generation: i64,
+    run_revision: i64,
+    basis: Option<ResourceStatusBasis<'_>>,
+    current: &super::generic::Snapshot,
+) -> PipelineKnowledgeResourceStatus {
+    let Some(old) = basis else {
+        return PipelineKnowledgeResourceStatus {
             state: PipelineKnowledgeResourceState::NeedsContext,
             current_generation: generation,
             changed_unit_ids: current
@@ -257,26 +378,14 @@ pub(crate) async fn resource_status(
                 .iter()
                 .map(|v| v.unit_id)
                 .collect(),
-            freshness_warnings: current.manifest.freshness_warnings,
+            freshness_warnings: current.manifest.freshness_warnings.clone(),
             access_changed: current
                 .blocking_gaps
                 .iter()
                 .any(|v| v == "resource_inaccessible"),
-        }));
+        };
     };
-    let old_items: BTreeSet<_> = old
-        .selected
-        .iter()
-        .map(|v| {
-            (
-                v.unit_id,
-                v.revision,
-                v.rdf_digest.clone(),
-                v.binding.binding_iri.clone(),
-            )
-        })
-        .collect();
-    let new_items: BTreeSet<_> = current
+    let new_items: BTreeSet<ResourceIdentity> = current
         .manifest
         .selected
         .iter()
@@ -289,7 +398,8 @@ pub(crate) async fn resource_status(
             )
         })
         .collect();
-    let changed_unit_ids = old_items
+    let changed_unit_ids = old
+        .items
         .symmetric_difference(&new_items)
         .map(|v| v.0)
         .collect::<BTreeSet<_>>()
@@ -301,7 +411,7 @@ pub(crate) async fn resource_status(
         && old.definition_version == current.manifest.definition_version
         && old.definition_digest == current.manifest.definition_digest
         && old.method_requirements == current.manifest.method_requirements
-        && old.inquiry == current.manifest.inquiry
+        && old.inquiry == current.manifest.inquiry.as_ref()
         && old.projection_policy == current.manifest.projection_policy;
     let state = if !current.blocking_gaps.is_empty() {
         PipelineKnowledgeResourceState::NeedsContext
@@ -310,14 +420,183 @@ pub(crate) async fn resource_status(
     } else {
         PipelineKnowledgeResourceState::Stale
     };
-    Ok(Some(PipelineKnowledgeResourceStatus {
+    PipelineKnowledgeResourceStatus {
         state,
         current_generation: generation,
         changed_unit_ids,
-        freshness_warnings: current.manifest.freshness_warnings,
+        freshness_warnings: current.manifest.freshness_warnings.clone(),
         access_changed: current
             .blocking_gaps
             .iter()
             .any(|v| v == "resource_inaccessible"),
-    }))
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn resource_status_from_capture(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    run: Uuid,
+    scope: Uuid,
+    slice: Uuid,
+    phase: Option<&str>,
+    manifest: Option<&PipelineKnowledgeResourceManifest>,
+    captured: &super::Captured,
+) -> Result<Option<PipelineKnowledgeResourceStatus>> {
+    let Some(old) = manifest else {
+        return resource_status(
+            tx, tenant, workspace, principal, run, scope, slice, phase, manifest,
+        )
+        .await;
+    };
+    let state: Option<(i64, bool, i64)> = sqlx::query_as("SELECT k.generation,k.capability_ready,r.revision FROM workspace_knowledge_state k JOIN slice_pipeline_runs r ON r.tenant_id=k.tenant_id AND r.workspace_id=k.workspace_id WHERE k.tenant_id=$1 AND k.workspace_id=$2 AND r.id=$3 AND r.scope_id=$4 AND r.slice_id=$5")
+        .bind(tenant).bind(workspace).bind(run).bind(scope).bind(slice)
+        .fetch_optional(&mut **tx).await.map_err(storage_error)?;
+    let Some((generation, ready, run_revision)) = state else {
+        return Ok(None);
+    };
+    let snapshot = &captured.snapshot;
+    if !ready
+        || phase != Some(snapshot.manifest.phase_id.as_str())
+        || snapshot.manifest.run_id != run
+        || snapshot.manifest.run_revision != run_revision
+        || snapshot.manifest.workspace_generation != generation
+        || captured.manifest.id != old.id
+        || captured.manifest.digest != old.digest
+        || snapshot.manifest != *old
+    {
+        return resource_status(
+            tx, tenant, workspace, principal, run, scope, slice, phase, manifest,
+        )
+        .await;
+    }
+    require_identity_ready(tx).await?;
+    // The workspace state lock excludes normal knowledge mutations, but PostgreSQL
+    // clock_timestamp advances inside this transaction. Recompute if a validity
+    // or review boundary could have changed the captured result.
+    let crossed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM pg_catalog.unnest($1::text[]) AS boundary(value) WHERE boundary.value::timestamptz >= $2::timestamptz AND boundary.value::timestamptz <= pg_catalog.clock_timestamp())")
+        .bind(&snapshot.temporal_boundaries)
+        .bind(&snapshot.captured_before)
+        .fetch_one(&mut **tx).await.map_err(storage_error)?;
+    if crossed {
+        return resource_status(
+            tx, tenant, workspace, principal, run, scope, slice, phase, manifest,
+        )
+        .await;
+    }
+    Ok(Some(project_resource_status(
+        generation,
+        run_revision,
+        manifest,
+        snapshot,
+    )))
+}
+
+#[cfg(test)]
+mod paged_authorization_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn all_pinned_rows_recheck_current_acl_and_erasure() {
+        let Ok(url) = std::env::var("TECT_TEST_ADMIN_URL") else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        // Session-local shadows exercise the exact authorization SQL without
+        // creating a live knowledge fixture or modifying the main database.
+        for ddl in [
+            "CREATE TEMP TABLE pipeline_knowledge_manifest_resources(tenant_id uuid,workspace_id uuid,manifest_id uuid,unit_id uuid,revision bigint,entry_kind text,publication_event_id uuid,validation_event_id uuid,binding_id uuid)",
+            "CREATE TEMP TABLE knowledge_unit_heads(tenant_id uuid,workspace_id uuid,unit_id uuid,payload_erased bool,access_scope text)",
+            "CREATE TEMP TABLE knowledge_revisions(tenant_id uuid,workspace_id uuid,unit_id uuid,revision bigint,payload_erased bool,access_scope text)",
+            "CREATE TEMP TABLE knowledge_publication_events(tenant_id uuid,workspace_id uuid,id uuid,unit_id uuid,unit_revision bigint,payload_erased bool)",
+            "CREATE TEMP TABLE knowledge_validation_events(tenant_id uuid,workspace_id uuid,id uuid,unit_id uuid,unit_revision bigint,payload_erased bool)",
+            "CREATE TEMP TABLE knowledge_bindings(tenant_id uuid,workspace_id uuid,id uuid,unit_id uuid)",
+        ] {
+            sqlx::query(ddl).execute(&mut *tx).await.unwrap();
+        }
+        let tenant = Uuid::new_v4();
+        let workspace = Uuid::new_v4();
+        let manifest = Uuid::new_v4();
+        let mut units = Vec::new();
+        for ordinal in 0..2 {
+            let unit = Uuid::new_v4();
+            let event = Uuid::new_v4();
+            let binding = Uuid::new_v4();
+            units.push(unit);
+            sqlx::query("INSERT INTO pipeline_knowledge_manifest_resources VALUES($1,$2,$3,$4,1,$5,$6,NULL,$7)")
+                .bind(tenant).bind(workspace).bind(manifest).bind(unit)
+                .bind(if ordinal == 0 { "dk2_event" } else { "dk1_legacy" })
+                .bind(if ordinal == 0 { Some(event) } else { None })
+                .bind(binding)
+                .execute(&mut *tx).await.unwrap();
+            sqlx::query(
+                "INSERT INTO knowledge_unit_heads VALUES($1,$2,$3,false,'workspace_members')",
+            )
+            .bind(tenant)
+            .bind(workspace)
+            .bind(unit)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO knowledge_revisions VALUES($1,$2,$3,1,false,'workspace_members')",
+            )
+            .bind(tenant)
+            .bind(workspace)
+            .bind(unit)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO knowledge_publication_events VALUES($1,$2,$3,$4,1,false)")
+                .bind(tenant)
+                .bind(workspace)
+                .bind(event)
+                .bind(unit)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO knowledge_bindings VALUES($1,$2,$3,$4)")
+                .bind(tenant)
+                .bind(workspace)
+                .bind(binding)
+                .bind(unit)
+                .execute(&mut *tx)
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            authorize_paged_rows(&mut tx, tenant, workspace, manifest, false).await,
+            Ok(())
+        );
+        sqlx::query("UPDATE knowledge_unit_heads SET access_scope='owners_only' WHERE unit_id=$1")
+            .bind(units[1])
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            authorize_paged_rows(&mut tx, tenant, workspace, manifest, false).await,
+            Err(Error::Forbidden)
+        );
+        assert_eq!(
+            authorize_paged_rows(&mut tx, tenant, workspace, manifest, true).await,
+            Ok(())
+        );
+        sqlx::query("UPDATE knowledge_unit_heads SET payload_erased=true WHERE unit_id=$1")
+            .bind(units[1])
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            authorize_paged_rows(&mut tx, tenant, workspace, manifest, true).await,
+            Err(Error::KnowledgePayloadErased)
+        );
+        assert_eq!(
+            authorize_paged_rows(&mut tx, Uuid::new_v4(), workspace, manifest, false).await,
+            Ok(())
+        );
+        tx.rollback().await.unwrap();
+    }
 }

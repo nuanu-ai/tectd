@@ -21,6 +21,20 @@ async fn latest_validation(
     let Some((event_id, sequence)) = row else {
         return Ok(None);
     };
+    Ok(Some(
+        validation_at(tx, tenant, workspace, unit, revision, event_id, sequence).await?,
+    ))
+}
+
+pub(in crate::durable_knowledge::manifest) async fn validation_at(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    unit: Uuid,
+    revision: i64,
+    event_id: Uuid,
+    sequence: i64,
+) -> Result<PipelineKnowledgeValidationPin> {
     let verified = crate::knowledge_lifecycle::verify_publication_event(
         tx, tenant, workspace, unit, revision, event_id, false,
     )
@@ -43,7 +57,7 @@ async fn latest_validation(
     if !exact {
         return Err(Error::InternalInvariant);
     }
-    Ok(Some(PipelineKnowledgeValidationPin {
+    Ok(PipelineKnowledgeValidationPin {
         event_id,
         event_iri: format!("urn:tect:dk:event:{tenant}:{workspace}:{event_id}"),
         event_digest: verified.rdf_digest,
@@ -64,7 +78,7 @@ async fn latest_validation(
                 uri: value.uri,
             })
             .collect(),
-    }))
+    })
 }
 
 pub(super) async fn typed(
@@ -72,24 +86,17 @@ pub(super) async fn typed(
     tenant: Uuid,
     workspace: Uuid,
     row: &BindingRow,
+    verified: &crate::knowledge_lifecycle::VerifiedPublicationEvent,
     projection: Option<&crate::durable_knowledge::manifest::inquiry::Projection>,
     purpose: KnowledgeBindingPurpose,
 ) -> Result<TypedResource> {
-    let event_id = row.event_id.ok_or(Error::InternalInvariant)?;
-    let verified = crate::knowledge_lifecycle::verify_publication_event(
-        tx,
-        tenant,
-        workspace,
-        row.unit_id,
-        row.revision,
-        event_id,
-        true,
-    )
-    .await?;
+    if row.event_id != Some(verified.input.event_id) {
+        return Err(Error::InternalInvariant);
+    }
     if row.rdf_digest.as_deref() != Some(verified.rdf_digest.as_str()) {
         return Err(Error::InternalInvariant);
     }
-    let input = verified.input;
+    let input = verified.input.clone();
     let Some(document) = input.planned.document.as_ref() else {
         return Ok(TypedResource {
             resource: None,
@@ -208,16 +215,30 @@ pub(super) async fn legacy(
         context::load_revision(tx, tenant, workspace, row.unit_id, Some(row.revision), true)
             .await?
             .ok_or(Error::InternalInvariant)?;
-    let target = value.constraint.target_iri.clone();
-    Ok(PipelineKnowledgeResource {
-        unit_id: value.unit_id,
-        revision: value.revision,
-        lifecycle: if value.active {
+    Ok(legacy_from_revision(
+        if value.active {
             KnowledgeLifecycleState::Active
         } else {
             KnowledgeLifecycleState::Retracted
         },
-        access_scope: decode(serde_json::Value::String(row.head_access.clone()))?,
+        value,
+        decode(serde_json::Value::String(row.head_access.clone()))?,
+        binding(row)?,
+    ))
+}
+
+pub(in crate::durable_knowledge::manifest) fn legacy_from_revision(
+    lifecycle: KnowledgeLifecycleState,
+    value: KnowledgeUnitRevision,
+    access_scope: KnowledgeAccessScope,
+    binding: PipelineKnowledgeBindingPin,
+) -> PipelineKnowledgeResource {
+    let target = value.constraint.target_iri.clone();
+    PipelineKnowledgeResource {
+        unit_id: value.unit_id,
+        revision: value.revision,
+        lifecycle,
+        access_scope,
         rdf_digest: value.rdf_digest,
         unit_iri: value.unit_iri,
         revision_iri: value.revision_iri,
@@ -248,7 +269,14 @@ pub(super) async fn legacy(
             uri: value.constraint.source.uri,
         }],
         latest_validation: None,
-        binding: binding(row)?,
-        why_included: format!("{}_binding", row.binding_kind),
-    })
+        why_included: match binding.target {
+            KnowledgeBindingTarget::Workspace => "workspace_binding",
+            KnowledgeBindingTarget::Program { .. } => "program_binding",
+            KnowledgeBindingTarget::Scope { .. } => "scope_binding",
+            KnowledgeBindingTarget::Slice { .. } => "slice_binding",
+            KnowledgeBindingTarget::SlicePhase { .. } => "slice_phase_binding",
+        }
+        .into(),
+        binding,
+    }
 }

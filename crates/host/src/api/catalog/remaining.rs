@@ -255,6 +255,20 @@ vec![
         ),
         route!(
             "query",
+            "slice.pipeline.knowledge_page",
+            "slice_pipeline_knowledge_page",
+            "Read one bounded page of a pinned pipeline knowledge manifest.",
+            "Requires an authenticated open session, the exact run, dk-2-paged manifest ID and digest. The cursor is a position hint; every page rechecks the entire manifest and current access. Omitted byte_budget uses 131072 bytes; minimum is 8192 and maximum is 262144 encoded MCP response bytes.",
+            "Returns verified resources or exact byte fragments, count, position and continuation. A complete page does not prove prior pages were read.",
+            "Safe to repeat. Follow the returned action until next_cursor is null; reassemble fragments and verify their SHA-256 digest.",
+            object_schema(
+                json!({"run_id":uuid(),"manifest_id":uuid(),"digest":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"},"cursor":{"type":"string","minLength":1,"maxLength":2048},"byte_budget":{"type":"integer","minimum":crate::pipeline_dispatch::MIN_KNOWLEDGE_PAGE_BYTES,"maximum":262144}}),
+                json!(["run_id", "manifest_id", "digest"]),
+            ),
+            json!({"run_id":example_id,"manifest_id":example_id,"digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","byte_budget":131072}),
+        ),
+        route!(
+            "query",
             "slice.pipeline.instruction",
             "slice_pipeline_instruction",
             "Read one explicitly refreshed pinned pipeline method, instruction, skill, or resource body.",

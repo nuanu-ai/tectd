@@ -160,7 +160,107 @@ pub(crate) async fn load_context(
     principal: Uuid,
     run_id: Uuid,
 ) -> Result<Option<PipelineRunContext>> {
-    load_context_with_delivery_receipt(tx, tenant, workspace, principal, run_id, true).await
+    load_context_with_delivery_receipt(tx, tenant, workspace, principal, run_id, true, None, None)
+        .await
+}
+
+pub(crate) async fn load_context_after_capture(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    run_id: Uuid,
+    captured: &crate::durable_knowledge::manifest::Captured,
+) -> Result<Option<PipelineRunContext>> {
+    load_context_with_delivery_receipt(
+        tx,
+        tenant,
+        workspace,
+        principal,
+        run_id,
+        true,
+        Some(captured),
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn load_context_after_paged_capture(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    run_id: Uuid,
+    captured: &crate::durable_knowledge::manifest::PagedCaptured,
+) -> Result<Option<PipelineRunContext>> {
+    load_context_with_delivery_receipt(
+        tx,
+        tenant,
+        workspace,
+        principal,
+        run_id,
+        true,
+        None,
+        Some(captured),
+    )
+    .await
+}
+
+pub(super) async fn authorize_frozen_replay(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    run: Uuid,
+    frozen: &PipelineRunContext,
+) -> Result<()> {
+    authorize_context_copies(tx, tenant, workspace, principal, run).await?;
+    let erased: bool = sqlx::query_scalar("SELECT payload_erased FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
+        .bind(tenant).bind(workspace).bind(run).fetch_optional(&mut **tx).await.map_err(storage_error)?
+        .ok_or(Error::NotFound)?;
+    if erased {
+        return Err(Error::KnowledgePayloadErased);
+    }
+    if let Some(header) = frozen.knowledge_resources_paged.as_ref() {
+        let (current, _) = crate::durable_knowledge::manifest::load_paged_resources(
+            tx,
+            tenant,
+            workspace,
+            Some(header.id),
+            principal,
+        )
+        .await?
+        .ok_or(Error::InternalInvariant)?;
+        if current != *header || current.run_id != run {
+            return Err(Error::InternalInvariant);
+        }
+    }
+    if let Some(manifest) = frozen.knowledge_resources.as_ref() {
+        let current = crate::durable_knowledge::manifest::load_resources(
+            tx,
+            tenant,
+            workspace,
+            Some(manifest.id),
+            principal,
+        )
+        .await?
+        .ok_or(Error::InternalInvariant)?;
+        if current != *manifest {
+            return Err(Error::InternalInvariant);
+        }
+    }
+    if let Some(manifest) = frozen.knowledge.as_ref() {
+        crate::durable_knowledge::manifest::authorize_manifest(
+            tx,
+            tenant,
+            workspace,
+            manifest.id,
+            principal,
+        )
+        .await?
+        .ok_or(Error::Forbidden)?;
+    }
+    Ok(())
 }
 
 pub(crate) async fn load_context_without_delivery_receipt(
@@ -170,7 +270,8 @@ pub(crate) async fn load_context_without_delivery_receipt(
     principal: Uuid,
     run_id: Uuid,
 ) -> Result<Option<PipelineRunContext>> {
-    load_context_with_delivery_receipt(tx, tenant, workspace, principal, run_id, false).await
+    load_context_with_delivery_receipt(tx, tenant, workspace, principal, run_id, false, None, None)
+        .await
 }
 
 #[allow(clippy::type_complexity)]
@@ -181,6 +282,8 @@ async fn load_context_with_delivery_receipt(
     principal: Uuid,
     run_id: Uuid,
     issue_delivery_receipt: bool,
+    captured: Option<&crate::durable_knowledge::manifest::Captured>,
+    paged_captured: Option<&crate::durable_knowledge::manifest::PagedCaptured>,
 ) -> Result<Option<PipelineRunContext>> {
     let row:Option<serde_json::Value>=sqlx::query_scalar(
         "SELECT pg_catalog.jsonb_build_object('id',id,'scope_id',scope_id,'slice_id',slice_id,'slice_revision',slice_revision,'revision',revision,'definition_kind',definition_kind,'definition_version',definition_version,'definition_digest',definition_digest,'definition',definition,'selected_option_id',selected_option_id,'verification_plan_id',verification_plan_id,'verification_plan_version',verification_plan_version,'verification_plan_digest',verification_plan_digest,'delivery_mode',delivery_mode,'qualification_reason',qualification_reason,'status',status,'current_phase_id',current_phase_id,'current_phase_ordinal',current_phase_ordinal,'knowledge_manifest_id',knowledge_manifest_id,'payload_erased',payload_erased,'inquiry',inquiry,'source_checkpoint_id',source_checkpoint_id,'source_checkpoint_digest',source_checkpoint_digest) FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
@@ -365,7 +468,7 @@ async fn load_context_with_delivery_receipt(
         knowledge.as_ref(),
     )
     .await?;
-    let knowledge_resources = crate::durable_knowledge::manifest::load_resources(
+    let paged = crate::durable_knowledge::manifest::load_paged_resources(
         tx,
         tenant,
         workspace,
@@ -373,18 +476,77 @@ async fn load_context_with_delivery_receipt(
         principal,
     )
     .await?;
-    let knowledge_resource_status = crate::durable_knowledge::manifest::resource_status(
-        tx,
-        tenant,
-        workspace,
-        principal,
-        run.id,
-        run.scope_id,
-        run.slice_id,
-        run.current_phase_id.as_deref(),
-        knowledge_resources.as_ref(),
-    )
-    .await?;
+    let knowledge_resources = if paged.is_some() {
+        None
+    } else {
+        crate::durable_knowledge::manifest::load_resources(
+            tx,
+            tenant,
+            workspace,
+            row.knowledge_manifest_id,
+            principal,
+        )
+        .await?
+    };
+    let knowledge_resource_status = if let Some((manifest, pins)) = &paged {
+        if let Some(captured) = paged_captured {
+            crate::durable_knowledge::manifest::paged_resource_status_from_capture(
+                tx,
+                tenant,
+                workspace,
+                principal,
+                run.id,
+                run.scope_id,
+                run.slice_id,
+                run.current_phase_id.as_deref(),
+                manifest,
+                pins,
+                captured,
+            )
+            .await?
+        } else {
+            crate::durable_knowledge::manifest::paged_resource_status(
+                tx,
+                tenant,
+                workspace,
+                principal,
+                run.id,
+                run.scope_id,
+                run.slice_id,
+                run.current_phase_id.as_deref(),
+                manifest,
+                pins,
+            )
+            .await?
+        }
+    } else if let Some(captured) = captured {
+        crate::durable_knowledge::manifest::resource_status_from_capture(
+            tx,
+            tenant,
+            workspace,
+            principal,
+            run.id,
+            run.scope_id,
+            run.slice_id,
+            run.current_phase_id.as_deref(),
+            knowledge_resources.as_ref(),
+            captured,
+        )
+        .await?
+    } else {
+        crate::durable_knowledge::manifest::resource_status(
+            tx,
+            tenant,
+            workspace,
+            principal,
+            run.id,
+            run.scope_id,
+            run.slice_id,
+            run.current_phase_id.as_deref(),
+            knowledge_resources.as_ref(),
+        )
+        .await?
+    };
     let (delivery_receipt, delivery_fresh) = if issue_delivery_receipt {
         let (receipt, fresh) = load_or_create_delivery_receipt(
             tx,
@@ -416,6 +578,7 @@ async fn load_context_with_delivery_receipt(
         knowledge,
         knowledge_status,
         knowledge_resources,
+        knowledge_resources_paged: paged.map(|(manifest, _)| manifest),
         knowledge_resource_status,
         delivery_receipt,
         delivery_fresh,

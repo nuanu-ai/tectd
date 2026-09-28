@@ -5,10 +5,10 @@ use sha2::{Digest, Sha256};
 use tect_domain::{
     BeginPipelineRun, BeginPipelineRunOutcome, CompletePipelinePhase, Error,
     EscalatePipelineDelivery, PipelineContextResponse, PipelineInstructionQuery,
-    PipelineInstructionResponse, PipelineMutationOutcome, PipelineRunContextQuery,
-    PipelineRunContextView, PipelineRunMigrationCommand, PipelineRunMigrationOutcome,
-    RecordPipelineInput, ResolvePipelineCheckpoint, ResolvePipelineCheckpointOutcome, Result,
-    SliceState,
+    PipelineInstructionResponse, PipelineKnowledgePageQuery, PipelineMutationOutcome,
+    PipelineRunContextQuery, PipelineRunContextView, PipelineRunMigrationCommand,
+    PipelineRunMigrationOutcome, RecordPipelineInput, ResolvePipelineCheckpoint,
+    ResolvePipelineCheckpointOutcome, Result, SliceState,
 };
 use uuid::Uuid;
 
@@ -194,6 +194,31 @@ impl WorkspaceService {
             .await?;
         tx.commit().await?;
         Ok(value)
+    }
+
+    pub async fn pipeline_knowledge_page(
+        &self,
+        context: &tect_domain::RequestContext,
+        query: &PipelineKnowledgePageQuery,
+        backend_budget: usize,
+    ) -> Result<serde_json::Value> {
+        if query.run_id.is_nil()
+            || query.manifest_id.is_nil()
+            || query.digest.len() != 64
+            || !query.digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || backend_budget < 768
+        {
+            return Err(Error::InvalidArguments);
+        }
+        let (mut tx, workspace, session) = self
+            .native_planning_transaction(context, TransactionMode::ReadOnlyRepeatableRead)
+            .await?;
+        let principal_id = tx.session_principal(session.id).await?;
+        let page = tx
+            .pipeline_knowledge_page(workspace.id, principal_id, query, backend_budget)
+            .await?;
+        tx.commit().await?;
+        Ok(page)
     }
 
     pub async fn pipeline_context(

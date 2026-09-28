@@ -368,6 +368,8 @@ pub struct RefreshPipelineKnowledge {
 pub enum RefreshPipelineKnowledgeOutcome {
     Refreshed(PipelineKnowledgeManifest),
     Replay(PipelineKnowledgeManifest),
+    PagedRefreshed(crate::PagedPipelineKnowledgeManifest),
+    PagedReplay(crate::PagedPipelineKnowledgeManifest),
 }
 
 #[derive(Debug, Clone)]

@@ -1,8 +1,8 @@
 use crate::{
-    ConsumedKnowledgeManifestRef, KnowledgePublicationReference, PipelineCheckpointRef,
-    PipelineEvidenceArtifactRef, PipelineInquiryContract, PipelineKind, PipelineKnowledgeManifest,
-    PipelineKnowledgeResourceManifest, PipelineKnowledgeResourceStatus, PipelineKnowledgeStatus,
-    PipelineResearchCheckpoint, SliceResult, SliceResultEvidence,
+    ConsumedKnowledgeManifestRef, KnowledgePublicationReference, PagedPipelineKnowledgeManifest,
+    PipelineCheckpointRef, PipelineEvidenceArtifactRef, PipelineInquiryContract, PipelineKind,
+    PipelineKnowledgeManifest, PipelineKnowledgeResourceManifest, PipelineKnowledgeResourceStatus,
+    PipelineKnowledgeStatus, PipelineResearchCheckpoint, SliceResult, SliceResultEvidence,
     pipeline_followups::{PipelineFollowupContract, PipelineFollowupProposal},
 };
 use serde::{Deserialize, Serialize};
@@ -459,6 +459,8 @@ pub struct PipelineRunContext {
     pub knowledge_status: Option<PipelineKnowledgeStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge_resources: Option<PipelineKnowledgeResourceManifest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_resources_paged: Option<PagedPipelineKnowledgeManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge_resource_status: Option<PipelineKnowledgeResourceStatus>,
     /// Backend-issued proof that the immutable run manifest was delivered for

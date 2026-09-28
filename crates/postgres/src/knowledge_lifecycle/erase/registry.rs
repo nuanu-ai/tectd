@@ -72,7 +72,7 @@ async fn units_for_manifest(
     workspace: Uuid,
     manifest: Uuid,
 ) -> Result<Vec<(Uuid, i64)>> {
-    sqlx::query_as("SELECT DISTINCT (item->>'unit_id')::uuid,(item->>'revision')::bigint FROM pipeline_knowledge_manifests m CROSS JOIN LATERAL pg_catalog.jsonb_array_elements(COALESCE(m.selected,'[]'::jsonb)||COALESCE(m.selected_resources,'[]'::jsonb)) item WHERE m.tenant_id=$1 AND m.workspace_id=$2 AND m.id=$3 AND NOT m.payload_erased AND item ? 'unit_id' AND item ? 'revision' ORDER BY 1,2")
+    sqlx::query_as("SELECT DISTINCT unit_id,revision FROM (SELECT (item->>'unit_id')::uuid AS unit_id,(item->>'revision')::bigint AS revision FROM pipeline_knowledge_manifests m CROSS JOIN LATERAL pg_catalog.jsonb_array_elements(COALESCE(m.selected,'[]'::jsonb)||COALESCE(m.selected_resources,'[]'::jsonb)) item WHERE m.tenant_id=$1 AND m.workspace_id=$2 AND m.id=$3 AND NOT m.payload_erased AND item ? 'unit_id' AND item ? 'revision' UNION ALL SELECT p.unit_id,p.revision FROM pipeline_knowledge_manifest_resources p JOIN pipeline_knowledge_manifests m ON m.tenant_id=p.tenant_id AND m.workspace_id=p.workspace_id AND m.id=p.manifest_id WHERE p.tenant_id=$1 AND p.workspace_id=$2 AND p.manifest_id=$3 AND NOT m.payload_erased) pins ORDER BY 1,2")
         .bind(tenant).bind(workspace).bind(manifest).fetch_all(&mut **tx).await.map_err(storage_error)
 }
 

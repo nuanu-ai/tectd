@@ -179,6 +179,7 @@ fn context(state: PipelineKnowledgeResourceState, selected: bool) -> PipelineRun
             freshness_warnings: Vec::new(),
             access_changed: false,
         }),
+        knowledge_resources_paged: None,
         delivery_receipt: None,
         delivery_fresh: false,
     }
@@ -189,6 +190,54 @@ fn action<'a>(values: &'a [Value], route: &str) -> &'a Value {
         .iter()
         .find(|value| value["arguments"]["route"] == route)
         .expect("expected action route")
+}
+
+#[test]
+fn paged_context_exposes_initial_page_and_pinned_instruction_reads() {
+    let mut value = context(PipelineKnowledgeResourceState::Current, false);
+    value.knowledge_resources = None;
+    let manifest_id = uuid::Uuid::new_v4();
+    let digest = "a".repeat(64);
+    value.knowledge_resources_paged = Some(tect_domain::PagedPipelineKnowledgeManifest {
+        contract_version: "dk-2-paged".into(),
+        id: manifest_id,
+        digest: digest.clone(),
+        semantic_digest: "b".repeat(64),
+        workspace_generation: 1,
+        run_id: value.run.id,
+        run_revision: value.run.revision,
+        phase_id: "fixture-phase".into(),
+        definition_version: "fixture-version".into(),
+        definition_digest: "definition-digest".into(),
+        method_requirements: Vec::new(),
+        inquiry: None,
+        projection_policy: None,
+        unresolved_needs: Vec::new(),
+        freshness_warnings: Vec::new(),
+        resource_count: 2,
+        total_resource_bytes: 100,
+        resource_digest_algorithm: "resource-json-v1-sha256".into(),
+        page_route: "slice.pipeline.knowledge_page".into(),
+    });
+    let page = action(&actions(&value).unwrap(), "slice.pipeline.knowledge_page").clone();
+    assert_eq!(
+        page["arguments"]["params"]["manifest_id"],
+        manifest_id.to_string()
+    );
+    assert_eq!(page["arguments"]["params"]["digest"], digest);
+    value.run.delivery_mode = PipelineDeliveryMode::Whole;
+    value.definition.overview.body = "M".repeat(180_000);
+    value.definition.phases[0].instructions[0].body = "I".repeat(180_000);
+    value.delivered_phases = value.definition.phases.clone();
+    let projected = begin(BeginPipelineRunOutcome::Created(value), 256 * 1024).unwrap();
+    let created = &projected["created"];
+    assert_eq!(created["response_contract_version"], "slice.begin.paged.v1");
+    assert_eq!(created["body_delivery"], "pinned_references");
+    let pin = &created["definition"]["phases"][0]["instructions"][0];
+    assert!(pin.get("body").is_none());
+    assert_eq!(pin["read"]["route"], "slice.pipeline.instruction");
+    assert_eq!(pin["read"]["params"]["refresh"], true);
+    assert!(serde_json::to_vec(&projected).unwrap().len() < 256 * 1024);
 }
 
 fn open_checkpoint(

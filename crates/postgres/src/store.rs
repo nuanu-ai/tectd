@@ -274,7 +274,10 @@ impl Store for PgStore {
 
     async fn begin(&self, mode: TransactionMode) -> Result<Box<dyn UnitOfWork>> {
         let mut transaction = self.pool.begin().await.map_err(storage_error)?;
-        if mode == TransactionMode::ReadOnly {
+        if matches!(
+            mode,
+            TransactionMode::ReadOnly | TransactionMode::ReadOnlyRepeatableRead
+        ) {
             sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
                 .execute(&mut *transaction)
                 .await

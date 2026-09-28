@@ -1,4 +1,6 @@
-use crate::{PipelineDefinitionProvider, TransactionMode, WorkspaceService};
+use crate::{
+    PipelineDefinitionProvider, PipelineExecutionOutputGuard, TransactionMode, WorkspaceService,
+};
 use sha2::{Digest, Sha256};
 use tect_domain::*;
 use uuid::Uuid;
@@ -179,6 +181,7 @@ impl WorkspaceService {
         &self,
         context: &RequestContext,
         request: &RefreshPipelineKnowledge,
+        guard: &dyn PipelineExecutionOutputGuard,
     ) -> Result<RefreshPipelineKnowledgeOutcome> {
         request.validate()?;
         let (mut tx, workspace, session) = self
@@ -187,6 +190,7 @@ impl WorkspaceService {
         let value = tx
             .refresh_pipeline_knowledge(workspace.id, session.id, request)
             .await?;
+        guard.check_refresh(&value)?;
         tx.commit().await?;
         Ok(value)
     }

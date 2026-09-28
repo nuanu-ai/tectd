@@ -57,12 +57,30 @@ pub(crate) async fn begin_replay(
     let context = match prior {
         BeginPipelineRunOutcome::Created(value) | BeginPipelineRunOutcome::Replay(value) => value,
     };
+    if let Some(header) = context.knowledge_resources_paged.as_ref() {
+        let (current, _) = crate::durable_knowledge::manifest::load_paged_resources(
+            tx,
+            tenant,
+            workspace,
+            Some(header.id),
+            principal,
+        )
+        .await?
+        .ok_or(Error::InternalInvariant)?;
+        if current != *header || current.run_id != run_id {
+            return Err(Error::InternalInvariant);
+        }
+    }
     Ok(Some(BeginPipelineRunOutcome::Replay(context)))
 }
 
 fn origin_manifest_id(value: &serde_json::Value) -> Result<Option<Uuid>> {
     for outcome in ["created", "replay"] {
-        for field in ["knowledge_resources", "knowledge"] {
+        for field in [
+            "knowledge_resources_paged",
+            "knowledge_resources",
+            "knowledge",
+        ] {
             if let Some(value) = value
                 .get(outcome)
                 .and_then(|context| context.get(field))
@@ -156,7 +174,7 @@ pub(crate) async fn begin(
         request.source_checkpoint.as_ref(),
     )
     .await?;
-    let origin_manifest = if let Some(manifest) = crate::durable_knowledge::manifest::capture(
+    let captured = crate::durable_knowledge::manifest::capture_paged(
         tx,
         tenant,
         workspace,
@@ -167,17 +185,36 @@ pub(crate) async fn begin(
         &first.id,
         session,
     )
-    .await?
-    {
+    .await?;
+    let origin_manifest = if let Some(captured) = captured.as_ref() {
+        let (manifest_id, manifest_digest) = match captured {
+            crate::durable_knowledge::manifest::PagedCapture::Paged(value) => {
+                (value.manifest.id, &value.manifest.digest)
+            }
+            crate::durable_knowledge::manifest::PagedCapture::Inline(value) => {
+                (value.manifest.id, &value.manifest.digest)
+            }
+        };
         sqlx::query("UPDATE slice_pipeline_runs SET knowledge_manifest_id=$4,knowledge_manifest_digest=$5 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
-            .bind(tenant).bind(workspace).bind(id).bind(manifest.id).bind(&manifest.digest).execute(&mut **tx).await.map_err(storage_error)?;
-        Some(manifest.id)
+            .bind(tenant).bind(workspace).bind(id).bind(manifest_id).bind(manifest_digest).execute(&mut **tx).await.map_err(storage_error)?;
+        Some(manifest_id)
     } else {
         None
     };
-    let context = load_context(tx, tenant, workspace, principal, id)
-        .await?
-        .ok_or(Error::InternalInvariant)?;
+    let context = match captured.as_ref() {
+        Some(crate::durable_knowledge::manifest::PagedCapture::Inline(captured)) => {
+            context::load_context_after_capture(tx, tenant, workspace, principal, id, captured)
+                .await?
+        }
+        Some(crate::durable_knowledge::manifest::PagedCapture::Paged(captured)) => {
+            context::load_context_after_paged_capture(
+                tx, tenant, workspace, principal, id, captured,
+            )
+            .await?
+        }
+        None => load_context(tx, tenant, workspace, principal, id).await?,
+    }
+    .ok_or(Error::InternalInvariant)?;
     let outcome = BeginPipelineRunOutcome::Created(context);
     sqlx::query("UPDATE slice_pipeline_runs SET origin_result=$4 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
         .bind(tenant).bind(workspace).bind(id).bind(json(&outcome)?).execute(&mut **tx).await.map_err(storage_error)?;
@@ -206,6 +243,13 @@ mod tests {
         assert_eq!(
             origin_manifest_id(
                 &serde_json::json!({"replay":{"knowledge_resources":{"id":generic}}})
+            )
+            .unwrap(),
+            Some(generic)
+        );
+        assert_eq!(
+            origin_manifest_id(
+                &serde_json::json!({"created":{"knowledge_resources_paged":{"id":generic}}})
             )
             .unwrap(),
             Some(generic)

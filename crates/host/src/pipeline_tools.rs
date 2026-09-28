@@ -1,13 +1,14 @@
 use serde_json::Value;
 use tect_domain::{
     BeginPipelineRun, CompletePipelinePhase, Error, EscalatePipelineDelivery,
-    FinalizePipelineEvidenceArtifact, PipelineInstructionQuery, PipelineRunContextQuery,
-    PipelineRunMigrationCommand, ReadPipelineEvidenceArtifact, RecordPipelineInput,
-    RegisterPipelineEvidenceArtifact, ResolvePipelineCheckpoint, Result,
+    FinalizePipelineEvidenceArtifact, PipelineInstructionQuery, PipelineKnowledgePageQuery,
+    PipelineRunContextQuery, PipelineRunMigrationCommand, ReadPipelineEvidenceArtifact,
+    RecordPipelineInput, RegisterPipelineEvidenceArtifact, ResolvePipelineCheckpoint, Result,
 };
 
 pub(crate) enum PipelineInvocation {
     Context(PipelineRunContextQuery),
+    KnowledgePage(PipelineKnowledgePageQuery),
     Instruction(PipelineInstructionQuery),
     Begin(BeginPipelineRun),
     Migrate(PipelineRunMigrationCommand),
@@ -38,6 +39,13 @@ impl PipelineInvocation {
                 "a current run id and a valid context view",
                 "refresh_pipeline_context",
                 "current_pipeline_context",
+            ),
+            Self::KnowledgePage(_) => boundary(
+                "DK2-PAGE-01",
+                "arguments.params",
+                "an accessible pinned manifest for this run and a byte budget that fits one page",
+                "read_current_manifest_and_retry",
+                "authorized_paged_manifest",
             ),
             Self::Instruction(_) => boundary(
                 "WP6-INSTRUCTION-01",
@@ -133,6 +141,7 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<PipelineInvocation> 
     reject_optional_nulls(&arguments).map_err(|error| normalize_parse_error(error, name))?;
     match name {
         "slice_pipeline_context" => decode(arguments).map(PipelineInvocation::Context),
+        "slice_pipeline_knowledge_page" => decode(arguments).map(PipelineInvocation::KnowledgePage),
         "slice_pipeline_instruction" => decode(arguments).map(PipelineInvocation::Instruction),
         "slice_pipeline_begin" => decode(arguments).map(PipelineInvocation::Begin),
         "slice_pipeline_run_migrate" => decode(arguments).map(PipelineInvocation::Migrate),
@@ -165,6 +174,7 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<PipelineInvocation> 
 fn normalize_parse_error(error: Error, name: &str) -> Error {
     let rule = match name {
         "slice_pipeline_context" => "WP6-SCHEMA-CONTEXT-01",
+        "slice_pipeline_knowledge_page" => "DK2-SCHEMA-PAGE-01",
         "slice_pipeline_instruction" => "WP6-SCHEMA-INSTRUCTION-01",
         "slice_pipeline_begin" => "WP6-SCHEMA-BEGIN-01",
         "slice_pipeline_run_migrate" => "WP6-SCHEMA-MIGRATION-01",
@@ -238,6 +248,8 @@ fn reject_optional_nulls(value: &Value) -> Result<()> {
         "delivery_mode",
         "definition_version",
         "view",
+        "cursor",
+        "byte_budget",
         "output_id",
         "digest",
         "verdict",
@@ -286,6 +298,7 @@ mod refusal_tests {
     fn every_pipeline_schema_failure_is_a_complete_route_specific_refusal() {
         let routes = [
             ("slice_pipeline_context", "WP6-SCHEMA-CONTEXT-01"),
+            ("slice_pipeline_knowledge_page", "DK2-SCHEMA-PAGE-01"),
             ("slice_pipeline_instruction", "WP6-SCHEMA-INSTRUCTION-01"),
             ("slice_pipeline_begin", "WP6-SCHEMA-BEGIN-01"),
             ("slice_pipeline_run_migrate", "WP6-SCHEMA-MIGRATION-01"),
@@ -338,5 +351,25 @@ mod refusal_tests {
                 Error::Refused(_) | Error::PipelineRefused { .. }
             ));
         }
+    }
+
+    #[test]
+    fn knowledge_page_rejects_forged_identity_and_preserves_context_decoder() {
+        let run = uuid::Uuid::new_v4();
+        let manifest = uuid::Uuid::new_v4();
+        let params = json!({"run_id":run,"manifest_id":manifest,"digest":"a".repeat(64)});
+        assert!(matches!(
+            parse("slice_pipeline_knowledge_page", params.clone()).unwrap(),
+            PipelineInvocation::KnowledgePage(_)
+        ));
+        for key in ["tenant_id", "workspace_id", "principal_id"] {
+            let mut forged = params.clone();
+            forged[key] = json!(uuid::Uuid::new_v4());
+            assert!(parse("slice_pipeline_knowledge_page", forged).is_err());
+        }
+        assert!(matches!(
+            parse("slice_pipeline_context", json!({"run_id":run})).unwrap(),
+            PipelineInvocation::Context(_)
+        ));
     }
 }

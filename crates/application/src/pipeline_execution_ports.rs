@@ -2,10 +2,11 @@ use async_trait::async_trait;
 use tect_domain::{
     BeginPipelineRun, BeginPipelineRunOutcome, CompletePipelinePhase, EscalatePipelineDelivery,
     FinalizePipelineEvidenceArtifact, PipelineDefinitionSnapshot, PipelineEvidenceArtifactOutcome,
-    PipelineEvidenceArtifactPage, PipelineKind, PipelineMutationOutcome, PipelineRunContext,
-    PipelineRunMigrationCommand, PipelineRunMigrationOutcome, ReadPipelineEvidenceArtifact,
-    RecordPipelineInput, RegisterPipelineEvidenceArtifact, ResolvePipelineCheckpoint,
-    ResolvePipelineCheckpointOutcome, Result,
+    PipelineEvidenceArtifactPage, PipelineKind, PipelineKnowledgePageQuery,
+    PipelineMutationOutcome, PipelineRunContext, PipelineRunMigrationCommand,
+    PipelineRunMigrationOutcome, ReadPipelineEvidenceArtifact, RecordPipelineInput,
+    RegisterPipelineEvidenceArtifact, ResolvePipelineCheckpoint, ResolvePipelineCheckpointOutcome,
+    Result,
 };
 use uuid::Uuid;
 
@@ -36,10 +37,18 @@ pub trait PipelineExecutionOutputGuard: Send + Sync {
     fn check_begin(&self, value: &BeginPipelineRunOutcome) -> Result<()>;
     fn check_mutation(&self, value: &PipelineMutationOutcome) -> Result<()>;
     fn check_checkpoint_resolution(&self, value: &ResolvePipelineCheckpointOutcome) -> Result<()>;
+    fn check_refresh(&self, value: &tect_domain::RefreshPipelineKnowledgeOutcome) -> Result<()>;
 }
 
 #[async_trait]
 pub trait PipelineExecutionStore: Send {
+    async fn pipeline_knowledge_page(
+        &mut self,
+        workspace_id: Uuid,
+        principal_id: Uuid,
+        query: &PipelineKnowledgePageQuery,
+        backend_budget: usize,
+    ) -> Result<serde_json::Value>;
     async fn register_pipeline_evidence_artifact(
         &mut self,
         workspace_id: Uuid,

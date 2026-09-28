@@ -21,7 +21,9 @@ use tokio::time::timeout;
 
 const MAX_CONNECTIONS: usize = 32;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
-const OPERATION_TIMEOUT: Duration = Duration::from_secs(15);
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(45);
+// Leave time for the daemon to encode and write its deadline response.
+const RESPONSE_READ_TIMEOUT: Duration = Duration::from_secs(55);
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -121,7 +123,7 @@ pub(crate) async fn call_tool_bounded(
         .map_err(|_| Error::TransportUnavailable)?;
 
     let mut reader = FrameReader::new(read);
-    let frame = timeout(OPERATION_TIMEOUT, reader.next())
+    let frame = timeout(RESPONSE_READ_TIMEOUT, reader.next())
         .await
         .map_err(|_| Error::TransportUnavailable)?
         .map_err(|_| Error::TransportUnavailable)?;

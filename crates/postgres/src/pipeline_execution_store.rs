@@ -6,6 +6,45 @@ use uuid::Uuid;
 
 #[async_trait]
 impl PipelineExecutionStore for PgUnitOfWork {
+    async fn pipeline_knowledge_page(
+        &mut self,
+        workspace_id: Uuid,
+        principal_id: Uuid,
+        query: &PipelineKnowledgePageQuery,
+        backend_budget: usize,
+    ) -> Result<serde_json::Value> {
+        let tenant = self.tenant_id()?;
+        let pinned: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND knowledge_manifest_id=$4 AND knowledge_manifest_digest=$5 AND NOT payload_erased)",
+        )
+        .bind(tenant)
+        .bind(workspace_id)
+        .bind(query.run_id)
+        .bind(query.manifest_id)
+        .bind(&query.digest)
+        .fetch_one(&mut **self.transaction()?)
+        .await
+        .map_err(crate::storage_error)?;
+        if !pinned {
+            return Err(Error::NotFound);
+        }
+        let page = crate::durable_knowledge::manifest::read_manifest_resource_page(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            principal_id,
+            query.manifest_id,
+            &query.digest,
+            query.cursor.as_deref(),
+            query
+                .byte_budget
+                .unwrap_or(backend_budget)
+                .min(backend_budget),
+        )
+        .await?;
+        serde_json::to_value(page).map_err(crate::storage_error)
+    }
+
     async fn register_pipeline_evidence_artifact(
         &mut self,
         workspace_id: Uuid,
