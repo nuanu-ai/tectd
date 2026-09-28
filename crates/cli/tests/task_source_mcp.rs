@@ -600,12 +600,16 @@ async fn bound_source_cannot_replay_as_unbound() {
     assert_eq!(bound["input"]["intent"]["state"], "known");
     assert!(bound["requirements_snapshot_id"].as_str().is_some());
     assert_eq!(
-        route(&mut owner, "command", "task.source.record", params).await,
+        route(&mut owner, "command", "task.source.record", params.clone()).await,
         bound,
         "same bound request must retain its receipt"
     );
 
-    let unbound_params = record(task_id, 1, request_id, bound["input"].clone());
+    let mut unbound_params = params.clone();
+    unbound_params
+        .as_object_mut()
+        .unwrap()
+        .remove("requirements_locator");
     let conflict = owner
         .call_error(
             "command",
@@ -613,6 +617,19 @@ async fn bound_source_cannot_replay_as_unbound() {
         )
         .await;
     assert_eq!(conflict["error"]["code"], "input_conflict");
+    let injected_unbound = record(task_id, 1, request_id, bound["input"].clone());
+    let conflict = owner
+        .call_error(
+            "command",
+            json!({"route":"task.source.record","params":injected_unbound}),
+        )
+        .await;
+    assert_eq!(conflict["error"]["code"], "input_conflict");
+    assert_eq!(
+        route(&mut owner, "command", "task.source.record", params).await,
+        bound,
+        "bound replay after rejected unbound attempts must retain its saved binding"
+    );
     let current = route(
         &mut owner,
         "query",
