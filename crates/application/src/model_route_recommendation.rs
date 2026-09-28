@@ -20,6 +20,7 @@ pub struct PrepareModelRouteRecommendation {
     pub expected_mapped_work_node_revision: i64,
     pub request_key: String,
     pub requested_route_id: Option<String>,
+    pub origin_session_id: Option<Uuid>,
     pub session_preference: AdvisoryRequestPreference,
     pub request_preference: AdvisoryRequestPreference,
 }
@@ -60,7 +61,7 @@ impl PrepareModelRouteRecommendation {
                 || saved.work.approved_matrix_selection.task_revision != self.expected_task_revision
                 || !self.matches_selection_link(&saved.work)
                 || saved.routes.requested_route_id != self.requested_route_id
-                || saved.session_preference != self.session_preference
+                || saved.origin_session_id != self.origin_session_id
                 || saved.request_preference != self.request_preference
             {
                 return Err(Error::InputConflict);
@@ -134,6 +135,7 @@ impl PrepareModelRouteRecommendation {
         let prepared = PreparedModelRouteRecommendation {
             workspace_id: self.workspace_id,
             request_key: self.request_key.clone(),
+            origin_session_id: self.origin_session_id,
             session_preference: self.session_preference,
             request_preference: self.request_preference,
             advisory_config_revision: basis.advisory_config_revision,

@@ -380,6 +380,7 @@ async fn one_shot_campaign_anti_bloat() {
         review_id,
         workspace_id: workspace,
         actor_id: actor,
+        invocation: None,
         input: serde_json::from_value(input.clone()).unwrap(),
         review: serde_json::from_value(review.clone()).unwrap(),
         state: AntiBloatAttemptState::Prepared,

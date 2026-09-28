@@ -8,7 +8,8 @@ pub(super) async fn record_preflight_no_call(
     if !uow.is_read_write()
         || !matches!(
             reason,
-            AntiBloatNoCall::ProviderUnconfigured
+            AntiBloatNoCall::SessionSkip
+                | AntiBloatNoCall::ProviderUnconfigured
                 | AntiBloatNoCall::PreflightInvalidConfiguration
                 | AntiBloatNoCall::PreflightInvalidArguments
                 | AntiBloatNoCall::PreflightInputConflict

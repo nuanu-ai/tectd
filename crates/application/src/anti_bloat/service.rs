@@ -5,14 +5,14 @@ impl WorkspaceService {
         &self,
         context: &RequestContext,
         mode: TransactionMode,
-    ) -> Result<(Box<dyn UnitOfWork>, Uuid, Uuid)> {
+    ) -> Result<(Box<dyn UnitOfWork>, Uuid, Uuid, Uuid)> {
         let (mut tx, identity) = self.authorized(context, mode).await?;
         if mode == TransactionMode::ReadWrite {
             tx.lock_native_session(identity.host_id, &context.native_session_id)
                 .await?;
         }
-        let (workspace, _) = Self::bound_session(&mut *tx, context, &identity).await?;
-        Ok((tx, workspace.id, identity.principal_id))
+        let (workspace, session) = Self::bound_session(&mut *tx, context, &identity).await?;
+        Ok((tx, workspace.id, identity.principal_id, session.id))
     }
 
     pub async fn prepare_anti_bloat(
@@ -22,16 +22,25 @@ impl WorkspaceService {
         expected_revision: i64,
         preference: AdvisoryRequestPreference,
     ) -> Result<StoredAntiBloatReview> {
-        let (mut tx, workspace, actor) = self
+        let (mut tx, workspace, actor, session) = self
             .anti_bloat_transaction(context, TransactionMode::ReadWrite)
             .await?;
-        let review = prepare_anti_bloat_review(
+        let session_preference = tx
+            .session_advisory_preference(workspace, session)
+            .await?
+            .preference;
+        let review = prepare_anti_bloat_review_with_invocation(
             tx.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
             workspace,
             actor,
             candidate_set_id,
             expected_revision,
             preference,
+            Some(AntiBloatInvocationSnapshot {
+                session_id: session,
+                session_preference,
+                request_preference: preference,
+            }),
         )
         .await?;
         tx.commit().await?;
@@ -46,7 +55,7 @@ impl WorkspaceService {
         if review_id.is_nil() {
             return Err(Error::InvalidArguments);
         }
-        let (mut tx, workspace, _) = self
+        let (mut tx, workspace, _, _) = self
             .anti_bloat_transaction(context, TransactionMode::ReadOnly)
             .await?;
         let review = tx
@@ -67,7 +76,7 @@ impl WorkspaceService {
         context: &RequestContext,
         authored: &AntiBloatAuthoredDelta,
     ) -> Result<AntiBloatApplyReceipt> {
-        let (mut tx, workspace, _) = self
+        let (mut tx, workspace, _, _) = self
             .anti_bloat_transaction(context, TransactionMode::ReadWrite)
             .await?;
         let store = tx.anti_bloat_store().ok_or(Error::StorageUnavailable)?;
@@ -93,7 +102,7 @@ impl WorkspaceService {
         if review_id.is_nil() {
             return Err(Error::InvalidArguments);
         }
-        let (mut fence, workspace, _) = self
+        let (mut fence, workspace, actor, session) = self
             .anti_bloat_transaction(context, TransactionMode::ReadWrite)
             .await?;
         let saved = fence
@@ -104,6 +113,26 @@ impl WorkspaceService {
             .ok_or(Error::NotFound)?;
         if saved.workspace_id != workspace {
             return Err(Error::Forbidden);
+        }
+        if saved.actor_id != actor
+            || saved.invocation.as_ref().map(|v| v.session_id) != Some(session)
+        {
+            return Err(Error::InputConflict);
+        }
+        if saved.state == AntiBloatAttemptState::Prepared
+            && fence
+                .session_advisory_preference(workspace, session)
+                .await?
+                .preference
+                == AdvisoryRequestPreference::Skip
+        {
+            fence
+                .anti_bloat_store()
+                .ok_or(Error::StorageUnavailable)?
+                .record_preflight_no_call(review_id, AntiBloatNoCall::SessionSkip)
+                .await?;
+            fence.commit().await?;
+            return Ok(AntiBloatAttemptState::NoCall(AntiBloatNoCall::SessionSkip));
         }
         if saved.state == AntiBloatAttemptState::Sending {
             fence.commit().await?;
@@ -129,7 +158,7 @@ impl WorkspaceService {
         {
             Ok(observation) => observation,
             Err(_) => {
-                let (mut uncertain, _, _) = self
+                let (mut uncertain, _, _, _) = self
                     .anti_bloat_transaction(context, TransactionMode::ReadWrite)
                     .await?;
                 uncertain
@@ -141,7 +170,7 @@ impl WorkspaceService {
                 return Ok(AntiBloatAttemptState::SendUnknown);
             }
         };
-        let (mut seal, _, _) = self
+        let (mut seal, _, _, _) = self
             .anti_bloat_transaction(context, TransactionMode::ReadWrite)
             .await?;
         seal_anti_bloat_response(
@@ -160,7 +189,7 @@ impl WorkspaceService {
         context: &RequestContext,
         review_id: Uuid,
     ) -> Result<AntiBloatAttemptState> {
-        let (mut usage_read, workspace, _) = self
+        let (mut usage_read, workspace, _, _) = self
             .anti_bloat_transaction(context, TransactionMode::ReadOnly)
             .await?;
         let store = usage_read
@@ -198,7 +227,7 @@ impl WorkspaceService {
         .await?;
         usage_read.commit().await?;
 
-        let (mut consume, _, _) = self
+        let (mut consume, _, _, _) = self
             .anti_bloat_transaction(context, TransactionMode::ReadWrite)
             .await?;
         let exhausted = consume
@@ -212,7 +241,7 @@ impl WorkspaceService {
                 .http_status
                 .is_some_and(|n| !(200..=299).contains(&n))
         {
-            let (mut invalid, _, _) = self
+            let (mut invalid, _, _, _) = self
                 .anti_bloat_transaction(context, TransactionMode::ReadWrite)
                 .await?;
             invalid
@@ -224,7 +253,7 @@ impl WorkspaceService {
             return Ok(AntiBloatAttemptState::InvalidResponse);
         }
         if exhausted {
-            let (mut uncertain, _, _) = self
+            let (mut uncertain, _, _, _) = self
                 .anti_bloat_transaction(context, TransactionMode::ReadWrite)
                 .await?;
             uncertain
@@ -236,7 +265,7 @@ impl WorkspaceService {
             return Ok(AntiBloatAttemptState::SendUnknown);
         }
 
-        let (mut finish, _, _) = self
+        let (mut finish, _, _, _) = self
             .anti_bloat_transaction(context, TransactionMode::ReadWrite)
             .await?;
         let outcome = finalize_anti_bloat_response(

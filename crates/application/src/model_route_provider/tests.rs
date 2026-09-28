@@ -124,6 +124,7 @@ fn prepared(state: ModelRoutePreparation) -> PreparedModelRouteRecommendation {
     PreparedModelRouteRecommendation {
         workspace_id: Uuid::from_u128(106),
         request_key: "prepare-1".into(),
+        origin_session_id: None,
         session_preference: AdvisoryRequestPreference::UseWorkspace,
         request_preference: AdvisoryRequestPreference::UseWorkspace,
         advisory_config_revision: 1,

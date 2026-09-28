@@ -1,14 +1,14 @@
 //! Public recommendation-only workflow. No recommended model is executed.
-use tect_domain::{Error, RequestContext, Result};
+use tect_domain::{AdvisoryRequestPreference, Error, RequestContext, Result};
 use uuid::Uuid;
 
 use crate::{
     CapturedModelRouteDisposition, DecideModelRouteRecommendation,
     DispositionModelRouteRecommendation, ModelRouteDecisionInput, ModelRouteDispositionAction,
-    ModelRouteInvocation, ModelRouteSendStart, PrepareModelRouteRecommendation,
-    PreparedModelRouteRecommendation, TransactionMode, WorkspaceService,
-    attempt_model_route_observed_after_commit, finalize_model_route_provider_response,
-    prepare_model_route_send,
+    ModelRouteInvocation, ModelRoutePreparation, ModelRouteRunNoCall, ModelRouteSendStart,
+    PrepareModelRouteRecommendation, PreparedModelRouteRecommendation, TransactionMode,
+    WorkspaceService, attempt_model_route_observed_after_commit,
+    finalize_model_route_provider_response, prepare_model_route_send,
 };
 
 pub use tect_domain::ModelRouteView;
@@ -30,6 +30,11 @@ impl WorkspaceService {
         let workspace = Self::validate_binding(&mut *writer, context, &identity, &session).await?;
         let mut effective = request.clone();
         effective.workspace_id = workspace.id;
+        effective.origin_session_id = Some(session.id);
+        effective.session_preference = writer
+            .session_advisory_preference(workspace.id, session.id)
+            .await?
+            .preference;
         let (host_capabilities, catalogue_provider) = self.model_route_advisory_inputs();
         let prepared = effective
             .prepare(
@@ -130,21 +135,48 @@ impl WorkspaceService {
             .by_request(workspace.id, preparation_request_key)
             .await?
             .ok_or(Error::NotFound)?;
+        if prepared.origin_session_id != Some(session.id) {
+            return Err(Error::Forbidden);
+        }
         prepared.work.require_current_authority()?;
         start
             .model_route_recommendation_store()
             .ok_or(Error::Forbidden)?
             .validate_current(&prepared)
             .await?;
-        let started = prepare_model_route_send(
-            start.model_route_attempt_store().ok_or(Error::Forbidden)?,
-            &*self.model_route_ranking_provider,
-            &prepared,
-            ModelRouteInvocation {
-                session_id: session.id,
-            },
-        )
-        .await?;
+        let invocation = ModelRouteInvocation {
+            session_id: session.id,
+        };
+        let existing = start
+            .model_route_attempt_store()
+            .ok_or(Error::Forbidden)?
+            .by_preparation(workspace.id, preparation_request_key, invocation)
+            .await?;
+        let started = if existing.is_some() {
+            ModelRouteSendStart::Replay
+        } else if prepared.preparation == ModelRoutePreparation::Prepared
+            && start
+                .session_advisory_preference(workspace.id, session.id)
+                .await?
+                .preference
+                == AdvisoryRequestPreference::Skip
+        {
+            let reason = ModelRouteRunNoCall::Preparation(ModelRoutePreparation::SessionSkip);
+            start
+                .model_route_attempt_store()
+                .ok_or(Error::Forbidden)?
+                .record_no_call(&prepared, invocation, reason)
+                .await?;
+            ModelRouteSendStart::NoCall(reason)
+        } else {
+            prepare_model_route_send(
+                start.model_route_attempt_store().ok_or(Error::Forbidden)?,
+                &*self.model_route_ranking_provider,
+                &prepared,
+                invocation,
+            )
+            .await?
+        };
         match started {
             ModelRouteSendStart::NoCall(_) => {
                 start.commit().await?;

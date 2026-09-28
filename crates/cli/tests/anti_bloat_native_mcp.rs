@@ -48,7 +48,11 @@ async fn identity(pool: &PgPool) {
             .parse::<i64>()
             .unwrap(),
         std::env::var("TECT_TEST_EXPECTED_PG_SYSTEM_ID").unwrap(),
-        110,
+        sqlx::migrate!("../postgres/migrations")
+            .iter()
+            .last()
+            .unwrap()
+            .version,
     );
     assert!(expected.0.starts_with("tect_s04_live_"));
     assert_eq!(row, expected);
@@ -128,6 +132,9 @@ async fn native_anti_bloat_public_mcp_is_sealed_once_and_default_disabled() {
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
     let runtime = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
     let pool = PgPool::connect(&admin_url).await.unwrap();
+    admin::migrate(&pool, &std::env::var("TECT_TEST_RUNTIME_ROLE").unwrap())
+        .await
+        .unwrap();
     identity(&pool).await;
     for (enabled, status, abstain, duplicate, partial, expected) in [
         (true, 200, false, false, 0, "ranked"),
@@ -249,6 +256,133 @@ async fn native_anti_bloat_public_mcp_is_sealed_once_and_default_disabled() {
         )
         .await;
         let mut client = Mcp::start(&native_socket, &config, &native, &key).await;
+        if enabled && status == 200 && !abstain && !duplicate && partial == 0 {
+            let request_skip = call(
+                &pool,
+                &mut client,
+                "command",
+                "scope.anti_bloat.prepare",
+                json!({"candidate_set_id":candidate,"expected_revision":revision,
+                    "request_preference":"skip"}),
+            )
+            .await;
+            assert_eq!(
+                request_skip["state"],
+                json!({"status":"no_call","reason":"skipped"})
+            );
+            assert_eq!(request_skip["request_preference"], "skip");
+            let other_native = Uuid::new_v4().to_string();
+            let mut other = Mcp::start(&native_socket, &config, &other_native, &key).await;
+            call(&pool, &mut other, "command", "workspace.open", json!({})).await;
+            let foreign = support::route_error(
+                &mut other,
+                "command",
+                "scope.anti_bloat.run",
+                json!({"review_id":review}),
+            )
+            .await;
+            assert_eq!(foreign["error"]["code"], "input_conflict", "{foreign}");
+            other.finish().await;
+
+            let later_skip = call(
+                &pool,
+                &mut client,
+                "command",
+                "scope.anti_bloat.prepare",
+                json!({"candidate_set_id":candidate,"expected_revision":revision}),
+            )
+            .await;
+            let later_skip_id = id(&later_skip["review_id"]);
+            assert_eq!(later_skip["state"]["status"], "prepared");
+            call(
+                &pool,
+                &mut client,
+                "command",
+                "session.advisory.preference.set",
+                json!({"expected_revision":0,"preference":"skip"}),
+            )
+            .await;
+            let initial_skip = call(
+                &pool,
+                &mut client,
+                "command",
+                "scope.anti_bloat.prepare",
+                json!({"candidate_set_id":candidate,"expected_revision":revision}),
+            )
+            .await;
+            assert_eq!(
+                initial_skip["state"],
+                json!({"status":"no_call","reason":"session_skip"})
+            );
+            assert_eq!(initial_skip["session_preference"], "skip");
+            let initial_skip_id = id(&initial_skip["review_id"]);
+            let no_send = call(
+                &pool,
+                &mut client,
+                "command",
+                "scope.anti_bloat.run",
+                json!({"review_id":initial_skip_id}),
+            )
+            .await;
+            assert_eq!(no_send["state"], initial_skip["state"]);
+            let skipped = call(
+                &pool,
+                &mut client,
+                "command",
+                "scope.anti_bloat.run",
+                json!({"review_id":later_skip_id}),
+            )
+            .await;
+            assert_eq!(
+                skipped["state"],
+                json!({"status":"no_call","reason":"session_skip"})
+            );
+            let skipped_replay = call(
+                &pool,
+                &mut client,
+                "command",
+                "scope.anti_bloat.run",
+                json!({"review_id":later_skip_id}),
+            )
+            .await;
+            assert_eq!(skipped_replay, skipped);
+            let skipped_row: (String, Option<Uuid>, String, String) = sqlx::query_as(
+                "SELECT state,origin_session_id,session_preference,request_preference \
+                 FROM scope_anti_bloat_reviews WHERE review_id=$1",
+            )
+            .bind(later_skip_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(skipped_row.0, "session_skipped");
+            assert!(skipped_row.1.is_some());
+            assert_eq!(
+                (&*skipped_row.2, &*skipped_row.3),
+                ("use_workspace", "use_workspace")
+            );
+            let reservations: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM scope_anti_bloat_budget_reservations WHERE review_id=$1",
+            )
+            .bind(later_skip_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(reservations, 0);
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(150), listener.accept())
+                    .await
+                    .is_err(),
+                "session skip before send must not POST"
+            );
+            call(
+                &pool,
+                &mut client,
+                "command",
+                "session.advisory.preference.set",
+                json!({"expected_revision":1,"preference":"use_workspace"}),
+            )
+            .await;
+        }
         let dispatch = enabled && expected != "no_call";
         let (http, quiet) = if dispatch {
             (
@@ -275,6 +409,16 @@ async fn native_anti_bloat_public_mcp_is_sealed_once_and_default_disabled() {
         )
         .await;
         assert_eq!(result["state"]["status"], expected, "{result}");
+        if enabled && status == 200 && !abstain && !duplicate && partial == 0 {
+            call(
+                &pool,
+                &mut client,
+                "command",
+                "session.advisory.preference.set",
+                json!({"expected_revision":2,"preference":"skip"}),
+            )
+            .await;
+        }
         if !enabled {
             assert_eq!(result["state"]["reason"], "provider_unconfigured");
         }

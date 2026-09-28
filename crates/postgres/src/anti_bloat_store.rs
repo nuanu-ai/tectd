@@ -7,10 +7,10 @@ use tect_application::{
     Sha256ScopeDigest, StoredAntiBloatReview,
 };
 use tect_domain::{
-    AdvisoryBudgetPolicy, AntiBloatApplyReceipt, AntiBloatDisposition, AntiBloatInput,
-    AntiBloatObligationLink, AntiBloatPreservation, Error, ResolvedCandidateDraft, Result,
-    ScopeConstructorManifest, WorkspaceAdvisoryMode, check_anti_bloat_delta, review_anti_bloat,
-    scope_candidate_material_digest,
+    AdvisoryBudgetPolicy, AdvisoryRequestPreference, AntiBloatApplyReceipt, AntiBloatDisposition,
+    AntiBloatInput, AntiBloatObligationLink, AntiBloatPreservation, Error, ResolvedCandidateDraft,
+    Result, ScopeConstructorManifest, WorkspaceAdvisoryMode, check_anti_bloat_delta,
+    review_anti_bloat, scope_candidate_material_digest,
 };
 use uuid::Uuid;
 
@@ -67,6 +67,7 @@ fn state_name(state: &AntiBloatAttemptState) -> &'static str {
     match state {
         AntiBloatAttemptState::NoCall(AntiBloatNoCall::Disabled) => "disabled",
         AntiBloatAttemptState::NoCall(AntiBloatNoCall::Skipped) => "skipped",
+        AntiBloatAttemptState::NoCall(AntiBloatNoCall::SessionSkip) => "session_skipped",
         AntiBloatAttemptState::NoCall(AntiBloatNoCall::NoEligibleFindings) => "no_eligible",
         AntiBloatAttemptState::NoCall(AntiBloatNoCall::ProviderUnconfigured) => {
             "provider_unconfigured"
@@ -96,6 +97,7 @@ fn parse_state(name: &str, ranked: Option<serde_json::Value>) -> Result<AntiBloa
     Ok(match name {
         "disabled" => AntiBloatAttemptState::NoCall(AntiBloatNoCall::Disabled),
         "skipped" => AntiBloatAttemptState::NoCall(AntiBloatNoCall::Skipped),
+        "session_skipped" => AntiBloatAttemptState::NoCall(AntiBloatNoCall::SessionSkip),
         "no_eligible" => AntiBloatAttemptState::NoCall(AntiBloatNoCall::NoEligibleFindings),
         "provider_unconfigured" => {
             AntiBloatAttemptState::NoCall(AntiBloatNoCall::ProviderUnconfigured)

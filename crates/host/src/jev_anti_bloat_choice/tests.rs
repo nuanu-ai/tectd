@@ -53,6 +53,7 @@ pub(crate) fn saved() -> tect_application::StoredAntiBloatReview {
         review_id: id,
         workspace_id: id,
         actor_id: id,
+        invocation: None,
         input,
         review: AntiBloatReview {
             source_digest: digest.clone(),

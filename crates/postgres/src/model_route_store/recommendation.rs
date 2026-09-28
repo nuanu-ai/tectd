@@ -19,8 +19,8 @@ impl ModelRouteRecommendationStore for PgUnitOfWork {
         request_key: &str,
     ) -> Result<Option<PreparedModelRouteRecommendation>> {
         let tenant = self.tenant_id()?;
-        let row: Option<Value> = sqlx::query_scalar(
-            "SELECT prepared_payload FROM model_route_preparations \
+        let row: Option<(Value, Option<Uuid>)> = sqlx::query_as(
+            "SELECT prepared_payload,origin_session_id FROM model_route_preparations \
              WHERE tenant_id=$1 AND workspace_id=$2 AND request_key=$3",
         )
         .bind(tenant)
@@ -29,7 +29,16 @@ impl ModelRouteRecommendationStore for PgUnitOfWork {
         .fetch_optional(&mut **self.transaction()?)
         .await
         .map_err(storage_error)?;
-        row.map(decode).transpose()
+        match row {
+            Some((payload, origin)) => {
+                let prepared: PreparedModelRouteRecommendation = decode(payload)?;
+                if prepared.origin_session_id != origin {
+                    return Err(Error::StorageUnavailable);
+                }
+                Ok(Some(prepared))
+            }
+            None => Ok(None),
+        }
     }
 
     async fn load_basis(
@@ -81,8 +90,8 @@ impl ModelRouteRecommendationStore for PgUnitOfWork {
             "INSERT INTO model_route_preparations \
              (tenant_id,workspace_id,request_key,disposition_id,candidate_set_id,caller_request_id, \
               work_node_id,work_node_revision,task_id,task_revision,advisory_mode, \
-              advisory_config_revision,work_digest,catalogue_digest,host_capability_evidence_ref,prepared_payload) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)",
+              advisory_config_revision,work_digest,catalogue_digest,host_capability_evidence_ref,prepared_payload,origin_session_id) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
         )
         .bind(tenant)
         .bind(prepared.workspace_id)
@@ -100,6 +109,7 @@ impl ModelRouteRecommendationStore for PgUnitOfWork {
         .bind(if catalogue_digest.is_empty() { None } else { Some(catalogue_digest) })
         .bind(host_ref)
         .bind(encode(prepared)?)
+        .bind(prepared.origin_session_id)
         .execute(&mut **self.transaction()?)
         .await
         .map_err(write_error)?;

@@ -17,6 +17,7 @@ pub(super) async fn prepare_case(
         expected_mapped_work_node_id: created.work_node,
         expected_mapped_work_node_revision: created.work_revision,
         request_key: format!("route-{label}-{}", Uuid::new_v4()),
+        origin_session_id: Some(created.invocation_session),
         requested_route_id: None,
         session_preference: AdvisoryRequestPreference::UseWorkspace,
         request_preference: AdvisoryRequestPreference::UseWorkspace,

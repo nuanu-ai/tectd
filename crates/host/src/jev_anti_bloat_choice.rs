@@ -55,6 +55,24 @@ pub fn restore_choice_request(
             .map_err(|_| Error::InvalidArguments)?,
         actor_id: serde_json::from_value(binding["actor_id"].clone())
             .map_err(|_| Error::InvalidArguments)?,
+        invocation: binding
+            .get("invocation")
+            .map(|value| {
+                let session_id = serde_json::from_value(value["session_id"].clone())
+                    .map_err(|_| Error::InvalidArguments)?;
+                let session_preference =
+                    serde_json::from_value(value["session_preference"].clone())
+                        .map_err(|_| Error::InvalidArguments)?;
+                let request_preference =
+                    serde_json::from_value(value["request_preference"].clone())
+                        .map_err(|_| Error::InvalidArguments)?;
+                Ok(tect_application::AntiBloatInvocationSnapshot {
+                    session_id,
+                    session_preference,
+                    request_preference,
+                })
+            })
+            .transpose()?,
         input: serde_json::from_value(state["input"].clone())
             .map_err(|_| Error::InvalidArguments)?,
         review: serde_json::from_value(state["review"].clone())
@@ -140,12 +158,20 @@ pub fn prepare_choice_request(
         json!("Insufficient evidence or findings cannot be distinctly prioritised."),
     );
     let material_sha256 = anti_bloat_material_sha256(material.saved)?;
+    let mut binding = json!({"review_id": material.saved.review_id,
+        "workspace_id": material.saved.workspace_id, "actor_id": material.saved.actor_id,
+        "material_sha256": material_sha256});
+    if let Some(invocation) = &material.saved.invocation {
+        binding["invocation"] = json!({"session_id": invocation.session_id,
+            "session_preference": invocation.session_preference.as_str(),
+            "request_preference": invocation.request_preference.as_str()});
+    }
     let body = serde_json::to_vec(&json!({
         "model": model,
         "state": {
             "contract": CHOICE_WIRE_VERSION,
             "provider_binding_digest": provider_binding_digest,
-            "binding": {"review_id": material.saved.review_id, "workspace_id": material.saved.workspace_id, "actor_id": material.saved.actor_id, "material_sha256": material_sha256},
+            "binding": binding,
             "input": material.saved.input, "review": material.saved.review,
             "eligible_ids": eligible, "finding_tokens": token_to_finding_id,
         },

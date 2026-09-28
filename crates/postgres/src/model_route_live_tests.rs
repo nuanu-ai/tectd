@@ -67,6 +67,7 @@ fn missing_link_preparation(workspace_id: Uuid) -> PreparedModelRouteRecommendat
     PreparedModelRouteRecommendation {
         workspace_id,
         request_key: format!("missing-link-{}", Uuid::new_v4()),
+        origin_session_id: None,
         session_preference: AdvisoryRequestPreference::UseWorkspace,
         request_preference: AdvisoryRequestPreference::UseWorkspace,
         advisory_config_revision: 0,

@@ -40,6 +40,10 @@ pub enum ModelRoutePreparation {
 pub struct PreparedModelRouteRecommendation {
     pub workspace_id: Uuid,
     pub request_key: String,
+    /// The native session which first captured this immutable preparation.
+    /// Historical receipts predate this binding and cannot be replayed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_session_id: Option<Uuid>,
     pub session_preference: AdvisoryRequestPreference,
     pub request_preference: AdvisoryRequestPreference,
     pub advisory_config_revision: i64,

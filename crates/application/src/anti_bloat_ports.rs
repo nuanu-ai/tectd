@@ -1,9 +1,9 @@
 //! Durable, default-deny boundaries for a source-relative review of one saved graph.
 use async_trait::async_trait;
 use tect_domain::{
-    AdvisoryBudgetPolicy, AntiBloatApplyReceipt, AntiBloatDisposition, AntiBloatInput,
-    AntiBloatPreservation, AntiBloatPreservationAttestation, AntiBloatReview, CandidateDeltaBatch,
-    ResolvedCandidateDraft, Result, WorkspaceAdvisoryMode,
+    AdvisoryBudgetPolicy, AdvisoryRequestPreference, AntiBloatApplyReceipt, AntiBloatDisposition,
+    AntiBloatInput, AntiBloatPreservation, AntiBloatPreservationAttestation, AntiBloatReview,
+    CandidateDeltaBatch, ResolvedCandidateDraft, Result, WorkspaceAdvisoryMode,
 };
 use uuid::Uuid;
 
@@ -13,6 +13,7 @@ pub use tect_domain::AntiBloatVerificationMaterial;
 pub enum AntiBloatNoCall {
     Disabled,
     Skipped,
+    SessionSkip,
     NoEligibleFindings,
     ProviderUnconfigured,
     PreflightInvalidConfiguration,
@@ -50,9 +51,18 @@ pub struct StoredAntiBloatReview {
     pub review_id: Uuid,
     pub workspace_id: Uuid,
     pub actor_id: Uuid,
+    /// Frozen authenticated invocation; absent only for historical reviews.
+    pub invocation: Option<AntiBloatInvocationSnapshot>,
     pub input: AntiBloatInput,
     pub review: AntiBloatReview,
     pub state: AntiBloatAttemptState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AntiBloatInvocationSnapshot {
+    pub session_id: Uuid,
+    pub session_preference: AdvisoryRequestPreference,
+    pub request_preference: AdvisoryRequestPreference,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,13 +81,27 @@ pub struct AntiBloatRankingMaterial<'a> {
 
 pub fn anti_bloat_material_sha256(saved: &StoredAntiBloatReview) -> Result<String> {
     use sha2::{Digest, Sha256};
-    let bytes = serde_json::to_vec(&(
-        saved.review_id,
-        saved.workspace_id,
-        saved.actor_id,
-        &saved.input,
-        &saved.review,
-    ))
+    let bytes = if let Some(invocation) = &saved.invocation {
+        serde_json::to_vec(&(
+            saved.review_id,
+            saved.workspace_id,
+            saved.actor_id,
+            invocation.session_id,
+            invocation.session_preference.as_str(),
+            invocation.request_preference.as_str(),
+            &saved.input,
+            &saved.review,
+        ))
+    } else {
+        // Preserve the historical material digest for reviews without provenance.
+        serde_json::to_vec(&(
+            saved.review_id,
+            saved.workspace_id,
+            saved.actor_id,
+            &saved.input,
+            &saved.review,
+        ))
+    }
     .map_err(|_| tect_domain::Error::InternalInvariant)?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }

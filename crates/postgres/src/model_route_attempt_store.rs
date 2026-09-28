@@ -302,6 +302,11 @@ impl ModelRouteAttemptStore for PgUnitOfWork {
         let reason_text = no_call_reason(reason)?;
         if !matches!(reason, ModelRouteRunNoCall::ProviderUnavailable)
             && reason != ModelRouteRunNoCall::Preparation(prepared.preparation)
+            && !(reason
+                == ModelRouteRunNoCall::Preparation(
+                    tect_application::ModelRoutePreparation::SessionSkip,
+                )
+                && prepared.preparation == tect_application::ModelRoutePreparation::Prepared)
             || matches!(reason, ModelRouteRunNoCall::ProviderUnavailable)
                 && prepared.preparation != tect_application::ModelRoutePreparation::Prepared
         {

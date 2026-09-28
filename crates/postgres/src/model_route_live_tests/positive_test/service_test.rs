@@ -47,6 +47,7 @@ fn request(
         expected_mapped_work_node_revision: created.work_revision,
         request_key: format!("public-route-{label}-{}", Uuid::new_v4()),
         requested_route_id: None,
+        origin_session_id: None,
         session_preference: AdvisoryRequestPreference::UseWorkspace,
         request_preference: AdvisoryRequestPreference::UseWorkspace,
     }

@@ -26,7 +26,6 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
                     "expected_mapped_work_node_revision":{"type":"integer","minimum":1},
                     "request_key":{"type":"string","minLength":1,"maxLength":256,"x-maxUtf8Bytes":256},
                     "requested_route_id":{"type":"string","minLength":1,"maxLength":256},
-                    "session_preference":{"type":"string","enum":["use_workspace","skip"],"default":"use_workspace"},
                     "request_preference":{"type":"string","enum":["use_workspace","skip"],"default":"use_workspace"}
                 }),
                 json!([
@@ -106,6 +105,7 @@ mod tests {
         for route in &routes {
             assert!(!route.schema.to_string().contains("ranked_route_ids"));
             assert!(!route.schema.to_string().contains("actual_route_id"));
+            assert!(!route.schema.to_string().contains("session_preference"));
         }
         assert_eq!(
             routes[1].schema["required"],

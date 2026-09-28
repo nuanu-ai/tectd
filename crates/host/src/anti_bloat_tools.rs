@@ -150,6 +150,7 @@ pub(crate) fn state(value: &AntiBloatAttemptState) -> Value {
     match value {
         AntiBloatAttemptState::NoCall(reason) => json!({"status":"no_call","reason":match reason {
             AntiBloatNoCall::Disabled => "disabled", AntiBloatNoCall::Skipped => "skipped",
+            AntiBloatNoCall::SessionSkip => "session_skip",
             AntiBloatNoCall::NoEligibleFindings => "no_eligible_findings",
             AntiBloatNoCall::ProviderUnconfigured => "provider_unconfigured",
             AntiBloatNoCall::PreflightInvalidConfiguration => "preflight_invalid_configuration",
@@ -169,6 +170,9 @@ pub(crate) fn state(value: &AntiBloatAttemptState) -> Value {
 pub(crate) fn review(value: StoredAntiBloatReview) -> Value {
     json!({
         "review_id": value.review_id,
+        "origin_session_id": value.invocation.as_ref().map(|v| v.session_id),
+        "session_preference": value.invocation.as_ref().map(|v| v.session_preference.as_str()),
+        "request_preference": value.invocation.as_ref().map(|v| v.request_preference.as_str()),
         "candidate_set_id": value.review.candidate_set_id,
         "plan_revision": value.review.plan_revision,
         "source_digest": value.review.source_digest,

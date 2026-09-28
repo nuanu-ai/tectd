@@ -34,8 +34,6 @@ struct PrepareArguments {
     request_key: String,
     requested_route_id: Option<String>,
     #[serde(default)]
-    session_preference: AdvisoryRequestPreference,
-    #[serde(default)]
     request_preference: AdvisoryRequestPreference,
 }
 
@@ -104,7 +102,8 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<ModelRouteInvocation
                     expected_mapped_work_node_revision: a.expected_mapped_work_node_revision,
                     request_key: a.request_key,
                     requested_route_id: a.requested_route_id,
-                    session_preference: a.session_preference,
+                    origin_session_id: None,
+                    session_preference: AdvisoryRequestPreference::UseWorkspace,
                     request_preference: a.request_preference,
                 },
             ))
@@ -166,7 +165,12 @@ mod tests {
             parse("model_route_prepare", prepared.clone()),
             Ok(ModelRouteInvocation::Prepare(_))
         ));
-        for field in ["workspace_id", "ranked_route_ids", "actual_route_id"] {
+        for field in [
+            "workspace_id",
+            "session_preference",
+            "ranked_route_ids",
+            "actual_route_id",
+        ] {
             let mut bad = prepared.clone();
             bad[field] = json!(id);
             assert!(parse("model_route_prepare", bad).is_err());

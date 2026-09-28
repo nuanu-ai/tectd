@@ -8,10 +8,10 @@ pub use anti_bloat::AntiBloatApplication;
 pub use anti_bloat_ports::AntiBloatSealedResponse;
 pub use anti_bloat_ports::AntiBloatStartedDispatchPermit;
 pub use anti_bloat_ports::{
-    AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall, AntiBloatPreparedRequest,
-    AntiBloatProviderObservation, AntiBloatRankingMaterial, AntiBloatRankingProvider,
-    AntiBloatSendPermit, AntiBloatStore, DisabledAntiBloatRankingProvider, StoredAntiBloatReview,
-    anti_bloat_material_sha256,
+    AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatInvocationSnapshot, AntiBloatNoCall,
+    AntiBloatPreparedRequest, AntiBloatProviderObservation, AntiBloatRankingMaterial,
+    AntiBloatRankingProvider, AntiBloatSendPermit, AntiBloatStore,
+    DisabledAntiBloatRankingProvider, StoredAntiBloatReview, anti_bloat_material_sha256,
 };
 pub use anti_bloat_ports::{AntiBloatRankingOutcome, AntiBloatUsage};
 pub use anti_bloat_ports::{AntiBloatVerificationMaterial, AntiBloatVerificationStore};

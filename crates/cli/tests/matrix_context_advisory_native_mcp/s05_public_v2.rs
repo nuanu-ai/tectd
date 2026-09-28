@@ -13,6 +13,72 @@ use tect_domain::{
     ModelRouteFactProvenance, ModelRouteHostCapabilities, ModelRouteRankingWireRequest,
 };
 
+async fn s05_session_fixture() -> (PgPool, String) {
+    assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
+    let database = std::env::var("TECT_TEST_DB_NAME").unwrap();
+    assert!(database.starts_with("tect_modelroute_session_"));
+    let expected_system_id = std::env::var("TECT_TEST_SYSTEM_ID").unwrap();
+    let expected_oid: i64 = std::env::var("TECT_TEST_DATABASE_OID")
+        .unwrap()
+        .parse()
+        .unwrap();
+    let expected_port: u16 = std::env::var("TECT_TEST_PG_PORT").unwrap().parse().unwrap();
+    let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
+    let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
+    for (url, role) in [(&admin_url, "postgres"), (&runtime_url, "tect_ci")] {
+        let parsed = Url::parse(url).unwrap();
+        assert!(matches!(parsed.scheme(), "postgres" | "postgresql"));
+        assert_eq!(parsed.host_str(), Some("127.0.0.1"));
+        assert_eq!(parsed.port(), Some(expected_port));
+        assert_eq!(parsed.path(), format!("/{database}"));
+        assert_eq!(parsed.username(), role);
+        assert!(parsed.query().is_none() && parsed.fragment().is_none());
+    }
+    let pool = PgPool::connect_with(PgConnectOptions::from_str(&admin_url).unwrap())
+        .await
+        .unwrap();
+    let identity: (i32, String, i64, String, bool) = sqlx::query_as(
+        "SELECT current_setting('server_version_num')::integer,current_database(),\
+         (SELECT oid::bigint FROM pg_database WHERE datname=current_database()),\
+         (SELECT system_identifier::text FROM pg_control_system()),\
+         to_regclass('public._sqlx_migrations') IS NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        identity,
+        (
+            180006,
+            database.clone(),
+            expected_oid,
+            expected_system_id,
+            true
+        )
+    );
+    admin::migrate(&pool, "tect_ci").await.unwrap();
+    let ledger: Vec<(i64, bool)> =
+        sqlx::query_as("SELECT version,success FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(ledger.len(), 113);
+    for (index, (version, success)) in ledger.iter().enumerate() {
+        assert_eq!(*version, index as i64 + 1);
+        assert!(*success);
+    }
+    let runtime: (String, String) = sqlx::query_as("SELECT current_database(),current_user")
+        .fetch_one(
+            &PgPool::connect_with(PgConnectOptions::from_str(&runtime_url).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(runtime, (database, "tect_ci".into()));
+    (pool, runtime_url)
+}
+
 struct Routes;
 impl ModelRouteCatalogueProvider for Routes {
     fn catalogue(&self) -> Result<Option<ModelRouteCatalogue>> {
@@ -139,9 +205,9 @@ fn assert_caller_fact<T: PartialEq + std::fmt::Debug>(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "writes only exact owned PostgreSQL 18.6 fixture at migration 110; synthetic adviser"]
+#[ignore = "writes only exact owned PostgreSQL 18.6 fixture at migration 113; synthetic adviser"]
 async fn public_s05_v2_work_caller_assertions_rank_eligible_ids_only() {
-    let (pool, runtime_url) = exact_fixture().await;
+    let (pool, runtime_url) = s05_session_fixture().await;
     let temp = private_temp();
     let root = temp.path().canonicalize().unwrap();
     let repo = root.join("source");
@@ -325,6 +391,197 @@ async fn public_s05_v2_work_caller_assertions_rank_eligible_ids_only() {
         }),
     )
     .await;
+    let skip_key = format!("s05-v2-skip-{}", Uuid::new_v4());
+    let skip_input = json!({
+        "disposition_id":chosen["disposition_id"],"expected_task_id":task,
+        "expected_task_revision":1,"expected_candidate_set_id":set,
+        "expected_caller_request_id":caller_request,"expected_mapped_work_node_id":work["id"],
+        "expected_mapped_work_node_revision":work["revision"],
+        "request_key":skip_key,"requested_route_id":"route-a"
+    });
+    let mut forged = skip_input.clone();
+    forged["session_preference"] = json!("skip");
+    assert_eq!(
+        route_error(&mut owner, "command", "model.route.prepare", forged).await["error"]["code"],
+        "invalid_arguments"
+    );
+    let skipped_setting = route(
+        &mut owner,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":0,"preference":"skip"}),
+    )
+    .await;
+    assert_eq!(skipped_setting["preference"], "skip");
+    let skipped = route(
+        &mut owner,
+        "command",
+        "model.route.prepare",
+        skip_input.clone(),
+    )
+    .await;
+    assert_eq!(skipped["preparation"], "SessionSkip");
+    assert_eq!(skipped["session_preference"], "skip");
+    assert!(!skipped["origin_session_id"].is_null());
+    let skipped_run = route(
+        &mut owner,
+        "command",
+        "model.route.run",
+        json!({"preparation_request_key":skip_key}),
+    )
+    .await;
+    assert_eq!(skipped_run["attempt"]["no_call_reason"], "session_skip");
+    assert!(skipped_run["decision"]["routes"]["recommended_route_id"].is_null());
+    assert_eq!(ranking_calls.load(Ordering::SeqCst), 0);
+    let unskipped_setting = route(
+        &mut owner,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":1,"preference":"use_workspace"}),
+    )
+    .await;
+    assert_eq!(unskipped_setting["preference"], "use_workspace");
+    assert_eq!(
+        route(&mut owner, "command", "model.route.prepare", skip_input).await,
+        skipped
+    );
+    let skipped_replay = route(
+        &mut owner,
+        "command",
+        "model.route.run",
+        json!({"preparation_request_key":skip_key}),
+    )
+    .await;
+    assert_eq!(skipped_replay["attempt"]["no_call_reason"], "session_skip");
+    assert_eq!(ranking_calls.load(Ordering::SeqCst), 0);
+
+    // Upgrade compatibility: a pre-0113 immutable receipt has no origin
+    // session. It remains readable but cannot be used to initiate a send.
+    let legacy_key = format!("s05-v2-legacy-{}", Uuid::new_v4());
+    sqlx::query(
+        "INSERT INTO model_route_preparations \
+         (tenant_id,workspace_id,request_key,disposition_id,candidate_set_id,caller_request_id, \
+          work_node_id,work_node_revision,task_id,task_revision,advisory_mode, \
+          advisory_config_revision,work_digest,catalogue_digest,host_capability_evidence_ref,prepared_payload) \
+         SELECT tenant_id,workspace_id,$2,disposition_id,candidate_set_id,caller_request_id, \
+          work_node_id,work_node_revision,task_id,task_revision,advisory_mode, \
+          advisory_config_revision,work_digest,catalogue_digest,host_capability_evidence_ref, \
+          jsonb_set(prepared_payload - 'origin_session_id','{request_key}',to_jsonb($2::text)) \
+         FROM model_route_preparations WHERE workspace_id=$3 AND request_key=$1",
+    )
+    .bind(&skip_key)
+    .bind(&legacy_key)
+    .bind(workspace)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let legacy_read = route(
+        &mut owner,
+        "query",
+        "model.route.get",
+        json!({"preparation_request_key":legacy_key}),
+    )
+    .await;
+    assert!(legacy_read["preparation"]["origin_session_id"].is_null());
+    assert_eq!(
+        route_error(
+            &mut owner,
+            "command",
+            "model.route.run",
+            json!({"preparation_request_key":legacy_key})
+        )
+        .await["error"]["code"],
+        "forbidden"
+    );
+    let mut legacy_tx = pool.begin().await.unwrap();
+    sqlx::query("SELECT set_config('tect.tenant_id',$1,true)")
+        .bind(enrolled.tenant_id.to_string())
+        .execute(&mut *legacy_tx)
+        .await
+        .unwrap();
+    let forged_legacy_attempt = sqlx::query(
+        "INSERT INTO model_route_advisory_attempts \
+         (tenant_id,workspace_id,id,preparation_request_key,invoking_session_id, \
+          invoking_principal_id,candidate_set_id,work_node_id,work_node_revision, \
+          task_id,task_revision,work_digest,catalogue_digest,host_capability_evidence_ref, \
+          state,no_call_reason) \
+         SELECT tenant_id,workspace_id,$3,$2,invoking_session_id, \
+          invoking_principal_id,candidate_set_id,work_node_id,work_node_revision, \
+          task_id,task_revision,work_digest,catalogue_digest,host_capability_evidence_ref, \
+          state,no_call_reason FROM model_route_advisory_attempts \
+         WHERE workspace_id=$4 AND preparation_request_key=$1",
+    )
+    .bind(&skip_key)
+    .bind(&legacy_key)
+    .bind(Uuid::new_v4())
+    .bind(workspace)
+    .execute(&mut *legacy_tx)
+    .await
+    .unwrap_err();
+    assert_eq!(
+        forged_legacy_attempt
+            .as_database_error()
+            .unwrap()
+            .code()
+            .as_deref(),
+        Some("42501")
+    );
+    legacy_tx.rollback().await.unwrap();
+    assert_eq!(ranking_calls.load(Ordering::SeqCst), 0);
+
+    // A skip committed after preparation but before send authorization wins
+    // the native-session fence and seals a durable no-call.
+    let late_skip_key = format!("s05-v2-late-skip-{}", Uuid::new_v4());
+    let late_skip_prepared = route(
+        &mut owner,
+        "command",
+        "model.route.prepare",
+        json!({
+            "disposition_id":chosen["disposition_id"],"expected_task_id":task,
+            "expected_task_revision":1,"expected_candidate_set_id":set,
+            "expected_caller_request_id":caller_request,"expected_mapped_work_node_id":work["id"],
+            "expected_mapped_work_node_revision":work["revision"],
+            "request_key":late_skip_key,"requested_route_id":"route-a"
+        }),
+    )
+    .await;
+    assert_eq!(late_skip_prepared["preparation"], "Prepared");
+    route(
+        &mut owner,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":2,"preference":"skip"}),
+    )
+    .await;
+    let late_skip_run = route(
+        &mut owner,
+        "command",
+        "model.route.run",
+        json!({"preparation_request_key":late_skip_key}),
+    )
+    .await;
+    assert_eq!(late_skip_run["attempt"]["no_call_reason"], "session_skip");
+    assert_eq!(ranking_calls.load(Ordering::SeqCst), 0);
+    route(
+        &mut owner,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":3,"preference":"use_workspace"}),
+    )
+    .await;
+    let late_skip_replay = route(
+        &mut owner,
+        "command",
+        "model.route.run",
+        json!({"preparation_request_key":late_skip_key}),
+    )
+    .await;
+    assert_eq!(
+        late_skip_replay["attempt"]["attempt_id"],
+        late_skip_run["attempt"]["attempt_id"]
+    );
+    assert_eq!(ranking_calls.load(Ordering::SeqCst), 0);
+
     let key = format!("s05-v2-route-{}", Uuid::new_v4());
     let prepared = route(
         &mut owner,
@@ -403,6 +660,31 @@ async fn public_s05_v2_work_caller_assertions_rank_eligible_ids_only() {
     assert_eq!(run["decision"]["routes"]["recommended_route_id"], "route-b");
     assert!(run["decision"]["routes"]["observed_actual"].is_null());
     assert_eq!(ranking_calls.load(Ordering::SeqCst), 1);
+    // Once the send has been authorized and sealed, a later skip cannot
+    // replace its immutable evidence or trigger a second provider call.
+    route(
+        &mut owner,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":4,"preference":"skip"}),
+    )
+    .await;
+    let replay = route(
+        &mut owner,
+        "command",
+        "model.route.run",
+        json!({"preparation_request_key":key}),
+    )
+    .await;
+    assert_eq!(replay["decision"]["id"], run["decision"]["id"]);
+    assert_eq!(ranking_calls.load(Ordering::SeqCst), 1);
+    route(
+        &mut owner,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":5,"preference":"use_workspace"}),
+    )
+    .await;
     let disposition = route(&mut owner, "command", "model.route.disposition", json!({
         "disposition_id":Uuid::new_v4(),"decision_id":run["decision"]["id"],
         "action":"accept","rationale":"Synthetic caller accepts advisory rank without executing a model"
@@ -449,6 +731,23 @@ async fn public_s05_v2_work_caller_assertions_rank_eligible_ids_only() {
     );
     assert!(later_run["decision"]["routes"]["observed_actual"].is_null());
     assert_eq!(ranking_calls.load(Ordering::SeqCst), 2);
+    let changed_request = json!({
+        "disposition_id":chosen["disposition_id"],"expected_task_id":task,
+        "expected_task_revision":1,"expected_candidate_set_id":set,
+        "expected_caller_request_id":caller_request,"expected_mapped_work_node_id":work["id"],
+        "expected_mapped_work_node_revision":work["revision"],
+        "request_key":later_key,"requested_route_id":"route-a","request_preference":"skip"
+    });
+    assert_eq!(
+        route_error(
+            &mut owner,
+            "command",
+            "model.route.prepare",
+            changed_request
+        )
+        .await["error"]["code"],
+        "input_conflict"
+    );
     let source_session: Uuid = sqlx::query_scalar(
         "SELECT caller_session_id FROM matrix_planning_selection_links \
          WHERE workspace_id=$1 AND candidate_set_id=$2 AND caller_request_id=$3",
@@ -470,6 +769,16 @@ async fn public_s05_v2_work_caller_assertions_rank_eligible_ids_only() {
     assert_eq!(
         id(&fresh.call("open_workspace", json!({})).await["workspace"]["id"]),
         workspace
+    );
+    assert_eq!(
+        route_error(
+            &mut fresh,
+            "command",
+            "model.route.run",
+            json!({"preparation_request_key":later_key})
+        )
+        .await["error"]["code"],
+        "forbidden"
     );
     let later_disposition = route(
         &mut fresh,
@@ -508,7 +817,40 @@ async fn public_s05_v2_work_caller_assertions_rank_eligible_ids_only() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(persisted, (2, 2, 0));
+    assert_eq!(persisted, (4, 2, 0));
+    let states: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT state,count(*) FROM model_route_advisory_attempts WHERE workspace_id=$1 \
+         GROUP BY state ORDER BY state",
+    )
+    .bind(workspace)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(states, [("no_call".into(), 2), ("parsed".into(), 2)]);
+    let mut immutable_tx = pool.begin().await.unwrap();
+    sqlx::query("SELECT set_config('tect.tenant_id',$1,true)")
+        .bind(enrolled.tenant_id.to_string())
+        .execute(&mut *immutable_tx)
+        .await
+        .unwrap();
+    let immutable_error = sqlx::query(
+        "UPDATE model_route_advisory_attempts SET no_call_reason='provider_unavailable' \
+         WHERE workspace_id=$1 AND preparation_request_key=$2",
+    )
+    .bind(workspace)
+    .bind(&skip_key)
+    .execute(&mut *immutable_tx)
+    .await
+    .unwrap_err();
+    assert_eq!(
+        immutable_error
+            .as_database_error()
+            .unwrap()
+            .code()
+            .as_deref(),
+        Some("23514")
+    );
+    immutable_tx.rollback().await.unwrap();
     assert_eq!(matrix_calls.load(Ordering::SeqCst), 1);
     independent.finish().await;
     owner.finish().await;

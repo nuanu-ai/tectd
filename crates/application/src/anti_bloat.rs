@@ -1,8 +1,9 @@
 //! Slice 04 application policy. All source/plan facts come from the store port.
 use crate::{
-    AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatNoCall, AntiBloatPreparedRequest,
-    AntiBloatProviderObservation, AntiBloatRankingProvider, AntiBloatSendPermit, AntiBloatStore,
-    Sha256ScopeDigest, StoredAntiBloatReview, TransactionMode, UnitOfWork, WorkspaceService,
+    AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatInvocationSnapshot, AntiBloatNoCall,
+    AntiBloatPreparedRequest, AntiBloatProviderObservation, AntiBloatRankingProvider,
+    AntiBloatSendPermit, AntiBloatStore, Sha256ScopeDigest, StoredAntiBloatReview, TransactionMode,
+    UnitOfWork, WorkspaceService,
 };
 use sha2::{Digest, Sha256};
 use std::future::Future;
@@ -77,6 +78,27 @@ pub async fn prepare_anti_bloat_review(
     expected_revision: i64,
     preference: AdvisoryRequestPreference,
 ) -> Result<StoredAntiBloatReview> {
+    prepare_anti_bloat_review_with_invocation(
+        store,
+        workspace_id,
+        actor_id,
+        candidate_set_id,
+        expected_revision,
+        preference,
+        None,
+    )
+    .await
+}
+
+pub async fn prepare_anti_bloat_review_with_invocation(
+    store: &mut dyn AntiBloatStore,
+    workspace_id: Uuid,
+    actor_id: Uuid,
+    candidate_set_id: Uuid,
+    expected_revision: i64,
+    preference: AdvisoryRequestPreference,
+    invocation: Option<AntiBloatInvocationSnapshot>,
+) -> Result<StoredAntiBloatReview> {
     if workspace_id.is_nil()
         || actor_id.is_nil()
         || candidate_set_id.is_nil()
@@ -97,6 +119,11 @@ pub async fn prepare_anti_bloat_review(
     let review = review_anti_bloat(&Sha256ScopeDigest, &input)?;
     let state = if mode == WorkspaceAdvisoryMode::Disabled {
         AntiBloatAttemptState::NoCall(AntiBloatNoCall::Disabled)
+    } else if invocation
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.session_preference == AdvisoryRequestPreference::Skip)
+    {
+        AntiBloatAttemptState::NoCall(AntiBloatNoCall::SessionSkip)
     } else if preference == AdvisoryRequestPreference::Skip {
         AntiBloatAttemptState::NoCall(AntiBloatNoCall::Skipped)
     } else if !review.findings.iter().any(|finding| finding.rankable) {
@@ -109,6 +136,7 @@ pub async fn prepare_anti_bloat_review(
             review_id: Uuid::new_v4(),
             workspace_id,
             actor_id,
+            invocation,
             input,
             review,
             state,

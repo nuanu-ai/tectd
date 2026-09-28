@@ -98,6 +98,7 @@ fn fixture() -> (PrepareModelRouteRecommendation, Store, Host, Catalogue) {
         expected_mapped_work_node_revision: 2,
         request_key: "request-1".into(),
         requested_route_id: Some("route-disabled".into()),
+        origin_session_id: None,
         session_preference: AdvisoryRequestPreference::UseWorkspace,
         request_preference: AdvisoryRequestPreference::UseWorkspace,
     };
@@ -219,6 +220,42 @@ async fn prepare_keeps_requested_ineligible_and_actual_unknown_without_execution
         prepared
     );
     assert_eq!(store.captures, 1);
+}
+
+#[tokio::test]
+async fn replay_is_bound_to_original_session_and_request_preference_not_mutable_setting() {
+    let (mut request, mut store, host, catalogue) = fixture();
+    let origin = Uuid::new_v4();
+    request.origin_session_id = Some(origin);
+    request.session_preference = AdvisoryRequestPreference::Skip;
+    let saved = request
+        .prepare(&mut store, &host, &catalogue)
+        .await
+        .unwrap();
+    assert_eq!(saved.origin_session_id, Some(origin));
+    assert_eq!(saved.preparation, ModelRoutePreparation::SessionSkip);
+
+    request.session_preference = AdvisoryRequestPreference::UseWorkspace;
+    assert_eq!(
+        request
+            .prepare(&mut store, &host, &catalogue)
+            .await
+            .unwrap(),
+        saved
+    );
+    assert_eq!(store.captures, 1);
+
+    request.request_preference = AdvisoryRequestPreference::Skip;
+    assert_eq!(
+        request.prepare(&mut store, &host, &catalogue).await,
+        Err(Error::InputConflict)
+    );
+    request.request_preference = AdvisoryRequestPreference::UseWorkspace;
+    request.origin_session_id = Some(Uuid::new_v4());
+    assert_eq!(
+        request.prepare(&mut store, &host, &catalogue).await,
+        Err(Error::InputConflict)
+    );
 }
 
 #[tokio::test]
