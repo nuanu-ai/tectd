@@ -24,8 +24,9 @@ use support::{id, ready_source_candidate, repository, route, route_error};
 use tect_application::{
     PreparedScopeAdviceAttempt, ScopeAdviceProvider, ScopeAdviceProviderContext,
     ScopeAdviceProviderError, ScopeAdviceProviderObservation, ScopeAdviceProviderRequest,
-    ScopeBudgetPolicy, ScopeBudgetPolicyEvaluation, ScopeBudgetRequest, StartedScopeDispatchPermit,
-    Store, TransactionMode, WorkspaceService,
+    ScopeAuthorityObserver, ScopeAuthorityOutcome, ScopeAuthorityRequest, ScopeBudgetPolicy,
+    ScopeBudgetPolicyEvaluation, ScopeBudgetRequest, StartedScopeDispatchPermit, Store,
+    TransactionMode, WorkspaceService,
 };
 use tect_domain::{
     AdvisoryBudgetCeilings, AdvisoryBudgetPolicy, AdvisoryDispatchOutcome, AdvisorySendCertainty,
@@ -139,7 +140,113 @@ impl ScopeBudgetPolicy for SyntheticBudget {
     }
 }
 
-struct FakeJev(Arc<AtomicUsize>);
+struct FakeJev {
+    calls: Arc<AtomicUsize>,
+    pause: Option<Arc<PauseProviderAttempt>>,
+}
+
+struct PauseProviderAttempt {
+    arm: tokio::sync::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+}
+
+impl PauseProviderAttempt {
+    fn new() -> Self {
+        Self {
+            arm: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    async fn arm(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        *self.arm.lock().await = Some((reached_tx, release_rx));
+        (reached_rx, release_tx)
+    }
+}
+
+struct PauseSecondObservation {
+    inner: Arc<dyn ScopeAuthorityObserver>,
+    arm: tokio::sync::Mutex<Option<ObservationArm>>,
+}
+
+struct ObservationArm {
+    candidate: Uuid,
+    seen: usize,
+    reached: Option<tokio::sync::oneshot::Sender<()>>,
+    release: Option<tokio::sync::oneshot::Receiver<()>>,
+}
+
+impl PauseSecondObservation {
+    fn new(inner: Arc<dyn ScopeAuthorityObserver>) -> Self {
+        Self {
+            inner,
+            arm: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    async fn arm(
+        &self,
+        candidate: Uuid,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        *self.arm.lock().await = Some(ObservationArm {
+            candidate,
+            seen: 0,
+            reached: Some(reached_tx),
+            release: Some(release_rx),
+        });
+        (reached_rx, release_tx)
+    }
+}
+
+#[async_trait]
+impl ScopeAuthorityObserver for PauseSecondObservation {
+    async fn observe(
+        &self,
+        request: &ScopeAuthorityRequest,
+    ) -> tect_domain::Result<ScopeAuthorityOutcome> {
+        let pause = {
+            let mut guard = self.arm.lock().await;
+            if let Some(arm) = guard
+                .as_mut()
+                .filter(|arm| arm.candidate == request.candidate_set_id)
+            {
+                arm.seen += 1;
+                if arm.seen == 2 {
+                    let reached = arm.reached.take();
+                    let release = arm.release.take();
+                    *guard = None;
+                    reached.zip(release)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        if let Some((reached, release)) = pause {
+            let _ = reached.send(());
+            release
+                .await
+                .map_err(|_| tect_domain::Error::TransportUnavailable)?;
+        }
+        self.inner.observe(request).await
+    }
+}
 
 #[async_trait]
 impl ScopeAdviceProvider for FakeJev {
@@ -171,7 +278,13 @@ impl ScopeAdviceProvider for FakeJev {
         assert_eq!(prepared.request(), &request.request);
         assert!(permit.permits(request.dispatch_id, &prepared));
         assert_eq!(request.request.alternatives.len(), 2);
-        self.0.fetch_add(1, Ordering::SeqCst);
+        if let Some(pause) = &self.pause
+            && let Some((reached, release)) = pause.arm.lock().await.take()
+        {
+            let _ = reached.send(());
+            release.await.expect("provider pause released");
+        }
+        self.calls.fetch_add(1, Ordering::SeqCst);
         let answers = request
             .request
             .alternatives
@@ -224,6 +337,50 @@ fn authored_draft(source_ref: Uuid, prior: &Value, title: &str) -> Value {
         "reason":"Compare this authored option with the prior candidate",
         "replacements":[{"local":"candidate"}]
     }]})
+}
+
+async fn authored_scope_set(
+    client: &mut Mcp,
+    candidate_set: Uuid,
+    revision: i64,
+    prior: &Value,
+) -> Value {
+    let inputs = client
+        .call(
+            "candidate_context",
+            json!({"candidate_set_id":candidate_set,"view":"inputs","limit":25}),
+        )
+        .await;
+    let program = client
+        .call(
+            "candidate_context",
+            json!({"candidate_set_id":candidate_set,"view":"program","limit":25}),
+        )
+        .await;
+    let mut refs: Vec<Uuid> = inputs["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| id(&item["input"]["source_ref_id"]))
+        .collect();
+    let source_ref = *refs.first().unwrap();
+    refs.extend(
+        program["program"]["field_refs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| id(&field["id"])),
+    );
+    refs.sort_unstable();
+    refs.dedup();
+    json!({"expected_candidate_set_revision":revision,
+        "baseline_key":"baseline","alternatives":[
+            {"key":"baseline","kind":"cohesive",
+             "draft":authored_draft(source_ref, prior, "Cohesive diagnosis"),
+             "covered_source_ref_ids":refs},
+            {"key":"partition","kind":"partitioned",
+             "draft":authored_draft(source_ref, prior, "Partitioned diagnosis"),
+             "covered_source_ref_ids":refs}]})
 }
 
 async fn signed_fixture_budget(
@@ -305,6 +462,468 @@ async fn signed_fixture_budget(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "requires fresh disposable PostgreSQL 18 and TECT_TEST_*; local synthetic provider only"]
+async fn public_scope_session_preference_is_bound_snapshotted_and_replay_stable() {
+    let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
+    let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
+    let role = std::env::var("TECT_TEST_RUNTIME_ROLE").unwrap();
+    let pool = PgPool::connect(&admin_url).await.unwrap();
+    let version: i32 = sqlx::query_scalar("SELECT current_setting('server_version_num')::integer")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!((180000..190000).contains(&version));
+    admin::migrate(&pool, &role).await.unwrap();
+    let temp = private_temp();
+    let root = temp.path().canonicalize().unwrap();
+    let repo = root.join("source");
+    repository(&repo);
+    let socket = root.join("scope-session-preference.sock");
+    let runtime = tagged_url(
+        &runtime_url,
+        &format!("scope-session-pref-{}", Uuid::new_v4()),
+    );
+    let store = PgStore::connect(&runtime, 4).await.unwrap();
+    let enrollment = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+    let workspace_key = format!("scope-session-pref-{}", Uuid::new_v4());
+    let (workspace, keys) = signed_fixture_budget(
+        &store,
+        &enrollment,
+        &workspace_key,
+        AdvisoryBudgetCeilings {
+            provider_calls: 3,
+            input_tokens: 1_000,
+            output_tokens: 1_000,
+            request_utf8_bytes: 2_000_000,
+            elapsed_monotonic_ms: 120_000,
+            retry_dispatches: 1,
+        },
+    )
+    .await;
+    let trusted = store.with_budget_owner_keys(keys);
+    let authority = Arc::new(PgScopeAuthorityObserver::new(
+        trusted.clone(),
+        Arc::new(tect_host::StaticCandidateGuidance),
+    ));
+    let supplier = Arc::new(PgScopeAuthoredManifestSupplier::new(
+        trusted.clone(),
+        authority.clone(),
+    ));
+    let paused_authority = Arc::new(PauseSecondObservation::new(authority));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider_pause = Arc::new(PauseProviderAttempt::new());
+    let service = Arc::new(WorkspaceService::new_with_scope_advisory_adapters(
+        Arc::new(trusted),
+        Arc::new(tect_host::GitSourceInspector),
+        Arc::new(tect_host::LocalSetupFiles),
+        paused_authority.clone(),
+        supplier,
+        Arc::new(SyntheticBudget),
+        Arc::new(FakeJev {
+            calls: calls.clone(),
+            pause: Some(provider_pause.clone()),
+        }),
+    ));
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let server = tokio::spawn(tect_host::serve(listener, service.clone()));
+    let host = root.join("host.json");
+    host_file(&host, &enrollment.auth);
+    let session_a = Uuid::new_v4().to_string();
+    let session_b = Uuid::new_v4().to_string();
+    let mut a = Mcp::start(&socket, &host, &session_a, &workspace_key).await;
+    let mut b = Mcp::start(&socket, &host, &session_b, &workspace_key).await;
+    b.call("open_workspace", json!({})).await;
+    let (source, prior) = ready_source_candidate(&mut a, &repo).await;
+    // The candidate snapshot binds the selected source set. Mirror A's sole
+    // registered worktree into B's independent native-session selection so
+    // B can observe the same source fingerprint while retaining its own
+    // default advisory preference.
+    let sources = b.call("list_sources", json!({"limit":25})).await;
+    let source_items = sources["items"].as_array().unwrap();
+    assert_eq!(source_items.len(), 1);
+    b.call(
+        "select_worktrees",
+        json!({"worktree_ids":[source_items[0]["id"]]}),
+    )
+    .await;
+    let candidate = id(&source["candidate_set"]["id"]);
+    let revision = source["candidate_set"]["revision"].as_i64().unwrap();
+    let configured = route(
+        &mut a,
+        "command",
+        "workspace.advisory.configure",
+        json!({"expected_revision":0,"mode":"optional",
+            "provider_profile_ref":{"id":"fixture-profile"},
+            "model_configuration":{"model":"fixture-model"}}),
+    )
+    .await;
+    assert_eq!(id(&configured["workspace_id"]), workspace);
+    let skip = route(
+        &mut a,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":0,"preference":"skip"}),
+    )
+    .await;
+    assert_eq!(skip["revision"], 1);
+    let skipped_params = json!({"request_id":Uuid::new_v4(),"candidate_set_id":candidate});
+    let skipped = route(
+        &mut a,
+        "command",
+        "scope.advisory.request",
+        skipped_params.clone(),
+    )
+    .await;
+    assert_eq!(skipped["state"], "no_call");
+    assert_eq!(skipped["reason"], "session_skip");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    let skipped_id = id(&skipped["opportunity_id"]);
+    let skipped_detail = route(
+        &mut a,
+        "query",
+        "candidate.advisory.get",
+        json!({"candidate_set_id":candidate,"opportunity_id":skipped_id}),
+    )
+    .await;
+    assert_eq!(skipped_detail["opportunity"]["session_preference"], "skip");
+    assert!(skipped_detail["dispatches"].as_array().unwrap().is_empty());
+
+    let authored = authored_scope_set(&mut a, candidate, revision, &prior).await;
+    let b_params = json!({"request_id":Uuid::new_v4(),"candidate_set_id":candidate,
+        "authored_scope_set":authored});
+    let b_result = route(&mut b, "command", "scope.advisory.request", b_params).await;
+    assert_eq!(b_result["state"], "advised", "{b_result}");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let b_detail = route(
+        &mut b,
+        "query",
+        "candidate.advisory.get",
+        json!({"candidate_set_id":candidate,"opportunity_id":b_result["opportunity_id"]}),
+    )
+    .await;
+    assert_eq!(
+        b_detail["opportunity"]["session_preference"],
+        "use_workspace"
+    );
+    assert_eq!(b_detail["dispatches"].as_array().unwrap().len(), 1);
+
+    let use_workspace = route(
+        &mut a,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":1,"preference":"use_workspace"}),
+    )
+    .await;
+    assert_eq!(use_workspace["revision"], 2);
+    let replay = route(&mut a, "command", "scope.advisory.request", skipped_params).await;
+    assert_eq!(replay["opportunity_id"], skipped["opportunity_id"]);
+    assert_eq!(replay["reason"], "session_skip");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let forged = route_error(
+        &mut a,
+        "command",
+        "scope.advisory.request",
+        json!({"request_id":Uuid::new_v4(),"candidate_set_id":candidate,
+            "session_preference":"skip"}),
+    )
+    .await;
+    assert_eq!(forged["error"]["code"], "invalid_arguments");
+    let request_skip = route(
+        &mut a,
+        "command",
+        "scope.advisory.request",
+        json!({"request_id":Uuid::new_v4(),"candidate_set_id":candidate,
+            "request_preference":"skip"}),
+    )
+    .await;
+    assert_eq!(request_skip["reason"], "request_skip");
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    // The anti-bloat binding is intentionally unique per candidate-set
+    // revision. Exercise A's restored session preference on a fresh set rather
+    // than trying to author a second opportunity against B's bound revision.
+    let (a_source, a_prior) = ready_source_candidate(&mut a, &repo).await;
+    let a_candidate = id(&a_source["candidate_set"]["id"]);
+    let a_revision = a_source["candidate_set"]["revision"].as_i64().unwrap();
+    let a_authored = authored_scope_set(&mut a, a_candidate, a_revision, &a_prior).await;
+    let a_active_params = json!({"request_id":Uuid::new_v4(),"candidate_set_id":a_candidate,
+        "authored_scope_set":a_authored});
+    let a_active = route(
+        &mut a,
+        "command",
+        "scope.advisory.request",
+        a_active_params.clone(),
+    )
+    .await;
+    assert_eq!(a_active["state"], "advised", "{a_active}");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let a_detail = route(
+        &mut a,
+        "query",
+        "candidate.advisory.get",
+        json!({"candidate_set_id":a_candidate,"opportunity_id":a_active["opportunity_id"]}),
+    )
+    .await;
+    assert_eq!(
+        a_detail["opportunity"]["session_preference"],
+        "use_workspace"
+    );
+    assert_eq!(a_detail["dispatches"].as_array().unwrap().len(), 1);
+    let cross_session_replay = route_error(
+        &mut b,
+        "command",
+        "scope.advisory.request",
+        a_active_params.clone(),
+    )
+    .await;
+    assert_eq!(cross_session_replay["error"]["code"], "input_conflict");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let mut changed_request_preference = a_active_params.clone();
+    changed_request_preference["request_preference"] = json!("skip");
+    let changed_replay = route_error(
+        &mut a,
+        "command",
+        "scope.advisory.request",
+        changed_request_preference,
+    )
+    .await;
+    assert_eq!(changed_replay["error"]["code"], "input_conflict");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let changed_session_preference = route(
+        &mut a,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":2,"preference":"skip"}),
+    )
+    .await;
+    assert_eq!(changed_session_preference["revision"], 3);
+    let saved_replay = route(&mut a, "command", "scope.advisory.request", a_active_params).await;
+    assert_eq!(saved_replay["opportunity_id"], a_active["opportunity_id"]);
+    assert_eq!(saved_replay["state"], "advised");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let persisted: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT s.native_session_id,o.session_preference,o.request_preference,o.primary_reason \
+         FROM advisory_opportunity o JOIN agent_sessions s \
+           ON (s.tenant_id,s.workspace_id,s.id)=(o.tenant_id,o.workspace_id,o.session_id) \
+         WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.id IN ($3,$4,$5,$6) ORDER BY o.created_at",
+    )
+    .bind(enrollment.tenant_id)
+    .bind(workspace)
+    .bind(skipped_id)
+    .bind(id(&b_result["opportunity_id"]))
+    .bind(id(&request_skip["opportunity_id"]))
+    .bind(id(&a_active["opportunity_id"]))
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(persisted.len(), 4);
+    assert!(persisted.contains(&(
+        session_a.clone(),
+        "skip".into(),
+        "use_workspace".into(),
+        "session_skip".into(),
+    )));
+    assert!(persisted.contains(&(
+        session_b.clone(),
+        "use_workspace".into(),
+        "use_workspace".into(),
+        "provider_response".into(),
+    )));
+    assert!(persisted.contains(&(
+        session_a.clone(),
+        "use_workspace".into(),
+        "skip".into(),
+        "request_skip".into(),
+    )));
+    assert!(persisted.contains(&(
+        session_a.clone(),
+        "use_workspace".into(),
+        "use_workspace".into(),
+        "provider_response".into(),
+    )));
+    let skipped_dispatches: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3")
+        .bind(enrollment.tenant_id).bind(workspace).bind(skipped_id)
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(skipped_dispatches, 0);
+
+    // The second source observation happens after prepared material commits.
+    // A committed skip during that pause must win before dispatch authorization.
+    route(
+        &mut a,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":3,"preference":"use_workspace"}),
+    )
+    .await;
+    let (paused_source, paused_prior) = ready_source_candidate(&mut a, &repo).await;
+    let paused_candidate = id(&paused_source["candidate_set"]["id"]);
+    let paused_authored = authored_scope_set(
+        &mut a,
+        paused_candidate,
+        paused_source["candidate_set"]["revision"].as_i64().unwrap(),
+        &paused_prior,
+    )
+    .await;
+    let paused_params = json!({"request_id":Uuid::new_v4(),
+        "candidate_set_id":paused_candidate,"authored_scope_set":paused_authored});
+    let (reached, release) = paused_authority.arm(paused_candidate).await;
+    let mut pending = Box::pin(route(
+        &mut a,
+        "command",
+        "scope.advisory.request",
+        paused_params.clone(),
+    ));
+    tokio::select! {
+        _ = reached => {},
+        result = &mut pending => panic!("request completed before prepared pause: {result}"),
+    }
+    let skipped_after_prepare = service
+        .set_session_advisory_preference(
+            &tect_domain::RequestContext {
+                auth: enrollment.auth.clone(),
+                native_session_id: session_a.clone(),
+                workspace_key: workspace_key.clone(),
+            },
+            &tect_domain::SetSessionAdvisoryPreference {
+                expected_revision: 4,
+                preference: tect_domain::AdvisoryRequestPreference::Skip,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(skipped_after_prepare.revision, 5);
+    release.send(()).unwrap();
+    let fenced = (&mut pending).await;
+    drop(pending);
+    assert_eq!(fenced["state"], "no_call", "{fenced}");
+    assert_eq!(fenced["reason"], "session_skip");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    let fenced_detail = route(
+        &mut a,
+        "query",
+        "candidate.advisory.get",
+        json!({"candidate_set_id":paused_candidate,"opportunity_id":fenced["opportunity_id"]}),
+    )
+    .await;
+    assert_eq!(
+        fenced_detail["opportunity"]["session_preference"],
+        "use_workspace"
+    );
+    assert!(fenced_detail["dispatches"].as_array().unwrap().is_empty());
+    let fenced_replay = route(&mut a, "command", "scope.advisory.request", paused_params).await;
+    assert_eq!(fenced_replay["opportunity_id"], fenced["opportunity_id"]);
+    assert_eq!(fenced_replay["reason"], "session_skip");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        service
+            .session_advisory_preference(&tect_domain::RequestContext {
+                auth: enrollment.auth.clone(),
+                native_session_id: session_b.clone(),
+                workspace_key: workspace_key.clone(),
+            })
+            .await
+            .unwrap()
+            .preference,
+        tect_domain::AdvisoryRequestPreference::UseWorkspace
+    );
+
+    // The provider seam is entered only after the one-use authorization and
+    // sending transactions commit. A later skip cannot erase that attempt.
+    route(
+        &mut a,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":5,"preference":"use_workspace"}),
+    )
+    .await;
+    let (authorized_source, authorized_prior) = ready_source_candidate(&mut a, &repo).await;
+    let authorized_candidate = id(&authorized_source["candidate_set"]["id"]);
+    let authorized_authored = authored_scope_set(
+        &mut a,
+        authorized_candidate,
+        authorized_source["candidate_set"]["revision"]
+            .as_i64()
+            .unwrap(),
+        &authorized_prior,
+    )
+    .await;
+    let authorized_params = json!({"request_id":Uuid::new_v4(),
+        "candidate_set_id":authorized_candidate,"authored_scope_set":authorized_authored});
+    let (provider_reached, provider_release) = provider_pause.arm().await;
+    let mut authorized_pending = Box::pin(route(
+        &mut a,
+        "command",
+        "scope.advisory.request",
+        authorized_params.clone(),
+    ));
+    tokio::select! {
+        _ = provider_reached => {},
+        result = &mut authorized_pending => panic!("request completed before provider pause: {result}"),
+    }
+    let before_skip: Vec<(String, String)> = sqlx::query_as(
+        "SELECT d.state,d.send_certainty FROM advisory_dispatch d JOIN advisory_opportunity o \
+         ON (o.tenant_id,o.workspace_id,o.id)=(d.tenant_id,d.workspace_id,d.opportunity_id) \
+         WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.request_key=$3",
+    )
+    .bind(enrollment.tenant_id)
+    .bind(workspace)
+    .bind(authorized_params["request_id"].as_str().unwrap())
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(before_skip, vec![("sending".into(), "sent_unknown".into())]);
+    service
+        .set_session_advisory_preference(
+            &tect_domain::RequestContext {
+                auth: enrollment.auth.clone(),
+                native_session_id: session_a.clone(),
+                workspace_key: workspace_key.clone(),
+            },
+            &tect_domain::SetSessionAdvisoryPreference {
+                expected_revision: 6,
+                preference: tect_domain::AdvisoryRequestPreference::Skip,
+            },
+        )
+        .await
+        .unwrap();
+    provider_release.send(()).unwrap();
+    let authorized_result = (&mut authorized_pending).await;
+    drop(authorized_pending);
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    let after_skip: Vec<(String, String)> = sqlx::query_as(
+        "SELECT d.state,d.send_certainty FROM advisory_dispatch d JOIN advisory_opportunity o \
+         ON (o.tenant_id,o.workspace_id,o.id)=(d.tenant_id,d.workspace_id,d.opportunity_id) \
+         WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.request_key=$3",
+    )
+    .bind(enrollment.tenant_id)
+    .bind(workspace)
+    .bind(authorized_params["request_id"].as_str().unwrap())
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(after_skip, vec![("sealed".into(), "sent".into())]);
+    let authorized_replay = route(
+        &mut a,
+        "command",
+        "scope.advisory.request",
+        authorized_params,
+    )
+    .await;
+    assert_eq!(
+        authorized_replay["opportunity_id"],
+        authorized_result["opportunity_id"]
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    a.finish().await;
+    b.finish().await;
+    server.abort();
+    let _ = server.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 #[ignore = "owned disposable PostgreSQL 18.6 ledger110 and TECT_TEST_* required; no migration"]
 async fn public_s01_request_decision_caller_and_distinct_verifier() {
     let (pool, runtime_url) = owned_ledger110().await;
@@ -350,7 +969,10 @@ async fn public_s01_request_decision_caller_and_distinct_verifier() {
         authority,
         supplier,
         Arc::new(SyntheticBudget),
-        Arc::new(FakeJev(calls.clone())),
+        Arc::new(FakeJev {
+            calls: calls.clone(),
+            pause: None,
+        }),
     ));
     let listener = UnixListener::bind(&socket).unwrap();
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();

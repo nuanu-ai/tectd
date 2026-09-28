@@ -2714,6 +2714,10 @@ fn prepared_scope_disposition_uses_only_pre_dispatch_terminal_reasons() {
         Ok("no_call")
     );
     assert_eq!(
+        super::prepared_scope_disposition_state(AdvisoryReason::SessionSkip),
+        Ok("no_call")
+    );
+    assert_eq!(
         super::prepared_scope_disposition_state(AdvisoryReason::ConfigurationChanged),
         Ok("invalidated")
     );

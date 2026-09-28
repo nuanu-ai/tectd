@@ -864,6 +864,16 @@ fn dispatch_stale_errors_map_only_to_their_audited_terminal_reasons() {
     assert_eq!(
         validate_terminalized_pre_dispatch_opportunity(AdvisoryOpportunity {
             state: AdvisoryOpportunityState::NoCall,
+            primary_reason: AdvisoryReason::SessionSkip,
+            ..prepared.clone()
+        })
+        .unwrap()
+        .primary_reason,
+        AdvisoryReason::SessionSkip
+    );
+    assert_eq!(
+        validate_terminalized_pre_dispatch_opportunity(AdvisoryOpportunity {
+            state: AdvisoryOpportunityState::NoCall,
             primary_reason: AdvisoryReason::DeterministicInputInvalid,
             provider_called: true,
             ..prepared
@@ -1780,6 +1790,39 @@ fn authorize_staleness_and_cancelled_start_terminalize_before_provider_attempt()
     assert!(source.contains("started.dispatch.opportunity_id == opportunity.id"));
     assert!(source.contains("started.dispatch.outcome.is_none()"));
     assert!(source.contains("started.dispatch.raw_response_ref.is_none()"));
+}
+
+#[test]
+fn session_skip_fence_is_inside_the_native_session_authorization_transaction() {
+    let source = include_str!("dispatch.rs");
+    let transaction = source
+        .find(".scope_transaction(context, TransactionMode::ReadWrite)")
+        .unwrap();
+    let preference = source[transaction..]
+        .find(".session_advisory_preference(workspace_id, authorize_session.id)")
+        .unwrap()
+        + transaction;
+    let terminal = source[preference..]
+        .find(".finalize_prepared_scope_advisory_without_dispatch(workspace_id, &disposition)")
+        .unwrap()
+        + preference;
+    let authorize = source[terminal..]
+        .find(".authorize_advisory_dispatch(&lifecycle")
+        .unwrap()
+        + terminal;
+    let send = source.find(".observe_prepared(").unwrap();
+    assert!(transaction < preference && preference < terminal && terminal < authorize);
+    assert!(authorize < send);
+    let transaction_source = include_str!("../scope_advisory_orchestration.rs");
+    assert!(
+        transaction_source
+            .contains("tx.lock_native_session(identity.host_id, &context.native_session_id)")
+    );
+    let setter_source = include_str!("../advisory.rs");
+    assert!(
+        setter_source
+            .contains(".session_preference_transaction(context, TransactionMode::ReadWrite)")
+    );
 }
 
 #[test]

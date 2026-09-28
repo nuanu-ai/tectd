@@ -36,6 +36,8 @@ impl WorkspaceService {
         let opportunity = if let Some(existing) = existing {
             if existing.target_kind != "scope_candidate_set"
                 || existing.target_id != Some(request.candidate_set_id)
+                || existing.authorized_actor_id != identity.actor
+                || existing.session_id != identity.session
                 || existing.work_revision != Some(no_call.revision)
                 || existing.config_revision != config.revision
                 || existing.material_digest != digest
@@ -66,6 +68,11 @@ impl WorkspaceService {
             .await?;
         if fresh_session.id != identity.session
             || tx.advisory_config(workspace.id).await? != *config
+            || tx
+                .session_advisory_preference(workspace.id, fresh_session.id)
+                .await?
+                .preference
+                != request.session_preference
             || tx
                 .lock_candidate_revision(workspace.id, request.candidate_set_id)
                 .await?
@@ -101,10 +108,17 @@ impl WorkspaceService {
         material_digest: String,
         status: ScopeCaptureStatus,
     ) -> Result<tect_domain::AdvisoryOpportunity> {
-        let (mut tx, workspace, _) = self
+        let (mut tx, workspace, session) = self
             .scope_transaction(context, crate::TransactionMode::ReadWrite)
             .await?;
-        if tx.advisory_config(workspace.id).await? != *config {
+        if session.id != identity.session
+            || tx.advisory_config(workspace.id).await? != *config
+            || tx
+                .session_advisory_preference(workspace.id, session.id)
+                .await?
+                .preference
+                != request.session_preference
+        {
             return Err(tect_domain::Error::StaleRevision);
         }
         let value = tx

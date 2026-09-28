@@ -68,7 +68,9 @@ struct PreparedScopeDispositionRow {
 
 fn prepared_scope_disposition_state(reason: AdvisoryReason) -> Result<&'static str> {
     let state = match reason {
-        AdvisoryReason::DeterministicInputInvalid => AdvisoryOpportunityState::NoCall,
+        AdvisoryReason::DeterministicInputInvalid | AdvisoryReason::SessionSkip => {
+            AdvisoryOpportunityState::NoCall
+        }
         AdvisoryReason::ConfigurationChanged => AdvisoryOpportunityState::Invalidated,
         _ => return Err(Error::InvalidArguments),
     };

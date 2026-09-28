@@ -19,11 +19,17 @@ impl WorkspaceService {
         let existing = read
             .advisory_opportunity_by_request(workspace.id, &request.request_id.to_string())
             .await?;
+        let mut bound_request = request.clone();
+        bound_request.session_preference =
+            bound_session_preference(&mut *read, workspace.id, session.id, existing.as_ref())
+                .await?;
+        let request = &bound_request;
         if let Some((saved, stored)) = self
             .scope_receipt_for_replay(
                 &mut *read,
                 workspace.id,
                 identity.principal_id,
+                session.id,
                 request,
                 existing.as_ref(),
             )
@@ -34,8 +40,6 @@ impl WorkspaceService {
                 .recover_scope_receipt(context, request, identity.tenant_id, saved, stored)
                 .await;
         }
-        // Disabled and explicitly skipped requests do not need source material.
-        // The workspace-scoped candidate lookup still proves target access.
         let early_no_call =
             early_no_call_target(&mut *read, workspace.id, &config, request).await?;
         let authored_request_digest = if early_no_call.is_none() {
@@ -80,7 +84,6 @@ impl WorkspaceService {
                 )
                 .await;
         }
-
         // An active invocation needs the caller's complete authored set.
         // Disabled and explicitly skipped invocations above remain auditable
         // without requiring source material or enabling the provider.
@@ -294,6 +297,8 @@ impl WorkspaceService {
         if fresh_workspace.id != workspace.id
             || fresh_session.id != session.id
             || prepare.advisory_config(workspace.id).await? != config
+            || bound_session_preference(&mut *prepare, workspace.id, session.id, None).await?
+                != request.session_preference
             || prepare
                 .candidate_context(workspace.id, request.candidate_set_id)
                 .await?
@@ -354,7 +359,6 @@ impl WorkspaceService {
                 });
             }
         }
-
         let prepared_attempt = match prepare_scope_advice_attempt(
             self.scope_advice_provider.as_ref(),
             &provider_context,

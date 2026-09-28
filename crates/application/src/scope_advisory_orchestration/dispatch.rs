@@ -112,9 +112,44 @@ impl WorkspaceService {
             &policy,
         )?;
         let lifecycle = AdvisoryLifecycleCapability::internal();
-        let (mut authorize, _, _) = self
+        let (mut authorize, authorize_workspace, authorize_session) = self
             .scope_transaction(context, TransactionMode::ReadWrite)
             .await?;
+        if authorize_workspace.id != workspace_id
+            || authorize_session.id != opportunity.session_id
+            || opportunity.session_preference != AdvisoryRequestPreference::UseWorkspace
+        {
+            return Err(Error::InputConflict);
+        }
+        // scope_transaction holds the same native-session lock as preference.set
+        // through commit. The current preference and the one-use authorization
+        // therefore have one order, even if the prepared snapshot is older.
+        if authorize
+            .session_advisory_preference(workspace_id, authorize_session.id)
+            .await?
+            .preference
+            == AdvisoryRequestPreference::Skip
+            && authorize.advisory_config(workspace_id).await? == *config
+        {
+            let disposition = crate::ScopePreparedAdvisoryDisposition {
+                opportunity_id: opportunity.id,
+                candidate_set_id: request.candidate_set_id,
+                expected_source_digest: manifest.source.digest.clone(),
+                reason: AdvisoryReason::SessionSkip,
+            };
+            authorize
+                .finalize_prepared_scope_advisory_without_dispatch(workspace_id, &disposition)
+                .await?;
+            let terminal = authorize
+                .advisory_opportunity_for_dispatch(workspace_id, opportunity.id)
+                .await?;
+            let terminal = validate_terminalized_pre_dispatch_opportunity(terminal)?;
+            authorize.commit().await?;
+            return Ok(ScopeAdvisoryOutcome {
+                opportunity: terminal,
+                advice: None,
+            });
+        }
         let authorized = match authorize
             .authorize_advisory_dispatch(&lifecycle, workspace_id, config.revision, &authorization)
             .await

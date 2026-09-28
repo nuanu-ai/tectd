@@ -16,6 +16,22 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
+pub(super) async fn bound_session_preference(
+    read: &mut dyn crate::UnitOfWork,
+    workspace: Uuid,
+    session: Uuid,
+    existing: Option<&AdvisoryOpportunity>,
+) -> Result<AdvisoryRequestPreference> {
+    if let Some(saved) = existing {
+        Ok(saved.session_preference)
+    } else {
+        Ok(read
+            .session_advisory_preference(workspace, session)
+            .await?
+            .preference)
+    }
+}
+
 #[async_trait]
 pub(super) trait EarlyCandidateRevision: Send {
     async fn revision(&mut self, workspace_id: Uuid, candidate_set_id: Uuid)
@@ -271,6 +287,8 @@ pub(super) fn validate_authored_replay_binding<'a>(
         || opportunity.workflow_occurrence_key != request.request_id.to_string()
         || opportunity.authorized_actor_id != actor_id
         || opportunity.session_id != session_id
+        || opportunity.session_preference != request.session_preference
+        || opportunity.request_preference != request.request_preference
         || opportunity.target_kind != "scope_candidate_set"
         || opportunity.target_id != Some(request.candidate_set_id)
         || stored.record.candidate_set_id != request.candidate_set_id
@@ -345,6 +363,9 @@ pub(super) fn validate_terminalized_pre_dispatch_opportunity(
         ) | (
             AdvisoryOpportunityState::NoCall,
             AdvisoryReason::DeterministicInputInvalid
+        ) | (
+            AdvisoryOpportunityState::NoCall,
+            AdvisoryReason::SessionSkip
         )
     );
     if !expected || opportunity.provider_called {

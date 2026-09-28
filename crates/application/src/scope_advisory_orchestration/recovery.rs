@@ -9,6 +9,7 @@ impl WorkspaceService {
         read: &mut dyn crate::UnitOfWork,
         workspace: Uuid,
         actor: Uuid,
+        session: Uuid,
         request: &RunScopeAdvisory,
         existing: Option<&AdvisoryOpportunity>,
     ) -> Result<Option<(StoredAdvisoryProviderReceipt, StoredScopeManifestRecord)>> {
@@ -24,6 +25,15 @@ impl WorkspaceService {
         }) else {
             return Ok(None);
         };
+        if opportunity.authorized_actor_id != actor {
+            return Err(Error::Forbidden);
+        }
+        if opportunity.session_id != session
+            || opportunity.request_preference != request.request_preference
+            || opportunity.session_preference != request.session_preference
+        {
+            return Err(Error::InputConflict);
+        }
         let Some(saved) = read
             .advisory_dispatch_receipt(workspace, opportunity.id)
             .await?
@@ -31,8 +41,8 @@ impl WorkspaceService {
         else {
             return Ok(None);
         };
-        if saved.opportunity.authorized_actor_id != actor {
-            return Err(Error::Forbidden);
+        if saved.opportunity != *opportunity {
+            return Err(Error::InputConflict);
         }
         let stored = read
             .scope_advisory_manifest_by_request_key(workspace, &request.request_id.to_string())
@@ -126,9 +136,12 @@ fn validate_receipt_replay_binding(
     )?;
     if stored.authored_request_digest.as_deref() != Some(&digest)
         || opportunity.workflow_occurrence_key != request.request_id.to_string()
+        || opportunity.session_preference != request.session_preference
+        || opportunity.request_preference != request.request_preference
         || opportunity.target_kind != "scope_candidate_set"
         || opportunity.target_id != Some(request.candidate_set_id)
         || record.candidate_set_id != request.candidate_set_id
+        || record.manifest.source.candidate_set_id != request.candidate_set_id
         || record.opportunity_id != opportunity.id
         || record.config_revision != opportunity.config_revision
         || record.opportunity_material_digest != opportunity.material_digest

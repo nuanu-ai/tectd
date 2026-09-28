@@ -42,8 +42,9 @@ fn lawful_saved_recovery_accounts_before_current_source_and_never_resends() {
             < run.find("early_no_call_target(").unwrap()
     );
     let recovery = include_str!("recovery.rs");
-    assert!(recovery.contains("saved.opportunity.authorized_actor_id != actor"));
-    assert!(!recovery.contains("opportunity.session_id"));
+    assert!(recovery.contains("opportunity.authorized_actor_id != actor"));
+    assert!(recovery.contains("opportunity.session_id != session"));
+    assert!(recovery.contains("opportunity.request_preference != request.request_preference"));
     assert!(!recovery.contains("start_advisory_dispatch"));
     assert!(!recovery.contains("observe_prepared"));
     let compact: String = recovery.chars().filter(|ch| !ch.is_whitespace()).collect();
