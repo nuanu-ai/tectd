@@ -1,10 +1,64 @@
 //! Public S02 route proof with exact, approved PostgreSQL artifact bytes.
 //! The adviser and owner response are synthetic; no installed runtime is used.
 use super::*;
+use recovery_support::public_call;
+use tect_domain::RequiredMatrixFact;
 use tect_postgres::{ApprovedMatrixEvidenceArtifact, PgMatrixEvidenceValidator};
 use url::Url;
 
+fn relaunch_with_isolated_codex_home(test_name: &str) -> bool {
+    let root = std::env::var("TECT_TEST_ISOLATED_ROOT").ok();
+    let home = std::env::var("CODEX_HOME").ok();
+    if root.is_some() && home.is_some() {
+        return false;
+    }
+    assert!(
+        root.is_none() && home.is_none(),
+        "partial S02 isolation environment"
+    );
+    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+    let temp = private_temp();
+    let root = temp.path().canonicalize().unwrap();
+    let home = root.join("codex-home");
+    std::fs::create_dir(&home).unwrap();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .arg(test_name)
+        .arg("--exact")
+        .arg("--ignored")
+        .env("TECT_TEST_ISOLATED_ROOT", &root)
+        .env("CODEX_HOME", &home)
+        .status()
+        .unwrap();
+    assert!(status.success(), "isolated S02 child failed: {status}");
+    true
+}
+
 async fn fresh_artifact_fixture() -> (PgPool, String) {
+    let isolated_root =
+        std::fs::canonicalize(std::env::var("TECT_TEST_ISOLATED_ROOT").unwrap()).unwrap();
+    let codex_home = std::fs::canonicalize(std::env::var("CODEX_HOME").unwrap()).unwrap();
+    assert_eq!(codex_home, isolated_root.join("codex-home"));
+    assert_ne!(
+        codex_home,
+        std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(".codex")
+    );
+    let ci = std::env::var("GITHUB_ACTIONS").as_deref() == Ok("true");
+    let expected_data = if ci {
+        let run = std::env::var("GITHUB_RUN_ID").unwrap();
+        let attempt = std::env::var("GITHUB_RUN_ATTEMPT").unwrap();
+        assert_eq!(
+            std::env::var("TECT_TEST_DB_NAME").unwrap(),
+            format!("tect_matrix_approved_{run}_{attempt}")
+        );
+        assert_eq!(std::env::var("TECT_TEST_PG_PORT").as_deref(), Ok("5432"));
+        None
+    } else {
+        Some(std::fs::canonicalize(isolated_root.join("pgdata")).unwrap())
+    };
+    let own_exe = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+    let build_dir = own_exe.parent().unwrap().parent().unwrap();
+    let mcp_exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_tectd-mcp")).unwrap();
+    assert_eq!(mcp_exe, build_dir.join("tectd-mcp"));
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
     assert_eq!(
         std::env::var("TECT_TEST_RUNTIME_ROLE").as_deref(),
@@ -33,19 +87,36 @@ async fn fresh_artifact_fixture() -> (PgPool, String) {
     let pool = PgPool::connect_with(PgConnectOptions::from_str(&admin_url).unwrap())
         .await
         .unwrap();
-    let identity: (i32, String, String, i64, String, bool) = sqlx::query_as(
+    let identity: (i32, String, String, i64, String, bool, String) = sqlx::query_as(
         "SELECT current_setting('server_version_num')::integer,current_database(),current_user,\
          (SELECT oid::bigint FROM pg_database WHERE datname=current_database()),\
          (SELECT system_identifier::text FROM pg_control_system()),\
-         to_regclass('public._sqlx_migrations') IS NULL",
+         to_regclass('public._sqlx_migrations') IS NULL,current_setting('data_directory')",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
     assert_eq!(
-        identity,
-        (180006, name, "postgres".into(), oid, system_id, true)
+        (
+            &identity.0,
+            &identity.1,
+            &identity.2,
+            &identity.3,
+            &identity.4,
+            &identity.5
+        ),
+        (
+            &180006,
+            &name,
+            &"postgres".to_owned(),
+            &oid,
+            &system_id,
+            &true
+        )
     );
+    if let Some(expected_data) = expected_data {
+        assert_eq!(std::fs::canonicalize(&identity.6).unwrap(), expected_data);
+    }
     let runtime: (String, String) = sqlx::query_as("SELECT current_database(),current_user")
         .fetch_one(
             &PgPool::connect_with(PgConnectOptions::from_str(&runtime_url).unwrap())
@@ -106,9 +177,160 @@ fn planning_save(planning: &Value, selection: Value) -> Value {
     request
 }
 
+async fn artifact_route(client: &mut Mcp, tool: &str, name: &str, params: Value) -> Value {
+    let response = client
+        .exchange(
+            "tools/call",
+            public_call(tool, json!({"route":name,"params":params})),
+        )
+        .await;
+    assert!(
+        response.get("error").is_none() && response["result"]["isError"] != true,
+        "{response}"
+    );
+    serde_json::from_str(response["result"]["content"][1]["text"].as_str().unwrap()).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires a fresh owned PostgreSQL 18.6 cluster and explicit identity guard"]
+async fn public_artifact_issuance_revalidates_exact_task_revision_and_bytes() {
+    if relaunch_with_isolated_codex_home(
+        "s02_approved_artifact::public_artifact_issuance_revalidates_exact_task_revision_and_bytes",
+    ) {
+        return;
+    }
+    let (pool, runtime_url) = fresh_artifact_fixture().await;
+    admin::migrate(&pool, "tect_ci").await.unwrap();
+    let temp = private_temp();
+    let root = temp.path().canonicalize().unwrap();
+    let socket = root.join("matrix-artifact-issuance.sock");
+    let enrolled = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
+        .await
+        .unwrap();
+    let store = PgStore::connect(&runtime_url, 4).await.unwrap();
+    let service = Arc::new(WorkspaceService::new(
+        Arc::new(store),
+        Arc::new(tect_host::GitSourceInspector),
+        Arc::new(tect_host::LocalSetupFiles),
+    ));
+    let listener = UnixListener::bind(&socket).unwrap();
+    std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let server = tokio::spawn(tect_host::serve(listener, service));
+    let host = root.join("owner.json");
+    host_file(&host, &enrolled.auth);
+    let mut owner = Mcp::start(
+        &socket,
+        &host,
+        &Uuid::new_v4().to_string(),
+        &format!("matrix-artifact-{}", Uuid::new_v4()),
+    )
+    .await;
+    let opened = route(&mut owner, "command", "workspace.open", json!({})).await;
+    let workspace = id(&opened["workspace"]["id"]);
+    let task = Uuid::new_v4();
+    let now = i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    )
+    .unwrap();
+    // Fixture values exercise the issuance mechanism only. They are not
+    // approved operating observations and this test has no advice provider.
+    let body = artifact_body(workspace, task, now - 10, now + 600);
+    let digest = format!("{:x}", Sha256::digest(body.as_bytes()));
+    let registered = artifact_route(
+        &mut owner,
+        "command",
+        "slice.pipeline.evidence_artifact.register",
+        json!({
+            "request_id":Uuid::new_v4(),"digest":digest,"size":body.len(),
+            "format":"application/vnd.tect.matrix-operating-evidence+json;version=1",
+            "provenance":"synthetic-public-issuance-test","target":format!("matrix-task:{task}@1")
+        }),
+    )
+    .await;
+    let artifact_id = id(&registered["artifact"]["artifact_id"]);
+    assert_eq!(registered["artifact"]["readiness"], "uploading");
+    let finalized = artifact_route(
+        &mut owner,
+        "command",
+        "slice.pipeline.evidence_artifact.finalize",
+        json!({"request_id":Uuid::new_v4(),"artifact_id":artifact_id,
+            "revision":1,"body":body}),
+    )
+    .await;
+    assert_eq!(finalized["artifact"]["readiness"], "ready");
+    let read = artifact_route(
+        &mut owner,
+        "query",
+        "slice.pipeline.evidence_artifact.read",
+        json!({"artifact_id":artifact_id,"revision":1,"offset":0,"limit":65536}),
+    )
+    .await;
+    assert_eq!(read["fragment"], body);
+    assert_eq!(read["complete"], true);
+    let approval = ApprovedMatrixEvidenceArtifact {
+        tenant_id: enrolled.tenant_id,
+        workspace_id: workspace,
+        task_id: task,
+        task_revision: 1,
+        artifact_id,
+        artifact_revision: 1,
+        sha256: digest.clone(),
+        policy_version: "synthetic-issuance-check/1".into(),
+        max_age_seconds: 600,
+    };
+    let runtime_pool = PgPool::connect_with(PgConnectOptions::from_str(&runtime_url).unwrap())
+        .await
+        .unwrap();
+    let validator = PgMatrixEvidenceValidator::new(runtime_pool, approval);
+    let parsed: EngineeringMatrixInput = serde_json::from_value(input()).unwrap();
+    let scale = &parsed.envelope.scale;
+    let fact = RequiredMatrixFact {
+        path: "/envelope/scale".into(),
+        value_digest: format!("{:x}", Sha256::digest(serde_json::to_vec(scale).unwrap())),
+    };
+    let reference = format!("pipeline-evidence:{artifact_id}@1");
+    let binding = validator
+        .validate(workspace, task, 1, &fact, &reference, now)
+        .await
+        .unwrap();
+    assert_eq!(binding.content_digest, digest);
+    validator
+        .revalidate(workspace, task, 1, &fact, &binding, now)
+        .await
+        .unwrap();
+    assert!(
+        validator
+            .validate(workspace, task, 2, &fact, &reference, now)
+            .await
+            .is_err()
+    );
+    assert!(
+        validator
+            .validate(workspace, Uuid::new_v4(), 1, &fact, &reference, now)
+            .await
+            .is_err()
+    );
+    assert!(
+        validator
+            .validate(workspace, task, 1, &fact, &reference, now + 601)
+            .await
+            .is_err()
+    );
+    owner.finish().await;
+    server.abort();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires a fresh owned PostgreSQL 18.6 cluster and explicit identity guard"]
 async fn public_s02_approved_artifact_to_independently_verified_planning_effect() {
+    if relaunch_with_isolated_codex_home(
+        "s02_approved_artifact::public_s02_approved_artifact_to_independently_verified_planning_effect",
+    ) {
+        return;
+    }
     let (pool, runtime_url) = fresh_artifact_fixture().await;
     admin::migrate(&pool, "tect_ci").await.unwrap();
     let temp = private_temp();
