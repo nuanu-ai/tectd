@@ -141,6 +141,26 @@ impl KnowledgeDocumentDraft {
             || self.sources.len() > DK2_MAX_LIST_ITEMS
             || self.bindings.is_empty()
             || self.bindings.len() > DK2_MAX_LIST_ITEMS
+            || self.graph_assertions.len() > DK2_MAX_LIST_ITEMS
+            || self.graph_assertions.iter().any(|assertion| {
+                !iri(&assertion.subject_iri)
+                    || !iri(&assertion.object_iri)
+                    || oxrdf::NamedNode::new(&assertion.subject_iri).is_err()
+                    || oxrdf::NamedNode::new(&assertion.object_iri).is_err()
+            })
+            || self
+                .graph_assertions
+                .iter()
+                .map(|assertion| {
+                    (
+                        &assertion.subject_iri,
+                        assertion.predicate,
+                        &assertion.object_iri,
+                    )
+                })
+                .collect::<BTreeSet<_>>()
+                .len()
+                != self.graph_assertions.len()
             || self.planning_briefs.len() > PLANNING_KNOWLEDGE_MAX_BRIEFS
             || self
                 .planning_briefs

@@ -36,7 +36,7 @@ fn variant(mode: &str, fields: &[&str], required: &[&str], graph: Option<bool>) 
                 json!({"type":"array","items":{"type":"string","minLength":1,"maxLength":4096,"format":"uri"},"maxItems":16,"uniqueItems":true})
             }
             "relations" => {
-                json!({"type":"array","items":{"type":"string","enum":["targets","depends_on","uses_asset","in_environment","derived_from","bound_to"]},"minItems":1,"maxItems":6,"uniqueItems":true})
+                json!({"type":"array","items":{"type":"string","enum":["targets","depends_on","uses_asset","in_environment","derived_from","bound_to","broader_concept","classified_as","has_environment","applies_to"]},"minItems":1,"maxItems":10,"uniqueItems":true})
             }
             "direction" => json!({"type":"string","enum":["outgoing","incoming","both"]}),
             "max_depth" => json!({"type":"integer","minimum":1,"maximum":4,"default":2}),
@@ -89,6 +89,20 @@ mod tests {
         assert_eq!(variants[0]["properties"]["limit"]["maximum"], 50);
         assert_eq!(variants[1]["properties"]["max_depth"]["maximum"], 4);
         assert_eq!(variants[1]["properties"]["seeds"]["minItems"], 1);
+        assert_eq!(variants[1]["properties"]["relations"]["maxItems"], 10);
+        for relation in [
+            "broader_concept",
+            "classified_as",
+            "has_environment",
+            "applies_to",
+        ] {
+            assert!(
+                variants[1]["properties"]["relations"]["items"]["enum"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(relation))
+            );
+        }
         assert_eq!(variants[3]["properties"]["include_graph"]["const"], true);
         assert!(variants[0]["properties"].get("direction").is_none());
         assert!(variants[1]["properties"].get("query").is_none());

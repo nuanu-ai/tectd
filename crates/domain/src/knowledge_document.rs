@@ -181,6 +181,34 @@ pub struct KnowledgeDocumentBinding {
     pub version_resolution: KnowledgeBindingVersion,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KnowledgeGraphPredicate {
+    BroaderConcept,
+    ClassifiedAs,
+    HasEnvironment,
+    AppliesTo,
+}
+
+impl KnowledgeGraphPredicate {
+    pub const fn iri(self) -> &'static str {
+        match self {
+            Self::BroaderConcept => "urn:tect:dk:v2:broaderConcept",
+            Self::ClassifiedAs => "urn:tect:dk:v2:classifiedAs",
+            Self::HasEnvironment => "urn:tect:dk:v2:hasEnvironment",
+            Self::AppliesTo => "urn:tect:dk:v2:appliesTo",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KnowledgeGraphAssertion {
+    pub subject_iri: String,
+    pub predicate: KnowledgeGraphPredicate,
+    pub object_iri: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum KnowledgeProofStatus {
@@ -382,6 +410,8 @@ pub struct KnowledgeDocumentDraft {
     pub access_scope: KnowledgeAccessScope,
     pub owner_ref: String,
     pub authority_basis: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub graph_assertions: Vec<KnowledgeGraphAssertion>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub planning_briefs: Vec<crate::PlanningBrief>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

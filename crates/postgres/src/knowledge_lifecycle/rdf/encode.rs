@@ -142,6 +142,13 @@ fn build_revision(builder: &mut Builder, input: &RdfPublicationInput) -> Result<
     }
     encode_sources(builder, &revision, &revision, &input.resolved_sources)?;
     encode_bindings(builder, &revision, &revision, &document.bindings, input)?;
+    for assertion in &document.graph_assertions {
+        builder.iri(
+            &assertion.subject_iri,
+            assertion.predicate.iri(),
+            &assertion.object_iri,
+        )?;
+    }
     if input.include_empty_planning_briefs || !document.planning_briefs.is_empty() {
         planning::encode_planning_briefs(builder, &revision, document)?;
     }

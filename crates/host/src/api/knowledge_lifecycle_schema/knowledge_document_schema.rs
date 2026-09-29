@@ -26,6 +26,17 @@ fn artifact() -> Value {
     )
 }
 
+fn graph_assertion() -> Value {
+    object_schema(
+        json!({
+            "subject_iri":iri(),
+            "predicate":{"enum":["broader_concept","classified_as","has_environment","applies_to"]},
+            "object_iri":iri()
+        }),
+        json!(["subject_iri", "predicate", "object_iri"]),
+    )
+}
+
 fn planning_brief() -> Value {
     let selectors = object_schema(
         json!({
@@ -106,6 +117,7 @@ pub(super) fn document() -> Value {
                 "operations","product_research","security"]},"minItems":1,"maxItems":7,"uniqueItems":true},
             "access_scope":{"enum":["workspace_members","owners_only"]},"owner_ref":text(1024),
             "authority_basis":text(4096),
+            "graph_assertions":{"type":"array","items":graph_assertion(),"maxItems":LIST,"uniqueItems":true},
             "valid_from":{"type":"string","format":"date-time","maxLength":128},
             "valid_until":{"type":"string","format":"date-time","maxLength":128},
             "review_due_at":{"type":"string","format":"date-time","maxLength":128},
@@ -162,5 +174,33 @@ mod tests {
             "string"
         );
         assert_eq!(value["properties"]["valid_from"]["type"], "string");
+    }
+
+    #[test]
+    fn graph_assertions_are_optional_closed_typed_objects() {
+        let value = document();
+        assert!(
+            !value["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("graph_assertions"))
+        );
+        let assertions = &value["properties"]["graph_assertions"];
+        assert_eq!(assertions["maxItems"], LIST);
+        assert_eq!(assertions["uniqueItems"], true);
+        assert_eq!(assertions["items"]["additionalProperties"], false);
+        assert_eq!(
+            assertions["items"]["required"],
+            json!(["subject_iri", "predicate", "object_iri"])
+        );
+        assert_eq!(
+            assertions["items"]["properties"]["predicate"]["enum"],
+            json!([
+                "broader_concept",
+                "classified_as",
+                "has_environment",
+                "applies_to"
+            ])
+        );
     }
 }

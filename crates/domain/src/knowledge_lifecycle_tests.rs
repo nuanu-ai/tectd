@@ -32,6 +32,7 @@ fn security_document(access_scope: KnowledgeAccessScope) -> KnowledgeDocumentDra
         access_scope,
         owner_ref: "workspace-owner".into(),
         authority_basis: "authenticated workspace owner".into(),
+        graph_assertions: vec![],
         planning_briefs: vec![],
         valid_from: None,
         valid_until: None,
@@ -53,6 +54,72 @@ fn security_document(access_scope: KnowledgeAccessScope) -> KnowledgeDocumentDra
             ..KnowledgeProfileSections::default()
         },
     }
+}
+
+#[test]
+fn graph_assertions_round_trip_and_old_documents_stay_unchanged() {
+    let mut document = security_document(KnowledgeAccessScope::OwnersOnly);
+    let old_json = serde_json::to_value(&document).unwrap();
+    assert!(old_json.get("graph_assertions").is_none());
+    assert_eq!(
+        serde_json::from_value::<KnowledgeDocumentDraft>(old_json.clone()).unwrap(),
+        document
+    );
+
+    document.graph_assertions = vec![KnowledgeGraphAssertion {
+        subject_iri: "urn:concept:child".into(),
+        predicate: KnowledgeGraphPredicate::BroaderConcept,
+        object_iri: "https://example.test/concepts/parent".into(),
+    }];
+    assert_eq!(document.validate(), Ok(()));
+    let json = serde_json::to_value(&document).unwrap();
+    assert_eq!(json["graph_assertions"][0]["predicate"], "broader_concept");
+    assert_eq!(
+        serde_json::from_value::<KnowledgeDocumentDraft>(json).unwrap(),
+        document
+    );
+}
+
+#[test]
+fn graph_assertions_reject_invalid_iris_duplicates_and_excess_count() {
+    let base = security_document(KnowledgeAccessScope::OwnersOnly);
+    let assertion = KnowledgeGraphAssertion {
+        subject_iri: "urn:concept:child".into(),
+        predicate: KnowledgeGraphPredicate::ClassifiedAs,
+        object_iri: "urn:class:parent".into(),
+    };
+    let mut document = base.clone();
+    document.graph_assertions = vec![assertion.clone(), assertion.clone()];
+    assert_eq!(document.validate(), Err(Error::InvalidArguments));
+
+    for bad_iri in [
+        "relative/path",
+        "urn:has space",
+        "https://example.test/has space",
+    ] {
+        let mut document = base.clone();
+        document.graph_assertions = vec![KnowledgeGraphAssertion {
+            subject_iri: bad_iri.into(),
+            ..assertion.clone()
+        }];
+        assert_eq!(document.validate(), Err(Error::InvalidArguments));
+        document.graph_assertions[0].subject_iri = assertion.subject_iri.clone();
+        document.graph_assertions[0].object_iri = bad_iri.into();
+        assert_eq!(document.validate(), Err(Error::InvalidArguments));
+    }
+
+    let mut document = base;
+    document.graph_assertions = (0..=DK2_MAX_LIST_ITEMS)
+        .map(|index| KnowledgeGraphAssertion {
+            subject_iri: format!("urn:concept:{index}"),
+            ..assertion.clone()
+        })
+        .collect();
+    assert_eq!(document.validate(), Err(Error::InvalidArguments));
+
+    let mut json = serde_json::to_value(&document).unwrap();
+    json["graph_assertions"][0]["predicate"] = "unexpected".into();
+    assert!(serde_json::from_value::<KnowledgeDocumentDraft>(json).is_err());
 }
 
 fn begin() -> BeginKnowledgeChange {
