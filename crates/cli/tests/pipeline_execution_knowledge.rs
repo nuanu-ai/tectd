@@ -283,11 +283,19 @@ async fn durable_knowledge_lifecycle_is_bound_to_real_pipeline_and_access() {
     )
     .await;
     assert_eq!(revision["applied"]["workspace_generation"], 2);
-    let stale = route(
+    let stale_default = route(
         &mut client,
         "query",
         "slice.pipeline.context",
         json!({"run_id":pipeline["run"]["id"]}),
+    )
+    .await;
+    assert_eq!(stale_default["definition"]["phases"], json!([]));
+    let stale = route(
+        &mut client,
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":pipeline["run"]["id"],"refresh":true}),
     )
     .await;
     assert_eq!(stale["knowledge_resource_status"]["state"], "stale");
@@ -319,13 +327,31 @@ async fn durable_knowledge_lifecycle_is_bound_to_real_pipeline_and_access() {
         action_params(refresh).clone(),
     )
     .await;
-    let refreshed = route(
+    let refreshed_default = route(
         &mut client,
         "query",
         "slice.pipeline.context",
         json!({"run_id":pipeline["run"]["id"]}),
     )
     .await;
+    // A knowledge refresh advances the run revision, so its first delivery is fresh.
+    assert!(
+        !refreshed_default["definition"]["phases"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let refreshed = route(
+        &mut client,
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":pipeline["run"]["id"],"refresh":true}),
+    )
+    .await;
+    assert_eq!(
+        refreshed_default["definition"]["phases"],
+        refreshed["definition"]["phases"]
+    );
     assert_eq!(refreshed["knowledge_resource_status"]["state"], "current");
     assert_eq!(
         refreshed["knowledge_resources"]["selected"][0]["revision"],
