@@ -83,7 +83,8 @@ the recovery receipt and remaining owned-copy count, then separately review acce
 promotion. A successful staged restore alone is not permission to grant `CONNECT`.
 On a dedicated PostgreSQL 18 test cluster with pinned pgRDF, run
 `TECT_TEST_DK_STAGED=1 cargo test -p tect-cli --test staged_restore` with the
-`TECT_TEST_ADMIN_URL` and `TECT_TEST_RUNTIME_ROLE` variables described below.
+`TECT_TEST_ADMIN_URL`, `TECT_TEST_RUNTIME_URL`, and `TECT_TEST_RUNTIME_ROLE`
+variables described below.
 Keep the complete backup directory private and intact because its manifest, dump,
 and portable graph files are validated together before target creation.
 
