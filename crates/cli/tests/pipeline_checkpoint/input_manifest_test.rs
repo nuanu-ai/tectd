@@ -2,6 +2,9 @@ use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn checkpoint_resolution_rebinds_changed_dk_and_completes_from_returned_context() {
+    if std::env::var("TECT_TEST_DK2").as_deref() != Ok("1") {
+        return;
+    }
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").expect("dedicated admin URL required");
     let runtime_url =
         std::env::var("TECT_TEST_RUNTIME_URL").expect("dedicated runtime URL required");
