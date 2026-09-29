@@ -1,26 +1,43 @@
 use super::*;
 use std::path::{Path, PathBuf};
 
-pub(super) async fn run(
-    client: Mcp,
-    mut daemon: Daemon,
-    pool: &PgPool,
-    runtime: &str,
-    socket: PathBuf,
-    config: &Path,
-    native: &str,
-    key: &str,
-    amendment: Value,
-    persisted_session_id: Uuid,
-    definition_digest_before_amendment: Value,
-    phase_five_binding: Value,
-    phase_five_output: Value,
-) {
+pub(super) struct ColdRecovery<'a> {
+    pub(super) client: Mcp,
+    pub(super) daemon: Daemon,
+    pub(super) pool: &'a PgPool,
+    pub(super) runtime: &'a str,
+    pub(super) socket: PathBuf,
+    pub(super) config: &'a Path,
+    pub(super) native: &'a str,
+    pub(super) key: &'a str,
+    pub(super) amendment: Value,
+    pub(super) persisted_session_id: Uuid,
+    pub(super) definition_digest_before_amendment: Value,
+    pub(super) phase_five_binding: Value,
+    pub(super) phase_five_output: Value,
+}
+
+pub(super) async fn run(state: ColdRecovery<'_>) {
+    let ColdRecovery {
+        client,
+        mut daemon,
+        pool,
+        runtime,
+        socket,
+        config,
+        native,
+        key,
+        amendment,
+        persisted_session_id,
+        definition_digest_before_amendment,
+        phase_five_binding,
+        phase_five_output,
+    } = state;
     client.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();
-    daemon = Daemon::start(&runtime, socket.clone()).await;
-    let mut client = Mcp::start(&socket, &config, &native, &key).await;
+    daemon = Daemon::start(runtime, socket.clone()).await;
+    let mut client = Mcp::start(&socket, config, native, key).await;
     client.call("open_workspace", json!({})).await;
     let mut context = route(
         &mut client,
@@ -279,8 +296,8 @@ pub(super) async fn run(
     client.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();
-    let _restarted_daemon = Daemon::start(&runtime, socket.clone()).await;
-    let mut client = Mcp::start(&socket, &config, &native, &key).await;
+    let _restarted_daemon = Daemon::start(runtime, socket.clone()).await;
+    let mut client = Mcp::start(&socket, config, native, key).await;
     client.call("open_workspace", json!({})).await;
     context = route(
         &mut client,

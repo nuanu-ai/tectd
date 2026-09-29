@@ -407,9 +407,6 @@ fn fields(phase: &Value, verdict: &str) -> Map<String, Value> {
 mod completion;
 
 pub(super) use completion::{completion, successful_route};
-// Shared support is compiled by suites that do not need this helper.
-#[allow(unused_imports)]
-pub(super) use completion::refresh_knowledge;
 
 #[test]
 fn non_field_engineering_constraints_do_not_enter_field_dispatch() {
@@ -421,4 +418,57 @@ fn non_field_engineering_constraints_do_not_enter_field_dispatch() {
         ]
     });
     assert!(fields(&phase, "pass").is_empty());
+}
+
+pub(super) async fn refresh_knowledge(client: &mut Mcp, context: &Value) -> Value {
+    let stale = client
+        .call(
+            "query",
+            json!({"route":"slice.pipeline.context","params":{"run_id":context["run"]["id"]}}),
+        )
+        .await;
+    assert_eq!(stale["run"]["id"], context["run"]["id"]);
+    assert_eq!(stale["run"]["revision"], context["run"]["revision"]);
+    assert_eq!(
+        stale["run"]["current_phase_id"],
+        context["run"]["current_phase_id"]
+    );
+    if stale["knowledge_resource_status"]["state"] == "inactive" {
+        assert!(stale["knowledge_resources"].is_null());
+        assert!(stale["knowledge"].is_null());
+        assert!(find_action(&stale, "pipeline.knowledge_refresh").is_none());
+        return stale;
+    }
+    let resource_state = stale["knowledge_resource_status"]["state"]
+        .as_str()
+        .unwrap();
+    assert!(
+        matches!(resource_state, "stale" | "needs_context"),
+        "{stale}"
+    );
+    if resource_state == "stale" {
+        assert_eq!(
+            stale["run"]["revision"].as_i64().unwrap(),
+            stale["knowledge_resources"]["run_revision"]
+                .as_i64()
+                .unwrap()
+                + 1
+        );
+    }
+    let action = find_action(&stale, "pipeline.knowledge_refresh")
+        .expect("stale pipeline knowledge must expose its exact refresh action");
+    client
+        .call(
+            "command",
+            json!({"route":"pipeline.knowledge_refresh","params":action_params(action)}),
+        )
+        .await;
+    let current = client
+        .call(
+            "query",
+            json!({"route":"slice.pipeline.context","params":{"run_id":context["run"]["id"]}}),
+        )
+        .await;
+    assert_eq!(current["knowledge_resource_status"]["state"], "current");
+    current
 }

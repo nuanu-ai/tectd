@@ -185,20 +185,20 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
         phase_five_binding,
         phase_five_output,
     ) = source_amendment::run(&mut client, &pool, context).await;
-    cold_recovery::run(
+    cold_recovery::run(cold_recovery::ColdRecovery {
         client,
         daemon,
-        &pool,
-        &runtime,
+        pool: &pool,
+        runtime: &runtime,
         socket,
-        &config,
-        &native,
-        &key,
+        config: &config,
+        native: &native,
+        key: &key,
         amendment,
         persisted_session_id,
         definition_digest_before_amendment,
         phase_five_binding,
         phase_five_output,
-    )
+    })
     .await;
 }

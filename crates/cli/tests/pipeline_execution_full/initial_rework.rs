@@ -1,7 +1,7 @@
 use super::*;
 
-pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value) -> Value {
-    context = advance(&mut client, context).await;
+pub(super) async fn run(client: &mut Mcp, pool: &PgPool, mut context: Value) -> Value {
+    context = advance(client, context).await;
     let (phase_two_verdict, phase_two_outcome, phase_two_transition) = successful_route(&context);
     let mut wrong_digest = completion(
         &context,
@@ -14,7 +14,7 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
     wrong_digest["output"]["artifacts"][0]["digest"] = json!("wrong");
     assert_eq!(
         route_error(
-            &mut client,
+            client,
             "command",
             "slice.pipeline.phase.complete",
             wrong_digest
@@ -22,8 +22,8 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
         .await["error"]["code"],
         "INVALID_OUTPUT"
     );
-    context = advance(&mut client, context).await;
-    context = advance(&mut client, context).await;
+    context = advance(client, context).await;
+    context = advance(client, context).await;
     let (phase_four_verdict, phase_four_outcome, phase_four_transition) =
         successful_route(&context);
     let mut malformed_json = completion(
@@ -39,7 +39,7 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
         json!("7ccfa1fb147ea0cb851480c39f28c0f78a2b035aeed0d2cf5e4c13d0d2adca4d");
     assert_eq!(
         route_error(
-            &mut client,
+            client,
             "command",
             "slice.pipeline.phase.complete",
             malformed_json
@@ -47,7 +47,7 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
         .await["error"]["code"],
         "INVALID_OUTPUT"
     );
-    context = advance(&mut client, context).await;
+    context = advance(client, context).await;
     assert_eq!(
         context["run"]["current_phase_id"],
         "slice-component-decision-interrogator"
@@ -69,7 +69,7 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
     ledger["body"] = json!("{}");
     ledger["digest"] = json!("44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
     let empty_ledger_error = route_error(
-        &mut client,
+        client,
         "command",
         "slice.pipeline.phase.complete",
         empty_ledger,
@@ -93,7 +93,7 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
         "correct_output"
     );
     let after_empty_ledger = route(
-        &mut client,
+        client,
         "query",
         "slice.pipeline.context",
         json!({"run_id":context["run"]["id"],"refresh":true}),
@@ -122,7 +122,7 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
     wrong_rework["revisit_phase_id"] = json!("slice-full-dev-entry-gate");
     assert_eq!(
         route_error(
-            &mut client,
+            client,
             "command",
             "slice.pipeline.phase.complete",
             wrong_rework
@@ -153,7 +153,7 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
         20
     );
     let reworked = route(
-        &mut client,
+        client,
         "command",
         "slice.pipeline.phase.complete",
         valid_phase_five,
@@ -169,7 +169,7 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
         assert_eq!(binding["stale"], ordinal >= 3);
     }
     let stale_target = route(
-        &mut client,
+        client,
         "query",
         "slice.pipeline.context",
         json!({"run_id":context["run"]["id"],"view":"output",
@@ -183,7 +183,7 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
     );
 
     for _ in 0..3 {
-        context = advance(&mut client, context).await;
+        context = advance(client, context).await;
     }
     assert_eq!(
         context["run"]["current_phase_id"],
@@ -207,7 +207,7 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
         5
     );
     context = route(
-        &mut client,
+        client,
         "command",
         "slice.pipeline.phase.complete",
         review_request,
@@ -223,18 +223,13 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
     assert_eq!(verdict, "not_required");
     let mut dropped = completion(&context, verdict, outcome, transition, None, None);
     replace_ledger(&mut dropped["output"], 5);
-    let dropped_error = route_error(
-        &mut client,
-        "command",
-        "slice.pipeline.phase.complete",
-        dropped,
-    )
-    .await;
+    let dropped_error =
+        route_error(client, "command", "slice.pipeline.phase.complete", dropped).await;
     assert_eq!(dropped_error["error"]["code"], "invalid_arguments");
     assert_eq!(dropped_error["error"]["refusal"]["code"], "INVALID_OUTPUT");
     assert_eq!(dropped_error["error"]["refusal"]["rule"], "WP6-COMPLETE-01");
     let after_rejection = route(
-        &mut client,
+        client,
         "query",
         "slice.pipeline.context",
         json!({"run_id":context["run"]["id"],"refresh":true}),
@@ -260,7 +255,7 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
     blocked_no_revisit["outcome"] = json!("blocked");
     blocked_no_revisit["transition"] = json!("block");
     context = route(
-        &mut client,
+        client,
         "command",
         "slice.pipeline.phase.complete",
         blocked_no_revisit,
@@ -307,7 +302,7 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
         .await
         .unwrap();
     context = route(
-        &mut client,
+        client,
         "query",
         "slice.pipeline.context",
         json!({"run_id":context["run"]["id"]}),
@@ -318,7 +313,7 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
     let forward_with_legacy_phase_five =
         completion(&context, verdict, outcome, transition, None, None);
     let legacy_forward_error = route_error(
-        &mut client,
+        client,
         "command",
         "slice.pipeline.phase.complete",
         forward_with_legacy_phase_five,
@@ -338,7 +333,7 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
         "correct_output"
     );
     let after_legacy_forward_rejection = route(
-        &mut client,
+        client,
         "query",
         "slice.pipeline.context",
         json!({"run_id":context["run"]["id"]}),
@@ -373,7 +368,7 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
         .unwrap()["digest"] =
         json!("44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a");
     let invalid_recovery_error = route_error(
-        &mut client,
+        client,
         "command",
         "slice.pipeline.phase.complete",
         invalid_recovery,
@@ -394,7 +389,7 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
     recovery_request["output"]["dispositions"] = json!([recovery_verdict]);
     recovery_request["revisit_phase_id"] = json!("slice-component-decision-interrogator");
     let recovery = route(
-        &mut client,
+        client,
         "command",
         "slice.pipeline.phase.complete",
         recovery_request,
@@ -415,13 +410,13 @@ pub(super) async fn run(mut client: &mut Mcp, pool: &PgPool, mut context: Value)
             );
         }
     }
-    context = advance(&mut client, context).await;
-    context = advance(&mut client, context).await;
+    context = advance(client, context).await;
+    context = advance(client, context).await;
     assert_eq!(
         context["run"]["current_phase_id"],
         "slice-reconciliation-runner"
     );
-    context = advance(&mut client, context).await;
+    context = advance(client, context).await;
     assert_eq!(
         context["run"]["current_phase_id"],
         "slice-implementation-spec-synthesizer"

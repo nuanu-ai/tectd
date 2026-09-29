@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) async fn run(
-    mut client: &mut Mcp,
+    client: &mut Mcp,
     pool: &PgPool,
     mut context: Value,
 ) -> (Value, Uuid, Value, Value, Value) {
@@ -76,13 +76,7 @@ pub(super) async fn run(
         let mut wrong_predecessor = amendment.clone();
         wrong_predecessor["request_id"] = json!(Uuid::new_v4());
         wrong_predecessor["source_amendment"]["predecessor"][field] = wrong;
-        let error = route_error(
-            &mut client,
-            "command",
-            "slice.pipeline.input",
-            wrong_predecessor,
-        )
-        .await;
+        let error = route_error(client, "command", "slice.pipeline.input", wrong_predecessor).await;
         assert_eq!(
             error["error"]["refusal"]["code"], "INVALID_OUTPUT",
             "{field}: {error}"
@@ -93,13 +87,8 @@ pub(super) async fn run(
     wrong_artifact["request_id"] = json!(Uuid::new_v4());
     wrong_artifact["source_amendment"]["predecessor"]["artifact_name"] =
         json!("decision-traceability.json");
-    let wrong_artifact_error = route_error(
-        &mut client,
-        "command",
-        "slice.pipeline.input",
-        wrong_artifact,
-    )
-    .await;
+    let wrong_artifact_error =
+        route_error(client, "command", "slice.pipeline.input", wrong_artifact).await;
     assert_eq!(
         wrong_artifact_error["error"]["refusal"]["code"],
         "INVALID_OUTPUT"
@@ -113,7 +102,7 @@ pub(super) async fn run(
     out_of_scope["request_id"] = json!(Uuid::new_v4());
     out_of_scope["source_amendment"]["target_phase_id"] = json!("slice-design-spec-shaper");
     let out_of_scope_error =
-        route_error(&mut client, "command", "slice.pipeline.input", out_of_scope).await;
+        route_error(client, "command", "slice.pipeline.input", out_of_scope).await;
     assert_eq!(
         out_of_scope_error["error"]["refusal"]["code"],
         "INVALID_OUTPUT"
@@ -126,25 +115,15 @@ pub(super) async fn run(
     let mut digest_mismatch = amendment.clone();
     digest_mismatch["request_id"] = json!(Uuid::new_v4());
     digest_mismatch["source_amendment"]["successor"]["artifact"]["digest"] = json!("0".repeat(64));
-    let digest_error = route_error(
-        &mut client,
-        "command",
-        "slice.pipeline.input",
-        digest_mismatch,
-    )
-    .await;
+    let digest_error =
+        route_error(client, "command", "slice.pipeline.input", digest_mismatch).await;
     assert_eq!(digest_error["error"]["code"], "invalid_arguments");
 
     let mut missing_authority = amendment.clone();
     missing_authority["request_id"] = json!(Uuid::new_v4());
     missing_authority["source_amendment"]["authorization_scope"] = json!("");
-    let authority_error = route_error(
-        &mut client,
-        "command",
-        "slice.pipeline.input",
-        missing_authority,
-    )
-    .await;
+    let authority_error =
+        route_error(client, "command", "slice.pipeline.input", missing_authority).await;
     assert_eq!(authority_error["error"]["code"], "invalid_arguments");
     let mut path_name_mismatch = amendment.clone();
     path_name_mismatch["request_id"] = json!(Uuid::new_v4());
@@ -152,7 +131,7 @@ pub(super) async fn run(
         json!("other-source.md");
     assert_eq!(
         route_error(
-            &mut client,
+            client,
             "command",
             "slice.pipeline.input",
             path_name_mismatch
@@ -161,7 +140,7 @@ pub(super) async fn run(
         "invalid_arguments"
     );
     let after_rejections = route(
-        &mut client,
+        client,
         "query",
         "slice.pipeline.context",
         json!({"run_id":context["run"]["id"]}),
@@ -175,20 +154,8 @@ pub(super) async fn run(
         definition_digest_before_amendment
     );
 
-    let amended = route(
-        &mut client,
-        "command",
-        "slice.pipeline.input",
-        amendment.clone(),
-    )
-    .await;
-    let replay = route(
-        &mut client,
-        "command",
-        "slice.pipeline.input",
-        amendment.clone(),
-    )
-    .await;
+    let amended = route(client, "command", "slice.pipeline.input", amendment.clone()).await;
+    let replay = route(client, "command", "slice.pipeline.input", amendment.clone()).await;
     assert_eq!(replay, amended);
     context = amended["context"].clone();
     assert_eq!(
