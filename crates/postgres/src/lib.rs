@@ -43,6 +43,7 @@ mod matrix_choice_set_migration_tests;
 #[cfg(test)]
 mod matrix_disposition_migration_tests;
 mod matrix_disposition_store;
+mod matrix_evidence_artifact;
 #[cfg(test)]
 mod matrix_no_choice_migration_tests;
 #[cfg(test)]
@@ -121,6 +122,7 @@ pub use knowledge_recovery::{
     prepare_knowledge_suppression_manifest, record_knowledge_suppression_export,
 };
 pub use knowledge_search_admin::enable_knowledge_vector_search;
+pub use matrix_evidence_artifact::{ApprovedMatrixEvidenceArtifact, PgMatrixEvidenceValidator};
 pub use scope_advisory::{PgScopeAuthoredManifestSupplier, PgScopeAuthorityObserver};
 pub use store::PgStore;
 

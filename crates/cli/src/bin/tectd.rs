@@ -22,7 +22,8 @@ use tect_host::jev_pipeline_recommendation::{
     JevPipelineConfig, JevPipelineProvider, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, WIRE_VERSION,
 };
 use tect_postgres::{
-    BudgetOwnerKeys, PgScopeAuthoredManifestSupplier, PgScopeAuthorityObserver, PgStore,
+    ApprovedMatrixEvidenceArtifact, BudgetOwnerKeys, PgMatrixEvidenceValidator,
+    PgScopeAuthoredManifestSupplier, PgScopeAuthorityObserver, PgStore,
 };
 use tokio::net::UnixListener;
 
@@ -59,6 +60,11 @@ async fn run() -> tect_domain::Result<()> {
     };
     let pipeline_provider = pipeline_provider_from_env()?;
     let matrix_provider = matrix_provider_from_env()?;
+    let matrix_evidence_approval = match std::env::var("TECT_MATRIX_EVIDENCE_APPROVAL_JSON") {
+        Ok(value) => Some(ApprovedMatrixEvidenceArtifact::from_json(&value)?),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(_) => return Err(Error::InvalidConfiguration),
+    };
     let pipeline_compatibility_policy = pipeline_compatibility_policy_from_env()?;
     let scope_provider = scope_provider_from_env()?;
     let anti_bloat_provider = anti_bloat_provider_from_env()?;
@@ -69,6 +75,8 @@ async fn run() -> tect_domain::Result<()> {
     let store = PgStore::connect(&database_url, max_connections)
         .await?
         .with_budget_owner_keys(budget_owner_keys);
+    let matrix_evidence_validator = matrix_evidence_approval
+        .map(|approval| PgMatrixEvidenceValidator::new(store.pool().clone(), approval));
     let authority = Arc::new(PgScopeAuthorityObserver::new(
         store.clone(),
         Arc::new(tect_host::StaticCandidateGuidance),
@@ -110,6 +118,9 @@ async fn run() -> tect_domain::Result<()> {
             Arc::new(provider),
             Arc::new(SignedMatrixBudgetPreflight),
         );
+    }
+    if let Some(validator) = matrix_evidence_validator {
+        service = service.with_matrix_evidence_validator(Arc::new(validator));
     }
     if let Some(policy) = pipeline_compatibility_policy {
         service = service
