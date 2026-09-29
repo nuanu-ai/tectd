@@ -106,10 +106,10 @@ pub use matrix_planning_selection_ports::{
 };
 pub use matrix_task_ports::{BoundMatrixTaskRecord, MatrixTaskStore};
 pub use matrix_tasks::{
-    CurrentMatrixAdvice, EngineeringAdvisoryRead, MATRIX_INPUT_SCHEMA,
+    CurrentMatrixAdvice, EngineeringAdvisoryRead, GetVerifiedMatrixCards, MATRIX_INPUT_SCHEMA,
     MatrixTaskRequirementsBinding, MatrixTaskRevision, MatrixTaskSource, RecordMatrixTask,
-    RequestEngineeringAdvisory, canonical_matrix_input_digest,
-    canonical_matrix_source_request_digest,
+    RequestEngineeringAdvisory, VERIFIED_MATRIX_CARDS_SCHEMA, VerifiedMatrixCardSummary,
+    VerifiedMatrixCards, canonical_matrix_input_digest, canonical_matrix_source_request_digest,
 };
 pub use matrix_verification::{MatrixEvidenceReference, VerifiedMatrixTask, VerifyMatrixTask};
 pub use matrix_verification_ports::{

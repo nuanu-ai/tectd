@@ -327,6 +327,7 @@ pub(crate) async fn freeze_locked_matrix_requirements_context(
 
 mod advisory;
 mod binding;
+mod verified_cards;
 #[cfg(test)]
 use binding::compose_current_revision;
 pub(crate) use binding::{
@@ -336,6 +337,10 @@ pub(crate) use binding::{
 };
 use binding::{
     matrix_advisory_receipt_matches, matrix_advisory_replay_matches, valid_advisory_request_key,
+};
+pub use verified_cards::{
+    GetVerifiedMatrixCards, VERIFIED_MATRIX_CARDS_SCHEMA, VerifiedMatrixCardSummary,
+    VerifiedMatrixCards,
 };
 
 /// Hash the same canonical JSON representation that the store persists.
