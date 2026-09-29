@@ -52,7 +52,7 @@ async fn respond_once(
     assert_eq!(frozen.1, expected);
     assert_eq!(frozen.2, format!("{:x}", Sha256::digest(body)));
     let (selected, p0, p1, pa, status, tokens) = match case.as_str() {
-        "ranked" => ("R1", 0.2, 0.7, 0.1, 200, 3),
+        "ranked" | "ranked_select" | "ranked_no_select" => ("R1", 0.2, 0.7, 0.1, 200, 3),
         "abstain" => ("ABSTAIN", 0.1, 0.1, 0.8, 200, 3),
         "error" => ("R1", 0.2, 0.7, 0.1, 500, 3),
         "budget" => ("R1", 0.2, 0.7, 0.1, 200, 2500),
@@ -97,7 +97,7 @@ pub(super) async fn run(
         std::env::var("S05_LOOPBACK_CASE").expect("select ranked, abstain, error, or budget");
     assert!(matches!(
         case.as_str(),
-        "ranked" | "abstain" | "error" | "budget"
+        "ranked" | "ranked_select" | "ranked_no_select" | "abstain" | "error" | "budget"
     ));
     let dummy_key = "s05-loopback-only";
     let expected = provider_at(&endpoint, dummy_key.into())
@@ -105,6 +105,22 @@ pub(super) async fn run(
         .unwrap()
         .request_bytes;
     assert!(expected.len() < MAX_REQUEST);
+    let wire: Value = serde_json::from_slice(&expected).unwrap();
+    let routes = wire["state"]["request"]["eligible_routes"]
+        .as_array()
+        .unwrap();
+    assert_eq!(
+        routes.len(),
+        2,
+        "only policy-allowed code routes may reach JEV"
+    );
+    assert_eq!(routes[0]["id"], "route-a");
+    assert_eq!(routes[1]["id"], "route-b");
+    assert_eq!(
+        (routes[0]["model"].as_str(), routes[1]["model"].as_str()),
+        (Some("gpt-6-sol"), Some("gpt-6-luna"))
+    );
+    assert!(routes.iter().all(|route| route["provider"] == "openai"));
     let digest = format!("{:x}", Sha256::digest(&expected));
     let http = tokio::spawn(respond_once(
         listener,
@@ -151,6 +167,18 @@ pub(super) async fn run(
     let counts:(i64,i64,i64,i64,i64) = sqlx::query_as("SELECT (SELECT coalesce(sum(call_count),0)::bigint FROM advisory_call_audit WHERE workspace_id=$1 AND capability='model_routing'),(SELECT count(*) FROM model_route_budget_reservations WHERE workspace_id=$1),(SELECT count(*) FROM model_route_budget_consumptions WHERE workspace_id=$1),(SELECT count(*) FROM model_route_decisions WHERE workspace_id=$1),(SELECT count(*) FROM model_route_dispositions WHERE workspace_id=$1)")
         .bind(workspace).fetch_one(&observer).await.unwrap();
     assert_eq!((counts.0, counts.1, counts.2), (1, 1, 1));
+    let model_dispatches: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM advisory_dispatch WHERE workspace_id=$1 AND provider<>$2",
+    )
+    .bind(workspace)
+    .bind(PROFILE)
+    .fetch_one(&observer)
+    .await
+    .unwrap();
+    assert_eq!(
+        model_dispatches, 0,
+        "route recommendation cannot dispatch a candidate model"
+    );
     let view = if case == "error" {
         assert_eq!(raw_run["result"]["isError"], true);
         let first = recovery_support::tool_payload(&raw_run);
@@ -184,7 +212,7 @@ pub(super) async fn run(
     };
     assert!(view["preparation"]["routes"]["observed_actual"].is_null());
     match case.as_str() {
-        "ranked" => {
+        "ranked" | "ranked_select" | "ranked_no_select" => {
             assert_eq!(audit.0, "parsed");
             assert_eq!(counts.3, 1);
             assert_eq!(view["decision"]["routes"]["requested_route_id"], "route-a");
@@ -201,6 +229,43 @@ pub(super) async fn run(
             )
             .await;
             assert_eq!(before["decision"]["id"], view["decision"]["id"]);
+            let decision = id(&view["decision"]["id"]);
+            let expected = format!("SELECT JEV S05 {digest} {decision} route-b\n");
+            let selected = if case == "ranked_no_select" {
+                selection_confirmed(&mut std::io::Cursor::new(""), &digest, decision, "route-b")
+            } else {
+                selection_confirmed(
+                    &mut std::io::Cursor::new(expected),
+                    &digest,
+                    decision,
+                    "route-b",
+                )
+            };
+            if !selected {
+                let dispositions: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM model_route_dispositions WHERE workspace_id=$1",
+                )
+                .bind(workspace)
+                .fetch_one(&observer)
+                .await
+                .unwrap();
+                assert_eq!(dispositions, 0, "Ranked without SELECT cannot auto-accept");
+                assert_eq!(
+                    view["decision"]["routes"]["recommended_route_id"],
+                    "route-b"
+                );
+                assert_eq!(view["decision"]["routes"]["requested_route_id"], "route-a");
+                assert!(view["decision"]["routes"]["observed_actual"].is_null());
+                let persisted: Value = sqlx::query_scalar(
+                    "SELECT decision_payload FROM model_route_decisions WHERE workspace_id=$1 AND id=$2",
+                ).bind(workspace).bind(decision).fetch_one(&observer).await.unwrap();
+                assert_eq!(persisted["routes"], view["decision"]["routes"]);
+                println!(
+                    "S05 loopback ranked_no_select requested=route-a recommended=route-b actual=null dispositions=0"
+                );
+                observer.close().await;
+                return;
+            }
             let source_session: Uuid = sqlx::query_scalar("SELECT caller_session_id FROM matrix_planning_selection_links WHERE workspace_id=$1 AND candidate_set_id=$2 AND caller_request_id=$3")
                 .bind(workspace).bind(set).bind(caller_request).fetch_one(&observer).await.unwrap();
             admin::revoke_session(&observer, source_session)
@@ -252,6 +317,10 @@ pub(super) async fn run(
             assert_eq!(view["decision"]["routes"]["requested_route_id"], "route-a");
             assert!(view["decision"]["routes"]["observed_actual"].is_null());
             assert!(view["disposition"].is_null());
+            let persisted: Value = sqlx::query_scalar(
+                "SELECT decision_payload FROM model_route_decisions WHERE workspace_id=$1 AND id=$2",
+            ).bind(workspace).bind(id(&view["decision"]["id"])).fetch_one(&observer).await.unwrap();
+            assert_eq!(persisted["routes"], view["decision"]["routes"]);
         }
         "error" => {
             assert_eq!(audit.0, "raw_sealed");
@@ -273,7 +342,10 @@ pub(super) async fn run(
             .fetch_one(&observer)
             .await
             .unwrap();
-    assert_eq!(final_dispositions, i64::from(case == "ranked"));
+    assert_eq!(
+        final_dispositions,
+        i64::from(matches!(case.as_str(), "ranked" | "ranked_select"))
+    );
     println!(
         "S05 loopback case={case} bytes={} sha256={digest} audit_state={} decisions={} dispositions={} actual=null",
         expected.len(),

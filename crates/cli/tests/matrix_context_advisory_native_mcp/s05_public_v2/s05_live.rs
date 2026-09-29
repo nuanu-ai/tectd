@@ -13,18 +13,30 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpListener,
 };
+#[path = "s05_active.rs"]
+mod active;
 #[path = "s05_loopback.rs"]
 mod loopback;
 
 const CALL_ID_PREFIX: &str = "tectd-jev-s05-v2-2026-09-28-";
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 const ADVISER: &str = "jev-1.13.0";
-const ARTIFACT_DIR: &str =
-    "/Users/tony/Work/Projects/nuanu-ai-lab/artifacts/jev-live-eval-20260919";
 const MAX_REQUEST: usize = 45_000;
+// The 24-hour freshness policy for the Owner's 2026-09-29 11:48:37 UTC
+// attestation is fixed. Never refresh observed_at from this test harness.
+const OWNER_FACT_EXPIRES_UNIX: u64 = 1_790_768_917;
 
 fn artifact(suffix: &str) -> std::path::PathBuf {
-    Path::new(ARTIFACT_DIR).join(format!("{}.{suffix}", call_id()))
+    let root = std::path::PathBuf::from(
+        std::env::var("S05_ONE_SHOT_ARTIFACT_DIR")
+            .expect("explicit isolated S05 artifact directory required"),
+    );
+    assert!(root.is_absolute() && root.is_dir());
+    assert_eq!(
+        fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    root.join(format!("{}.{suffix}", call_id()))
 }
 fn call_id() -> String {
     let id = std::env::var("S05_ONE_SHOT_CALL_ID").unwrap_or_else(|_| format!("{CALL_ID_PREFIX}2"));
@@ -61,6 +73,19 @@ fn confirmed(reader: &mut impl BufRead, digest: &str) -> bool {
             .strip_suffix('\n')
             .is_some_and(|s| s.strip_suffix('\r').unwrap_or(s) == format!("SEND JEV {digest}"))
 }
+fn selection_confirmed(
+    reader: &mut impl BufRead,
+    digest: &str,
+    decision: Uuid,
+    route_id: &str,
+) -> bool {
+    let mut line = String::new();
+    reader.read_line(&mut line).is_ok()
+        && line.strip_suffix('\n').is_some_and(|text| {
+            text.strip_suffix('\r').unwrap_or(text)
+                == format!("SELECT JEV S05 {digest} {decision} {route_id}")
+        })
+}
 #[test]
 fn s05_one_shot_marker_is_exclusive_and_confirmation_exact() {
     let temp = private_temp();
@@ -73,6 +98,25 @@ fn s05_one_shot_marker_is_exclusive_and_confirmation_exact() {
     assert!(confirmed(
         &mut std::io::Cursor::new("SEND JEV abc\n"),
         "abc"
+    ));
+    let decision = Uuid::from_u128(1);
+    assert!(!selection_confirmed(
+        &mut std::io::Cursor::new(""),
+        "abc",
+        decision,
+        "route-b"
+    ));
+    assert!(!selection_confirmed(
+        &mut std::io::Cursor::new(format!("SELECT JEV S05 wrong {decision} route-b\n")),
+        "abc",
+        decision,
+        "route-b"
+    ));
+    assert!(selection_confirmed(
+        &mut std::io::Cursor::new(format!("SELECT JEV S05 abc {decision} route-b\n")),
+        "abc",
+        decision,
+        "route-b"
     ));
     exclusive(&marker, b"call_id=test\nrequest_sha256=abc\n");
     assert!(std::panic::catch_unwind(|| exclusive(&marker, b"again")).is_err());
@@ -156,6 +200,15 @@ impl ModelRouteRankingProvider for ReviewedProvider {
 
 async fn fresh_database() -> (PgPool, String) {
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
+    let isolated_root =
+        fs::canonicalize(std::env::var("TECT_TEST_ISOLATED_ROOT").unwrap()).unwrap();
+    let codex_home = fs::canonicalize(std::env::var("CODEX_HOME").unwrap()).unwrap();
+    assert_eq!(codex_home, isolated_root.join("codex-home"));
+    assert_ne!(
+        codex_home,
+        std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(".codex")
+    );
+    let pgdata = fs::canonicalize(isolated_root.join("pgdata")).unwrap();
     let name = std::env::var("TECT_TEST_EXPECTED_DB_NAME").unwrap();
     assert!(name.starts_with("tect_s05_live_"));
     let expected_oid: i64 = std::env::var("TECT_TEST_EXPECTED_DB_OID")
@@ -178,9 +231,13 @@ async fn fresh_database() -> (PgPool, String) {
         assert!(parsed.get_socket().is_none());
     }
     let pool = PgPool::connect(&admin_url).await.unwrap();
-    let identity: (i32,String,i64,String) = sqlx::query_as("SELECT current_setting('server_version_num')::integer,current_database(),(SELECT oid::bigint FROM pg_database WHERE datname=current_database()),(SELECT system_identifier::text FROM pg_control_system())")
+    let identity: (i32,String,i64,String,String) = sqlx::query_as("SELECT current_setting('server_version_num')::integer,current_database(),(SELECT oid::bigint FROM pg_database WHERE datname=current_database()),(SELECT system_identifier::text FROM pg_control_system()),current_setting('data_directory')")
         .fetch_one(&pool).await.unwrap();
-    assert_eq!(identity, (180006, name, expected_oid, expected_system));
+    assert_eq!(
+        (identity.0, identity.1, identity.2, identity.3),
+        (180006, name, expected_oid, expected_system)
+    );
+    assert_eq!(fs::canonicalize(identity.4).unwrap(), pgdata);
     let residue: i64 = sqlx::query_scalar("SELECT (SELECT count(*) FROM pg_namespace WHERE nspname NOT IN ('pg_catalog','pg_toast','public','information_schema')) + (SELECT count(*) FROM pg_class WHERE relnamespace='public'::regnamespace) + (SELECT count(*) FROM pg_proc WHERE pronamespace='public'::regnamespace) + (SELECT count(*) FROM pg_extension WHERE extname <> 'plpgsql') + (SELECT count(*) FROM pg_event_trigger)")
         .fetch_one(&pool).await.unwrap();
     assert_eq!(residue, 0, "S05 database must be new and empty");
@@ -286,6 +343,16 @@ async fn signed_s05_budget(
 async fn s05_real_adviser_one_shot() {
     let mode = std::env::var("S05_ONE_SHOT_MODE").expect("set preflight or send");
     assert!(matches!(mode.as_str(), "preflight" | "send" | "loopback"));
+    if mode != "loopback" {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(
+            now < OWNER_FACT_EXPIRES_UNIX,
+            "Owner operating-fact attestation expired; no provider send"
+        );
+    }
     let call_id = call_id();
     if mode == "send" {
         assert!(
@@ -306,7 +373,7 @@ async fn s05_real_adviser_one_shot() {
     let temp = private_temp();
     let root = temp.path().canonicalize().unwrap();
     let repo = root.join("source");
-    repository(&repo);
+    let source_head = active::clone_dev_source(&repo);
     let socket = root.join("s05-live.sock");
     let enrolled = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
         .await
@@ -367,7 +434,7 @@ async fn s05_real_adviser_one_shot() {
             Arc::new(Provider(matrix_calls.clone())),
             Arc::new(Budget(Arc::new(AtomicUsize::new(0)))),
         )
-        .with_model_route_catalogue_provider(Arc::new(Routes))
+        .with_model_route_catalogue_provider(Arc::new(active::ActiveRoutes))
         .with_model_route_host_capabilities_provider(Arc::new(HostCapabilities))
         .with_model_route_ranking_provider(ranking_provider),
     );
@@ -378,7 +445,7 @@ async fn s05_real_adviser_one_shot() {
     host_file(&owner_file, &enrolled.auth);
     let native = Uuid::new_v4().to_string();
     let mut owner = Mcp::start(&socket, &owner_file, &native, &workspace_key).await;
-    let (source, candidate) = ready_source_candidate(&mut owner, &repo).await;
+    let (source, candidate) = active::ready_work(&mut owner, &repo, &source_head).await;
     assert_eq!(
         id(&owner.call("open_workspace", json!({})).await["workspace"]["id"]),
         workspace
@@ -389,7 +456,7 @@ async fn s05_real_adviser_one_shot() {
             .fetch_one(&pool)
             .await
             .unwrap();
-    propose_confirm(&mut owner, program, 0, declarations("demo")).await;
+    propose_confirm(&mut owner, program, 0, active::active_declarations()).await;
     let effective = route(
         &mut owner,
         "query",
@@ -398,7 +465,7 @@ async fn s05_real_adviser_one_shot() {
     )
     .await;
     let task = Uuid::new_v4();
-    let recorded = record(&mut owner, task, Uuid::new_v4(), Some(locator(program))).await;
+    let recorded = active::record_work(&mut owner, task, program, &source_head).await;
     route(&mut owner,"command","workspace.advisory.configure",json!({"expected_revision":0,"mode":"optional","provider_profile_ref":{"id":PROFILE},"model_configuration":{"model":MODEL}})).await;
     let verifier = admin::prepare_verifier_enrollment(&pool, enrolled.tenant_id, workspace)
         .await
@@ -435,6 +502,8 @@ async fn s05_real_adviser_one_shot() {
     let selection = json!({"task_id":task,"task_revision":1,"disposition_id":chosen["disposition_id"],"selected_choice_id":"b","expected_input_digest":recorded["input_digest"],"expected_choice_set_digest":recorded["choice_set_digest"],"expected_verification_digest":verified["verification_digest"],"mapped_draft_node_indices":[0]});
     let opened = route(&mut owner,"command","scope.open",json!({"request_id":Uuid::new_v4(),"candidate_set_id":source["candidate_set"]["id"],"candidate_set_revision":source["candidate_set"]["revision"],"candidate_snapshot_id":source["snapshot"]["id"],"candidate_id":candidate["id"],"candidate_revision":candidate["revision"]})).await;
     let mut save = save_request(&opened["created"]["planning"], selection);
+    // The role/tool/class follow the exact dev code Work. Numeric budget and
+    // latency are explicit agent-authored test assumptions, not Owner facts.
     save["draft"]["nodes"][0]["model_route_facts"] = json!({"role":"agent","tool":"code","data_class":"internal","remaining_budget_units":20,"available_latency_ms":100});
     let caller_request = save["request_id"].clone();
     let saved = route(&mut owner, "command", "slice.candidates.save", save).await;
@@ -500,13 +569,11 @@ async fn s05_real_adviser_one_shot() {
         .as_array()
         .unwrap();
     assert_eq!(routes.len(), 2);
-    assert!(
-        routes
-            .iter()
-            .all(|route| route["provider"].as_str().unwrap().ends_with(".invalid"))
-    );
+    assert!(routes.iter().all(|route| route["provider"] == "openai"));
+    assert!(routes.iter().any(|route| route["model"] == "gpt-6-sol"));
+    assert!(routes.iter().any(|route| route["model"] == "gpt-6-luna"));
     assert!(routes.iter().all(|route| route["model"] != ADVISER));
-    let manifest = json!({"call_id":call_id,"endpoint":ENDPOINT,"adviser_model":ADVISER,"request_bytes":exact.len(),"request_sha256":digest,"workspace_id":workspace,"task_id":task,"candidate_set_id":set,"work_node_id":work["id"],"preparation_request_key":key,"requested_route_id":"route-a","candidate_routes":routes,"budget":{"provider_calls_total":2,"matrix_synthetic_calls":1,"route_real_calls_max":1,"input_tokens":24000,"output_tokens":2000,"request_utf8_bytes_max":MAX_REQUEST,"timeout_ms":10000,"retry_dispatches_policy_ceiling":1,"harness_retries":0}});
+    let manifest = json!({"call_id":call_id,"endpoint":ENDPOINT,"adviser_model":ADVISER,"request_bytes":exact.len(),"request_sha256":digest,"workspace_id":workspace,"task_id":task,"source_head":source_head,"candidate_set_id":set,"work_node_id":work["id"],"preparation_request_key":key,"requested_route_id":"route-a","candidate_routes":routes,"candidate_policy":"agent-authored test-only route catalogue; no model dispatch","budget":{"provider_calls_total":2,"matrix_synthetic_calls":1,"route_real_calls_max":1,"input_tokens":24000,"output_tokens":2000,"request_utf8_bytes_max":MAX_REQUEST,"timeout_ms":10000,"retry_dispatches_policy_ceiling":1,"harness_retries":0}});
     exclusive(&request_path, &exact);
     exclusive(
         &manifest_path,
@@ -563,7 +630,7 @@ async fn s05_real_adviser_one_shot() {
             Arc::new(tect_host::GitSourceInspector),
             Arc::new(tect_host::LocalSetupFiles),
         )
-        .with_model_route_catalogue_provider(Arc::new(Routes))
+        .with_model_route_catalogue_provider(Arc::new(active::ActiveRoutes))
         .with_model_route_host_capabilities_provider(Arc::new(HostCapabilities))
         .with_model_route_ranking_provider(Arc::new(ReviewedProvider {
             inner: provider(credential),
@@ -678,6 +745,35 @@ async fn s05_real_adviser_one_shot() {
         )
         .await;
         assert_eq!(before["decision"]["id"], run["decision"]["id"]);
+        let decision_id = id(&run["decision"]["id"]);
+        eprintln!(
+            "To disposition recommendation, enter exactly: SELECT JEV S05 {digest} {decision_id} {recommended}"
+        );
+        if !selection_confirmed(
+            &mut std::io::stdin().lock(),
+            &digest,
+            decision_id,
+            recommended,
+        ) {
+            let dispositions: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM model_route_dispositions WHERE workspace_id=$1",
+            )
+            .bind(workspace)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                dispositions, 0,
+                "Ranked without SELECT must not auto-accept"
+            );
+            println!(
+                "S05 ranked without Owner SELECT: requested=route-a recommended={recommended} actual=null disposition=0"
+            );
+            owner.finish().await;
+            send_server.abort();
+            let _ = send_server.await;
+            return;
+        }
         let source_session: Uuid = sqlx::query_scalar("SELECT caller_session_id FROM matrix_planning_selection_links WHERE workspace_id=$1 AND candidate_set_id=$2 AND caller_request_id=$3")
             .bind(workspace).bind(id(&set)).bind(id(&caller_request)).fetch_one(&pool).await.unwrap();
         admin::revoke_session(&pool, source_session).await.unwrap();
