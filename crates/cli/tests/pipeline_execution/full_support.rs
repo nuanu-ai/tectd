@@ -406,7 +406,10 @@ fn fields(phase: &Value, verdict: &str) -> Map<String, Value> {
 #[path = "full_support/completion.rs"]
 mod completion;
 
-pub(super) use completion::{completion, refresh_knowledge, successful_route};
+pub(super) use completion::{completion, successful_route};
+// Shared support is compiled by suites that do not need this helper.
+#[allow(unused_imports)]
+pub(super) use completion::refresh_knowledge;
 
 #[test]
 fn non_field_engineering_constraints_do_not_enter_field_dispatch() {

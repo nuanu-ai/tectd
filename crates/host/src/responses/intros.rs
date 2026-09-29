@@ -149,3 +149,24 @@ pub(crate) fn error_intro(error: &Error) -> &'static str {
         }
     }
 }
+
+pub(super) fn failure_intro(error: &Error, call: Option<(&str, &Value)>) -> &'static str {
+    if !matches!(error.pipeline_source(), Error::OperationTimeout) {
+        return error_intro(error);
+    }
+    match call {
+        Some(("get_state" | "help" | "query", _)) => {
+            "The daemon reached its operation deadline while reading. Retry the read if needed."
+        }
+        Some((_, arguments))
+            if arguments
+                .pointer("/params/request_id")
+                .or_else(|| arguments.get("request_id"))
+                .and_then(Value::as_str)
+                .is_some() =>
+        {
+            "The daemon reached its operation deadline. Read saved state when available; if the result is still absent, retry only the exact same request ID and payload. Do not create a replacement record."
+        }
+        _ => error_intro(error),
+    }
+}

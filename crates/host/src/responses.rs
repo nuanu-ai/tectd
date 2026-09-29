@@ -1,7 +1,7 @@
 mod intros;
 
 pub(crate) use intros::error_intro;
-use intros::intro;
+use intros::{failure_intro, intro};
 use serde_json::{Value, json};
 use tect_domain::Error;
 
@@ -233,27 +233,6 @@ fn try_failure_with_state(
     }
     let data = with_actions(json!({"error":error_data}), actions, recommended);
     Ok(content(failure_intro(&error, call), data, true))
-}
-
-fn failure_intro(error: &Error, call: Option<(&str, &Value)>) -> &'static str {
-    if !matches!(error.pipeline_source(), Error::OperationTimeout) {
-        return error_intro(error);
-    }
-    match call {
-        Some(("get_state" | "help" | "query", _)) => {
-            "The daemon reached its operation deadline while reading. Retry the read if needed."
-        }
-        Some((_, arguments))
-            if arguments
-                .pointer("/params/request_id")
-                .or_else(|| arguments.get("request_id"))
-                .and_then(Value::as_str)
-                .is_some() =>
-        {
-            "The daemon reached its operation deadline. Read saved state when available; if the result is still absent, retry only the exact same request ID and payload. Do not create a replacement record."
-        }
-        _ => error_intro(error),
-    }
 }
 
 fn internal_failure() -> Value {
