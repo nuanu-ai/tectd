@@ -511,8 +511,8 @@ async fn one_shot_owner_attested_s02_matrix() {
     } else {
         assert!(synthetic_mode);
         assert!(
-            std::env::var("TYPESAFE_API_KEY").is_err(),
-            "synthetic mode cannot hold a credential"
+            synthetic_matrix_credential_allowed(&mode, std::env::var("TYPESAFE_API_KEY").is_ok()),
+            "synthetic Matrix mode cannot hold a credential"
         );
         Arc::new(SyntheticNativeTrialProvider {
             parser: native_provider(&profile, "synthetic-fixture-never-sent".into()),
@@ -890,6 +890,10 @@ async fn one_shot_owner_attested_s02_matrix() {
     preflight_server.abort();
 }
 
+fn synthetic_matrix_credential_allowed(mode: &str, credential_present: bool) -> bool {
+    !credential_present || mode == "pipeline_send"
+}
+
 #[test]
 fn one_shot_guard_is_exact_and_owner_attestation_never_refreshes() {
     let body: Value =
@@ -917,4 +921,16 @@ fn one_shot_guard_is_exact_and_owner_attestation_never_refreshes() {
         choices["candidates"][1]["candidate_id"],
         "matrix-trust-first"
     );
+    assert!(synthetic_matrix_credential_allowed("pipeline_send", true));
+    for mode in [
+        "synthetic",
+        "synthetic_pipeline",
+        "pipeline_preflight",
+        "pipeline_synthetic_effect",
+        "pipeline_synthetic_no_select",
+        "pipeline_synthetic_abstain",
+    ] {
+        assert!(!synthetic_matrix_credential_allowed(mode, true), "{mode}");
+        assert!(synthetic_matrix_credential_allowed(mode, false), "{mode}");
+    }
 }
