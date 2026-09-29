@@ -2,6 +2,8 @@ use super::*;
 
 mod legacy;
 mod read;
+mod trial;
+use trial::trial_ranked_snapshot_matches;
 
 #[async_trait]
 impl MatrixAdviceStore for PgUnitOfWork {
@@ -123,13 +125,17 @@ impl PgUnitOfWork {
         if record.trial_evidence.is_some() && !trial_policy {
             return Err(Error::InputConflict);
         }
-        if trial_policy && matches!(&record.outcome, GuardedMatrixAdviceOutcome::Ranked { .. }) {
-            // Until trial confidence metadata is durably/publicly represented,
-            // never store its recommendation as ordinary ranked advice.
-            return Err(Error::InputConflict);
-        }
         let request_payload: Vec<u8> =
             dispatch.try_get("request_payload").map_err(storage_error)?;
+        if trial_policy
+            && matches!(&record.outcome, GuardedMatrixAdviceOutcome::Ranked { .. })
+            && !trial_ranked_snapshot_matches(&snapshot, &request_payload, record)
+        {
+            // A trial ranking is never interchangeable with a strict row.
+            // Its signed native dispatch and complete typed uncertainty must
+            // match the exact V2 authority and occurrence before persistence.
+            return Err(Error::InputConflict);
+        }
         let response_payload: Option<Vec<u8>> = dispatch
             .try_get("response_payload")
             .map_err(storage_error)?;

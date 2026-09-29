@@ -2,7 +2,10 @@
 //! The adviser and owner response are synthetic; no installed runtime is used.
 use super::*;
 use recovery_support::public_call;
-use tect_application::{FixedPipelineCompatibilityPolicy, PipelineProviderIdentity};
+use tect_application::{
+    FixedPipelineCompatibilityPolicy, PipelineProviderIdentity,
+    canonical_matrix_trial_advice_digest,
+};
 use tect_domain::{PipelineKind, RequiredMatrixFact};
 use tect_host::jev_pipeline_recommendation::{JevPipelineSavedResponseParser, WIRE_VERSION};
 use tect_postgres::{ApprovedMatrixEvidenceArtifact, PgMatrixEvidenceValidator};
@@ -657,6 +660,246 @@ async fn public_s02_approved_artifact_to_independently_verified_planning_effect(
     assert_eq!(attested["verdict"], "matches");
     let ready = support::review(&mut owner, &saved).await;
     assert_eq!(ready["candidate_set"]["status"], "ready");
+    // Direct synthetic setup changes a SECOND already sealed fixture dispatch
+    // into a native trial dispatch. This tests the V2 store/public read contract
+    // without enabling the production host trial composer or contacting JEV.
+    let trial_key = format!("approved-trial-{}", Uuid::new_v4());
+    let trial_advised = advice(&mut owner, task, &trial_key).await;
+    assert_eq!(trial_advised["state"], "advised");
+    let trial_opportunity = id(&trial_advised["opportunity_id"]);
+    let direct_store = PgStore::connect(&runtime_url, 4).await.unwrap();
+    let mut unit = direct_store
+        .begin(TransactionMode::ReadWrite)
+        .await
+        .unwrap();
+    unit.authenticate(&enrolled.auth).await.unwrap();
+    unit.set_tenant(enrolled.tenant_id).await.unwrap();
+    let mut trial_record = unit
+        .guarded_matrix_advice(workspace, trial_opportunity)
+        .await
+        .unwrap()
+        .unwrap()
+        .record;
+    unit.commit().await.unwrap();
+    let mut snapshot: Value =
+        sqlx::query_scalar("SELECT configuration_snapshot FROM advisory_dispatch WHERE id=$1")
+            .bind(trial_record.dispatch_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let tect_application::MatrixVerificationAuthority::ContextV2 {
+        digest: verification_digest,
+        snapshot_id,
+        authority_schema,
+        semantic_digest,
+    } = &trial_record.binding.verification
+    else {
+        panic!("synthetic fixture must retain V2 verification");
+    };
+    snapshot["ranking_policy"] = json!(tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION);
+    snapshot["wire_version"] = json!("tect.matrix-typesafe-native/1");
+    snapshot["destination"] = json!("https://api.typesafe.ai/v1/systemone");
+    snapshot["matrix_authority"] = json!({
+        "schema":"tect.context-matrix-verification/1",
+        "verification_digest":verification_digest,
+        "frozen_snapshot_id":snapshot_id,
+        "authority_schema":authority_schema,
+        "requirements_semantic_digest":semantic_digest,
+    });
+    snapshot["advisory_correlation"] = json!({
+        "opportunity_id":trial_opportunity,
+        "dispatch_id":trial_record.dispatch_id,
+    });
+    let mut request: Value = serde_json::from_slice(
+        &sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT request_payload FROM advisory_dispatch WHERE id=$1",
+        )
+        .bind(trial_record.dispatch_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    request["state"]["contract"] = json!("tect.matrix-typesafe-native/1");
+    request["state"]["ranking_policy"] =
+        json!(tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION);
+    let request_bytes = serde_json::to_vec(&request).unwrap();
+    snapshot["request_body_length"] = json!(request_bytes.len());
+    snapshot["request_body_sha256"] = json!(format!("{:x}", Sha256::digest(&request_bytes)));
+    let configuration_digest = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&snapshot).unwrap())
+    );
+    sqlx::query("DELETE FROM advisory_matrix_advice WHERE workspace_id=$1 AND opportunity_id=$2")
+        .bind(workspace)
+        .bind(trial_opportunity)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE advisory_dispatch SET configuration_snapshot=$1,configuration_digest=$2,\
+         request_payload=$3,payload_digest=$4 WHERE id=$5",
+    )
+    .bind(&snapshot)
+    .bind(&configuration_digest)
+    .bind(&request_bytes)
+    .bind(format!("{:x}", Sha256::digest(&request_bytes)))
+    .bind(trial_record.dispatch_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let score = |candidate_id: &str, level: usize, confidence: f64| {
+        let mut probabilities = [0.0; 10];
+        probabilities[level] = 1.0;
+        let distribution = tect_domain::NativeMatrixScoreDistribution::new(probabilities).unwrap();
+        let bounds = distribution.feasible_expected_score();
+        tect_domain::MatrixTrialCandidateEvidence {
+            candidate_id: candidate_id.into(),
+            declared_score: level as f64,
+            score_confidence: confidence,
+            probabilities,
+            displayed_mean: distribution.displayed_mean(),
+            feasible_minimum: bounds.minimum,
+            feasible_maximum: bounds.maximum,
+        }
+    };
+    trial_record.trial_evidence = Some(tect_domain::MatrixTrialRankingEvidence {
+        policy_id: tect_domain::MATRIX_TRIAL_POLICY_ID.into(),
+        policy_version: tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION.into(),
+        policy_digest: tect_domain::matrix_trial_policy_digest(),
+        choice_selected_candidate_id: "a".into(),
+        choice_confidence: 0.8,
+        choice_selected_answer_probability: 0.8,
+        scores: vec![score("a", 8, 0.9), score("b", 4, 0.5)],
+        low_loser_confidence: true,
+    });
+    trial_record.advice_digest = canonical_matrix_trial_advice_digest(
+        &trial_record.binding,
+        &trial_record.outcome,
+        trial_record.trial_evidence.as_ref().unwrap(),
+        trial_record.opportunity_id,
+        trial_record.dispatch_id,
+        &trial_record.response_payload_sha256,
+    )
+    .unwrap();
+    let mut wrong_authority = snapshot.clone();
+    wrong_authority["matrix_authority"]["verification_digest"] = json!("0".repeat(64));
+    let wrong_digest = format!(
+        "{:x}",
+        Sha256::digest(serde_json::to_vec(&wrong_authority).unwrap())
+    );
+    sqlx::query("UPDATE advisory_dispatch SET configuration_snapshot=$1,configuration_digest=$2 WHERE id=$3")
+        .bind(&wrong_authority)
+        .bind(wrong_digest)
+        .bind(trial_record.dispatch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut unit = direct_store
+        .begin(TransactionMode::ReadWrite)
+        .await
+        .unwrap();
+    unit.authenticate(&enrolled.auth).await.unwrap();
+    unit.set_tenant(enrolled.tenant_id).await.unwrap();
+    assert!(
+        unit.persist_guarded_matrix_advice(workspace, &trial_record)
+            .await
+            .is_err()
+    );
+    unit.commit().await.unwrap();
+    sqlx::query("UPDATE advisory_dispatch SET configuration_snapshot=$1,configuration_digest=$2 WHERE id=$3")
+        .bind(&snapshot)
+        .bind(&configuration_digest)
+        .bind(trial_record.dispatch_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let mut unit = direct_store
+        .begin(TransactionMode::ReadWrite)
+        .await
+        .unwrap();
+    unit.authenticate(&enrolled.auth).await.unwrap();
+    unit.set_tenant(enrolled.tenant_id).await.unwrap();
+    let mut missing = trial_record.clone();
+    missing.trial_evidence = None;
+    assert!(
+        unit.persist_guarded_matrix_advice(workspace, &missing)
+            .await
+            .is_err()
+    );
+    let mut tampered = trial_record.clone();
+    tampered.trial_evidence.as_mut().unwrap().scores[0].feasible_minimum = 0.0;
+    assert!(
+        unit.persist_guarded_matrix_advice(workspace, &tampered)
+            .await
+            .is_err()
+    );
+    let inserted = unit
+        .persist_guarded_matrix_advice(workspace, &trial_record)
+        .await
+        .unwrap();
+    assert_eq!(
+        unit.guarded_matrix_advice(workspace, trial_opportunity)
+            .await
+            .unwrap(),
+        Some(inserted)
+    );
+    unit.commit().await.unwrap();
+    let paired: (Option<String>, Option<Value>) = sqlx::query_as(
+        "SELECT ranking_policy_version,trial_uncertainty FROM advisory_matrix_advice WHERE workspace_id=$1 AND opportunity_id=$2",
+    )
+    .bind(workspace)
+    .bind(trial_opportunity)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        paired.0.as_deref(),
+        Some(tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION)
+    );
+    assert_eq!(paired.1, Some(json!(trial_record.trial_evidence)));
+    let owner_trial = route(
+        &mut owner,
+        "query",
+        "engineering.advisory.get",
+        json!({
+            "task_id":task,"request_key":trial_key
+        }),
+    )
+    .await;
+    let verifier_trial = route(
+        &mut independent,
+        "query",
+        "engineering.advisory.get",
+        json!({
+            "task_id":task,"request_key":trial_key
+        }),
+    )
+    .await;
+    assert_eq!(
+        owner_trial["current_advice"],
+        verifier_trial["current_advice"]
+    );
+    assert_eq!(
+        owner_trial["current_advice"]["advice_digest"],
+        trial_record.advice_digest
+    );
+    assert_eq!(
+        owner_trial["current_advice"]["trial_uncertainty"]["policy_version"],
+        tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION
+    );
+    assert_eq!(
+        owner_trial["current_advice"]["trial_uncertainty"]["scores"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(
+        !owner_trial
+            .to_string()
+            .contains("synthetic private response")
+    );
     independent.finish().await;
     owner.finish().await;
     server.abort();
