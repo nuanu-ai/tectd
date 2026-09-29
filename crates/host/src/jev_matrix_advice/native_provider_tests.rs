@@ -4,7 +4,10 @@ use std::{
     io::{Read, Write},
     net::TcpListener,
 };
-use tect_domain::{AdvisoryModelConfiguration, AdvisoryProviderProfileRef, MatrixRanking};
+use tect_domain::{
+    AdvisoryModelConfiguration, AdvisoryProviderProfileRef, MatrixRanking,
+    evaluate_native_matrix_robust_trial,
+};
 use uuid::Uuid;
 
 fn config(endpoint: Url, maximum_response_bytes: usize) -> JevNativeMatrixConfig {
@@ -300,10 +303,20 @@ fn captured_like_v2_snapshot_requires_exact_authority_and_correlation() {
 }
 
 #[test]
-#[ignore = "requires explicitly supplied retained raw S02 response; never sends"]
-fn retained_s02_native_response_parses_to_low_confidence_abstention() {
+#[ignore = "requires explicitly supplied SHA-verified retained raw S02 response; never sends"]
+fn retained_s02_native_response_is_strict_abstention_but_robust_trial_ranking() {
     let raw = std::env::var("TECT_TEST_CAPTURED_S02_RESPONSE")
         .expect("supply retained raw response from an isolated database clone");
+    let digest = format!("{:x}", Sha256::digest(raw.as_bytes()));
+    assert!(
+        [
+            "3236d6acfe8050f2377645e7114521f4636566b361bb59ac791f91665b093ed4",
+            "63dca18673987331dee444b0031a0468ead39a652bec79859eb460ddb43fe2e4",
+            "c79eb088b33a971f05af50dcab7fdccbc96736fb215f8ee298ff972f20a0a27a",
+        ]
+        .contains(&digest.as_str()),
+        "retained response SHA-256 mismatch"
+    );
     let prepared = native_wire::PreparedNativeMatrixRequest {
         body: Vec::new(),
         model: "jev-1.13.0".into(),
@@ -332,13 +345,30 @@ fn retained_s02_native_response_parses_to_low_confidence_abstention() {
     let parsed = native_wire::parse_native_response(raw.as_bytes(), &prepared, 4096).unwrap();
     assert!(matches!(
         (parsed.input_tokens, parsed.output_tokens),
-        (3650 | 3656, 80)
+        (3640 | 3650 | 3656, 80)
     ));
     assert!(parsed.signals.candidate_scores[1].answer_confidence < 0.70);
     assert!(matches!(
         compose_native_matrix_ranking(&prepared.eligibility, &parsed.signals).unwrap(),
         MatrixRanking::Abstained { .. }
     ));
+    let trial =
+        evaluate_native_matrix_robust_trial(&prepared.eligibility, &parsed.signals).unwrap();
+    assert_eq!(
+        trial.ranking,
+        MatrixRanking::Ranked {
+            ranked_candidate_ids: vec![
+                "matrix-local-evidence-first".into(),
+                "matrix-trust-first".into(),
+            ],
+            recommended_candidate_id: "matrix-local-evidence-first".into(),
+        }
+    );
+    assert!(trial.low_loser_confidence);
+    assert!(
+        trial.score_evidence[0].feasible_expected_score.minimum
+            > trial.score_evidence[1].feasible_expected_score.maximum
+    );
 }
 
 #[test]

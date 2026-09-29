@@ -7,11 +7,127 @@ fn eligible() -> MatrixAdviceEligibility {
 }
 
 fn score(id: &str, mean: f64) -> NativeMatrixCandidateScore {
+    let mut probabilities = [0.0; 10];
+    let lower = mean.floor() as usize;
+    probabilities[lower] = 1.0 - mean.fract();
+    if mean.fract() > 0.0 {
+        probabilities[lower + 1] = mean.fract();
+    }
     NativeMatrixCandidateScore {
         candidate_id: id.into(),
         score: mean,
         answer_confidence: 0.8,
+        distribution: Some(NativeMatrixScoreDistribution::new(probabilities).unwrap()),
     }
+}
+
+fn trial_signals() -> NativeMatrixRankingSignals {
+    NativeMatrixRankingSignals {
+        candidate_scores: vec![score("a", 8.0), score("b", 4.0)],
+        choice: NativeMatrixChoice::Candidate("a".into()),
+        choice_confidence: 0.9,
+        choice_selected_answer_probability: 0.9,
+    }
+}
+
+fn trial_eligible() -> MatrixAdviceEligibility {
+    MatrixAdviceEligibility::EligibleForAdvice {
+        candidate_ids: vec!["a".into(), "b".into()],
+    }
+}
+
+#[test]
+fn robust_trial_ranks_only_two_robustly_separated_options_and_retains_low_loser_confidence() {
+    let mut input = trial_signals();
+    input.candidate_scores[1].answer_confidence = 0.31;
+    assert_eq!(
+        compose_native_matrix_ranking(&trial_eligible(), &input),
+        Ok(abstained())
+    );
+    let evaluated = evaluate_native_matrix_robust_trial(&trial_eligible(), &input).unwrap();
+    assert!(matches!(evaluated.ranking, MatrixRanking::Ranked { .. }));
+    assert!(evaluated.low_loser_confidence);
+    assert_eq!(evaluated.score_evidence[1].answer_confidence, 0.31);
+    assert_eq!(evaluated.score_evidence[0].candidate_id, "a");
+    input.candidate_scores.reverse();
+    assert_eq!(
+        evaluate_native_matrix_robust_trial(&trial_eligible(), &input).unwrap(),
+        evaluated
+    );
+    assert_eq!(
+        evaluate_native_matrix_robust_trial(&eligible(), &signals()),
+        Err(Error::InvalidArguments)
+    );
+}
+
+#[test]
+fn robust_trial_abstains_on_overlap_tie_reversal_and_low_winner_confidence() {
+    let base = trial_signals();
+    let mut overlap = base.clone();
+    overlap.candidate_scores[1] = score("b", 7.95);
+    assert_eq!(
+        evaluate_native_matrix_robust_trial(&trial_eligible(), &overlap)
+            .unwrap()
+            .ranking,
+        abstained()
+    );
+    overlap.candidate_scores[1] = score("b", 8.0);
+    assert_eq!(
+        evaluate_native_matrix_robust_trial(&trial_eligible(), &overlap)
+            .unwrap()
+            .ranking,
+        abstained()
+    );
+    let mut reversed = base.clone();
+    reversed.choice = NativeMatrixChoice::Candidate("b".into());
+    assert_eq!(
+        evaluate_native_matrix_robust_trial(&trial_eligible(), &reversed)
+            .unwrap()
+            .ranking,
+        abstained()
+    );
+    let mut low_winner = base;
+    low_winner.candidate_scores[0].answer_confidence = 0.699;
+    assert_eq!(
+        evaluate_native_matrix_robust_trial(&trial_eligible(), &low_winner)
+            .unwrap()
+            .ranking,
+        abstained()
+    );
+}
+
+#[test]
+fn robust_trial_rejects_invalid_or_missing_distributions_and_cent_rounding() {
+    let mut input = trial_signals();
+    input.candidate_scores[0].distribution = None;
+    assert_eq!(
+        evaluate_native_matrix_robust_trial(&trial_eligible(), &input),
+        Err(Error::InvalidArguments)
+    );
+    input = trial_signals();
+    input.candidate_scores[0].score = 7.9;
+    assert_eq!(
+        evaluate_native_matrix_robust_trial(&trial_eligible(), &input),
+        Err(Error::InvalidArguments)
+    );
+    let mut rounded = [0.0; 10];
+    rounded[7] = 0.05;
+    rounded[8] = 0.85;
+    rounded[9] = 0.10;
+    let interval = NativeMatrixScoreDistribution::new(rounded)
+        .unwrap()
+        .feasible_expected_score();
+    assert!(interval.minimum <= 8.0 && interval.maximum >= 8.0);
+    rounded[8] = 0.75;
+    assert_eq!(
+        NativeMatrixScoreDistribution::new(rounded),
+        Err(Error::InvalidArguments)
+    );
+    rounded[8] = f64::NAN;
+    assert_eq!(
+        NativeMatrixScoreDistribution::new(rounded),
+        Err(Error::InvalidArguments)
+    );
 }
 
 fn signals() -> NativeMatrixRankingSignals {

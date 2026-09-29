@@ -95,6 +95,14 @@ fn parses_exact_native_answer_and_opaque_token_mapping() {
     assert_eq!(parsed.signals.candidate_scores.len(), 2);
     assert_eq!(parsed.signals.candidate_scores[0].candidate_id, "id-a");
     assert_eq!(parsed.signals.candidate_scores[0].score, 8.0);
+    assert_eq!(
+        parsed.signals.candidate_scores[0]
+            .distribution
+            .as_ref()
+            .unwrap()
+            .probabilities()[8],
+        1.0
+    );
     assert_eq!(parsed.signals.candidate_scores[1].candidate_id, "id-b");
     assert_eq!(
         parsed.signals.choice,
@@ -112,6 +120,12 @@ fn fractional_score_is_weighted_mean_without_quantization() {
     value["answers"]["score_v1_C0"]["probabilities"]["8"] = json!(0.25);
     let parsed = parse(&value).unwrap();
     assert_eq!(parsed.signals.candidate_scores[0].score, 7.25);
+    let interval = parsed.signals.candidate_scores[0]
+        .distribution
+        .as_ref()
+        .unwrap()
+        .feasible_expected_score();
+    assert!(interval.minimum <= 7.25 && interval.maximum >= 7.25);
 }
 
 #[test]

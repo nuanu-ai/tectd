@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use tect_application::{MAX_PREPARED_MATRIX_BODY_BYTES, MatrixProviderRequest};
 use tect_domain::{
     Error, MatrixAdviceEligibility, NativeMatrixCandidateScore, NativeMatrixChoice,
-    NativeMatrixRankingSignals, Result,
+    NativeMatrixRankingSignals, NativeMatrixScoreDistribution, Result,
 };
 
 use super::wire::{self, MatrixRankingBinding};
@@ -17,7 +17,6 @@ pub const NATIVE_MATRIX_ENDPOINT_PATH: &str = "/v1/systemone";
 const CHOICE_QUESTION_ID: &str = "choice_v1";
 const ABSTAIN_TOKEN: &str = "ABSTAIN";
 const DISTRIBUTION_TOLERANCE: f64 = 1e-6;
-const WEIGHTED_SCORE_TOLERANCE: f64 = 1e-6;
 const CENT_HALF: f64 = 0.005;
 const FLOAT_EPSILON: f64 = 1e-9;
 const SCORE_LEVELS: [&str; 10] = [
@@ -223,16 +222,17 @@ pub fn parse_native_response(
             &support,
             true,
         )?;
-        let weighted = (0..10)
-            .map(|level| level as f64 * probabilities[&level.to_string()])
-            .sum::<f64>();
-        if !score_consistent_with_probabilities(score, weighted, &probabilities) {
+        let distribution = NativeMatrixScoreDistribution::new(std::array::from_fn(|level| {
+            probabilities[&level.to_string()]
+        }))?;
+        if !distribution.consistent_with_declared_score(score) {
             return Err(Error::InvalidArguments);
         }
         candidate_scores.push(NativeMatrixCandidateScore {
             candidate_id: candidate_id.clone(),
-            score: weighted,
+            score: distribution.displayed_mean(),
             answer_confidence: confidence,
+            distribution: Some(distribution),
         });
     }
     let answer = object_with_keys(
@@ -292,56 +292,6 @@ pub fn parse_native_response(
         input_tokens,
         output_tokens,
     })
-}
-
-// The API reports an expected Score and level probabilities separately. If
-// both are cent-quantized, their independently rounded values can differ from
-// the mean of the displayed probabilities. Accept only a score reachable by
-// probabilities within half a cent of each displayed level, normalized to 1.
-// Higher-precision values retain the previous exact consistency contract.
-fn score_consistent_with_probabilities(
-    score: f64,
-    weighted: f64,
-    probabilities: &BTreeMap<String, f64>,
-) -> bool {
-    let cent = |value: f64| (value * 100.0 - (value * 100.0).round()).abs() <= FLOAT_EPSILON;
-    if !cent(score) || !probabilities.values().all(|value| cent(*value)) {
-        return (weighted - score).abs() <= WEIGHTED_SCORE_TOLERANCE;
-    }
-    let mut lower = [0.0; 10];
-    let mut upper = [0.0; 10];
-    for level in 0..10 {
-        let value = probabilities[&level.to_string()];
-        lower[level] = (value - CENT_HALF).max(0.0);
-        upper[level] = (value + CENT_HALF).min(1.0);
-    }
-    let Some(minimum) = feasible_score_bound(&lower, &upper, false) else {
-        return false;
-    };
-    let Some(maximum) = feasible_score_bound(&lower, &upper, true) else {
-        return false;
-    };
-    minimum <= score + CENT_HALF + FLOAT_EPSILON && maximum + FLOAT_EPSILON >= score - CENT_HALF
-}
-
-fn feasible_score_bound(lower: &[f64; 10], upper: &[f64; 10], maximize: bool) -> Option<f64> {
-    let mut remaining = 1.0 - lower.iter().sum::<f64>();
-    if remaining < -FLOAT_EPSILON || upper.iter().sum::<f64>() < 1.0 - FLOAT_EPSILON {
-        return None;
-    }
-    remaining = remaining.max(0.0);
-    let mut score = lower
-        .iter()
-        .enumerate()
-        .map(|(level, value)| level as f64 * value)
-        .sum::<f64>();
-    for index in 0..10 {
-        let level = if maximize { 9 - index } else { index };
-        let added = remaining.min(upper[level] - lower[level]);
-        score += level as f64 * added;
-        remaining -= added;
-    }
-    (remaining <= FLOAT_EPSILON).then_some(score)
 }
 
 fn object_with_keys<'a>(
