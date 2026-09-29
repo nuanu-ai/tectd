@@ -175,9 +175,12 @@ async fn one_shot_owner_attested_s02_matrix() {
             .is_err()
     );
     let capture = Arc::new(Mutex::new(None));
+    let live = Arc::new(Mutex::new(None));
+    let enabled = Arc::new(AtomicBool::new(false));
     let preflight_provider = Arc::new(CaptureProvider {
         inner: native_provider(&profile, "preflight-no-send".into()),
         body: capture.clone(),
+        live: live.clone(),
     });
     let preflight_socket = root.join("matrix-preflight.sock");
     let preflight_server = start_server(
@@ -187,7 +190,7 @@ async fn one_shot_owner_attested_s02_matrix() {
             keys.clone(),
             approval.clone(),
             preflight_provider,
-            Arc::new(DenyMatrixBudget),
+            Arc::new(SwitchedBudget(enabled.clone())),
         )
         .await,
     )
@@ -364,15 +367,38 @@ async fn one_shot_owner_attested_s02_matrix() {
     .await
     .unwrap();
     assert_eq!(reservations, 0);
+    // The same still-open Owner MCP client must own any later positive send.
+    let session: Uuid = sqlx::query_scalar(
+        "SELECT id FROM agent_sessions WHERE tenant_id=$1 AND workspace_id=$2 \
+         AND native_session_id=$3 AND revoked=false",
+    )
+    .bind(enrolled.tenant_id)
+    .bind(workspace)
+    .bind(&native_session)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let captured_session: Uuid = sqlx::query_scalar(
+        "SELECT session_id FROM advisory_opportunity WHERE workspace_id=$1 AND id=$2",
+    )
+    .bind(workspace)
+    .bind(id(&preflight["opportunity_id"]))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        session, captured_session,
+        "original authorized session changed"
+    );
     println!(
         "s02_preflight call_id={CALL_ID} workspace={workspace} task={task}@1 artifact={artifact_id}@1 artifact_sha256={digest} verification_digest={} profile={profile} request_bytes={} request_sha256={wire_digest} dispatches=0 owner_source={OWNER_SOURCE} alternatives=matrix-local-evidence-first,matrix-trust-first",
         validated["verification_digest"],
         wire.len()
     );
     independent.finish().await;
-    owner.finish().await;
-    preflight_server.abort();
     if mode == "preflight" {
+        owner.finish().await;
+        preflight_server.abort();
         return;
     }
 
@@ -400,21 +426,7 @@ async fn one_shot_owner_attested_s02_matrix() {
         inner: native_provider(&profile, key),
         reviewed: Arc::new(wire),
     });
-    let live_socket = root.join("matrix-live.sock");
-    let live_server = start_server(
-        &live_socket,
-        service(
-            &runtime_url,
-            keys,
-            approval,
-            live_provider,
-            Arc::new(SignedMatrixBudgetPreflight),
-        )
-        .await,
-    )
-    .await;
-    let mut owner = Mcp::start(&live_socket, &owner_host, &native_session, &workspace_key).await;
-    owner.call("open_workspace", json!({})).await;
+    // Keep this ORIGINAL connection; no second open_workspace request is made.
     let pre_send: i64 =
         sqlx::query_scalar("SELECT count(*) FROM advisory_dispatch WHERE workspace_id=$1")
             .bind(workspace)
@@ -422,6 +434,8 @@ async fn one_shot_owner_attested_s02_matrix() {
             .await
             .unwrap();
     assert_eq!(pre_send, 0);
+    *live.lock().unwrap() = Some(live_provider);
+    enabled.store(true, Ordering::SeqCst);
     exclusive_write(
         &marker_path,
         format!("call_id={CALL_ID}\nrequest_sha256={wire_digest}\n").as_bytes(),
@@ -451,7 +465,7 @@ async fn one_shot_owner_attested_s02_matrix() {
         advised["opportunity_id"], advised["state"], audit.2, audit.3, audit.4, audit.5
     );
     owner.finish().await;
-    live_server.abort();
+    preflight_server.abort();
 }
 
 #[test]

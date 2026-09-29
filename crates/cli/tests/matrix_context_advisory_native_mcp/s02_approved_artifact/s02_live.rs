@@ -6,18 +6,22 @@ use std::{
     io::{BufRead, Write},
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tect_application::{
-    DenyMatrixBudget, MatrixProviderObservation, SignedMatrixBudgetPreflight, StoredMatrixDispatch,
+    MatrixProviderObservation, SignedMatrixBudgetPreflight, StoredMatrixDispatch,
 };
 use tect_host::jev_matrix_advice::native_provider::{
     JevNativeMatrixConfig, JevNativeMatrixProvider, MAX_NATIVE_MATRIX_RESPONSE_BYTES,
 };
 use tect_host::jev_matrix_advice::native_wire::NATIVE_MATRIX_WIRE_VERSION;
 
-const CALL_ID: &str = "tectd-jev-matrix-s02-mvp-2026-09-29-1";
+// -1 was confirmed but consumed by a harness reconnect conflict before dispatch.
+const CALL_ID: &str = "tectd-jev-matrix-s02-mvp-2026-09-29-2";
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 const PROFILE_ENV: &str = "JEV_MATRIX_PROFILE_ID";
 const MODEL: &str = "jev-1.13.0";
@@ -55,6 +59,7 @@ fn native_provider(profile: &str, credential: String) -> JevNativeMatrixProvider
 struct CaptureProvider {
     inner: JevNativeMatrixProvider,
     body: Arc<Mutex<Option<Vec<u8>>>>,
+    live: Arc<Mutex<Option<Arc<ReviewedProvider>>>>,
 }
 #[async_trait]
 impl MatrixAdviceProvider for CaptureProvider {
@@ -62,16 +67,65 @@ impl MatrixAdviceProvider for CaptureProvider {
         self.inner.identity()
     }
     fn prepare(&self, request: &MatrixProviderRequest) -> Result<PreparedMatrixAdviceAttempt> {
+        if let Some(live) = self.live.lock().unwrap().clone() {
+            return live.prepare(request);
+        }
         let prepared = self.inner.prepare(request)?;
         *self.body.lock().unwrap() = Some(prepared.body().to_vec());
         Ok(prepared)
     }
+    fn parse_sealed_response(
+        &self,
+        request: &MatrixProviderRequest,
+        saved: &StoredMatrixDispatch,
+    ) -> Result<MatrixProviderResponse> {
+        self.live
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(tect_domain::Error::Forbidden)?
+            .parse_sealed_response(request, saved)
+    }
+    async fn observe_prepared(
+        &self,
+        prepared: PreparedMatrixAdviceAttempt,
+        permit: MatrixStartedDispatchPermit,
+    ) -> Result<MatrixProviderObservation> {
+        let live = self
+            .live
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(tect_domain::Error::Forbidden)?;
+        live.observe_prepared(prepared, permit).await
+    }
     async fn attempt_prepared(
         &self,
-        _: PreparedMatrixAdviceAttempt,
-        _: MatrixStartedDispatchPermit,
+        prepared: PreparedMatrixAdviceAttempt,
+        permit: MatrixStartedDispatchPermit,
     ) -> Result<MatrixProviderResponse> {
-        panic!("preflight must never receive a dispatch permit")
+        let live = self
+            .live
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(tect_domain::Error::Forbidden)?;
+        live.attempt_prepared(prepared, permit).await
+    }
+}
+
+struct SwitchedBudget(Arc<AtomicBool>);
+#[async_trait]
+impl MatrixBudgetPolicy for SwitchedBudget {
+    async fn authorize(
+        &self,
+        request: &MatrixBudgetRequest,
+        policy: &AdvisoryBudgetPolicy,
+    ) -> Result<Option<MatrixBudgetAuthorization>> {
+        if !self.0.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
+        SignedMatrixBudgetPreflight.authorize(request, policy).await
     }
 }
 
