@@ -209,16 +209,115 @@ pub(super) async fn require_v2_matrix_dispatch_payload(
         "authority_schema": authority_schema,
         "requirements_semantic_digest": semantic,
     });
-    if body.pointer("/state/binding/verification_digest") != Some(&serde_json::json!(digest))
-        || body.pointer("/state/binding/context") != Some(&context)
-        || body.pointer("/state/binding/evaluation_digest")
-            != Some(&serde_json::json!(input.material_digest))
-        || body.pointer("/state/contract")
-            != Some(&serde_json::json!(
-                "tect.context-matrix-verified-evaluation/1"
-            ))
-    {
+    if !matches_verified_matrix_payload(input, &body, digest, &context) {
         return Err(Error::InputConflict);
     }
     Ok(())
+}
+
+fn matches_verified_matrix_payload(
+    input: &AdvisoryDispatchAuthorization,
+    body: &serde_json::Value,
+    digest: &str,
+    context: &serde_json::Value,
+) -> bool {
+    if body.pointer("/state/binding/verification_digest") != Some(&serde_json::json!(digest))
+        || body.pointer("/state/binding/context") != Some(context)
+        || body.pointer("/state/binding/evaluation_digest")
+            != Some(&serde_json::json!(input.material_digest))
+    {
+        return false;
+    }
+    match body.pointer("/state/contract").and_then(serde_json::Value::as_str) {
+        Some("tect.context-matrix-verified-evaluation/1") => true,
+        Some("tect.matrix-typesafe-native/1") => {
+            let snapshot = &input.configuration_snapshot;
+            snapshot.get("wire_version") == Some(&serde_json::json!("tect.matrix-typesafe-native/1"))
+                && snapshot.get("destination")
+                    == Some(&serde_json::json!("https://api.typesafe.ai/v1/systemone"))
+                && snapshot.pointer("/provider_profile_ref/id")
+                    == Some(&serde_json::json!(input.provider))
+                && snapshot.pointer("/model_configuration/model")
+                    == Some(&serde_json::json!(input.model))
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+
+    fn input() -> AdvisoryDispatchAuthorization {
+        AdvisoryDispatchAuthorization {
+            dispatch_id: Uuid::new_v4(),
+            opportunity_id: Uuid::new_v4(),
+            predecessor_dispatch_id: None,
+            attempt_number: 1,
+            retry_basis: AdvisoryRetryBasis::Initial,
+            provider: "local-profile".into(),
+            model: "jev-1.13.0".into(),
+            configuration_snapshot: serde_json::json!({
+                "wire_version": "tect.matrix-typesafe-native/1",
+                "destination": "https://api.typesafe.ai/v1/systemone",
+                "provider_profile_ref": {"id": "local-profile"},
+                "model_configuration": {"model": "jev-1.13.0"},
+            }),
+            configuration_digest: "a".repeat(64),
+            material_digest: "b".repeat(64),
+            payload_digest: "c".repeat(64),
+            request_payload: vec![1],
+        }
+    }
+
+    fn payload(contract: &str) -> serde_json::Value {
+        serde_json::json!({"state": {
+            "contract": contract,
+            "binding": {
+                "verification_digest": "verified",
+                "context": {"schema": "tect.context-matrix-verification/1"},
+                "evaluation_digest": "b".repeat(64),
+            }
+        }})
+    }
+
+    #[test]
+    fn native_requires_exact_provider_wire_identity_and_verified_binding() {
+        let context = serde_json::json!({"schema": "tect.context-matrix-verification/1"});
+        let input = input();
+        let body = payload("tect.matrix-typesafe-native/1");
+        assert!(matches_verified_matrix_payload(&input, &body, "verified", &context));
+
+        for (field, wrong) in [
+            ("wire_version", "other-wire"),
+            ("destination", "https://example.invalid/other"),
+        ] {
+            let mut changed = input.clone();
+            changed.configuration_snapshot[field] = serde_json::json!(wrong);
+            assert!(!matches_verified_matrix_payload(&changed, &body, "verified", &context));
+        }
+        let mut changed = input.clone();
+        changed.configuration_snapshot["provider_profile_ref"]["id"] = serde_json::json!("other");
+        assert!(!matches_verified_matrix_payload(&changed, &body, "verified", &context));
+        changed = input.clone();
+        changed.configuration_snapshot["model_configuration"]["model"] = serde_json::json!("other");
+        assert!(!matches_verified_matrix_payload(&changed, &body, "verified", &context));
+        let mut missing = body.clone();
+        missing["state"]["binding"].as_object_mut().unwrap().remove("verification_digest");
+        assert!(!matches_verified_matrix_payload(&input, &missing, "verified", &context));
+        missing = body.clone();
+        missing["state"]["binding"].as_object_mut().unwrap().remove("context");
+        assert!(!matches_verified_matrix_payload(&input, &missing, "verified", &context));
+        missing = body.clone();
+        missing["state"]["binding"].as_object_mut().unwrap().remove("evaluation_digest");
+        assert!(!matches_verified_matrix_payload(&input, &missing, "verified", &context));
+        assert!(!matches_verified_matrix_payload(&input, &payload("other-contract"), "verified", &context));
+    }
+
+    #[test]
+    fn existing_verified_evaluation_contract_remains_accepted() {
+        let context = serde_json::json!({"schema": "tect.context-matrix-verification/1"});
+        let body = payload("tect.context-matrix-verified-evaluation/1");
+        assert!(matches_verified_matrix_payload(&input(), &body, "verified", &context));
+    }
 }

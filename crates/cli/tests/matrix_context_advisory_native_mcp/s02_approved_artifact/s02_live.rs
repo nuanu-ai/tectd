@@ -20,8 +20,8 @@ use tect_host::jev_matrix_advice::native_provider::{
 };
 use tect_host::jev_matrix_advice::native_wire::NATIVE_MATRIX_WIRE_VERSION;
 
-// -1 was confirmed but consumed by a harness reconnect conflict before dispatch.
-const CALL_ID: &str = "tectd-jev-matrix-s02-mvp-2026-09-29-2";
+// -1 and -2 were confirmed but failed before dispatch; both one-use markers remain spent.
+const CALL_ID: &str = "tectd-jev-matrix-s02-mvp-2026-09-29-3";
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 const PROFILE_ENV: &str = "JEV_MATRIX_PROFILE_ID";
 const MODEL: &str = "jev-1.13.0";
