@@ -122,7 +122,7 @@ fn verdict(f: &OutcomeFacts<'_>) -> std::result::Result<bool, &'static str> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn readback(
+pub(crate) async fn readback(
     pool: &PgPool,
     workspace: Uuid,
     opportunity: Uuid,
@@ -132,8 +132,9 @@ pub(super) async fn readback(
     digest: &str,
     manifest_digest: &str,
     profile: &str,
+    call_id: &str,
 ) -> bool {
-    let expected_marker = format!("call_id={}\nrequest_sha256={digest}\n", send::CALL_ID);
+    let expected_marker = format!("call_id={call_id}\nrequest_sha256={digest}\n");
     assert_eq!(fs::read_to_string(marker_path).unwrap(), expected_marker);
     assert_eq!(
         fs::metadata(marker_path).unwrap().permissions().mode() & 0o777,

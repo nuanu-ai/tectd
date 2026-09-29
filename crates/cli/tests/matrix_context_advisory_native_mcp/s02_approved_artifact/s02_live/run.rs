@@ -8,12 +8,28 @@ async fn one_shot_owner_attested_s02_matrix() {
         return;
     }
     let mode = std::env::var("JEV_MATRIX_ONE_SHOT_MODE")
-        .expect("set preflight, synthetic, synthetic_pipeline or send");
+        .expect("set preflight, synthetic, synthetic_pipeline, pipeline_preflight, pipeline_send, pipeline_synthetic_effect, pipeline_synthetic_no_select, pipeline_synthetic_abstain or send");
     assert!(matches!(
         mode.as_str(),
-        "preflight" | "synthetic" | "synthetic_pipeline" | "send"
+        "preflight"
+            | "synthetic"
+            | "synthetic_pipeline"
+            | "pipeline_preflight"
+            | "pipeline_send"
+            | "pipeline_synthetic_effect"
+            | "pipeline_synthetic_no_select"
+            | "pipeline_synthetic_abstain"
+            | "send"
     ));
-    let pipeline_probe = mode == "synthetic_pipeline";
+    let pipeline_probe = matches!(
+        mode.as_str(),
+        "synthetic_pipeline"
+            | "pipeline_preflight"
+            | "pipeline_send"
+            | "pipeline_synthetic_effect"
+            | "pipeline_synthetic_no_select"
+            | "pipeline_synthetic_abstain"
+    );
     let synthetic_mode = mode == "synthetic" || pipeline_probe;
     let profile = std::env::var(PROFILE_ENV).expect("explicit local provider profile required");
     assert_eq!(
@@ -63,7 +79,7 @@ async fn one_shot_owner_attested_s02_matrix() {
         &bootstrap,
         &enrolled,
         &workspace_key,
-        1,
+        if pipeline_probe { 2 } else { 1 },
         24_000,
         2_000,
     )
@@ -409,7 +425,7 @@ async fn one_shot_owner_attested_s02_matrix() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    assert_eq!(policy_calls, 1);
+    assert_eq!(policy_calls, if pipeline_probe { 2 } else { 1 });
     let reservations: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM advisory_budget_reservations WHERE workspace_id=$1",
     )
@@ -557,7 +573,7 @@ async fn one_shot_owner_attested_s02_matrix() {
     assert_eq!(audit.1, wire_digest);
     assert_eq!(audit.5, 1, "one durable signed budget reservation required");
     println!(
-        "s02_send call_id={CALL_ID} workspace={workspace} task={task}@1 opportunity={} state={} dispatches={dispatches} dispatch_state={} send_certainty={} outcome={:?} budget_reservations={}",
+        "s02_{mode}_result call_id={CALL_ID} workspace={workspace} task={task}@1 opportunity={} state={} dispatches={dispatches} dispatch_state={} send_certainty={} outcome={:?} budget_reservations={}",
         advised["opportunity_id"], advised["state"], audit.2, audit.3, audit.4, audit.5
     );
     let owner_read = route(
@@ -831,6 +847,10 @@ async fn one_shot_owner_attested_s02_matrix() {
                     saved: &saved,
                     ready: &ready,
                     source_head: source_head.as_deref().unwrap(),
+                    mode: &mode,
+                    workspace,
+                    enrolled: &enrolled,
+                    verifier_host: &verifier_host,
                 })
                 .await;
                 return;

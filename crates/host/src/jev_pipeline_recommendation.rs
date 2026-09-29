@@ -112,6 +112,18 @@ pub struct ParsedPipelineNativeResponse {
     pub choice_confidence: f64,
     /// Validated provider scores, in canonical manifest order.
     pub scores: Vec<(String, f64)>,
+    /// Validated score uncertainty, in canonical manifest order.
+    pub score_uncertainty: Vec<PipelineNativeScoreUncertainty>,
+    /// Validated choice distribution over eligible IDs and abstention.
+    pub choice_probabilities: BTreeMap<String, f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PipelineNativeScoreUncertainty {
+    pub option_id: String,
+    pub score: f64,
+    pub confidence: f64,
+    pub probabilities: BTreeMap<String, f64>,
 }
 
 #[derive(Serialize)]
@@ -197,7 +209,7 @@ pub fn parse_sealed_native_response(
     Ok(parsed)
 }
 
-pub(crate) fn parse_native_response(
+pub fn parse_native_response(
     bytes: &[u8],
     prepared: &PreparedPipelineNativeRequest,
     maximum_response_bytes: usize,
@@ -249,6 +261,7 @@ pub(crate) fn parse_native_response(
         return Err(Error::InvalidArguments);
     }
     let mut scores = Vec::with_capacity(prepared.eligible_ids.len());
+    let mut score_uncertainty = Vec::with_capacity(prepared.eligible_ids.len());
     for (index, id) in prepared.eligible_ids.iter().enumerate() {
         let key = format!("score_v1_{index}");
         let answer = exact_object(
@@ -259,7 +272,7 @@ pub(crate) fn parse_native_response(
             return Err(Error::InvalidArguments);
         }
         let score = number(answer.get("score").ok_or(Error::InvalidArguments)?, 9.0)?;
-        number(
+        let confidence = number(
             answer.get("confidence").ok_or(Error::InvalidArguments)?,
             1.0,
         )?;
@@ -297,6 +310,12 @@ pub(crate) fn parse_native_response(
             weighted
         };
         scores.push((id.clone(), ranking_score));
+        score_uncertainty.push(PipelineNativeScoreUncertainty {
+            option_id: id.clone(),
+            score,
+            confidence,
+            probabilities,
+        });
     }
     let choice = exact_object(
         answers.get(CHOICE_ID).ok_or(Error::InvalidArguments)?,
@@ -366,6 +385,8 @@ pub(crate) fn parse_native_response(
         selected_probability,
         choice_confidence,
         scores,
+        score_uncertainty,
+        choice_probabilities: probabilities,
     })
 }
 

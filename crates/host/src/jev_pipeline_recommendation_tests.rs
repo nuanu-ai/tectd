@@ -354,6 +354,15 @@ fn eight_way_request_and_fake_provider_response_rank_exact_permutation() {
     assert_eq!((parsed.input_tokens, parsed.output_tokens), (20, 30));
     assert_eq!(parsed.selected_probability, 0.8);
     assert_eq!(parsed.choice_confidence, 0.8);
+    assert_eq!(parsed.score_uncertainty.len(), prepared.eligible_ids.len());
+    for (index, score) in parsed.score_uncertainty.iter().enumerate() {
+        assert_eq!(score.option_id, prepared.eligible_ids[index]);
+        assert_eq!(score.score, (9 - index) as f64);
+        assert_eq!(score.confidence, 0.91);
+        assert_eq!(score.probabilities[&(9 - index).to_string()], 1.0);
+    }
+    assert_eq!(parsed.choice_probabilities[&prepared.eligible_ids[0]], 0.8);
+    assert_eq!(parsed.choice_probabilities[ABSTAIN], 0.2);
     assert_eq!(
         parsed.ranking,
         PipelineRecommendationRanking::Ranked {

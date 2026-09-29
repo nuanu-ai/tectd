@@ -6,11 +6,11 @@ use tect_domain::PipelineRecommendationManifest;
 use tect_host::jev_pipeline_recommendation::JevPipelineSavedResponseParser;
 
 #[path = "s03_live/audit.rs"]
-mod audit;
+pub(crate) mod audit;
 #[path = "s03_live/budget.rs"]
-mod budget;
+pub(crate) mod budget;
 #[path = "s03_live/effect.rs"]
-pub(super) mod effect;
+pub(crate) mod effect;
 #[path = "s03_live/guard.rs"]
 mod guard;
 #[path = "s03_live/runtime.rs"]
@@ -594,6 +594,7 @@ async fn run_fixture(mode: &str, policy_calls: i64) {
         &digest,
         &manifest.digest,
         &profile,
+        send::CALL_ID,
     )
     .await;
     assert!(

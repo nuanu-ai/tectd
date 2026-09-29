@@ -3,18 +3,18 @@ use tect_domain::AdvisoryBudgetPolicy;
 
 type MatrixBudgetRow = (Uuid, i64, i64, i64, i64, bool, bool, String, String, String);
 
-pub(super) struct Headroom {
-    pub(super) calls: i64,
-    pub(super) request_bytes: i64,
-    pub(super) input_tokens: i64,
-    pub(super) output_tokens: i64,
-    pub(super) elapsed_ms: i64,
+pub(crate) struct Headroom {
+    pub(crate) calls: i64,
+    pub(crate) request_bytes: i64,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) elapsed_ms: i64,
 }
 
 /// Read the same immutable policy and policy-wide ledger used by the dispatch
 /// guard. The synthetic Matrix attempt must be the sole prior reservation.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn remaining_for_pipeline(
+pub(crate) async fn remaining_for_pipeline(
     pool: &PgPool,
     store: &PgStore,
     enrolled: &tect_postgres::admin::Enrollment,

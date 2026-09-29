@@ -1,5 +1,25 @@
 # One-shot real JEV Pipeline S03 harness
 
+The separate ignored S02 Owner-case fixture now supports
+`JEV_MATRIX_ONE_SHOT_MODE=pipeline_preflight` and `pipeline_send` for a bounded
+Active JEV MVP test case, plus no-network `pipeline_synthetic_effect`,
+`pipeline_synthetic_no_select`, and `pipeline_synthetic_abstain` paths. It uses a
+clean Git clone of the exact dev HEAD, a V2 approved artifact and verified
+`pipeline-evidence` binding, selected Matrix C0 Work, and both applicable
+SCOPE/PROTECT cards. The Matrix response remains explicitly synthetic in this
+fixture; it is not a replay of an installed Work session or real S02 advice.
+The Pipeline request uses the normal signed, audited application route with
+the original capture session. `pipeline_preflight` needs a fresh disposable
+PostgreSQL 18 database and owner-only `JEV_PIPELINE_ONE_SHOT_ARTIFACT_DIR`, but
+no API key; it prints exact request bytes/SHA and checks zero Pipeline sends,
+one remaining signed call and absent one-use marker. `pipeline_send` requires
+the same guards on a *second* pristine database, process-only
+`TYPESAFE_API_KEY`, exact `SEND JEV PIPELINE <sha>` and, only after durable
+Ranked readback, exact `SELECT JEV PIPELINE <manifest-digest> <top-option-id>`.
+No SELECT leaves disposition, Slice and run absent. The owner attestation has
+a fixed expiry of 2026-09-30 11:48:37 UTC; the harness never refreshes it.
+This new path has not sent a real Pipeline request or established S03 acceptance.
+
 `s03_live.rs` is an ignored, test-only extension of the public S03 fixture. It
 creates a synthetic source, Program, Scope, task, Matrix context, independent
 Verifier, matched planning effect, and agent-authored compatibility policy. It

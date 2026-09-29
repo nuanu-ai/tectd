@@ -23,7 +23,7 @@ use tokio::{
 use url::Url;
 
 #[path = "s03_v4/s03_live.rs"]
-mod s03_live;
+pub(crate) mod s03_live;
 #[path = "s05_public_v2.rs"]
 mod s05_public_v2;
 
@@ -310,7 +310,7 @@ fn save_request(planning: &Value, selection: Value) -> Value {
     request
 }
 
-fn native_response(body: &[u8], eligible: &[String]) -> Vec<u8> {
+pub(crate) fn native_response(body: &[u8], eligible: &[String]) -> Vec<u8> {
     let request: Value = serde_json::from_slice(body).unwrap();
     let mut answers = serde_json::Map::new();
     for (index, _) in eligible.iter().enumerate() {
