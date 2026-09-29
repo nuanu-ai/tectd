@@ -290,6 +290,111 @@ pub async fn restore_graphs(pool: &PgPool, graphs: &[RestoreGraph]) -> Result<()
     tx.commit().await.map_err(storage_error)
 }
 
+/// Install only the pinned native storage needed to import graphs. The copied
+/// capability identity is deliberately left untouched for managed recovery.
+pub async fn install_staged_restore_pgrdf(pool: &PgPool, runtime_role: &str) -> Result<()> {
+    let role = quote_identifier(runtime_role)?;
+    let mut tx = pool.begin().await.map_err(storage_error)?;
+    super::validate_runtime_role(pool, runtime_role).await?;
+    let (stored_system, stored_oid, actual_system, actual_oid): (
+        Option<String>,
+        Option<i64>,
+        String,
+        i64,
+    ) = sqlx::query_as(
+        "SELECT c.qualified_system_identifier,c.qualified_database_oid::bigint,
+                s.system_identifier::text,d.oid::bigint
+         FROM durable_knowledge_capability c
+         CROSS JOIN pg_catalog.pg_control_system() s
+         JOIN pg_catalog.pg_database d ON d.datname=pg_catalog.current_database()
+         WHERE c.singleton",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(storage_error)?;
+    if stored_system.is_none()
+        || stored_oid.is_none()
+        || (stored_system.as_deref() == Some(actual_system.as_str())
+            && stored_oid == Some(actual_oid))
+    {
+        return Err(Error::InvalidConfiguration);
+    }
+    sqlx::query("CREATE EXTENSION pgrdf VERSION '0.6.34'")
+        .execute(&mut *tx)
+        .await
+        .map_err(storage_error)?;
+    for statement in [
+        format!("REVOKE ALL PRIVILEGES ON SCHEMA pgrdf FROM PUBLIC,{role}"),
+        format!("REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA pgrdf FROM PUBLIC,{role}"),
+        format!("REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA pgrdf FROM PUBLIC,{role}"),
+        format!("REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA pgrdf FROM PUBLIC,{role}"),
+        format!("REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA pgrdf FROM PUBLIC,{role}"),
+    ] {
+        sqlx::query(&statement)
+            .execute(&mut *tx)
+            .await
+            .map_err(storage_error)?;
+    }
+    let (version, owner, schema, native_version, build_id): (
+        String,
+        String,
+        String,
+        String,
+        String,
+    ) = sqlx::query_as(
+        "SELECT e.extversion,r.rolname,n.nspname,pgrdf.version(),pgrdf.build_id()
+             FROM pg_catalog.pg_extension e
+             JOIN pg_catalog.pg_roles r ON r.oid=e.extowner
+             JOIN pg_catalog.pg_namespace n ON n.oid=e.extnamespace
+             WHERE e.extname='pgrdf'",
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(storage_error)?;
+    let current: String = sqlx::query_scalar("SELECT CURRENT_USER")
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(storage_error)?;
+    if version != "0.6.34"
+        || native_version != version
+        || build_id != "v0.6.34"
+        || owner != current
+        || schema != "pgrdf"
+    {
+        return Err(Error::InvalidConfiguration);
+    }
+    tx.commit().await.map_err(storage_error)
+}
+
+/// A staged copy must remain fenced even after every native graph is verified.
+pub async fn validate_staged_restore(pool: &PgPool, runtime_role: &str) -> Result<()> {
+    super::validate_runtime_role(pool, runtime_role).await?;
+    let (ready, runtime_connect, public_connect, native_access): (bool, bool, bool, bool) =
+        sqlx::query_as(
+            "SELECT public.tect_dk_database_identity_ready(),
+             pg_catalog.has_database_privilege($1,pg_catalog.current_database(),'CONNECT'),
+             EXISTS(SELECT 1 FROM pg_catalog.pg_database d CROSS JOIN LATERAL
+               pg_catalog.aclexplode(COALESCE(d.datacl,pg_catalog.acldefault('d',d.datdba))) a
+               WHERE d.datname=pg_catalog.current_database() AND a.grantee=0
+                 AND a.privilege_type='CONNECT'),
+             pg_catalog.has_schema_privilege($1,'pgrdf','USAGE') OR EXISTS(
+               SELECT 1 FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace
+               WHERE n.nspname='pgrdf' AND pg_catalog.has_function_privilege($1,p.oid,'EXECUTE'))
+             OR EXISTS(SELECT 1 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace
+               WHERE n.nspname='pgrdf' AND CASE WHEN c.relkind='S'
+                 THEN pg_catalog.has_sequence_privilege($1,c.oid,'USAGE')
+                 ELSE pg_catalog.has_table_privilege($1,c.oid,'SELECT') END)",
+        )
+        .bind(runtime_role)
+        .fetch_one(pool)
+        .await
+        .map_err(storage_error)?;
+    if ready || runtime_connect || public_connect || native_access {
+        return Err(Error::InvalidConfiguration);
+    }
+    Ok(())
+}
+
 pub async fn grant_database_connect(
     pool: &PgPool,
     database: &str,
