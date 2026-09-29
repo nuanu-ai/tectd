@@ -292,10 +292,11 @@ async fn run_fixture(mode: &str, policy_calls: i64) {
     let prepared_service =
         pipeline_service(&runtime_url, keys.clone(), task, &matrix, no_send_provider).await;
     let prepare_server = start_server(&pipeline_socket, prepared_service).await;
+    let pipeline_native = Uuid::new_v4().to_string();
     let mut owner = Mcp::start(
         &pipeline_socket,
         &owner_host,
-        &Uuid::new_v4().to_string(),
+        &pipeline_native,
         &workspace_key,
     )
     .await;
@@ -318,6 +319,17 @@ async fn run_fixture(mode: &str, policy_calls: i64) {
     })).await;
     assert_eq!(prepared["state"], "prepared", "{prepared}");
     let opportunity = id(&prepared["opportunity_id"]);
+    let captured_native: String = sqlx::query_scalar(
+        "SELECT s.native_session_id FROM advisory_opportunity o \
+         JOIN agent_sessions s ON s.tenant_id=o.tenant_id AND s.id=o.session_id \
+         WHERE o.workspace_id=$1 AND o.id=$2",
+    )
+    .bind(workspace)
+    .bind(opportunity)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(captured_native, pipeline_native);
     let row: (Value, Option<Uuid>, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
         "SELECT manifest_payload,frozen_snapshot_id,requirements_semantic_digest,authority_schema,\
          operating_verification_digest FROM pipeline_advice_contexts WHERE workspace_id=$1 AND opportunity_id=$2",
@@ -435,6 +447,36 @@ async fn run_fixture(mode: &str, policy_calls: i64) {
         headroom.output_tokens,
         headroom.elapsed_ms,
     );
+    if mode == "preflight" {
+        let mut resumed = Mcp::start(
+            &pipeline_socket,
+            &owner_host,
+            &pipeline_native,
+            &workspace_key,
+        )
+        .await;
+        resumed.call("open_workspace", json!({})).await;
+        let resumed_session: Uuid = sqlx::query_scalar(
+            "SELECT id FROM agent_sessions WHERE tenant_id=$1 AND workspace_id=$2 \
+             AND native_session_id=$3 AND revoked=false",
+        )
+        .bind(enrolled.tenant_id)
+        .bind(workspace)
+        .bind(&pipeline_native)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let captured_session: Uuid = sqlx::query_scalar(
+            "SELECT session_id FROM advisory_opportunity WHERE workspace_id=$1 AND id=$2",
+        )
+        .bind(workspace)
+        .bind(opportunity)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(resumed_session, captured_session);
+        resumed.finish().await;
+    }
     owner.finish().await;
     prepare_server.abort();
     if mode == "preflight" {
@@ -504,17 +546,33 @@ async fn run_fixture(mode: &str, policy_calls: i64) {
         final_headroom.input_tokens > 0 && final_headroom.output_tokens > 0,
         "signed token headroom is exhausted; marker not created"
     );
-    send::mark_one_use(&marker_path, &digest);
     let live_socket = root.join("pipeline-live.sock");
     let live_server = start_server(&live_socket, service).await;
-    let mut owner = Mcp::start(
-        &live_socket,
-        &owner_host,
-        &Uuid::new_v4().to_string(),
-        &workspace_key,
-    )
-    .await;
+    let mut owner = Mcp::start(&live_socket, &owner_host, &pipeline_native, &workspace_key).await;
     owner.call("open_workspace", json!({})).await;
+    let reopened_session: Uuid = sqlx::query_scalar(
+        "SELECT id FROM agent_sessions WHERE tenant_id=$1 AND workspace_id=$2 \
+         AND native_session_id=$3 AND revoked=false",
+    )
+    .bind(enrolled.tenant_id)
+    .bind(workspace)
+    .bind(&pipeline_native)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let captured_session: Uuid = sqlx::query_scalar(
+        "SELECT session_id FROM advisory_opportunity WHERE workspace_id=$1 AND id=$2",
+    )
+    .bind(workspace)
+    .bind(opportunity)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        reopened_session, captured_session,
+        "send must use capture session"
+    );
+    send::mark_one_use(&marker_path, &digest);
     let outcome = route(
         &mut owner,
         "command",

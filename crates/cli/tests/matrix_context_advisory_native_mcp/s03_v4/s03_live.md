@@ -68,8 +68,10 @@ directory outside the checkout, and a nonempty process-level
 creates the exact request JSON with exclusive owner-only permissions and
 fsync, and prompts for `SEND JEV PIPELINE <printed-sha256>` followed by a
 newline. Only then does it exclusively create and fsync the fixed one-use
-marker `tectd-jev-pipeline-s03-effect-2026-09-29-5.used`, before dispatch. This is a
-fresh call ID; the prior `-4` marker is consumed and is never reused. An absent
+marker `tectd-jev-pipeline-s03-effect-2026-09-29-6.used`, before dispatch. This is a
+fresh call ID; the prior `-4` and `-5` markers are consumed and are never reused.
+The isolated `-5` attempt was refused for a native-session mismatch before
+provider dispatch; its durable marker remains consumed despite zero sends. An absent
 or mismatched line does not mark or send. A process failure after marking
 does not authorize a retry; retain the marker, request JSON and database.
 
