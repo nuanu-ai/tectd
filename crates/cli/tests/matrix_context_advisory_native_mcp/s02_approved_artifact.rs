@@ -734,47 +734,7 @@ async fn public_s02_approved_artifact_to_independently_verified_planning_effect(
         }),
     )
     .await;
-    let scope = route(
-        &mut owner,
-        "command",
-        "scope.open",
-        json!({
-            "request_id":Uuid::new_v4(),"candidate_set_id":source["candidate_set"]["id"],
-            "candidate_set_revision":source["candidate_set"]["revision"],
-            "candidate_snapshot_id":source["snapshot"]["id"],
-            "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]
-        }),
-    )
-    .await;
-    let selection = json!({
-        "task_id":task,"task_revision":1,"disposition_id":chosen["disposition_id"],
-        "selected_choice_id":"a","expected_input_digest":recorded["input_digest"],
-        "expected_choice_set_digest":recorded["choice_set_digest"],
-        "expected_verification_digest":verified["verification_digest"],
-        "mapped_draft_node_indices":[0]
-    });
-    let save = planning_save(&scope["created"]["planning"], selection);
-    let caller_request = save["request_id"].clone();
-    let saved = route(&mut owner, "command", "slice.candidates.save", save).await;
-    let effect = route(
-        &mut independent,
-        "query",
-        "engineering.matrix.planning_effect.get",
-        json!({
-            "candidate_set_id":saved["candidate_set"]["id"],"caller_request_id":caller_request
-        }),
-    )
-    .await;
-    assert_eq!(effect["material"]["selected_choice"]["candidate_id"], "a");
-    let attested = route(&mut independent, "command", "engineering.matrix.planning_effect.verify", json!({
-        "request_id":Uuid::new_v4(),"candidate_set_id":saved["candidate_set"]["id"],
-        "caller_request_id":caller_request,"expected_result_revision":effect["material"]["result_revision"],
-        "expected_effect_digest":effect["effect_digest"],"verdict":"matches",
-        "summary":"Exact selected synthetic Work remains mapped."
-    })).await;
-    assert_eq!(attested["verdict"], "matches");
-    let ready = support::review(&mut owner, &saved).await;
-    assert_eq!(ready["candidate_set"]["status"], "ready");
+    assert_eq!(chosen["decision"]["selected_choice_id"], "a");
     // Direct synthetic setup changes a SECOND already sealed fixture dispatch
     // into a native trial dispatch. This tests the V2 store/public read contract
     // without enabling the production host trial composer or contacting JEV.
@@ -1146,6 +1106,29 @@ async fn public_s02_approved_artifact_to_independently_verified_planning_effect(
             1,
         )
     );
+    let cards_before_save = route(
+        &mut native_verifier,
+        "query",
+        "scope.advisory.card",
+        json!({"task_id":task,"expected_task_revision":1}),
+    )
+    .await;
+    let card_ids: Vec<&str> = cards_before_save["mandatory_cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|card| card["id"].as_str().unwrap())
+        .collect();
+    assert!(card_ids.contains(&"EM02-SCOPE@0.1"));
+    let links_before: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM matrix_planning_selection_links WHERE workspace_id=$1 AND task_id=$2",
+    )
+    .bind(workspace)
+    .bind(task)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(links_before, 0, "Ranked advice must not auto-apply");
     let native_disposition = route(
         &mut native_owner,
         "command",
@@ -1162,6 +1145,87 @@ async fn public_s02_approved_artifact_to_independently_verified_planning_effect(
     )
     .await;
     assert_eq!(native_disposition["decision"]["selected_choice_id"], "a");
+    let disposition_request_id = native_disposition["request_id"].clone();
+    // Disposition readback is actor-scoped; the distinct Verifier observes
+    // the same advice above and the independently bound planning effect below.
+    let owner_disposition = route(
+        &mut native_owner,
+        "query",
+        "engineering.matrix.disposition.get",
+        json!({"task_id":task,"request_id":disposition_request_id}),
+    )
+    .await;
+    assert_eq!(
+        owner_disposition["disposition_id"],
+        native_disposition["disposition_id"]
+    );
+    assert_eq!(
+        owner_disposition["advice_digest"],
+        native_owner_read["current_advice"]["advice_digest"]
+    );
+    let scope = route(
+        &mut owner,
+        "command",
+        "scope.open",
+        json!({
+            "request_id":Uuid::new_v4(),"candidate_set_id":source["candidate_set"]["id"],
+            "candidate_set_revision":source["candidate_set"]["revision"],
+            "candidate_snapshot_id":source["snapshot"]["id"],
+            "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]
+        }),
+    )
+    .await;
+    let selection = json!({
+        "task_id":task,"task_revision":1,"disposition_id":native_disposition["disposition_id"],
+        "selected_choice_id":"a","expected_input_digest":recorded["input_digest"],
+        "expected_choice_set_digest":recorded["choice_set_digest"],
+        "expected_verification_digest":verified["verification_digest"],
+        "mapped_draft_node_indices":[0]
+    });
+    let save = planning_save(&scope["created"]["planning"], selection);
+    let caller_request = save["request_id"].clone();
+    let saved = route(&mut owner, "command", "slice.candidates.save", save).await;
+    let effect = route(
+        &mut independent,
+        "query",
+        "engineering.matrix.planning_effect.get",
+        json!({
+            "candidate_set_id":saved["candidate_set"]["id"],"caller_request_id":caller_request
+        }),
+    )
+    .await;
+    assert_eq!(effect["material"]["selected_choice"]["candidate_id"], "a");
+    assert_eq!(
+        effect["material"]["catalogue_version"],
+        cards_before_save["catalogue_version"]
+    );
+    assert_eq!(effect["material"]["task_id"], json!(task));
+    assert_eq!(effect["material"]["task_revision"], 1);
+    assert_eq!(
+        effect["material"]["verification_digest"],
+        verified["verification_digest"]
+    );
+    assert_eq!(
+        effect["material"]["disposition_id"],
+        native_disposition["disposition_id"]
+    );
+    let attested = route(&mut independent, "command", "engineering.matrix.planning_effect.verify", json!({
+        "request_id":Uuid::new_v4(),"candidate_set_id":saved["candidate_set"]["id"],
+        "caller_request_id":caller_request,"expected_result_revision":effect["material"]["result_revision"],
+        "expected_effect_digest":effect["effect_digest"],"verdict":"matches",
+        "summary":"Exact selected synthetic native-trial Work remains mapped."
+    })).await;
+    assert_eq!(attested["verdict"], "matches");
+    let cards_after_save = route(
+        &mut native_verifier,
+        "query",
+        "scope.advisory.card",
+        json!({"task_id":task,"expected_task_revision":1}),
+    )
+    .await;
+    assert_eq!(cards_after_save, cards_before_save);
+    let ready = support::review(&mut owner, &saved).await;
+    assert_eq!(ready["candidate_set"]["status"], "ready");
     let overlap_key = format!("native-trial-overlap-{}", Uuid::new_v4());
     let overlap = advice(&mut native_owner, task, &overlap_key).await;
     assert_eq!(overlap["state"], "advised", "{overlap}");
@@ -1181,6 +1245,24 @@ async fn public_s02_approved_artifact_to_independently_verified_planning_effect(
             .get("trial_uncertainty")
             .is_none()
     );
+    let abstained_dispositions: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM advisory_matrix_disposition WHERE workspace_id=$1 AND opportunity_id=$2",
+    )
+    .bind(workspace)
+    .bind(id(&overlap["opportunity_id"]))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(abstained_dispositions, 0);
+    let links_after: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM matrix_planning_selection_links WHERE workspace_id=$1 AND task_id=$2",
+    )
+    .bind(workspace)
+    .bind(task)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(links_after, 1, "abstention must not add a caller effect");
     assert_eq!(native_calls.load(Ordering::SeqCst), 2);
     native_verifier.finish().await;
     native_owner.finish().await;

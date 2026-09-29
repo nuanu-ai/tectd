@@ -297,6 +297,22 @@ async fn one_shot_owner_attested_s02_matrix() {
     })).await;
     assert_eq!(validated["schema"], "tect.context-matrix-verification/1");
     assert_eq!(validated["facts"].as_array().unwrap().len(), facts.len());
+    let cards = route(
+        &mut independent,
+        "query",
+        "scope.advisory.card",
+        json!({
+            "task_id":task,"expected_task_revision":1
+        }),
+    )
+    .await;
+    let card_ids: Vec<&str> = cards["mandatory_cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|card| card["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(card_ids, ["EM02-SCOPE@0.1", "EM02-PROTECT@0.1"]);
     for binding in validated["facts"].as_array().unwrap() {
         assert_eq!(binding["content_digest"], digest);
     }
