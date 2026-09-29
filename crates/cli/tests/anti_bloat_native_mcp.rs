@@ -723,6 +723,135 @@ async fn native_anti_bloat_public_mcp_is_sealed_once_and_default_disabled() {
             scope_fixture, 1,
             "admin-only selected-binding fixture, not Scope HTTP proof"
         );
+        if expected == "ranked" {
+            // Synthetic loopback response exercises the same-session caller effect; it is
+            // not evidence that the real JEV provider selected this finding.
+            let top = result["state"]["ranked_ids"][0].as_str().unwrap();
+            let finding = prepared["findings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|finding| finding["id"] == top && finding["rankable"] == true)
+                .unwrap();
+            let before: Value = sqlx::query_scalar(
+                "SELECT payload FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision=$2",
+            )
+            .bind(candidate)
+            .bind(revision)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            let removed = before["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["id"] == finding["candidate_id"])
+                .unwrap();
+            let applied = call(
+                &pool,
+                &mut client,
+                "command",
+                "scope.anti_bloat.apply",
+                json!({"review_id":review,"finding_id":top,"disposition":"narrow",
+                    "delta":{"candidate_set_id":candidate,"expected_revision":revision,
+                        "idempotency_key":format!("synthetic-s04-{review}"),"operations":[
+                            {"operation":"candidate.remove","candidate_id":finding["candidate_id"],
+                             "expected_revision":removed["revision"]}]}}),
+            )
+            .await;
+            assert_eq!(applied["from_revision"], revision);
+            assert_eq!(applied["to_revision"], revision + 1);
+            let after: Value = sqlx::query_scalar(
+                "SELECT payload FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision=$2",
+            )
+            .bind(candidate)
+            .bind(revision + 1)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            for field in ["goals", "evidence", "blockers", "protected_changes"] {
+                assert_eq!(after[field], before[field], "preserved {field}");
+            }
+            let before_candidates = before["candidates"].as_array().unwrap();
+            let after_candidates = after["candidates"].as_array().unwrap();
+            assert_eq!(after_candidates.len() + 1, before_candidates.len());
+            assert!(
+                !after_candidates
+                    .iter()
+                    .any(|item| item["id"] == finding["candidate_id"])
+            );
+            for item in before_candidates
+                .iter()
+                .filter(|item| item["id"] != finding["candidate_id"])
+            {
+                assert!(
+                    after_candidates.contains(item),
+                    "retained candidate changed"
+                );
+            }
+            let verifier =
+                admin::prepare_verifier_enrollment(&pool, enrollment.tenant_id, workspace)
+                    .await
+                    .unwrap()
+                    .try_commit()
+                    .await
+                    .unwrap();
+            assert_ne!(verifier.principal_id, actor);
+            let verifier_path = root.join("verifier.json");
+            host_file(&verifier_path, &verifier.auth);
+            let mut verifier_mcp = Mcp::start(
+                &native_socket,
+                &verifier_path,
+                &Uuid::new_v4().to_string(),
+                &key,
+            )
+            .await;
+            call(
+                &pool,
+                &mut verifier_mcp,
+                "command",
+                "workspace.open",
+                json!({}),
+            )
+            .await;
+            let preservation = call(
+                &pool,
+                &mut verifier_mcp,
+                "query",
+                "scope.anti_bloat.preservation.get",
+                json!({"review_id":review}),
+            )
+            .await;
+            assert_eq!(preservation["verdict"], "pass", "{preservation}");
+            assert_eq!(
+                preservation["material"]["after_saved"]["goals"],
+                before["goals"]
+            );
+            let attestation = call(
+                &pool,
+                &mut verifier_mcp,
+                "command",
+                "scope.anti_bloat.preservation.verify",
+                json!({"request_id":Uuid::new_v4(),"review_id":review,
+                    "expected_evidence_digest":preservation["evidence_digest"]}),
+            )
+            .await;
+            assert_eq!(attestation["verdict"], "pass", "{attestation}");
+            assert_eq!(
+                attestation["verifier_principal_id"],
+                verifier.principal_id.to_string()
+            );
+            let persisted: (i64, i64) = sqlx::query_as(
+                "SELECT (SELECT count(*) FROM scope_anti_bloat_caller_links WHERE review_id=$1), \
+                 (SELECT count(*) FROM scope_anti_bloat_preservation_attestations WHERE review_id=$1)",
+            )
+            .bind(review)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(persisted, (1, 1));
+            verifier_mcp.finish().await;
+        }
         client.finish().await;
         process::stop(&mut daemon).await;
     }
