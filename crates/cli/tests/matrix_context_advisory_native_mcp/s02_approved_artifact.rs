@@ -2,7 +2,9 @@
 //! The adviser and owner response are synthetic; no installed runtime is used.
 use super::*;
 use recovery_support::public_call;
-use tect_domain::RequiredMatrixFact;
+use tect_application::{FixedPipelineCompatibilityPolicy, PipelineProviderIdentity};
+use tect_domain::{PipelineKind, RequiredMatrixFact};
+use tect_host::jev_pipeline_recommendation::{JevPipelineSavedResponseParser, WIRE_VERSION};
 use tect_postgres::{ApprovedMatrixEvidenceArtifact, PgMatrixEvidenceValidator};
 use url::Url;
 
@@ -429,13 +431,13 @@ async fn public_s02_approved_artifact_to_independently_verified_planning_effect(
         .unwrap();
     let service = Arc::new(
         WorkspaceService::new(
-            Arc::new(store.with_budget_owner_keys(owner_keys)),
+            Arc::new(store.with_budget_owner_keys(owner_keys.clone())),
             Arc::new(tect_host::GitSourceInspector),
             Arc::new(tect_host::LocalSetupFiles),
         )
         .with_matrix_evidence_validator(Arc::new(PgMatrixEvidenceValidator::new(
             runtime_pool,
-            approval,
+            approval.clone(),
         )))
         .with_matrix_advisory_adapters(
             Arc::new(Provider(calls.clone())),
@@ -650,7 +652,119 @@ async fn public_s02_approved_artifact_to_independently_verified_planning_effect(
         "summary":"Exact selected synthetic Work remains mapped."
     })).await;
     assert_eq!(attested["verdict"], "matches");
+    let ready = support::review(&mut owner, &saved).await;
+    assert_eq!(ready["candidate_set"]["status"], "ready");
     independent.finish().await;
     owner.finish().await;
     server.abort();
+
+    // A separate branch-built host prepares advice from the same verified V2
+    // Work. The saved-response adapter has no transport and is never run.
+    let pipeline_socket = root.join("matrix-approved-pipeline.sock");
+    let runtime_pool = PgPool::connect_with(PgConnectOptions::from_str(&runtime_url).unwrap())
+        .await
+        .unwrap();
+    let no_send_provider = JevPipelineSavedResponseParser::new(PipelineProviderIdentity {
+        provider: PROFILE.into(),
+        model: MODEL.into(),
+        destination: "https://synthetic.invalid/no-send".into(),
+        wire_version: WIRE_VERSION.into(),
+    })
+    .unwrap();
+    let pipeline_service = Arc::new(
+        WorkspaceService::new(
+            Arc::new(
+                PgStore::connect(&runtime_url, 4)
+                    .await
+                    .unwrap()
+                    .with_budget_owner_keys(owner_keys),
+            ),
+            Arc::new(tect_host::GitSourceInspector),
+            Arc::new(tect_host::LocalSetupFiles),
+        )
+        .with_matrix_evidence_validator(Arc::new(PgMatrixEvidenceValidator::new(
+            runtime_pool,
+            approval,
+        )))
+        .with_pipeline_recommendation_definitions(Arc::new(
+            tect_host::StaticPipelineRecommendationDefinitions,
+        ))
+        .with_pipeline_compatibility_policy(Arc::new(FixedPipelineCompatibilityPolicy(
+            super::s03_v4::policy_for_choice(
+                task,
+                &parsed,
+                "a",
+                &[
+                    PipelineKind::DebugRootCause,
+                    PipelineKind::DeepBrainstorming,
+                ],
+            ),
+        )))
+        .with_pipeline_recommendation_provider(Arc::new(no_send_provider)),
+    );
+    let listener = UnixListener::bind(&pipeline_socket).unwrap();
+    std::fs::set_permissions(&pipeline_socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let pipeline_server = tokio::spawn(tect_host::serve(listener, pipeline_service));
+    let mut owner = Mcp::start(
+        &pipeline_socket,
+        &owner_host,
+        &Uuid::new_v4().to_string(),
+        &workspace_key,
+    )
+    .await;
+    owner.call("open_workspace", json!({})).await;
+    let work = &saved["draft"]["nodes"][0];
+    let prepared = route(
+        &mut owner,
+        "command",
+        "pipeline.recommendation.prepare",
+        json!({
+            "candidate_set_id":saved["candidate_set"]["id"],
+            "expected_candidate_set_revision":ready["candidate_set"]["revision"],
+            "work_node_id":work["id"],"expected_work_node_revision":work["revision"],
+            "request_key":format!("approved-pipeline-{}",Uuid::new_v4())
+        }),
+    )
+    .await;
+    assert_eq!(prepared["state"], "prepared", "{prepared}");
+    let opportunity_id = id(&prepared["opportunity_id"]);
+    let manifest: Value = sqlx::query_scalar(
+        "SELECT manifest_payload FROM pipeline_advice_contexts WHERE workspace_id=$1 AND opportunity_id=$2",
+    )
+    .bind(workspace)
+    .bind(opportunity_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    // Public verification receipts intentionally omit evidence_ref; read the
+    // independently sealed, exact task/revision/digest bindings for comparison.
+    let verified_refs: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT b.evidence_ref FROM matrix_verification_bindings b \
+         JOIN matrix_verifications v ON (v.tenant_id,v.workspace_id,v.id)= \
+             (b.tenant_id,b.workspace_id,b.verification_id) \
+         WHERE v.workspace_id=$1 AND v.task_id=$2 AND v.task_revision=1 \
+           AND v.record_digest=$3 AND v.schema='tect.context-matrix-verification/1' \
+         ORDER BY b.evidence_ref",
+    )
+    .bind(workspace)
+    .bind(task)
+    .bind(verified["verification_digest"].as_str().unwrap())
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(verified_refs, [reference]);
+    assert_eq!(manifest["evidence_refs"], json!(verified_refs));
+    assert_eq!(manifest["matrix_task_id"], task.to_string());
+    assert_eq!(manifest["matrix_task_revision"], "1");
+    let dispatches: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM advisory_dispatch WHERE workspace_id=$1 AND opportunity_id=$2",
+    )
+    .bind(workspace)
+    .bind(opportunity_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(dispatches, 0);
+    owner.finish().await;
+    pipeline_server.abort();
 }

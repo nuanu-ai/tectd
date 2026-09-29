@@ -193,6 +193,23 @@ async fn exact_fixture() -> (PgPool, String) {
 }
 
 fn policy(task: Uuid, matrix: &EngineeringMatrixInput) -> PipelineCompatibilityPolicy {
+    policy_for_choice(
+        task,
+        matrix,
+        "b",
+        &[
+            PipelineKind::LightweightTddDevelopment,
+            PipelineKind::DeepBrainstorming,
+        ],
+    )
+}
+
+pub(super) fn policy_for_choice(
+    task: Uuid,
+    matrix: &EngineeringMatrixInput,
+    choice_id: &str,
+    kinds: &[PipelineKind],
+) -> PipelineCompatibilityPolicy {
     let composition = compose_engineering_matrix(
         &VerifiedEngineeringMatrixFacts::bind_caller_verified_task_revision(
             task.to_string(),
@@ -212,58 +229,55 @@ fn policy(task: Uuid, matrix: &EngineeringMatrixInput) -> PipelineCompatibilityP
         task_id: task.to_string(),
         task_revision: "1".into(),
         catalogue_revision: "4".into(),
-        // The selected synthetic work can either establish its design through
-        // brainstorming or implement the bounded change with focused TDD.
-        // Every other catalogue kind has no rule and is recorded as excluded.
-        rules: [
-            PipelineKind::LightweightTddDevelopment,
-            PipelineKind::DeepBrainstorming,
-        ]
-        .into_iter()
-        .map(|kind| {
-            let definition = definitions.definition("4", kind).unwrap().unwrap();
-            let phase = definition
-                .phases
-                .iter()
-                .find(|phase| {
-                    phase.required
-                        && (!phase.required_fields.is_empty()
-                            || !phase.required_artifacts.is_empty()
-                            || !phase.validator_contracts.is_empty()
-                            || !phase.output_constraints.is_empty()
-                            || phase.fresh_reviewer_input)
-                })
-                .unwrap();
-            let obligation = PipelineVerificationObligation {
-                phase_id: phase.id.clone(),
-                required_fields: phase.required_fields.clone(),
-                required_artifacts: phase.required_artifacts.clone(),
-                validator_contracts: phase.validator_contracts.clone(),
-                output_constraints: phase.output_constraints.clone(),
-                allowed_verdicts: phase.allowed_verdicts.clone(),
-                verdict_routes: phase.verdict_routes.clone(),
-                disposition_required: phase.disposition_required,
-                required_dispositions: phase.required_dispositions.clone(),
-                fresh_reviewer_input: phase.fresh_reviewer_input,
-                output_contract: phase.output_contract.clone(),
-            };
-            let digest = pipeline_obligation_digest(&obligation).unwrap();
-            PipelineCompatibilityRule {
-                kind,
-                matrix_input_digest: matrix_input_digest(matrix).unwrap(),
-                allowed_modes: vec![EngineeringMode::Demo],
-                selected_candidate_ids: vec!["b".into()],
-                card_coverage: cards
+        // Only explicitly named synthetic fixture kinds receive a rule.
+        // Every other catalogue kind remains excluded.
+        rules: kinds
+            .iter()
+            .copied()
+            .map(|kind| {
+                let definition = definitions.definition("4", kind).unwrap().unwrap();
+                let phase = definition
+                    .phases
                     .iter()
-                    .map(|card_id| PipelineCardCoverage {
-                        card_id: card_id.clone(),
-                        phase_id: phase.id.clone(),
-                        obligation_digest: digest.clone(),
+                    .find(|phase| {
+                        phase.required
+                            && (!phase.required_fields.is_empty()
+                                || !phase.required_artifacts.is_empty()
+                                || !phase.validator_contracts.is_empty()
+                                || !phase.output_constraints.is_empty()
+                                || phase.fresh_reviewer_input)
                     })
-                    .collect(),
-            }
-        })
-        .collect(),
+                    .unwrap();
+                let obligation = PipelineVerificationObligation {
+                    phase_id: phase.id.clone(),
+                    required_fields: phase.required_fields.clone(),
+                    required_artifacts: phase.required_artifacts.clone(),
+                    validator_contracts: phase.validator_contracts.clone(),
+                    output_constraints: phase.output_constraints.clone(),
+                    allowed_verdicts: phase.allowed_verdicts.clone(),
+                    verdict_routes: phase.verdict_routes.clone(),
+                    disposition_required: phase.disposition_required,
+                    required_dispositions: phase.required_dispositions.clone(),
+                    fresh_reviewer_input: phase.fresh_reviewer_input,
+                    output_contract: phase.output_contract.clone(),
+                };
+                let digest = pipeline_obligation_digest(&obligation).unwrap();
+                PipelineCompatibilityRule {
+                    kind,
+                    matrix_input_digest: matrix_input_digest(matrix).unwrap(),
+                    allowed_modes: vec![EngineeringMode::Demo],
+                    selected_candidate_ids: vec![choice_id.into()],
+                    card_coverage: cards
+                        .iter()
+                        .map(|card_id| PipelineCardCoverage {
+                            card_id: card_id.clone(),
+                            phase_id: phase.id.clone(),
+                            obligation_digest: digest.clone(),
+                        })
+                        .collect(),
+                }
+            })
+            .collect(),
     }
 }
 
