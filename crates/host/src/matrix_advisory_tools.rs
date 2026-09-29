@@ -127,6 +127,19 @@ pub(crate) fn receipt(value: AdvisoryOpportunity) -> Value {
 pub(crate) fn read(value: EngineeringAdvisoryRead) -> Value {
     let mut receipt = receipt(value.opportunity);
     if let Some(advice) = value.current_advice {
+        let trial_uncertainty = advice.trial_evidence.as_ref().map(|evidence| {
+            let mut metadata = json!(evidence);
+            metadata["schema"] = json!("tect.matrix-trial-uncertainty/1");
+            metadata["digest_linkage"] = json!({
+                "input_digest": advice.input_digest,
+                "choice_set_digest": advice.choice_set_digest,
+                "evaluation_digest": advice.evaluation_digest,
+                "verification_digest": advice.verification_digest,
+                "response_payload_sha256": advice.response_payload_sha256,
+                "advice_digest": advice.advice_digest,
+            });
+            metadata
+        });
         let outcome = match advice.outcome {
             GuardedMatrixAdviceOutcome::Ranked { ranked_choice_ids } => {
                 json!({"status":"ranked","ranked_choice_ids":ranked_choice_ids})
@@ -152,6 +165,9 @@ pub(crate) fn read(value: EngineeringAdvisoryRead) -> Value {
             "advice_digest": advice.advice_digest,
             "outcome": outcome,
         });
+        if let Some(metadata) = trial_uncertainty {
+            receipt["current_advice"]["trial_uncertainty"] = metadata;
+        }
     }
     receipt
 }
@@ -197,6 +213,7 @@ mod tests {
             outcome: GuardedMatrixAdviceOutcome::Ranked {
                 ranked_choice_ids: vec!["a".into(), "b".into()],
             },
+            trial_evidence: None,
         };
         let ranked = read(EngineeringAdvisoryRead {
             opportunity: opportunity.clone(),
@@ -206,7 +223,68 @@ mod tests {
             ranked["current_advice"]["outcome"]["ranked_choice_ids"],
             json!(["a", "b"])
         );
+        assert!(ranked["current_advice"].get("trial_uncertainty").is_none());
         assert!(!ranked.to_string().contains("raw_response_payload"));
+        let score = |id: &str, level: usize, confidence: f64| {
+            let mut probabilities = [0.0; 10];
+            probabilities[level] = 1.0;
+            let distribution =
+                tect_domain::NativeMatrixScoreDistribution::new(probabilities).unwrap();
+            let bounds = distribution.feasible_expected_score();
+            tect_domain::MatrixTrialCandidateEvidence {
+                candidate_id: id.into(),
+                declared_score: level as f64,
+                score_confidence: confidence,
+                probabilities,
+                displayed_mean: distribution.displayed_mean(),
+                feasible_minimum: bounds.minimum,
+                feasible_maximum: bounds.maximum,
+            }
+        };
+        let mut trial = base.clone();
+        trial.trial_evidence = Some(tect_domain::MatrixTrialRankingEvidence {
+            policy_id: tect_domain::MATRIX_TRIAL_POLICY_ID.into(),
+            policy_version: tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION.into(),
+            policy_digest: tect_domain::matrix_trial_policy_digest(),
+            choice_selected_candidate_id: "a".into(),
+            choice_confidence: 0.8,
+            choice_selected_answer_probability: 0.8,
+            scores: vec![score("a", 8, 0.9), score("b", 4, 0.5)],
+            low_loser_confidence: true,
+        });
+        let owner = read(EngineeringAdvisoryRead {
+            opportunity: opportunity.clone(),
+            current_advice: Some(trial.clone()),
+        });
+        let verifier = read(EngineeringAdvisoryRead {
+            opportunity: opportunity.clone(),
+            current_advice: Some(trial),
+        });
+        assert_eq!(
+            owner["current_advice"]["advice_digest"],
+            verifier["current_advice"]["advice_digest"]
+        );
+        assert_eq!(
+            owner["current_advice"]["trial_uncertainty"],
+            verifier["current_advice"]["trial_uncertainty"]
+        );
+        assert_eq!(
+            owner["current_advice"]["trial_uncertainty"]["schema"],
+            "tect.matrix-trial-uncertainty/1"
+        );
+        assert_eq!(
+            owner["current_advice"]["trial_uncertainty"]["scores"][1]["score_confidence"],
+            0.5
+        );
+        assert_eq!(
+            owner["current_advice"]["trial_uncertainty"]["low_loser_confidence"],
+            true
+        );
+        assert_eq!(
+            owner["current_advice"]["trial_uncertainty"]["digest_linkage"]["response_payload_sha256"],
+            "e".repeat(64)
+        );
+        assert!(!owner.to_string().contains("raw_response_payload"));
         let mut abstained = base;
         abstained.outcome = GuardedMatrixAdviceOutcome::Abstained { reason: None };
         let abstained = read(EngineeringAdvisoryRead {

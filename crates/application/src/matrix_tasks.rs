@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 /// Public projection of advice that still matches the current Matrix head.
 /// Provider transport bytes deliberately have no place in this model.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CurrentMatrixAdvice {
     pub advice_id: Uuid,
     pub dispatch_id: Uuid,
@@ -32,9 +32,11 @@ pub struct CurrentMatrixAdvice {
     pub response_payload_sha256: String,
     pub advice_digest: String,
     pub outcome: crate::GuardedMatrixAdviceOutcome,
+    /// Present only on versioned robust-trial receipts. No raw response bytes.
+    pub trial_evidence: Option<tect_domain::MatrixTrialRankingEvidence>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct EngineeringAdvisoryRead {
     pub opportunity: AdvisoryOpportunity,
     pub current_advice: Option<CurrentMatrixAdvice>,

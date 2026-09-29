@@ -112,7 +112,7 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
             "get_engineering_advisory",
             "Read an Engineering Matrix advisory receipt and any guarded advice still current for the exact task and request key.",
             "Requires an authenticated open native session in the receipt's workspace. The receipt must target the exact Matrix task and request key.",
-            "Returns the saved receipt. For advised opportunities only, current_advice contains the persisted ranking or abstention, advice and dispatch IDs, provider identity, and binding digests after current task, configuration, latest verification, and evidence revalidation. Stale advice is omitted. Provider response bytes are never returned. No choice or release is established.",
+            "Returns the saved receipt. For advised opportunities only, current_advice contains the persisted ranking or abstention, advice and dispatch IDs, provider identity, and binding digests after current task, configuration, latest verification, and evidence revalidation. A versioned robust trial additionally exposes typed trial_uncertainty with policy ID/version/digest, Choice certainty, both Score distributions/confidences/feasible intervals, low-loser flag, and digest linkage; never raw provider bytes. Stale advice is omitted. No choice or release is established.",
             "Safe to repeat; a missing or mismatched receipt returns not_found.",
             object_schema(
                 json!({"task_id":uuid(),"request_key":{"type":"string","minLength":1,"maxLength":256,"x-maxUtf8Bytes":256,"description":"One to 256 UTF-8 bytes, no NUL, and no leading or trailing Unicode whitespace. Host validation enforces byte and trim limits."}}),

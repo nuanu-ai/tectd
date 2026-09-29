@@ -117,6 +117,20 @@ pub(crate) fn current_public_matrix_advice(
     {
         return None;
     }
+    let expected_digest = match &record.trial_evidence {
+        Some(evidence) => crate::canonical_matrix_trial_advice_digest(
+            binding,
+            &record.outcome,
+            evidence,
+            record.opportunity_id,
+            record.dispatch_id,
+            &record.response_payload_sha256,
+        ),
+        None => crate::canonical_matrix_advice_digest(binding, &record.outcome),
+    };
+    if expected_digest.ok().as_deref() != Some(record.advice_digest.as_str()) {
+        return None;
+    }
     Some(CurrentMatrixAdvice {
         advice_id: stored.advice_id,
         dispatch_id: record.dispatch_id,
@@ -132,6 +146,7 @@ pub(crate) fn current_public_matrix_advice(
         response_payload_sha256: record.response_payload_sha256.clone(),
         advice_digest: record.advice_digest.clone(),
         outcome: record.outcome.clone(),
+        trial_evidence: record.trial_evidence.clone(),
     })
 }
 

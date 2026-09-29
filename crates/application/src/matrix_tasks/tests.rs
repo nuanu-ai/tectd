@@ -133,7 +133,7 @@ fn public_guarded_advice_requires_exact_current_bindings() {
             model_configuration: model.clone(),
             raw_response_payload: Vec::new(),
             response_payload_sha256: "e".repeat(64),
-            advice_digest: "f".repeat(64),
+            advice_digest: crate::canonical_matrix_advice_digest(&binding, &outcome).unwrap(),
             outcome: outcome.clone(),
             trial_evidence: None,
         };
@@ -144,6 +144,7 @@ fn public_guarded_advice_requires_exact_current_bindings() {
         let current =
             current_public_matrix_advice(&receipt, &stored, &config, Some(&binding)).unwrap();
         assert_eq!(current.outcome, outcome);
+        assert!(current.trial_evidence.is_none());
         assert_eq!(current.advice_id, stored.advice_id);
         assert_eq!(current.verification_digest, "d".repeat(64));
         assert!(current_public_matrix_advice(&receipt, &stored, &config, None).is_none());
@@ -171,6 +172,83 @@ fn public_guarded_advice_requires_exact_current_bindings() {
         assert!(current_public_matrix_advice(&receipt, &stored, &config, Some(&binding)).is_none());
         receipt.state = AdvisoryOpportunityState::Advised;
     }
+    // A synthetic, versioned V2 receipt projects the same immutable advice
+    // digest and typed uncertainty; missing or altered metadata fails closed.
+    let mut v2_binding = binding.clone();
+    v2_binding.verification = crate::MatrixVerificationAuthority::ContextV2 {
+        digest: "d".repeat(64),
+        snapshot_id: Uuid::new_v4(),
+        authority_schema: tect_domain::MATRIX_REQUIREMENTS_SCHEMA.into(),
+        semantic_digest: "1".repeat(64),
+    };
+    let score = |id: &str, level: usize, confidence: f64| {
+        let mut probabilities = [0.0; 10];
+        probabilities[level] = 1.0;
+        let distribution = tect_domain::NativeMatrixScoreDistribution::new(probabilities).unwrap();
+        let bounds = distribution.feasible_expected_score();
+        tect_domain::MatrixTrialCandidateEvidence {
+            candidate_id: id.into(),
+            declared_score: level as f64,
+            score_confidence: confidence,
+            probabilities,
+            displayed_mean: distribution.displayed_mean(),
+            feasible_minimum: bounds.minimum,
+            feasible_maximum: bounds.maximum,
+        }
+    };
+    let evidence = tect_domain::MatrixTrialRankingEvidence {
+        policy_id: tect_domain::MATRIX_TRIAL_POLICY_ID.into(),
+        policy_version: tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION.into(),
+        policy_digest: tect_domain::matrix_trial_policy_digest(),
+        choice_selected_candidate_id: "a".into(),
+        choice_confidence: 0.8,
+        choice_selected_answer_probability: 0.8,
+        scores: vec![score("a", 8, 0.9), score("b", 4, 0.5)],
+        low_loser_confidence: true,
+    };
+    let trial_outcome = crate::GuardedMatrixAdviceOutcome::Ranked {
+        ranked_choice_ids: vec!["a".into(), "b".into()],
+    };
+    let trial_dispatch = Uuid::new_v4();
+    let response_sha = "e".repeat(64);
+    let advice_digest = crate::canonical_matrix_trial_advice_digest(
+        &v2_binding,
+        &trial_outcome,
+        &evidence,
+        receipt.id,
+        trial_dispatch,
+        &response_sha,
+    )
+    .unwrap();
+    let trial_stored = StoredGuardedMatrixAdviceRecord {
+        advice_id: Uuid::new_v4(),
+        record: GuardedMatrixAdviceRecord {
+            opportunity_id: receipt.id,
+            dispatch_id: trial_dispatch,
+            opportunity_material_digest: v2_binding.evaluation_digest.clone(),
+            binding: v2_binding.clone(),
+            provider_profile_ref: profile.clone(),
+            model_configuration: model.clone(),
+            raw_response_payload: Vec::new(),
+            response_payload_sha256: response_sha,
+            advice_digest: advice_digest.clone(),
+            outcome: trial_outcome,
+            trial_evidence: Some(evidence.clone()),
+        },
+    };
+    let current =
+        current_public_matrix_advice(&receipt, &trial_stored, &config, Some(&v2_binding)).unwrap();
+    assert_eq!(current.advice_digest, advice_digest);
+    assert_eq!(current.trial_evidence, Some(evidence));
+    let mut changed = trial_stored.clone();
+    changed.record.trial_evidence = None;
+    assert!(current_public_matrix_advice(&receipt, &changed, &config, Some(&v2_binding)).is_none());
+    changed = trial_stored.clone();
+    changed.record.trial_evidence.as_mut().unwrap().scores[0].feasible_minimum = 0.0;
+    assert!(current_public_matrix_advice(&receipt, &changed, &config, Some(&v2_binding)).is_none());
+    changed = trial_stored;
+    changed.record.advice_digest = "f".repeat(64);
+    assert!(current_public_matrix_advice(&receipt, &changed, &config, Some(&v2_binding)).is_none());
     let record = GuardedMatrixAdviceRecord {
         opportunity_id: receipt.id,
         dispatch_id: Uuid::new_v4(),
