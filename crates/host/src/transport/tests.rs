@@ -1,6 +1,7 @@
 use super::*;
 use serde::Deserialize;
 use serde_json::json;
+use std::os::unix::fs::PermissionsExt;
 use tect_domain::HostAuth;
 use uuid::Uuid;
 
@@ -64,4 +65,51 @@ fn old_daemon_shape_rejects_new_bridge_request_before_operation_decode() {
     };
     let encoded = serde_json::to_value(current).unwrap();
     assert!(serde_json::from_value::<LegacyWireRequest>(encoded).is_err());
+}
+
+#[tokio::test]
+async fn daemon_deadline_is_typed_and_bridge_budget_has_write_margin() {
+    assert_eq!(OPERATION_TIMEOUT, Duration::from_secs(15));
+    assert_eq!(RESPONSE_READ_TIMEOUT, Duration::from_secs(25));
+    assert!(RESPONSE_READ_TIMEOUT > OPERATION_TIMEOUT + IO_TIMEOUT);
+    let expired = timeout(
+        Duration::from_millis(1),
+        std::future::pending::<Result<Value>>(),
+    )
+    .await;
+    let response = operation_response(expired, MAX_FRAME_BYTES);
+    let encoded = encode_line(&response).unwrap();
+    assert_eq!(decode_wire_response(&encoded), Err(Error::OperationTimeout));
+    assert_eq!(Error::OperationTimeout.code(), "operation_timeout");
+}
+
+#[tokio::test]
+async fn delayed_daemon_response_preserves_wire_error_and_socket_absence_is_transport_error() {
+    let directory = tempfile::Builder::new().tempdir_in("/private/tmp").unwrap();
+    fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let socket = directory.path().join("tectd.sock");
+    assert_eq!(
+        call_tool(&socket, &context(), "get_state", json!({})).await,
+        Err(Error::TransportUnavailable)
+    );
+
+    let listener = UnixListener::bind(&socket).unwrap();
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
+    let daemon = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (read, mut write) = tokio::io::split(stream);
+        let mut reader = FrameReader::new(read);
+        assert!(matches!(reader.next().await.unwrap(), Some(Frame::Data(_))));
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let bytes = encode_line(&WireResponse::Error {
+            error: Error::OperationTimeout,
+        })
+        .unwrap();
+        write.write_all(&bytes).await.unwrap();
+    });
+    assert_eq!(
+        call_tool(&socket, &context(), "get_state", json!({})).await,
+        Err(Error::OperationTimeout)
+    );
+    daemon.await.unwrap();
 }

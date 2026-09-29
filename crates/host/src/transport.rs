@@ -21,6 +21,8 @@ use tokio::time::timeout;
 const MAX_CONNECTIONS: usize = 32;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(15);
+// Read budget exceeds daemon operation + response write limits with 5s of margin.
+const RESPONSE_READ_TIMEOUT: Duration = Duration::from_secs(25);
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -120,7 +122,7 @@ pub(crate) async fn call_tool_bounded(
         .map_err(|_| Error::TransportUnavailable)?;
 
     let mut reader = FrameReader::new(read);
-    let frame = timeout(OPERATION_TIMEOUT, reader.next())
+    let frame = timeout(RESPONSE_READ_TIMEOUT, reader.next())
         .await
         .map_err(|_| Error::TransportUnavailable)?
         .map_err(|_| Error::TransportUnavailable)?;
@@ -129,8 +131,12 @@ pub(crate) async fn call_tool_bounded(
         Some(Frame::TooLarge) => return Err(Error::RequestTooLarge),
         None => return Err(Error::TransportUnavailable),
     };
+    decode_wire_response(&bytes)
+}
+
+fn decode_wire_response(bytes: &[u8]) -> Result<Value> {
     let response: WireResponse =
-        serde_json::from_slice(&bytes).map_err(|_| Error::TransportUnavailable)?;
+        serde_json::from_slice(bytes).map_err(|_| Error::TransportUnavailable)?;
     match response {
         WireResponse::Ok { result } => Ok(result),
         WireResponse::Error { error } => Err(error),
@@ -266,9 +272,16 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
         }
     })
     .await;
+    operation_response(result, request.output_capacity)
+}
+
+fn operation_response(
+    result: std::result::Result<Result<Value>, tokio::time::error::Elapsed>,
+    output_capacity: usize,
+) -> WireResponse {
     match result {
         Ok(Ok(result)) => match responses::encoded_len(&result) {
-            Ok(bytes) if bytes <= request.output_capacity => WireResponse::Ok { result },
+            Ok(bytes) if bytes <= output_capacity => WireResponse::Ok { result },
             Ok(_) => WireResponse::Error {
                 error: Error::RequestTooLarge,
             },
@@ -276,7 +289,7 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
         },
         Ok(Err(error)) => WireResponse::Error { error },
         Err(_) => WireResponse::Error {
-            error: Error::TransportUnavailable,
+            error: Error::OperationTimeout,
         },
     }
 }
@@ -300,7 +313,7 @@ async fn authenticate_invalid_request(
         },
         Ok(Err(error)) => WireResponse::Error { error },
         Err(_) => WireResponse::Error {
-            error: Error::TransportUnavailable,
+            error: Error::OperationTimeout,
         },
     }
 }

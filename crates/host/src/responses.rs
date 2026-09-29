@@ -198,13 +198,26 @@ fn try_failure_with_state(
                 None => action("get_state", json!({}))?,
             });
         }
-        Error::StorageUnavailable | Error::TransportUnavailable => {
+        Error::StorageUnavailable | Error::TransportUnavailable | Error::OperationTimeout => {
             if let Some((name, arguments)) = call {
-                if name == "save_program" || name == "save_setup" {
+                if matches!(error.pipeline_source(), Error::OperationTimeout)
+                    && let Some(id) = arguments
+                        .pointer("/params/change_id")
+                        .or_else(|| arguments.get("change_id"))
+                        .and_then(Value::as_str)
+                        .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+                {
+                    actions.push(action(
+                        "knowledge_lifecycle",
+                        json!({"change_id":id,"view":"current"}),
+                    )?);
+                } else if name == "save_program" || name == "save_setup" {
                     actions.push(match reload {
                         Some(reload) => reload,
                         None => action("get_state", json!({}))?,
                     });
+                } else if matches!(name, "query" | "command" | "execute") {
+                    actions.push(json!({"kind":"ready_call","tool":name,"arguments":arguments}));
                 } else {
                     actions.push(action(name, arguments.clone())?);
                 }
@@ -293,7 +306,28 @@ fn try_failure_with_state(
         error_data["route_contract"] = contract;
     }
     let data = with_actions(json!({"error":error_data}), actions, recommended);
-    Ok(content(error_intro(&error), data, true))
+    Ok(content(failure_intro(&error, call), data, true))
+}
+
+fn failure_intro(error: &Error, call: Option<(&str, &Value)>) -> &'static str {
+    if !matches!(error.pipeline_source(), Error::OperationTimeout) {
+        return error_intro(error);
+    }
+    match call {
+        Some(("get_state" | "help" | "query", _)) => {
+            "The daemon reached its operation deadline while reading. Retry the read if needed."
+        }
+        Some((_, arguments))
+            if arguments
+                .pointer("/params/request_id")
+                .or_else(|| arguments.get("request_id"))
+                .and_then(Value::as_str)
+                .is_some() =>
+        {
+            "The daemon reached its operation deadline. Read saved state when available; if the result is still absent, retry only the exact same request ID and payload. Do not create a replacement record."
+        }
+        _ => error_intro(error),
+    }
 }
 
 fn internal_failure() -> Value {
@@ -353,6 +387,9 @@ pub(crate) fn error_intro(error: &Error) -> &'static str {
         Error::RequestTooLarge => {
             "The encoded request or response exceeds transport capacity. Reload current state before retrying."
         }
+        Error::OperationTimeout => {
+            "The daemon reached its operation deadline. The result is uncertain; inspect saved state before further writes."
+        }
         Error::StorageUnavailable | Error::TransportUnavailable => {
             "The result is uncertain. Recover with the exact call below; do not create a replacement record."
         }
@@ -391,6 +428,7 @@ mod tests {
             Error::RequestTooLarge,
             Error::StorageUnavailable,
             Error::TransportUnavailable,
+            Error::OperationTimeout,
             Error::InvalidArguments,
             Error::Unauthorized,
         ] {
@@ -428,6 +466,54 @@ mod tests {
             assert_eq!(response["content"][2]["type"], "text");
             assert_eq!(response["content"][2]["text"], RESPONSE_RULES);
         }
+    }
+
+    #[test]
+    fn operation_deadline_reads_existing_change_before_same_id_retry() {
+        let change_id = uuid::Uuid::new_v4();
+        let request_id = uuid::Uuid::new_v4();
+        let arguments = json!({"route":"knowledge.change_phase_complete","params":{
+            "change_id":change_id,"request_id":request_id,"phase_id":"kc-impact-plan"
+        }});
+        let response = failure(Error::OperationTimeout, Some(("command", &arguments)));
+        let body: Value =
+            serde_json::from_str(response["content"][1]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["error"]["code"], "operation_timeout");
+        assert_eq!(
+            body["actions"][0]["arguments"]["route"],
+            "knowledge.lifecycle"
+        );
+        assert_eq!(
+            body["actions"][0]["arguments"]["params"]["change_id"],
+            json!(change_id)
+        );
+        assert!(
+            response["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("same request ID")
+        );
+
+        let begin = json!({"route":"knowledge.change_begin","params":{"request_id":request_id}});
+        let response = failure(Error::OperationTimeout, Some(("command", &begin)));
+        let body: Value =
+            serde_json::from_str(response["content"][1]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["actions"][0]["arguments"], begin);
+        assert_eq!(body["recommended_action"], 0);
+
+        let read = failure(Error::OperationTimeout, Some(("get_state", &json!({}))));
+        assert!(
+            read["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Retry the read")
+        );
+        assert!(
+            !read["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("request ID")
+        );
     }
 
     #[test]

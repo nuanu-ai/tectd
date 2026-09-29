@@ -25,6 +25,8 @@ pub enum Error {
     StorageUnavailable,
     InvalidConfiguration,
     TransportUnavailable,
+    /// The daemon reached its bounded operation deadline; the result may be uncertain.
+    OperationTimeout,
     RequestTooLarge,
     StaleRevision,
     StaleContext,
@@ -121,6 +123,7 @@ impl Error {
             self,
             Self::StorageUnavailable
                 | Self::TransportUnavailable
+                | Self::OperationTimeout
                 | Self::Unauthorized
                 | Self::InvalidNativeSession
                 | Self::InvalidWorkspaceKey
@@ -235,6 +238,7 @@ impl Error {
             Self::StorageUnavailable => "storage_unavailable",
             Self::InvalidConfiguration => "invalid_configuration",
             Self::TransportUnavailable => "transport_unavailable",
+            Self::OperationTimeout => "operation_timeout",
             Self::RequestTooLarge => "request_too_large",
             Self::StaleRevision => "stale_revision",
             Self::StaleContext => "stale_context",
