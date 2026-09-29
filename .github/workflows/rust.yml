@@ -28,3 +28,15 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Provision fresh approved Matrix evidence database
+        env:
+          PGPASSWORD: postgres
+        run: |
+          db_name="tect_matrix_approved_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${db_name}\""
+          db_oid="$(psql -h 127.0.0.1 -U postgres -d postgres -At -v ON_ERROR_STOP=1 -c "SELECT oid FROM pg_database WHERE datname='${db_name}'")"
+          system_id="$(psql -h 127.0.0.1 -U postgres -d postgres -At -v ON_ERROR_STOP=1 -c "SELECT system_identifier::text FROM pg_control_system()")"
+          printf 'TECT_TEST_DISPOSABLE_PG=1\nTECT_TEST_DB_NAME=%s\nTECT_TEST_PG_PORT=5432\nTECT_TEST_DATABASE_OID=%s\nTECT_TEST_SYSTEM_ID=%s\n' "$db_name" "$db_oid" "$system_id" >> "$GITHUB_ENV"
+          printf 'TECT_TEST_ADMIN_URL=postgres://postgres:postgres@127.0.0.1:5432/%s\nTECT_TEST_RUNTIME_URL=postgres://tect_ci:ci-fixture-only@127.0.0.1:5432/%s\n' "$db_name" "$db_name" >> "$GITHUB_ENV"
+      - name: Approved Matrix evidence public MCP integration
+        run: cargo test -p tect-cli --test matrix_context_advisory_native_mcp s02_approved_artifact::public_s02_approved_artifact_to_independently_verified_planning_effect -- --exact --ignored

@@ -3,6 +3,8 @@
 //! Ignored: writes only after the exact disposable PostgreSQL 18.6 identity guard.
 #[allow(dead_code)]
 mod recovery_support;
+#[path = "matrix_context_advisory_native_mcp/s02_approved_artifact.rs"]
+mod s02_approved_artifact;
 #[path = "matrix_context_advisory_native_mcp/s03_v4.rs"]
 mod s03_v4;
 #[path = "native_planning/support.rs"]
