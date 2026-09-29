@@ -274,8 +274,11 @@ async fn run_upgrade(admin_url: &str, database: &str, runtime_role: &str) -> Res
             .fetch_one(&pool)
             .await
             .map_err(|error| error.to_string())?;
-    if migration_count != 38 || native_table.as_deref() != Some("native_scopes") {
-        return Err("schema 38 was not installed after preserving legacy and DK-1 rows".into());
+    let expected_migrations = admin::current_schema_version();
+    if migration_count != expected_migrations || native_table.as_deref() != Some("native_scopes") {
+        return Err(format!(
+            "current schema was not installed after preserving legacy and DK-1 rows: expected {expected_migrations} migrations and native_scopes table, observed {migration_count} migrations and {native_table:?}"
+        ));
     }
     pool.close().await;
     Ok(())

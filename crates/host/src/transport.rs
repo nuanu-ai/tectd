@@ -1,5 +1,7 @@
 use crate::Result;
 use crate::frame::{Frame, FrameReader, MAX_FRAME_BYTES};
+use crate::knowledge_lifecycle_tools::KnowledgeLifecycleInvocation;
+use crate::knowledge_tools::KnowledgeInvocation;
 use crate::program_output::ProgramEncoding;
 use crate::program_tools::ProgramInvocation;
 use crate::tools::{Invocation, parse_invocation};
@@ -12,7 +14,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tect_application::WorkspaceService;
-use tect_domain::{Error, RequestContext, WorkspaceState};
+use tect_domain::{
+    Error, KnowledgeChangePhaseId, KnowledgeSearchMode, RequestContext, WorkspaceState,
+};
 use tokio::io::{AsyncWriteExt, WriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
@@ -20,7 +24,31 @@ use tokio::time::timeout;
 
 const MAX_CONNECTIONS: usize = 32;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
-const OPERATION_TIMEOUT: Duration = Duration::from_secs(15);
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(45);
+const SUPER_WIDE_TIMEOUT: Duration = Duration::from_secs(60);
+const KNOWLEDGE_WRITE_TIMEOUT: Duration = Duration::from_secs(120);
+// The bridge allows the daemon's response write cap plus additional scheduling margin.
+const RESPONSE_MARGIN: Duration = Duration::from_secs(5);
+
+fn operation_timeout_for(invocation: &Invocation) -> Duration {
+    match invocation {
+        Invocation::KnowledgeSearch(query) if query.mode == KnowledgeSearchMode::SuperWide => {
+            SUPER_WIDE_TIMEOUT
+        }
+        Invocation::KnowledgeLifecycle(KnowledgeLifecycleInvocation::PhaseComplete(request))
+            if request.phase_id == KnowledgeChangePhaseId::KcImpactPlan =>
+        {
+            KNOWLEDGE_WRITE_TIMEOUT
+        }
+        Invocation::KnowledgeLifecycle(KnowledgeLifecycleInvocation::Commit(_))
+        | Invocation::Knowledge(KnowledgeInvocation::Publish(_)) => KNOWLEDGE_WRITE_TIMEOUT,
+        _ => OPERATION_TIMEOUT,
+    }
+}
+
+fn response_read_timeout_for(invocation: Option<&Invocation>) -> Duration {
+    invocation.map_or(OPERATION_TIMEOUT, operation_timeout_for) + IO_TIMEOUT + RESPONSE_MARGIN
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -92,6 +120,10 @@ pub(crate) async fn call_tool_bounded(
     output_capacity: usize,
 ) -> Result<Value> {
     let expected_socket = validate_socket(socket)?;
+    // Parse the same validated invocation shape used by the daemon. Invalid calls
+    // still get the bounded default while the daemon authenticates their error.
+    let invocation = parse_invocation(tool_name, arguments.clone()).ok();
+    let response_read_timeout = response_read_timeout_for(invocation.as_ref());
 
     let request = WireRequest {
         api_version: Some(crate::api::WIRE_API_VERSION),
@@ -120,7 +152,7 @@ pub(crate) async fn call_tool_bounded(
         .map_err(|_| Error::TransportUnavailable)?;
 
     let mut reader = FrameReader::new(read);
-    let frame = timeout(OPERATION_TIMEOUT, reader.next())
+    let frame = timeout(response_read_timeout, reader.next())
         .await
         .map_err(|_| Error::TransportUnavailable)?
         .map_err(|_| Error::TransportUnavailable)?;
@@ -129,8 +161,12 @@ pub(crate) async fn call_tool_bounded(
         Some(Frame::TooLarge) => return Err(Error::RequestTooLarge),
         None => return Err(Error::TransportUnavailable),
     };
+    decode_wire_response(&bytes)
+}
+
+fn decode_wire_response(bytes: &[u8]) -> Result<Value> {
     let response: WireResponse =
-        serde_json::from_slice(&bytes).map_err(|_| Error::TransportUnavailable)?;
+        serde_json::from_slice(bytes).map_err(|_| Error::TransportUnavailable)?;
     match response {
         WireResponse::Ok { result } => Ok(result),
         WireResponse::Error { error } => Err(error),
@@ -172,8 +208,9 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
             return authenticate_invalid_request(service, &request.context).await;
         }
     };
+    let operation_timeout = operation_timeout_for(&invocation);
 
-    let result = timeout(OPERATION_TIMEOUT, async {
+    let result = timeout(operation_timeout, async {
         let context = &request.context;
         let capacity = request.output_capacity;
         match invocation {
@@ -266,9 +303,16 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
         }
     })
     .await;
+    operation_response(result, request.output_capacity)
+}
+
+fn operation_response(
+    result: std::result::Result<Result<Value>, tokio::time::error::Elapsed>,
+    output_capacity: usize,
+) -> WireResponse {
     match result {
         Ok(Ok(result)) => match responses::encoded_len(&result) {
-            Ok(bytes) if bytes <= request.output_capacity => WireResponse::Ok { result },
+            Ok(bytes) if bytes <= output_capacity => WireResponse::Ok { result },
             Ok(_) => WireResponse::Error {
                 error: Error::RequestTooLarge,
             },
@@ -276,7 +320,7 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
         },
         Ok(Err(error)) => WireResponse::Error { error },
         Err(_) => WireResponse::Error {
-            error: Error::TransportUnavailable,
+            error: Error::OperationTimeout,
         },
     }
 }
@@ -300,7 +344,7 @@ async fn authenticate_invalid_request(
         },
         Ok(Err(error)) => WireResponse::Error { error },
         Err(_) => WireResponse::Error {
-            error: Error::TransportUnavailable,
+            error: Error::OperationTimeout,
         },
     }
 }

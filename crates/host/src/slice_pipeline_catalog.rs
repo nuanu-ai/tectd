@@ -213,6 +213,30 @@ pub(crate) fn value() -> Value {
     })
 }
 
+pub(crate) fn summary_value() -> Value {
+    let snapshot = snapshot();
+    let pipelines = snapshot
+        .entries
+        .iter()
+        .map(|entry| {
+            json!({
+                "kind": entry.kind,
+                "description": entry.description,
+                "executable": entry.executable,
+                "execution_owner": entry.execution_owner,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "view": "summary",
+        "revision": snapshot.revision,
+        "digest": snapshot.digest,
+        "executable_count": snapshot.entries.iter().filter(|entry| entry.executable).count(),
+        "pipelines": pipelines,
+        "full_view": {"tool": "query", "arguments": {"route": "slice.pipelines", "params": {}}},
+    })
+}
+
 fn digest_entries(revision: &str, entries: &[PipelineCatalogueEntry]) -> String {
     let bytes = serde_json::to_vec(&(revision, entries)).expect("static catalog serializes");
     let hash = Sha256::digest(bytes);
@@ -269,6 +293,14 @@ mod tests {
         let catalog = value();
         assert_eq!(catalog["executable"], true);
         assert_eq!(catalog["executable_count"], 9);
+        let summary = summary_value();
+        assert_eq!(summary["view"], "summary");
+        assert_eq!(summary["revision"], catalog["revision"]);
+        assert_eq!(summary["digest"], catalog["digest"]);
+        assert_eq!(summary["pipelines"].as_array().unwrap().len(), 9);
+        assert!(summary.get("promotion_method").is_none());
+        assert!(summary.get("knowledge_change_entry").is_none());
+        assert!(serde_json::to_vec(&summary).unwrap().len() < 4096);
         assert_eq!(catalog["implementation_status"], "executable");
         assert_eq!(catalog["description_status"], "refined");
         assert_eq!(catalog["refinement_required"], false);

@@ -1,7 +1,7 @@
 use crate::responses;
 use crate::scope_guidance::StaticCandidateGuidance;
 use crate::slice_guidance::StaticSliceGuidance;
-use crate::slice_tools::SliceInvocation;
+use crate::slice_tools::{PipelineView, SliceInvocation};
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -52,9 +52,13 @@ pub(crate) async fn execute(
         SliceInvocation::ScopeContext { scope_id } => {
             output(service.scope_context(context, scope_id).await?, vec![])
         }
-        SliceInvocation::Pipelines => {
+        SliceInvocation::Pipelines(view) => {
             service.authenticate_host(context).await?;
-            output(crate::slice_pipeline_catalog::value(), vec![])
+            let value = match view {
+                PipelineView::Full => crate::slice_pipeline_catalog::value(),
+                PipelineView::Summary => crate::slice_pipeline_catalog::summary_value(),
+            };
+            output(value, vec![])
         }
         SliceInvocation::CandidateContext(query) => {
             let value = service

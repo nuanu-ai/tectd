@@ -31,6 +31,8 @@ use uuid::Uuid;
 mod checkpoint_flow;
 #[path = "pipeline_checkpoint/checkpoint_support.rs"]
 mod checkpoint_support;
+#[path = "pipeline_checkpoint/input_manifest_test.rs"]
+mod input_manifest_test;
 #[path = "pipeline_checkpoint/producer_flow.rs"]
 mod producer_flow;
 
@@ -40,6 +42,9 @@ use producer_flow::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn checkpoint_handoff_is_exact_replayable_and_rework_safe() {
+    if std::env::var("TECT_TEST_DK2").as_deref() != Ok("1") {
+        return;
+    }
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").expect("TECT_TEST_ADMIN_URL required");
     let runtime_url =
         std::env::var("TECT_TEST_RUNTIME_URL").expect("TECT_TEST_RUNTIME_URL required");

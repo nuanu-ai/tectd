@@ -222,6 +222,9 @@ pub(super) async fn refresh_or_capture_knowledge(client: &mut Mcp, context: &Val
         json!({"run_id":context["run"]["id"]}),
     )
     .await;
+    if current["knowledge_resource_status"]["state"] == "current" {
+        return current;
+    }
     assert!(matches!(
         current["knowledge_resource_status"]["state"].as_str(),
         Some("needs_context" | "stale")

@@ -127,9 +127,10 @@ async fn run_upgrade(
         .fetch_one(&pool)
         .await
         .map_err(|error| error.to_string())?;
-    if migration_count != 38 {
+    let expected_migrations = admin::current_schema_version();
+    if migration_count != expected_migrations {
         return Err(format!(
-            "expected 38 migrations, observed {migration_count}"
+            "expected {expected_migrations} migrations, observed {migration_count}"
         ));
     }
     let knowledge_table_count: i64 = sqlx::query_scalar(
