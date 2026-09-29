@@ -36,6 +36,53 @@ pub fn bind_matrix_requirements_input(
                 CommitmentEvidence::NoCommitment,
                 provenance,
             )?,
+            DeclaredRequirementValue::DemandCommitment(_)
+            | DeclaredRequirementValue::LatencyCommitment(_) => {}
+        }
+    }
+    for (path, fact) in [
+        (
+            DeclaredRequirementPath::DemandCommitment,
+            &output.demand_commitment,
+        ),
+        (
+            DeclaredRequirementPath::LatencyCommitment,
+            &output.latency_commitment,
+        ),
+    ] {
+        let declaration = context.values().get(&path).map(|resolved| &resolved.value);
+        match (declaration, fact) {
+            (
+                Some(
+                    DeclaredRequirementValue::NoDemandCommitment
+                    | DeclaredRequirementValue::NoLatencyCommitment,
+                ),
+                MatrixFact::Known {
+                    value: CommitmentEvidence::NoCommitment,
+                    ..
+                },
+            ) => {}
+            (
+                Some(
+                    DeclaredRequirementValue::DemandCommitment(_)
+                    | DeclaredRequirementValue::LatencyCommitment(_),
+                ),
+                MatrixFact::Known {
+                    value: CommitmentEvidence::NoCommitment,
+                    ..
+                },
+            ) => {
+                return Err(Error::InvalidArguments);
+            }
+            (
+                Some(
+                    DeclaredRequirementValue::DemandCommitment(_)
+                    | DeclaredRequirementValue::LatencyCommitment(_),
+                ),
+                _,
+            ) => {}
+            (None, MatrixFact::Known { .. }) => return Err(Error::InvalidArguments),
+            _ => {}
         }
     }
     output.validate()?;

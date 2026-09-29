@@ -94,8 +94,9 @@ impl DeclaredRequirementPath {
     }
 }
 
-/// NoCommitment declares absence of a promise. Verified limits are deliberately
-/// impossible to place in a declaration patch.
+/// Commitments are owner-confirmed promises, never measured operating status or
+/// verified limits. The positive variants extend the existing /1 JSON contract;
+/// previously stored no-commitment declarations retain their exact encoding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
@@ -111,6 +112,8 @@ pub enum DeclaredRequirementValue {
     PromisedProof(String),
     NoDemandCommitment,
     NoLatencyCommitment,
+    DemandCommitment(String),
+    LatencyCommitment(String),
 }
 impl DeclaredRequirementValue {
     pub fn path(&self) -> DeclaredRequirementPath {
@@ -120,8 +123,12 @@ impl DeclaredRequirementValue {
             Self::Urgency(_) => DeclaredRequirementPath::Urgency,
             Self::PromisedBehavior(_) => DeclaredRequirementPath::PromisedBehavior,
             Self::PromisedProof(_) => DeclaredRequirementPath::PromisedProof,
-            Self::NoDemandCommitment => DeclaredRequirementPath::DemandCommitment,
-            Self::NoLatencyCommitment => DeclaredRequirementPath::LatencyCommitment,
+            Self::NoDemandCommitment | Self::DemandCommitment(_) => {
+                DeclaredRequirementPath::DemandCommitment
+            }
+            Self::NoLatencyCommitment | Self::LatencyCommitment(_) => {
+                DeclaredRequirementPath::LatencyCommitment
+            }
         }
     }
     fn validate(&self) -> Result<()> {
@@ -130,6 +137,13 @@ impl DeclaredRequirementValue {
             | Self::Urgency(s)
             | Self::PromisedBehavior(s)
             | Self::PromisedProof(s) => text(s),
+            Self::DemandCommitment(statement) | Self::LatencyCommitment(statement) => {
+                text(statement)?;
+                if statement.trim() != statement || statement.chars().any(char::is_control) {
+                    return Err(Error::InvalidArguments);
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }

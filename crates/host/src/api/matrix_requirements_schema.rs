@@ -19,7 +19,7 @@ fn patches() -> Value {
         )
     };
     let intent = json!({"oneOf":[object_schema(json!({"kind":{"const":"production_hotfix"}}),json!(["kind"])),object_schema(json!({"kind":{"const":"other"},"description":text}),json!(["kind","description"]))]});
-    let value = json!({"oneOf":[valued("mode",json!({"type":"string","enum":["demo","mvp","production"]})),valued("intent",intent),valued("urgency",text.clone()),valued("promised_behavior",text.clone()),valued("promised_proof",text),object_schema(json!({"kind":{"const":"no_demand_commitment"}}),json!(["kind"])),object_schema(json!({"kind":{"const":"no_latency_commitment"}}),json!(["kind"]))]});
+    let value = json!({"oneOf":[valued("mode",json!({"type":"string","enum":["demo","mvp","production"]})),valued("intent",intent),valued("urgency",text.clone()),valued("promised_behavior",text.clone()),valued("promised_proof",text.clone()),valued("demand_commitment",text.clone()),valued("latency_commitment",text),object_schema(json!({"kind":{"const":"no_demand_commitment"}}),json!(["kind"])),object_schema(json!({"kind":{"const":"no_latency_commitment"}}),json!(["kind"]))]});
     json!({"type":"array","minItems":1,"maxItems":7,"items":{"oneOf":[object_schema(json!({"operation":{"const":"set"},"value":value}),json!(["operation","value"])),object_schema(json!({"operation":{"const":"remove"},"path":{"type":"string","enum":["mode","intent","urgency","promised_behavior","promised_proof","demand_commitment","latency_commitment"]}}),json!(["operation","path"]))]}})
 }
 pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
@@ -123,7 +123,7 @@ mod tests {
         let mut confirmation_bounds = Vec::new();
         max_lengths(&confirm.schema, &mut confirmation_bounds);
 
-        assert_eq!(proposal_bounds, vec![256; 4]);
+        assert_eq!(proposal_bounds, vec![256; 6]);
         assert_eq!(confirmation_bounds, vec![256]);
     }
 }

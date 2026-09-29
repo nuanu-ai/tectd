@@ -94,6 +94,139 @@ fn input() -> EngineeringMatrixInput {
         urgent_repair: known(false),
     }
 }
+
+#[test]
+fn positive_commitment_is_a_digest_bound_promise_not_a_measured_status() {
+    let mut patches = declarations();
+    patches[5] = set(DeclaredRequirementValue::DemandCommitment(
+        "100 requests per second".into(),
+    ));
+    patches[6] = set(DeclaredRequirementValue::LatencyCommitment(
+        "p95 under 200 ms".into(),
+    ));
+    let first = MatrixRequirementsProposal::new(program(), 1, patches.clone(), recorder()).unwrap();
+    let replay =
+        MatrixRequirementsProposal::new(program(), 1, patches.clone(), recorder()).unwrap();
+    assert_eq!(first.digest(), replay.digest());
+    let mut changed = patches.clone();
+    changed[5] = set(DeclaredRequirementValue::DemandCommitment(
+        "200 requests per second".into(),
+    ));
+    assert_ne!(
+        first.digest(),
+        MatrixRequirementsProposal::new(program(), 1, changed, recorder())
+            .unwrap()
+            .digest()
+    );
+    let confirmed = revision(program(), 1, patches, true);
+    let context = resolve_matrix_requirements(
+        &[program()],
+        std::slice::from_ref(&confirmed),
+        MATRIX_REQUIREMENTS_SCHEMA,
+    )
+    .unwrap();
+    let context_replay =
+        resolve_matrix_requirements(&[program()], &[confirmed], MATRIX_REQUIREMENTS_SCHEMA)
+            .unwrap();
+    assert_eq!(context.semantic_digest(), context_replay.semantic_digest());
+    let mut operating = input();
+    operating.demand_commitment = known(CommitmentEvidence::ExceedsVerifiedLimit);
+    operating.latency_commitment = known(CommitmentEvidence::WithinVerifiedLimit);
+    let required = required_matrix_operating_facts(&context, &operating).unwrap();
+    assert!(
+        required
+            .iter()
+            .any(|fact| fact.path == "/demand_commitment")
+    );
+    assert!(
+        required
+            .iter()
+            .any(|fact| fact.path == "/latency_commitment")
+    );
+    let composition =
+        compose_declared_requirements_matrix(&context, "task".into(), "1".into(), &operating)
+            .unwrap();
+    assert!(
+        composition
+            .mandatory_cards
+            .iter()
+            .any(|card| card.id == "EM02-CAPACITY@0.1")
+    );
+    assert!(
+        !composition.is_resolved(),
+        "a promise and caller claim are not verification"
+    );
+
+    operating.demand_commitment = known(CommitmentEvidence::NoCommitment);
+    assert!(bind_matrix_requirements_input(&context, &operating).is_err());
+    operating.demand_commitment = known(CommitmentEvidence::LacksEvidence);
+    assert!(required_matrix_operating_facts(&context, &operating).is_err());
+
+    let mut without_promise = declarations();
+    without_promise.remove(5);
+    let missing = resolve_matrix_requirements(
+        &[program()],
+        &[revision(program(), 1, without_promise, true)],
+        MATRIX_REQUIREMENTS_SCHEMA,
+    )
+    .unwrap();
+    operating.demand_commitment = known(CommitmentEvidence::ExceedsVerifiedLimit);
+    assert!(bind_matrix_requirements_input(&missing, &operating).is_err());
+    let old = resolve_matrix_requirements(
+        &[program()],
+        &[revision(program(), 1, declarations(), true)],
+        MATRIX_REQUIREMENTS_SCHEMA,
+    )
+    .unwrap();
+    assert!(bind_matrix_requirements_input(&old, &operating).is_err());
+    assert!(matches!(
+        bind_matrix_requirements_input(&old, &input())
+            .unwrap()
+            .demand_commitment,
+        MatrixFact::Known {
+            value: CommitmentEvidence::NoCommitment,
+            ..
+        }
+    ));
+    assert_eq!(
+        serde_json::to_value(DeclaredRequirementValue::NoDemandCommitment).unwrap(),
+        serde_json::json!({"kind":"no_demand_commitment"})
+    );
+}
+
+#[test]
+fn positive_commitment_statement_requires_canonical_bounded_text() {
+    for statement in [
+        "",
+        " ",
+        " leading",
+        "trailing ",
+        "line\nbreak",
+        &"x".repeat(257),
+    ] {
+        assert!(
+            MatrixRequirementsProposal::new(
+                program(),
+                1,
+                vec![set(DeclaredRequirementValue::DemandCommitment(
+                    statement.into()
+                ))],
+                recorder(),
+            )
+            .is_err()
+        );
+    }
+    let statement = "x".repeat(256);
+    assert!(
+        MatrixRequirementsProposal::new(
+            program(),
+            1,
+            vec![set(DeclaredRequirementValue::LatencyCommitment(statement))],
+            recorder(),
+        )
+        .is_ok()
+    );
+}
 #[test]
 fn exact_confirmation_binding_rejects_wrong_revision_digest_and_empty_response() {
     let p = MatrixRequirementsProposal::new(program(), 1, declarations(), recorder()).unwrap();

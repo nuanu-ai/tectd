@@ -167,9 +167,10 @@ fn has_overlong_declaration_text(arguments: &Value) -> bool {
                 Some("intent") => value
                     .and_then(|value| value.get("value"))
                     .and_then(|value| value.get("description")),
-                Some("urgency" | "promised_behavior" | "promised_proof") => {
-                    value.and_then(|value| value.get("value"))
-                }
+                Some(
+                    "urgency" | "promised_behavior" | "promised_proof" | "demand_commitment"
+                    | "latency_commitment",
+                ) => value.and_then(|value| value.get("value")),
                 _ => None,
             };
             text.and_then(Value::as_str)
@@ -196,6 +197,23 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<MatrixRequirementsCo
                 .map_err(Error::invalid_arguments_from)?;
                 if let StrictIntent::Other(description) = intent
                     && description.trim().is_empty()
+                {
+                    return Err(Error::InvalidArguments);
+                }
+            }
+            if let Some(value) = patch.get("value")
+                && matches!(
+                    value.get("kind").and_then(Value::as_str),
+                    Some("demand_commitment" | "latency_commitment")
+                )
+            {
+                let statement = value
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .ok_or(Error::InvalidArguments)?;
+                if statement.is_empty()
+                    || statement.trim() != statement
+                    || statement.chars().any(char::is_control)
                 {
                     return Err(Error::InvalidArguments);
                 }
@@ -276,6 +294,21 @@ mod tests {
         assert!(parse("matrix_context_propose", bad).is_err());
     }
     #[test]
+    fn positive_commitment_patch_is_a_bounded_promise_only() {
+        let id = "00000000-0000-4000-8000-000000000001";
+        let mut request = json!({"request_id":id,"locator":{"level":"program","program_id":id},"expected_context_revision":0,"patches":[{"operation":"set","value":{"kind":"demand_commitment","value":"100 requests per second"}}]});
+        assert!(parse("matrix_context_propose", request.clone()).is_ok());
+        request["patches"][0]["value"] =
+            json!({"kind":"latency_commitment","value":"p95 under 200 ms"});
+        assert!(parse("matrix_context_propose", request.clone()).is_ok());
+        for statement in ["", " leading", "trailing ", "line\nbreak"] {
+            request["patches"][0]["value"]["value"] = json!(statement);
+            assert!(parse("matrix_context_propose", request.clone()).is_err());
+        }
+        request["patches"][0]["value"] = json!({"kind":"demand_commitment","value":"100 requests per second","verified_limit":true});
+        assert!(parse("matrix_context_propose", request).is_err());
+    }
+    #[test]
     fn effective_read_accepts_only_locator() {
         assert!(parse("matrix_context_effective_get", json!({"locator":{"level":"opened_slice","slice_id":"00000000-0000-4000-8000-000000000001"},"freeze":true})).is_err());
     }
@@ -289,6 +322,8 @@ mod tests {
             ("urgency", false),
             ("promised_behavior", false),
             ("promised_proof", false),
+            ("demand_commitment", false),
+            ("latency_commitment", false),
         ] {
             for length in [256, 257] {
                 let text = "x".repeat(length);
