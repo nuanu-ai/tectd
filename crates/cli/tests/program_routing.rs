@@ -106,6 +106,7 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "slice.candidates.context",
             "slice.context",
             "slice.pipeline.context",
+            "slice.pipeline.knowledge_page",
             "slice.pipeline.instruction",
             "knowledge.context",
             "knowledge.change",

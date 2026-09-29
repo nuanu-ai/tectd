@@ -13,7 +13,8 @@ ALLOWED = {
     "tect-application": {"tect-domain", "async-trait", "uuid", "sha2", "serde_json"},
     "tect-postgres": {
         "tect-domain", "tect-application", "async-trait", "sqlx", "uuid",
-        "sha2", "ring", "getrandom", "serde", "serde_json", "oxrdf",
+        # URL-safe Base64 encodes page cursors and byte fragments at the SQL adapter boundary.
+        "sha2", "ring", "getrandom", "serde", "serde_json", "oxrdf", "base64",
     },
     "tect-host": {
         "tect-domain", "tect-application", "serde", "serde_json", "tokio",
