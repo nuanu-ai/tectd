@@ -14,7 +14,7 @@ use tect_application::{
 };
 use tect_domain::{Error, PipelineRecommendationRanking, Result};
 
-pub(super) const CALL_ID: &str = "tectd-jev-pipeline-s03-effect-2026-09-29-6";
+pub(super) const CALL_ID: &str = "tectd-jev-pipeline-s03-effect-2026-09-29-7";
 
 pub(super) fn artifact_paths() -> (std::path::PathBuf, std::path::PathBuf) {
     let dir = std::path::PathBuf::from(
