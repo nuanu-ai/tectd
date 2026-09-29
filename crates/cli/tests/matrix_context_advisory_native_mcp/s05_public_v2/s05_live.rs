@@ -701,6 +701,10 @@ async fn s05_real_adviser_one_shot() {
                 "accept".into()
             )
         );
+        // Public GET is attempt-session scoped; the separate database read
+        // confirms the durable route distinction after fresh Owner disposition.
+        assert_eq!(saved.3["routes"]["recommended_route_id"], recommended);
+        assert_eq!(saved.3["routes"]["requested_route_id"], "route-a");
         assert!(saved.3["routes"]["observed_actual"].is_null());
         fresh.finish().await;
     } else {

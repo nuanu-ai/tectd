@@ -226,7 +226,18 @@ pub(super) async fn run(
                     "accept".into()
                 )
             );
+            // The read-only observer sees the persisted decision independently.
+            // Public GET is deliberately bound to the invoking attempt session.
+            assert_eq!(saved.3["routes"]["recommended_route_id"], "route-b");
+            assert_eq!(saved.3["routes"]["requested_route_id"], "route-a");
             assert!(saved.3["routes"]["observed_actual"].is_null());
+            let dispatches: i64 =
+                sqlx::query_scalar("SELECT count(*) FROM advisory_dispatch WHERE workspace_id=$1")
+                    .bind(workspace)
+                    .fetch_one(&observer)
+                    .await
+                    .unwrap();
+            assert_eq!(dispatches, 1, "only the synthetic Matrix adviser dispatch");
             fresh.finish().await;
         }
         "abstain" => {
@@ -256,12 +267,19 @@ pub(super) async fn run(
         }
         _ => unreachable!(),
     }
+    let final_dispositions: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM model_route_dispositions WHERE workspace_id=$1")
+            .bind(workspace)
+            .fetch_one(&observer)
+            .await
+            .unwrap();
+    assert_eq!(final_dispositions, i64::from(case == "ranked"));
     println!(
         "S05 loopback case={case} bytes={} sha256={digest} audit_state={} decisions={} dispositions={} actual=null",
         expected.len(),
         audit.0,
         counts.3,
-        counts.4
+        final_dispositions
     );
     observer.close().await;
 }
