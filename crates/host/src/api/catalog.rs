@@ -130,11 +130,14 @@ fn build_routes() -> Vec<RouteSpec> {
             "query",
             "slice.pipelines",
             "slice_pipelines",
-            "List the seven canonical Slice pipelines and their current execution availability.",
+            "List current Slice pipelines. Use view=summary for a compact index; omitted view keeps the complete catalogue.",
             "Requires host authentication.",
-            "Returns refined delivery metadata for executable definitions and explicit stub status for the rest; it starts no run.",
+            "The full view returns delivery metadata and definitions; the summary returns names, descriptions, execution owners, availability, revision and digest. It starts no run.",
             "Safe to repeat.",
-            object_schema(json!({}), json!([])),
+            object_schema(
+                json!({"view":{"type":"string","enum":["full","summary"]}}),
+                json!([])
+            ),
             json!({}),
         ),
         route!(

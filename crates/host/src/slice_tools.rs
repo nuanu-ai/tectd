@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 pub(crate) enum SliceInvocation {
     ScopeContext { scope_id: Uuid },
-    Pipelines,
+    Pipelines(PipelineView),
     CandidateContext(SliceCandidateContextQuery),
     OpenScope(OpenScope),
     SaveDraft(SaveSliceCandidateDraft),
@@ -19,6 +19,21 @@ pub(crate) enum SliceInvocation {
     OpenSlice(OpenSlice),
     SliceContext { slice_id: Uuid },
     RecordResult(RecordSliceResult),
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PipelineView {
+    #[default]
+    Full,
+    Summary,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PipelineArguments {
+    #[serde(default)]
+    view: PipelineView,
 }
 
 #[derive(Deserialize)]
@@ -56,7 +71,9 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<SliceInvocation> {
                 },
             )
         }
-        "slice_pipelines" if empty_object(&arguments) => Ok(SliceInvocation::Pipelines),
+        "slice_pipelines" => {
+            decode(arguments).map(|args: PipelineArguments| SliceInvocation::Pipelines(args.view))
+        }
         "slice_candidate_context" => {
             let query: SliceCandidateContextQuery = decode(arguments)?;
             if query.after.is_some_and(|after| after < 0) || query.limit == 0 || query.limit > 100 {
@@ -86,10 +103,6 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<SliceInvocation> {
 
 fn decode<T: for<'de> Deserialize<'de>>(arguments: Value) -> Result<T> {
     serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)
-}
-
-fn empty_object(value: &Value) -> bool {
-    value.as_object().is_some_and(serde_json::Map::is_empty)
 }
 
 fn reject_optional_nulls(value: &Value) -> Result<()> {
@@ -134,10 +147,19 @@ mod tests {
     #[test]
     fn slice_routes_use_strict_known_shapes() {
         let id = "00000000-0000-4000-8000-000000000001";
-        assert!(parse("slice_pipelines", json!({})).is_ok());
+        assert!(matches!(
+            parse("slice_pipelines", json!({})),
+            Ok(SliceInvocation::Pipelines(PipelineView::Full))
+        ));
+        assert!(matches!(
+            parse("slice_pipelines", json!({"view":"summary"})),
+            Ok(SliceInvocation::Pipelines(PipelineView::Summary))
+        ));
         assert!(parse("scope_context", json!({"scope_id":id})).is_ok());
         assert!(parse("slice_context", json!({"slice_id":id})).is_ok());
         assert!(parse("slice_pipelines", json!({"extra":true})).is_err());
+        assert!(parse("slice_pipelines", json!({"view":null})).is_err());
+        assert!(parse("slice_pipelines", json!({"view":"unknown"})).is_err());
         assert!(parse("scope_context", json!({"scope_id":id,"extra":true})).is_err());
         assert!(parse("slice_context", json!({"slice_id":id,"extra":true})).is_err());
         assert!(
