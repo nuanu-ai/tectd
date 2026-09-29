@@ -275,6 +275,48 @@ async fn public_s02_approved_artifact_to_independently_verified_planning_effect(
          b.source='system-observation:synthetic-42' AND b.content_digest=$3 AND b.evidence_ref=$4",
     ).bind(workspace).bind(task).bind(&digest).bind(&reference).fetch_one(&pool).await.unwrap();
     assert_eq!(sourced_bindings as usize, facts.len());
+
+    // The saved verification cannot authorize advice once its approved bytes change.
+    let altered_body = body.replacen(
+        "system-observation:synthetic-42",
+        "system-observation:synthetic-43",
+        1,
+    );
+    assert_ne!(altered_body, body);
+    let altered = sqlx::query(
+        "UPDATE pipeline_evidence_artifacts SET body=$1 \
+         WHERE tenant_id=$2 AND workspace_id=$3 AND artifact_id=$4 AND revision=1",
+    )
+    .bind(&altered_body)
+    .bind(enrolled.tenant_id)
+    .bind(workspace)
+    .bind(artifact_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(altered.rows_affected(), 1);
+    let stale = advice(
+        &mut owner,
+        task,
+        &format!("stale-artifact-{}", Uuid::new_v4()),
+    )
+    .await;
+    assert_eq!(stale["state"], "no_call", "{stale}");
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert_eq!(budgets.load(Ordering::SeqCst), 0);
+
+    let restored = sqlx::query(
+        "UPDATE pipeline_evidence_artifacts SET body=$1 \
+         WHERE tenant_id=$2 AND workspace_id=$3 AND artifact_id=$4 AND revision=1",
+    )
+    .bind(&body)
+    .bind(enrolled.tenant_id)
+    .bind(workspace)
+    .bind(artifact_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(restored.rows_affected(), 1);
     let advice_key = format!("approved-{}", Uuid::new_v4());
     let advised = advice(&mut owner, task, &advice_key).await;
     assert_eq!(advised["state"], "advised", "{advised}");
