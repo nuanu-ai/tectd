@@ -165,6 +165,7 @@ impl MatrixAdviceProvider for Provider {
                 ranked_candidate_ids: vec!["a".into(), "b".into()],
                 recommended_candidate_id: "a".into(),
             },
+            trial_evidence: None,
             input_tokens: Some(3),
             output_tokens: Some(4),
         })

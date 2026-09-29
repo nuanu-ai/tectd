@@ -395,10 +395,13 @@ fn retained_s02_native_response_is_strict_abstention_but_robust_trial_ranking() 
         json!({}),
     )
     .binding;
-    assert!(matches!(
-        trial_provider.parse_response(binding, &prepared, raw.into_bytes()),
-        Err(Error::Forbidden)
-    ));
+    let parsed = trial_provider
+        .parse_response(binding, &prepared, raw.into_bytes())
+        .unwrap();
+    assert!(matches!(parsed.ranking, MatrixRanking::Ranked { .. }));
+    let evidence = parsed.trial_evidence.unwrap();
+    assert!(evidence.low_loser_confidence);
+    assert_eq!(evidence.scores.len(), 2);
 }
 
 #[test]

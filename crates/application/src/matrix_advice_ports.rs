@@ -29,12 +29,12 @@ pub struct GuardedMatrixAdviceRecord {
     /// response data as evidence of what was received.
     pub raw_response_payload: Vec<u8>,
     pub response_payload_sha256: String,
-    /// Canonical digest of schema version, full binding, and typed outcome.
-    /// It deliberately excludes occurrence IDs and raw transport bytes.
+    /// Strict receipts use the legacy binding/outcome digest. Versioned trial
+    /// receipts additionally bind occurrence, dispatch, response hash, and
+    /// complete reviewable uncertainty.
     pub advice_digest: String,
     pub outcome: GuardedMatrixAdviceOutcome,
-    /// Absent for every legacy/strict receipt. Trial Ranked remains blocked
-    /// at host and store boundaries until public uncertainty readback exists.
+    /// Absent for every legacy/strict receipt.
     pub trial_evidence: Option<MatrixTrialRankingEvidence>,
 }
 
@@ -74,7 +74,17 @@ impl GuardedMatrixAdviceRecord {
             }
         };
         let binding = request.binding().clone();
-        let advice_digest = canonical_matrix_advice_digest(&binding, &outcome)?;
+        let advice_digest = match &response.trial_evidence {
+            Some(evidence) => canonical_matrix_trial_advice_digest(
+                &binding,
+                &outcome,
+                evidence,
+                opportunity_id,
+                dispatch_id,
+                &response.response_payload_sha256,
+            )?,
+            None => canonical_matrix_advice_digest(&binding, &outcome)?,
+        };
         let record = Self {
             opportunity_id,
             dispatch_id,
@@ -86,7 +96,7 @@ impl GuardedMatrixAdviceRecord {
             response_payload_sha256: response.response_payload_sha256,
             advice_digest,
             outcome,
-            trial_evidence: None,
+            trial_evidence: response.trial_evidence,
         };
         record.validate_for(
             opportunity_id,

@@ -356,7 +356,7 @@ impl RevalidatedMatrixVerification {
 
 include!("advisory_ports/matrix_request.rs");
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MatrixProviderResponse {
     pub binding: MatrixProviderBinding,
     pub provider_profile_ref: AdvisoryProviderProfileRef,
@@ -367,12 +367,14 @@ pub struct MatrixProviderResponse {
     pub raw_response_payload: Vec<u8>,
     pub response_payload_sha256: String,
     pub ranking: MatrixRanking,
+    /// Complete typed uncertainty only for a versioned two-option trial rank.
+    pub trial_evidence: Option<tect_domain::MatrixTrialRankingEvidence>,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
 }
 
 /// Opaque transport evidence. No ranking interpretation occurs at this seam.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MatrixProviderObservation {
     pub response_payload: Option<Vec<u8>>,
     pub http_status: Option<u16>,
@@ -399,20 +401,7 @@ impl From<&MatrixProviderObservation> for crate::AdvisoryProviderReceiptObservat
     }
 }
 
-impl MatrixProviderResponse {
-    pub fn validate_for(&self, request: &MatrixProviderRequest) -> Result<()> {
-        if self.binding != request.binding
-            || self.provider_profile_ref != request.provider_profile_ref
-            || self.model_configuration != request.model_configuration
-            || self.raw_response_payload.is_empty()
-            || self.response_payload_sha256
-                != format!("{:x}", sha2::Sha256::digest(&self.raw_response_payload))
-        {
-            return Err(Error::InvalidArguments);
-        }
-        self.ranking.validate(&request.eligibility)
-    }
-}
+include!("advisory_ports/matrix_response_validation.rs");
 
 #[async_trait]
 pub trait MatrixAdviceProvider: Send + Sync {

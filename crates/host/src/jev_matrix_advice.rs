@@ -160,6 +160,7 @@ impl MatrixAdviceProvider for JevMatrixSavedResponseParser {
             raw_response_payload: response.clone(),
             response_payload_sha256: response_hash,
             ranking: parsed.ranking,
+            trial_evidence: None,
             input_tokens: parsed.input_tokens,
             output_tokens: parsed.output_tokens,
         };

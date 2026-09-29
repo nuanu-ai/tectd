@@ -77,6 +77,7 @@ async fn owner_reported_matrix_never_prepares_even_with_budget() {
             ranked_candidate_ids: vec!["a".into(), "b".into()],
             recommended_candidate_id: "a".into(),
         },
+        trial_evidence: None,
         input_tokens: None,
         output_tokens: None,
     };

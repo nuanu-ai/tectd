@@ -176,6 +176,7 @@ impl MatrixAdviceProvider for Provider {
             response_payload_sha256: format!("{:x}", Sha256::digest(&raw)),
             raw_response_payload: raw,
             ranking,
+            trial_evidence: None,
             input_tokens: Some(3),
             output_tokens: Some(4),
         })

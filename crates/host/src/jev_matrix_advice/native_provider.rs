@@ -18,8 +18,8 @@ use tect_application::{
 };
 use tect_domain::{
     AdvisoryDispatchOutcome, AdvisoryDispatchState, AdvisorySendCertainty, Error,
-    MatrixAdviceEligibility, MatrixRanking, Result, compose_native_matrix_ranking,
-    evaluate_native_matrix_robust_trial,
+    MatrixAdviceEligibility, MatrixRanking, MatrixTrialRankingEvidence, Result,
+    compose_native_matrix_ranking, evaluate_native_matrix_robust_trial,
 };
 
 use super::{MatrixRankingBinding, native_wire};
@@ -119,19 +119,23 @@ impl JevNativeMatrixProvider {
             prepared,
             self.config.maximum_response_bytes,
         )?;
-        let ranking = match self.config.provider_identity.ranking_policy {
-            MatrixRankingPolicy::StrictV1 => {
-                compose_native_matrix_ranking(&prepared.eligibility, &parsed.signals)?
-            }
+        let (ranking, trial_evidence) = match self.config.provider_identity.ranking_policy {
+            MatrixRankingPolicy::StrictV1 => (
+                compose_native_matrix_ranking(&prepared.eligibility, &parsed.signals)?,
+                None,
+            ),
             MatrixRankingPolicy::RobustTrialV1 => {
                 let trial =
                     evaluate_native_matrix_robust_trial(&prepared.eligibility, &parsed.signals)?;
-                // Packet 3 must persist/publicly expose uncertainty before a
-                // trial recommendation may become usable advice.
-                if matches!(trial.ranking, MatrixRanking::Ranked { .. }) {
-                    return Err(Error::Forbidden);
-                }
-                trial.ranking
+                let evidence = if matches!(trial.ranking, MatrixRanking::Ranked { .. }) {
+                    Some(MatrixTrialRankingEvidence::from_evaluation(
+                        &parsed.signals,
+                        &trial,
+                    )?)
+                } else {
+                    None
+                };
+                (trial.ranking, evidence)
             }
         };
         Ok(MatrixProviderResponse {
@@ -141,6 +145,7 @@ impl JevNativeMatrixProvider {
             response_payload_sha256: format!("{:x}", Sha256::digest(&bytes)),
             raw_response_payload: bytes,
             ranking,
+            trial_evidence,
             input_tokens: Some(parsed.input_tokens),
             output_tokens: Some(parsed.output_tokens),
         })

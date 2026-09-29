@@ -7,12 +7,127 @@ use tect_application::{
     canonical_matrix_trial_advice_digest,
 };
 use tect_domain::{PipelineKind, RequiredMatrixFact};
+use tect_host::jev_matrix_advice::native_provider::{
+    JevNativeMatrixConfig, JevNativeMatrixProvider,
+};
 use tect_host::jev_pipeline_recommendation::{JevPipelineSavedResponseParser, WIRE_VERSION};
 use tect_postgres::{ApprovedMatrixEvidenceArtifact, PgMatrixEvidenceValidator};
 use url::Url;
 
 #[path = "s02_approved_artifact/s02_live.rs"]
 mod s02_live;
+
+/// Supplies controlled bytes only after the normal signed dispatch/permit.
+/// The real native parser still validates the saved request and response;
+/// no HTTP request or JEV credential is used by this fixture.
+struct SyntheticNativeTrialProvider {
+    parser: JevNativeMatrixProvider,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl MatrixAdviceProvider for SyntheticNativeTrialProvider {
+    fn identity(&self) -> Option<MatrixProviderIdentity> {
+        self.parser.identity()
+    }
+
+    fn prepare(&self, request: &MatrixProviderRequest) -> Result<PreparedMatrixAdviceAttempt> {
+        self.parser.prepare(request)
+    }
+
+    fn parse_sealed_response(
+        &self,
+        request: &MatrixProviderRequest,
+        saved: &tect_application::StoredMatrixDispatch,
+    ) -> Result<MatrixProviderResponse> {
+        self.parser.parse_sealed_response(request, saved)
+    }
+
+    fn sealed_response_usage(
+        &self,
+        saved: &tect_application::StoredMatrixDispatch,
+    ) -> tect_application::MatrixProviderUsage {
+        self.parser.sealed_response_usage(saved)
+    }
+
+    async fn attempt_prepared(
+        &self,
+        _prepared: PreparedMatrixAdviceAttempt,
+        _permit: MatrixStartedDispatchPermit,
+    ) -> Result<MatrixProviderResponse> {
+        Err(tect_domain::Error::Forbidden)
+    }
+
+    async fn observe_prepared(
+        &self,
+        prepared: PreparedMatrixAdviceAttempt,
+        permit: MatrixStartedDispatchPermit,
+    ) -> Result<tect_application::MatrixProviderObservation> {
+        if !permit.permits_prepared(&prepared) {
+            return Err(tect_domain::Error::InputConflict);
+        }
+        let invocation = self.calls.fetch_add(1, Ordering::SeqCst);
+        let request: Value = serde_json::from_slice(prepared.body()).unwrap();
+        let mut answers = serde_json::Map::new();
+        let loser = if invocation == 0 {
+            ("C1", 4, 0.5)
+        } else {
+            ("C1", 8, 0.9)
+        };
+        for (token, level, confidence) in [("C0", 8, 0.9), loser] {
+            let question = format!("score_v1_{token}");
+            let legend = request["questions"][&question]["criteria"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+                .map(|(index, value)| (index.to_string(), value.clone()))
+                .collect::<serde_json::Map<_, _>>();
+            let probabilities = (0..10)
+                .map(|index| {
+                    (
+                        index.to_string(),
+                        json!(if index == level { 1.0 } else { 0.0 }),
+                    )
+                })
+                .collect::<serde_json::Map<_, _>>();
+            answers.insert(
+                question,
+                json!({
+                    "type":"score","score":level,"legend":legend,
+                    "probabilities":probabilities,"confidence":confidence,
+                }),
+            );
+        }
+        answers.insert(
+            "choice_v1".into(),
+            json!({
+                "type":"choice","choice":"C0",
+                "probabilities":{"C0":0.8,"C1":0.1,"ABSTAIN":0.1},
+                "confidence":0.8,
+            }),
+        );
+        let raw = serde_json::to_vec(&json!({
+            "model":request["model"],"answers":answers,
+            "usage":{"input_tokens":20,"output_tokens":30},
+        }))
+        .unwrap();
+        Ok(tect_application::MatrixProviderObservation {
+            response_payload: Some(raw.clone()),
+            http_status: Some(200),
+            input_tokens: None,
+            output_tokens: None,
+            legacy_response: None,
+            response_complete: true,
+            original_transport_context: Some(tect_application::AdvisoryProviderTransportContext {
+                send_certainty: tect_domain::AdvisorySendCertainty::Sent,
+                outcome: tect_domain::AdvisoryDispatchOutcome::ProviderResponse,
+                raw_response_ref: Some(format!("sha256:{:x}", Sha256::digest(&raw))),
+                provider_failure_code: None,
+            }),
+        })
+    }
+}
 
 fn relaunch_with_isolated_codex_home(test_name: &str) -> bool {
     let root = std::env::var("TECT_TEST_ISOLATED_ROOT").ok();
@@ -900,6 +1015,176 @@ async fn public_s02_approved_artifact_to_independently_verified_planning_effect(
             .to_string()
             .contains("synthetic private response")
     );
+    // A THIRD opportunity takes the actual signed native request and saved
+    // response parser path. Only its provider observation is synthetic; this
+    // wrapper has no network transport and never holds a real JEV credential.
+    let native_socket = root.join("matrix-native-trial.sock");
+    let native_calls = Arc::new(AtomicUsize::new(0));
+    let native_parser = JevNativeMatrixProvider::new(
+        JevNativeMatrixConfig {
+            provider_identity: MatrixProviderIdentity {
+                provider_profile_ref: tect_domain::AdvisoryProviderProfileRef {
+                    id: PROFILE.into(),
+                },
+                model_configuration: tect_domain::AdvisoryModelConfiguration {
+                    model: MODEL.into(),
+                },
+                destination: "https://api.typesafe.ai/v1/systemone".into(),
+                wire_version: "tect.matrix-typesafe-native/1".into(),
+                ranking_policy: tect_application::MatrixRankingPolicy::RobustTrialV1,
+            },
+            endpoint: "https://api.typesafe.ai/v1/systemone".parse().unwrap(),
+            timeout: std::time::Duration::from_secs(3),
+            maximum_request_bytes: 512 * 1024,
+            maximum_response_bytes: 64 * 1024,
+        },
+        "synthetic-fixture-never-sent".into(),
+    )
+    .unwrap();
+    let native_service = Arc::new(
+        WorkspaceService::new(
+            Arc::new(
+                PgStore::connect(&runtime_url, 4)
+                    .await
+                    .unwrap()
+                    .with_budget_owner_keys(owner_keys.clone()),
+            ),
+            Arc::new(tect_host::GitSourceInspector),
+            Arc::new(tect_host::LocalSetupFiles),
+        )
+        .with_matrix_evidence_validator(Arc::new(PgMatrixEvidenceValidator::new(
+            PgPool::connect_with(PgConnectOptions::from_str(&runtime_url).unwrap())
+                .await
+                .unwrap(),
+            approval.clone(),
+        )))
+        .with_matrix_advisory_adapters(
+            Arc::new(SyntheticNativeTrialProvider {
+                parser: native_parser,
+                calls: native_calls.clone(),
+            }),
+            Arc::new(Budget(budgets.clone())),
+        ),
+    );
+    let native_listener = UnixListener::bind(&native_socket).unwrap();
+    std::fs::set_permissions(&native_socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let native_server = tokio::spawn(tect_host::serve(native_listener, native_service));
+    let mut native_owner = Mcp::start(
+        &native_socket,
+        &owner_host,
+        &Uuid::new_v4().to_string(),
+        &workspace_key,
+    )
+    .await;
+    native_owner.call("open_workspace", json!({})).await;
+    let mut native_verifier = Mcp::start(
+        &native_socket,
+        &verifier_host,
+        &Uuid::new_v4().to_string(),
+        &workspace_key,
+    )
+    .await;
+    native_verifier.call("open_workspace", json!({})).await;
+    let native_key = format!("native-trial-{}", Uuid::new_v4());
+    let native_advised = advice(&mut native_owner, task, &native_key).await;
+    assert_eq!(native_advised["state"], "advised", "{native_advised}");
+    assert_eq!(native_calls.load(Ordering::SeqCst), 1);
+    let native_owner_read = route(
+        &mut native_owner,
+        "query",
+        "engineering.advisory.get",
+        json!({"task_id":task,"request_key":native_key}),
+    )
+    .await;
+    let native_verifier_read = route(
+        &mut native_verifier,
+        "query",
+        "engineering.advisory.get",
+        json!({"task_id":task,"request_key":native_key}),
+    )
+    .await;
+    assert_eq!(
+        native_owner_read["current_advice"],
+        native_verifier_read["current_advice"]
+    );
+    assert_eq!(
+        native_owner_read["current_advice"]["outcome"]["status"],
+        "ranked"
+    );
+    assert_eq!(
+        native_owner_read["current_advice"]["trial_uncertainty"]["policy_version"],
+        tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION
+    );
+    assert_eq!(
+        native_owner_read["current_advice"]["trial_uncertainty"]["low_loser_confidence"],
+        true
+    );
+    assert_eq!(
+        native_owner_read["current_advice"]["trial_uncertainty"]["digest_linkage"]["advice_digest"],
+        native_owner_read["current_advice"]["advice_digest"]
+    );
+    let native_dispatch = id(&native_owner_read["current_advice"]["dispatch_id"]);
+    let durable: (String, String, String, bool, i64) = sqlx::query_as(
+        "SELECT d.state,d.send_certainty,a.ranking_policy_version, \
+         a.trial_uncertainty IS NOT NULL, \
+         (SELECT count(*) FROM advisory_budget_reservations r WHERE r.dispatch_id=d.id) \
+         FROM advisory_dispatch d JOIN advisory_matrix_advice a ON a.dispatch_id=d.id \
+         WHERE d.workspace_id=$1 AND d.id=$2",
+    )
+    .bind(workspace)
+    .bind(native_dispatch)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        durable,
+        (
+            "sealed".into(),
+            "sent".into(),
+            tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION.into(),
+            true,
+            1,
+        )
+    );
+    let native_disposition = route(
+        &mut native_owner,
+        "command",
+        "engineering.matrix.disposition.record",
+        json!({
+            "request_id":Uuid::new_v4(),"task_id":task,"expected_task_revision":1,
+            "expected_input_digest":recorded["input_digest"],
+            "expected_choice_set_digest":recorded["choice_set_digest"],
+            "opportunity_id":native_advised["opportunity_id"],"basis":"after_advice",
+            "advice_id":native_owner_read["current_advice"]["advice_id"],
+            "advice_digest":native_owner_read["current_advice"]["advice_digest"],
+            "decision":{"outcome":"selected","selected_choice_id":"a"}
+        }),
+    )
+    .await;
+    assert_eq!(native_disposition["decision"]["selected_choice_id"], "a");
+    let overlap_key = format!("native-trial-overlap-{}", Uuid::new_v4());
+    let overlap = advice(&mut native_owner, task, &overlap_key).await;
+    assert_eq!(overlap["state"], "advised", "{overlap}");
+    let overlap_read = route(
+        &mut native_verifier,
+        "query",
+        "engineering.advisory.get",
+        json!({"task_id":task,"request_key":overlap_key}),
+    )
+    .await;
+    assert_eq!(
+        overlap_read["current_advice"]["outcome"]["status"],
+        "abstained"
+    );
+    assert!(
+        overlap_read["current_advice"]
+            .get("trial_uncertainty")
+            .is_none()
+    );
+    assert_eq!(native_calls.load(Ordering::SeqCst), 2);
+    native_verifier.finish().await;
+    native_owner.finish().await;
+    native_server.abort();
     independent.finish().await;
     owner.finish().await;
     server.abort();
