@@ -68,6 +68,7 @@ impl WorkspaceService {
             input: input.to_owned(),
             encoded_bytes: guard.input_bytes(input)?,
         };
+        tx.lock_knowledge_publisher().await?;
         let mut program = tx.ensure_program(workspace.id, session.id, &input).await?;
         let principal = tx.session_principal(session.id).await?;
         let method = guidance.planning_method();
@@ -154,6 +155,7 @@ impl WorkspaceService {
         let (mut tx, workspace, session) = self
             .program_transaction(context, TransactionMode::ReadWrite)
             .await?;
+        tx.lock_knowledge_publisher().await?;
         changes.validate()?;
         let current = tx
             .program(workspace.id, changes.program_id, true)
@@ -235,6 +237,7 @@ impl WorkspaceService {
         if program_id.is_nil() {
             return Err(Error::InvalidArguments);
         }
+        tx.lock_knowledge_publisher().await?;
         let current = tx
             .program(workspace.id, program_id, true)
             .await?
@@ -327,6 +330,7 @@ impl WorkspaceService {
         let (mut tx, workspace, session) = self
             .program_transaction(context, TransactionMode::ReadWrite)
             .await?;
+        tx.lock_knowledge_publisher().await?;
         let principal = tx.session_principal(session.id).await?;
         if let Some(program) = tx
             .program_knowledge_refresh_replay(workspace.id, principal, request)

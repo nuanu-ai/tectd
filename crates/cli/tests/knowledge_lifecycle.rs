@@ -9,6 +9,8 @@ mod knowledge_operation_support;
 mod planning_delivery;
 #[path = "knowledge_lifecycle/planning_pins.rs"]
 mod planning_pins;
+#[path = "knowledge_lifecycle/program_publisher_lock_order.rs"]
+mod program_publisher_lock_order;
 #[allow(dead_code)]
 mod recovery_support;
 #[path = "native_planning/support.rs"]
