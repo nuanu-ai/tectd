@@ -389,11 +389,29 @@ async fn task_source_revisions_replay_conflict_staleness_and_workspace_isolation
     .await;
     assert_eq!(after_choice_refusals, rev3);
 
+    let saved_preference = route(
+        &mut owner,
+        "command",
+        "session.advisory.preference.set",
+        json!({"expected_revision":0,"preference":"use_workspace"}),
+    )
+    .await;
+    assert_eq!(saved_preference["preference"], "use_workspace");
+    assert_eq!(saved_preference["revision"], 1);
+    assert_eq!(
+        route(
+            &mut owner,
+            "query",
+            "session.advisory.preference",
+            json!({})
+        )
+        .await,
+        saved_preference
+    );
     let advisory_key = format!("matrix-advisory-{}", Uuid::new_v4());
     let advisory_params = json!({
         "task_id":task_id,"expected_task_revision":3,
         "request_key":advisory_key,
-        "session_preference":"use_workspace",
         "request_preference":"use_workspace"
     });
     let no_call = route(
@@ -414,8 +432,9 @@ async fn task_source_revisions_replay_conflict_staleness_and_workspace_isolation
     assert_eq!(no_call["material_digest"].as_str().unwrap().len(), 64);
     let opportunity_id = Uuid::parse_str(no_call["opportunity_id"].as_str().unwrap()).unwrap();
     let workspace_id = Uuid::parse_str(opened["workspace"]["id"].as_str().unwrap()).unwrap();
-    let (capability, decision_point, dispatch_count): (String, String, i64) = sqlx::query_as(
-        "SELECT o.capability,o.decision_point, \
+    let (capability, decision_point, session_preference, dispatch_count):
+        (String, String, String, i64) = sqlx::query_as(
+        "SELECT o.capability,o.decision_point,o.session_preference, \
          (SELECT count(*) FROM advisory_dispatch d \
           WHERE d.tenant_id=o.tenant_id AND d.workspace_id=o.workspace_id AND d.opportunity_id=o.id) \
          FROM advisory_opportunity o \
@@ -429,6 +448,7 @@ async fn task_source_revisions_replay_conflict_staleness_and_workspace_isolation
     .unwrap();
     assert_eq!(capability, "engineering_profile");
     assert_eq!(decision_point, "engineering.profile.before_selection");
+    assert_eq!(session_preference, "use_workspace");
     assert_eq!(dispatch_count, 0, "terminal no-call must have no dispatch");
 
     let saved_no_call = route(
