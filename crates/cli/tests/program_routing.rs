@@ -127,6 +127,7 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "candidate.advisory.audit",
             "model.route.get",
             "engineering.matrix.context.effective.get",
+            "engineering.matrix.cards.get",
             "slice.pipeline.evidence_artifact.read"
         ])
     );
