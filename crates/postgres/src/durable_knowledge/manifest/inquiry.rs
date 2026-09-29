@@ -199,6 +199,7 @@ mod tests {
             access_scope: KnowledgeAccessScope::WorkspaceMembers,
             owner_ref: "owner".into(),
             authority_basis: "authority".into(),
+            graph_assertions: vec![],
             planning_briefs: vec![
                 PlanningBrief {
                     local_id: "program".into(),

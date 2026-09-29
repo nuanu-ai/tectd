@@ -5,6 +5,8 @@ use sha2::{Digest, Sha256};
 use tect_domain::*;
 use uuid::Uuid;
 
+#[path = "tests/graph_assertions.rs"]
+mod graph_assertions;
 mod planning;
 
 #[derive(Deserialize)]
@@ -66,6 +68,7 @@ fn document() -> KnowledgeDocumentDraft {
         access_scope: KnowledgeAccessScope::OwnersOnly,
         owner_ref: "owner".into(),
         authority_basis: "authority".into(),
+        graph_assertions: vec![],
         planning_briefs: vec![],
         valid_from: None,
         valid_until: None,

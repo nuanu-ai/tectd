@@ -103,6 +103,20 @@ fn graph_edges(
 ) -> Result<Vec<SearchEdge>> {
     let v2 = "urn:tect:dk:v2:";
     let mut values = Vec::new();
+    for assertion in &doc.graph_assertions {
+        let relation = match assertion.predicate {
+            KnowledgeGraphPredicate::BroaderConcept => KnowledgeSearchRelation::BroaderConcept,
+            KnowledgeGraphPredicate::ClassifiedAs => KnowledgeSearchRelation::ClassifiedAs,
+            KnowledgeGraphPredicate::HasEnvironment => KnowledgeSearchRelation::HasEnvironment,
+            KnowledgeGraphPredicate::AppliesTo => KnowledgeSearchRelation::AppliesTo,
+        };
+        values.push(edge(
+            &assertion.subject_iri,
+            &assertion.object_iri,
+            relation,
+            vec![assertion.predicate.iri()],
+        ));
+    }
     for iri in &doc.target_iris {
         values.push(edge(
             resource,

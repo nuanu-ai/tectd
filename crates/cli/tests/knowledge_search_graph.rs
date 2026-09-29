@@ -1,3 +1,5 @@
+#[path = "knowledge_search_graph/assertions.rs"]
+mod graph_assertions;
 #[path = "knowledge_search_graph/fixture.rs"]
 mod graph_fixture;
 #[path = "knowledge_search_graph/proof.rs"]
@@ -155,19 +157,17 @@ async fn native_graph_projection_ancestry_access_and_bounds_are_exact() {
             "phase_id":phase_id.clone()})
         )
     ]);
-    let rich = commit_create(
-        &mut owner,
-        document(
-            "Graph rich public",
-            "workspace_members",
-            bindings,
-            shared,
-            dependency,
-            environment,
-            Some(asset),
-        ),
-    )
-    .await;
+    let mut rich_document = document(
+        "Graph rich public",
+        "workspace_members",
+        bindings,
+        shared,
+        dependency,
+        environment,
+        Some(asset),
+    );
+    graph_assertions::add(&mut rich_document);
+    let rich = commit_create(&mut owner, rich_document).await;
     let rich_id = Uuid::parse_str(
         rich.receipt["applied_operations"][0]["unit_id"]
             .as_str()
@@ -223,6 +223,7 @@ async fn native_graph_projection_ancestry_access_and_bounds_are_exact() {
     .unwrap();
 
     let v2 = "urn:tect:dk:v2:";
+    graph_assertions::verify(&mut owner, rich_id, &rich.exact["document"]["revision_iri"]).await;
     assert_edge(
         &mut owner,
         rich_id,

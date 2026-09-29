@@ -67,6 +67,10 @@ pub enum KnowledgeSearchRelation {
     InEnvironment,
     DerivedFrom,
     BoundTo,
+    BroaderConcept,
+    ClassifiedAs,
+    HasEnvironment,
+    AppliesTo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

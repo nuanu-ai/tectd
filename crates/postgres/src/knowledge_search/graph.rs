@@ -76,6 +76,22 @@ pub(super) fn traverse(
                 break;
             }
             edges_visited += 1;
+            let mut target_path = path.clone();
+            target_path.push(hop.clone());
+            if matches!(
+                hop.relation,
+                KnowledgeSearchRelation::BroaderConcept
+                    | KnowledgeSearchRelation::ClassifiedAs
+                    | KnowledgeSearchRelation::HasEnvironment
+                    | KnowledgeSearchRelation::AppliesTo
+            ) {
+                paths
+                    .entry(hop.supporting_unit_id)
+                    .or_insert_with(|| KnowledgeGraphPath {
+                        seed_iri: seed.clone(),
+                        hops: target_path.clone(),
+                    });
+            }
             if visited.contains(target) {
                 continue;
             }
@@ -84,8 +100,6 @@ pub(super) fn traverse(
                 break;
             }
             visited.insert(target.clone());
-            let mut target_path = path.clone();
-            target_path.push(hop.clone());
             queue.push_back((seed.clone(), target.clone(), target_path));
         }
         if budget_exhausted {
@@ -239,5 +253,66 @@ mod tests {
         assert_eq!(path.hops[0].from_iri, source);
         assert_eq!(path.hops[0].to_iri, target);
         assert!(path.hops[0].traversed_in_reverse);
+    }
+
+    #[test]
+    fn assertion_edges_retrieve_supporting_unit_from_foreign_subjects_in_both_directions() {
+        let relations = [
+            (KnowledgeSearchRelation::BroaderConcept, "broaderConcept"),
+            (KnowledgeSearchRelation::ClassifiedAs, "classifiedAs"),
+            (KnowledgeSearchRelation::HasEnvironment, "hasEnvironment"),
+            (KnowledgeSearchRelation::AppliesTo, "appliesTo"),
+        ];
+        for (relation, name) in relations {
+            let unit = Uuid::new_v4();
+            let subject = format!("urn:example:{name}:subject");
+            let object = format!("urn:example:{name}:object");
+            let supporting_iri = format!("urn:tect:dk:unit:{unit}");
+            let support = resource(
+                unit,
+                &supporting_iri,
+                Some(SearchEdge {
+                    from: subject.clone(),
+                    to: object.clone(),
+                    relation,
+                    predicate_path: vec![format!("urn:tect:dk:v2:{name}")],
+                    binding: None,
+                }),
+            );
+            for (seed, direction, reverse) in [
+                (&subject, KnowledgeSearchDirection::Outgoing, false),
+                (&object, KnowledgeSearchDirection::Incoming, true),
+            ] {
+                let traversal = traverse(
+                    std::slice::from_ref(&support),
+                    std::slice::from_ref(seed),
+                    &[relation],
+                    direction,
+                    1,
+                );
+                let (found_unit, path) = traversal.paths.first().expect("supporting unit result");
+                assert_eq!(*found_unit, unit);
+                assert_eq!(path.seed_iri, *seed);
+                assert_eq!(path.hops.len(), 1);
+                let hop = &path.hops[0];
+                assert_eq!(hop.from_iri, subject);
+                assert_eq!(hop.to_iri, object);
+                assert_eq!(hop.traversed_in_reverse, reverse);
+                assert_eq!(hop.relation, relation);
+                assert_eq!(hop.supporting_unit_id, unit);
+                assert_eq!(hop.supporting_revision, 1);
+                assert_eq!(hop.supporting_revision_iri, support.revision_iri);
+                assert_eq!(hop.predicate_path, vec![format!("urn:tect:dk:v2:{name}")]);
+            }
+            let filtered = traverse(
+                &[support],
+                &[subject],
+                &[KnowledgeSearchRelation::Targets],
+                KnowledgeSearchDirection::Outgoing,
+                1,
+            );
+            assert!(filtered.paths.is_empty());
+            assert_eq!(filtered.edges_visited, 0);
+        }
     }
 }

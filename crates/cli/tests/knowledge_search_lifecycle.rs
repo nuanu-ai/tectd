@@ -6,6 +6,8 @@ mod knowledge_lifecycle_support;
 mod knowledge_operation_support;
 #[allow(dead_code)]
 mod recovery_support;
+#[path = "knowledge_search_lifecycle/shared_assertion.rs"]
+mod shared_assertion;
 #[path = "native_planning/support.rs"]
 #[allow(dead_code)]
 mod support;
