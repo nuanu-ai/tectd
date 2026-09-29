@@ -21,9 +21,9 @@ use tect_host::jev_matrix_advice::native_provider::{
 };
 use tect_host::jev_matrix_advice::native_wire::NATIVE_MATRIX_WIRE_VERSION;
 
-// -1 and -2 failed before dispatch; -3 sent once but failed closed on unknown usage.
-// All three one-use markers remain spent.
-const CALL_ID: &str = "tectd-jev-matrix-s02-mvp-2026-09-29-4";
+// -1 and -2 failed before dispatch; -3 and -4 each sent once but failed closed.
+// All four one-use markers remain spent.
+const CALL_ID: &str = "tectd-jev-matrix-s02-mvp-2026-09-29-5";
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 const PROFILE_ENV: &str = "JEV_MATRIX_PROFILE_ID";
 const MODEL: &str = "jev-1.13.0";

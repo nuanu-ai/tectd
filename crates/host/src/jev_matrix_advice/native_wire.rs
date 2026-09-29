@@ -18,6 +18,8 @@ const CHOICE_QUESTION_ID: &str = "choice_v1";
 const ABSTAIN_TOKEN: &str = "ABSTAIN";
 const DISTRIBUTION_TOLERANCE: f64 = 1e-6;
 const WEIGHTED_SCORE_TOLERANCE: f64 = 1e-6;
+const CENT_HALF: f64 = 0.005;
+const FLOAT_EPSILON: f64 = 1e-9;
 const SCORE_LEVELS: [&str; 10] = [
     "0: incompatible with the recorded facts",
     "1: very poor fit",
@@ -219,11 +221,12 @@ pub fn parse_native_response(
         let probabilities = probabilities(
             answer.get("probabilities").ok_or(Error::InvalidArguments)?,
             &support,
+            true,
         )?;
         let weighted = (0..10)
             .map(|level| level as f64 * probabilities[&level.to_string()])
             .sum::<f64>();
-        if (weighted - score).abs() > WEIGHTED_SCORE_TOLERANCE {
+        if !score_consistent_with_probabilities(score, weighted, &probabilities) {
             return Err(Error::InvalidArguments);
         }
         candidate_scores.push(NativeMatrixCandidateScore {
@@ -254,6 +257,7 @@ pub fn parse_native_response(
     let probabilities = probabilities(
         answer.get("probabilities").ok_or(Error::InvalidArguments)?,
         &support,
+        false,
     )?;
     let selected_probability = *probabilities.get(selected).ok_or(Error::InvalidArguments)?;
     if probabilities
@@ -290,6 +294,56 @@ pub fn parse_native_response(
     })
 }
 
+// The API reports an expected Score and level probabilities separately. If
+// both are cent-quantized, their independently rounded values can differ from
+// the mean of the displayed probabilities. Accept only a score reachable by
+// probabilities within half a cent of each displayed level, normalized to 1.
+// Higher-precision values retain the previous exact consistency contract.
+fn score_consistent_with_probabilities(
+    score: f64,
+    weighted: f64,
+    probabilities: &BTreeMap<String, f64>,
+) -> bool {
+    let cent = |value: f64| (value * 100.0 - (value * 100.0).round()).abs() <= FLOAT_EPSILON;
+    if !cent(score) || !probabilities.values().all(|value| cent(*value)) {
+        return (weighted - score).abs() <= WEIGHTED_SCORE_TOLERANCE;
+    }
+    let mut lower = [0.0; 10];
+    let mut upper = [0.0; 10];
+    for level in 0..10 {
+        let value = probabilities[&level.to_string()];
+        lower[level] = (value - CENT_HALF).max(0.0);
+        upper[level] = (value + CENT_HALF).min(1.0);
+    }
+    let Some(minimum) = feasible_score_bound(&lower, &upper, false) else {
+        return false;
+    };
+    let Some(maximum) = feasible_score_bound(&lower, &upper, true) else {
+        return false;
+    };
+    minimum <= score + CENT_HALF + FLOAT_EPSILON && maximum + FLOAT_EPSILON >= score - CENT_HALF
+}
+
+fn feasible_score_bound(lower: &[f64; 10], upper: &[f64; 10], maximize: bool) -> Option<f64> {
+    let mut remaining = 1.0 - lower.iter().sum::<f64>();
+    if remaining < -FLOAT_EPSILON || upper.iter().sum::<f64>() < 1.0 - FLOAT_EPSILON {
+        return None;
+    }
+    remaining = remaining.max(0.0);
+    let mut score = lower
+        .iter()
+        .enumerate()
+        .map(|(level, value)| level as f64 * value)
+        .sum::<f64>();
+    for index in 0..10 {
+        let level = if maximize { 9 - index } else { index };
+        let added = remaining.min(upper[level] - lower[level]);
+        score += level as f64 * added;
+        remaining -= added;
+    }
+    (remaining <= FLOAT_EPSILON).then_some(score)
+}
+
 fn object_with_keys<'a>(
     value: &'a Value,
     keys: &[&str],
@@ -309,7 +363,11 @@ fn number(value: &Value, maximum: f64) -> Result<f64> {
     Ok(value)
 }
 
-fn probabilities(value: &Value, support: &BTreeSet<String>) -> Result<BTreeMap<String, f64>> {
+fn probabilities(
+    value: &Value,
+    support: &BTreeSet<String>,
+    cent_rounded_score: bool,
+) -> Result<BTreeMap<String, f64>> {
     let object = value.as_object().ok_or(Error::InvalidArguments)?;
     if object.len() != support.len() || object.keys().any(|key| !support.contains(key)) {
         return Err(Error::InvalidArguments);
@@ -321,7 +379,21 @@ fn probabilities(value: &Value, support: &BTreeSet<String>) -> Result<BTreeMap<S
             number(object.get(key).ok_or(Error::InvalidArguments)?, 1.0)?,
         );
     }
-    if (result.values().sum::<f64>() - 1.0).abs() > DISTRIBUTION_TOLERANCE {
+    let cent = |value: f64| (value * 100.0 - (value * 100.0).round()).abs() <= FLOAT_EPSILON;
+    let normalized = if cent_rounded_score && result.values().all(|value| cent(*value)) {
+        let lower = result
+            .values()
+            .map(|value| (value - CENT_HALF).max(0.0))
+            .sum::<f64>();
+        let upper = result
+            .values()
+            .map(|value| (value + CENT_HALF).min(1.0))
+            .sum::<f64>();
+        lower <= 1.0 + FLOAT_EPSILON && upper >= 1.0 - FLOAT_EPSILON
+    } else {
+        (result.values().sum::<f64>() - 1.0).abs() <= DISTRIBUTION_TOLERANCE
+    };
+    if !normalized {
         return Err(Error::InvalidArguments);
     }
     Ok(result)

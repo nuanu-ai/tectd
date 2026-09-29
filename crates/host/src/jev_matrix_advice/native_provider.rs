@@ -13,7 +13,8 @@ use sha2::{Digest, Sha256};
 use tect_application::{
     MAX_PREPARED_MATRIX_BODY_BYTES, MatrixAdviceProvider, MatrixProviderIdentity,
     MatrixProviderObservation, MatrixProviderRequest, MatrixProviderResponse, MatrixProviderUsage,
-    MatrixStartedDispatchPermit, PreparedMatrixAdviceAttempt, StoredMatrixDispatch,
+    MatrixStartedDispatchPermit, MatrixVerificationAuthority, PreparedMatrixAdviceAttempt,
+    StoredMatrixDispatch,
 };
 use tect_domain::{
     AdvisoryDispatchOutcome, AdvisoryDispatchState, AdvisorySendCertainty, Error,
@@ -243,25 +244,8 @@ impl MatrixAdviceProvider for JevNativeMatrixProvider {
         let request_hash = format!("{:x}", Sha256::digest(&saved.request_payload));
         let response_hash = format!("{:x}", Sha256::digest(response));
         let snapshot = &saved.configuration_snapshot;
-        let policy_id = snapshot
-            .get("budget_policy_id")
-            .and_then(Value::as_str)
-            .ok_or(Error::InvalidArguments)?;
-        if policy_id.is_empty() || policy_id.len() > 256 || policy_id.trim() != policy_id {
-            return Err(Error::InvalidArguments);
-        }
-        let expected_snapshot = json!({
-            "provider_profile_ref": self.config.provider_identity.provider_profile_ref,
-            "model_configuration": self.config.provider_identity.model_configuration,
-            "destination": self.config.provider_identity.destination,
-            "wire_version": native_wire::NATIVE_MATRIX_WIRE_VERSION,
-            "budget_policy_id": policy_id,
-            "request_body_length": saved.request_payload.len(),
-            "request_body_sha256": request_hash,
-            "budget_policy": validated_budget_header(snapshot, policy_id)?,
-        });
         let snapshot_bytes = serde_json::to_vec(snapshot).map_err(|_| Error::InvalidArguments)?;
-        if snapshot != &expected_snapshot
+        if !native_snapshot_matches(&self.config.provider_identity, saved, &request_hash)?
             || snapshot_bytes.len() > 8 * 1024
             || saved.request_payload_sha256 != request_hash
             || saved.response_payload_sha256.as_deref() != Some(response_hash.as_str())
@@ -347,6 +331,63 @@ impl MatrixAdviceProvider for JevNativeMatrixProvider {
             output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
         }
     }
+}
+
+fn native_snapshot_matches(
+    identity: &MatrixProviderIdentity,
+    saved: &StoredMatrixDispatch,
+    request_hash: &str,
+) -> Result<bool> {
+    let snapshot = &saved.configuration_snapshot;
+    let policy_id = snapshot
+        .get("budget_policy_id")
+        .and_then(Value::as_str)
+        .ok_or(Error::InvalidArguments)?;
+    if policy_id.is_empty() || policy_id.len() > 256 || policy_id.trim() != policy_id {
+        return Err(Error::InvalidArguments);
+    }
+    Ok(snapshot == &expected_native_snapshot(identity, saved, policy_id, request_hash)?)
+}
+
+fn expected_native_snapshot(
+    identity: &MatrixProviderIdentity,
+    saved: &StoredMatrixDispatch,
+    policy_id: &str,
+    request_hash: &str,
+) -> Result<Value> {
+    let mut snapshot = json!({
+        "provider_profile_ref": identity.provider_profile_ref,
+        "model_configuration": identity.model_configuration,
+        "destination": identity.destination,
+        "wire_version": native_wire::NATIVE_MATRIX_WIRE_VERSION,
+        "budget_policy_id": policy_id,
+        "request_body_length": saved.request_payload.len(),
+        "request_body_sha256": request_hash,
+        "budget_policy": validated_budget_header(&saved.configuration_snapshot, policy_id)?,
+    });
+    match &saved.binding.verification {
+        MatrixVerificationAuthority::ContextV2 {
+            digest,
+            snapshot_id,
+            authority_schema,
+            semantic_digest,
+        } => {
+            snapshot["matrix_authority"] = json!({
+                "schema": "tect.context-matrix-verification/1",
+                "verification_digest": digest,
+                "frozen_snapshot_id": snapshot_id,
+                "authority_schema": authority_schema,
+                "requirements_semantic_digest": semantic_digest,
+            });
+            snapshot["advisory_correlation"] = json!({
+                "opportunity_id": saved.dispatch.opportunity_id,
+                "dispatch_id": saved.dispatch.id,
+            });
+        }
+        MatrixVerificationAuthority::LegacyV1 { .. } => {}
+        MatrixVerificationAuthority::Unverified => return Err(Error::InvalidArguments),
+    }
+    Ok(snapshot)
 }
 
 // Application owns signature verification and exact committed policy binding.

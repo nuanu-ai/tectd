@@ -115,6 +115,36 @@ fn fractional_score_is_weighted_mean_without_quantization() {
 }
 
 #[test]
+fn cent_rounded_score_accepts_only_feasible_expected_value() {
+    let mut value = response();
+    value["answers"]["score_v1_C0"]["probabilities"]["7"] = json!(0.05);
+    value["answers"]["score_v1_C0"]["probabilities"]["8"] = json!(0.85);
+    value["answers"]["score_v1_C0"]["probabilities"]["9"] = json!(0.10);
+    value["answers"]["score_v1_C0"]["score"] = json!(8.00); // displayed mean is 8.05
+    assert!((parse(&value).unwrap().signals.candidate_scores[0].score - 8.05).abs() < 1e-9);
+    value["answers"]["score_v1_C0"]["score"] = json!(7.70);
+    assert_eq!(parse(&value), Err(Error::InvalidArguments));
+    value["answers"]["score_v1_C0"]["score"] = json!(8.00);
+    value["answers"]["score_v1_C0"]["probabilities"]["8"] = json!(0.851);
+    value["answers"]["score_v1_C0"]["probabilities"]["9"] = json!(0.099);
+    assert_eq!(parse(&value), Err(Error::InvalidArguments));
+}
+
+#[test]
+fn cent_rounded_distribution_requires_feasible_normalization() {
+    let mut value = response();
+    value["answers"]["score_v1_C1"]["probabilities"]["4"] = json!(0.99);
+    assert!(parse(&value).is_ok());
+    value["answers"]["score_v1_C1"]["probabilities"]["4"] = json!(0.90);
+    assert_eq!(parse(&value), Err(Error::InvalidArguments));
+    value["answers"]["score_v1_C1"]["probabilities"]["4"] = json!(0.999);
+    assert_eq!(parse(&value), Err(Error::InvalidArguments));
+    value = response();
+    value["answers"]["choice_v1"]["probabilities"]["C0"] = json!(0.79);
+    assert_eq!(parse(&value), Err(Error::InvalidArguments));
+}
+
+#[test]
 fn explicit_abstain_is_preserved_as_signal() {
     let mut value = response();
     value["answers"]["choice_v1"]["choice"] = json!("ABSTAIN");
