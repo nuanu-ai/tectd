@@ -94,7 +94,21 @@ pub(super) async fn exercise_prepare(
             .unwrap()
             .is_empty()
     );
-    assert_eq!(manifest["evidence_refs"], json!([]));
+    let verified_refs: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT b.evidence_ref FROM matrix_verification_bindings b \
+         JOIN matrix_verifications v ON (v.tenant_id,v.workspace_id,v.id)= \
+             (b.tenant_id,b.workspace_id,b.verification_id) \
+         WHERE v.workspace_id=$1 AND v.task_id=$2 AND v.task_revision=1 \
+           AND v.schema='tect.context-matrix-verification/1' \
+         ORDER BY b.evidence_ref",
+    )
+    .bind(workspace)
+    .bind(task)
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert!(!verified_refs.is_empty());
+    assert_eq!(manifest["evidence_refs"], json!(verified_refs));
     let options = manifest["options"].as_array().unwrap();
     assert_eq!(options.len(), 7);
     assert_eq!(

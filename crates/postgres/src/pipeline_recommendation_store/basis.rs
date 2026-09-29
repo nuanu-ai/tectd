@@ -1,5 +1,12 @@
 use super::*;
 
+fn inspectable_evidence_refs<'a>(refs: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut refs: Vec<_> = refs.into_iter().map(str::to_owned).collect();
+    refs.sort();
+    refs.dedup();
+    refs
+}
+
 pub(super) async fn load_pipeline_recommendation_basis(
     uow: &mut PgUnitOfWork,
     workspace_id: Uuid,
@@ -301,6 +308,15 @@ pub(super) async fn load_pipeline_recommendation_basis(
         .iter()
         .map(|card| card.id.to_string())
         .collect();
+    // The record was checked against this exact task/revision and evaluated
+    // for complete, unexpired accepted bindings above. These are inspectable
+    // references, not an additional claim that a pipeline check passed.
+    let evidence_refs = inspectable_evidence_refs(
+        verification
+            .bindings
+            .iter()
+            .map(|binding| binding.evidence_ref.as_str()),
+    );
     let source = PipelineRecommendationSource {
         work,
         current_work_revision: work_revision,
@@ -323,7 +339,7 @@ pub(super) async fn load_pipeline_recommendation_basis(
         catalogue,
         definitions: Vec::new(),
         compatibility_policy: PipelineCompatibilityPolicy::unavailable(),
-        evidence_refs: Vec::new(),
+        evidence_refs,
     };
     Ok(Some(PipelineRecommendationBasis {
         scope_id,
@@ -341,4 +357,22 @@ pub(super) async fn load_pipeline_recommendation_basis(
         match_effect_attestation_id: row.try_get("attestation_id").map_err(storage_error)?,
         source,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inspectable_evidence_refs;
+
+    #[test]
+    fn verified_refs_are_sorted_and_deduplicated() {
+        assert_eq!(
+            inspectable_evidence_refs(["evidence:z", "evidence:a", "evidence:z"]),
+            ["evidence:a", "evidence:z"]
+        );
+    }
+
+    #[test]
+    fn no_verified_refs_adds_no_inspectable_reference() {
+        assert!(inspectable_evidence_refs(std::iter::empty()).is_empty());
+    }
 }
