@@ -152,7 +152,6 @@ pub(super) async fn typed(
             needs_context,
         ),
     };
-    let expected = rdf::build(&input)?;
     let latest = latest_validation(tx, tenant, workspace, row.unit_id, row.revision).await?;
     let valid_until = latest
         .as_ref()
@@ -173,8 +172,8 @@ pub(super) async fn typed(
             lifecycle: decode(serde_json::Value::String(row.lifecycle.clone()))?,
             access_scope: decode(serde_json::Value::String(row.head_access.clone()))?,
             rdf_digest: row.rdf_digest.clone().ok_or(Error::InternalInvariant)?,
-            unit_iri: expected.refs.unit,
-            revision_iri: expected.refs.revision,
+            unit_iri: verified.refs.unit.clone(),
+            revision_iri: verified.refs.revision.clone(),
             title: document.title.clone(),
             canonical_text,
             knowledge_kind: document.knowledge_kind,

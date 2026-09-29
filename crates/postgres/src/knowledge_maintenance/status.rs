@@ -10,6 +10,42 @@ pub(crate) async fn current_unit_review_status(
     unit: Uuid,
     revision: i64,
 ) -> Result<KnowledgeUnitReviewStatus> {
+    current_unit_review_status_core(tx, tenant, workspace, principal, unit, revision, None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn current_unit_review_status_with_rows(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    unit: Uuid,
+    revision: i64,
+    event: Uuid,
+    rows: &[serde_json::Value],
+) -> Result<KnowledgeUnitReviewStatus> {
+    current_unit_review_status_core(
+        tx,
+        tenant,
+        workspace,
+        principal,
+        unit,
+        revision,
+        Some((event, rows)),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn current_unit_review_status_core(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    unit: Uuid,
+    revision: i64,
+    supplied: Option<(Uuid, &[serde_json::Value])>,
+) -> Result<KnowledgeUnitReviewStatus> {
     require_identity(tx).await?;
     let row: Option<StatusRow> = sqlx::query_as(
         "SELECT h.accepted_revision,h.lifecycle,h.access_scope,r.access_scope, \
@@ -37,18 +73,28 @@ pub(crate) async fn current_unit_review_status(
     if head_erased || erased || matches!(lifecycle.as_str(), "erased" | "erasure_pending") {
         return Err(Error::KnowledgePayloadErased);
     }
-    let response = crate::knowledge_lifecycle::unit(
-        tx,
-        tenant,
-        workspace,
-        principal,
-        &KnowledgeUnitQuery {
-            unit_id: unit,
-            revision: Some(revision),
-            fragment: None,
-        },
-    )
-    .await?
+    if supplied.is_some_and(|(expected_event, _)| expected_event != event) {
+        return Err(Error::ContextChanged);
+    }
+    let query = KnowledgeUnitQuery {
+        unit_id: unit,
+        revision: Some(revision),
+        fragment: None,
+    };
+    let response = if let Some((expected_event, rows)) = supplied {
+        crate::knowledge_lifecycle::unit_with_rows(
+            tx,
+            tenant,
+            workspace,
+            principal,
+            &query,
+            expected_event,
+            rows,
+        )
+        .await?
+    } else {
+        crate::knowledge_lifecycle::unit(tx, tenant, workspace, principal, &query).await?
+    }
     .ok_or(Error::NotFound)?;
     let (valid_from, mut valid_until, mut review_due_at, access_scope) = match response {
         KnowledgeUnitResponse::Document(value) => (

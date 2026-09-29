@@ -173,7 +173,7 @@ pub(super) async fn require_new_revalidation_evidence(
     .map_err(storage_error)?;
     let mut accepted = BTreeSet::new();
     for payload in payloads {
-        let input: rdf::RdfPublicationInput = decode(payload)?;
+        let (input, _, _) = rdf::decode_event(payload)?;
         accepted.extend(
             input
                 .resolved_sources
@@ -218,7 +218,7 @@ pub(super) async fn successor(
         let row:Option<(i64,Uuid,serde_json::Value)>=sqlx::query_as("SELECT h.accepted_revision,h.last_event_id,r.document_payload FROM knowledge_unit_heads h JOIN knowledge_revisions r ON r.tenant_id=h.tenant_id AND r.workspace_id=h.workspace_id AND r.unit_id=h.unit_id AND r.revision=h.accepted_revision WHERE h.tenant_id=$1 AND h.workspace_id=$2 AND h.unit_id=$3 AND h.lifecycle='active' AND h.contract_version='dk-2' AND NOT h.payload_erased AND NOT r.payload_erased")
             .bind(tenant).bind(workspace).bind(unit).fetch_optional(&mut **tx).await.map_err(storage_error)?;
         let (revision, event, document) = row.ok_or(Error::NeedsContext)?;
-        let document: KnowledgeDocumentDraft = decode(document)?;
+        let (document, _) = rdf::decode_document(document)?;
         let valid:bool=sqlx::query_scalar("SELECT ($1::timestamptz IS NULL OR $1::timestamptz<=pg_catalog.clock_timestamp()) AND ($2::timestamptz IS NULL OR $2::timestamptz>=pg_catalog.clock_timestamp())")
             .bind(&document.valid_from).bind(&document.valid_until).fetch_one(&mut **tx).await.map_err(storage_error)?;
         let verified = event::verify_native_publication_event(

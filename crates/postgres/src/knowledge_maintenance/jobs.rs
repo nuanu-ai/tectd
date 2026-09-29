@@ -423,7 +423,7 @@ pub(super) async fn basis_applies(
             .fetch_one(&mut **tx)
             .await
             .map_err(storage_error)?;
-            let value: KnowledgeDocumentDraft = decode(document)?;
+            let (value, _) = crate::knowledge_lifecycle::rdf::decode_document(document)?;
             Ok(value
                 .sections
                 .runbook

@@ -190,9 +190,9 @@ pub(crate) async fn capture(
         if document.planning_briefs.is_empty() {
             continue;
         }
-        let expected = rdf::build(&verified.input)?;
-        let native = rdf::native_rows(tx, tenant, workspace, unit, revision, event, true).await?;
-        rdf::validate_rows(&native, &expected)?;
+        // verify_publication_event already rebuilt the stored graph and
+        // compared every native row. Rebuilding as new input can reject an
+        // accepted historical document under today's semantic rules.
         let review = crate::knowledge_maintenance::current_unit_review_status(
             tx, tenant, workspace, principal, unit, revision,
         )
@@ -353,4 +353,70 @@ pub(crate) async fn capture(
     .await?;
     super::lineage::register_manifest_lineage(tx, tenant, workspace, id).await?;
     Ok(manifest)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::knowledge_lifecycle::rdf;
+
+    #[test]
+    fn historical_briefs_remain_available_after_stored_event_replay() {
+        let mut devops: serde_json::Value = serde_json::from_str(include_str!(
+            "../knowledge_lifecycle/rdf/fixtures/devops.json"
+        ))
+        .unwrap();
+        let planning: serde_json::Value = serde_json::from_str(include_str!(
+            "../knowledge_lifecycle/rdf/fixtures/planning-abstraction.json"
+        ))
+        .unwrap();
+        devops["document"]["planning_briefs"] = planning["document"]["planning_briefs"].clone();
+        devops["document"]["sections"]["devops"]["observations"] = serde_json::json!([]);
+        devops["document"]["schema_version"] = serde_json::json!(2);
+        devops["document"]["operational_refs"] = serde_json::json!({
+            "entity":{"kind":"knowledge_resource","iri":"urn:test:planning-resource"},
+            "entity_source_refs":[{
+                "source_index":0,
+                "fragment_iri":"urn:test:planning-source",
+                "sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }],
+            "assertions":[]
+        });
+        let payload = serde_json::json!({
+            "tenant":Uuid::from_u128(1),"workspace":Uuid::from_u128(2),
+            "change_id":Uuid::from_u128(3),"event_id":Uuid::from_u128(4),
+            "content_revision":1,
+            "planned":{
+                "operation_id":Uuid::from_u128(5),"unit_id":Uuid::from_u128(6),
+                "client_label":"historical planning","operation":"create",
+                "document":devops["document"],"replacement_bindings":[],
+                "reason":"historical planning","authority_basis":"fixture",
+                "dependency_operation_ids":[]
+            },
+            "principal_id":Uuid::from_u128(7),"session_id":Uuid::from_u128(8),
+            "resolved_sources":[{
+                "pin":{
+                    "source_index":0,"digest":"source-digest",
+                    "evidence_kind":"document","observed_at":null,
+                    "evidence_scope":"workspace","source_iri":"urn:test:planning-source"
+                },
+                "title":"source","uri":"urn:test:planning-source","text":"source"
+            }],
+            "successor_unit":null
+        });
+        let (input, operational, raw_document) = rdf::decode_event(payload).unwrap();
+        let briefs = &input.planned.document.as_ref().unwrap().planning_briefs;
+        assert_eq!(
+            briefs
+                .iter()
+                .filter(|brief| brief.stage == PlanningStage::Program)
+                .count(),
+            1
+        );
+        assert!(raw_document.unwrap().get("operational_refs").is_some());
+        assert!(rdf::build(&input).is_err());
+        let graph = rdf::build_stored(&input, operational.as_ref()).unwrap();
+        assert!(graph.payload.contains("planningBrief"));
+        assert!(graph.payload.contains("operationalEntity"));
+    }
 }

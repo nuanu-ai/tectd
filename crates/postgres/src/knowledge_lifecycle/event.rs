@@ -16,6 +16,8 @@ type PublicationEventRow = (
 pub(crate) struct VerifiedPublicationEvent {
     pub input: rdf::RdfPublicationInput,
     pub rdf_digest: String,
+    pub original_document: Option<serde_json::Value>,
+    pub refs: rdf::RdfRefs,
 }
 
 pub(crate) async fn verify_revision_guard(
@@ -101,6 +103,31 @@ pub(crate) async fn verify_publication_event(
     Ok(verified)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn verify_publication_event_with_rows(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    unit: Uuid,
+    revision: i64,
+    event: Uuid,
+    rows: &[serde_json::Value],
+) -> Result<VerifiedPublicationEvent> {
+    let verified = verify_publication_event_core(
+        tx,
+        tenant,
+        workspace,
+        unit,
+        revision,
+        event,
+        Some(rows),
+        true,
+    )
+    .await?;
+    verify_receipt_proof(tx, tenant, workspace, &verified).await?;
+    Ok(verified)
+}
+
 pub(crate) async fn verify_native_publication_event(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -108,6 +135,30 @@ pub(crate) async fn verify_native_publication_event(
     unit: Uuid,
     revision: i64,
     event: Uuid,
+    include_revision: bool,
+) -> Result<VerifiedPublicationEvent> {
+    verify_publication_event_core(
+        tx,
+        tenant,
+        workspace,
+        unit,
+        revision,
+        event,
+        None,
+        include_revision,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn verify_publication_event_core(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    unit: Uuid,
+    revision: i64,
+    event: Uuid,
+    supplied_rows: Option<&[serde_json::Value]>,
     include_revision: bool,
 ) -> Result<VerifiedPublicationEvent> {
     let row: Option<PublicationEventRow> = sqlx::query_as(
@@ -133,7 +184,8 @@ pub(crate) async fn verify_native_publication_event(
     if erased {
         return Err(Error::KnowledgePayloadErased);
     }
-    let input: rdf::RdfPublicationInput = decode(payload.ok_or(Error::InternalInvariant)?)?;
+    let (input, operational, original_document) =
+        rdf::decode_event(payload.ok_or(Error::InternalInvariant)?)?;
     let event_digest = event_digest.ok_or(Error::InternalInvariant)?;
     if event_unit != unit
         || event_revision != revision
@@ -148,22 +200,30 @@ pub(crate) async fn verify_native_publication_event(
     {
         return Err(Error::InternalInvariant);
     }
-    let expected = rdf::build(&input)?;
-    let rows = rdf::native_rows(
-        tx,
-        tenant,
-        workspace,
-        unit,
-        revision,
-        event,
-        include_revision,
-    )
-    .await?;
-    rdf::validate_rows(&rows, &expected)?;
+    let expected = rdf::build_stored(&input, operational.as_ref())?;
+    let fetched_rows;
+    let rows = if let Some(rows) = supplied_rows {
+        rows
+    } else {
+        fetched_rows = rdf::native_rows(
+            tx,
+            tenant,
+            workspace,
+            unit,
+            revision,
+            event,
+            include_revision,
+        )
+        .await?;
+        fetched_rows.as_slice()
+    };
+    rdf::validate_rows(rows, &expected)?;
 
     Ok(VerifiedPublicationEvent {
         input,
         rdf_digest: event_digest,
+        original_document,
+        refs: expected.refs,
     })
 }
 

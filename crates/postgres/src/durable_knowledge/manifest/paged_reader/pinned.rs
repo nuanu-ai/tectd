@@ -302,7 +302,7 @@ pub(crate) fn assemble(
         .document
         .as_ref()
         .ok_or(Error::InternalInvariant)?;
-    let rdf = crate::knowledge_lifecycle::rdf::build(&verified.input)?;
+    let refs = verified.refs;
     let (canonical_text, target_iris, conditions, exceptions, sections, inquiry_briefs) =
         if pin.projection.policy == PipelineKnowledgeProjectionPolicy::FullResources {
             (
@@ -344,8 +344,8 @@ pub(crate) fn assemble(
         lifecycle: pin.lifecycle,
         access_scope: pin.access_scope,
         rdf_digest: pin.rdf_digest.clone(),
-        unit_iri: rdf.refs.unit,
-        revision_iri: rdf.refs.revision,
+        unit_iri: refs.unit,
+        revision_iri: refs.revision,
         title: document.title.clone(),
         canonical_text,
         knowledge_kind: document.knowledge_kind,

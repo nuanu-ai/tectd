@@ -482,3 +482,232 @@ fn revise_keeps_legacy_unit_scaffold_without_reinserting_legacy_type() {
     );
     assert!(!document.payload.contains("urn:tect:dk:v2:KnowledgeUnit"));
 }
+
+#[test]
+fn stored_legacy_entity_and_sources_replay_the_operational_graph() {
+    let mut payload = serde_json::to_value(input()).unwrap();
+    let original = serde_json::json!({
+        "entity": {"kind":"knowledge_resource","iri":"urn:test:resource"},
+        "entity_source_refs": [{
+            "source_index":0,
+            "fragment_iri":"urn:source:original",
+            "sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }],
+        "assertions": []
+    });
+    payload["planned"]["document"]["schema_version"] = serde_json::json!(2);
+    payload["planned"]["document"]["operational_refs"] = original;
+    let raw_document = payload["planned"]["document"].clone();
+    assert!(serde_json::from_value::<RdfPublicationInput>(payload.clone()).is_err());
+    let (decoded, operational, preserved) = decode_event(payload).unwrap();
+    assert_eq!(preserved, Some(raw_document));
+    let graph = build_stored(&decoded, operational.as_ref()).unwrap();
+    assert!(
+        graph
+            .payload
+            .contains("urn:tectd:vocab:ops:v1:schemaVersion")
+    );
+    assert!(
+        graph
+            .payload
+            .contains("urn:tectd:vocab:ops:v1:operationalEntity")
+    );
+    assert!(graph.payload.contains("urn:tectd:vocab:ops:v1:sourceRef"));
+    assert!(
+        !build(&decoded)
+            .unwrap()
+            .payload
+            .contains("urn:tectd:vocab:ops:v1:")
+    );
+}
+
+#[test]
+fn stored_legacy_assertion_only_and_schema_only_replay() {
+    let mut payload = serde_json::to_value(input()).unwrap();
+    payload["planned"]["document"]["schema_version"] = serde_json::json!(2);
+    let (schema_only, refs, _) = decode_event(payload.clone()).unwrap();
+    assert!(refs.is_none());
+    assert!(
+        !build_stored(&schema_only, refs.as_ref())
+            .unwrap()
+            .payload
+            .contains("urn:tectd:vocab:ops:v1:schemaVersion")
+    );
+
+    payload["planned"]["document"]["operational_refs"] = serde_json::json!({
+        "entity": null,
+        "entity_source_refs": [],
+        "assertions": [{
+            "subject_iri":"urn:test:concept:a",
+            "subject_kind":"taxonomy_concept",
+            "predicate":"broader_concept",
+            "object_iri":"urn:test:concept:b",
+            "object_kind":"taxonomy_concept",
+            "state":"accepted",
+            "source_refs":[{
+                "source_index":0,
+                "fragment_iri":"urn:source:original",
+                "sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            }],
+            "reviewer_ref":"reviewer",
+            "review_receipt":"receipt",
+            "authority_basis":"authority",
+            "access_scope":"owners_only",
+            "asserted_at":"2026-09-14T00:00:00Z",
+            "observed_at":null,
+            "valid_from":null,
+            "valid_until":null,
+            "review_due_at":null
+        }]
+    });
+    let (decoded, refs, _) = decode_event(payload).unwrap();
+    let graph = build_stored(&decoded, refs.as_ref()).unwrap();
+    assert!(
+        graph
+            .payload
+            .contains("urn:tectd:vocab:ops:v1:operationalAssertion")
+    );
+    assert!(
+        graph
+            .payload
+            .contains("urn:tectd:vocab:ops:v1:broaderConcept")
+    );
+}
+
+#[test]
+fn stored_replay_encodes_historical_empty_observations_without_relaxing_new_input() {
+    let mut value = input();
+    value
+        .planned
+        .document
+        .as_mut()
+        .unwrap()
+        .sections
+        .devops
+        .as_mut()
+        .unwrap()
+        .observations
+        .clear();
+    assert!(matches!(build(&value), Err(Error::InvalidArguments)));
+    let stored = build_stored(&value, None).unwrap();
+    let observations = format!("{}:section:devops:list:observations", stored.refs.revision);
+    assert!(stored.payload.contains(&format!(
+        "<{observations}> <{}> <{V2}OrderedList>",
+        super::model::RDF_TYPE
+    )));
+    assert!(!stored.payload.contains(&format!(
+        "<{observations}> <{}> <{V2}RequiredList>",
+        super::model::RDF_TYPE
+    )));
+    validate_rows(&rows(&stored), &stored).unwrap();
+}
+
+#[test]
+fn stored_legacy_projection_rejects_unknown_or_malformed_fields() {
+    let current = serde_json::to_value(document()).unwrap();
+    assert!(decode_document(current.clone()).is_ok());
+    for (key, value) in [
+        ("schema_version", serde_json::json!(3)),
+        ("operational_refs", serde_json::json!({"unknown":true})),
+        ("unknown_legacy_field", serde_json::json!(true)),
+    ] {
+        let mut malformed = current.clone();
+        malformed[key] = value;
+        assert!(decode_document(malformed).is_err(), "{key}");
+    }
+    let mut malformed_nested = current;
+    malformed_nested["schema_version"] = serde_json::json!(2);
+    malformed_nested["operational_refs"] = serde_json::json!({
+        "entity":{"kind":"knowledge_resource","iri":"urn:test:resource","unknown":true},
+        "entity_source_refs":[],
+        "assertions":[]
+    });
+    assert!(decode_document(malformed_nested).is_err());
+}
+
+#[test]
+fn stored_source_scope_projects_only_matching_typed_legacy_values() {
+    let mut snapshot = serde_json::to_value(document()).unwrap();
+    snapshot["sources"][0]["snapshot"]["access_scope"] = serde_json::json!("owners_only");
+    let (projected, _) = decode_document(snapshot.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(projected).unwrap()["sources"][0]["snapshot"].get("access_scope"),
+        None
+    );
+    assert!(serde_json::from_value::<KnowledgeDocumentDraft>(snapshot.clone()).is_err());
+
+    for invalid in [
+        serde_json::json!("workspace_members"),
+        serde_json::json!("invalid"),
+    ] {
+        let mut value = snapshot.clone();
+        value["sources"][0]["snapshot"]["access_scope"] = invalid;
+        assert!(decode_document(value).is_err());
+    }
+    let mut unknown = snapshot.clone();
+    unknown["sources"][0]["snapshot"]["unknown"] = serde_json::json!(true);
+    assert!(decode_document(unknown).is_err());
+
+    let mut output = snapshot;
+    output["sources"][0] = serde_json::json!({
+        "kind":"pipeline_output",
+        "output":{
+            "run_id":"00000000-0000-4000-8000-000000000001",
+            "output_id":"00000000-0000-4000-8000-000000000002",
+            "digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "evidence_kind":"document",
+            "evidence_scope":"workspace",
+            "access_scope":"owners_only"
+        }
+    });
+    assert!(decode_document(output.clone()).is_ok());
+    output["sources"][0]["output"]["access_scope"] = serde_json::json!("workspace_members");
+    assert!(decode_document(output).is_err());
+}
+
+// Run against a restored database only. The transaction is read-only and
+// checks the exact stored native triples for every intact create/revise event;
+// it never publishes or rewrites a revision.
+#[tokio::test]
+#[ignore]
+async fn restored_legacy_events_match_native_rows() {
+    use sqlx::{Connection, Executor, postgres::PgConnectOptions};
+
+    let socket = std::env::var("TECT_JEV_REHEARSAL_SOCKET").unwrap();
+    let port = std::env::var("TECT_JEV_REHEARSAL_PORT")
+        .unwrap()
+        .parse::<u16>()
+        .unwrap();
+    let options = PgConnectOptions::new()
+        .host(&socket)
+        .port(port)
+        .username("tony")
+        .database("tectd");
+    let mut connection = sqlx::PgConnection::connect_with(&options).await.unwrap();
+    let mut tx = connection.begin().await.unwrap();
+    tx.execute("SET TRANSACTION READ ONLY").await.unwrap();
+    let events: Vec<(Uuid, Uuid, Uuid, i64, Uuid, serde_json::Value)> = sqlx::query_as(
+        "SELECT tenant_id,workspace_id,unit_id,unit_revision,id,event_payload \
+         FROM knowledge_publication_events WHERE contract_version='dk-2' \
+         AND NOT payload_erased AND operation IN ('create','revise') ORDER BY id",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    assert!(!events.is_empty());
+    for (tenant, workspace, unit, revision, event, payload) in events {
+        sqlx::query_scalar::<_, String>("SELECT set_config('tect.tenant_id',$1,true)")
+            .bind(tenant.to_string())
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        let (input, operational, _) =
+            decode_event(payload).unwrap_or_else(|error| panic!("{event}: decode {error:?}"));
+        let expected = build_stored(&input, operational.as_ref())
+            .unwrap_or_else(|error| panic!("{event}: build {error:?}"));
+        let rows = native_rows(&mut tx, tenant, workspace, unit, revision, event, true)
+            .await
+            .unwrap();
+        validate_rows(&rows, &expected).unwrap_or_else(|error| panic!("{event}: {error:?}"));
+    }
+}

@@ -108,6 +108,37 @@ pub(crate) async fn unit(
     principal: Uuid,
     query: &KnowledgeUnitQuery,
 ) -> Result<Option<KnowledgeUnitResponse>> {
+    unit_core(tx, tenant, workspace, principal, query, None).await
+}
+
+pub(crate) async fn unit_with_rows(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    query: &KnowledgeUnitQuery,
+    expected_event: Uuid,
+    rows: &[serde_json::Value],
+) -> Result<Option<KnowledgeUnitResponse>> {
+    unit_core(
+        tx,
+        tenant,
+        workspace,
+        principal,
+        query,
+        Some((expected_event, rows)),
+    )
+    .await
+}
+
+async fn unit_core(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    query: &KnowledgeUnitQuery,
+    supplied: Option<(Uuid, &[serde_json::Value])>,
+) -> Result<Option<KnowledgeUnitResponse>> {
     let row:Option<UnitRevisionRow>=sqlx::query_as(
         "SELECT h.lifecycle,h.access_scope,r.access_scope,r.revision,r.contract_version,r.payload_erased,r.document_payload,r.rdf_digest,r.unit_iri,r.revision_iri,r.publication_event_id FROM knowledge_unit_heads h JOIN knowledge_revisions r ON r.tenant_id=h.tenant_id AND r.workspace_id=h.workspace_id AND r.unit_id=h.unit_id AND r.revision=COALESCE($4,h.accepted_revision) WHERE h.tenant_id=$1 AND h.workspace_id=$2 AND h.unit_id=$3"
     ).bind(tenant).bind(workspace).bind(query.unit_id).bind(query.revision).fetch_optional(&mut **tx).await.map_err(storage_error)?;
@@ -138,7 +169,13 @@ pub(crate) async fn unit(
             },
         )));
     }
+    if supplied.is_some_and(|(expected_event, _)| expected_event != event) {
+        return Err(Error::ContextChanged);
+    }
     if contract == "dk-1" {
+        if supplied.is_some() {
+            return Err(Error::ContextChanged);
+        }
         return Ok(crate::durable_knowledge::context::load_revision(
             tx,
             tenant,
@@ -150,19 +187,25 @@ pub(crate) async fn unit(
         .await?
         .map(|value| KnowledgeUnitResponse::LegacyConstraint(Box::new(value))));
     }
-    let verified = event::verify_publication_event(
-        tx,
-        tenant,
-        workspace,
-        query.unit_id,
-        revision,
-        event,
-        true,
-    )
-    .await?;
+    let verified = if let Some((_, rows)) = supplied {
+        event::verify_publication_event_with_rows(
+            tx,
+            tenant,
+            workspace,
+            query.unit_id,
+            revision,
+            event,
+            rows,
+        )
+        .await?
+    } else {
+        event::verify_publication_event(tx, tenant, workspace, query.unit_id, revision, event, true)
+            .await?
+    };
+    let original_document = verified.original_document;
+    let refs = verified.refs;
     let input = verified.input;
-    let expected = rdf::build(&input)?;
-    if expected.refs.unit != unit_iri || expected.refs.revision != revision_iri {
+    if refs.unit != unit_iri || refs.revision != revision_iri {
         return Err(Error::InternalInvariant);
     }
     let verified_document = input
@@ -170,7 +213,7 @@ pub(crate) async fn unit(
         .document
         .as_ref()
         .ok_or(Error::InternalInvariant)?;
-    if document.as_ref() != Some(&json(verified_document)?) {
+    if document.as_ref() != original_document.as_ref() {
         return Err(Error::InternalInvariant);
     }
     if revision_rdf_digest.as_deref() != Some(verified.rdf_digest.as_str()) {

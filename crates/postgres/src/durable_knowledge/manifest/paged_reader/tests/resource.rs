@@ -28,6 +28,8 @@ pub(super) fn fixture() -> (
     }))
     .unwrap();
     let verified = crate::knowledge_lifecycle::VerifiedPublicationEvent {
+        original_document: None,
+        refs: crate::knowledge_lifecycle::rdf::build(&input).unwrap().refs,
         input,
         rdf_digest: "a".repeat(64),
     };

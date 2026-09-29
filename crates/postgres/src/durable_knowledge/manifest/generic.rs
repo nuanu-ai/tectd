@@ -1,5 +1,4 @@
 use super::super::*;
-use crate::knowledge_lifecycle::rdf;
 use sqlx::Row;
 use std::collections::{HashMap, HashSet};
 
@@ -40,6 +39,16 @@ struct BindingRow {
     rdf_digest: Option<String>,
     lifecycle: String,
     head_access: String,
+}
+
+struct ReviewPending {
+    resource: PipelineKnowledgeResource,
+    purpose: KnowledgeBindingPurpose,
+    review_due: bool,
+    dk2_event: Option<Uuid>,
+    gap_index: usize,
+    warning_index: usize,
+    boundary_index: usize,
 }
 
 fn binding(row: &BindingRow) -> Result<PipelineKnowledgeBindingPin> {
@@ -246,10 +255,14 @@ pub(super) async fn snapshot(
             }
         }
     }
+    let batch_rows = crate::knowledge_lifecycle::rdf::canonical_native_rows(
+        tx, tenant, workspace, principal, &keys,
+    )
+    .await?;
     let mut proofs = HashMap::new();
-    for (unit, revision, event) in keys {
-        let verified = crate::knowledge_lifecycle::verify_publication_event(
-            tx, tenant, workspace, unit, revision, event, true,
+    for ((unit, revision, event), rows) in keys.into_iter().zip(batch_rows) {
+        let verified = crate::knowledge_lifecycle::verify_publication_event_with_rows(
+            tx, tenant, workspace, unit, revision, event, &rows,
         )
         .await?;
         if proofs.insert((unit, revision, event), verified).is_some() {
@@ -261,6 +274,7 @@ pub(super) async fn snapshot(
     let mut gaps = Vec::new();
     let mut warnings = Vec::new();
     let mut temporal_boundaries = Vec::new();
+    let mut pending_reviews = Vec::new();
     for row in rows {
         if projection
             .as_ref()
@@ -399,41 +413,105 @@ pub(super) async fn snapshot(
             }
             continue;
         }
-        let review = crate::knowledge_maintenance::current_unit_review_status(
-            tx,
-            tenant,
-            workspace,
-            principal,
-            resource.unit_id,
-            resource.revision,
-        )
-        .await?;
-        for boundary in [
-            &review.valid_from,
-            &review.valid_until,
-            &review.review_due_at,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            temporal_boundaries.push(boundary.clone());
-        }
-        if review.needs_review {
-            if blocking(purpose) {
-                gaps.push(format!("knowledge_needs_review:{}", resource.unit_id));
+        pending_reviews.push(ReviewPending {
+            resource,
+            purpose,
+            review_due,
+            dk2_event: if row.revision_contract.as_deref() == Some("dk-2") {
+                Some(row.event_id.ok_or(Error::InternalInvariant)?)
             } else {
-                warnings.push(format!(
+                None
+            },
+            gap_index: gaps.len(),
+            warning_index: warnings.len(),
+            boundary_index: temporal_boundaries.len(),
+        });
+    }
+    // A second read is intentional under READ COMMITTED: review status has its
+    // own fresh publication proof, independent of the earlier resource proof.
+    let mut review_keys = Vec::new();
+    let mut review_indices = HashMap::new();
+    for pending in &pending_reviews {
+        if let Some(event) = pending.dk2_event {
+            let key = (pending.resource.unit_id, pending.resource.revision, event);
+            if let std::collections::hash_map::Entry::Vacant(entry) = review_indices.entry(key) {
+                entry.insert(review_keys.len());
+                review_keys.push(key);
+            }
+        }
+    }
+    let review_rows = crate::knowledge_lifecycle::rdf::canonical_native_rows(
+        tx,
+        tenant,
+        workspace,
+        principal,
+        &review_keys,
+    )
+    .await?;
+    if review_rows.len() != review_keys.len() {
+        return Err(Error::InternalInvariant);
+    }
+    let mut reviews = Vec::with_capacity(pending_reviews.len());
+    for pending in &pending_reviews {
+        let review = if let Some(event) = pending.dk2_event {
+            let key = (pending.resource.unit_id, pending.resource.revision, event);
+            let index = review_indices.get(&key).ok_or(Error::InternalInvariant)?;
+            crate::knowledge_maintenance::current_unit_review_status_with_rows(
+                tx,
+                tenant,
+                workspace,
+                principal,
+                pending.resource.unit_id,
+                pending.resource.revision,
+                event,
+                &review_rows[*index],
+            )
+            .await?
+        } else {
+            crate::knowledge_maintenance::current_unit_review_status(
+                tx,
+                tenant,
+                workspace,
+                principal,
+                pending.resource.unit_id,
+                pending.resource.revision,
+            )
+            .await?
+        };
+        reviews.push(review);
+    }
+    // Insert deferred results from the back to preserve the original binding
+    // walk's gap, warning, temporal-boundary, and selected-resource ordering.
+    for (pending, review) in pending_reviews.into_iter().zip(reviews).rev() {
+        let boundaries = [review.valid_from, review.valid_until, review.review_due_at]
+            .into_iter()
+            .flatten();
+        temporal_boundaries.splice(pending.boundary_index..pending.boundary_index, boundaries);
+        let mut review_warnings = Vec::new();
+        if review.needs_review {
+            if blocking(pending.purpose) {
+                gaps.insert(
+                    pending.gap_index,
+                    format!("knowledge_needs_review:{}", pending.resource.unit_id),
+                );
+            } else {
+                review_warnings.push(format!(
                     "optional_knowledge_needs_review:{}",
-                    resource.unit_id
+                    pending.resource.unit_id
                 ));
             }
         }
-        if review_due {
-            warnings.push(format!("review_due:{}", resource.unit_id));
+        if pending.review_due {
+            review_warnings.push(format!("review_due:{}", pending.resource.unit_id));
         }
-        has_dk2_selected |= row.revision_contract.as_deref() == Some("dk-2");
-        selected.push(resource);
+        warnings.splice(
+            pending.warning_index..pending.warning_index,
+            review_warnings,
+        );
+        has_dk2_selected |= pending.dk2_event.is_some();
+        selected.push(pending.resource);
     }
+    selected.reverse();
     let base_semantic_digest = digest(&(
         &definition_version,
         &definition_digest,

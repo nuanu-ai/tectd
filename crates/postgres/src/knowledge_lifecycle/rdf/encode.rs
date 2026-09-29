@@ -1,13 +1,21 @@
+use super::legacy_operational::OperationalReferencesDraft;
 use super::model::{Builder, DK, RDF_TYPE, RdfDocument, RdfRefs, V2};
 use super::sections;
 use super::{RdfPublicationInput, ResolvedSourcePayload};
 use serde::Serialize;
 use tect_domain::*;
 
+mod operational;
 mod planning;
 
-pub(super) fn build(input: &RdfPublicationInput) -> Result<RdfDocument> {
-    input.planned.validate()?;
+pub(super) fn build(
+    input: &RdfPublicationInput,
+    operational: Option<&OperationalReferencesDraft>,
+    validate_current_input: bool,
+) -> Result<RdfDocument> {
+    if validate_current_input {
+        input.planned.validate()?;
+    }
     if input.content_revision < 1 || input.change_id.is_nil() || input.event_id.is_nil() {
         return Err(Error::InvalidArguments);
     }
@@ -18,7 +26,7 @@ pub(super) fn build(input: &RdfPublicationInput) -> Result<RdfDocument> {
     let mut builder = Builder::new(refs);
     match input.planned.operation {
         KnowledgeLifecycleOperation::Create | KnowledgeLifecycleOperation::Revise => {
-            build_revision(&mut builder, input)?;
+            build_revision(&mut builder, input, operational)?;
         }
         KnowledgeLifecycleOperation::Revalidate
         | KnowledgeLifecycleOperation::Supersede
@@ -45,7 +53,11 @@ fn refs(input: &RdfPublicationInput) -> RdfRefs {
     }
 }
 
-fn build_revision(builder: &mut Builder, input: &RdfPublicationInput) -> Result<()> {
+fn build_revision(
+    builder: &mut Builder,
+    input: &RdfPublicationInput,
+    operational: Option<&OperationalReferencesDraft>,
+) -> Result<()> {
     let document = input
         .planned
         .document
@@ -146,6 +158,9 @@ fn build_revision(builder: &mut Builder, input: &RdfPublicationInput) -> Result<
         planning::encode_planning_briefs(builder, &revision, document)?;
     }
     sections::encode(builder, &revision, document)?;
+    if let Some(operational) = operational {
+        operational::encode(builder, &revision, operational)?;
+    }
     build_event(builder, input)?;
     builder.iri(
         &builder.refs.event.clone(),
@@ -447,10 +462,9 @@ pub(super) fn structured_list(
     if matches!(name, "sources" | "bindings" | "profiles") || name == "alternatives" && count > 0 {
         builder.iri(&list, RDF_TYPE, &format!("{V2}RequiredList"))?;
     }
-    if matches!(
-        name,
-        "steps" | "assertions" | "observations" | "roles" | "evidenceMap"
-    ) {
+    if matches!(name, "steps" | "assertions" | "roles" | "evidenceMap")
+        || name == "observations" && count > 0
+    {
         builder.iri(&list, RDF_TYPE, &format!("{V2}RequiredList"))?;
     }
     builder.integer(&list, &field("itemCount"), count as i64)?;

@@ -51,6 +51,55 @@ pub(crate) async fn native_rows(
         .map_err(native_error)
 }
 
+const CANONICAL_BATCH_LIMIT: usize = 512;
+
+fn group_canonical_rows(
+    count: usize,
+    rows: Vec<(i64, serde_json::Value)>,
+) -> Result<Vec<Vec<serde_json::Value>>> {
+    let mut grouped = vec![Vec::new(); count];
+    for (ordinal, triple) in rows {
+        let index = usize::try_from(ordinal)
+            .ok()
+            .and_then(|value| value.checked_sub(1))
+            .filter(|index| *index < count)
+            .ok_or(Error::InternalInvariant)?;
+        grouped[index].push(triple);
+    }
+    Ok(grouped)
+}
+
+pub(crate) async fn canonical_native_rows(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    keys: &[(Uuid, i64, Uuid)],
+) -> Result<Vec<Vec<serde_json::Value>>> {
+    let mut grouped = Vec::with_capacity(keys.len());
+    for chunk in keys.chunks(CANONICAL_BATCH_LIMIT) {
+        let units: Vec<Uuid> = chunk.iter().map(|key| key.0).collect();
+        let revisions: Vec<i64> = chunk.iter().map(|key| key.1).collect();
+        let events: Vec<Uuid> = chunk.iter().map(|key| key.2).collect();
+        let include_revisions = vec![true; chunk.len()];
+        let rows: Vec<(i64, serde_json::Value)> = sqlx::query_as(
+            "SELECT input_ordinal,triple FROM public.tect_dk2_canonical_native_rows($1,$2,$3,$4,$5,$6,$7)",
+        )
+        .bind(tenant)
+        .bind(workspace)
+        .bind(principal)
+        .bind(units)
+        .bind(revisions)
+        .bind(events)
+        .bind(include_revisions)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(native_error)?;
+        grouped.extend(group_canonical_rows(chunk.len(), rows)?);
+    }
+    Ok(grouped)
+}
+
 pub(crate) async fn qualify_native(tx: &mut Transaction<'_, Postgres>) -> Result<()> {
     let identity: (String, String, String) = sqlx::query_as(
         "SELECT pgrdf.version(),pgrdf.build_id(),(SELECT extversion FROM pg_catalog.pg_extension WHERE extname='pgrdf')",
@@ -148,5 +197,46 @@ fn native_error(error: sqlx::Error) -> Error {
         Some("23514") | Some("22023") => Error::InvalidArguments,
         Some("42501") => Error::KnowledgeUnavailable,
         _ => Error::StorageUnavailable,
+    }
+}
+
+#[cfg(test)]
+mod canonical_tests {
+    use super::*;
+
+    #[test]
+    fn groups_by_one_based_ordinal_without_deduplicating_rows() {
+        let triple = serde_json::json!({"subject": "same"});
+        let grouped = group_canonical_rows(
+            3,
+            vec![
+                (2, triple.clone()),
+                (1, triple.clone()),
+                (2, triple.clone()),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            grouped,
+            vec![vec![triple.clone()], vec![triple.clone(), triple], vec![]]
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_ordinals() {
+        for ordinal in [0, -1, 3, i64::MAX] {
+            assert!(matches!(
+                group_canonical_rows(2, vec![(ordinal, serde_json::Value::Null)]),
+                Err(Error::InternalInvariant)
+            ));
+        }
+    }
+
+    #[test]
+    fn leaves_malformed_triples_for_strict_validation() {
+        assert_eq!(
+            group_canonical_rows(1, vec![(1, serde_json::Value::Null)]).unwrap(),
+            vec![vec![serde_json::Value::Null]]
+        );
     }
 }
