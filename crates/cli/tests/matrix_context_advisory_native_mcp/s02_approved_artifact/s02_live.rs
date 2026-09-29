@@ -13,15 +13,17 @@ use std::{
     time::Duration,
 };
 use tect_application::{
-    MatrixProviderObservation, SignedMatrixBudgetPreflight, StoredMatrixDispatch,
+    MatrixProviderObservation, MatrixProviderUsage, SignedMatrixBudgetPreflight,
+    StoredMatrixDispatch,
 };
 use tect_host::jev_matrix_advice::native_provider::{
     JevNativeMatrixConfig, JevNativeMatrixProvider, MAX_NATIVE_MATRIX_RESPONSE_BYTES,
 };
 use tect_host::jev_matrix_advice::native_wire::NATIVE_MATRIX_WIRE_VERSION;
 
-// -1 and -2 were confirmed but failed before dispatch; both one-use markers remain spent.
-const CALL_ID: &str = "tectd-jev-matrix-s02-mvp-2026-09-29-3";
+// -1 and -2 failed before dispatch; -3 sent once but failed closed on unknown usage.
+// All three one-use markers remain spent.
+const CALL_ID: &str = "tectd-jev-matrix-s02-mvp-2026-09-29-4";
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 const PROFILE_ENV: &str = "JEV_MATRIX_PROFILE_ID";
 const MODEL: &str = "jev-1.13.0";
@@ -85,6 +87,9 @@ impl MatrixAdviceProvider for CaptureProvider {
             .clone()
             .ok_or(tect_domain::Error::Forbidden)?
             .parse_sealed_response(request, saved)
+    }
+    fn sealed_response_usage(&self, saved: &StoredMatrixDispatch) -> MatrixProviderUsage {
+        self.inner.sealed_response_usage(saved)
     }
     async fn observe_prepared(
         &self,
@@ -153,6 +158,9 @@ impl MatrixAdviceProvider for ReviewedProvider {
     ) -> Result<MatrixProviderResponse> {
         self.inner.parse_sealed_response(request, saved)
     }
+    fn sealed_response_usage(&self, saved: &StoredMatrixDispatch) -> MatrixProviderUsage {
+        self.inner.sealed_response_usage(saved)
+    }
     async fn observe_prepared(
         &self,
         prepared: PreparedMatrixAdviceAttempt,
@@ -173,6 +181,101 @@ impl MatrixAdviceProvider for ReviewedProvider {
         }
         self.inner.attempt_prepared(prepared, permit).await
     }
+}
+
+#[test]
+fn wrapper_preserves_native_sealed_usage_and_unknown_boundary() {
+    use tect_application::MatrixProviderBinding;
+    use tect_domain::{
+        AdvisoryDispatch, AdvisoryDispatchOutcome, AdvisoryDispatchState, AdvisoryRetryBasis,
+        AdvisorySendCertainty,
+    };
+
+    let profile = "synthetic-no-send";
+    let saved = StoredMatrixDispatch {
+        dispatch: AdvisoryDispatch {
+            id: Uuid::new_v4(),
+            opportunity_id: Uuid::new_v4(),
+            predecessor_dispatch_id: None,
+            attempt_number: 1,
+            provider: profile.into(),
+            model: MODEL.into(),
+            configuration_digest: String::new(),
+            material_digest: String::new(),
+            payload_digest: String::new(),
+            input_tokens: None,
+            output_tokens: None,
+            latency_ms: None,
+            state: AdvisoryDispatchState::Sealed,
+            send_certainty: AdvisorySendCertainty::Sent,
+            outcome: Some(AdvisoryDispatchOutcome::ProviderResponse),
+            retry_basis: AdvisoryRetryBasis::Initial,
+            raw_response_ref: None,
+        },
+        binding: MatrixProviderBinding {
+            task_id: Uuid::new_v4(),
+            task_revision: 1,
+            input_digest: String::new(),
+            choice_set_id: String::new(),
+            choice_set_version: 1,
+            choice_set_digest: String::new(),
+            evaluation_digest: String::new(),
+            verification: MatrixVerificationAuthority::Unverified,
+        },
+        provider_profile_ref: AdvisoryProviderProfileRef { id: profile.into() },
+        model_configuration: AdvisoryModelConfiguration {
+            model: MODEL.into(),
+        },
+        configuration_snapshot: json!({}),
+        destination: ENDPOINT.into(),
+        wire_version: NATIVE_MATRIX_WIRE_VERSION.into(),
+        request_payload: Vec::new(),
+        request_payload_sha256: String::new(),
+        response_payload: Some(br#"{"usage":{"input_tokens":3656,"output_tokens":80}}"#.to_vec()),
+        response_payload_sha256: None,
+        response_http_status: Some(200),
+        original_input_tokens: None,
+        original_output_tokens: None,
+        original_elapsed_ms: None,
+        raw_observation_sealed: true,
+        response_complete: true,
+        original_transport_context: None,
+    };
+    let capture = CaptureProvider {
+        inner: native_provider(profile, "synthetic-credential-never-sent".into()),
+        body: Arc::new(Mutex::new(None)),
+        live: Arc::new(Mutex::new(None)),
+    };
+    let reviewed = ReviewedProvider {
+        inner: native_provider(profile, "synthetic-credential-never-sent".into()),
+        reviewed: Arc::new(Vec::new()),
+    };
+    let known = MatrixProviderUsage {
+        input_tokens: Some(3656),
+        output_tokens: Some(80),
+    };
+    assert_eq!(capture.sealed_response_usage(&saved), known);
+    assert_eq!(reviewed.sealed_response_usage(&saved), known);
+    let mut unsealed = saved.clone();
+    unsealed.raw_observation_sealed = false;
+    assert_eq!(
+        capture.sealed_response_usage(&unsealed),
+        MatrixProviderUsage::default()
+    );
+    assert_eq!(
+        reviewed.sealed_response_usage(&unsealed),
+        MatrixProviderUsage::default()
+    );
+    let mut missing = saved;
+    missing.response_payload = None;
+    assert_eq!(
+        capture.sealed_response_usage(&missing),
+        MatrixProviderUsage::default()
+    );
+    assert_eq!(
+        reviewed.sealed_response_usage(&missing),
+        MatrixProviderUsage::default()
+    );
 }
 
 fn owner_declarations() -> Vec<Value> {
