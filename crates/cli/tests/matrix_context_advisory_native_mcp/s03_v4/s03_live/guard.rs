@@ -92,6 +92,19 @@ async fn rejects_schema_view_function_and_type_before_migration() {
 }
 
 pub(super) async fn fresh_database() -> (PgPool, String) {
+    let isolated_root =
+        std::fs::canonicalize(std::env::var("TECT_TEST_ISOLATED_ROOT").unwrap()).unwrap();
+    let codex_home = std::fs::canonicalize(std::env::var("CODEX_HOME").unwrap()).unwrap();
+    assert_eq!(codex_home, isolated_root.join("codex-home"));
+    assert_ne!(
+        codex_home,
+        std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(".codex")
+    );
+    let expected_data = std::fs::canonicalize(isolated_root.join("pgdata")).unwrap();
+    let test_exe = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+    let build_dir = test_exe.parent().unwrap().parent().unwrap();
+    let mcp_exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_tectd-mcp")).unwrap();
+    assert_eq!(mcp_exe, build_dir.join("tectd-mcp"));
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
     let expected_system = std::env::var("TECT_TEST_EXPECTED_PG_SYSTEM_ID")
         .expect("explicit disposable PostgreSQL system ID required");
@@ -117,10 +130,10 @@ pub(super) async fn fresh_database() -> (PgPool, String) {
     let pool = PgPool::connect_with(PgConnectOptions::from_str(&admin_url).unwrap())
         .await
         .expect("isolated admin connection failed");
-    let identity: (i32, String, String, i64, String) = sqlx::query_as(
+    let identity: (i32, String, String, i64, String, String) = sqlx::query_as(
         "SELECT current_setting('server_version_num')::integer,current_database(),current_user,\
          (SELECT oid::bigint FROM pg_database WHERE datname=current_database()),\
-         (SELECT system_identifier::text FROM pg_control_system())",
+         (SELECT system_identifier::text FROM pg_control_system()),current_setting('data_directory')",
     )
     .fetch_one(&pool)
     .await
@@ -130,6 +143,7 @@ pub(super) async fn fresh_database() -> (PgPool, String) {
     assert_eq!(identity.2, "postgres");
     assert_eq!(identity.3, expected_oid);
     assert_eq!(identity.4, expected_system);
+    assert_eq!(std::fs::canonicalize(&identity.5).unwrap(), expected_data);
     assert_eq!(
         user_catalog_residue(&pool).await,
         0,
@@ -154,7 +168,7 @@ pub(super) async fn fresh_database() -> (PgPool, String) {
             .fetch_all(&pool)
             .await
             .unwrap();
-    assert_eq!(ledger.len(), 110);
+    assert_eq!(ledger.len(), 122);
     for (index, (version, success, _)) in ledger.iter().enumerate() {
         assert_eq!(*version, index as i64 + 1);
         assert!(*success);
@@ -199,6 +213,13 @@ pub(super) async fn fresh_database() -> (PgPool, String) {
             110,
             include_bytes!(
                 "../../../../../postgres/migrations/0110_pipeline_context_matrix_authority.sql"
+            )
+            .as_slice(),
+        ),
+        (
+            111,
+            include_bytes!(
+                "../../../../../postgres/migrations/0111_session_advisory_preference.sql"
             )
             .as_slice(),
         ),

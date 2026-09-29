@@ -11,8 +11,8 @@ retries.
 The operator supplies a newly initialized, dedicated PostgreSQL 18 database
 and its exact system ID and database OID. The test checks both URLs resolve to
 the same loopback host, port and database, checks the admin and runtime roles,
-requires no non-system user schema or catalog objects, applies migrations 1 through 110, and
-checks source checksums for migrations 105 through 110. Keep the cluster and
+requires no non-system user schema or catalog objects, applies migrations 1 through 122, and
+checks source checksums for migrations 105 through 111. Keep the cluster and
 database after a run. A second invocation needs another **empty** database
 with its own OID; a preflight database cannot be reused for `send`.
 
@@ -21,6 +21,10 @@ Set `TECT_TEST_DISPOSABLE_PG=1`, `TECT_TEST_EXPECTED_PG_SYSTEM_ID`,
 `TECT_TEST_RUNTIME_ROLE`, and `JEV_PIPELINE_PROFILE_ID` in the process
 environment. The admin URL must use `postgres` and the runtime URL must use the
 named, distinct login role. Keep credential-bearing URLs out of shared logs.
+Set `TECT_TEST_ISOLATED_ROOT` to the private fixture directory containing
+`pgdata/` and `codex-home/`, and set `CODEX_HOME` to that exact `codex-home/`.
+The test checks the PostgreSQL data directory and Cargo-built MCP executable
+before writing to the database.
 The profile ID is a local test identity and is mirrored into the workspace
 advisory configuration and provider identity. It is not an external account.
 
@@ -64,8 +68,8 @@ directory outside the checkout, and a nonempty process-level
 creates the exact request JSON with exclusive owner-only permissions and
 fsync, and prompts for `SEND JEV PIPELINE <printed-sha256>` followed by a
 newline. Only then does it exclusively create and fsync the fixed one-use
-marker `tectd-jev-pipeline-s03-2026-09-28-4.used`, before dispatch. This is a
-fresh call ID; the prior `-3` marker is consumed and is never reused. An absent
+marker `tectd-jev-pipeline-s03-effect-2026-09-29-5.used`, before dispatch. This is a
+fresh call ID; the prior `-4` marker is consumed and is never reused. An absent
 or mismatched line does not mark or send. A process failure after marking
 does not authorize a retry; retain the marker, request JSON and database.
 
@@ -75,7 +79,17 @@ the raw observation, sealed response bytes/hash/reference, accounting and
 interpretation according to the reported outcome. It prints the observed
 status and IDs without printing raw response bytes. An abstention, transport
 uncertainty, timeout, or other failure retains the audit and fails the test;
-only durable ranked advice passes.
+only durable ranked advice passes. After that audit passes, the original owner
+session explicitly accepts the ranked eligible option, opens the Slice, and
+starts its pinned pipeline run. A distinct enrolled Verifier reads the public
+`pipeline.open_effect.get` material and records `pipeline.open_effect.verify`.
+The test compares the selected plan digest on the Slice and run with the
+source manifest's nonempty mandatory obligations. A ranking or disposition
+alone still creates neither a Slice nor a run. The fixture's Matrix facts and
+compatibility policy remain synthetic and are not product approval.
+The ignored public S03 loopback test invokes this same caller/Verifier
+continuation against one sealed local response and a fresh disposable
+database; it checks the code path, not a real Jev effect.
 Inspect persisted evidence privately by the printed opportunity ID:
 
 ```sql

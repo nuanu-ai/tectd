@@ -28,6 +28,15 @@ mod s03_live;
 mod s05_public_v2;
 
 async fn exact_fixture() -> (PgPool, String) {
+    let isolated_root =
+        std::fs::canonicalize(std::env::var("TECT_TEST_ISOLATED_ROOT").unwrap()).unwrap();
+    let codex_home = std::fs::canonicalize(std::env::var("CODEX_HOME").unwrap()).unwrap();
+    assert_eq!(codex_home, isolated_root.join("codex-home"));
+    let expected_data = std::fs::canonicalize(isolated_root.join("pgdata")).unwrap();
+    let test_exe = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+    let build_dir = test_exe.parent().unwrap().parent().unwrap();
+    let mcp_exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_tectd-mcp")).unwrap();
+    assert_eq!(mcp_exe, build_dir.join("tectd-mcp"));
     assert_eq!(std::env::var("TECT_TEST_DISPOSABLE_PG").as_deref(), Ok("1"));
     let expected_system_id = std::env::var("TECT_TEST_SYSTEM_ID").unwrap();
     let expected_oid: i64 = std::env::var("TECT_TEST_DATABASE_OID")
@@ -58,25 +67,32 @@ async fn exact_fixture() -> (PgPool, String) {
     let pool = PgPool::connect_with(PgConnectOptions::from_str(&admin_url).unwrap())
         .await
         .unwrap();
-    let preflight: (i32, String, i64, String, bool) = sqlx::query_as(
+    let preflight: (i32, String, i64, String, bool, String) = sqlx::query_as(
         "SELECT current_setting('server_version_num')::integer,current_database(),\
          (SELECT oid::bigint FROM pg_database WHERE datname=current_database()),\
          (SELECT system_identifier::text FROM pg_control_system()),\
-         to_regclass('public._sqlx_migrations') IS NULL",
+         to_regclass('public._sqlx_migrations') IS NULL,current_setting('data_directory')",
     )
     .fetch_one(&pool)
     .await
     .unwrap();
     assert_eq!(
-        preflight,
         (
-            180006,
-            expected_database.clone(),
-            expected_oid,
-            expected_system_id.clone(),
-            true
+            &preflight.0,
+            &preflight.1,
+            &preflight.2,
+            &preflight.3,
+            &preflight.4
+        ),
+        (
+            &180006,
+            &expected_database,
+            &expected_oid,
+            &expected_system_id,
+            &true
         )
     );
+    assert_eq!(std::fs::canonicalize(&preflight.5).unwrap(), expected_data);
     admin::migrate(&pool, "tect_ci").await.unwrap();
     let identity: (i32, String, String, i64, String) = sqlx::query_as(
         "SELECT current_setting('server_version_num')::integer,current_database(),current_user,\
@@ -103,8 +119,8 @@ async fn exact_fixture() -> (PgPool, String) {
             .unwrap();
     assert_eq!(
         ledger.len(),
-        111,
-        "fixture must have exactly migrations 1 through 111"
+        122,
+        "fixture must have exactly migrations 1 through 122"
     );
     for (index, (version, success, _)) in ledger.iter().enumerate() {
         assert_eq!(*version, index as i64 + 1);
@@ -900,101 +916,25 @@ async fn public_s03_v4_context_bound_pipeline_happy_path() {
         (0, 0),
         "provider ranking must not create caller effects"
     );
-    let disposition = route(&mut owner, "command", "pipeline.recommendation.disposition", json!({
-        "request_id":Uuid::new_v4(),"opportunity_id":opportunity,
-        "expected_work_revision":work["revision"],"manifest_digest":prepared["manifest_digest"],
-        "action":"accept_recommendation","rationale":"Caller explicitly accepts synthetic JEV advice."})).await;
-    assert_eq!(disposition["selected_option_id"], ranked["ranked_ids"][0]);
-    let slice_open_request = json!({
-        "request_id":Uuid::new_v4(),"scope_id":ready["scope"]["id"],
-        "scope_revision":ready["scope"]["revision"],
-        "candidate_set_id":set,"candidate_set_revision":ready["candidate_set"]["revision"],
-        "candidate_snapshot_id":ready["snapshot"]["id"],"candidate_id":work["id"],
-        "candidate_revision":work["revision"],"disposition_id":disposition["id"]});
-    let opened = route(
-        &mut owner,
-        "command",
-        "slice.open",
-        slice_open_request.clone(),
-    )
-    .await;
-    assert_eq!(
-        opened["created"]["selected_option_id"],
-        disposition["selected_option_id"]
-    );
-    let slice_id = id(&opened["created"]["id"]);
-    let begin = json!({
-        "request_id":Uuid::new_v4(),"scope_id":ready["scope"]["id"],
-        "slice_id":slice_id,"slice_revision":opened["created"]["revision"],
-        "definition_version":opened["created"]["verification_plan_source_definition_version"],
-        "qualification_reason":"Caller explicitly begins selected synthetic pipeline."});
-    let begun = route(&mut owner, "command", "slice.pipeline.begin", begin.clone()).await;
-    let pipeline_run = &begun["created"]["run"];
-    assert_eq!(
-        pipeline_run["selected_option_id"],
-        disposition["selected_option_id"]
-    );
-    let stored: (String, String) = sqlx::query_as(
-        "SELECT selected_option_id,verification_plan_digest FROM slice_pipeline_runs WHERE workspace_id=$1 AND id=$2")
-        .bind(workspace).bind(id(&pipeline_run["id"])).fetch_one(&pool).await.unwrap();
-    assert_eq!(
-        stored.0,
-        pipeline_run["selected_option_id"].as_str().unwrap()
-    );
-    assert_eq!(
-        stored.1,
-        pipeline_run["verification_plan_digest"].as_str().unwrap()
-    );
-    let open_effect = route(
-        &mut independent,
-        "query",
-        "pipeline.open_effect.get",
-        json!({
-        "slice_id":slice_id,"open_request_id":slice_open_request["request_id"]}),
-    )
-    .await;
-    assert_eq!(open_effect["material"]["slice"], opened["created"]);
-    assert_eq!(
-        open_effect["material"]["disposition"]["id"],
-        disposition["id"]
-    );
-    assert_eq!(
-        open_effect["material"]["matrix_effect_attestation_id"],
-        json!(matrix_effect_id)
-    );
-    assert_ne!(
-        open_effect["verifier_principal_id"],
-        open_effect["material"]["caller_principal_id"]
-    );
-    assert_eq!(
-        route_error(
-            &mut owner,
-            "query",
-            "pipeline.open_effect.get",
-            json!({
-        "slice_id":slice_id,"open_request_id":slice_open_request["request_id"]})
-        )
-        .await["error"]["code"],
-        "forbidden"
-    );
-    let attested = route(
-        &mut independent,
-        "command",
-        "pipeline.open_effect.verify",
-        json!({
-        "request_id":Uuid::new_v4(),"slice_id":slice_id,
-        "open_request_id":slice_open_request["request_id"],
-        "expected_effect_digest":open_effect["effect_digest"],"verdict":"matches",
-        "summary":"Independent synthetic verifier read the exact saved opening effect."}),
-    )
-    .await;
-    assert_eq!(attested["verdict"], "matches");
-    let attestation_count: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM pipeline_open_effect_attestations WHERE workspace_id=$1 AND slice_id=$2")
-        .bind(workspace).bind(slice_id).fetch_one(&pool).await.unwrap();
-    assert_eq!(attestation_count, 1);
-    owner.finish().await;
     independent.finish().await;
+    // Loopback response exercises the same continuation as the real-provider
+    // harness. It is only a synthetic code-path test, not JEV acceptance.
+    s03_live::effect::verify_ranked_caller_effect(
+        &pool,
+        workspace,
+        &mut owner,
+        &pipeline_socket,
+        &verifier_host,
+        &workspace_key,
+        &ready,
+        &work,
+        &prepared,
+        &manifest,
+        &ranked,
+        matrix_effect_id,
+    )
+    .await;
+    owner.finish().await;
     pipeline_server.abort();
     matrix_server.abort();
 }

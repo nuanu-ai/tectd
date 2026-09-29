@@ -9,6 +9,8 @@ use tect_host::jev_pipeline_recommendation::JevPipelineSavedResponseParser;
 mod audit;
 #[path = "s03_live/budget.rs"]
 mod budget;
+#[path = "s03_live/effect.rs"]
+pub(super) mod effect;
 #[path = "s03_live/guard.rs"]
 mod guard;
 #[path = "s03_live/runtime.rs"]
@@ -536,10 +538,33 @@ async fn run_fixture(mode: &str, policy_calls: i64) {
         &profile,
     )
     .await;
-    owner.finish().await;
-    live_server.abort();
     assert!(
         ranked,
         "provider did not return ranked advice; retained audit records the observed outcome"
     );
+    let matrix_effect_id: Uuid = sqlx::query_scalar(
+        "SELECT id FROM matrix_planning_effect_attestations WHERE workspace_id=$1 AND verifier_request_id=$2",
+    )
+    .bind(workspace)
+    .bind(id(&matched["request_id"]))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    effect::verify_ranked_caller_effect(
+        &pool,
+        workspace,
+        &mut owner,
+        &live_socket,
+        &verifier_host,
+        &workspace_key,
+        &ready,
+        &work,
+        &prepared,
+        &manifest,
+        &outcome,
+        matrix_effect_id,
+    )
+    .await;
+    owner.finish().await;
+    live_server.abort();
 }
