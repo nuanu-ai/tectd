@@ -8,6 +8,9 @@ use tect_host::jev_pipeline_recommendation::{JevPipelineSavedResponseParser, WIR
 use tect_postgres::{ApprovedMatrixEvidenceArtifact, PgMatrixEvidenceValidator};
 use url::Url;
 
+#[path = "s02_approved_artifact/s02_live.rs"]
+mod s02_live;
+
 fn relaunch_with_isolated_codex_home(test_name: &str) -> bool {
     let root = std::env::var("TECT_TEST_ISOLATED_ROOT").ok();
     let home = std::env::var("CODEX_HOME").ok();
