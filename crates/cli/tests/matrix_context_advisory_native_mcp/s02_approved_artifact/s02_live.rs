@@ -31,6 +31,10 @@ const OWNER_SOURCE: &str = "owner-approval:active-jev-s02-operating-facts-2026-0
 const OBSERVED_AT: i64 = 1_790_682_517; // 2026-09-29 11:48:37 UTC; never refreshed by a run.
 const EXPIRES_AT: i64 = OBSERVED_AT + 86_400;
 
+#[path = "s02_live/continuation.rs"]
+mod continuation;
+pub(super) use continuation::selection_confirmation;
+
 fn native_identity(profile: &str) -> MatrixProviderIdentity {
     let ranking_policy = match std::env::var("JEV_MATRIX_ONE_SHOT_RANKING_POLICY") {
         Ok(value) if value == "robust-trial-v1" => {
@@ -69,7 +73,7 @@ fn native_provider(profile: &str, credential: String) -> JevNativeMatrixProvider
 struct CaptureProvider {
     inner: JevNativeMatrixProvider,
     body: Arc<Mutex<Option<Vec<u8>>>>,
-    live: Arc<Mutex<Option<Arc<ReviewedProvider>>>>,
+    live: Arc<Mutex<Option<Arc<dyn MatrixAdviceProvider>>>>,
 }
 #[async_trait]
 impl MatrixAdviceProvider for CaptureProvider {

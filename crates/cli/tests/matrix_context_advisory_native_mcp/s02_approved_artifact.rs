@@ -1129,6 +1129,24 @@ async fn public_s02_approved_artifact_to_independently_verified_planning_effect(
     .await
     .unwrap();
     assert_eq!(links_before, 0, "Ranked advice must not auto-apply");
+    let trial_digest = native_owner_read["current_advice"]["advice_digest"]
+        .as_str()
+        .unwrap();
+    let eligible = vec!["a".to_owned(), "b".to_owned()];
+    assert_eq!(
+        s02_live::selection_confirmation(
+            &mut std::io::Cursor::new("SELECT JEV MATRIX wrong a\n"),
+            trial_digest,
+            &eligible,
+        ),
+        None
+    );
+    let selected = s02_live::selection_confirmation(
+        &mut std::io::Cursor::new(format!("SELECT JEV MATRIX {trial_digest} a\n")),
+        trial_digest,
+        &eligible,
+    )
+    .unwrap();
     let native_disposition = route(
         &mut native_owner,
         "command",
@@ -1140,7 +1158,7 @@ async fn public_s02_approved_artifact_to_independently_verified_planning_effect(
             "opportunity_id":native_advised["opportunity_id"],"basis":"after_advice",
             "advice_id":native_owner_read["current_advice"]["advice_id"],
             "advice_digest":native_owner_read["current_advice"]["advice_digest"],
-            "decision":{"outcome":"selected","selected_choice_id":"a"}
+            "decision":{"outcome":"selected","selected_choice_id":selected}
         }),
     )
     .await;

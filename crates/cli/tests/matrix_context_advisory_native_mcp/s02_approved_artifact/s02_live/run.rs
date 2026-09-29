@@ -7,9 +7,14 @@ async fn one_shot_owner_attested_s02_matrix() {
     ) {
         return;
     }
-    let mode = std::env::var("JEV_MATRIX_ONE_SHOT_MODE").expect("set preflight or send");
-    assert!(matches!(mode.as_str(), "preflight" | "send"));
+    let mode = std::env::var("JEV_MATRIX_ONE_SHOT_MODE").expect("set preflight, synthetic or send");
+    assert!(matches!(mode.as_str(), "preflight" | "synthetic" | "send"));
     let profile = std::env::var(PROFILE_ENV).expect("explicit local provider profile required");
+    assert_eq!(
+        std::env::var("JEV_MATRIX_ONE_SHOT_RANKING_POLICY").as_deref(),
+        Ok("robust-trial-v1"),
+        "-6 must explicitly opt into the versioned trial policy"
+    );
     assert!(
         !profile.is_empty()
             && profile.len() <= 128
@@ -202,7 +207,7 @@ async fn one_shot_owner_attested_s02_matrix() {
         &workspace_key,
     )
     .await;
-    let (source, _) = ready_source_candidate(&mut owner, &repo).await;
+    let (source, candidate) = ready_source_candidate(&mut owner, &repo).await;
     owner.call("open_workspace", json!({})).await;
     let program: Uuid =
         sqlx::query_scalar("SELECT program_id FROM scope_candidate_sets WHERE id=$1")
@@ -313,6 +318,21 @@ async fn one_shot_owner_attested_s02_matrix() {
         .map(|card| card["id"].as_str().unwrap())
         .collect();
     assert_eq!(card_ids, ["EM02-SCOPE@0.1", "EM02-PROTECT@0.1"]);
+    let mut full_cards = Vec::new();
+    for card_id in &card_ids {
+        full_cards.push(
+            route(
+                &mut independent,
+                "query",
+                "scope.advisory.card",
+                json!({
+                    "task_id":task,"expected_task_revision":1,"detail":"full","card_id":card_id
+                }),
+            )
+            .await,
+        );
+    }
+    let full_cards: [Value; 2] = full_cards.try_into().unwrap();
     for binding in validated["facts"].as_array().unwrap() {
         assert_eq!(binding["content_digest"], digest);
     }
@@ -411,37 +431,63 @@ async fn one_shot_owner_attested_s02_matrix() {
         validated["verification_digest"],
         wire.len()
     );
-    independent.finish().await;
     if mode == "preflight" {
+        independent.finish().await;
         owner.finish().await;
         preflight_server.abort();
         return;
     }
 
-    let (request_path, marker_path) = artifacts.unwrap();
-    exclusive_write(&request_path, &wire);
-    assert_eq!(fs::read(&request_path).unwrap(), wire);
-    println!(
-        "review {} ({} bytes; sha256={wire_digest})",
-        request_path.display(),
-        wire.len()
-    );
-    println!("enter exactly: SEND JEV MATRIX {wire_digest}");
-    std::io::stdout().flush().unwrap();
-    assert!(
-        confirmation_matches(&mut std::io::stdin().lock(), &wire_digest),
-        "confirmation absent or mismatched; zero sends"
-    );
-    assert!(
-        now_seconds() < EXPIRES_AT,
-        "attestation expired before send"
-    );
-    let key = std::env::var("TYPESAFE_API_KEY").expect("subprocess-only API key required");
-    assert!(!key.trim().is_empty());
-    let live_provider = Arc::new(ReviewedProvider {
-        inner: native_provider(&profile, key),
-        reviewed: Arc::new(wire),
-    });
+    let synthetic_case = if mode == "synthetic" {
+        Some(
+            std::env::var("JEV_MATRIX_SYNTHETIC_SELECTION")
+                .expect("synthetic mode requires none, recommended, alternate or abstain"),
+        )
+    } else {
+        None
+    };
+    let synthetic_calls = Arc::new(AtomicUsize::new(usize::from(
+        synthetic_case.as_deref() == Some("abstain"),
+    )));
+    let mut send_marker = None;
+    let live_provider: Arc<dyn MatrixAdviceProvider> = if mode == "send" {
+        let (request_path, marker_path) = artifacts.unwrap();
+        exclusive_write(&request_path, &wire);
+        assert_eq!(fs::read(&request_path).unwrap(), wire);
+        println!(
+            "review {} ({} bytes; sha256={wire_digest})",
+            request_path.display(),
+            wire.len()
+        );
+        println!("enter exactly: SEND JEV MATRIX {wire_digest}");
+        std::io::stdout().flush().unwrap();
+        assert!(
+            confirmation_matches(&mut std::io::stdin().lock(), &wire_digest),
+            "confirmation absent or mismatched; zero sends"
+        );
+        assert!(
+            now_seconds() < EXPIRES_AT,
+            "attestation expired before send"
+        );
+        let key = std::env::var("TYPESAFE_API_KEY").expect("subprocess-only API key required");
+        assert!(!key.trim().is_empty());
+        let reviewed = Arc::new(ReviewedProvider {
+            inner: native_provider(&profile, key),
+            reviewed: Arc::new(wire),
+        });
+        send_marker = Some(marker_path);
+        reviewed
+    } else {
+        assert_eq!(mode, "synthetic");
+        assert!(
+            std::env::var("TYPESAFE_API_KEY").is_err(),
+            "synthetic mode cannot hold a credential"
+        );
+        Arc::new(SyntheticNativeTrialProvider {
+            parser: native_provider(&profile, "synthetic-fixture-never-sent".into()),
+            calls: synthetic_calls.clone(),
+        })
+    };
     // Keep this ORIGINAL connection; no second open_workspace request is made.
     let pre_send: i64 =
         sqlx::query_scalar("SELECT count(*) FROM advisory_dispatch WHERE workspace_id=$1")
@@ -452,17 +498,36 @@ async fn one_shot_owner_attested_s02_matrix() {
     assert_eq!(pre_send, 0);
     *live.lock().unwrap() = Some(live_provider);
     enabled.store(true, Ordering::SeqCst);
-    exclusive_write(
-        &marker_path,
-        format!("call_id={CALL_ID}\nrequest_sha256={wire_digest}\n").as_bytes(),
-    );
-    let advised = advice(&mut owner, task, &format!("send-{}", Uuid::new_v4())).await;
+    if let Some(marker_path) = send_marker {
+        exclusive_write(
+            &marker_path,
+            format!("call_id={CALL_ID}\nrequest_sha256={wire_digest}\n").as_bytes(),
+        );
+    }
+    let advised = advice(&mut owner, task, &format!("{mode}-{}", Uuid::new_v4())).await;
+    if mode == "synthetic" {
+        assert_eq!(
+            synthetic_calls.load(Ordering::SeqCst),
+            if synthetic_case.as_deref() == Some("abstain") {
+                2
+            } else {
+                1
+            }
+        );
+    }
     let dispatches: i64 =
         sqlx::query_scalar("SELECT count(*) FROM advisory_dispatch WHERE workspace_id=$1")
             .bind(workspace)
             .fetch_one(&pool)
             .await
             .unwrap();
+    if advised["state"] != "advised" {
+        assert_eq!(dispatches, 0, "no-call cannot create a dispatch");
+        independent.finish().await;
+        owner.finish().await;
+        preflight_server.abort();
+        return;
+    }
     assert_eq!(dispatches, 1, "exactly one durable dispatch required");
     let audit: (i32, String, String, String, Option<String>, i64) = sqlx::query_as(
         "SELECT d.attempt_number,d.payload_digest,d.state,d.send_certainty,d.outcome,\
@@ -480,6 +545,277 @@ async fn one_shot_owner_attested_s02_matrix() {
         "s02_send call_id={CALL_ID} workspace={workspace} task={task}@1 opportunity={} state={} dispatches={dispatches} dispatch_state={} send_certainty={} outcome={:?} budget_reservations={}",
         advised["opportunity_id"], advised["state"], audit.2, audit.3, audit.4, audit.5
     );
+    let owner_read = route(
+        &mut owner,
+        "query",
+        "engineering.advisory.get",
+        json!({
+            "task_id":task,"request_key":advised["request_key"]
+        }),
+    )
+    .await;
+    let verifier_read = route(
+        &mut independent,
+        "query",
+        "engineering.advisory.get",
+        json!({
+            "task_id":task,"request_key":advised["request_key"]
+        }),
+    )
+    .await;
+    assert_eq!(
+        owner_read["current_advice"],
+        verifier_read["current_advice"]
+    );
+    let advice = &owner_read["current_advice"];
+    if synthetic_case.as_deref() == Some("abstain") {
+        assert_eq!(advice["outcome"]["status"], "abstained");
+    }
+    if advice["outcome"]["status"] == "ranked" {
+        let uncertainty = &advice["trial_uncertainty"];
+        assert_eq!(
+            uncertainty["policy_version"],
+            tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION
+        );
+        assert_eq!(
+            uncertainty["digest_linkage"]["advice_digest"],
+            advice["advice_digest"]
+        );
+        let ranked = advice["outcome"]["ranked_choice_ids"]
+            .as_array()
+            .expect("ranked advice must name choices");
+        let choices = owner_choices(task);
+        let eligible: Vec<String> = choices["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|choice| choice["candidate_id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(ranked.len(), eligible.len());
+        assert!(
+            ranked
+                .iter()
+                .all(|choice| eligible.iter().any(|id| choice == id))
+        );
+        assert_eq!(
+            ranked[0], uncertainty["choice_selected_candidate_id"],
+            "Choice and top Score must agree"
+        );
+        assert_eq!(uncertainty["scores"].as_array().unwrap().len(), 2);
+        println!(
+            "s02_ranked advice_digest={} policy_id={} policy_version={} policy_digest={} choice_id={} choice_confidence={} choice_mass={} scores={}",
+            advice["advice_digest"],
+            uncertainty["policy_id"],
+            uncertainty["policy_version"],
+            uncertainty["policy_digest"],
+            uncertainty["choice_selected_candidate_id"],
+            uncertainty["choice_confidence"],
+            uncertainty["choice_selected_answer_probability"],
+            json!(uncertainty["scores"].as_array().unwrap().iter().map(|score| json!({
+                "candidate_id":score["candidate_id"],"score_confidence":score["score_confidence"]
+            })).collect::<Vec<_>>())
+        );
+        println!(
+            "enter exactly one Owner selection: SELECT JEV MATRIX {} <choice_id>",
+            advice["advice_digest"].as_str().unwrap()
+        );
+        std::io::stdout().flush().unwrap();
+        let selected = if mode == "synthetic" {
+            let line = match synthetic_case.as_deref().unwrap() {
+                "none" => String::new(),
+                "recommended" => format!(
+                    "SELECT JEV MATRIX {} {}\n",
+                    advice["advice_digest"].as_str().unwrap(),
+                    ranked[0].as_str().unwrap()
+                ),
+                "alternate" => format!(
+                    "SELECT JEV MATRIX {} {}\n",
+                    advice["advice_digest"].as_str().unwrap(),
+                    ranked[1].as_str().unwrap()
+                ),
+                _ => panic!("unsupported synthetic selection case"),
+            };
+            continuation::selection_confirmation(
+                &mut std::io::Cursor::new(line),
+                advice["advice_digest"].as_str().unwrap(),
+                &eligible,
+            )
+        } else {
+            continuation::selection_confirmation(
+                &mut std::io::stdin().lock(),
+                advice["advice_digest"].as_str().unwrap(),
+                &eligible,
+            )
+        };
+        if let Some(choice_id) = selected {
+            assert!(
+                now_seconds() < EXPIRES_AT,
+                "Owner facts expired before selection"
+            );
+            let choice = choices["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|choice| choice["candidate_id"] == choice_id)
+                .unwrap();
+            let disposition = route(
+                &mut owner,
+                "command",
+                "engineering.matrix.disposition.record",
+                json!({
+                    "request_id":Uuid::new_v4(),"task_id":task,"expected_task_revision":1,
+                    "expected_input_digest":recorded["input_digest"],
+                    "expected_choice_set_digest":recorded["choice_set_digest"],
+                    "opportunity_id":advised["opportunity_id"],"basis":"after_advice",
+                    "advice_id":advice["advice_id"],"advice_digest":advice["advice_digest"],
+                    "decision":{"outcome":"selected","selected_choice_id":choice_id}
+                }),
+            )
+            .await;
+            let owner_disposition = route(
+                &mut owner,
+                "query",
+                "engineering.matrix.disposition.get",
+                json!({
+                    "task_id":task,"request_id":disposition["request_id"]
+                }),
+            )
+            .await;
+            assert_eq!(owner_disposition["advice_digest"], advice["advice_digest"]);
+            let scope = route(
+                &mut owner,
+                "command",
+                "scope.open",
+                json!({
+                    "request_id":Uuid::new_v4(),
+                    "candidate_set_id":source["candidate_set"]["id"],
+                    "candidate_set_revision":source["candidate_set"]["revision"],
+                    "candidate_snapshot_id":source["snapshot"]["id"],
+                    "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]
+                }),
+            )
+            .await;
+            let selection = json!({
+                "task_id":task,"task_revision":1,"disposition_id":disposition["disposition_id"],
+                "selected_choice_id":choice_id,"expected_input_digest":recorded["input_digest"],
+                "expected_choice_set_digest":recorded["choice_set_digest"],
+                "expected_verification_digest":validated["verification_digest"],
+                "mapped_draft_node_indices":[0,1,2]
+            });
+            let draft = continuation::owner_case_draft(choice, &full_cards);
+            let mut save = planning_save(&scope["created"]["planning"], selection);
+            save["draft"] = draft.clone();
+            let mut shape = save.clone();
+            shape.as_object_mut().unwrap().remove("kind");
+            let typed: tect_domain::SaveSliceCandidateDraft = serde_json::from_value(shape)
+                .unwrap_or_else(|error| panic!("selected save shape invalid: {error}"));
+            typed
+                .draft
+                .validate()
+                .expect("selected draft must satisfy native rules");
+            let caller_request_id = save["request_id"].clone();
+            let saved = route(&mut owner, "command", "slice.candidates.save", save).await;
+            let verifier_advice = route(
+                &mut independent,
+                "query",
+                "engineering.advisory.get",
+                json!({
+                    "task_id":task,"request_key":advised["request_key"]
+                }),
+            )
+            .await;
+            assert_eq!(
+                verifier_advice["current_advice"]["advice_digest"],
+                advice["advice_digest"]
+            );
+            let effect = route(&mut independent, "query", "engineering.matrix.planning_effect.get", json!({
+                "candidate_set_id":saved["candidate_set"]["id"],"caller_request_id":caller_request_id
+            })).await;
+            assert_eq!(effect["material"]["task_id"], json!(task));
+            assert_eq!(effect["material"]["task_revision"], 1);
+            assert_eq!(
+                effect["material"]["disposition_id"],
+                disposition["disposition_id"]
+            );
+            assert_eq!(
+                effect["material"]["verification_digest"],
+                validated["verification_digest"]
+            );
+            assert_eq!(
+                effect["material"]["catalogue_version"],
+                cards["catalogue_version"]
+            );
+            assert_eq!(
+                effect["material"]["selected_choice"]["candidate_id"],
+                choice_id
+            );
+            let nodes = effect["material"]["nodes"].as_array().unwrap();
+            assert_eq!(
+                nodes.len(),
+                3,
+                "both mandatory cards must survive the caller save"
+            );
+            for (index, node) in nodes.iter().enumerate() {
+                assert_eq!(node["draft_index"], index);
+                assert_eq!(node["body"]["includes"], draft["nodes"][index]["includes"]);
+            }
+            let cards_after = route(
+                &mut independent,
+                "query",
+                "scope.advisory.card",
+                json!({
+                    "task_id":task,"expected_task_revision":1
+                }),
+            )
+            .await;
+            assert_eq!(cards_after, cards);
+            let verified_effect = route(&mut independent, "command", "engineering.matrix.planning_effect.verify", json!({
+                "request_id":Uuid::new_v4(),"candidate_set_id":saved["candidate_set"]["id"],
+                "caller_request_id":caller_request_id,
+                "expected_result_revision":effect["material"]["result_revision"],
+                "expected_effect_digest":effect["effect_digest"],"verdict":"matches",
+                "summary":"Exact trial-selected Work and both applicable EM02 duties survive caller save."
+            })).await;
+            assert_eq!(verified_effect["verdict"], "matches");
+            println!(
+                "s02_effect task={task}@1 advice_digest={} disposition={} choice={} effect_digest={} verifier={} mandatory_cards=EM02-SCOPE@0.1,EM02-PROTECT@0.1",
+                advice["advice_digest"],
+                disposition["disposition_id"],
+                choice_id,
+                effect["effect_digest"],
+                verified_effect["verifier_principal_id"]
+            );
+        } else {
+            println!("s02_selection absent_or_mismatched; no disposition or caller save");
+        }
+    } else {
+        println!("s02_advice not_ranked; no disposition or caller save");
+    }
+    let dispositions: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM advisory_matrix_disposition WHERE workspace_id=$1 AND opportunity_id=$2",
+    )
+    .bind(workspace)
+    .bind(id(&advised["opportunity_id"]))
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let effects: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM matrix_planning_selection_links WHERE workspace_id=$1 AND task_id=$2",
+    )
+    .bind(workspace)
+    .bind(task)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        dispositions, effects,
+        "disposition and effect must be paired"
+    );
+    if advice["outcome"]["status"] != "ranked" || synthetic_case.as_deref() == Some("none") {
+        assert_eq!(dispositions, 0, "no selection may create a disposition");
+        assert_eq!(effects, 0, "no selection may create a planning effect");
+    }
+    independent.finish().await;
     owner.finish().await;
     preflight_server.abort();
 }
