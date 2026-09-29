@@ -30,6 +30,11 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
     let role = std::env::var("TECT_TEST_RUNTIME_ROLE").expect("TECT_TEST_RUNTIME_ROLE required");
     let pool = PgPool::connect(&admin_url).await.unwrap();
     admin::migrate(&pool, &role).await.unwrap();
+    if std::env::var("TECT_TEST_DK2").as_deref() == Ok("1") {
+        tect_postgres::enable_durable_knowledge(&pool, &role)
+            .await
+            .unwrap();
+    }
     let temp = private_temp();
     let root = temp.path().canonicalize().unwrap();
     let repo = root.join("source");
@@ -196,7 +201,7 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
         .await["error"]["code"],
         "forbidden"
     );
-    context = refresh_pipeline_knowledge(&mut client, &context).await;
+    context = refresh_pipeline_knowledge(&mut client, &context, "stale").await;
 
     let (waiting, _) = complete(
         &mut client,
@@ -222,7 +227,7 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
     context = input["context"].clone();
     assert_eq!(context["run"]["status"], "active");
     assert_eq!(context["inputs"].as_array().unwrap().len(), 1);
-    context = refresh_pipeline_knowledge(&mut client, &context).await;
+    context = refresh_pipeline_knowledge(&mut client, &context, "current").await;
 
     let resume = route(
         &mut client,
@@ -400,7 +405,7 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
     )
     .await;
     context = resumed["context"].clone();
-    context = refresh_pipeline_knowledge(&mut client, &context).await;
+    context = refresh_pipeline_knowledge(&mut client, &context, "current").await;
     let (completed, _) = complete(
         &mut client,
         &context,
