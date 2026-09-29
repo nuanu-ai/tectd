@@ -245,10 +245,9 @@ async fn restore_created(
     let target_pool_url = auth.pool_database_url(database)?;
     let target = tect_postgres::admin::connect_admin(&target_pool_url).await?;
     tect_postgres::admin::migrate(&target, runtime_role).await?;
-    tect_postgres::enable_durable_knowledge(&target, runtime_role).await?;
+    tect_postgres::admin::install_staged_restore_pgrdf(&target, runtime_role).await?;
     tect_postgres::admin::restore_graphs(&target, &bundle.graphs).await?;
-    tect_postgres::admin::validate_restored_runtime_access(&target, runtime_role).await?;
-    tect_postgres::admin::grant_database_connect(&target, database, runtime_role).await?;
+    tect_postgres::admin::validate_staged_restore(&target, runtime_role).await?;
     target.close().await;
     Ok(())
 }

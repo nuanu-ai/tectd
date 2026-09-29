@@ -69,9 +69,21 @@ Operators create portable application and durable-knowledge backups with
 `tect-admin backup --out /absolute/new/private-directory --runtime-role ROLE`.
 The parent directory must be private (`0700`), and PostgreSQL 18 `pg_dump` and
 `pg_restore` must be on `PATH`. Restore always targets a new database:
-`tect-admin restore --from /absolute/private-backup --database NEW_DB --runtime-role ROLE`.
+`tect-admin restore --staged --from /absolute/private-backup --database NEW_DB --runtime-role ROLE`.
+The `--staged` flag is required; an unflagged restore fails before creating a database.
 The recorded role must already exist and match `ROLE`. Restore never replaces or
 drops a database; a failed new database remains disconnected for operator inspection.
+Successful restore is **staged and sealed**, not active: it installs pinned pgRDF,
+imports and verifies the exact native graph inventory and digests, and preserves the
+copied source database identity. Runtime and PUBLIC `CONNECT` stay denied. The
+ordinary durable-knowledge enable command rejects that copied identity. Before any
+runtime access, an owner must run the managed suppression/erasure recovery using a
+current, independently held suppression manifest and its exact checkpoint, verify
+the recovery receipt and remaining owned-copy count, then separately review access
+promotion. A successful staged restore alone is not permission to grant `CONNECT`.
+On a dedicated PostgreSQL 18 test cluster with pinned pgRDF, run
+`TECT_TEST_DK_STAGED=1 cargo test -p tect-cli --test staged_restore` with the
+`TECT_TEST_ADMIN_URL` and `TECT_TEST_RUNTIME_ROLE` variables described below.
 Keep the complete backup directory private and intact because its manifest, dump,
 and portable graph files are validated together before target creation.
 
@@ -493,14 +505,14 @@ cargo test -p tect-cli --test pipeline_execution_knowledge_binding
 ```
 
 The lifecycle test performs explicit operator activation, real daemon/stdio MCP
-calls, publication and pipeline refresh guards, access denials, and an application
-logical-backup round trip: one exported snapshot supplies canonical native graph
-exports and an app-only `pg_dump`, then a fresh database restores app metadata,
-reactivates the pinned extension, imports graphs by IRI, verifies graph digests, and
-performs an exact daemon read. A plain whole-database pgRDF restore is not this
-portable path. Without the opt-in flag, the DK lifecycle
-binaries return without changing the database; ordinary historical tests remain
-independent of pgRDF activation.
+calls, publication and pipeline refresh guards, and access denials. The separate
+`staged_restore` test exercises the production backup and restore commands: one
+exported snapshot supplies canonical native graphs and an app-only `pg_dump`;
+the new database restores app metadata, installs pinned pgRDF, verifies exact
+graph inventory and digests, and stays sealed. A plain whole-database pgRDF
+restore is not this portable path. Without their opt-in flags, these native tests
+return without changing the database; ordinary historical tests remain independent
+of pgRDF activation.
 
 The ignored `legacy_program_capacity_remains_recoverable` test separately verifies
 Program names accepted at the pre-setup `b6d988ef4eec91f9a90ce12ce8ac9fd75decc1a7`

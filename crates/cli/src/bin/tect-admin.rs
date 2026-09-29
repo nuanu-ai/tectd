@@ -28,6 +28,9 @@ enum Command {
         runtime_role: String,
     },
     Restore {
+        /// Restore and verify into a sealed database; managed recovery is required before use.
+        #[arg(long)]
+        staged: bool,
         #[arg(long = "from")]
         from: PathBuf,
         #[arg(long)]
@@ -118,12 +121,18 @@ async fn run(arguments: Arguments) -> Result<()> {
             Ok(())
         }
         Command::Restore {
+            staged,
             from,
             database,
             runtime_role,
         } => {
+            if !staged {
+                return Err(Error::InvalidArguments);
+            }
             tect_admin_backup::restore(&admin_url, &from, &database, &runtime_role).await?;
-            println!("restore complete for database {database}");
+            println!(
+                "restore staged and sealed for database {database}; runtime CONNECT denied; managed suppression recovery required"
+            );
             Ok(())
         }
         command => run_database_command(&admin_url, command).await,
