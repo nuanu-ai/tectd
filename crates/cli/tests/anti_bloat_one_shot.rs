@@ -1,9 +1,11 @@
 //! Ignored, test-only S04 one-shot. Preflight never reads a provider key or opens HTTP.
+#[path = "anti_bloat_native_mcp/loopback.rs"]
+mod loopback;
 #[allow(dead_code)]
 mod recovery_support;
-#[path = "anti_bloat_native_mcp/setup.rs"]
+#[path = "anti_bloat_native_mcp/active_setup.rs"]
 mod setup;
-#[path = "anti_bloat_native_mcp/source.rs"]
+#[path = "anti_bloat_native_mcp/active_source.rs"]
 mod source;
 #[path = "native_planning/support.rs"]
 #[allow(dead_code)]
@@ -23,28 +25,35 @@ use std::{
     str::FromStr,
     sync::Arc,
 };
-use support::{id, repository};
+use support::id;
 use tect_application::{
-    AntiBloatAttemptState, AntiBloatRankingMaterial, AntiBloatRankingProvider, Store,
-    StoredAntiBloatReview, TransactionMode, WorkspaceService,
+    AntiBloatAttemptState, AntiBloatInvocationSnapshot, AntiBloatRankingMaterial,
+    AntiBloatRankingProvider, Store, StoredAntiBloatReview, TransactionMode, WorkspaceService,
 };
-use tect_domain::{AdvisoryBudgetCeilings, AdvisoryBudgetPolicy};
+use tect_domain::{AdvisoryBudgetCeilings, AdvisoryBudgetPolicy, AdvisoryRequestPreference};
 use tect_postgres::{PgStore, admin};
 use tokio::{
-    net::UnixListener,
+    net::{TcpListener, UnixListener},
     process::{Child, Command},
 };
 use uuid::Uuid;
 
-const CALL_ID: &str = "tectd-jev-s04-campaign-2026-09-28-1";
-const ARTIFACT_DIR: &str =
-    "/Users/tony/Work/Projects/nuanu-ai-lab/artifacts/jev-live-eval-20260919";
+const CALL_ID: &str = "tectd-jev-s04-active-mvp-2026-09-30-2";
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 const MODEL: &str = "jev-1.13.0";
 const MAX_REQUEST: usize = 45_000;
 
 fn artifact(extension: &str) -> std::path::PathBuf {
-    Path::new(ARTIFACT_DIR).join(format!("{CALL_ID}.{extension}"))
+    let root = std::path::PathBuf::from(
+        std::env::var("JEV_S04_ARTIFACT_DIR")
+            .expect("explicit private S04 artifact directory required"),
+    );
+    assert!(root.is_absolute() && root.is_dir());
+    assert_eq!(
+        fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    root.join(format!("{CALL_ID}.{extension}"))
 }
 
 fn exclusive(path: &Path, bytes: &[u8]) {
@@ -76,6 +85,20 @@ fn confirmed(reader: &mut impl BufRead, digest: &str) -> bool {
             .is_some_and(|s| s.strip_suffix('\r').unwrap_or(s) == format!("SEND JEV {digest}"))
 }
 
+fn selection_confirmed(
+    reader: &mut impl BufRead,
+    request_digest: &str,
+    review_id: Uuid,
+    finding_id: &str,
+) -> bool {
+    let mut line = String::new();
+    reader.read_line(&mut line).is_ok()
+        && line.strip_suffix('\n').is_some_and(|text| {
+            text.strip_suffix('\r').unwrap_or(text)
+                == format!("SELECT JEV S04 {request_digest} {review_id} {finding_id}")
+        })
+}
+
 #[test]
 fn one_shot_fence_rejects_replay_and_wrong_confirmation() {
     let temp = private_temp();
@@ -91,6 +114,25 @@ fn one_shot_fence_rejects_replay_and_wrong_confirmation() {
     ));
     exclusive(&path, b"call_id=test\nrequest_sha256=abc\n");
     assert!(std::panic::catch_unwind(|| exclusive(&path, b"replacement")).is_err());
+    let review = Uuid::from_u128(1);
+    assert!(!selection_confirmed(
+        &mut std::io::Cursor::new(""),
+        "abc",
+        review,
+        "R0"
+    ));
+    assert!(!selection_confirmed(
+        &mut std::io::Cursor::new(format!("SELECT JEV S04 wrong {review} R0\n")),
+        "abc",
+        review,
+        "R0"
+    ));
+    assert!(selection_confirmed(
+        &mut std::io::Cursor::new(format!("SELECT JEV S04 abc {review} R0\n")),
+        "abc",
+        review,
+        "R0"
+    ));
 }
 
 async fn identity(pool: &PgPool) {
@@ -115,11 +157,40 @@ async fn call(pool: &PgPool, client: &mut Mcp, kind: &str, route: &str, params: 
     support::route(client, kind, route, params).await
 }
 
-fn config(key: String) -> tect_host::JevAntiBloatProvider {
+async fn assert_saved_draft_unchanged(
+    pool: &PgPool,
+    candidate_set: Uuid,
+    revision: i64,
+    before: &Value,
+) {
+    let current: Value = sqlx::query_scalar(
+        "SELECT payload FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision=$2",
+    )
+    .bind(candidate_set)
+    .bind(revision)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        &current, before,
+        "no selection must leave the saved Work unchanged"
+    );
+    let later: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision>$2",
+    )
+    .bind(candidate_set)
+    .bind(revision)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(later, 0, "no selection must not save a new revision");
+}
+
+fn config(key: String, endpoint: &str) -> tect_host::JevAntiBloatProvider {
     tect_host::JevAntiBloatProvider::new(
         tect_host::JevAntiBloatConfig {
             profile: CALL_ID.into(),
-            endpoint: ENDPOINT.parse().unwrap(),
+            endpoint: endpoint.parse().unwrap(),
             model: MODEL.into(),
             timeout: std::time::Duration::from_secs(10),
             maximum_request_bytes: MAX_REQUEST,
@@ -228,10 +299,21 @@ async fn signed_budget(
     keys
 }
 
-async fn daemon(runtime: &str, socket: &Path, keys: &Value, send_key: Option<String>) -> Child {
+async fn daemon(
+    runtime: &str,
+    socket: &Path,
+    keys: &Value,
+    send_key: Option<String>,
+    endpoint: &str,
+) -> Child {
+    let isolated_root = std::path::PathBuf::from(std::env::var("TECT_TEST_ISOLATED_ROOT").unwrap());
+    let codex_home = std::path::PathBuf::from(std::env::var("CODEX_HOME").unwrap());
+    assert_eq!(codex_home, isolated_root.join("codex-home"));
+    assert!(codex_home.is_dir());
     let mut command = Command::new(env!("CARGO_BIN_EXE_tectd"));
     command
         .env_clear()
+        .env("CODEX_HOME", &codex_home)
         .env("TECT_DATABASE_URL", runtime)
         .env("TECT_SOCKET", socket)
         .env("TECT_JEV_BUDGET_OWNER_KEYS_JSON", keys.to_string())
@@ -241,7 +323,7 @@ async fn daemon(runtime: &str, socket: &Path, keys: &Value, send_key: Option<Str
         .kill_on_drop(true);
     if let Some(key) = send_key {
         command
-            .env("TECT_JEV_ANTI_BLOAT_ENDPOINT", ENDPOINT)
+            .env("TECT_JEV_ANTI_BLOAT_ENDPOINT", endpoint)
             .env("TECT_JEV_ANTI_BLOAT_PROVIDER_PROFILE_ID", CALL_ID)
             .env("TECT_JEV_ANTI_BLOAT_MODEL", MODEL)
             .env("TYPESAFE_API_KEY", key);
@@ -264,14 +346,30 @@ async fn daemon(runtime: &str, socket: &Path, keys: &Value, send_key: Option<Str
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "explicit JEV_S04_ONE_SHOT_MODE=preflight or send; fresh pinned PG18 only"]
 async fn one_shot_campaign_anti_bloat() {
-    let mode = std::env::var("JEV_S04_ONE_SHOT_MODE").expect("preflight or send required");
-    assert!(matches!(mode.as_str(), "preflight" | "send"));
-    let request_path = artifact(if mode == "send" {
+    let mode =
+        std::env::var("JEV_S04_ONE_SHOT_MODE").expect("preflight, send, or loopback mode required");
+    let loopback_case = match mode.as_str() {
+        "loopback_ranked_select" => Some(false),
+        "loopback_ranked_no_select" => Some(false),
+        "loopback_abstain" => Some(true),
+        "preflight" | "send" => None,
+        _ => panic!("unsupported one-shot mode"),
+    };
+    let loopback_listener = if loopback_case.is_some() {
+        Some(TcpListener::bind("127.0.0.1:0").await.unwrap())
+    } else {
+        None
+    };
+    let endpoint = loopback_listener.as_ref().map_or_else(
+        || ENDPOINT.to_owned(),
+        |listener| format!("http://{}/v1/systemone", listener.local_addr().unwrap()),
+    );
+    let request_path = artifact(if mode != "preflight" {
         "request.json"
     } else {
         "preflight.request.json"
     });
-    let manifest_path = artifact(if mode == "send" {
+    let manifest_path = artifact(if mode != "preflight" {
         "manifest.json"
     } else {
         "preflight.manifest.json"
@@ -282,7 +380,7 @@ async fn one_shot_campaign_anti_bloat() {
     let temp = private_temp();
     let root = temp.path().canonicalize().unwrap();
     let repo = root.join("source");
-    repository(&repo);
+    let source_head = source::clone_current_dev_source(&repo);
     let socket = root.join("seed.sock");
     let store = PgStore::connect(&runtime, 4).await.unwrap();
     let service = Arc::new(WorkspaceService::new(
@@ -328,6 +426,7 @@ async fn one_shot_campaign_anti_bloat() {
         &native,
         &mut client,
         &repo,
+        &source_head,
     )
     .await;
     let keys = signed_budget(
@@ -350,11 +449,11 @@ async fn one_shot_campaign_anti_bloat() {
     assert_eq!(prepared["state"]["status"], "prepared");
     let review_id = id(&prepared["review_id"]);
     let findings = prepared["findings"].as_array().unwrap();
-    assert_eq!(findings.len(), 3);
-    assert_eq!(findings.iter().filter(|f| f["rankable"] == true).count(), 2);
+    assert_eq!(findings.len(), 4);
+    assert_eq!(findings.iter().filter(|f| f["rankable"] == true).count(), 1);
     assert_eq!(
         findings.iter().filter(|f| f["rankable"] == false).count(),
-        1
+        3
     );
     let selected_draft: Value = sqlx::query_scalar(
         "SELECT payload FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision=$2",
@@ -365,29 +464,44 @@ async fn one_shot_campaign_anti_bloat() {
     .await
     .unwrap();
     let candidates = selected_draft["candidates"].as_array().unwrap();
-    assert_eq!(candidates.len(), 3);
+    assert_eq!(candidates.len(), 4);
     let titles = candidates
         .iter()
         .map(|c| c["title"].as_str().unwrap())
         .collect::<Vec<_>>();
-    assert!(titles.contains(&"Required 600px campaign Preview"));
-    assert!(titles.contains(&"Optional 375/600px comparison toggle with synchronized scrolling"));
-    assert!(titles.contains(&"Optional nonblocking copy-advice checklist"));
-    let (input,review,eligible): (Value,Value,Value) = sqlx::query_as(
-        "SELECT input_payload,review_payload,eligible_ids FROM scope_anti_bloat_reviews WHERE review_id=$1")
+    for title in [
+        "Required Active JEV MVP Work",
+        "Required EM02-SCOPE@0.1 Work",
+        "Required EM02-PROTECT@0.1 Work",
+        "Agent-proposed optional duplicate advisory status panel",
+    ] {
+        assert!(titles.contains(&title));
+    }
+    let (input,review,eligible,origin_session,session_preference,request_preference): (Value,Value,Value,Option<Uuid>,String,String) = sqlx::query_as(
+        "SELECT input_payload,review_payload,eligible_ids,origin_session_id,session_preference,request_preference FROM scope_anti_bloat_reviews WHERE review_id=$1")
         .bind(review_id).fetch_one(&pool).await.unwrap();
     let saved = StoredAntiBloatReview {
         review_id,
         workspace_id: workspace,
         actor_id: actor,
-        invocation: None,
+        invocation: Some(AntiBloatInvocationSnapshot {
+            session_id: origin_session.expect("current review must bind the owner session"),
+            session_preference: serde_json::from_value::<AdvisoryRequestPreference>(json!(
+                session_preference
+            ))
+            .unwrap(),
+            request_preference: serde_json::from_value::<AdvisoryRequestPreference>(json!(
+                request_preference
+            ))
+            .unwrap(),
+        }),
         input: serde_json::from_value(input.clone()).unwrap(),
         review: serde_json::from_value(review.clone()).unwrap(),
         state: AntiBloatAttemptState::Prepared,
     };
     let eligible_ids: Vec<String> = serde_json::from_value(eligible.clone()).unwrap();
-    assert_eq!(eligible_ids.len(), 2);
-    let exact = config("preflight-placeholder-never-sent".into())
+    assert_eq!(eligible_ids.len(), 1);
+    let exact = config("preflight-placeholder-never-sent".into(), &endpoint)
         .prepare(&AntiBloatRankingMaterial {
             saved: &saved,
             eligible_ids: &eligible_ids,
@@ -415,7 +529,7 @@ async fn one_shot_campaign_anti_bloat() {
     drop(server);
     let native_socket = root.join("native.sock");
     if mode == "preflight" {
-        let mut child = daemon(&runtime, &native_socket, &keys, None).await;
+        let mut child = daemon(&runtime, &native_socket, &keys, None, &endpoint).await;
         let mut client = Mcp::start(&native_socket, &host, &native, &workspace_key).await;
         let result = call(
             &pool,
@@ -443,9 +557,17 @@ async fn one_shot_campaign_anti_bloat() {
         return;
     }
     // A send run constructs the bearer only after the exact request is frozen.
-    let key = std::env::var("TYPESAFE_API_KEY").expect("send needs private process key");
+    let key = if loopback_case.is_some() {
+        assert!(
+            std::env::var("TYPESAFE_API_KEY").is_err(),
+            "loopback cannot hold a real credential"
+        );
+        "s04-loopback-only".to_owned()
+    } else {
+        std::env::var("TYPESAFE_API_KEY").expect("send needs private process key")
+    };
     assert!(!key.trim().is_empty());
-    let real = config(key.clone());
+    let real = config(key.clone(), &endpoint);
     assert_eq!(
         real.prepare(&AntiBloatRankingMaterial {
             saved: &saved,
@@ -454,21 +576,33 @@ async fn one_shot_campaign_anti_bloat() {
         .unwrap(),
         exact
     );
-    eprintln!(
-        "Review {} and {}. Enter exactly: SEND JEV {digest}",
-        request_path.display(),
-        manifest_path.display()
-    );
-    assert!(
-        confirmed(&mut std::io::stdin().lock(), &digest),
-        "confirmation mismatch; no send"
-    );
+    let send_confirmed = if loopback_case.is_some() {
+        confirmed(
+            &mut std::io::Cursor::new(format!("SEND JEV {digest}\n")),
+            &digest,
+        )
+    } else {
+        eprintln!(
+            "Review {} and {}. Enter exactly: SEND JEV {digest}",
+            request_path.display(),
+            manifest_path.display()
+        );
+        confirmed(&mut std::io::stdin().lock(), &digest)
+    };
+    assert!(send_confirmed, "confirmation mismatch; no send");
     exclusive(
         &marker_path,
         format!("call_id={CALL_ID}\nrequest_sha256={digest}\n").as_bytes(),
     );
     assert!(marker_path.exists());
-    let mut child = daemon(&runtime, &native_socket, &keys, Some(key)).await;
+    let responder = loopback_listener.map(|listener| {
+        tokio::spawn(loopback::respond_once(
+            listener,
+            exact.clone(),
+            loopback_case.unwrap(),
+        ))
+    });
+    let mut child = daemon(&runtime, &native_socket, &keys, Some(key), &endpoint).await;
     let mut client = Mcp::start(&native_socket, &host, &native, &workspace_key).await;
     let result = call(
         &pool,
@@ -478,6 +612,9 @@ async fn one_shot_campaign_anti_bloat() {
         json!({"review_id":review_id}),
     )
     .await;
+    if let Some(responder) = responder {
+        responder.await.unwrap();
+    }
     let replay = call(
         &pool,
         &mut client,
@@ -487,6 +624,21 @@ async fn one_shot_campaign_anti_bloat() {
     )
     .await;
     assert_eq!(result, replay);
+    let foreign = support::route_error(
+        &mut client,
+        "command",
+        "scope.anti_bloat.apply",
+        json!({"review_id":review_id,"finding_id":"R999-foreign",
+            "disposition":"narrow","delta":{"candidate_set_id":candidate_set,
+                "expected_revision":revision,"idempotency_key":format!("s04-foreign-{review_id}"),
+                "operations":[]}}),
+    )
+    .await;
+    assert!(
+        foreign["error"]["code"].as_str().is_some(),
+        "foreign finding must be denied"
+    );
+    assert_saved_draft_unchanged(&pool, candidate_set, revision, &selected_draft).await;
     let audit: (Vec<u8>,String,Option<Vec<u8>>,Option<String>,String) = sqlx::query_as(
         "SELECT request_bytes,request_sha256,raw_response,response_sha256,state FROM scope_anti_bloat_reviews WHERE review_id=$1")
         .bind(review_id).fetch_one(&pool).await.unwrap();
@@ -508,6 +660,36 @@ async fn one_shot_campaign_anti_bloat() {
             .expect("ranked IDs");
         let top = ranked.first().and_then(Value::as_str).expect("top finding");
         assert!(eligible_ids.iter().any(|id| id == top));
+        eprintln!(
+            "To apply one agent-authored delta, enter exactly: SELECT JEV S04 {digest} {review_id} {top}"
+        );
+        let selected = match mode.as_str() {
+            "loopback_ranked_select" => selection_confirmed(
+                &mut std::io::Cursor::new(format!("SELECT JEV S04 {digest} {review_id} {top}\n")),
+                &digest,
+                review_id,
+                top,
+            ),
+            "loopback_ranked_no_select" => {
+                selection_confirmed(&mut std::io::Cursor::new(""), &digest, review_id, top)
+            }
+            _ => selection_confirmed(&mut std::io::stdin().lock(), &digest, review_id, top),
+        };
+        if !selected {
+            let links: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM scope_anti_bloat_caller_links WHERE review_id=$1",
+            )
+            .bind(review_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            assert_eq!(links, 0, "no SELECT cannot apply a finding");
+            assert_saved_draft_unchanged(&pool, candidate_set, revision, &selected_draft).await;
+            client.finish().await;
+            child.kill().await.unwrap();
+            child.wait().await.unwrap();
+            return;
+        }
         let finding = findings
             .iter()
             .find(|f| f["id"] == top && f["rankable"] == true)
@@ -531,6 +713,26 @@ async fn one_shot_campaign_anti_bloat() {
         .await;
         assert_eq!(applied["from_revision"], revision);
         assert_eq!(applied["to_revision"], revision + 1);
+        let after_draft: Value = sqlx::query_scalar(
+            "SELECT payload FROM scope_candidate_drafts WHERE candidate_set_id=$1 AND set_revision=$2",
+        )
+        .bind(candidate_set)
+        .bind(revision + 1)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let after_candidates = after_draft["candidates"].as_array().unwrap();
+        assert_eq!(
+            after_candidates.len(),
+            3,
+            "only the exploratory candidate may be removed"
+        );
+        for required in candidates.iter().take(3) {
+            assert!(
+                after_candidates.iter().any(|saved| saved == required),
+                "MVP, SCOPE and PROTECT candidate bodies must be identical"
+            );
+        }
         let verifier = admin::prepare_verifier_enrollment(&pool, enrolled.tenant_id, workspace)
             .await
             .unwrap()
@@ -591,6 +793,7 @@ async fn one_shot_campaign_anti_bloat() {
             links, 0,
             "abstain, tie or invalid response cannot mutate plan"
         );
+        assert_saved_draft_unchanged(&pool, candidate_set, revision, &selected_draft).await;
     }
     client.finish().await;
     child.kill().await.unwrap();
