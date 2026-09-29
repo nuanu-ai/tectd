@@ -345,7 +345,6 @@ async fn public_s02_approved_artifact_to_independently_verified_planning_effect(
     let store = PgStore::connect(&runtime_url, 4).await.unwrap();
     let (workspace, owner_keys) = signed_fixture_budget(&store, &enrolled, &workspace_key).await;
     let task = Uuid::new_v4();
-    let artifact_id = Uuid::new_v4();
     let now = i64::try_from(
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -355,6 +354,63 @@ async fn public_s02_approved_artifact_to_independently_verified_planning_effect(
     .unwrap();
     let body = artifact_body(workspace, task, now - 10, now + 600);
     let digest = format!("{:x}", Sha256::digest(body.as_bytes()));
+    // Public issuance assigns the artifact ID. Bootstrap the same disposable
+    // workspace without a validator, then bind the validator to those exact
+    // finalized bytes for the independent V2 verification below.
+    let owner_host = root.join("owner.json");
+    host_file(&owner_host, &enrolled.auth);
+    let issuance_socket = root.join("matrix-planning-issuance.sock");
+    let issuance_service = Arc::new(WorkspaceService::new(
+        Arc::new(PgStore::connect(&runtime_url, 4).await.unwrap()),
+        Arc::new(tect_host::GitSourceInspector),
+        Arc::new(tect_host::LocalSetupFiles),
+    ));
+    let issuance_listener = UnixListener::bind(&issuance_socket).unwrap();
+    std::fs::set_permissions(&issuance_socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let issuance_server = tokio::spawn(tect_host::serve(issuance_listener, issuance_service));
+    let mut issuer = Mcp::start(
+        &issuance_socket,
+        &owner_host,
+        &Uuid::new_v4().to_string(),
+        &workspace_key,
+    )
+    .await;
+    let opened = route(&mut issuer, "command", "workspace.open", json!({})).await;
+    assert_eq!(id(&opened["workspace"]["id"]), workspace);
+    let registered = artifact_route(
+        &mut issuer,
+        "command",
+        "slice.pipeline.evidence_artifact.register",
+        json!({
+            "request_id":Uuid::new_v4(),"digest":digest,"size":body.len(),
+            "format":"application/vnd.tect.matrix-operating-evidence+json;version=1",
+            "provenance":"synthetic-public-planning-test",
+            "target":format!("matrix-task:{task}@1")
+        }),
+    )
+    .await;
+    let artifact_id = id(&registered["artifact"]["artifact_id"]);
+    assert_eq!(registered["artifact"]["readiness"], "uploading");
+    let finalized = artifact_route(
+        &mut issuer,
+        "command",
+        "slice.pipeline.evidence_artifact.finalize",
+        json!({"request_id":Uuid::new_v4(),"artifact_id":artifact_id,
+            "revision":1,"body":body}),
+    )
+    .await;
+    assert_eq!(finalized["artifact"]["readiness"], "ready");
+    let read = artifact_route(
+        &mut issuer,
+        "query",
+        "slice.pipeline.evidence_artifact.read",
+        json!({"artifact_id":artifact_id,"revision":1,"offset":0,"limit":65536}),
+    )
+    .await;
+    assert_eq!(read["fragment"], body);
+    assert_eq!(read["complete"], true);
+    issuer.finish().await;
+    issuance_server.abort();
     let approval = ApprovedMatrixEvidenceArtifact {
         tenant_id: enrolled.tenant_id,
         workspace_id: workspace,
@@ -366,15 +422,6 @@ async fn public_s02_approved_artifact_to_independently_verified_planning_effect(
         policy_version: "matrix-approved-artifact/1".into(),
         max_age_seconds: 600,
     };
-    // This direct fixture insert models an already finalized pipeline artifact.
-    // The runtime validator still independently checks exact bytes and approval.
-    sqlx::query("INSERT INTO pipeline_evidence_artifacts \
-        (tenant_id,workspace_id,artifact_id,revision,digest,size,format,provenance,target,readiness,body,request_id) \
-        VALUES($1,$2,$3,1,$4,$5,$6,'synthetic-pipeline','synthetic-task','ready',$7,$8)")
-        .bind(enrolled.tenant_id).bind(workspace).bind(artifact_id).bind(&digest)
-        .bind(body.len() as i64)
-        .bind("application/vnd.tect.matrix-operating-evidence+json;version=1")
-        .bind(&body).bind(Uuid::new_v4()).execute(&pool).await.unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let budgets = Arc::new(AtomicUsize::new(0));
     let runtime_pool = PgPool::connect_with(PgConnectOptions::from_str(&runtime_url).unwrap())
@@ -398,8 +445,6 @@ async fn public_s02_approved_artifact_to_independently_verified_planning_effect(
     let listener = UnixListener::bind(&socket).unwrap();
     std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
     let server = tokio::spawn(tect_host::serve(listener, service));
-    let owner_host = root.join("owner.json");
-    host_file(&owner_host, &enrolled.auth);
     let mut owner = Mcp::start(
         &socket,
         &owner_host,
