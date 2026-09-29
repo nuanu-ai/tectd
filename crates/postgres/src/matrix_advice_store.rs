@@ -6,15 +6,15 @@ use tect_application::{
     MatrixAdviceStore, MatrixProviderBinding, MatrixRequirementsContextStore, MatrixTaskStore,
     MatrixVerificationAuthority, MatrixVerificationStore, StoredGuardedMatrixAdviceRecord,
     canonical_matrix_advice_digest, canonical_matrix_input_digest,
-    context_matrix_verified_evaluation_digest,
+    canonical_matrix_trial_advice_digest, context_matrix_verified_evaluation_digest,
 };
 use tect_domain::{
     AdvisoryDispatch, AdvisoryModelConfiguration, AdvisoryOpportunity, AdvisoryOpportunityState,
     AdvisoryProviderProfileRef, CONTEXT_MATRIX_VERIFICATION_SCHEMA, EngineeringChoiceSet,
-    EngineeringMatrixInput, Error, MATRIX_VERIFICATION_SCHEMA, OwnerReportedEngineeringMatrixFacts,
-    Result, compose_confirmed_requirements_matrix, compose_independently_verified_owner_matrix,
-    evaluate_context_matrix_verification, evaluate_matrix_verification,
-    matrix_verified_evaluation_digest,
+    EngineeringMatrixInput, Error, MATRIX_VERIFICATION_SCHEMA, MatrixTrialRankingEvidence,
+    OwnerReportedEngineeringMatrixFacts, Result, compose_confirmed_requirements_matrix,
+    compose_independently_verified_owner_matrix, evaluate_context_matrix_verification,
+    evaluate_matrix_verification, matrix_verified_evaluation_digest,
 };
 use uuid::Uuid;
 
@@ -76,6 +76,28 @@ fn decode_advice(
     let model: serde_json::Value = row.try_get("model_configuration").map_err(storage_error)?;
     let model_configuration: AdvisoryModelConfiguration =
         serde_json::from_value(model).map_err(|_| Error::InternalInvariant)?;
+    let policy: Option<String> = row
+        .try_get("ranking_policy_version")
+        .map_err(storage_error)?;
+    let trial_json: Option<serde_json::Value> =
+        row.try_get("trial_uncertainty").map_err(storage_error)?;
+    let signed_snapshot: serde_json::Value = row
+        .try_get("configuration_snapshot")
+        .map_err(storage_error)?;
+    if policy.is_some() {
+        let saved_digest: String = row.try_get("configuration_digest").map_err(storage_error)?;
+        let actual_digest = format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&signed_snapshot).map_err(|_| Error::InternalInvariant)?
+            )
+        );
+        if actual_digest != saved_digest {
+            return Err(Error::InternalInvariant);
+        }
+    }
+    let trial_evidence =
+        decode_trial_uncertainty(policy.as_deref(), trial_json, &signed_snapshot, &outcome)?;
     let record = GuardedMatrixAdviceRecord {
         opportunity_id: row.try_get("opportunity_id").map_err(storage_error)?,
         dispatch_id: row.try_get("dispatch_id").map_err(storage_error)?,
@@ -89,10 +111,24 @@ fn decode_advice(
             .map_err(storage_error)?,
         advice_digest: row.try_get("advice_digest").map_err(storage_error)?,
         outcome,
+        trial_evidence,
+    };
+    let expected_digest = match &record.trial_evidence {
+        Some(evidence) => canonical_matrix_trial_advice_digest(
+            &record.binding,
+            &record.outcome,
+            evidence,
+            record.opportunity_id,
+            record.dispatch_id,
+            &record.response_payload_sha256,
+        )
+        .map_err(|_| Error::InternalInvariant)?,
+        None => canonical_matrix_advice_digest(&record.binding, &record.outcome)
+            .map_err(|_| Error::InternalInvariant)?,
     };
     if record.response_payload_sha256
         != format!("{:x}", Sha256::digest(&record.raw_response_payload))
-        || record.advice_digest != canonical_matrix_advice_digest(&record.binding, &record.outcome)?
+        || record.advice_digest != expected_digest
         || row.try_get::<Uuid, _>("task_id").map_err(storage_error)? != record.binding.task_id
         || row
             .try_get::<i64, _>("matrix_task_revision")
@@ -109,6 +145,51 @@ fn decode_advice(
         advice_id: row.try_get("advice_id").map_err(storage_error)?,
         record,
     })
+}
+
+fn decode_trial_uncertainty(
+    policy: Option<&str>,
+    trial_json: Option<serde_json::Value>,
+    signed_snapshot: &serde_json::Value,
+    outcome: &GuardedMatrixAdviceOutcome,
+) -> Result<Option<MatrixTrialRankingEvidence>> {
+    let signed_trial = match signed_snapshot.get("ranking_policy") {
+        None => false, // Existing strict rows predate the explicit marker.
+        Some(serde_json::Value::String(version))
+            if version == tect_domain::MATRIX_NATIVE_RANKING_POLICY_VERSION =>
+        {
+            false
+        }
+        Some(serde_json::Value::String(version))
+            if version == tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION =>
+        {
+            true
+        }
+        _ => return Err(Error::InternalInvariant),
+    };
+    if (policy.is_some() && !signed_trial)
+        || (signed_trial
+            && matches!(outcome, GuardedMatrixAdviceOutcome::Ranked { .. })
+            && policy.is_none())
+    {
+        return Err(Error::InternalInvariant);
+    }
+    match (policy, trial_json, outcome) {
+        (None, None, _) => Ok(None),
+        (
+            Some(tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION),
+            Some(value),
+            GuardedMatrixAdviceOutcome::Ranked { ranked_choice_ids },
+        ) => {
+            let evidence: MatrixTrialRankingEvidence =
+                serde_json::from_value(value).map_err(|_| Error::InternalInvariant)?;
+            evidence
+                .validate_ranked(ranked_choice_ids)
+                .map_err(|_| Error::InternalInvariant)?;
+            Ok(Some(evidence))
+        }
+        _ => Err(Error::InternalInvariant),
+    }
 }
 
 fn outcome_columns(
@@ -131,14 +212,24 @@ impl PgUnitOfWork {
     ) -> Result<StoredGuardedMatrixAdviceRecord> {
         let tenant = self.tenant_id()?;
         let (kind, ranks, reason) = outcome_columns(&record.outcome);
+        let policy = record
+            .trial_evidence
+            .as_ref()
+            .map(|evidence| evidence.policy_version.as_str());
+        let uncertainty = record
+            .trial_evidence
+            .as_ref()
+            .map(|evidence| serde_json::to_value(evidence).map_err(storage_error))
+            .transpose()?;
         let inserted: Option<Uuid> = sqlx::query_scalar(
-            "INSERT INTO advisory_matrix_advice (tenant_id,workspace_id,opportunity_id,task_id,matrix_task_revision,matrix_choice_set_digest,dispatch_id,kind,ranked_choice_ids,reason,advice_digest,provider_profile_ref,model_configuration,response_payload_sha256) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT DO NOTHING RETURNING advice_id"
+            "INSERT INTO advisory_matrix_advice (tenant_id,workspace_id,opportunity_id,task_id,matrix_task_revision,matrix_choice_set_digest,dispatch_id,kind,ranked_choice_ids,reason,advice_digest,provider_profile_ref,model_configuration,response_payload_sha256,ranking_policy_version,trial_uncertainty) \
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) ON CONFLICT DO NOTHING RETURNING advice_id"
         ).bind(tenant).bind(workspace_id).bind(record.opportunity_id).bind(record.binding.task_id)
             .bind(record.binding.task_revision).bind(&record.binding.choice_set_digest)
             .bind(record.dispatch_id).bind(kind).bind(ranks).bind(reason)
             .bind(&record.advice_digest).bind(&record.provider_profile_ref.id)
             .bind(serde_json::json!(record.model_configuration)).bind(&record.response_payload_sha256)
+            .bind(policy).bind(uncertainty)
             .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?;
         let advice_id = inserted.ok_or(Error::InputConflict)?;
         Ok(StoredGuardedMatrixAdviceRecord {
@@ -182,6 +273,123 @@ mod tests {
         EvidenceValidationOutcome, MATRIX_VERIFICATION_SCHEMA, MatrixEvidenceBinding,
         matrix_input_digest, required_matrix_facts,
     };
+
+    #[test]
+    fn typed_trial_codec_requires_signed_policy_complete_metadata_and_valid_bounds() {
+        use tect_domain::{
+            MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION, MATRIX_TRIAL_POLICY_ID,
+            MatrixTrialCandidateEvidence, NativeMatrixScoreDistribution,
+            matrix_trial_policy_digest,
+        };
+        let score = |id: &str, level: usize, confidence: f64| {
+            let mut probabilities = [0.0; 10];
+            probabilities[level] = 1.0;
+            let distribution = NativeMatrixScoreDistribution::new(probabilities).unwrap();
+            let bounds = distribution.feasible_expected_score();
+            MatrixTrialCandidateEvidence {
+                candidate_id: id.into(),
+                declared_score: level as f64,
+                score_confidence: confidence,
+                probabilities,
+                displayed_mean: distribution.displayed_mean(),
+                feasible_minimum: bounds.minimum,
+                feasible_maximum: bounds.maximum,
+            }
+        };
+        let evidence = MatrixTrialRankingEvidence {
+            policy_id: MATRIX_TRIAL_POLICY_ID.into(),
+            policy_version: MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION.into(),
+            policy_digest: matrix_trial_policy_digest(),
+            choice_selected_candidate_id: "a".into(),
+            choice_confidence: 0.8,
+            choice_selected_answer_probability: 0.8,
+            scores: vec![score("a", 8, 0.9), score("b", 4, 0.5)],
+            low_loser_confidence: true,
+        };
+        let snapshot =
+            serde_json::json!({"ranking_policy":MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION});
+        let ranked = GuardedMatrixAdviceOutcome::Ranked {
+            ranked_choice_ids: vec!["a".into(), "b".into()],
+        };
+        let encoded = serde_json::to_value(&evidence).unwrap();
+        assert_eq!(
+            decode_trial_uncertainty(
+                Some(MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION),
+                Some(encoded.clone()),
+                &snapshot,
+                &ranked
+            ),
+            Ok(Some(evidence)),
+        );
+        assert!(decode_trial_uncertainty(None, Some(encoded.clone()), &snapshot, &ranked).is_err());
+        assert!(
+            decode_trial_uncertainty(
+                Some(MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION),
+                None,
+                &snapshot,
+                &ranked
+            )
+            .is_err()
+        );
+        assert!(
+            decode_trial_uncertainty(
+                Some(MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION),
+                Some(encoded.clone()),
+                &serde_json::json!({}),
+                &ranked
+            )
+            .is_err()
+        );
+        let mut tampered = encoded;
+        tampered["scores"][0]["feasible_minimum"] = serde_json::json!(0.0);
+        assert!(
+            decode_trial_uncertainty(
+                Some(MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION),
+                Some(tampered),
+                &snapshot,
+                &ranked
+            )
+            .is_err()
+        );
+        assert_eq!(
+            decode_trial_uncertainty(None, None, &serde_json::json!({}), &ranked),
+            Ok(None)
+        );
+        assert!(
+            decode_trial_uncertainty(
+                None,
+                None,
+                &serde_json::json!({"ranking_policy":"unknown"}),
+                &ranked
+            )
+            .is_err()
+        );
+        assert_eq!(
+            decode_trial_uncertainty(
+                None,
+                None,
+                &snapshot,
+                &GuardedMatrixAdviceOutcome::Abstained { reason: None }
+            ),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn trial_uncertainty_migration_is_additive_and_paired() {
+        let sql = include_str!("../migrations/0123_matrix_trial_uncertainty.sql");
+        for required in [
+            "ADD COLUMN ranking_policy_version text",
+            "ADD COLUMN trial_uncertainty jsonb",
+            "ranking_policy_version IS NULL AND trial_uncertainty IS NULL",
+            "kind = 'ranked'",
+            "jsonb_array_length(trial_uncertainty->'scores') = 2",
+        ] {
+            assert!(sql.contains(required), "missing {required}");
+        }
+        assert!(!sql.contains("UPDATE advisory_matrix_advice"));
+        assert!(!sql.contains("DROP COLUMN"));
+    }
 
     #[test]
     fn rejected_outcome_has_no_ranking_or_usable_kind() {

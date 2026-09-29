@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use sha2::{Digest, Sha256};
 use tect_domain::{
     AdvisoryDispatch, AdvisoryModelConfiguration, AdvisoryOpportunity, AdvisoryProviderProfileRef,
-    Error, MatrixAdviceEligibility, MatrixRanking, Result,
+    Error, MatrixAdviceEligibility, MatrixRanking, MatrixTrialRankingEvidence, Result,
 };
 use uuid::Uuid;
 
@@ -11,11 +11,13 @@ use crate::{
     MatrixProviderResponse,
 };
 
-const ADVICE_DIGEST_DOMAIN: &[u8] = b"tect.guarded-matrix-advice/1\0";
+mod digest;
+use digest::is_digest;
+pub use digest::{canonical_matrix_advice_digest, canonical_matrix_trial_advice_digest};
 
 /// Durable evidence of one guarded Matrix dispatch. A ranking is advisory only;
 /// selection belongs to the later, separate disposition record.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GuardedMatrixAdviceRecord {
     pub opportunity_id: Uuid,
     pub dispatch_id: Uuid,
@@ -31,6 +33,9 @@ pub struct GuardedMatrixAdviceRecord {
     /// It deliberately excludes occurrence IDs and raw transport bytes.
     pub advice_digest: String,
     pub outcome: GuardedMatrixAdviceOutcome,
+    /// Absent for every legacy/strict receipt. Trial Ranked remains blocked
+    /// at host and store boundaries until public uncertainty readback exists.
+    pub trial_evidence: Option<MatrixTrialRankingEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +86,7 @@ impl GuardedMatrixAdviceRecord {
             response_payload_sha256: response.response_payload_sha256,
             advice_digest,
             outcome,
+            trial_evidence: None,
         };
         record.validate_for(
             opportunity_id,
@@ -125,12 +131,32 @@ impl GuardedMatrixAdviceRecord {
                 .is_some_and(|digest| !is_digest(digest))
             || self.response_payload_sha256
                 != format!("{:x}", Sha256::digest(&self.raw_response_payload))
-            || self.advice_digest != canonical_matrix_advice_digest(binding, &self.outcome)?
+            || self.advice_digest
+                != match &self.trial_evidence {
+                    Some(evidence) => canonical_matrix_trial_advice_digest(
+                        binding,
+                        &self.outcome,
+                        evidence,
+                        self.opportunity_id,
+                        self.dispatch_id,
+                        &self.response_payload_sha256,
+                    )?,
+                    None => canonical_matrix_advice_digest(binding, &self.outcome)?,
+                }
         {
             return Err(Error::InvalidArguments);
         }
         match &self.outcome {
             GuardedMatrixAdviceOutcome::Ranked { ranked_choice_ids } => {
+                if let Some(evidence) = &self.trial_evidence {
+                    if !matches!(
+                        binding.verification,
+                        crate::MatrixVerificationAuthority::ContextV2 { .. }
+                    ) {
+                        return Err(Error::InvalidArguments);
+                    }
+                    evidence.validate_ranked(ranked_choice_ids)?;
+                }
                 let ranking = MatrixRanking::Ranked {
                     ranked_candidate_ids: ranked_choice_ids.clone(),
                     recommended_candidate_id: ranked_choice_ids
@@ -141,6 +167,9 @@ impl GuardedMatrixAdviceRecord {
                 ranking.validate(eligibility)
             }
             GuardedMatrixAdviceOutcome::Abstained { reason } => {
+                if self.trial_evidence.is_some() {
+                    return Err(Error::InvalidArguments);
+                }
                 valid_reason(reason.as_deref())?;
                 MatrixRanking::Abstained {
                     ranked_candidate_ids: Vec::new(),
@@ -149,6 +178,9 @@ impl GuardedMatrixAdviceRecord {
                 .validate(eligibility)
             }
             GuardedMatrixAdviceOutcome::Rejected { reason } => {
+                if self.trial_evidence.is_some() {
+                    return Err(Error::InvalidArguments);
+                }
                 valid_reason(Some(reason))?;
                 if !matches!(
                     eligibility,
@@ -162,77 +194,6 @@ impl GuardedMatrixAdviceRecord {
     }
 }
 
-/// Stable, domain-separated SHA-256. JSON object keys are serialized in sorted
-/// order by serde_json; array order (including rank order) is retained.
-pub fn canonical_matrix_advice_digest(
-    binding: &MatrixProviderBinding,
-    outcome: &GuardedMatrixAdviceOutcome,
-) -> Result<String> {
-    let outcome = match outcome {
-        GuardedMatrixAdviceOutcome::Ranked { ranked_choice_ids } => {
-            serde_json::json!({"status": "ranked", "ranked_choice_ids": ranked_choice_ids})
-        }
-        GuardedMatrixAdviceOutcome::Abstained { reason } => {
-            serde_json::json!({"status": "abstained", "reason": reason})
-        }
-        GuardedMatrixAdviceOutcome::Rejected { reason } => {
-            serde_json::json!({"status": "rejected", "reason": reason})
-        }
-    };
-    let mut material = serde_json::json!({
-        "schema_version": match binding.verification {
-            crate::MatrixVerificationAuthority::Unverified => 1,
-            crate::MatrixVerificationAuthority::LegacyV1 { .. } => 2,
-            crate::MatrixVerificationAuthority::ContextV2 { .. } => 3,
-        },
-        "binding": {
-            "task_id": binding.task_id,
-            "task_revision": binding.task_revision,
-            "input_digest": binding.input_digest,
-            "choice_set_id": binding.choice_set_id,
-            "choice_set_version": binding.choice_set_version,
-            "choice_set_digest": binding.choice_set_digest,
-            "evaluation_digest": binding.evaluation_digest,
-        },
-        "outcome": outcome,
-    });
-    if let Some(digest) = binding.verification.digest() {
-        if !is_digest(digest) {
-            return Err(Error::InvalidArguments);
-        }
-        material["binding"]["verification_digest"] = serde_json::json!(digest);
-    }
-    if let crate::MatrixVerificationAuthority::ContextV2 {
-        snapshot_id,
-        authority_schema,
-        semantic_digest,
-        ..
-    } = &binding.verification
-    {
-        if snapshot_id.is_nil()
-            || authority_schema != tect_domain::MATRIX_REQUIREMENTS_SCHEMA
-            || !is_digest(semantic_digest)
-        {
-            return Err(Error::InvalidArguments);
-        }
-        material["binding"]["frozen_snapshot_id"] = serde_json::json!(snapshot_id);
-        material["binding"]["authority_schema"] = serde_json::json!(authority_schema);
-        material["binding"]["requirements_semantic_digest"] = serde_json::json!(semantic_digest);
-    }
-    let encoded = serde_json::to_vec(&material).map_err(|_| Error::InternalInvariant)?;
-    let mut hasher = Sha256::new();
-    hasher.update(ADVICE_DIGEST_DOMAIN);
-    hasher.update(encoded);
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
-fn is_digest(value: &str) -> bool {
-    value.len() == 64
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-}
-
 fn valid_reason(reason: Option<&str>) -> Result<()> {
     if reason.is_some_and(|value| value.trim().is_empty()) {
         return Err(Error::InvalidArguments);
@@ -240,7 +201,7 @@ fn valid_reason(reason: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StoredGuardedMatrixAdviceRecord {
     pub advice_id: Uuid,
     pub record: GuardedMatrixAdviceRecord,
@@ -331,6 +292,7 @@ mod tests {
             raw_response_payload,
             advice_digest,
             outcome,
+            trial_evidence: None,
         }
     }
 
@@ -495,3 +457,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod trial_tests;

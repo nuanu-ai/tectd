@@ -448,6 +448,7 @@ async fn guarded_matrix_advice_round_trip_and_raw_byte_conflict() {
         response_payload_sha256: sha(&raw),
         advice_digest: canonical_matrix_advice_digest(&binding, &outcome).unwrap(),
         outcome,
+        trial_evidence: None,
     };
     // A correctly self-hashed but byte-different response must fail against
     // the sealed dispatch before any advice row exists.

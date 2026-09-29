@@ -11,7 +11,8 @@ impl PgUnitOfWork {
             "SELECT a.advice_id,a.opportunity_id,a.dispatch_id,a.task_id,a.matrix_task_revision, \
                     a.matrix_choice_set_digest,a.kind,a.ranked_choice_ids,a.reason,a.advice_digest, \
                     a.provider_profile_ref,a.model_configuration,a.response_payload_sha256, \
-                    o.material_digest,o.matrix_verification_digest,r.input_digest,r.canonical_input,r.choice_set,d.response_payload \
+                    a.ranking_policy_version,a.trial_uncertainty, \
+                    o.material_digest,o.matrix_verification_digest,r.input_digest,r.canonical_input,r.choice_set,d.response_payload,d.configuration_snapshot,d.configuration_digest \
              FROM advisory_matrix_advice a \
              JOIN advisory_opportunity o ON (o.tenant_id,o.workspace_id,o.id)=(a.tenant_id,a.workspace_id,a.opportunity_id) \
              JOIN matrix_task_revisions r ON (r.tenant_id,r.workspace_id,r.task_id,r.revision)=(a.tenant_id,a.workspace_id,a.task_id,a.matrix_task_revision) \

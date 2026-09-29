@@ -78,11 +78,13 @@ pub use advisory_ports::{
     context_matrix_verified_evaluation_digest,
 };
 pub use context_matrix_verification_ports::ContextMatrixVerificationStore;
-#[doc(hidden)]
-pub use matrix_advice_ports::canonical_matrix_advice_digest;
 pub use matrix_advice_ports::{
     GuardedMatrixAdviceOutcome, GuardedMatrixAdviceRecord, MatrixAdviceStore,
     StoredGuardedMatrixAdviceRecord,
+};
+#[doc(hidden)]
+pub use matrix_advice_ports::{
+    canonical_matrix_advice_digest, canonical_matrix_trial_advice_digest,
 };
 pub use matrix_advice_runtime::{
     DenyMatrixBudget, MAX_PREPARED_MATRIX_BODY_BYTES, MatrixBudgetAuthorization,

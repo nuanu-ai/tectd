@@ -116,12 +116,14 @@ impl PgUnitOfWork {
         let snapshot: serde_json::Value = dispatch
             .try_get("configuration_snapshot")
             .map_err(storage_error)?;
-        if snapshot
+        let trial_policy = snapshot
             .get("ranking_policy")
             .and_then(serde_json::Value::as_str)
-            == Some(tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION)
-            && matches!(&record.outcome, GuardedMatrixAdviceOutcome::Ranked { .. })
-        {
+            == Some(tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION);
+        if record.trial_evidence.is_some() && !trial_policy {
+            return Err(Error::InputConflict);
+        }
+        if trial_policy && matches!(&record.outcome, GuardedMatrixAdviceOutcome::Ranked { .. }) {
             // Until trial confidence metadata is durably/publicly represented,
             // never store its recommendation as ordinary ranked advice.
             return Err(Error::InputConflict);

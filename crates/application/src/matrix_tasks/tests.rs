@@ -135,6 +135,7 @@ fn public_guarded_advice_requires_exact_current_bindings() {
             response_payload_sha256: "e".repeat(64),
             advice_digest: "f".repeat(64),
             outcome: outcome.clone(),
+            trial_evidence: None,
         };
         let stored = StoredGuardedMatrixAdviceRecord {
             advice_id: Uuid::new_v4(),
@@ -183,6 +184,7 @@ fn public_guarded_advice_requires_exact_current_bindings() {
         outcome: crate::GuardedMatrixAdviceOutcome::Rejected {
             reason: "invalid".into(),
         },
+        trial_evidence: None,
     };
     let stored = StoredGuardedMatrixAdviceRecord {
         advice_id: Uuid::new_v4(),
