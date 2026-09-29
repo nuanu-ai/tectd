@@ -344,6 +344,11 @@ fn route_for_internal(internal: &str) -> Option<RouteSpec> {
         .cloned()
 }
 
+pub(crate) fn read_only_internal_call(name: &str) -> bool {
+    matches!(name, "get_state" | "help" | "query")
+        || route_for_internal(name).is_some_and(|route| route.tool == "query")
+}
+
 pub(crate) fn ready_action(internal: &str, params: Value) -> Result<Value> {
     let (tool, arguments) = public_call(internal, params)?;
     decode_public_call(tool, arguments.clone()).map_err(|_| Error::InternalInvariant)?;

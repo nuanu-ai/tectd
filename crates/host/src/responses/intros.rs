@@ -155,7 +155,7 @@ pub(super) fn failure_intro(error: &Error, call: Option<(&str, &Value)>) -> &'st
         return error_intro(error);
     }
     match call {
-        Some(("get_state" | "help" | "query", _)) => {
+        Some((name, _)) if crate::api::read_only_internal_call(name) => {
             "The daemon reached its operation deadline while reading. Retry the read if needed."
         }
         Some((_, arguments))
@@ -168,5 +168,48 @@ pub(super) fn failure_intro(error: &Error, call: Option<(&str, &Value)>) -> &'st
             "The daemon reached its operation deadline. Read saved state when available; if the result is still absent, retry only the exact same request ID and payload. Do not create a replacement record."
         }
         _ => error_intro(error),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn internal_read_timeout_guidance_matches_catalogue() {
+        for route in [
+            "knowledge_search",
+            "knowledge_lifecycle",
+            "list_programs",
+            "slice_pipelines",
+        ] {
+            let args = json!({});
+            let intro = failure_intro(&Error::OperationTimeout, Some((route, &args)));
+            assert!(intro.contains("Retry the read"), "{route}");
+            assert!(!intro.contains("request ID"), "{route}");
+        }
+        let search = failure(
+            Error::OperationTimeout,
+            Some((
+                "knowledge_search",
+                &json!({"mode":"lexical","query":"current evidence","purpose":"lookup"}),
+            )),
+        );
+        assert!(
+            search["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("Retry the read")
+        );
+        let write = failure(
+            Error::OperationTimeout,
+            Some(("open_workspace", &json!({}))),
+        );
+        assert!(
+            write["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("result is uncertain")
+        );
     }
 }
