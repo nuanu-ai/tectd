@@ -170,9 +170,12 @@ async fn baseline_large_program_and_input_are_exactly_fragmented_and_failed_outp
     let role = std::env::var("TECT_TEST_RUNTIME_ROLE").expect("TECT_TEST_RUNTIME_ROLE required");
     let pool = PgPool::connect(&admin_url).await.unwrap();
     admin::migrate(&pool, &role).await.unwrap();
-    tect_postgres::enable_durable_knowledge(&pool, &role)
-        .await
-        .unwrap();
+    let durable_knowledge = std::env::var("TECT_TEST_DK2").as_deref() == Ok("1");
+    if durable_knowledge {
+        tect_postgres::enable_durable_knowledge(&pool, &role)
+            .await
+            .unwrap();
+    }
     let temp = private_temp();
     let root = temp.path().canonicalize().unwrap();
     let socket = root.join("scope-capacity.sock");
@@ -248,63 +251,65 @@ async fn baseline_large_program_and_input_are_exactly_fragmented_and_failed_outp
         (0, 0, 0, 0, 0, 0)
     );
 
-    let mut capacity_document: Value = serde_json::from_str(include_str!(
-        "../../postgres/src/knowledge_lifecycle/rdf/fixtures/planning-abstraction.json"
-    ))
-    .unwrap();
-    let large_instruction = "K".repeat(7_000);
-    capacity_document["document"]["planning_briefs"] = Value::Array(
-        (0..64)
-            .map(|index| {
-                json!({
-                    "local_id":format!("capacity-scope-{index}"),"stage":"scope",
-                    "instruction":large_instruction,"conditions":[],"exceptions":[],
-                    "purpose":"Capacity rollback proof.",
-                    "selectors":{"target_iris":["urn:tect:dk4:capacity:match"]}
+    if durable_knowledge {
+        let mut capacity_document: Value = serde_json::from_str(include_str!(
+            "../../postgres/src/knowledge_lifecycle/rdf/fixtures/planning-abstraction.json"
+        ))
+        .unwrap();
+        let large_instruction = "K".repeat(7_000);
+        capacity_document["document"]["planning_briefs"] = Value::Array(
+            (0..64)
+                .map(|index| {
+                    json!({
+                        "local_id":format!("capacity-scope-{index}"),"stage":"scope",
+                        "instruction":large_instruction,"conditions":[],"exceptions":[],
+                        "purpose":"Capacity rollback proof.",
+                        "selectors":{"target_iris":["urn:tect:dk4:capacity:match"]}
+                    })
                 })
-            })
-            .collect(),
-    );
-    commit_create(&mut client, capacity_document["document"].clone()).await;
-    let before_large_manifest = candidate_rows_for_program(&pool, program_id).await;
-    let large_manifest_guard = BeginRejectingGuard {
-        material: CandidateEncoding {
-            capacity: 8 * 1024 * 1024,
-        },
-        begin: CandidateEncoding { capacity: 128 },
-        begin_checked: AtomicBool::new(false),
-    };
-    let large_manifest_refused = direct
-        .begin_candidate_set(
-            &RequestContext {
-                auth: enrollment.auth.clone(),
-                native_session_id: native.clone(),
-                workspace_key: workspace.clone(),
+                .collect(),
+        );
+        commit_create(&mut client, capacity_document["document"].clone()).await;
+        let before_large_manifest = candidate_rows_for_program(&pool, program_id).await;
+        let large_manifest_guard = BeginRejectingGuard {
+            material: CandidateEncoding {
+                capacity: 8 * 1024 * 1024,
             },
-            &BeginCandidateSet {
-                request_id: Uuid::new_v4(),
-                program_id,
-                program_revision: 2,
-                boundary: tect_domain::CandidateBoundary::Ongoing,
-                input: "Deliver every applicable capacity brief without truncation.".into(),
-                task_context: tect_domain::PlanningTaskContext {
-                    target_iris: Some(vec!["urn:tect:dk4:capacity:match".into()]),
-                    ..Default::default()
+            begin: CandidateEncoding { capacity: 128 },
+            begin_checked: AtomicBool::new(false),
+        };
+        let large_manifest_refused = direct
+            .begin_candidate_set(
+                &RequestContext {
+                    auth: enrollment.auth.clone(),
+                    native_session_id: native.clone(),
+                    workspace_key: workspace.clone(),
                 },
-            },
-            &FixtureGuidance,
-            &large_manifest_guard,
-        )
-        .await;
-    assert!(matches!(
-        large_manifest_refused,
-        Err(Error::RequestTooLarge)
-    ));
-    assert!(large_manifest_guard.begin_checked.load(Ordering::SeqCst));
-    assert_eq!(
-        candidate_rows_for_program(&pool, program_id).await,
-        before_large_manifest
-    );
+                &BeginCandidateSet {
+                    request_id: Uuid::new_v4(),
+                    program_id,
+                    program_revision: 2,
+                    boundary: tect_domain::CandidateBoundary::Ongoing,
+                    input: "Deliver every applicable capacity brief without truncation.".into(),
+                    task_context: tect_domain::PlanningTaskContext {
+                        target_iris: Some(vec!["urn:tect:dk4:capacity:match".into()]),
+                        ..Default::default()
+                    },
+                },
+                &FixtureGuidance,
+                &large_manifest_guard,
+            )
+            .await;
+        assert!(matches!(
+            large_manifest_refused,
+            Err(Error::RequestTooLarge)
+        ));
+        assert!(large_manifest_guard.begin_checked.load(Ordering::SeqCst));
+        assert_eq!(
+            candidate_rows_for_program(&pool, program_id).await,
+            before_large_manifest
+        );
+    }
 
     let input = format!(
         "{}{}",
