@@ -7,8 +7,14 @@ async fn one_shot_owner_attested_s02_matrix() {
     ) {
         return;
     }
-    let mode = std::env::var("JEV_MATRIX_ONE_SHOT_MODE").expect("set preflight, synthetic or send");
-    assert!(matches!(mode.as_str(), "preflight" | "synthetic" | "send"));
+    let mode = std::env::var("JEV_MATRIX_ONE_SHOT_MODE")
+        .expect("set preflight, synthetic, synthetic_pipeline or send");
+    assert!(matches!(
+        mode.as_str(),
+        "preflight" | "synthetic" | "synthetic_pipeline" | "send"
+    ));
+    let pipeline_probe = mode == "synthetic_pipeline";
+    let synthetic_mode = mode == "synthetic" || pipeline_probe;
     let profile = std::env::var(PROFILE_ENV).expect("explicit local provider profile required");
     assert_eq!(
         std::env::var("JEV_MATRIX_ONE_SHOT_RANKING_POLICY").as_deref(),
@@ -42,7 +48,12 @@ async fn one_shot_owner_attested_s02_matrix() {
     let temp = private_temp();
     let root = temp.path().canonicalize().unwrap();
     let repo = root.join("source");
-    repository(&repo); // Only scaffolds an isolated Program; it is not the installed Work.
+    let source_head = if pipeline_probe {
+        Some(source::clone_current_dev_source(&repo))
+    } else {
+        repository(&repo); // Existing S02 fixture; not the installed Work.
+        None
+    };
     let enrolled = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
         .await
         .unwrap();
@@ -207,7 +218,11 @@ async fn one_shot_owner_attested_s02_matrix() {
         &workspace_key,
     )
     .await;
-    let (source, candidate) = ready_source_candidate(&mut owner, &repo).await;
+    let (source, candidate) = if let Some(head) = source_head.as_deref() {
+        source::ready_active_jev_source_candidate(&mut owner, &repo, head).await
+    } else {
+        ready_source_candidate(&mut owner, &repo).await
+    };
     owner.call("open_workspace", json!({})).await;
     let program: Uuid =
         sqlx::query_scalar("SELECT program_id FROM scope_candidate_sets WHERE id=$1")
@@ -438,7 +453,7 @@ async fn one_shot_owner_attested_s02_matrix() {
         return;
     }
 
-    let synthetic_case = if mode == "synthetic" {
+    let synthetic_case = if synthetic_mode {
         Some(
             std::env::var("JEV_MATRIX_SYNTHETIC_SELECTION")
                 .expect("synthetic mode requires none, recommended, alternate or abstain"),
@@ -478,7 +493,7 @@ async fn one_shot_owner_attested_s02_matrix() {
         send_marker = Some(marker_path);
         reviewed
     } else {
-        assert_eq!(mode, "synthetic");
+        assert!(synthetic_mode);
         assert!(
             std::env::var("TYPESAFE_API_KEY").is_err(),
             "synthetic mode cannot hold a credential"
@@ -505,7 +520,7 @@ async fn one_shot_owner_attested_s02_matrix() {
         );
     }
     let advised = advice(&mut owner, task, &format!("{mode}-{}", Uuid::new_v4())).await;
-    if mode == "synthetic" {
+    if synthetic_mode {
         assert_eq!(
             synthetic_calls.load(Ordering::SeqCst),
             if synthetic_case.as_deref() == Some("abstain") {
@@ -620,7 +635,7 @@ async fn one_shot_owner_attested_s02_matrix() {
             advice["advice_digest"].as_str().unwrap()
         );
         std::io::stdout().flush().unwrap();
-        let selected = if mode == "synthetic" {
+        let selected = if synthetic_mode {
             let line = match synthetic_case.as_deref().unwrap() {
                 "none" => String::new(),
                 "recommended" => format!(
@@ -785,6 +800,41 @@ async fn one_shot_owner_attested_s02_matrix() {
                 effect["effect_digest"],
                 verified_effect["verifier_principal_id"]
             );
+            if pipeline_probe {
+                assert_eq!(choice_id, "matrix-local-evidence-first");
+                let ready = support::review(&mut owner, &saved).await;
+                assert_eq!(ready["candidate_set"]["status"], "ready");
+                let effects: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM matrix_planning_selection_links WHERE task_id=$1",
+                )
+                .bind(task)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+                assert_eq!(effects, 1);
+                independent.finish().await;
+                owner.finish().await;
+                preflight_server.abort();
+                pipeline::prepare_owner_case(pipeline::OwnerCasePipeline {
+                    pool: &pool,
+                    runtime_url: &runtime_url,
+                    keys: keys.clone(),
+                    approval: approval.clone(),
+                    workspace_key: &workspace_key,
+                    owner_host: &owner_host,
+                    root: &root,
+                    task,
+                    recorded: &recorded,
+                    validated: &validated,
+                    disposition: &disposition,
+                    matrix_effect: &verified_effect,
+                    saved: &saved,
+                    ready: &ready,
+                    source_head: source_head.as_deref().unwrap(),
+                })
+                .await;
+                return;
+            }
         } else {
             println!("s02_selection absent_or_mismatched; no disposition or caller save");
         }

@@ -33,6 +33,10 @@ const EXPIRES_AT: i64 = OBSERVED_AT + 86_400;
 
 #[path = "s02_live/continuation.rs"]
 mod continuation;
+#[path = "s02_live/pipeline.rs"]
+mod pipeline;
+#[path = "s02_live/source.rs"]
+mod source;
 pub(super) use continuation::selection_confirmation;
 
 fn native_identity(profile: &str) -> MatrixProviderIdentity {

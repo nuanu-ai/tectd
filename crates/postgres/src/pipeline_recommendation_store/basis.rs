@@ -7,6 +7,13 @@ fn inspectable_evidence_refs<'a>(refs: impl IntoIterator<Item = &'a str>) -> Vec
     refs
 }
 
+fn canonical_mandatory_card_ids(ids: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut ids: Vec<_> = ids.into_iter().collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 pub(super) async fn load_pipeline_recommendation_basis(
     uow: &mut PgUnitOfWork,
     workspace_id: Uuid,
@@ -303,11 +310,12 @@ pub(super) async fn load_pipeline_recommendation_basis(
     .map_err(|_| Error::StaleContext)?;
     catalogue.validate().map_err(|_| Error::StaleContext)?;
     let scope_id: Uuid = row.try_get("scope_id").map_err(storage_error)?;
-    let saved_mandatory_card_ids = composition
-        .mandatory_cards
-        .iter()
-        .map(|card| card.id.to_string())
-        .collect();
+    let saved_mandatory_card_ids = canonical_mandatory_card_ids(
+        composition
+            .mandatory_cards
+            .iter()
+            .map(|card| card.id.to_string()),
+    );
     // The record was checked against this exact task/revision and evaluated
     // for complete, unexpired accepted bindings above. These are inspectable
     // references, not an additional claim that a pipeline check passed.
@@ -361,8 +369,15 @@ pub(super) async fn load_pipeline_recommendation_basis(
 
 #[cfg(test)]
 mod tests {
-    use super::inspectable_evidence_refs;
+    use super::{canonical_mandatory_card_ids, inspectable_evidence_refs};
 
+    #[test]
+    fn two_mandatory_cards_match_canonical_manifest_order() {
+        assert_eq!(
+            canonical_mandatory_card_ids(["EM02-SCOPE@0.1".into(), "EM02-PROTECT@0.1".into(),]),
+            ["EM02-PROTECT@0.1", "EM02-SCOPE@0.1"]
+        );
+    }
     #[test]
     fn verified_refs_are_sorted_and_deduplicated() {
         assert_eq!(
