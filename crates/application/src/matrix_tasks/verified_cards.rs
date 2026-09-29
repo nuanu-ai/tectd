@@ -50,7 +50,11 @@ impl WorkspaceService {
         let (mut tx, identity) = self
             .authenticated(context, TransactionMode::ReadOnly)
             .await?;
-        let (workspace, _) = Self::bound_session(&mut *tx, context, &identity).await?;
+        let session = tx
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
         let source = tx
             .matrix_task_source(workspace.id, request.task_id)
             .await?

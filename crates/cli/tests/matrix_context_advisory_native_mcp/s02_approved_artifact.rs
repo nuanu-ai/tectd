@@ -14,6 +14,8 @@ use tect_host::jev_pipeline_recommendation::{JevPipelineSavedResponseParser, WIR
 use tect_postgres::{ApprovedMatrixEvidenceArtifact, PgMatrixEvidenceValidator};
 use url::Url;
 
+#[path = "s02_approved_artifact/s02_breadth.rs"]
+mod s02_breadth;
 #[path = "s02_approved_artifact/s02_live.rs"]
 mod s02_live;
 

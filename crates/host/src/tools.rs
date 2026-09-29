@@ -119,7 +119,7 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
         "knowledge_search" => {
             crate::knowledge_search_tools::parse(name, arguments).map(Invocation::KnowledgeSearch)
         }
-        "record_matrix_task" | "get_matrix_task" => {
+        "record_matrix_task" | "get_matrix_task" | "get_verified_matrix_cards" => {
             crate::matrix_task_tools::parse(name, arguments).map(Invocation::MatrixTask)
         }
         "matrix_context_propose" | "matrix_context_confirm" | "matrix_context_effective_get" => {

@@ -1,5 +1,32 @@
 use super::*;
 
+#[test]
+fn verified_v2_cards_read_requires_exact_typed_digest_and_rejects_extra_fields() {
+    let task_id = Uuid::new_v4();
+    let params = json!({"task_id":task_id,"expected_task_revision":1,
+        "operating_verification_digest":"a".repeat(64),"card_id":"EM02-SCOPE@0.1"});
+    let MatrixTaskInvocation::VerifiedCards(read) =
+        parse("get_verified_matrix_cards", params.clone()).unwrap()
+    else {
+        panic!("V2 cards read must have its own invocation");
+    };
+    assert_eq!(read.task_id, task_id);
+    assert_eq!(read.card_id.as_deref(), Some("EM02-SCOPE@0.1"));
+    for changed in [
+        json!({"task_id":task_id,"expected_task_revision":1}),
+        json!({"task_id":task_id,"expected_task_revision":0,
+            "operating_verification_digest":"a".repeat(64)}),
+        json!({"task_id":task_id,"expected_task_revision":1,
+            "operating_verification_digest":"a".repeat(64),"detail":"full"}),
+        json!({"task_id":task_id,"expected_task_revision":1,
+            "operating_verification_digest":"bad"}),
+        json!({"task_id":task_id,"expected_task_revision":1,
+            "operating_verification_digest":"a".repeat(64),"card_id":null}),
+    ] {
+        assert!(parse("get_verified_matrix_cards", changed).is_err());
+    }
+}
+
 fn example_params() -> Value {
     crate::api::route_contract("command", "task.source.record").unwrap()["example"]["arguments"]
             ["params"]

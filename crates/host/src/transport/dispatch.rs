@@ -95,12 +95,15 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                     crate::matrix_task_tools::MatrixTaskInvocation::Get(task_id) => {
                         crate::matrix_task_tools::source(service.get_matrix_task_source(context, task_id).await?)
                     }
+                    crate::matrix_task_tools::MatrixTaskInvocation::VerifiedCards(request) => {
+                        crate::matrix_task_tools::verified_cards(service.get_verified_matrix_cards(context, &request).await?)
+                    }
                 };
-                Ok(responses::with_actions(
-                    output,
-                    Vec::new(),
-                    None,
-                ))
+                let response = responses::with_actions(output, Vec::new(), None);
+                if responses::encoded_len(&response)? > capacity {
+                    return Err(Error::RequestTooLarge);
+                }
+                Ok(response)
             }
             Invocation::MatrixVerification(request) => {
                 service

@@ -1,7 +1,8 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tect_application::{
-    MatrixRequirementsLocator, MatrixTaskRevision, MatrixTaskSource, RecordMatrixTask,
+    GetVerifiedMatrixCards, MatrixRequirementsLocator, MatrixTaskRevision, MatrixTaskSource,
+    RecordMatrixTask, VerifiedMatrixCards,
 };
 use tect_domain::{EngineeringChoiceSet, Error, Result};
 use uuid::Uuid;
@@ -13,6 +14,7 @@ pub(crate) enum MatrixTaskInvocation {
     Record(Box<RecordMatrixTask>),
     BoundRecord(Box<RecordMatrixTask>, MatrixRequirementsLocator),
     Get(Uuid),
+    VerifiedCards(GetVerifiedMatrixCards),
 }
 
 #[derive(Deserialize)]
@@ -33,6 +35,15 @@ struct RecordArguments {
 #[serde(deny_unknown_fields)]
 struct GetArguments {
     task_id: Uuid,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VerifiedCardsArguments {
+    task_id: Uuid,
+    expected_task_revision: i64,
+    operating_verification_digest: String,
+    card_id: Option<String>,
 }
 
 pub(crate) fn parse(name: &str, arguments: Value) -> Result<MatrixTaskInvocation> {
@@ -96,6 +107,34 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<MatrixTaskInvocation
                 return Err(Error::InvalidArguments);
             }
             Ok(MatrixTaskInvocation::Get(args.task_id))
+        }
+        "get_verified_matrix_cards" => {
+            if arguments.get("card_id") == Some(&Value::Null) {
+                return Err(Error::InvalidArguments);
+            }
+            let args: VerifiedCardsArguments =
+                serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
+            if args.task_id.is_nil()
+                || args.expected_task_revision < 1
+                || args.operating_verification_digest.len() != 64
+                || !args
+                    .operating_verification_digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+                || args.card_id.as_deref().is_some_and(|id| {
+                    id.is_empty() || id.len() > 128 || id.chars().any(char::is_control)
+                })
+            {
+                return Err(Error::InvalidArguments);
+            }
+            Ok(MatrixTaskInvocation::VerifiedCards(
+                GetVerifiedMatrixCards {
+                    task_id: args.task_id,
+                    expected_task_revision: args.expected_task_revision,
+                    operating_verification_digest: args.operating_verification_digest,
+                    card_id: args.card_id,
+                },
+            ))
         }
         _ => Err(Error::InvalidArguments),
     }
@@ -256,6 +295,27 @@ pub(crate) fn source(source: MatrixTaskSource) -> Value {
         output["requirements_locator"] = Value::Null;
     }
     output
+}
+
+pub(crate) fn verified_cards(cards: VerifiedMatrixCards) -> Value {
+    json!({
+        "schema": cards.schema,
+        "task_id": cards.task_id,
+        "task_revision": cards.task_revision,
+        "input_digest": cards.input_digest,
+        "catalogue_version": cards.catalogue_version,
+        "mandatory_cards": cards.mandatory_cards.iter().map(|card| json!({
+            "id": card.id,
+            "summary": card.summary,
+        })).collect::<Vec<_>>(),
+        "selected_card": cards.selected_card,
+        "resolution_status": cards.resolution_status,
+        "frozen_snapshot_id": cards.frozen_snapshot_id,
+        "authority_schema": cards.authority_schema,
+        "requirements_semantic_digest": cards.requirements_semantic_digest,
+        "operating_verification_digest": cards.operating_verification_digest,
+        "policy_version": cards.policy_version,
+    })
 }
 
 #[cfg(test)]
