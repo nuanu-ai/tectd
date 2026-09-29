@@ -119,6 +119,24 @@ pub(super) async fn prepare_owner_case(input: OwnerCasePipeline<'_>) {
     .await;
     owner.call("open_workspace", json!({})).await;
     owner.call("get_state", json!({})).await;
+    let registered_source = route(
+        &mut owner,
+        "command",
+        "source.register",
+        json!({"path":input.root.join("source")}),
+    )
+    .await;
+    let selected_sources = route(
+        &mut owner,
+        "command",
+        "session.select_worktrees",
+        json!({"worktree_ids":[registered_source["id"]]}),
+    )
+    .await;
+    assert_eq!(
+        selected_sources["selected_worktrees"][0]["id"],
+        registered_source["id"]
+    );
     if live_mode {
         let config = route(
             &mut owner,
@@ -265,6 +283,7 @@ pub(super) async fn prepare_owner_case(input: OwnerCasePipeline<'_>) {
             &identity,
             &prepared,
             &manifest,
+            &registered_source,
         )
         .await;
     }
@@ -282,6 +301,7 @@ async fn run_guarded_pipeline(
     identity: &PipelineProviderIdentity,
     prepared: &Value,
     manifest: &PipelineRecommendationManifest,
+    registered_source: &Value,
 ) {
     let opportunity = id(&prepared["opportunity_id"]);
     let wire = prepare_native_request(MODEL, manifest, MAX_REQUEST_BYTES).unwrap();
@@ -453,6 +473,14 @@ async fn run_guarded_pipeline(
         let effects: i64 = sqlx::query_scalar("SELECT count(*) FROM pipeline_advice_dispositions WHERE workspace_id=$1 AND opportunity_id=$2")
             .bind(input.workspace).bind(opportunity).fetch_one(input.pool).await.unwrap();
         assert_eq!(effects, 0, "abstention/no-call cannot disposition");
+        let phases: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM slice_pipeline_phase_attempts WHERE workspace_id=$1",
+        )
+        .bind(input.workspace)
+        .fetch_one(input.pool)
+        .await
+        .unwrap();
+        assert_eq!(phases, 0, "abstention/no-call cannot complete K1");
         println!(
             "s03_guarded_outcome status={} no_caller_effect=true",
             outcome["status"]
@@ -515,6 +543,14 @@ async fn run_guarded_pipeline(
                 .await
                 .unwrap();
         assert_eq!((dispositions, slices, runs), (0, 0, 0));
+        let phases: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM slice_pipeline_phase_attempts WHERE workspace_id=$1",
+        )
+        .bind(input.workspace)
+        .fetch_one(input.pool)
+        .await
+        .unwrap();
+        assert_eq!(phases, 0, "no selection cannot complete K1");
         println!("s03_selection absent_or_mismatched; no disposition or caller effect");
         return;
     }
@@ -522,6 +558,7 @@ async fn run_guarded_pipeline(
         "SELECT id FROM matrix_planning_effect_attestations WHERE workspace_id=$1 AND verifier_request_id=$2",
     ).bind(input.workspace).bind(id(&input.matrix_effect["request_id"]))
      .fetch_one(input.pool).await.unwrap();
+    let source_path = input.root.join("source");
     crate::s03_v4::s03_live::effect::verify_ranked_caller_effect(
         input.pool,
         input.workspace,
@@ -535,6 +572,12 @@ async fn run_guarded_pipeline(
         manifest,
         &outcome,
         matrix_effect_id,
+        Some((
+            registered_source,
+            &source_path,
+            input.source_head,
+            EXPIRES_AT,
+        )),
     )
     .await;
 }

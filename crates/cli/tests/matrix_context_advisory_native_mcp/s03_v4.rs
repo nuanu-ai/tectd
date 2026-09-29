@@ -946,6 +946,7 @@ async fn public_s03_v4_context_bound_pipeline_happy_path() {
         &manifest,
         &ranked,
         matrix_effect_id,
+        None,
     )
     .await;
     owner.finish().await;

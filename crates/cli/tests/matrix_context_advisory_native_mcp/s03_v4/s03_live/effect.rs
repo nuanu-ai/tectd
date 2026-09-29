@@ -17,6 +17,7 @@ pub(crate) async fn verify_ranked_caller_effect(
     manifest: &PipelineRecommendationManifest,
     ranked: &Value,
     matrix_effect_id: Uuid,
+    phase_binding: Option<(&Value, &Path, &str, i64)>,
 ) {
     assert_eq!(ranked["status"], "ranked");
     manifest.validate_digest().unwrap();
@@ -225,5 +226,21 @@ pub(crate) async fn verify_ranked_caller_effect(
         option.verification_plan.obligations.len(),
         attested["request_id"]
     );
+    if let Some((registered_source, source_path, source_head, facts_expires_at)) = phase_binding {
+        super::phase::complete_and_verify_k1(
+            pool,
+            workspace,
+            owner,
+            &mut verifier,
+            run,
+            slice,
+            &effect,
+            registered_source,
+            source_path,
+            source_head,
+            facts_expires_at,
+        )
+        .await;
+    }
     verifier.finish().await;
 }

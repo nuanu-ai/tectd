@@ -13,6 +13,8 @@ pub(crate) mod budget;
 pub(crate) mod effect;
 #[path = "s03_live/guard.rs"]
 mod guard;
+#[path = "s03_live/phase.rs"]
+mod phase;
 #[path = "s03_live/runtime.rs"]
 mod runtime;
 #[path = "s03_live/send.rs"]
@@ -622,6 +624,7 @@ async fn run_fixture(mode: &str, policy_calls: i64) {
         &manifest,
         &outcome,
         matrix_effect_id,
+        None,
     )
     .await;
     owner.finish().await;
