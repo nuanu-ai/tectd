@@ -133,7 +133,10 @@ pub(crate) async fn record_input(
         if stored != Some(payload.clone()) { return Err(Error::InputConflict) }
         return decode(result.ok_or(Error::InternalInvariant)?);
     }
-    let row:(i64,String,Option<String>,Option<i32>,String,serde_json::Value)=sqlx::query_as("SELECT revision,status,current_phase_id,current_phase_ordinal,definition_kind,definition FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
+    // DK lock order: workspace knowledge state precedes the run lock. An
+    // ordinary input captures a manifest for the new run revision below.
+    let _ = crate::durable_knowledge::lock_state(tx, tenant, workspace).await?;
+    let row:(i64,String,Option<String>,Option<i32>,String,serde_json::Value,Uuid,Uuid)=sqlx::query_as("SELECT revision,status,current_phase_id,current_phase_ordinal,definition_kind,definition,scope_id,slice_id FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
         .bind(tenant).bind(workspace).bind(request.run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?.ok_or(Error::NotFound)?;
     load_context(tx, tenant, workspace, principal, request.run_id)
         .await?
@@ -148,6 +151,7 @@ pub(crate) async fn record_input(
     if row.0 != request.run_revision {
         return Err(Error::StaleRevision);
     }
+    let next_revision = row.0.checked_add(1).ok_or(Error::StorageUnavailable)?;
     checkpoint::ensure_run_source_open(tx, tenant, workspace, request.run_id).await?;
     if sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM pipeline_research_checkpoints WHERE tenant_id=$1 AND workspace_id=$2 AND producer_run_id=$3 AND status='open')",
@@ -197,6 +201,23 @@ pub(crate) async fn record_input(
     } else {
         sqlx::query("UPDATE slice_pipeline_runs SET revision=revision+1,status='active' WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
             .bind(tenant).bind(workspace).bind(request.run_id).execute(&mut **tx).await.map_err(storage_error)?;
+        let manifest = crate::durable_knowledge::manifest::capture(
+            tx,
+            tenant,
+            workspace,
+            request.run_id,
+            next_revision,
+            row.6,
+            row.7,
+            &request.phase_id,
+            session,
+        )
+        .await?;
+        sqlx::query("UPDATE slice_pipeline_runs SET knowledge_manifest_id=$4,knowledge_manifest_digest=$5 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
+            .bind(tenant).bind(workspace).bind(request.run_id)
+            .bind(manifest.as_ref().map(|value| value.id))
+            .bind(manifest.as_ref().map(|value| value.digest.as_str()))
+            .execute(&mut **tx).await.map_err(storage_error)?;
     }
     let outcome = PipelineMutationOutcome {
         context: load_context(tx, tenant, workspace, principal, request.run_id)

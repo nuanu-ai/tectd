@@ -31,6 +31,8 @@ use uuid::Uuid;
 mod checkpoint_flow;
 #[path = "pipeline_checkpoint/checkpoint_support.rs"]
 mod checkpoint_support;
+#[path = "pipeline_checkpoint/input_manifest_test.rs"]
+mod input_manifest_test;
 #[path = "pipeline_checkpoint/producer_flow.rs"]
 mod producer_flow;
 

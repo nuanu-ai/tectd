@@ -24,8 +24,8 @@ pub(crate) async fn resolve(
     if request.action == ResolvePipelineCheckpointAction::Accept {
         checkpoint::validate_open_basis(tx, tenant, workspace, &request.checkpoint).await?;
     }
-    let run: (i64, String, Option<String>, String, bool) = sqlx::query_as(
-        "SELECT revision,status,current_phase_id,definition_kind,payload_erased FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE",
+    let run: (i64, String, Option<String>, String, bool, Uuid, Uuid) = sqlx::query_as(
+        "SELECT revision,status,current_phase_id,definition_kind,payload_erased,scope_id,slice_id FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE",
     )
     .bind(tenant).bind(workspace).bind(request.producer_run_id)
     .fetch_optional(&mut **tx).await.map_err(storage_error)?.ok_or(Error::NotFound)?;
@@ -35,6 +35,7 @@ pub(crate) async fn resolve(
     if run.0 != request.producer_run_revision {
         return Err(Error::StaleRevision);
     }
+    let next_revision = run.0.checked_add(1).ok_or(Error::StorageUnavailable)?;
     let phase_id = run.2.as_deref().ok_or(Error::InternalInvariant)?;
     let phase_ordinal: Option<i32> = sqlx::query_scalar(
         "SELECT current_phase_ordinal FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
@@ -115,6 +116,23 @@ pub(crate) async fn resolve(
     .execute(&mut **tx).await.map_err(storage_error)?;
     sqlx::query("UPDATE slice_pipeline_runs SET revision=revision+1,status='active' WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
         .bind(tenant).bind(workspace).bind(request.producer_run_id)
+        .execute(&mut **tx).await.map_err(storage_error)?;
+    let manifest = crate::durable_knowledge::manifest::capture(
+        tx,
+        tenant,
+        workspace,
+        request.producer_run_id,
+        next_revision,
+        run.5,
+        run.6,
+        phase_id,
+        session,
+    )
+    .await?;
+    sqlx::query("UPDATE slice_pipeline_runs SET knowledge_manifest_id=$4,knowledge_manifest_digest=$5 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
+        .bind(tenant).bind(workspace).bind(request.producer_run_id)
+        .bind(manifest.as_ref().map(|value| value.id))
+        .bind(manifest.as_ref().map(|value| value.digest.as_str()))
         .execute(&mut **tx).await.map_err(storage_error)?;
     sqlx::query("INSERT INTO pipeline_checkpoint_receipts(tenant_id,workspace_id,checkpoint_id,request_id,actor_session_id,request_payload,result_payload) VALUES($1,$2,$3,$4,$5,$6,$7)")
         .bind(tenant).bind(workspace).bind(request.checkpoint.checkpoint_id).bind(request.request_id)
