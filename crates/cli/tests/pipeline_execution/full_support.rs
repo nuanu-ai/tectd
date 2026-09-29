@@ -439,6 +439,14 @@ pub(super) async fn refresh_knowledge(client: &mut Mcp, context: &Value) -> Valu
         assert!(find_action(&stale, "pipeline.knowledge_refresh").is_none());
         return stale;
     }
+    if stale["knowledge_resource_status"]["state"] == "current" {
+        assert_eq!(
+            stale["knowledge_resources"]["run_revision"],
+            stale["run"]["revision"]
+        );
+        assert!(find_action(&stale, "pipeline.knowledge_refresh").is_none());
+        return stale;
+    }
     let resource_state = stale["knowledge_resource_status"]["state"]
         .as_str()
         .unwrap();
