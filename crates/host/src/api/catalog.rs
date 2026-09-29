@@ -59,7 +59,7 @@ mod tests {
         let expected: Vec<_> = include_str!("catalog/route_order_golden.txt")
             .lines()
             .collect();
-        assert_eq!(expected.len(), 52);
+        assert_eq!(expected.len(), 53);
         let actual: Vec<_> = routes()
             .iter()
             .take(expected.len())

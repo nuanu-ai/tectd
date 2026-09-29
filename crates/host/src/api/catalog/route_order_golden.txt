@@ -42,6 +42,7 @@ command slice.candidates.refresh refresh_slice_candidate_set
 command slice.open slice_open
 command slice.result.record slice_result_record
 query slice.pipeline.context slice_pipeline_context
+query slice.pipeline.knowledge_page slice_pipeline_knowledge_page
 query slice.pipeline.instruction slice_pipeline_instruction
 command slice.pipeline.begin slice_pipeline_begin
 command slice.pipeline.run.migrate slice_pipeline_run_migrate
