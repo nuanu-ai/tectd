@@ -266,6 +266,7 @@ fn matrix_provider_config(
             model_configuration: AdvisoryModelConfiguration { model },
             destination: endpoint.as_str().into(),
             wire_version: NATIVE_MATRIX_WIRE_VERSION.into(),
+            ranking_policy: tect_application::MatrixRankingPolicy::StrictV1,
         },
         endpoint,
         timeout: Duration::from_secs(10),

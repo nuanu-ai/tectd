@@ -79,7 +79,7 @@ pub(crate) fn authorize_prepared_matrix(
         return Err(Error::BudgetPolicyInvalid);
     }
     let identity = prepared.identity();
-    let configuration_snapshot = serde_json::json!({
+    let mut configuration_snapshot = serde_json::json!({
         "provider_profile_ref": identity.provider_profile_ref,
         "model_configuration": identity.model_configuration,
         "destination": identity.destination,
@@ -107,6 +107,10 @@ pub(crate) fn authorize_prepared_matrix(
             "dispatch_id": dispatch_id,
         },
     });
+    if identity.wire_version == "tect.matrix-typesafe-native/1" {
+        configuration_snapshot["ranking_policy"] =
+            serde_json::json!(identity.ranking_policy.as_str());
+    }
     let configuration_digest = format!(
         "{:x}",
         Sha256::digest(

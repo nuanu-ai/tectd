@@ -72,6 +72,7 @@ async fn matrix_no_call_precedence_and_digest_bind_stored_material() {
         },
         destination: "test-destination".into(),
         wire_version: "test-wire/1".into(),
+        ranking_policy: crate::MatrixRankingPolicy::StrictV1,
     });
     let mut all_absent = eligible.clone();
     let result = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(

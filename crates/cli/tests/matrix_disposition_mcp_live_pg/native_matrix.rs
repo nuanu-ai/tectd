@@ -112,6 +112,7 @@ async fn exercise(case: Case) {
                 },
                 destination: endpoint.clone(),
                 wire_version: "tect.matrix-typesafe-native/1".into(),
+                ranking_policy: tect_application::MatrixRankingPolicy::StrictV1,
             },
             endpoint: endpoint.parse().unwrap(),
             timeout: Duration::from_secs(3),

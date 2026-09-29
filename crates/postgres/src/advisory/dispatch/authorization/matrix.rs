@@ -232,7 +232,17 @@ fn matches_verified_matrix_payload(
         Some("tect.context-matrix-verified-evaluation/1") => true,
         Some("tect.matrix-typesafe-native/1") => {
             let snapshot = &input.configuration_snapshot;
+            let policy = snapshot.get("ranking_policy").and_then(serde_json::Value::as_str);
+            let body_policy = body.pointer("/state/ranking_policy").and_then(serde_json::Value::as_str);
             snapshot.get("wire_version") == Some(&serde_json::json!("tect.matrix-typesafe-native/1"))
+                && matches!(policy, Some(tect_domain::MATRIX_NATIVE_RANKING_POLICY_VERSION)
+                    | Some(tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION))
+                && body_policy == if policy == Some(tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION) {
+                    policy
+                } else {
+                    None
+                }
+                && body.pointer("/state/ranking_policy").is_none_or(|value| value.is_string())
                 && snapshot.get("destination")
                     == Some(&serde_json::json!("https://api.typesafe.ai/v1/systemone"))
                 && snapshot.pointer("/provider_profile_ref/id")
@@ -259,6 +269,7 @@ mod payload_tests {
             model: "jev-1.13.0".into(),
             configuration_snapshot: serde_json::json!({
                 "wire_version": "tect.matrix-typesafe-native/1",
+                "ranking_policy": tect_domain::MATRIX_NATIVE_RANKING_POLICY_VERSION,
                 "destination": "https://api.typesafe.ai/v1/systemone",
                 "provider_profile_ref": {"id": "local-profile"},
                 "model_configuration": {"model": "jev-1.13.0"},
@@ -287,6 +298,20 @@ mod payload_tests {
         let input = input();
         let body = payload("tect.matrix-typesafe-native/1");
         assert!(matches_verified_matrix_payload(&input, &body, "verified", &context));
+        let mut unsigned = input.clone();
+        unsigned.configuration_snapshot.as_object_mut().unwrap().remove("ranking_policy");
+        assert!(!matches_verified_matrix_payload(&unsigned, &body, "verified", &context));
+        let mut trial = input.clone();
+        trial.configuration_snapshot["ranking_policy"] =
+            serde_json::json!(tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION);
+        assert!(!matches_verified_matrix_payload(&trial, &body, "verified", &context));
+        let mut trial_body = body.clone();
+        trial_body["state"]["ranking_policy"] =
+            serde_json::json!(tect_domain::MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION);
+        assert!(matches_verified_matrix_payload(&trial, &trial_body, "verified", &context));
+        assert!(!matches_verified_matrix_payload(&input, &trial_body, "verified", &context));
+        trial.configuration_snapshot["ranking_policy"] = serde_json::json!("other-policy");
+        assert!(!matches_verified_matrix_payload(&trial, &trial_body, "verified", &context));
 
         for (field, wrong) in [
             ("wire_version", "other-wire"),

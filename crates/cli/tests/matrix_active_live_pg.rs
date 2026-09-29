@@ -57,6 +57,7 @@ impl MatrixAdviceProvider for CountingFixtureProvider {
             },
             destination: "https://fixture.invalid/matrix".into(),
             wire_version: "fixture-matrix/1".into(),
+            ranking_policy: tect_application::MatrixRankingPolicy::StrictV1,
         })
     }
 

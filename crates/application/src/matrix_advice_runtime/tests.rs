@@ -23,6 +23,7 @@ fn committed_permit_matches_only_its_prepared_attempt() {
         },
         destination: "test-target".into(),
         wire_version: "test-wire/1".into(),
+        ranking_policy: MatrixRankingPolicy::StrictV1,
     };
     let prepared = PreparedMatrixAdviceAttempt {
         binding: binding.clone(),
@@ -56,6 +57,11 @@ fn committed_permit_matches_only_its_prepared_attempt() {
         },
         body: prepared.body.clone(),
         body_sha256: prepared.body_sha256.clone(),
+    };
+    assert!(!permit().permits_prepared(&changed));
+    changed.identity = MatrixProviderIdentity {
+        ranking_policy: MatrixRankingPolicy::RobustTrialV1,
+        ..identity.clone()
     };
     assert!(!permit().permits_prepared(&changed));
     changed.identity = identity.clone();
@@ -128,6 +134,7 @@ async fn disabled_identity_and_explicit_budget_deny() {
         },
         destination: "test-target".into(),
         wire_version: "test-wire/1".into(),
+        ranking_policy: MatrixRankingPolicy::StrictV1,
         body_length: 2,
         body_sha256: "digest".into(),
     };

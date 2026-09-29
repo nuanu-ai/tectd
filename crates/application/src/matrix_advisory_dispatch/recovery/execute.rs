@@ -135,6 +135,12 @@ impl WorkspaceService {
                     model_configuration: saved.model_configuration.clone(),
                     destination: saved.destination.clone(),
                     wire_version: saved.wire_version.clone(),
+                    ranking_policy: match saved.configuration_snapshot.get("ranking_policy") {
+                        Some(value) => crate::MatrixRankingPolicy::from_version(
+                            value.as_str().ok_or(Error::InputConflict)?,
+                        )?,
+                        None => crate::MatrixRankingPolicy::StrictV1,
+                    },
                 };
                 if self.matrix_advice_provider.identity().as_ref() != Some(&identity) {
                     return self

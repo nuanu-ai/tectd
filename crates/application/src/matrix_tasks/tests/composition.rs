@@ -88,6 +88,7 @@ async fn complete_stored_demo_remains_pending_independent_verification() {
         },
         destination: "test-destination".into(),
         wire_version: "test-wire/1".into(),
+        ranking_policy: crate::MatrixRankingPolicy::StrictV1,
     });
     let actor_id = receipt.authorized_actor_id;
     let prepared = crate::matrix_advisory_capture::prepare_eligible_matrix_opportunity(

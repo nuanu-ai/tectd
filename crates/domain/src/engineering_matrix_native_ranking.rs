@@ -5,7 +5,7 @@ use crate::{Error, MatrixAdviceEligibility, MatrixRanking, Result};
 use std::collections::BTreeSet;
 
 pub const MATRIX_NATIVE_RANKING_POLICY_VERSION: &str =
-    "tect.matrix-native-ranking-policy/provisional-v1";
+    "tect.matrix-native-ranking-policy/strict-v1";
 /// Deliberately not selected by the native provider or production configuration.
 pub const MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION: &str =
     "tect.matrix-native-ranking-policy/robust-trial-v1";

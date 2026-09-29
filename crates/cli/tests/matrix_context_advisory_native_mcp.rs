@@ -228,6 +228,7 @@ impl Provider {
             },
             destination: "https://synthetic.invalid/context".into(),
             wire_version: "synthetic-context/1".into(),
+            ranking_policy: tect_application::MatrixRankingPolicy::StrictV1,
         }
     }
 }

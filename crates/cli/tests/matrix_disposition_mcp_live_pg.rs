@@ -133,6 +133,7 @@ impl Provider {
             },
             destination: "https://synthetic.invalid/matrix".into(),
             wire_version: "synthetic-disposition/1".into(),
+            ranking_policy: tect_application::MatrixRankingPolicy::StrictV1,
         }
     }
 }

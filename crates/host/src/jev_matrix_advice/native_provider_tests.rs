@@ -21,6 +21,7 @@ fn config(endpoint: Url, maximum_response_bytes: usize) -> JevNativeMatrixConfig
             },
             destination: endpoint.as_str().into(),
             wire_version: "caller-value-is-normalized".into(),
+            ranking_policy: tect_application::MatrixRankingPolicy::StrictV1,
         },
         endpoint,
         timeout: Duration::from_secs(2),
@@ -243,6 +244,21 @@ fn captured_like_v2_snapshot_requires_exact_authority_and_correlation() {
         },
     });
     assert!(native_snapshot_matches(&identity, &saved, &request_hash).unwrap());
+    let mut marked_strict = saved.clone();
+    marked_strict.configuration_snapshot["ranking_policy"] =
+        json!(MatrixRankingPolicy::StrictV1.as_str());
+    assert!(native_snapshot_matches(&identity, &marked_strict, &request_hash).unwrap());
+    let mut trial_identity = identity.clone();
+    trial_identity.ranking_policy = MatrixRankingPolicy::RobustTrialV1;
+    assert!(!native_snapshot_matches(&trial_identity, &saved, &request_hash).unwrap());
+    assert!(!native_snapshot_matches(&trial_identity, &marked_strict, &request_hash).unwrap());
+    let mut marked_trial = saved.clone();
+    marked_trial.configuration_snapshot["ranking_policy"] =
+        json!(MatrixRankingPolicy::RobustTrialV1.as_str());
+    assert!(native_snapshot_matches(&trial_identity, &marked_trial, &request_hash).unwrap());
+    assert!(!native_snapshot_matches(&identity, &marked_trial, &request_hash).unwrap());
+    marked_trial.configuration_snapshot["ranking_policy"] = json!("unknown");
+    assert!(!native_snapshot_matches(&trial_identity, &marked_trial, &request_hash).unwrap());
     assert_eq!(
         provider.sealed_response_usage(&saved).input_tokens,
         Some(3650)
@@ -369,6 +385,20 @@ fn retained_s02_native_response_is_strict_abstention_but_robust_trial_ranking() 
         trial.score_evidence[0].feasible_expected_score.minimum
             > trial.score_evidence[1].feasible_expected_score.maximum
     );
+    let endpoint = Url::parse("https://api.typesafe.ai/v1/systemone").unwrap();
+    let mut trial_config = config(endpoint, 4096);
+    trial_config.provider_identity.ranking_policy = MatrixRankingPolicy::RobustTrialV1;
+    let trial_provider = JevNativeMatrixProvider::new(trial_config, "offline-test".into()).unwrap();
+    let binding = super::super::saved_response_tests::stored_dispatch(
+        b"offline-request".to_vec(),
+        None,
+        json!({}),
+    )
+    .binding;
+    assert!(matches!(
+        trial_provider.parse_response(binding, &prepared, raw.into_bytes()),
+        Err(Error::Forbidden)
+    ));
 }
 
 #[test]

@@ -13,15 +13,21 @@ use sha2::{Digest, Sha256};
 use tect_application::{
     MAX_PREPARED_MATRIX_BODY_BYTES, MatrixAdviceProvider, MatrixProviderIdentity,
     MatrixProviderObservation, MatrixProviderRequest, MatrixProviderResponse, MatrixProviderUsage,
-    MatrixStartedDispatchPermit, MatrixVerificationAuthority, PreparedMatrixAdviceAttempt,
-    StoredMatrixDispatch,
+    MatrixRankingPolicy, MatrixStartedDispatchPermit, MatrixVerificationAuthority,
+    PreparedMatrixAdviceAttempt, StoredMatrixDispatch,
 };
 use tect_domain::{
     AdvisoryDispatchOutcome, AdvisoryDispatchState, AdvisorySendCertainty, Error,
-    MatrixAdviceEligibility, Result, compose_native_matrix_ranking,
+    MatrixAdviceEligibility, MatrixRanking, Result, compose_native_matrix_ranking,
+    evaluate_native_matrix_robust_trial,
 };
 
 use super::{MatrixRankingBinding, native_wire};
+
+mod snapshot;
+use snapshot::native_snapshot_matches;
+#[cfg(test)]
+use snapshot::validated_budget_header;
 
 /// Native captures must fit the existing Postgres Matrix recovery ceiling.
 /// The general request/frame and saved-parser ceilings remain unchanged.
@@ -113,7 +119,21 @@ impl JevNativeMatrixProvider {
             prepared,
             self.config.maximum_response_bytes,
         )?;
-        let ranking = compose_native_matrix_ranking(&prepared.eligibility, &parsed.signals)?;
+        let ranking = match self.config.provider_identity.ranking_policy {
+            MatrixRankingPolicy::StrictV1 => {
+                compose_native_matrix_ranking(&prepared.eligibility, &parsed.signals)?
+            }
+            MatrixRankingPolicy::RobustTrialV1 => {
+                let trial =
+                    evaluate_native_matrix_robust_trial(&prepared.eligibility, &parsed.signals)?;
+                // Packet 3 must persist/publicly expose uncertainty before a
+                // trial recommendation may become usable advice.
+                if matches!(trial.ranking, MatrixRanking::Ranked { .. }) {
+                    return Err(Error::Forbidden);
+                }
+                trial.ranking
+            }
+        };
         Ok(MatrixProviderResponse {
             binding,
             provider_profile_ref: self.config.provider_identity.provider_profile_ref.clone(),
@@ -195,6 +215,7 @@ impl MatrixAdviceProvider for JevNativeMatrixProvider {
             &self.config.provider_identity.model_configuration.model,
             request,
             self.config.maximum_request_bytes,
+            self.config.provider_identity.ranking_policy,
         )?;
         PreparedMatrixAdviceAttempt::new(
             request,
@@ -212,6 +233,7 @@ impl MatrixAdviceProvider for JevNativeMatrixProvider {
             &self.config.provider_identity.model_configuration.model,
             request,
             self.config.maximum_request_bytes,
+            self.config.provider_identity.ranking_policy,
         )?;
         let response = saved
             .response_payload
@@ -333,90 +355,6 @@ impl MatrixAdviceProvider for JevNativeMatrixProvider {
     }
 }
 
-fn native_snapshot_matches(
-    identity: &MatrixProviderIdentity,
-    saved: &StoredMatrixDispatch,
-    request_hash: &str,
-) -> Result<bool> {
-    let snapshot = &saved.configuration_snapshot;
-    let policy_id = snapshot
-        .get("budget_policy_id")
-        .and_then(Value::as_str)
-        .ok_or(Error::InvalidArguments)?;
-    if policy_id.is_empty() || policy_id.len() > 256 || policy_id.trim() != policy_id {
-        return Err(Error::InvalidArguments);
-    }
-    Ok(snapshot == &expected_native_snapshot(identity, saved, policy_id, request_hash)?)
-}
-
-fn expected_native_snapshot(
-    identity: &MatrixProviderIdentity,
-    saved: &StoredMatrixDispatch,
-    policy_id: &str,
-    request_hash: &str,
-) -> Result<Value> {
-    let mut snapshot = json!({
-        "provider_profile_ref": identity.provider_profile_ref,
-        "model_configuration": identity.model_configuration,
-        "destination": identity.destination,
-        "wire_version": native_wire::NATIVE_MATRIX_WIRE_VERSION,
-        "budget_policy_id": policy_id,
-        "request_body_length": saved.request_payload.len(),
-        "request_body_sha256": request_hash,
-        "budget_policy": validated_budget_header(&saved.configuration_snapshot, policy_id)?,
-    });
-    match &saved.binding.verification {
-        MatrixVerificationAuthority::ContextV2 {
-            digest,
-            snapshot_id,
-            authority_schema,
-            semantic_digest,
-        } => {
-            snapshot["matrix_authority"] = json!({
-                "schema": "tect.context-matrix-verification/1",
-                "verification_digest": digest,
-                "frozen_snapshot_id": snapshot_id,
-                "authority_schema": authority_schema,
-                "requirements_semantic_digest": semantic_digest,
-            });
-            snapshot["advisory_correlation"] = json!({
-                "opportunity_id": saved.dispatch.opportunity_id,
-                "dispatch_id": saved.dispatch.id,
-            });
-        }
-        MatrixVerificationAuthority::LegacyV1 { .. } => {}
-        MatrixVerificationAuthority::Unverified => return Err(Error::InvalidArguments),
-    }
-    Ok(snapshot)
-}
-
-// Application owns signature verification and exact committed policy binding.
-// The codec accepts only this known header; no arbitrary frozen fields are stripped.
-fn validated_budget_header(snapshot: &Value, policy_id: &str) -> Result<Value> {
-    let header = snapshot
-        .get("budget_policy")
-        .and_then(Value::as_object)
-        .ok_or(Error::InvalidArguments)?;
-    if header.len() != 3
-        || header.get("policy_id").and_then(Value::as_str) != Some(policy_id)
-        || header
-            .get("policy_version")
-            .and_then(Value::as_i64)
-            .is_none_or(|v| v <= 0)
-        || !header
-            .get("policy_digest")
-            .and_then(Value::as_str)
-            .is_some_and(|v| {
-                v.len() == 64
-                    && v.bytes()
-                        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-            })
-    {
-        return Err(Error::InvalidArguments);
-    }
-    Ok(Value::Object(header.clone()))
-}
-
 /// Recover only parser metadata from the exact prepared native body. The body
 /// and identity were fixed before budget authorization and checked by permit.
 fn native_from_prepared(
@@ -425,8 +363,12 @@ fn native_from_prepared(
     let value: Value =
         serde_json::from_slice(prepared.body()).map_err(|_| Error::InvalidArguments)?;
     let state = value.get("state").ok_or(Error::InvalidArguments)?;
+    let expected_trial_policy = (prepared.identity().ranking_policy
+        == MatrixRankingPolicy::RobustTrialV1)
+        .then(|| json!(prepared.identity().ranking_policy.as_str()));
     if state.get("contract").and_then(Value::as_str)
         != Some(native_wire::NATIVE_MATRIX_WIRE_VERSION)
+        || state.get("ranking_policy") != expected_trial_policy.as_ref()
         || value.get("model").and_then(Value::as_str)
             != Some(prepared.identity().model_configuration.model.as_str())
     {

@@ -220,6 +220,7 @@ async fn positive_binding_requires_revalidated_exact_record() {
         model_configuration: provider.model_configuration().clone(),
         destination: "fake".into(),
         wire_version: "fake/1".into(),
+        ranking_policy: crate::MatrixRankingPolicy::StrictV1,
     });
     let saved = crate::StoredMatrixDispatch {
         dispatch: tect_domain::AdvisoryDispatch {

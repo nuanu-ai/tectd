@@ -4,7 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 use serde_json::{Value, json};
-use tect_application::{MAX_PREPARED_MATRIX_BODY_BYTES, MatrixProviderRequest};
+use tect_application::{
+    MAX_PREPARED_MATRIX_BODY_BYTES, MatrixProviderRequest, MatrixRankingPolicy,
+};
 use tect_domain::{
     Error, MatrixAdviceEligibility, NativeMatrixCandidateScore, NativeMatrixChoice,
     NativeMatrixRankingSignals, NativeMatrixScoreDistribution, Result,
@@ -63,6 +65,7 @@ pub fn prepare_native_request(
     model: &str,
     request: &MatrixProviderRequest,
     maximum_request_bytes: usize,
+    ranking_policy: MatrixRankingPolicy,
 ) -> Result<PreparedNativeMatrixRequest> {
     if model != request.model_configuration().model
         || maximum_request_bytes == 0
@@ -115,7 +118,7 @@ pub fn prepare_native_request(
         "instructions": format!("Choose exactly one candidate token as the best fit for the recorded facts, or ABSTAIN when evidence is insufficient, candidates cannot be distinguished, or no candidate is supportable. Use only the supplied facts. Mandatory cards remain mandatory. This is advice only and authorizes no action. Wire version: {NATIVE_MATRIX_WIRE_VERSION}."),
         "criteria": criteria,
     }));
-    let state = json!({
+    let mut state = json!({
         "contract": NATIVE_MATRIX_WIRE_VERSION,
         "binding": checked.binding,
         "input": request.revision().input,
@@ -123,6 +126,9 @@ pub fn prepare_native_request(
         "choice_set": canonical_choice_set,
         "candidate_tokens": candidates,
     });
+    if ranking_policy == MatrixRankingPolicy::RobustTrialV1 {
+        state["ranking_policy"] = json!(ranking_policy.as_str());
+    }
     let body = serde_json::to_vec(&NativeRequest {
         model,
         state,

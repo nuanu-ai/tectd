@@ -32,6 +32,13 @@ const OBSERVED_AT: i64 = 1_790_682_517; // 2026-09-29 11:48:37 UTC; never refres
 const EXPIRES_AT: i64 = OBSERVED_AT + 86_400;
 
 fn native_identity(profile: &str) -> MatrixProviderIdentity {
+    let ranking_policy = match std::env::var("JEV_MATRIX_ONE_SHOT_RANKING_POLICY") {
+        Ok(value) if value == "robust-trial-v1" => {
+            tect_application::MatrixRankingPolicy::RobustTrialV1
+        }
+        Err(std::env::VarError::NotPresent) => tect_application::MatrixRankingPolicy::StrictV1,
+        _ => panic!("only explicit robust-trial-v1 or absent strict policy is allowed"),
+    };
     MatrixProviderIdentity {
         provider_profile_ref: AdvisoryProviderProfileRef { id: profile.into() },
         model_configuration: AdvisoryModelConfiguration {
@@ -39,6 +46,7 @@ fn native_identity(profile: &str) -> MatrixProviderIdentity {
         },
         destination: ENDPOINT.into(),
         wire_version: NATIVE_MATRIX_WIRE_VERSION.into(),
+        ranking_policy,
     }
 }
 

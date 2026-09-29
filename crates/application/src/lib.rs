@@ -87,7 +87,8 @@ pub use matrix_advice_ports::{
 pub use matrix_advice_runtime::{
     DenyMatrixBudget, MAX_PREPARED_MATRIX_BODY_BYTES, MatrixBudgetAuthorization,
     MatrixBudgetPolicy, MatrixBudgetRequest, MatrixDispatchContinuation, MatrixProviderIdentity,
-    MatrixStartedDispatchPermit, PreparedMatrixAdviceAttempt, SignedMatrixBudgetPreflight,
+    MatrixRankingPolicy, MatrixStartedDispatchPermit, PreparedMatrixAdviceAttempt,
+    SignedMatrixBudgetPreflight,
 };
 pub use matrix_disposition_ports::{
     MatrixDispositionRecord, MatrixDispositionStore, MatrixDispositionVerification,

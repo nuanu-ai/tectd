@@ -4,7 +4,8 @@ use sha2::{Digest, Sha256};
 use tect_domain::{
     AdvisoryBudgetPolicy, AdvisoryCapability, AdvisoryDispatchAuthorization, AdvisoryDispatchStart,
     AdvisoryDispatchState, AdvisoryModelConfiguration, AdvisoryOpportunity,
-    AdvisoryProviderProfileRef, AdvisorySendCertainty, Error, Result,
+    AdvisoryProviderProfileRef, AdvisorySendCertainty, Error, MATRIX_NATIVE_RANKING_POLICY_VERSION,
+    MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION, Result,
 };
 use uuid::Uuid;
 
@@ -12,12 +13,39 @@ use uuid::Uuid;
 /// a smaller transport limit before calling the provider.
 pub const MAX_PREPARED_MATRIX_BODY_BYTES: usize = 1024 * 1024;
 
+/// Ranking semantics are an explicit provider identity, not a budget-policy
+/// version. Trial selection is never inferred from the response body.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum MatrixRankingPolicy {
+    #[default]
+    StrictV1,
+    RobustTrialV1,
+}
+
+impl MatrixRankingPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StrictV1 => MATRIX_NATIVE_RANKING_POLICY_VERSION,
+            Self::RobustTrialV1 => MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION,
+        }
+    }
+
+    pub fn from_version(value: &str) -> Result<Self> {
+        match value {
+            MATRIX_NATIVE_RANKING_POLICY_VERSION => Ok(Self::StrictV1),
+            MATRIX_NATIVE_ROBUST_TRIAL_POLICY_VERSION => Ok(Self::RobustTrialV1),
+            _ => Err(Error::InvalidArguments),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatrixProviderIdentity {
     pub provider_profile_ref: AdvisoryProviderProfileRef,
     pub model_configuration: AdvisoryModelConfiguration,
     pub destination: String,
     pub wire_version: String,
+    pub ranking_policy: MatrixRankingPolicy,
 }
 
 impl MatrixProviderIdentity {
@@ -30,6 +58,8 @@ impl MatrixProviderIdentity {
             || self.destination.contains('\0')
             || self.wire_version.is_empty()
             || self.wire_version.contains('\0')
+            || (self.ranking_policy == MatrixRankingPolicy::RobustTrialV1
+                && self.wire_version != "tect.matrix-typesafe-native/1")
         {
             return Err(Error::InvalidArguments);
         }
@@ -249,6 +279,13 @@ impl MatrixStartedDispatchPermit {
             || config.get("destination") != Some(&serde_json::json!(prepared.identity.destination))
             || config.get("wire_version")
                 != Some(&serde_json::json!(prepared.identity.wire_version))
+            || (prepared.identity.wire_version == "tect.matrix-typesafe-native/1"
+                && config.get("ranking_policy")
+                    != Some(&serde_json::json!(
+                        prepared.identity.ranking_policy.as_str()
+                    ))
+                && !(prepared.identity.ranking_policy == MatrixRankingPolicy::StrictV1
+                    && config.get("ranking_policy").is_none()))
             || config.get("request_body_length") != Some(&serde_json::json!(prepared.body_length()))
             || config.get("request_body_sha256") != Some(&serde_json::json!(prepared.body_sha256))
             || prepared.body_length() != prepared.body.len()
@@ -317,6 +354,7 @@ pub struct MatrixBudgetRequest {
     pub model_configuration: AdvisoryModelConfiguration,
     pub destination: String,
     pub wire_version: String,
+    pub ranking_policy: MatrixRankingPolicy,
     pub body_length: usize,
     pub body_sha256: String,
 }
@@ -338,6 +376,7 @@ impl MatrixBudgetRequest {
             model_configuration: prepared.identity.model_configuration.clone(),
             destination: prepared.identity.destination.clone(),
             wire_version: prepared.identity.wire_version.clone(),
+            ranking_policy: prepared.identity.ranking_policy,
             body_length: prepared.body_length(),
             body_sha256: prepared.body_sha256.clone(),
         })

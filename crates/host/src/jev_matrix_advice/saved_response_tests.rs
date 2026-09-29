@@ -78,6 +78,7 @@ fn identity() -> MatrixProviderIdentity {
         },
         destination: "test-destination".into(),
         wire_version: WIRE_VERSION.into(),
+        ranking_policy: tect_application::MatrixRankingPolicy::StrictV1,
     }
 }
 

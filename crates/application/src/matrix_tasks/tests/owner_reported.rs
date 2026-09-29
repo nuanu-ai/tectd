@@ -36,6 +36,7 @@ async fn owner_reported_matrix_never_prepares_even_with_budget() {
         },
         destination: "test-destination".into(),
         wire_version: "test-wire/1".into(),
+        ranking_policy: crate::MatrixRankingPolicy::StrictV1,
     };
     config.provider_profile_ref = Some(identity.provider_profile_ref.clone());
     config.model_configuration = Some(identity.model_configuration.clone());
