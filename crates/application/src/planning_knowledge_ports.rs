@@ -7,6 +7,9 @@ use uuid::Uuid;
 
 #[async_trait]
 pub trait PlanningKnowledgeStore: Send {
+    /// Acquire the native publisher gate before a write transaction reads planning knowledge.
+    async fn lock_knowledge_publisher(&mut self) -> Result<()>;
+
     #[allow(clippy::too_many_arguments)]
     async fn capture_planning_knowledge(
         &mut self,

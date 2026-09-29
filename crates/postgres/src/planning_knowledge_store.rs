@@ -6,6 +6,10 @@ use uuid::Uuid;
 
 #[async_trait]
 impl PlanningKnowledgeStore for PgUnitOfWork {
+    async fn lock_knowledge_publisher(&mut self) -> Result<()> {
+        crate::durable_knowledge::publisher_gate(self.transaction()?).await
+    }
+
     async fn capture_planning_knowledge(
         &mut self,
         workspace_id: Uuid,
