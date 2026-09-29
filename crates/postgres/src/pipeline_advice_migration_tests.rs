@@ -1,6 +1,7 @@
 const MIGRATION: &str = include_str!("../migrations/0062_pipeline_advice_contexts.sql");
 const ADMIN: &str = include_str!("admin/pipeline_advice.rs");
 const ROLE: &str = include_str!("admin/migration.rs");
+const ROLE_VALIDATION: &str = include_str!("admin/migration/validation.rs");
 const MATRIX_AUTHORITY_MIGRATION: &str =
     include_str!("../migrations/0110_pipeline_context_matrix_authority.sql");
 
@@ -73,6 +74,6 @@ fn context_has_rls_immutable_guard_and_minimal_runtime_grants() {
         "NOT pg_catalog.has_table_privilege($1,'public.pipeline_advice_contexts','UPDATE')"
     ));
     assert!(ADMIN.contains("pipeline_advice_context_immutable"));
-    assert!(ROLE.contains("'pipeline_advice_contexts'"));
+    assert!(ROLE_VALIDATION.contains("'pipeline_advice_contexts'"));
     assert!(ROLE.contains("validate_pipeline_advice_schema"));
 }

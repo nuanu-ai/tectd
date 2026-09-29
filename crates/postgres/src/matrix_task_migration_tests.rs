@@ -1,5 +1,6 @@
 const MIGRATION: &str = include_str!("../migrations/0047_matrix_task_revisions.sql");
 const RUNTIME_GRANTS: &str = include_str!("admin/migration.rs");
+const ROLE_VALIDATION: &str = include_str!("admin/migration/validation.rs");
 
 #[test]
 fn task_head_and_accepted_revisions_have_tenant_bound_lineage() {
@@ -115,10 +116,10 @@ fn tenant_rls_and_runtime_grants_allow_only_append_and_head_cas() {
         "REVOKE ALL PRIVILEGES ON TABLE matrix_tasks, matrix_task_revisions FROM {quoted_role}",
         "GRANT SELECT, INSERT ON TABLE matrix_tasks, matrix_task_revisions TO {quoted_role}",
         "GRANT UPDATE(current_revision) ON TABLE matrix_tasks TO {quoted_role}",
-        "'matrix_tasks', 'matrix_task_revisions'",
     ] {
         assert!(RUNTIME_GRANTS.contains(required), "missing {required}");
     }
+    assert!(ROLE_VALIDATION.contains("'matrix_tasks', 'matrix_task_revisions'"));
     assert!(!RUNTIME_GRANTS.contains("GRANT UPDATE ON TABLE matrix_task_revisions"));
     assert!(!RUNTIME_GRANTS.contains("GRANT DELETE ON TABLE matrix_task_revisions"));
 }

@@ -2,7 +2,7 @@ const MIGRATION: &str = include_str!("../migrations/0061_matrix_planning_effect_
 const CONTEXT_MIGRATION: &str =
     include_str!("../migrations/0109_matrix_planning_context_selection.sql");
 const ADMIN: &str = include_str!("admin/matrix_advisory.rs");
-const ROLE: &str = include_str!("admin/migration.rs");
+const ROLE: &str = include_str!("admin/migration/validation.rs");
 
 #[test]
 fn attestation_binds_exact_link_and_receipt_and_is_append_only() {
