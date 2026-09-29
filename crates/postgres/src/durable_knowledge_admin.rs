@@ -55,6 +55,13 @@ const INVALID: &str = r#"
 pub async fn enable_durable_knowledge(pool: &PgPool, runtime_role: &str) -> Result<()> {
     let role = quote_identifier(runtime_role)?;
     let mut tx = pool.begin().await.map_err(storage_error)?;
+    sqlx::query(
+        "SELECT pg_catalog.pg_advisory_xact_lock(\
+             pg_catalog.hashtextextended('tect-admin-runtime-grants', 0))",
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(storage_error)?;
     sqlx::query("SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('tect-dk-native-publisher',0))").execute(&mut *tx).await.map_err(storage_error)?;
     let stored_identity: (Option<String>, Option<i64>) = sqlx::query_as(
         "SELECT qualified_system_identifier,qualified_database_oid::bigint \
