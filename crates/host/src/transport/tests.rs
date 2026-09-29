@@ -162,9 +162,9 @@ fn validated_routes_select_bounded_operation_and_bridge_budgets() {
 
 #[tokio::test]
 async fn bridge_accepts_success_from_daemon_after_previous_fifteen_second_limit() {
-    let directory = tempfile::Builder::new().tempdir_in("/private/tmp").unwrap();
+    let directory = tempfile::tempdir().unwrap();
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
-    let socket = directory.path().join("tectd.sock");
+    let socket = directory.path().canonicalize().unwrap().join("tectd.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     fs::set_permissions(&socket, fs::Permissions::from_mode(0o600)).unwrap();
     let daemon = tokio::spawn(async move {
@@ -192,9 +192,9 @@ async fn bridge_accepts_success_from_daemon_after_previous_fifteen_second_limit(
 
 #[tokio::test]
 async fn delayed_daemon_response_preserves_wire_error_and_socket_absence_is_transport_error() {
-    let directory = tempfile::Builder::new().tempdir_in("/private/tmp").unwrap();
+    let directory = tempfile::tempdir().unwrap();
     fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
-    let socket = directory.path().join("tectd.sock");
+    let socket = directory.path().canonicalize().unwrap().join("tectd.sock");
     assert_eq!(
         call_tool(&socket, &context(), "get_state", json!({})).await,
         Err(Error::TransportUnavailable)
