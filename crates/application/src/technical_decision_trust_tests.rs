@@ -26,7 +26,7 @@ fn fact(kind: TechnicalFactKind, value: TechnicalFactValue) -> TechnicalDecision
     }
 }
 
-fn card() -> DeliveryMechanismDecisionCard {
+pub(crate) fn card() -> DeliveryMechanismDecisionCard {
     let mut card = DeliveryMechanismDecisionCard {
         schema: tect_domain::TECHNICAL_DECISION_SCHEMA.into(),
         card_id: tect_domain::DELIVERY_MECHANISM_CARD.into(),

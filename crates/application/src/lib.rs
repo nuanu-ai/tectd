@@ -55,13 +55,16 @@ mod pipeline_recommendation_runtime;
 mod planning_knowledge_ports;
 mod ports;
 mod provider_receipt_ports;
-// Internal, fail-closed bridge; no public route or production resolver is wired.
+// Server composition port and private fail-closed snapshot bridge. No host
+// route or production resolver is wired by the default service constructor.
+mod technical_decision_evidence_ports;
 #[allow(dead_code)]
 mod technical_decision_trust;
 pub use provider_receipt_ports::{
     AdvisoryDispatchContinuation, AdvisoryProviderReceiptObservation, AdvisoryProviderReceiptUsage,
     AdvisoryProviderTransportContext, StoredAdvisoryProviderReceipt,
 };
+pub use technical_decision_evidence_ports::*;
 mod programs;
 mod scope_advisory_orchestration;
 mod scope_advisory_ports;
@@ -109,10 +112,11 @@ pub use matrix_planning_selection_ports::{
 };
 pub use matrix_task_ports::{BoundMatrixTaskRecord, MatrixTaskStore};
 pub use matrix_tasks::{
-    CurrentMatrixAdvice, EngineeringAdvisoryRead, GetVerifiedMatrixCards, MATRIX_INPUT_SCHEMA,
-    MatrixTaskRequirementsBinding, MatrixTaskRevision, MatrixTaskSource, RecordMatrixTask,
-    RequestEngineeringAdvisory, VERIFIED_MATRIX_CARDS_SCHEMA, VerifiedMatrixCardSummary,
-    VerifiedMatrixCards, canonical_matrix_input_digest, canonical_matrix_source_request_digest,
+    CompareTechnicalDeliveryMechanisms, CurrentMatrixAdvice, EngineeringAdvisoryRead,
+    GetVerifiedMatrixCards, MATRIX_INPUT_SCHEMA, MatrixTaskRequirementsBinding, MatrixTaskRevision,
+    MatrixTaskSource, RecordMatrixTask, RequestEngineeringAdvisory, TechnicalDeliveryMechanismRead,
+    VERIFIED_MATRIX_CARDS_SCHEMA, VerifiedMatrixCardSummary, VerifiedMatrixCards,
+    canonical_matrix_input_digest, canonical_matrix_source_request_digest,
 };
 pub use matrix_verification::{MatrixEvidenceReference, VerifiedMatrixTask, VerifyMatrixTask};
 pub use matrix_verification_ports::{

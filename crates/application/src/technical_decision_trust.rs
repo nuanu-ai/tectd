@@ -129,4 +129,4 @@ impl TechnicalDecisionTrust for TechnicalDecisionTrustSnapshot {
 
 #[cfg(test)]
 #[path = "technical_decision_trust_tests.rs"]
-mod tests;
+pub(crate) mod tests;

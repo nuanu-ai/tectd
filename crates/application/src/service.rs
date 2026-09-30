@@ -21,6 +21,8 @@ pub struct WorkspaceService {
     #[allow(dead_code)]
     pub(crate) matrix_budget: Arc<dyn crate::MatrixBudgetPolicy>,
     pub(crate) matrix_evidence_validator: Arc<dyn crate::MatrixEvidenceValidator>,
+    pub(crate) technical_decision_evidence_resolver:
+        Arc<dyn crate::TechnicalDecisionEvidenceResolver>,
     pub(crate) pipeline_recommendation_definitions:
         Arc<dyn crate::PipelineRecommendationDefinitionProvider>,
     pub(crate) pipeline_recommendation_provider: Arc<dyn crate::PipelineRecommendationProvider>,
@@ -42,6 +44,14 @@ pub struct WorkspaceService {
 }
 
 impl WorkspaceService {
+    /// Server-only composition seam; default construction stays unavailable.
+    pub fn with_technical_decision_evidence_resolver(
+        mut self,
+        resolver: Arc<dyn crate::TechnicalDecisionEvidenceResolver>,
+    ) -> Self {
+        self.technical_decision_evidence_resolver = resolver;
+        self
+    }
     /// Installs only the authoritative Scope source adapters. The budget stays
     /// deny-by-default and the transport provider stays disabled.
     pub fn new_with_scope_sources(
@@ -79,6 +89,9 @@ impl WorkspaceService {
             matrix_advice_provider: Arc::new(crate::DisabledMatrixAdviceProvider),
             matrix_budget: Arc::new(crate::SignedMatrixBudgetPreflight),
             matrix_evidence_validator: Arc::new(crate::DisabledMatrixEvidenceValidator),
+            technical_decision_evidence_resolver: Arc::new(
+                crate::DisabledTechnicalDecisionEvidenceResolver,
+            ),
             pipeline_recommendation_definitions: Arc::new(
                 crate::UnavailablePipelineRecommendationDefinitions,
             ),

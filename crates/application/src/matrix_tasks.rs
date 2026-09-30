@@ -327,6 +327,9 @@ pub(crate) async fn freeze_locked_matrix_requirements_context(
 
 mod advisory;
 mod binding;
+mod technical_decision;
+#[cfg(test)]
+mod technical_decision_service_tests;
 mod verified_cards;
 #[cfg(test)]
 use binding::compose_current_revision;
@@ -338,6 +341,7 @@ pub(crate) use binding::{
 use binding::{
     matrix_advisory_receipt_matches, matrix_advisory_replay_matches, valid_advisory_request_key,
 };
+pub use technical_decision::{CompareTechnicalDeliveryMechanisms, TechnicalDeliveryMechanismRead};
 pub use verified_cards::{
     GetVerifiedMatrixCards, VERIFIED_MATRIX_CARDS_SCHEMA, VerifiedMatrixCardSummary,
     VerifiedMatrixCards,

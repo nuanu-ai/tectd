@@ -17,7 +17,7 @@ fn known<T>(value: T) -> MatrixFact<T> {
     }
 }
 
-fn stored_revision() -> MatrixTaskRevision {
+pub(super) fn stored_revision() -> MatrixTaskRevision {
     let task_id = Uuid::new_v4();
     let input = EngineeringMatrixInput {
         mode: MatrixFact::Absent,

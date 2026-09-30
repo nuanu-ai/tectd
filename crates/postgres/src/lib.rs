@@ -109,6 +109,7 @@ mod setup_store;
 mod setups;
 mod sources;
 mod store;
+mod technical_decision_evidence;
 
 pub use admin::Enrollment;
 pub use advisory_budget_policy_approval::verify_budget_policy_approval;
@@ -125,6 +126,12 @@ pub use knowledge_search_admin::enable_knowledge_vector_search;
 pub use matrix_evidence_artifact::{ApprovedMatrixEvidenceArtifact, PgMatrixEvidenceValidator};
 pub use scope_advisory::{PgScopeAuthoredManifestSupplier, PgScopeAuthorityObserver};
 pub use store::PgStore;
+pub use technical_decision_evidence::{
+    ApprovedTechnicalDecisionEvidence, PgTechnicalDecisionEvidenceResolver,
+    TECHNICAL_EVIDENCE_FORMAT, TECHNICAL_EVIDENCE_SCHEMA, TechnicalDecisionEvidenceArtifact,
+    TechnicalEvidenceCandidateMapping, TechnicalEvidenceLocator, TechnicalEvidenceObservation,
+    TechnicalEvidenceRequirements,
+};
 
 use tect_domain::Error;
 
