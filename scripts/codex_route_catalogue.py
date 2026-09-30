@@ -103,6 +103,31 @@ def one_off_prompt() -> str:
             "about your model identity.\n" + one_off_marker_json())
 
 
+PERSISTED_CASE_ID = "s05-appserver-luna56-persisted-c39e8241"
+PERSISTED_INVOCATION_KEY = "s05-owner-luna56-persisted-c39e8241"
+_PERSISTED_CATALOGUE = Catalogue(
+    schema="codex-app-server-case-scoped-persisted-route-catalogue-v1", version=1,
+    policy_source="Tony current-task approval: one isolated persisted S05 Luna56 case c39e8241",
+    host_transport="codex-app-server-stdio", model_availability="unverified",
+    routes=(Route("codex-app-server-persisted-luna56-xhigh-c39e8241",
+                  "gpt-5.6-luna", "xhigh", "routine"),),
+)
+
+
+def persisted_catalogue() -> Catalogue:
+    return _PERSISTED_CATALOGUE
+
+
+def persisted_marker_json() -> str:
+    return _canonical({"kind": "S05_APP_SERVER_MARKER_V1", "case_id": PERSISTED_CASE_ID,
+                       "selected_route_id": _PERSISTED_CATALOGUE.routes[0].route_id,
+                       "catalogue_sha256": _PERSISTED_CATALOGUE.digest})
+
+
+def persisted_prompt() -> str:
+    return one_off_prompt().split("\n", 1)[0] + "\n" + persisted_marker_json()
+
+
 @dataclass(frozen=True)
 class RouteSelection:
     catalogue_schema: str
@@ -119,7 +144,7 @@ class RouteSelection:
     def __post_init__(self) -> None:
         identity = (self.catalogue_schema, self.catalogue_version, self.catalogue_digest,
                     self.policy_source, self.host_transport)
-        matches_catalogue = [candidate for candidate in (_CATALOGUE, _ONE_OFF_CATALOGUE)
+        matches_catalogue = [candidate for candidate in (_CATALOGUE, _ONE_OFF_CATALOGUE, _PERSISTED_CATALOGUE)
                              if identity == (candidate.schema, candidate.version, candidate.digest,
                                              candidate.policy_source, candidate.host_transport)]
         if len(matches_catalogue) != 1:
@@ -138,6 +163,8 @@ class RouteSelection:
             raise SelectionRejected("task input digest must be lowercase SHA-256")
         if catalogue is _ONE_OFF_CATALOGUE and self.task_input_digest != _digest(one_off_prompt()):
             raise SelectionRejected("one-off selection requires the exact fixed case prompt")
+        if catalogue is _PERSISTED_CATALOGUE and self.task_input_digest != _digest(persisted_prompt()):
+            raise SelectionRejected("persisted selection requires the exact fixed case prompt")
 
     @property
     def canonical_json(self) -> str:
@@ -169,6 +196,14 @@ def select_route(*, route_id: str, model: str, effort: str, purpose: str,
 def select_one_off_route(*, task_input_digest: str) -> RouteSelection:
     """Select only the approved fixed case; human authority stays at root invocation."""
     catalogue = one_off_catalogue()
+    route = catalogue.routes[0]
+    return RouteSelection(catalogue.schema, catalogue.version, catalogue.digest,
+                          catalogue.policy_source, catalogue.host_transport, route.route_id,
+                          route.model, route.effort, route.purpose, task_input_digest)
+
+
+def select_persisted_route(*, task_input_digest: str) -> RouteSelection:
+    catalogue = persisted_catalogue()
     route = catalogue.routes[0]
     return RouteSelection(catalogue.schema, catalogue.version, catalogue.digest,
                           catalogue.policy_source, catalogue.host_transport, route.route_id,

@@ -21,7 +21,9 @@ from pathlib import Path
 from typing import Any
 
 from scripts.codex_route_catalogue import (RouteSelection, one_off_catalogue,
-                                          one_off_prompt, ONE_OFF_INVOCATION_KEY)
+    one_off_prompt, ONE_OFF_INVOCATION_KEY, persisted_catalogue, persisted_prompt,
+    PERSISTED_INVOCATION_KEY)
+from scripts.codex_app_server_rpc import AppServerRpcError
 
 
 class ObservationRejected(ValueError):
@@ -51,10 +53,20 @@ class ExecutionIntent:
     cwd: str
     requested: RouteSelection | None = None
     recommended: RouteSelection | None = None
+    ephemeral_thread: bool = True
 
     def __post_init__(self) -> None:
         if type(self.selection) is not RouteSelection:
             raise ObservationRejected("immutable catalogue selection required")
+        if type(self.ephemeral_thread) is not bool:
+            raise ObservationRejected("ephemeral_thread must be a strict bool")
+        persisted = self.selection.catalogue_digest == persisted_catalogue().digest
+        if persisted and (self.ephemeral_thread is not False or
+                self.invocation_key != PERSISTED_INVOCATION_KEY or self.prompt != persisted_prompt() or
+                self.requested is not None or self.recommended is not None):
+            raise ObservationRejected("persisted intent must match the fixed approval scope")
+        if not persisted and self.ephemeral_thread is not True:
+            raise ObservationRejected("only the fixed persisted case may save a thread")
         _exact(self.invocation_key, "invocation key")
         _exact(self.cwd, "cwd")
         if not Path(self.cwd).is_absolute():
@@ -81,6 +93,7 @@ class ExecutionIntent:
     def digest(self) -> str:
         return _sha(_json({"selection": asdict(self.selection), "prompt_sha256": self.prompt_digest,
                           "invocation_key": self.invocation_key, "cwd": self.cwd,
+                          "ephemeral_thread": self.ephemeral_thread,
                           "requested": None if self.requested is None else asdict(self.requested),
                           "recommended": None if self.recommended is None else asdict(self.recommended)}))
 
@@ -305,7 +318,8 @@ class AppServerObserver:
     def run_once(self, intent: ExecutionIntent, *, completion_timeout: float = 60) -> AppServerReceipt:
         if type(intent) is not ExecutionIntent:
             raise ObservationRejected("immutable execution intent required")
-        maximum_timeout = 180 if intent.selection.catalogue_digest == one_off_catalogue().digest else 60
+        maximum_timeout = 180 if intent.selection.catalogue_digest in {
+            one_off_catalogue().digest, persisted_catalogue().digest} else 60
         if isinstance(completion_timeout, bool) or not isinstance(completion_timeout, (int, float)) or not 0 < completion_timeout <= maximum_timeout:
             raise ObservationRejected(f"completion timeout must be within {maximum_timeout} seconds")
         key_digest = _sha(intent.invocation_key)
@@ -336,6 +350,7 @@ class AppServerObserver:
         completion_notification: dict[str, Any] | None = None
         capture_snapshot_returned = False
         notification_capture_complete = False
+        seal_attempted = False
         try:
             selection = intent.selection
             models = self._inventory("model/list", {"includeHidden": True, "limit": 100}, events)
@@ -348,7 +363,7 @@ class AppServerObserver:
                 raise ObservationRejected("selected effort not advertised by host")
             self._disabled_surface(events, intent.cwd)
             params = {"model": selection.model, "modelProvider": "openai", "cwd": intent.cwd,
-                      "approvalPolicy": "never", "sandbox": "read-only", "ephemeral": True,
+                      "approvalPolicy": "never", "sandbox": "read-only", "ephemeral": intent.ephemeral_thread,
                       "allowProviderModelFallback": False,
                       "config": {"model_reasoning_effort": selection.effort},
                       "developerInstructions": "Complete only the exact supplied bounded task. Do not use tools, MCP, plugins or agents."}
@@ -358,6 +373,8 @@ class AppServerObserver:
             if not isinstance(started, dict) or not isinstance(started.get("thread"), dict):
                 raise ObservationRejected("missing thread/start host response")
             thread_id = _exact(started["thread"].get("id"), "thread id")
+            if started["thread"].get("ephemeral") is not intent.ephemeral_thread:
+                raise ObservationRejected("thread/start persistence confirmation mismatch")
             if (started.get("model"), started.get("modelProvider"), started.get("reasoningEffort")) != (
                     selection.model, "openai", selection.effort):
                 raise ObservationRejected("thread/start configured model/provider/effort mismatch")
@@ -388,20 +405,27 @@ class AppServerObserver:
                     not isinstance(completion_params.get("turn"), dict) or completion_params["turn"].get("id") != turn_id):
                 raise ObservationRejected("completion host identity mismatch")
             outcome = completion_params["turn"].get("status")
-            read = self._rpc.request("thread/read", {"threadId": thread_id, "includeTurns": True}, timeout=30)
+            try:
+                read = self._rpc.request("thread/read", {"threadId": thread_id, "includeTurns": True}, timeout=30)
+            except Exception as error:
+                diagnostic = {"error_type": type(error).__name__, "method": "thread/read"}
+                if type(error) is AppServerRpcError and type(error.code) is int and -(2**31) <= error.code < 2**31:
+                    diagnostic["code"] = error.code
+                events.append({"method": "thread/read", "error": diagnostic})
+                raise
             events.append({"method": "thread/read", "response": read})
             if outcome != "completed":
                 raise ObservationRejected("host task did not complete successfully")
             self._turn(read, intent, thread_id, turn_id)
 
             try:
+                seal_attempted = True
                 notifications = self._rpc.seal_notifications(timeout=30)
             except Exception as error:
                 raise ObservationRejected(
                     f"complete notification stream capture failed ({type(error).__name__})"
                 ) from None
             capture_snapshot_returned = True
-            notification_capture_complete = self._evidence_kind == "owned_stdio"
             if not isinstance(notifications, list) or any(not isinstance(value, dict) for value in notifications):
                 raise ObservationRejected("complete notification stream snapshot is malformed")
             events.extend({"notification": value} for value in notifications)
@@ -415,12 +439,33 @@ class AppServerObserver:
             ]
             if len(matching_completions) != 1 or matching_completions[0] != completion_notification:
                 raise ObservationRejected("complete notification stream lacks the unique observed turn completion")
+            notification_capture_complete = self._evidence_kind == "owned_stdio"
             status = "completed_configured_route"
         except ObservationRejected as error:
             status, failure = "configured_route_rejected", str(error)
         except Exception as error:
             failure = f"host transport failure ({type(error).__name__})"
         finally:
+            if completion_notification is not None and not seal_attempted:
+                seal_attempted = True
+                try:
+                    notifications = self._rpc.seal_notifications(timeout=30)
+                    capture_snapshot_returned = True
+                    if not isinstance(notifications, list) or any(not isinstance(value, dict) for value in notifications):
+                        raise ObservationRejected("complete notification stream snapshot is malformed")
+                    events.extend({"notification": value} for value in notifications)
+                    matching = [value for value in notifications
+                                if value.get("method") == "turn/completed"
+                                and isinstance(value.get("params"), dict)
+                                and value["params"].get("threadId") == thread_id
+                                and isinstance(value["params"].get("turn"), dict)
+                                and value["params"]["turn"].get("id") == turn_id]
+                    if len(matching) != 1 or matching[0] != completion_notification:
+                        raise ObservationRejected("complete notification stream lacks the unique observed turn completion")
+                    notification_capture_complete = self._evidence_kind == "owned_stdio"
+                except Exception as error:
+                    events.append({"notification_seal_error": type(error).__name__})
+                    notification_capture_complete = False
             if completion_notification is not None and not capture_snapshot_returned:
                 events.append({"method": "turn/completed", "notification": completion_notification})
             try:
@@ -441,6 +486,10 @@ class AppServerObserver:
                 if params.get("threadId") != thread_id or params.get("turnId") != turn_id:
                     continue
                 item = params.get("item")
+                # A later evidence check must not replace the original transport
+                # failure; the notification remains retained for inspection.
+                if status == "unknown_after_reservation":
+                    continue
                 if notification.get("method") == "model/rerouted":
                     status, failure = "configured_route_rejected", "host reported model reroute"
                 elif isinstance(item, dict) and item.get("type") not in {"userMessage", "agentMessage", "reasoning"}:

@@ -46,7 +46,7 @@ class OfflineRpc:
         self.pages = {}
         self.started = {"model": "gpt-6.1-sol", "modelProvider": "openai", "reasoningEffort": "medium",
                         "approvalPolicy": "never", "cwd": CWD, "sandbox": {"type": "readOnly"},
-                        "thread": {"id": "thread-1"}}
+                        "thread": {"id": "thread-1", "ephemeral": True}}
         self.turn_started = {"turn": {"id": "turn-1", "status": "inProgress", "items": []}}
         self.completed = {"method": "turn/completed", "params": {"threadId": "thread-1", "turn": {
             "id": "turn-1", "status": "completed", "items": []}}}
