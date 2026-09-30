@@ -46,6 +46,33 @@ struct ClientInfo {
     version: String,
     #[serde(default, rename = "title")]
     _title: Option<String>,
+    #[serde(default, rename = "description")]
+    _description: Option<String>,
+    #[serde(default, rename = "websiteUrl")]
+    _website_url: Option<String>,
+    #[serde(default, rename = "icons")]
+    _icons: Option<Vec<ClientIcon>>,
+}
+
+// MCP 2025-11-25 Implementation metadata. Icons are parsed, never fetched.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClientIcon {
+    #[serde(rename = "src")]
+    _src: String,
+    #[serde(default, rename = "mimeType")]
+    _mime_type: Option<String>,
+    #[serde(default, rename = "sizes")]
+    _sizes: Option<Vec<String>>,
+    #[serde(default, rename = "theme")]
+    _theme: Option<ClientIconTheme>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ClientIconTheme {
+    Light,
+    Dark,
 }
 
 pub async fn run_stdio(socket: &Path, context: HostContext) -> Result<()> {
@@ -190,6 +217,9 @@ impl McpSession {
     }
 
     async fn tools_call(&self, id: Value, params: Option<&Value>) -> Value {
+        let arguments_present = params
+            .and_then(Value::as_object)
+            .is_some_and(|params| params.contains_key("arguments"));
         let params = match params
             .cloned()
             .and_then(|params| serde_json::from_value::<ToolCallParams>(params).ok())
@@ -197,7 +227,13 @@ impl McpSession {
             Some(params) => params,
             None => return error_response(id, -32602, "invalid_params"),
         };
-        let context = match request_context(&self.context, params.metadata.as_ref()) {
+        let context = match request_context(
+            &self.context,
+            params.metadata.as_ref(),
+            &params.name,
+            &params.arguments,
+            arguments_present,
+        ) {
             Ok(context) => context,
             Err(error) => return success_response(id, failed_tool_result(error)),
         };
@@ -242,12 +278,11 @@ impl McpSession {
 fn request_context(
     host: &HostContext,
     metadata: Option<&Map<String, Value>>,
+    tool: &str,
+    arguments: &Value,
+    arguments_present: bool,
 ) -> Result<RequestContext> {
-    let thread_id = metadata
-        .and_then(|metadata| metadata.get("threadId"))
-        .and_then(Value::as_str)
-        .ok_or(Error::InvalidNativeSession)?;
-    host.request_context(thread_id)
+    host.resolve_request_context(metadata, tool, arguments, arguments_present)
 }
 
 fn valid_request_members(object: &Map<String, Value>) -> bool {

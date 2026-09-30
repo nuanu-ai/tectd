@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "mcp__tectd__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/ABS/PATH/tectd-mcp' claude-pre-tool-use --destination-host-id 'PUBLIC-ENROLLED-HOST-UUID' --server-alias tectd --context-dir '/ABS/PRIVATE/claude-attestations'",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

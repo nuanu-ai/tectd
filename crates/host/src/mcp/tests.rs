@@ -148,8 +148,22 @@ fn native_identity_is_derived_from_each_call_metadata() {
     let second = Uuid::new_v4().to_string();
     let first_meta = json!({"threadId": first, "progressToken": "kept"});
     let second_meta = json!({"threadId": second});
-    let first_context = request_context(&session.context, first_meta.as_object()).unwrap();
-    let second_context = request_context(&session.context, second_meta.as_object()).unwrap();
+    let first_context = request_context(
+        &session.context,
+        first_meta.as_object(),
+        "get_state",
+        &json!({}),
+        true,
+    )
+    .unwrap();
+    let second_context = request_context(
+        &session.context,
+        second_meta.as_object(),
+        "get_state",
+        &json!({}),
+        true,
+    )
+    .unwrap();
     assert_eq!(first_context.native_session_id, first);
     assert_eq!(second_context.native_session_id, second);
     assert_ne!(
@@ -181,4 +195,77 @@ async fn missing_or_invalid_thread_id_fails_before_daemon_transport() {
                 .unwrap();
         assert_eq!(data["error"]["code"], "invalid_native_session");
     }
+}
+
+#[tokio::test]
+async fn claude_attestation_is_required_even_when_thread_id_is_present_before_transport() {
+    use crate::native_identity::{
+        ClaudeIdentityConfig, ClaudeToolAttestation, claude_attestation_filename, unix_time_ms,
+    };
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+    let host_id = Uuid::new_v4();
+    let native_id = Uuid::new_v4().to_string();
+    let mut session = synthetic_session();
+    session.context = HostContext::new(
+        HostAuth {
+            host_id,
+            credential: "0".repeat(64),
+        },
+        "synthetic-unit-fixture".into(),
+    )
+    .unwrap()
+    .with_claude_identity(ClaudeIdentityConfig::new(root.clone(), "tectd".into(), host_id).unwrap())
+    .unwrap();
+    for meta in [
+        json!({"threadId":native_id}),
+        json!({"threadId":native_id,"claudecode/toolUseId":"missing-record"}),
+    ] {
+        let params = json!({"name":"get_state","arguments":{},"_meta":meta});
+        let response = session.tools_call(json!(1), Some(&params)).await;
+        let data: Value =
+            serde_json::from_str(response["result"]["content"][1]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(data["error"]["code"], "invalid_native_session");
+    }
+    // A valid native record reaches the deliberately nonexistent test socket;
+    // the first failure is now transport, proving ingress accepted that record.
+    let now = unix_time_ms().unwrap();
+    let record = ClaudeToolAttestation::new(
+        native_id.clone(),
+        "actual-call".into(),
+        "mcp__tectd__get_state".into(),
+        json!({}),
+        "tectd".into(),
+        host_id,
+        now,
+        now + 30_000,
+    )
+    .unwrap();
+    let path = root.join(claude_attestation_filename("actual-call").unwrap());
+    fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    // These must still fail as identity errors on a nonexistent socket, so no
+    // transport or database effect can hide an attestation mismatch.
+    for params in [
+        json!({"name":"get_state","arguments":{"changed":true},"_meta":{"claudecode/toolUseId":"actual-call"}}),
+        json!({"name":"help","arguments":{},"_meta":{"claudecode/toolUseId":"actual-call"}}),
+        json!({"name":"get_state","_meta":{"claudecode/toolUseId":"actual-call"}}),
+        json!({"name":"get_state","arguments":{},"_meta":{"claudecode/toolUseId":"actual-call","threadId":Uuid::new_v4()}}),
+    ] {
+        let response = session.tools_call(json!(2), Some(&params)).await;
+        let data: Value =
+            serde_json::from_str(response["result"]["content"][1]["text"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(data["error"]["code"], "invalid_native_session");
+    }
+    let params =
+        json!({"name":"get_state","arguments":{},"_meta":{"claudecode/toolUseId":"actual-call"}});
+    let response = session.tools_call(json!(2), Some(&params)).await;
+    let data: Value =
+        serde_json::from_str(response["result"]["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(data["error"]["code"], "transport_unavailable");
 }

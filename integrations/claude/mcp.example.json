@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "tectd": {
+      "type": "stdio",
+      "command": "/ABS/PATH/tectd-mcp",
+      "env": {
+        "TECT_SOCKET": "/ABS/PRIVATE/tectd.sock",
+        "TECT_HOST_CONFIG": "/ABS/PRIVATE/enrolled-host.json",
+        "TECT_WORKSPACE_KEY": "nuanu-ai-lab",
+        "TECT_NATIVE_IDENTITY_PROVIDER": "claude_pre_tool_use",
+        "TECT_CLAUDE_ATTESTATION_DIR": "/ABS/PRIVATE/claude-attestations",
+        "TECT_CLAUDE_MCP_SERVER_ALIAS": "tectd"
+      }
+    }
+  }
+}
