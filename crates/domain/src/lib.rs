@@ -9,6 +9,7 @@ mod engineering_matrix_composer;
 mod engineering_matrix_disposition;
 mod engineering_matrix_input;
 mod engineering_matrix_native_ranking;
+mod engineering_matrix_technical_decision;
 mod engineering_matrix_trial_evidence;
 mod engineering_matrix_verification;
 mod engineering_review;
@@ -55,6 +56,7 @@ pub use engineering_matrix_composer::*;
 pub use engineering_matrix_disposition::*;
 pub use engineering_matrix_input::*;
 pub use engineering_matrix_native_ranking::*;
+pub use engineering_matrix_technical_decision::*;
 pub use engineering_matrix_trial_evidence::*;
 pub use engineering_matrix_verification::*;
 pub use error::{

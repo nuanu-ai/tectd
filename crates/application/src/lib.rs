@@ -55,6 +55,9 @@ mod pipeline_recommendation_runtime;
 mod planning_knowledge_ports;
 mod ports;
 mod provider_receipt_ports;
+// Internal, fail-closed bridge; no public route or production resolver is wired.
+#[allow(dead_code)]
+mod technical_decision_trust;
 pub use provider_receipt_ports::{
     AdvisoryDispatchContinuation, AdvisoryProviderReceiptObservation, AdvisoryProviderReceiptUsage,
     AdvisoryProviderTransportContext, StoredAdvisoryProviderReceipt,
