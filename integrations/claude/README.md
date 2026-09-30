@@ -98,11 +98,27 @@ installation or session lifecycle behavior on a new target.
 The current source port is validated by provider and writer tests plus a disposable
 stdio/Unix-socket/PostgreSQL fixture. That fixture proves that two MCP processes
 using the same attested native UUID recover the same TectD session, while a distinct
-UUID gets a separate session. It uses synthetic fixture events and does not prove a
-fresh native Claude launch or native resume. Acceptance remains pending for Claude
-Code **2.1.283** on the actual configured CLI and enrolled host. Verify: fresh `get_state` reaches the daemon under the original session;
-changed input/missing hook are rejected; retries do not renew timestamps; a new
-session and `/clear` do not reuse an old identity; fork has the native client's
-new identity; resume uses its original native identity with fresh call records;
-and concurrent invocations stay distinct. Record native hook and RPC evidence
+UUID gets a separate session.
+
+Native product acceptance passed with Claude Code **2.1.283** at source commit
+`f8bb326a300b116257986b494e3fc66c523ac196` and tree
+`9a5ba4ec4420e13b334b50690ac1caba2af4574f`. A fresh launch and a same-UUID resume
+each made exactly one successful `get_state` call. Both used native session UUID
+`476a5d96-bfab-4322-8b07-50bdb23a46a8` and returned the same fixture-seeded TectD
+session `73640cca-07fe-44a4-b0c3-6ed412b7e5ea`. In both calls, the genuine hook
+record matched the RPC `claudecode/toolUseId` metadata; the hook record was
+available 19 ms before the fresh RPC and 14 ms before the resume RPC.
+
+The database mapping was pre-seeded before both Claude launches. This proves native
+hook-to-RPC identity continuity and resume against that existing mapping; it does
+not prove that a native Claude launch creates a new database mapping. The separate
+stdio/DB integration test covers the MCP session lifecycle. This private fixture
+run was read-only and its owned fixture was cleaned up. It does not establish
+acceptance of an actual global Claude installation or its persistent user settings.
+See the [sanitized native acceptance receipt](acceptance/2026-09-30-cli-2.1.283.json)
+for the per-launch process IDs, tool-use IDs, hashes and timings.
+
+The native product run did not exercise rejection of missing hooks or changed
+arguments, retry timestamp behavior, `/clear`, forks, or concurrent invocations.
+Those cases remain outside this acceptance result. Record further native evidence
 without publishing raw tool payloads, transcripts or host credentials.
