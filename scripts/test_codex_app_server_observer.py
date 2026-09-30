@@ -95,6 +95,49 @@ class OfflineRpc:
 
 
 class ObserverTests(unittest.TestCase):
+    def test_one_off_exact_configuration_gates_and_durable_replay(self):
+        from scripts.codex_app_server_one_off_case import prepare_one_off_case
+        case = prepare_one_off_case(CWD).intent
+        self.rpc.models["data"][0]["model"] = case.selection.model
+        self.rpc.models["data"][0]["supportedReasoningEfforts"][0]["reasoningEffort"] = case.selection.effort
+        self.rpc.started.update(model=case.selection.model, reasoningEffort=case.selection.effort)
+        user = self.rpc.read["thread"]["turns"][0]["items"][0]
+        user["clientId"] = case.invocation_key
+        user["content"][0]["text"] = case.prompt
+        receipt = self.observer.run_once(case, completion_timeout=180)
+        self.assertEqual(receipt.status, "completed_configured_route")
+        self.assertIsNone(receipt.observed_actual)
+        methods = [method for method, _ in self.rpc.calls]
+        self.assertLess(methods.index("model/list"), methods.index("thread/start"))
+        self.assertLess(methods.index("config/read"), methods.index("thread/start"))
+        self.assertLess(methods.index("mcpServerStatus/list"), methods.index("thread/start"))
+        self.assertEqual(methods.count("thread/start"), 1)
+        self.assertEqual(methods.count("turn/start"), 1)
+        self.assertIs(self.observer.run_once(case, completion_timeout=180), receipt)
+        with self.assertRaises(ObservationRejected):
+            self.offline_observer().run_once(case, completion_timeout=180)
+        with self.assertRaises(ObservationRejected):
+            self.observer.run_once(case, completion_timeout=181)
+
+    def test_one_off_failed_model_or_surface_gate_never_starts_thread(self):
+        from scripts.codex_app_server_one_off_case import prepare_one_off_case
+        case = prepare_one_off_case(CWD).intent
+        for failure in ("model", "features", "plugins", "mcp"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                rpc = OfflineRpc()
+                rpc.models["data"][0]["model"] = case.selection.model
+                rpc.models["data"][0]["supportedReasoningEfforts"][0]["reasoningEffort"] = case.selection.effort
+                if failure == "model": rpc.models["data"] = []
+                if failure == "features": rpc.config["config"].pop("features")
+                if failure == "plugins": rpc.config["config"].pop("plugins")
+                if failure == "mcp": rpc.mcp["data"] = [{"name": "active"}]
+                observer = object.__new__(AppServerObserver)
+                observer._configure(rpc, Path(temporary) / "ledger", "offline_fixture")
+                receipt = observer.run_once(case, completion_timeout=180)
+                self.assertEqual(receipt.status, "configured_route_rejected")
+                self.assertNotIn("thread/start", [method for method, _ in rpc.calls])
+                self.assertNotIn("turn/start", [method for method, _ in rpc.calls])
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

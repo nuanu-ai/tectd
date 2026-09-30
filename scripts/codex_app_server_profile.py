@@ -55,6 +55,20 @@ def build_launch_profile(model: str = "gpt-6.1-sol", effort: str = "medium") -> 
     return _profile_from_config_text(config_text, model, effort)
 
 
+def build_one_off_launch_profile() -> AppServerLaunchProfile:
+    """Fixed case-only pair, never a fallback or normal route extension."""
+    try:
+        config_text = CODEX_CONFIG_PATH.read_text(encoding="utf-8")
+    except OSError:
+        raise LaunchProfileError("cannot read the standard Codex user TOML") from None
+    return _one_off_profile_from_config_text(config_text)
+
+
+def _one_off_profile_from_config_text(config_text: str) -> AppServerLaunchProfile:
+    """Private fake TOML seam; no caller-supplied model or effort."""
+    return _compose_profile(config_text, "gpt-5.6-luna", "xhigh")
+
+
 def _validate_route(model: str, effort: str) -> None:
     if (model, effort) not in _ALLOWED_ROUTES:
         raise LaunchProfileError("model and effort must be one of the two current host route pairs")
@@ -92,6 +106,10 @@ def _profile_from_config_text(
 ) -> AppServerLaunchProfile:
     """Private fake-TOML seam; production reads only ``CODEX_CONFIG_PATH``."""
     _validate_route(model, effort)
+    return _compose_profile(config_text, model, effort)
+
+
+def _compose_profile(config_text: str, model: str, effort: str) -> AppServerLaunchProfile:
     mcp_ids, plugin_ids = _configured_ids(config_text)
 
     argv: list[str] = [CODEX_EXECUTABLE, "app-server"]

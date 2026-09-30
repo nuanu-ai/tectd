@@ -20,7 +20,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from scripts.codex_route_catalogue import RouteSelection
+from scripts.codex_route_catalogue import (RouteSelection, one_off_catalogue,
+                                          one_off_prompt, ONE_OFF_INVOCATION_KEY)
 
 
 class ObservationRejected(ValueError):
@@ -62,6 +63,10 @@ class ExecutionIntent:
             raise ObservationRejected("prompt must be nonempty and bounded")
         if self.selection.task_input_digest != self.prompt_digest:
             raise ObservationRejected("selected task input digest differs from exact prompt")
+        if self.selection.catalogue_digest == one_off_catalogue().digest and (
+                self.invocation_key != ONE_OFF_INVOCATION_KEY or self.prompt != one_off_prompt() or
+                self.requested is not None or self.recommended is not None):
+            raise ObservationRejected("one-off intent must match the fixed approval scope")
         for stage in (self.requested, self.recommended):
             if stage is not None and (type(stage) is not RouteSelection or
                                      stage.task_input_digest != self.prompt_digest or
@@ -300,8 +305,9 @@ class AppServerObserver:
     def run_once(self, intent: ExecutionIntent, *, completion_timeout: float = 60) -> AppServerReceipt:
         if type(intent) is not ExecutionIntent:
             raise ObservationRejected("immutable execution intent required")
-        if isinstance(completion_timeout, bool) or not isinstance(completion_timeout, (int, float)) or not 0 < completion_timeout <= 60:
-            raise ObservationRejected("completion timeout must be within 60 seconds")
+        maximum_timeout = 180 if intent.selection.catalogue_digest == one_off_catalogue().digest else 60
+        if isinstance(completion_timeout, bool) or not isinstance(completion_timeout, (int, float)) or not 0 < completion_timeout <= maximum_timeout:
+            raise ObservationRejected(f"completion timeout must be within {maximum_timeout} seconds")
         key_digest = _sha(intent.invocation_key)
         with self._lock:
             previous = self._terminal.get(key_digest)
@@ -413,7 +419,7 @@ class AppServerObserver:
         except ObservationRejected as error:
             status, failure = "configured_route_rejected", str(error)
         except Exception as error:
-            failure = f"{type(error).__name__}: {error}"
+            failure = f"host transport failure ({type(error).__name__})"
         finally:
             if completion_notification is not None and not capture_snapshot_returned:
                 events.append({"method": "turn/completed", "notification": completion_notification})

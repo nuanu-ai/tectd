@@ -74,6 +74,35 @@ def development_catalogue() -> Catalogue:
     return _CATALOGUE
 
 
+ONE_OFF_CASE_ID = "s05-appserver-luna56-oneoff-7f29a6f6"
+ONE_OFF_INVOCATION_KEY = "s05-owner-luna56-oneoff-7f29a6f6"
+_ONE_OFF_CATALOGUE = Catalogue(
+    schema="codex-app-server-case-scoped-one-off-route-catalogue-v1", version=1,
+    policy_source="Tony current-task approval: one isolated S05 Luna56 case 7f29a6f6",
+    host_transport="codex-app-server-stdio", model_availability="unverified",
+    routes=(Route("codex-app-server-one-off-luna56-xhigh-7f29a6f6",
+                  "gpt-5.6-luna", "xhigh", "routine"),),
+)
+
+
+def one_off_catalogue() -> Catalogue:
+    """Fixed root composition data, not authentication or serving telemetry."""
+    return _ONE_OFF_CATALOGUE
+
+
+def one_off_marker_json() -> str:
+    return _canonical({"kind": "S05_APP_SERVER_MARKER_V1", "case_id": ONE_OFF_CASE_ID,
+                       "selected_route_id": _ONE_OFF_CATALOGUE.routes[0].route_id,
+                       "catalogue_sha256": _ONE_OFF_CATALOGUE.digest})
+
+
+def one_off_prompt() -> str:
+    return ("Perform this bounded no-tools JSON echo task. Return exactly the single JSON object "
+            "below, with no Markdown, commentary or additional fields. Do not use tools, web, "
+            "files, MCP, plugins or agents. The object is a supplied case marker, not a claim "
+            "about your model identity.\n" + one_off_marker_json())
+
+
 @dataclass(frozen=True)
 class RouteSelection:
     catalogue_schema: str
@@ -88,12 +117,14 @@ class RouteSelection:
     task_input_digest: str
 
     def __post_init__(self) -> None:
-        catalogue = development_catalogue()
-        if (self.catalogue_schema, self.catalogue_version, self.catalogue_digest,
-                self.policy_source, self.host_transport) != (
-                catalogue.schema, catalogue.version, catalogue.digest,
-                catalogue.policy_source, catalogue.host_transport):
+        identity = (self.catalogue_schema, self.catalogue_version, self.catalogue_digest,
+                    self.policy_source, self.host_transport)
+        matches_catalogue = [candidate for candidate in (_CATALOGUE, _ONE_OFF_CATALOGUE)
+                             if identity == (candidate.schema, candidate.version, candidate.digest,
+                                             candidate.policy_source, candidate.host_transport)]
+        if len(matches_catalogue) != 1:
             raise SelectionRejected("selection catalogue or host transport differs from policy")
+        catalogue = matches_catalogue[0]
         if type(self.catalogue_version) is not int:
             raise SelectionRejected("catalogue version must be an integer")
         matches = [route for route in catalogue.routes if route.route_id == self.route_id]
@@ -105,6 +136,8 @@ class RouteSelection:
         if not isinstance(self.task_input_digest, str) or re.fullmatch(
                 r"[0-9a-f]{64}", self.task_input_digest) is None:
             raise SelectionRejected("task input digest must be lowercase SHA-256")
+        if catalogue is _ONE_OFF_CATALOGUE and self.task_input_digest != _digest(one_off_prompt()):
+            raise SelectionRejected("one-off selection requires the exact fixed case prompt")
 
     @property
     def canonical_json(self) -> str:
@@ -131,3 +164,12 @@ def select_route(*, route_id: str, model: str, effort: str, purpose: str,
         host_transport=catalogue.host_transport, route_id=route_id, model=model,
         effort=effort, purpose=purpose, task_input_digest=task_input_digest,
     )
+
+
+def select_one_off_route(*, task_input_digest: str) -> RouteSelection:
+    """Select only the approved fixed case; human authority stays at root invocation."""
+    catalogue = one_off_catalogue()
+    route = catalogue.routes[0]
+    return RouteSelection(catalogue.schema, catalogue.version, catalogue.digest,
+                          catalogue.policy_source, catalogue.host_transport, route.route_id,
+                          route.model, route.effort, route.purpose, task_input_digest)

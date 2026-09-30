@@ -8,6 +8,7 @@ from scripts.codex_app_server_profile import (
     AppServerLaunchProfile,
     LaunchProfileError,
     _profile_from_config_text,
+    _one_off_profile_from_config_text,
 )
 
 
@@ -44,6 +45,15 @@ def config_with_ids(mcp_ids, plugin_ids, secret):
 
 
 class AppServerProfileTests(unittest.TestCase):
+    def test_one_off_pair_is_separate_and_preserves_every_isolation_flag(self):
+        with self.assertRaises(LaunchProfileError):
+            _profile_from_config_text(CONFIG, "gpt-5.6-luna", "xhigh")
+        one_off = _one_off_profile_from_config_text(CONFIG)
+        normal = _profile_from_config_text(CONFIG, "gpt-6-luna", "xhigh")
+        self.assertEqual(one_off.argv, tuple('model="gpt-5.6-luna"' if argument == 'model="gpt-6-luna"'
+                                           else argument for argument in normal.argv))
+        self.assertNotEqual(one_off.digest, normal.digest)
+        self.assertNotIn(SECRET, repr(one_off))
     def test_disables_every_direct_id_with_actual_cli_literal_path_semantics(self):
         original = CONFIG
         profile = _profile_from_config_text(CONFIG, MODEL, EFFORT)

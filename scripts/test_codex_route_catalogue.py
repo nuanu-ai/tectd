@@ -6,11 +6,32 @@ import unittest
 from dataclasses import FrozenInstanceError, replace
 
 from scripts.codex_route_catalogue import (
-    SelectionRejected, development_catalogue, select_route,
+    SelectionRejected, development_catalogue, select_route, one_off_catalogue,
+    one_off_prompt, select_one_off_route,
 )
 
 
 class CatalogueTests(unittest.TestCase):
+    def test_separate_fixed_one_off_policy_never_extends_default(self):
+        self.assertEqual(development_catalogue().digest,
+                         "6bb52b041cda0ad8effbe18f71854d18a0a007b12f5d3f616e56ae3a887850be")
+        catalogue = one_off_catalogue()
+        self.assertNotEqual(catalogue.schema, development_catalogue().schema)
+        self.assertEqual(len(catalogue.routes), 1)
+        digest = hashlib.sha256(one_off_prompt().encode()).hexdigest()
+        selection = select_one_off_route(task_input_digest=digest)
+        self.assertEqual((selection.model, selection.effort, selection.purpose),
+                         ("gpt-5.6-luna", "xhigh", "routine"))
+        for changed in ({"task_input_digest": "0" * 64}, {"model": "gpt-6-luna"},
+                        {"catalogue_digest": development_catalogue().digest},
+                        {"catalogue_version": True}, {"policy_source": "arbitrary authority"}):
+            with self.subTest(changed=changed), self.assertRaises(SelectionRejected):
+                replace(selection, **changed)
+        with self.assertRaises(SelectionRejected):
+            select_one_off_route(task_input_digest="0" * 64)
+        with self.assertRaises(SelectionRejected):
+            select_route(**dict(self.fields, model="gpt-5.6-luna", effort="xhigh"))
+
     def setUp(self):
         self.catalogue = development_catalogue()
         self.task_digest = hashlib.sha256(b"Exact bounded task input").hexdigest()
