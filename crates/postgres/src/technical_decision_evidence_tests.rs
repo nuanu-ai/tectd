@@ -1,4 +1,78 @@
 use super::*;
+
+#[test]
+fn private_server_approval_configuration_preserves_exact_metadata_and_denies_ambiguity() {
+    let (a, _) = fixture(true);
+    let b = &a.binding;
+    let p = &a.approval;
+    let value = serde_json::json!([{
+        "binding": {"tenant_id": b.tenant_id,"workspace_id":b.workspace_id,
+            "task_id":b.task_id,"task_revision":b.task_revision,
+            "operating_verification_digest":b.operating_verification_digest,
+            "operating_policy_version":b.operating_policy_version,
+            "requirements_binding":{"locator": b.requirements_binding.locator.as_json(),
+                "snapshot_id":b.requirements_binding.snapshot_id,"semantic_digest":b.requirements_binding.semantic_digest,
+                "authority_schema":b.requirements_binding.authority_schema},
+            "choice_set":b.choice_set,"choice_set_digest":b.choice_set_digest,
+            "recorded_by_principal_id":b.recorded_by_principal_id},
+        "reference":{"artifact_id":a.reference.artifact_id,"artifact_version":a.reference.artifact_version,
+            "content_sha256":a.reference.content_sha256},
+        "approval":{"claim":p.claim,"card_digest":p.card_digest,"candidate_digest":p.candidate_digest,
+            "choice_set_digest":p.choice_set_digest,"recorded_by_principal_id":p.recorded_by_principal_id,
+            "owner_author_principal_id":p.owner_author_principal_id,"owner_authorship_ref":p.owner_authorship_ref},
+        "candidate_mapping":a.candidate_mapping.iter().map(|m| serde_json::json!({
+            "frozen_candidate":m.frozen_candidate,"technical_approach":m.technical_approach})).collect::<Vec<_>>(),
+        "validator_policy_version":a.validator_policy_version,"max_age_seconds":a.max_age_seconds
+    }]);
+    let parsed = parse_technical_decision_approvals(&value.to_string()).unwrap();
+    assert_eq!(parsed[0].binding, a.binding);
+    assert_eq!(parsed[0].approval, a.approval);
+    assert!(parse_technical_decision_approvals("[]").unwrap().is_empty());
+    assert!(parse_technical_decision_approvals("[{\"binding\":{},\"binding\":{}}]").is_err());
+    for pointer in [
+        "/0/approval",
+        "/0/reference",
+        "/0/binding",
+        "/0/binding/requirements_binding/locator",
+        "/0/candidate_mapping/0/technical_approach",
+    ] {
+        let mut bad = value.clone();
+        bad.pointer_mut(pointer).unwrap()["forged"] = serde_json::json!(true);
+        assert!(parse_technical_decision_approvals(&bad.to_string()).is_err());
+    }
+    let mut duplicate = value.clone();
+    duplicate.as_array_mut().unwrap().push(value[0].clone());
+    assert!(parse_technical_decision_approvals(&duplicate.to_string()).is_err());
+    let mut forged_owner = value.clone();
+    forged_owner[0]["approval"]["owner_author_principal_id"] = serde_json::json!(Uuid::new_v4());
+    assert!(parse_technical_decision_approvals(&forged_owner.to_string()).is_err());
+    let id = Uuid::new_v4();
+    for locator in [
+        MatrixRequirementsLocator::Program { program_id: id },
+        MatrixRequirementsLocator::Scope {
+            program_id: id,
+            scope_id: id,
+        },
+        MatrixRequirementsLocator::Slice {
+            program_id: id,
+            scope_id: id,
+            candidate_set_id: id,
+            work_candidate_id: id,
+            expected_work_revision: 1,
+        },
+        MatrixRequirementsLocator::OpenedSlice { slice_id: id },
+    ] {
+        let mut configured = value.clone();
+        configured[0]["binding"]["requirements_binding"]["locator"] = locator.as_json();
+        assert_eq!(
+            parse_technical_decision_approvals(&configured.to_string()).unwrap()[0]
+                .binding
+                .requirements_binding
+                .locator,
+            locator
+        );
+    }
+}
 use tect_application::{MatrixRequirementsLocator, MatrixTaskRequirementsBinding};
 use tect_domain::{
     DeliveryApproachKind, EngineeringChoiceSet, MATRIX_CHOICE_SET_SCHEMA,

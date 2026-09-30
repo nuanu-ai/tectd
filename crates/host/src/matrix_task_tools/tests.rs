@@ -1,6 +1,41 @@
 use super::*;
 
 #[test]
+fn technical_comparison_accepts_pins_only_and_rejects_caller_authority() {
+    let id = Uuid::new_v4();
+    let args = json!({"task_id":id,"expected_task_revision":1,"operating_verification_digest":"a".repeat(64),
+        "evidence_reference":{"artifact_id":id,"artifact_version":1,"content_sha256":"b".repeat(64)}});
+    assert!(matches!(
+        parse("compare_technical_delivery_mechanisms", args.clone()),
+        Ok(MatrixTaskInvocation::TechnicalCompare(_))
+    ));
+    for field in [
+        "workspace_id",
+        "facts",
+        "approval",
+        "owner_authorship_ref",
+        "ranking",
+        "sender_path",
+    ] {
+        let mut bad = args.clone();
+        bad[field] = json!("forged");
+        assert!(parse("compare_technical_delivery_mechanisms", bad).is_err());
+    }
+    let mut bad = args.clone();
+    bad["evidence_reference"]["approval"] = json!("forged");
+    assert!(parse("compare_technical_delivery_mechanisms", bad).is_err());
+    for (field, value) in [
+        ("task_id", json!(Uuid::nil())),
+        ("expected_task_revision", json!(0)),
+        ("operating_verification_digest", json!("bad")),
+    ] {
+        let mut bad = args.clone();
+        bad[field] = value;
+        assert!(parse("compare_technical_delivery_mechanisms", bad).is_err());
+    }
+}
+
+#[test]
 fn verified_v2_cards_read_requires_exact_typed_digest_and_rejects_extra_fields() {
     let task_id = Uuid::new_v4();
     let params = json!({"task_id":task_id,"expected_task_revision":1,

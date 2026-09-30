@@ -81,6 +81,12 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
             }
             Invocation::MatrixTask(invocation) => {
                 let output = match invocation {
+                    crate::matrix_task_tools::MatrixTaskInvocation::TechnicalCompare(request) => {
+                        match service.compare_technical_delivery_mechanisms(context, &request).await? {
+                            tect_application::TechnicalDeliveryMechanismRead::Unavailable => serde_json::json!({"state":"unavailable"}),
+                            tect_application::TechnicalDeliveryMechanismRead::Compared(comparison) => serde_json::json!({"state":"compared", "comparison":comparison}),
+                        }
+                    }
                     crate::matrix_task_tools::MatrixTaskInvocation::Record(request) => {
                         crate::matrix_task_tools::guard_record_output(&request, capacity)?;
                         crate::matrix_task_tools::source(tect_application::MatrixTaskSource {
@@ -159,6 +165,12 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
             Invocation::ModelRoute(invocation) => {
                 use crate::model_route_tools::ModelRouteInvocation;
                 let value = match invocation {
+                    ModelRouteInvocation::HostSelection(request) => {
+                        let selected = service.prepare_model_route_host_selection(context, &request).await?;
+                        serde_json::json!({"material": selected.material(),
+                            "material_json": selected.material_json(), "material_sha256": selected.material_sha256(),
+                            "authorization_scope":"current_authenticated_read_only_snapshot"})
+                    }
                     ModelRouteInvocation::Prepare(request) => serde_json::to_value(
                         service.prepare_model_route(context, &request).await?
                     ).map_err(Error::invalid_arguments_from)?,

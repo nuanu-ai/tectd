@@ -16,6 +16,7 @@ import json
 import os
 import stat
 import threading
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -345,10 +346,19 @@ class AppServerObserver:
         observed = self._direct_observations.get(_sha(intent.invocation_key))
         return observed is not None and observed[0] == intent.digest and observed[1] is receipt
 
-    def _inventory(self, method: str, params: dict[str, Any], events: list[Any]) -> list[Any]:
+    @staticmethod
+    def _surface_timeout(deadline: float) -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ObservationRejected("disabled surface inspection deadline exceeded")
+        return min(30, remaining)
+
+    def _inventory(self, method: str, params: dict[str, Any], events: list[Any],
+                   *, deadline: float | None = None) -> list[Any]:
         rows, seen = [], set()
         for _ in range(16):
-            result = self._rpc.request(method, params, timeout=30)
+            result = self._rpc.request(method, params,
+                                       timeout=30 if deadline is None else self._surface_timeout(deadline))
             if method == "mcpServerStatus/list":
                 # Inventory may carry descriptions, URLs, and server-controlled
                 # payloads. Retain only shape metadata, even on rejected rows.
@@ -385,11 +395,75 @@ class AppServerObserver:
             params = dict(params, cursor=cursor)
         raise ObservationRejected("host inventory exceeds bounded pagination")
 
-    def _disabled_surface(self, events: list[Any], cwd: str, thread_id: str | None = None) -> None:
+    def _resolved_features(self, events: list[Any], flags: tuple[str, ...],
+                           thread_id: str | None, deadline: float) -> None:
+        # Codex 0.159.0's schema defines this as loaded feature enablement.
+        # config/read can retain false overrides while this inventory is true.
+        method = "experimentalFeature/list"
+        params: dict[str, Any] = {"limit": 100}
+        if thread_id is not None:
+            params["threadId"] = thread_id
+        names: dict[str, bool] = {}
+        cursors: set[str] = set()
+        stages = {"beta", "underDevelopment", "stable", "deprecated", "removed"}
+        for _ in range(16):
+            try:
+                result = self._rpc.request(method, params, timeout=self._surface_timeout(deadline))
+            except Exception as error:
+                events.append({"method": method, "error_type": type(error).__name__})
+                raise ObservationRejected("resolved feature inventory unavailable") from None
+            data = result.get("data") if isinstance(result, dict) else None
+            summaries = []
+            if isinstance(data, list):
+                for row in data[:100]:
+                    name = row.get("name") if isinstance(row, dict) else None
+                    enabled = row.get("enabled") if isinstance(row, dict) else None
+                    stage = row.get("stage") if isinstance(row, dict) else None
+                    summaries.append({
+                        "row_type": type(row).__name__,
+                        "name": name if isinstance(name, str) and name in flags else None,
+                        "name_sha256": _sha(name) if isinstance(name, str) else None,
+                        "name_type": type(name).__name__,
+                        "enabled": enabled if type(enabled) is bool else None,
+                        "enabled_type": type(enabled).__name__,
+                        "stage": stage if isinstance(stage, str) and stage in stages else None})
+            events.append({"method": method, "inventory_shape": {
+                "data_type": type(data).__name__, "entries": summaries,
+                "entry_count": len(data) if isinstance(data, list) else None}})
+            if (not isinstance(result, dict) or not isinstance(data, list) or len(data) > 100
+                    or "nextCursor" not in result):
+                raise ObservationRejected("malformed resolved feature inventory")
+            for row in data:
+                if (not isinstance(row, dict) or not isinstance(row.get("name"), str)
+                        or not row["name"] or row["name"] != row["name"].strip()
+                        or len(row["name"]) > 256 or not row["name"].isascii()
+                        or not all(char.isalnum() or char in "_." for char in row["name"])
+                        or type(row.get("enabled")) is not bool
+                        or not isinstance(row.get("stage"), str) or row["stage"] not in stages):
+                    raise ObservationRejected("malformed resolved feature entry")
+                if row["name"] in names:
+                    raise ObservationRejected("duplicate resolved feature name")
+                names[row["name"]] = row["enabled"]
+            cursor = result["nextCursor"]
+            if cursor is None:
+                self._surface_timeout(deadline)
+                if any(names.get(flag) is not False for flag in flags):
+                    raise ObservationRejected("every required resolved feature must be explicitly disabled")
+                return
+            if (not isinstance(cursor, str) or not cursor or cursor != cursor.strip()
+                    or cursor in cursors):
+                raise ObservationRejected("invalid resolved feature pagination")
+            cursors.add(cursor)
+            params = dict(params, cursor=cursor)
+        raise ObservationRejected("resolved feature inventory exceeds bounded pagination")
+
+    def _disabled_surface(self, events: list[Any], cwd: str, thread_id: str | None = None,
+                          *, deadline: float) -> None:
         # config/read returns the effective host map, not caller TOML or launch
         # arguments. MCP snake-case shape is confirmed against CLI 0.146.1.
-        # Feature/plugin shape remains unverified live: missing shape fails closed.
-        response = self._rpc.request("config/read", {"includeLayers": False, "cwd": cwd}, timeout=30)
+        # Raw overrides are necessary but do not prove resolved enablement.
+        response = self._rpc.request("config/read", {"includeLayers": False, "cwd": cwd},
+                                     timeout=self._surface_timeout(deadline))
         config = response.get("config") if isinstance(response, dict) else None
         if not isinstance(config, dict):
             raise ObservationRejected("missing effective host config")
@@ -410,12 +484,22 @@ class AppServerObserver:
         safe_plugins = summarize_identifier_map(plugins)
         safe_features = ({flag: features.get(flag) if type(features.get(flag)) is bool else None
                           for flag in flags} if isinstance(features, dict) else None)
+        safe_feature_shape = ({flag: {
+            "present": flag in features,
+            "json_type": ("boolean" if type(features.get(flag)) is bool else
+                          "null" if features.get(flag) is None else
+                          "object" if isinstance(features.get(flag), dict) else
+                          "array" if isinstance(features.get(flag), list) else
+                          "string" if isinstance(features.get(flag), str) else "number") if flag in features else "missing",
+            "boolean": features.get(flag) if type(features.get(flag)) is bool else None}
+            for flag in flags} if isinstance(features, dict) else None)
         web_search = config.get("web_search")
         safe_web_search = web_search if isinstance(web_search, str) and web_search in {
             "disabled", "cached", "live"} else None
         events.append({"method": "config/read", "effective_surface": {
             "mcp_enabled": safe_servers, "plugin_enabled": safe_plugins,
-            "features": safe_features, "web_search": safe_web_search}})
+            "features": safe_features, "feature_shape": safe_feature_shape,
+            "web_search": safe_web_search}})
         if not isinstance(servers, dict) or safe_servers is None or len(safe_servers) != len(servers):
             raise ObservationRejected("effective MCP map shape is unknown")
         if any(not isinstance(name, str) or not name or not isinstance(entry, dict) or
@@ -431,10 +515,11 @@ class AppServerObserver:
             raise ObservationRejected("effective plugin map must contain only disabled plugins")
         if config.get("web_search") != "disabled":
             raise ObservationRejected("effective web search must be disabled")
+        self._resolved_features(events, flags, thread_id, deadline)
         params: dict[str, Any] = {"limit": 100, "detail": "full"}
         if thread_id is not None:
             params["threadId"] = thread_id
-        rows = self._inventory("mcpServerStatus/list", params, events)
+        rows = self._inventory("mcpServerStatus/list", params, events, deadline=deadline)
         names: set[str] = set()
         for row in rows:
             if not isinstance(row, dict) or not isinstance(row.get("name"), str):
@@ -449,6 +534,7 @@ class AppServerObserver:
                 raise ObservationRejected("disabled MCP metadata has active or unknown inventory")
         if names != set(servers):
             raise ObservationRejected("effective configured MCP entries are not fully reported")
+        self._surface_timeout(deadline)
 
     @staticmethod
     def _turn(read: Any, intent: ExecutionIntent | CallerExecutionIntent, thread_id: str, turn_id: str) -> dict[str, Any]:
@@ -532,8 +618,12 @@ class AppServerObserver:
         notification_capture_complete = False
         seal_attempted = False
         try:
+            # One inspection/dispatch budget for the entire owned run. Refreshing
+            # the thread's surface never extends the time permitted for a send.
+            dispatch_deadline = time.monotonic() + 55
             selection = intent.selection
-            models = self._inventory("model/list", {"includeHidden": True, "limit": 100}, events)
+            models = self._inventory("model/list", {"includeHidden": True, "limit": 100}, events,
+                                     deadline=dispatch_deadline)
             matches = [model for model in models if isinstance(model, dict) and model.get("model") == selection.model]
             if len(matches) != 1 or not isinstance(matches[0].get("supportedReasoningEfforts"), list):
                 raise ObservationRejected("selected model not uniquely advertised by host")
@@ -541,14 +631,14 @@ class AppServerObserver:
             if not any(isinstance(option, dict) and option.get("reasoningEffort") == selection.effort
                        for option in efforts):
                 raise ObservationRejected("selected effort not advertised by host")
-            self._disabled_surface(events, intent.cwd)
+            self._disabled_surface(events, intent.cwd, deadline=dispatch_deadline)
             params = {"model": selection.model, "modelProvider": "openai", "cwd": intent.cwd,
                       "approvalPolicy": "never", "sandbox": "read-only", "ephemeral": intent.ephemeral_thread,
                       "allowProviderModelFallback": False,
                       "config": {"model_reasoning_effort": selection.effort},
                       "developerInstructions": "Complete only the exact supplied bounded task. Do not use tools, MCP, plugins or agents."}
             events.append({"method": "thread/start", "request": params})
-            started = self._rpc.request("thread/start", params, timeout=30)
+            started = self._rpc.request("thread/start", params, timeout=self._surface_timeout(dispatch_deadline))
             events.append({"method": "thread/start", "response": started})
             if not isinstance(started, dict) or not isinstance(started.get("thread"), dict):
                 raise ObservationRejected("missing thread/start host response")
@@ -562,14 +652,18 @@ class AppServerObserver:
                     not isinstance(started.get("sandbox"), dict) or started["sandbox"].get("type") != "readOnly"):
                 raise ObservationRejected("thread/start execution boundary mismatch")
             configured = DispatchedConfiguration(started["model"], started["modelProvider"], started["reasoningEffort"])
-            self._disabled_surface(events, intent.cwd, thread_id)
+            self._disabled_surface(events, intent.cwd, thread_id, deadline=dispatch_deadline)
             params = {"threadId": thread_id, "model": selection.model, "effort": selection.effort,
                       "clientUserMessageId": intent.invocation_key,
                       "input": [{"type": "text", "text": intent.prompt, "text_elements": []}]}
+            self._surface_timeout(dispatch_deadline)
+            # This durable fence records send intent, not proof of an RPC send.
+            # Expiry during filesystem I/O still prevents the request below.
             ledger.write(key_digest + ".01-before-turn.json", {"stage": "before_turn", "thread_id": thread_id,
                          "intent_digest": intent.digest, "request": params, "events": events})
+            self._surface_timeout(dispatch_deadline)
             events.append({"method": "turn/start", "request": params})
-            accepted = self._rpc.request("turn/start", params, timeout=30)
+            accepted = self._rpc.request("turn/start", params, timeout=self._surface_timeout(dispatch_deadline))
             events.append({"method": "turn/start", "response": accepted})
             turn = accepted.get("turn") if isinstance(accepted, dict) else None
             if not isinstance(turn, dict) or turn.get("status") not in {"inProgress", "completed", "failed", "interrupted"}:

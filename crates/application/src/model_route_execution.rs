@@ -50,7 +50,8 @@ impl CurrentModelRouteHostSelection {
 }
 
 impl WorkspaceService {
-    /// Public library boundary only; not an MCP route, host call or write.
+    /// Authenticated source read, also exposed by the read-only host query.
+    /// Its serialized material is not portable dispatch authorization.
     pub async fn prepare_model_route_host_selection(
         &self,
         context: &RequestContext,

@@ -187,10 +187,10 @@ impl ContextMatrixVerificationStore for PgUnitOfWork {
              JOIN matrix_task_requirements_bindings b \
                ON (b.tenant_id,b.workspace_id,b.task_id,b.revision)=(r.tenant_id,r.workspace_id,r.task_id,r.revision) \
              WHERE t.tenant_id=$1 AND t.workspace_id=$2 AND t.id=$3 AND t.current_revision=$4 \
-             FOR UPDATE OF t",
+             FOR UPDATE OF t NOWAIT",
         )
         .bind(tenant_id).bind(workspace_id).bind(task_id).bind(expected_revision)
-        .fetch_optional(&mut **self.transaction()?).await.map_err(storage_error)?
+        .fetch_optional(&mut **self.transaction()?).await.map_err(crate::matrix_lock_error)?
         .ok_or(Error::StaleRevision)?;
         let actual_digest: String = row.try_get("input_digest").map_err(storage_error)?;
         if actual_digest != expected_input_digest {

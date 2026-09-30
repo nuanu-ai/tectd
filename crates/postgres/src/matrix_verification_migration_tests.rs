@@ -103,7 +103,7 @@ fn verifier_identity_is_database_enforced_without_task_update_authority() {
 #[test]
 fn store_rechecks_current_head_and_reconstructs_exact_record() {
     for required in [
-        "t.current_revision=$4 FOR UPDATE OF t",
+        "t.current_revision=$4 FOR UPDATE OF t NOWAIT",
         "evaluate_matrix_verification(",
         "if prior == *record",
         "ORDER BY v.verified_at DESC,v.id DESC LIMIT 1",

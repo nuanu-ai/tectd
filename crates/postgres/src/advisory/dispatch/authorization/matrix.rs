@@ -42,14 +42,14 @@ pub(super) async fn require_current_matrix_choice(
     // The head lock serializes dispatch against an owner advancing the task.
     let current_revision: Option<i64> = sqlx::query_scalar(
         "SELECT current_revision FROM matrix_tasks \
-         WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE",
+         WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE NOWAIT",
     )
     .bind(tenant)
     .bind(workspace)
     .bind(task_id)
     .fetch_optional(&mut **tx)
     .await
-    .map_err(storage_error)?;
+    .map_err(crate::matrix_lock_error)?;
     if current_revision != opportunity.matrix_task_revision {
         return Err(Error::StaleContext);
     }

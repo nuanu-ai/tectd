@@ -15,6 +15,7 @@ pub(crate) enum MatrixTaskInvocation {
     BoundRecord(Box<RecordMatrixTask>, MatrixRequirementsLocator),
     Get(Uuid),
     VerifiedCards(GetVerifiedMatrixCards),
+    TechnicalCompare(tect_application::CompareTechnicalDeliveryMechanisms),
 }
 
 #[derive(Deserialize)]
@@ -46,8 +47,51 @@ struct VerifiedCardsArguments {
     card_id: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TechnicalCompareArguments {
+    task_id: Uuid,
+    expected_task_revision: i64,
+    operating_verification_digest: String,
+    evidence_reference: TechnicalReferenceArguments,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TechnicalReferenceArguments {
+    artifact_id: Uuid,
+    artifact_version: i64,
+    content_sha256: String,
+}
+
 pub(crate) fn parse(name: &str, arguments: Value) -> Result<MatrixTaskInvocation> {
     match name {
+        "compare_technical_delivery_mechanisms" => {
+            let a: TechnicalCompareArguments =
+                serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
+            let sha = |s: &str| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit());
+            if a.task_id.is_nil()
+                || a.expected_task_revision < 1
+                || a.evidence_reference.artifact_id.is_nil()
+                || a.evidence_reference.artifact_version < 1
+                || !sha(&a.operating_verification_digest)
+                || !sha(&a.evidence_reference.content_sha256)
+            {
+                return Err(Error::InvalidArguments);
+            }
+            Ok(MatrixTaskInvocation::TechnicalCompare(
+                tect_application::CompareTechnicalDeliveryMechanisms {
+                    task_id: a.task_id,
+                    expected_task_revision: a.expected_task_revision,
+                    operating_verification_digest: a.operating_verification_digest,
+                    evidence_reference: tect_application::TechnicalDecisionEvidenceReference {
+                        artifact_id: a.evidence_reference.artifact_id,
+                        artifact_version: a.evidence_reference.artifact_version,
+                        content_sha256: a.evidence_reference.content_sha256,
+                    },
+                },
+            ))
+        }
         "record_matrix_task" => {
             let input_bytes = serde_json::to_vec(&arguments["input"])
                 .map_err(|_| Error::InvalidArguments)?

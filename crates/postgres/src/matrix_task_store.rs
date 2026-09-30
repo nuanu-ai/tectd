@@ -300,14 +300,14 @@ impl MatrixTaskStore for PgUnitOfWork {
         } else {
             let current: Option<i64> = sqlx::query_scalar(
                 "SELECT current_revision FROM matrix_tasks \
-                 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE",
+                 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE NOWAIT",
             )
             .bind(tenant_id)
             .bind(workspace_id)
             .bind(request.task_id)
             .fetch_optional(&mut **self.transaction()?)
             .await
-            .map_err(storage_error)?;
+            .map_err(crate::matrix_lock_error)?;
             if current != Some(request.expected_current_revision) {
                 return self
                     .matrix_retry_or_error(
@@ -415,14 +415,14 @@ impl MatrixTaskStore for PgUnitOfWork {
     ) -> Result<Option<MatrixTaskRevision>> {
         let tenant_id = self.tenant_id()?;
         let head: Option<i64> = sqlx::query_scalar(
-            "SELECT current_revision FROM matrix_tasks WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE",
+            "SELECT current_revision FROM matrix_tasks WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE NOWAIT",
         )
         .bind(tenant_id)
         .bind(workspace_id)
         .bind(task_id)
         .fetch_optional(&mut **self.transaction()?)
         .await
-        .map_err(storage_error)?;
+        .map_err(crate::matrix_lock_error)?;
         match head {
             Some(revision) => {
                 let current = self.matrix_task(workspace_id, task_id).await?;

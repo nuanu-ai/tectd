@@ -2,6 +2,32 @@ use super::*;
 use serde_json::json;
 
 #[test]
+fn authenticated_source_queries_preserve_five_tools_and_reject_sends() {
+    assert_eq!(
+        PUBLIC_TOOLS,
+        ["get_state", "query", "command", "execute", "help"]
+    );
+    for name in ["matrix.technical.compare", "model.route.host.selection"] {
+        let spec = routes().iter().find(|r| r.route == name).unwrap();
+        assert_eq!(spec.tool, "query");
+        assert!(decode_public_call("query", json!({"route":name,"params":spec.example})).is_ok());
+        for tool in ["command", "execute"] {
+            assert!(decode_public_call(tool, json!({"route":name,"params":spec.example})).is_err());
+        }
+        for field in [
+            "sender_path",
+            "authorized_selection",
+            "workspace_id",
+            "native_session_id",
+        ] {
+            let mut bad = spec.example.clone();
+            bad[field] = json!("forged");
+            assert!(decode_public_call("query", json!({"route":name,"params":bad})).is_err());
+        }
+    }
+}
+
+#[test]
 fn every_route_example_uses_the_authoritative_strict_decoder() {
     for spec in routes() {
         let call = decode_public_call(spec.tool, json!({"route":spec.route,"params":spec.example}));

@@ -1,8 +1,14 @@
 name: Rust and PostgreSQL contracts
 on: [push, pull_request]
+
+permissions:
+  contents: read
+
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    # Shared self-hosted runners run repository pushes and same-repository PRs only.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, Linux, X64]
     services:
       postgres:
         image: postgres:18.6

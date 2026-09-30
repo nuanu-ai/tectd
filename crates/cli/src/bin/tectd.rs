@@ -24,6 +24,7 @@ use tect_host::jev_pipeline_recommendation::{
 use tect_postgres::{
     ApprovedMatrixEvidenceArtifact, BudgetOwnerKeys, PgMatrixEvidenceValidator,
     PgScopeAuthoredManifestSupplier, PgScopeAuthorityObserver, PgStore,
+    PgTechnicalDecisionEvidenceResolver,
 };
 use tokio::net::UnixListener;
 
@@ -33,6 +34,8 @@ mod daemon_config;
 mod knowledge_search_worker;
 #[path = "../model_route_daemon_config.rs"]
 mod model_route_daemon_config;
+#[path = "../technical_decision_daemon_config.rs"]
+mod technical_decision_daemon_config;
 use daemon_config::{
     anti_bloat_provider_from_env, database_max_connections, scope_provider_from_env,
 };
@@ -59,6 +62,7 @@ async fn run() -> tect_domain::Result<()> {
         Err(_) => return Err(Error::InvalidConfiguration),
     };
     let pipeline_provider = pipeline_provider_from_env()?;
+    let technical_decision_approvals = technical_decision_daemon_config::from_env()?;
     let matrix_provider = matrix_provider_from_env()?;
     let matrix_evidence_approval = match std::env::var("TECT_MATRIX_EVIDENCE_APPROVAL_JSON") {
         Ok(value) => Some(ApprovedMatrixEvidenceArtifact::from_json(&value)?),
@@ -77,6 +81,8 @@ async fn run() -> tect_domain::Result<()> {
         .with_budget_owner_keys(budget_owner_keys);
     let matrix_evidence_validator = matrix_evidence_approval
         .map(|approval| PgMatrixEvidenceValidator::new(store.pool().clone(), approval));
+    let technical_decision_resolver = technical_decision_approvals
+        .map(|approvals| PgTechnicalDecisionEvidenceResolver::new(store.pool().clone(), approvals));
     let authority = Arc::new(PgScopeAuthorityObserver::new(
         store.clone(),
         Arc::new(tect_host::StaticCandidateGuidance),
@@ -121,6 +127,9 @@ async fn run() -> tect_domain::Result<()> {
     }
     if let Some(validator) = matrix_evidence_validator {
         service = service.with_matrix_evidence_validator(Arc::new(validator));
+    }
+    if let Some(resolver) = technical_decision_resolver {
+        service = service.with_technical_decision_evidence_resolver(Arc::new(resolver));
     }
     if let Some(policy) = pipeline_compatibility_policy {
         service = service

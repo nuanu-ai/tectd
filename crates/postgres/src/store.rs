@@ -46,6 +46,18 @@ impl PgUnitOfWork {
         self.transaction.as_mut().ok_or(Error::StorageUnavailable)
     }
 
+    pub(crate) async fn abort_matrix_lock_contention(&mut self) -> Result<()> {
+        // A failed try-advisory lock leaves PostgreSQL usable. Remove it before
+        // rollback so callers that retain a context failure cannot commit any
+        // earlier writes or convert contention into a saved no-call result.
+        self.transaction
+            .take()
+            .ok_or(Error::StorageUnavailable)?
+            .rollback()
+            .await
+            .map_err(storage_error)
+    }
+
     pub(crate) fn tenant_id(&self) -> Result<Uuid> {
         self.tenant_id.ok_or(Error::Forbidden)
     }
@@ -65,6 +77,33 @@ impl PgUnitOfWork {
         self.identity
             .as_ref()
             .is_some_and(|identity| identity.role == PrincipalRole::Owner)
+    }
+}
+
+#[cfg(test)]
+mod matrix_aborted_uow_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn an_aborted_matrix_uow_cannot_resume_or_commit() {
+        // This is the state left after abort_matrix_lock_contention takes the
+        // transaction. The PostgreSQL rollback itself requires live tests.
+        let mut uow = PgUnitOfWork {
+            transaction: None,
+            mode: TransactionMode::ReadWrite,
+            identity: None,
+            tenant_id: Some(Uuid::new_v4()),
+            budget_owner_keys: Arc::new(BudgetOwnerKeys::default()),
+        };
+        assert!(matches!(uow.transaction(), Err(Error::StorageUnavailable)));
+        assert!(matches!(
+            uow.abort_matrix_lock_contention().await,
+            Err(Error::StorageUnavailable)
+        ));
+        assert!(matches!(
+            Box::new(uow).commit().await,
+            Err(Error::StorageUnavailable)
+        ));
     }
 }
 

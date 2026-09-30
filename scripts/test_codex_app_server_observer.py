@@ -6,6 +6,7 @@ import unittest
 from copy import deepcopy
 from dataclasses import FrozenInstanceError, replace, asdict
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.codex_app_server_observer import (
     AppServerObserver, CallerExecutionIntent, CallerRouteSelection, ExecutionIntent,
@@ -44,6 +45,8 @@ class OfflineRpc:
         self.config = {"config": {"mcp_servers": {}, "plugins": {}, "web_search": "disabled",
                        "features": {flag: False for flag in ("plugins", "remote_plugin", "apps",
                        "shell_tool", "unified_exec", "multi_agent", "multi_agent_v2")}}}
+        self.features = {"data": [{"name": name, "enabled": False, "stage": "stable"}
+                                 for name in self.config["config"]["features"]], "nextCursor": None}
         self.pages = {}
         self.started = {"model": "gpt-6.1-sol", "modelProvider": "openai", "reasoningEffort": "medium",
                         "approvalPolicy": "never", "cwd": CWD, "sandbox": {"type": "readOnly"},
@@ -67,6 +70,7 @@ class OfflineRpc:
         if method in self.pages:
             return deepcopy(self.pages[method][params.get("cursor")])
         return deepcopy({"model/list": self.models, "mcpServerStatus/list": self.mcp,
+                         "experimentalFeature/list": self.features,
                          "config/read": self.config,
                          "thread/start": self.started, "turn/start": self.turn_started,
                          "thread/read": self.read}[method])
@@ -312,6 +316,211 @@ class ObserverTests(unittest.TestCase):
         for method, params in self.rpc.calls:
             if method == "mcpServerStatus/list":
                 self.assertEqual(params["detail"], "full")
+
+    def test_resolved_features_checked_on_same_rpc_before_thread_and_turn(self):
+        receipt = self.observer.run_once(self.case)
+        self.assertEqual(receipt.status, "completed_configured_route")
+        calls = self.rpc.calls
+        inventory = [(index, params) for index, (method, params) in enumerate(calls)
+                     if method == "experimentalFeature/list"]
+        self.assertEqual(len(inventory), 2)
+        self.assertNotIn("threadId", inventory[0][1])
+        self.assertEqual(inventory[1][1]["threadId"], "thread-1")
+        self.assertLess(inventory[0][0], next(index for index, (method, _) in enumerate(calls)
+                                           if method == "thread/start"))
+        self.assertLess(inventory[1][0], next(index for index, (method, _) in enumerate(calls)
+                                           if method == "turn/start"))
+
+    def test_raw_false_resolved_true_or_absent_never_starts_thread(self):
+        for flag in self.rpc.config["config"]["features"]:
+            for change in ("enabled", "absent"):
+                with self.subTest(flag=flag, change=change):
+                    self.setUp()
+                    if change == "enabled":
+                        next(row for row in self.rpc.features["data"] if row["name"] == flag)["enabled"] = True
+                    else:
+                        self.rpc.features["data"] = [row for row in self.rpc.features["data"] if row["name"] != flag]
+                    self.assertIs(self.rpc.config["config"]["features"][flag], False)
+                    receipt = self.observer.run_once(self.case)
+                    self.assertEqual(receipt.status, "configured_route_rejected")
+                    self.assertNotIn("thread/start", [method for method, _ in self.rpc.calls])
+                    self.assertNotIn("turn/start", [method for method, _ in self.rpc.calls])
+
+    def test_resolved_malformed_duplicate_or_nonboolean_fail_closed(self):
+        for change in ("duplicate", "nonbool", "null", "missing_enabled", "empty_name",
+                       "padded_name", "object_name", "row", "stage", "data", "cursor_missing", "oversize"):
+            with self.subTest(change=change):
+                self.setUp()
+                row = self.rpc.features["data"][0]
+                if change == "duplicate":
+                    self.rpc.features["data"].append(deepcopy(row))
+                elif change == "nonbool": row["enabled"] = 0
+                elif change == "null": row["enabled"] = None
+                elif change == "missing_enabled": del row["enabled"]
+                elif change == "empty_name": row["name"] = ""
+                elif change == "padded_name": row["name"] = " plugins "
+                elif change == "object_name": row["name"] = {}
+                elif change == "row": self.rpc.features["data"][0] = []
+                elif change == "stage": row["stage"] = "unknown"
+                elif change == "data": self.rpc.features["data"] = {}
+                elif change == "cursor_missing": del self.rpc.features["nextCursor"]
+                else: self.rpc.features["data"] *= 15
+                receipt = self.observer.run_once(self.case)
+                self.assertEqual(receipt.status, "configured_route_rejected")
+                self.assertNotIn("thread/start", [method for method, _ in self.rpc.calls])
+
+    def test_resolved_feature_pagination_complete_and_unique(self):
+        first, rest = self.rpc.features["data"][:3], self.rpc.features["data"][3:]
+        self.rpc.pages["experimentalFeature/list"] = {
+            None: {"data": first, "nextCursor": "features-2"},
+            "features-2": {"data": rest, "nextCursor": None}}
+        self.assertEqual(self.observer.run_once(self.case).status, "completed_configured_route")
+        calls = [params for method, params in self.rpc.calls if method == "experimentalFeature/list"]
+        self.assertEqual(len(calls), 4)
+        self.assertTrue(all(params["threadId"] == "thread-1" for params in calls[2:]))
+
+    def test_resolved_feature_pagination_duplicate_incomplete_or_invalid_reject(self):
+        for change in ("duplicate_row", "duplicate_cursor", "blank_cursor", "nonstring_cursor", "bounded_pages"):
+            with self.subTest(change=change):
+                self.setUp()
+                if change == "duplicate_row":
+                    self.rpc.pages["experimentalFeature/list"] = {
+                        None: {"data": self.rpc.features["data"], "nextCursor": "features-2"},
+                        "features-2": {"data": [self.rpc.features["data"][0]], "nextCursor": None}}
+                elif change == "bounded_pages":
+                    self.rpc.pages["experimentalFeature/list"] = {
+                        None if index == 0 else str(index): {"data": [], "nextCursor": str(index + 1)}
+                        for index in range(16)}
+                else:
+                    cursor = "repeated" if change == "duplicate_cursor" else " " if change == "blank_cursor" else 0
+                    self.rpc.features["nextCursor"] = cursor
+                    if change == "duplicate_cursor":
+                        self.rpc.pages["experimentalFeature/list"] = {
+                            None: {"data": [], "nextCursor": cursor},
+                            cursor: {"data": [], "nextCursor": cursor}}
+                self.assertEqual(self.observer.run_once(self.case).status, "configured_route_rejected")
+                self.assertNotIn("thread/start", [method for method, _ in self.rpc.calls])
+
+    def test_resolved_feature_transport_failure_timeout_and_unsupported_reject(self):
+        from scripts.codex_app_server_rpc import AppServerRpcError
+        for error in (TimeoutError("private sentinel"), AppServerRpcError("experimentalFeature/list", -32601),
+                      RuntimeError("private sentinel")):
+            with self.subTest(error_type=type(error).__name__):
+                self.setUp()
+                request = self.rpc.request
+                def failing(method, params, timeout=30):
+                    if method == "experimentalFeature/list":
+                        raise error
+                    return request(method, params, timeout=timeout)
+                self.rpc.request = failing
+                receipt = self.observer.run_once(self.case)
+                self.assertEqual(receipt.status, "configured_route_rejected")
+                self.assertNotIn("thread/start", [method for method, _ in self.rpc.calls])
+                self.assertNotIn("private sentinel", receipt.events_json)
+
+    def test_disabled_surface_total_deadline_bounds_feature_pages(self):
+        self.rpc.pages["experimentalFeature/list"] = {
+            None: {"data": [], "nextCursor": "features-2"}}
+        with patch("scripts.codex_app_server_observer.time.monotonic", side_effect=[100, 100, 100, 130, 156]):
+            receipt = self.observer.run_once(self.case)
+        self.assertEqual(receipt.status, "configured_route_rejected")
+        self.assertEqual(sum(method == "experimentalFeature/list" for method, _ in self.rpc.calls), 1)
+        self.assertNotIn("thread/start", [method for method, _ in self.rpc.calls])
+
+    def test_owned_run_deadline_is_not_reset_for_refreshed_thread_surface(self):
+        clock = [100.0]
+        timeouts = []
+        request = self.rpc.request
+        def advancing(method, params, timeout=30):
+            timeouts.append((method, timeout))
+            result = request(method, params, timeout=timeout)
+            clock[0] += 9
+            return result
+        self.rpc.request = advancing
+        with patch("scripts.codex_app_server_observer.time.monotonic", side_effect=lambda: clock[0]):
+            receipt = self.observer.run_once(self.case)
+        self.assertEqual(receipt.status, "configured_route_rejected")
+        self.assertIn("thread/start", [method for method, _ in self.rpc.calls])
+        self.assertNotIn("turn/start", [method for method, _ in self.rpc.calls])
+        self.assertEqual(timeouts[-1], ("experimentalFeature/list", 1.0))
+
+    def test_owned_run_deadline_checked_immediately_before_turn_send(self):
+        clock = [100.0]
+        request = self.rpc.request
+        def expiring(method, params, timeout=30):
+            result = request(method, params, timeout=timeout)
+            if method == "mcpServerStatus/list" and "threadId" in params:
+                clock[0] = 154.0
+            return result
+        self.rpc.request = expiring
+        original = self.observer._disabled_surface
+        def late_surface(*args, **kwargs):
+            original(*args, **kwargs)
+            if len(args) > 2:
+                clock[0] = 156.0
+        self.observer._disabled_surface = late_surface
+        with patch("scripts.codex_app_server_observer.time.monotonic", side_effect=lambda: clock[0]):
+            receipt = self.observer.run_once(self.case)
+        self.assertEqual(receipt.status, "configured_route_rejected")
+        self.assertIn("thread/start", [method for method, _ in self.rpc.calls])
+        self.assertNotIn("turn/start", [method for method, _ in self.rpc.calls])
+        self.assertFalse((self.ledger / (_sha(self.case.invocation_key) + ".01-before-turn.json")).exists())
+        self.assertFalse(any(event.get("method") == "turn/start" for event in json.loads(receipt.events_json)))
+        self.assertTrue((self.ledger / (_sha(self.case.invocation_key) + ".00-reserved.json")).exists())
+        with self.assertRaisesRegex(ObservationRejected, "already reserved"):
+            self.offline_observer().run_once(self.case)
+
+    def test_expiry_during_before_turn_fence_io_preserves_intent_without_sending(self):
+        from scripts.codex_app_server_observer import _Ledger
+        clock = [100.0]
+        write = _Ledger.write
+        def expiring_write(ledger, name, record):
+            result = write(ledger, name, record)
+            if name.endswith(".01-before-turn.json"):
+                clock[0] = 156.0
+            return result
+        with patch("scripts.codex_app_server_observer.time.monotonic", side_effect=lambda: clock[0]), \
+                patch.object(_Ledger, "write", expiring_write):
+            receipt = self.observer.run_once(self.case)
+        self.assertEqual(receipt.status, "configured_route_rejected")
+        self.assertTrue((self.ledger / (_sha(self.case.invocation_key) + ".01-before-turn.json")).exists())
+        self.assertNotIn("turn/start", [method for method, _ in self.rpc.calls])
+        self.assertFalse(any(event.get("method") == "turn/start" for event in json.loads(receipt.events_json)))
+
+    def test_refreshed_thread_resolved_feature_enabled_never_starts_turn(self):
+        request = self.rpc.request
+        def refreshed(method, params, timeout=30):
+            result = request(method, params, timeout=timeout)
+            if method == "experimentalFeature/list" and "threadId" in params:
+                next(row for row in result["data"] if row["name"] == "unified_exec")["enabled"] = True
+            return result
+        self.rpc.request = refreshed
+        self.assertEqual(self.observer.run_once(self.case).status, "configured_route_rejected")
+        self.assertIn("thread/start", [method for method, _ in self.rpc.calls])
+        self.assertNotIn("turn/start", [method for method, _ in self.rpc.calls])
+
+    def test_feature_metadata_sanitizes_private_values_and_raw_presence_types(self):
+        secret = "PRIVATE_FEATURE_SENTINEL"
+        self.rpc.features["data"].append({"name": secret, "enabled": False, "stage": "stable",
+                                           "description": secret, "displayName": secret})
+        receipt = self.observer.run_once(self.case)
+        self.assertEqual(receipt.status, "completed_configured_route")
+        self.assertNotIn(secret, receipt.events_json)
+        for value, expected in ((None, "null"), ({"private": secret}, "object"), (0, "number")):
+            self.setUp()
+            self.rpc.config["config"]["features"]["multi_agent_v2"] = value
+            receipt = self.observer.run_once(self.case)
+            self.assertEqual(receipt.status, "configured_route_rejected")
+            shape = next(event for event in json.loads(receipt.events_json)
+                         if event.get("method") == "config/read")["effective_surface"]["feature_shape"]["multi_agent_v2"]
+            self.assertEqual(shape, {"present": True, "json_type": expected, "boolean": None})
+            self.assertNotIn(secret, receipt.events_json)
+        self.setUp()
+        del self.rpc.config["config"]["features"]["multi_agent_v2"]
+        receipt = self.observer.run_once(self.case)
+        shape = next(event for event in json.loads(receipt.events_json)
+                     if event.get("method") == "config/read")["effective_surface"]["feature_shape"]["multi_agent_v2"]
+        self.assertEqual(shape, {"present": False, "json_type": "missing", "boolean": None})
 
     def test_disabled_metadata_unknown_active_missing_or_duplicate_reject(self):
         changes = ("enabled", "unknown", "tools", "resources", "templates", "serverInfo",

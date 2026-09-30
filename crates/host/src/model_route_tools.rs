@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 #[derive(Debug)]
 pub(crate) enum ModelRouteInvocation {
+    HostSelection(tect_application::PrepareModelRouteHostSelection),
     Prepare(PrepareModelRouteRecommendation),
     Run {
         preparation_request_key: String,
@@ -39,6 +40,21 @@ struct PrepareArguments {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct HostSelectionArguments {
+    preparation_request_key: String,
+    decision_id: Uuid,
+    disposition_id: Uuid,
+    expected_task_id: Uuid,
+    expected_task_revision: i64,
+    expected_work_context_digest: String,
+    expected_catalogue_digest: String,
+    selected_route_id: String,
+    input_sha256: String,
+    invocation_key: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct KeyArguments {
     preparation_request_key: String,
 }
@@ -65,6 +81,48 @@ fn valid_key(value: &str) -> bool {
 
 pub(crate) fn parse(name: &str, arguments: Value) -> Result<ModelRouteInvocation> {
     match name {
+        "prepare_model_route_host_selection" => {
+            let a: HostSelectionArguments =
+                serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
+            let key = |s: &str, limit: usize| {
+                !s.is_empty()
+                    && s.len() <= limit
+                    && s.trim() == s
+                    && !s.chars().any(char::is_control)
+            };
+            let sha = |s: &str| {
+                s.len() == 64
+                    && s.bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            };
+            if [a.decision_id, a.disposition_id, a.expected_task_id]
+                .iter()
+                .any(Uuid::is_nil)
+                || a.expected_task_revision < 1
+                || !key(&a.preparation_request_key, 256)
+                || !key(&a.selected_route_id, 128)
+                || !key(&a.invocation_key, 256)
+                || !sha(&a.expected_work_context_digest)
+                || !sha(&a.expected_catalogue_digest)
+                || !sha(&a.input_sha256)
+            {
+                return Err(Error::InvalidArguments);
+            }
+            Ok(ModelRouteInvocation::HostSelection(
+                tect_application::PrepareModelRouteHostSelection {
+                    preparation_request_key: a.preparation_request_key,
+                    decision_id: a.decision_id,
+                    disposition_id: a.disposition_id,
+                    expected_task_id: a.expected_task_id,
+                    expected_task_revision: a.expected_task_revision,
+                    expected_work_context_digest: a.expected_work_context_digest,
+                    expected_catalogue_digest: a.expected_catalogue_digest,
+                    selected_route_id: a.selected_route_id,
+                    input_sha256: a.input_sha256,
+                    invocation_key: a.invocation_key,
+                },
+            ))
+        }
         "model_route_prepare" => {
             if arguments
                 .get("requested_route_id")
@@ -153,6 +211,42 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<ModelRouteInvocation
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn host_selection_is_strict_pins_only_and_never_accepts_sender_material() {
+        let id = Uuid::new_v4();
+        let args = json!({"preparation_request_key":"route-1","decision_id":id,"disposition_id":id,
+            "expected_task_id":id,"expected_task_revision":1,"expected_work_context_digest":"a".repeat(64),
+            "expected_catalogue_digest":"b".repeat(64),"selected_route_id":"route-a","input_sha256":"c".repeat(64),"invocation_key":"invocation-1"});
+        assert!(matches!(
+            parse("prepare_model_route_host_selection", args.clone()),
+            Ok(ModelRouteInvocation::HostSelection(_))
+        ));
+        for field in [
+            "workspace_id",
+            "native_session_id",
+            "provider",
+            "model",
+            "effort",
+            "material",
+            "authorized_selection",
+            "sender_path",
+        ] {
+            let mut bad = args.clone();
+            bad[field] = json!("forged");
+            assert!(parse("prepare_model_route_host_selection", bad).is_err());
+        }
+        for (field, value) in [
+            ("expected_task_revision", json!(0)),
+            ("input_sha256", json!("A".repeat(64))),
+            ("selected_route_id", json!("route\n")),
+            ("decision_id", json!(Uuid::nil())),
+        ] {
+            let mut bad = args.clone();
+            bad[field] = value;
+            assert!(parse("prepare_model_route_host_selection", bad).is_err());
+        }
+    }
 
     #[test]
     fn public_route_parser_rejects_ranks_unknowns_and_forged_workspace() {

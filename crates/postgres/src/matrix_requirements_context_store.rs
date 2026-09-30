@@ -120,11 +120,17 @@ impl MatrixRequirementsContextStore for PgUnitOfWork {
             "matrix-requirements:{tenant}:{workspace}:{}",
             json(&anchor)?
         );
-        sqlx::query("SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended($1,0))")
-            .bind(key)
-            .execute(&mut **self.transaction()?)
-            .await
-            .map_err(storage_error)?;
+        let locked: bool = sqlx::query_scalar(
+            "SELECT pg_catalog.pg_try_advisory_xact_lock(pg_catalog.hashtextextended($1,0))",
+        )
+        .bind(key)
+        .fetch_one(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?;
+        if !locked {
+            self.abort_matrix_lock_contention().await?;
+            return Err(Error::StaleRevision);
+        }
         let head: i64=sqlx::query_scalar("SELECT COALESCE(max(context_revision),0) FROM matrix_requirements_proposals WHERE tenant_id=$1 AND workspace_id=$2 AND anchor=$3")
             .bind(tenant).bind(workspace).bind(json(&anchor)?).fetch_one(&mut **self.transaction()?).await.map_err(storage_error)?;
         u64::try_from(head).map_err(|_| Error::InputConflict)

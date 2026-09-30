@@ -2,8 +2,10 @@
 
 The public default has no source or host and denies execution. A host composition
 root must privately install a source adapter which authenticates the current
-caller and validates persisted advisory/selection currentness. This module ships
-no production source adapter, authorization issuer, CLI or process launcher.
+caller and validates persisted advisory/selection currentness. The separate
+authenticated_caller_source adapter uses the owned authenticated Unix source;
+bounded_caller_route_launcher installs it only in a private owner composition.
+Neither module imports stored material as authorization or attests native agents.
 Canonical source bytes bind the intent; bytes/digests never authenticate a caller.
 Private offline source/RPC fixtures prove logic only. Existing consumed fixed
 cases and the finite Owner-policy catalogue are separate contracts.

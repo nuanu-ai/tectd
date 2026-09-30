@@ -223,7 +223,7 @@ impl MatrixVerificationStore for PgUnitOfWork {
                ON r.tenant_id=t.tenant_id AND r.workspace_id=t.workspace_id \
                AND r.task_id=t.id AND r.revision=t.current_revision \
              WHERE t.tenant_id=$1 AND t.workspace_id=$2 AND t.id=$3 \
-               AND t.current_revision=$4 FOR UPDATE OF t",
+               AND t.current_revision=$4 FOR UPDATE OF t NOWAIT",
         )
         .bind(tenant_id)
         .bind(workspace_id)
@@ -231,7 +231,7 @@ impl MatrixVerificationStore for PgUnitOfWork {
         .bind(expected_revision)
         .fetch_optional(&mut **self.transaction()?)
         .await
-        .map_err(storage_error)?
+        .map_err(crate::matrix_lock_error)?
         .ok_or(Error::StaleRevision)?;
         let actual_digest: String = row.try_get("input_digest").map_err(storage_error)?;
         if actual_digest != expected_input_digest {

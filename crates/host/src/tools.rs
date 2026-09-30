@@ -102,7 +102,8 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
         | "anti_bloat_preservation_verify" => {
             crate::anti_bloat_tools::parse(name, arguments).map(Invocation::AntiBloat)
         }
-        "model_route_prepare"
+        "prepare_model_route_host_selection"
+        | "model_route_prepare"
         | "model_route_run"
         | "model_route_get"
         | "model_route_disposition" => {
@@ -119,7 +120,10 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
         "knowledge_search" => {
             crate::knowledge_search_tools::parse(name, arguments).map(Invocation::KnowledgeSearch)
         }
-        "record_matrix_task" | "get_matrix_task" | "get_verified_matrix_cards" => {
+        "record_matrix_task"
+        | "get_matrix_task"
+        | "get_verified_matrix_cards"
+        | "compare_technical_delivery_mechanisms" => {
             crate::matrix_task_tools::parse(name, arguments).map(Invocation::MatrixTask)
         }
         "matrix_context_propose" | "matrix_context_confirm" | "matrix_context_effective_get" => {
