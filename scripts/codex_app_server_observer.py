@@ -164,7 +164,30 @@ class AppServerObserver:
         rows, seen = [], set()
         for _ in range(16):
             result = self._rpc.request(method, params, timeout=30)
-            events.append({"method": method, "response": result})
+            if method == "mcpServerStatus/list":
+                # Inventory may carry descriptions, URLs, and server-controlled
+                # payloads. Retain only shape metadata, even on rejected rows.
+                data = result.get("data") if isinstance(result, dict) else None
+                summaries = []
+                if isinstance(data, list):
+                    for row in data:
+                        if not isinstance(row, dict):
+                            summaries.append({"type": type(row).__name__})
+                            continue
+                        name = row.get("name")
+                        summary = {"name_sha256": _sha(name) if isinstance(name, str) else None,
+                                   "name_type": type(name).__name__,
+                                   "authStatus": "unsupported" if row.get("authStatus") == "unsupported" else None,
+                                   "serverInfoIsNull": row.get("serverInfo") is None}
+                        for key in ("tools", "resources", "resourceTemplates"):
+                            value = row.get(key)
+                            summary[key] = {"type": type(value).__name__,
+                                            "count": len(value) if isinstance(value, (dict, list)) else None}
+                        summaries.append(summary)
+                events.append({"method": method, "inventory_shape": {
+                    "data_type": type(data).__name__, "entries": summaries}})
+            else:
+                events.append({"method": method, "response": result})
             if not isinstance(result, dict) or not isinstance(result.get("data"), list):
                 raise ObservationRejected(f"missing {method} host inventory")
             rows.extend(result["data"])
@@ -177,12 +200,70 @@ class AppServerObserver:
             params = dict(params, cursor=cursor)
         raise ObservationRejected("host inventory exceeds bounded pagination")
 
-    def _empty_mcp(self, events: list[Any], thread_id: str | None = None) -> None:
+    def _disabled_surface(self, events: list[Any], cwd: str, thread_id: str | None = None) -> None:
+        # config/read returns the effective host map, not caller TOML or launch
+        # arguments. MCP snake-case shape is confirmed against CLI 0.146.1.
+        # Feature/plugin shape remains unverified live: missing shape fails closed.
+        response = self._rpc.request("config/read", {"includeLayers": False, "cwd": cwd}, timeout=30)
+        config = response.get("config") if isinstance(response, dict) else None
+        if not isinstance(config, dict):
+            raise ObservationRejected("missing effective host config")
+        servers, features, plugins = (config.get(key) for key in ("mcp_servers", "features", "plugins"))
+        flags = ("plugins", "remote_plugin", "apps", "shell_tool", "unified_exec", "multi_agent", "multi_agent_v2")
+        # Persist only safe metadata; raw config can contain credentials.
+        def summarize_identifier_map(value: Any) -> list[dict[str, Any]] | None:
+            if not isinstance(value, dict):
+                return None
+            return [{"identifier_sha256": _sha(name) if isinstance(name, str) else None,
+                     "identifier_type": type(name).__name__,
+                     "entry_type": type(entry).__name__,
+                     "enabled": entry.get("enabled") if isinstance(entry, dict) and
+                     type(entry.get("enabled")) is bool else None}
+                    for name, entry in value.items()]
+
+        safe_servers = summarize_identifier_map(servers)
+        safe_plugins = summarize_identifier_map(plugins)
+        safe_features = ({flag: features.get(flag) if type(features.get(flag)) is bool else None
+                          for flag in flags} if isinstance(features, dict) else None)
+        web_search = config.get("web_search")
+        safe_web_search = web_search if isinstance(web_search, str) and web_search in {
+            "disabled", "cached", "live"} else None
+        events.append({"method": "config/read", "effective_surface": {
+            "mcp_enabled": safe_servers, "plugin_enabled": safe_plugins,
+            "features": safe_features, "web_search": safe_web_search}})
+        if not isinstance(servers, dict) or safe_servers is None or len(safe_servers) != len(servers):
+            raise ObservationRejected("effective MCP map shape is unknown")
+        if any(not isinstance(name, str) or not name or not isinstance(entry, dict) or
+               type(entry.get("enabled")) is not bool or entry["enabled"] is not False
+               for name, entry in servers.items()):
+            raise ObservationRejected("every effective MCP server must be explicitly disabled")
+        if not isinstance(features, dict) or any(features.get(flag) is not False for flag in flags):
+            raise ObservationRejected("effective plugin/app/tool feature disables are missing")
+        if not isinstance(plugins, dict) or safe_plugins is None or len(safe_plugins) != len(plugins) or any(
+                not isinstance(name, str) or not name or not isinstance(entry, dict) or
+                type(entry.get("enabled")) is not bool or entry["enabled"] is not False
+                for name, entry in plugins.items()):
+            raise ObservationRejected("effective plugin map must contain only disabled plugins")
+        if config.get("web_search") != "disabled":
+            raise ObservationRejected("effective web search must be disabled")
         params: dict[str, Any] = {"limit": 100, "detail": "full"}
         if thread_id is not None:
             params["threadId"] = thread_id
-        if self._inventory("mcpServerStatus/list", params, events):
-            raise ObservationRejected("host MCP server surface is not empty")
+        rows = self._inventory("mcpServerStatus/list", params, events)
+        names: set[str] = set()
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("name"), str):
+                raise ObservationRejected("MCP status name is missing")
+            name = row["name"]
+            if name in names or name not in servers:
+                raise ObservationRejected("MCP status name is duplicated or absent from effective disabled map")
+            names.add(name)
+            if (row.get("authStatus") != "unsupported" or row.get("tools") != {} or
+                    row.get("resources") != [] or row.get("resourceTemplates") != [] or
+                    row.get("serverInfo") is not None):
+                raise ObservationRejected("disabled MCP metadata has active or unknown inventory")
+        if names != set(servers):
+            raise ObservationRejected("effective configured MCP entries are not fully reported")
 
     @staticmethod
     def _turn(read: Any, intent: ExecutionIntent, thread_id: str, turn_id: str) -> dict[str, Any]:
@@ -259,7 +340,7 @@ class AppServerObserver:
             if not any(isinstance(option, dict) and option.get("reasoningEffort") == selection.effort
                        for option in efforts):
                 raise ObservationRejected("selected effort not advertised by host")
-            self._empty_mcp(events)
+            self._disabled_surface(events, intent.cwd)
             params = {"model": selection.model, "modelProvider": "openai", "cwd": intent.cwd,
                       "approvalPolicy": "never", "sandbox": "read-only", "ephemeral": True,
                       "allowProviderModelFallback": False,
@@ -278,7 +359,7 @@ class AppServerObserver:
                     not isinstance(started.get("sandbox"), dict) or started["sandbox"].get("type") != "readOnly"):
                 raise ObservationRejected("thread/start execution boundary mismatch")
             configured = DispatchedConfiguration(started["model"], started["modelProvider"], started["reasoningEffort"])
-            self._empty_mcp(events, thread_id)
+            self._disabled_surface(events, intent.cwd, thread_id)
             params = {"threadId": thread_id, "model": selection.model, "effort": selection.effort,
                       "clientUserMessageId": intent.invocation_key,
                       "input": [{"type": "text", "text": intent.prompt, "text_elements": []}]}

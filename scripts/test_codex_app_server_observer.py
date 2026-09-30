@@ -40,6 +40,10 @@ class OfflineRpc:
         self.models = {"data": [{"model": "gpt-6.1-sol", "supportedReasoningEfforts": [
             {"reasoningEffort": "medium", "description": "fixture effort"}]}], "nextCursor": None}
         self.mcp = {"data": [], "nextCursor": None}
+        self.config = {"config": {"mcp_servers": {}, "plugins": {}, "web_search": "disabled",
+                       "features": {flag: False for flag in ("plugins", "remote_plugin", "apps",
+                       "shell_tool", "unified_exec", "multi_agent", "multi_agent_v2")}}}
+        self.pages = {}
         self.started = {"model": "gpt-6.1-sol", "modelProvider": "openai", "reasoningEffort": "medium",
                         "approvalPolicy": "never", "cwd": CWD, "sandbox": {"type": "readOnly"},
                         "thread": {"id": "thread-1"}}
@@ -59,7 +63,10 @@ class OfflineRpc:
         self.calls.append((method, deepcopy(params)))
         if self.fail_method == method:
             raise TimeoutError("unknown response")
+        if method in self.pages:
+            return deepcopy(self.pages[method][params.get("cursor")])
         return deepcopy({"model/list": self.models, "mcpServerStatus/list": self.mcp,
+                         "config/read": self.config,
                          "thread/start": self.started, "turn/start": self.turn_started,
                          "thread/read": self.read}[method])
 
@@ -170,6 +177,166 @@ class ObserverTests(unittest.TestCase):
                     self.rpc.mcp = {"data": [{"name": "forbidden"}]}
                 self.assertEqual(self.observer.run_once(self.case).status, "configured_route_rejected")
                 self.assertNotIn("thread/start", [method for method, _ in self.rpc.calls])
+
+    def test_six_disabled_configured_metadata_entries_accepted(self):
+        names = [f"disabled-{index}" for index in range(6)]
+        self.rpc.config["config"]["mcp_servers"] = {name: {"enabled": False} for name in names}
+        self.rpc.config["config"]["plugins"] = {"fixture-plugin": {"enabled": False}}
+        self.rpc.mcp["data"] = [{"name": name, "authStatus": "unsupported", "tools": {},
+                                 "resources": [], "resourceTemplates": [], "serverInfo": None}
+                                for name in names]
+        self.assertEqual(self.observer.run_once(self.case).status, "completed_configured_route")
+        for method, params in self.rpc.calls:
+            if method == "mcpServerStatus/list":
+                self.assertEqual(params["detail"], "full")
+
+    def test_disabled_metadata_unknown_active_missing_or_duplicate_reject(self):
+        changes = ("enabled", "unknown", "tools", "resources", "templates", "serverInfo",
+                   "auth", "missing_auth", "missing_tools", "unreported", "duplicate", "missing_config",
+                   "missing_features", "plugin_enabled", "apps_enabled")
+        for change in changes:
+            with self.subTest(change=change):
+                self.setUp()
+                config = self.rpc.config["config"]
+                config["mcp_servers"] = {"disabled": {"enabled": False}}
+                row = {"name": "disabled", "authStatus": "unsupported", "tools": {},
+                       "resources": [], "resourceTemplates": []}
+                self.rpc.mcp["data"] = [row]
+                if change == "enabled":
+                    config["mcp_servers"]["disabled"]["enabled"] = True
+                elif change == "unknown":
+                    row["name"] = "unconfigured"
+                elif change == "tools":
+                    row["tools"] = {"tool": {}}
+                elif change == "resources":
+                    row["resources"] = [{}]
+                elif change == "templates":
+                    row["resourceTemplates"] = [{}]
+                elif change == "serverInfo":
+                    row["serverInfo"] = {"name": "running"}
+                elif change == "auth":
+                    row["authStatus"] = "bearerToken"
+                elif change == "missing_auth":
+                    del row["authStatus"]
+                elif change == "missing_tools":
+                    del row["tools"]
+                elif change == "unreported":
+                    self.rpc.mcp["data"] = []
+                elif change == "duplicate":
+                    self.rpc.mcp["data"].append(deepcopy(row))
+                elif change == "missing_config":
+                    del config["mcp_servers"]
+                elif change == "missing_features":
+                    del config["features"]
+                elif change == "plugin_enabled":
+                    config["plugins"] = {"active": {"enabled": True}}
+                else:
+                    config["features"]["apps"] = True
+                self.assertEqual(self.observer.run_once(self.case).status, "configured_route_rejected")
+                self.assertNotIn("thread/start", [method for method, _ in self.rpc.calls])
+
+    def test_inventory_full_pagination_hidden_model_and_disabled_statuses(self):
+        self.rpc.config["config"]["mcp_servers"] = {"a": {"enabled": False}, "b": {"enabled": False}}
+        row = lambda name: {"name": name, "authStatus": "unsupported", "tools": {},
+                            "resources": [], "resourceTemplates": []}
+        self.rpc.pages = {"model/list": {None: {"data": [], "nextCursor": "model-page-2"},
+                           "model-page-2": self.rpc.models}, "mcpServerStatus/list": {
+                           None: {"data": [row("a")], "nextCursor": "mcp-page-2"},
+                           "mcp-page-2": {"data": [row("b")], "nextCursor": None}}}
+        self.rpc.models["data"][0]["hidden"] = True
+        self.assertEqual(self.observer.run_once(self.case).status, "completed_configured_route")
+        model_calls = [params for method, params in self.rpc.calls if method == "model/list"]
+        self.assertEqual(len(model_calls), 2)
+        self.assertTrue(all(params["includeHidden"] is True for params in model_calls))
+
+    def test_pagination_duplicate_cursor_fails_closed(self):
+        self.rpc.pages["model/list"] = {None: {"data": [], "nextCursor": "repeated"},
+                                        "repeated": {"data": [], "nextCursor": "repeated"}}
+        receipt = self.observer.run_once(self.case)
+        self.assertEqual(receipt.status, "configured_route_rejected")
+        self.assertNotIn("thread/start", [method for method, _ in self.rpc.calls])
+
+    def test_rejected_config_values_never_persist_private_payloads(self):
+        secret = "PRIVATE_CONFIG_SENTINEL"
+        for field in ("mcp", "plugin", "feature", "web_search"):
+            for value in ({"credential": secret}, [secret], secret):
+                with self.subTest(field=field, value_type=type(value).__name__):
+                    self.setUp()
+                    config = self.rpc.config["config"]
+                    if field == "mcp":
+                        config["mcp_servers"] = {"disabled": {"enabled": value}}
+                    elif field == "plugin":
+                        config["plugins"] = {"disabled-plugin": {"enabled": value}}
+                    elif field == "feature":
+                        config["features"]["apps"] = value
+                    else:
+                        config["web_search"] = value
+                    receipt = self.observer.run_once(self.case)
+                    self.assertEqual(receipt.status, "configured_route_rejected")
+                    self.assertNotIn("thread/start", [method for method, _ in self.rpc.calls])
+                    self.assertNotIn(secret, receipt.events_json)
+                    for record in self.ledger.glob("*.json"):
+                        self.assertNotIn(secret, record.read_text())
+
+    def test_rejected_mcp_inventory_never_persists_private_payloads(self):
+        secret = "PRIVATE_MCP_SENTINEL"
+        for field in ("tools", "resources", "resourceTemplates", "serverInfo", "authStatus"):
+            with self.subTest(field=field):
+                self.setUp()
+                self.rpc.config["config"]["mcp_servers"] = {"disabled": {"enabled": False}}
+                row = {"name": "disabled", "authStatus": "unsupported", "tools": {},
+                       "resources": [], "resourceTemplates": [], "serverInfo": None}
+                row[field] = {"description": secret, "url": secret} if field in {
+                    "tools", "serverInfo"} else [secret] if field != "authStatus" else secret
+                self.rpc.mcp["data"] = [row]
+                receipt = self.observer.run_once(self.case)
+                self.assertEqual(receipt.status, "configured_route_rejected")
+                self.assertNotIn("thread/start", [method for method, _ in self.rpc.calls])
+                self.assertNotIn(secret, receipt.events_json)
+                for record in self.ledger.glob("*.json"):
+                    self.assertNotIn(secret, record.read_text())
+
+    def test_valid_mcp_and_plugin_identifiers_are_hashed_in_all_persisted_events(self):
+        secret = "PRIVATE_IDENTIFIER_SENTINEL"
+        self.rpc.config["config"]["mcp_servers"] = {secret: {"enabled": False}}
+        self.rpc.config["config"]["plugins"] = {secret: {"enabled": False}}
+        self.rpc.mcp["data"] = [{"name": secret, "authStatus": "unsupported", "tools": {},
+                                 "resources": [], "resourceTemplates": [], "serverInfo": None}]
+
+        receipt = self.observer.run_once(self.case)
+
+        self.assertEqual(receipt.status, "completed_configured_route")
+        self.assertEqual(receipt.evidence_kind, "offline_fixture")
+        events = json.loads(receipt.events_json)
+        self.assertNotIn(secret, receipt.events_json)
+        digest = _sha(secret)
+        for event in events:
+            if event.get("method") == "config/read":
+                surface = event["effective_surface"]
+                self.assertEqual(surface["mcp_enabled"][0]["identifier_sha256"], digest)
+                self.assertEqual(surface["plugin_enabled"][0]["identifier_sha256"], digest)
+            if event.get("method") == "mcpServerStatus/list":
+                self.assertEqual(event["inventory_shape"]["entries"][0]["name_sha256"], digest)
+        for record in self.ledger.glob("*.json"):
+            self.assertNotIn(secret, record.read_text())
+
+    def test_invalid_mcp_row_name_persists_only_type_and_null_digest(self):
+        secret = "PRIVATE_INVALID_NAME_SENTINEL"
+        self.rpc.mcp["data"] = [{"name": {"credential": secret}, "authStatus": "unsupported",
+                                 "tools": {}, "resources": [], "resourceTemplates": [], "serverInfo": None}]
+
+        receipt = self.observer.run_once(self.case)
+
+        self.assertEqual(receipt.status, "configured_route_rejected")
+        self.assertNotIn("thread/start", [method for method, _ in self.rpc.calls])
+        self.assertNotIn(secret, receipt.events_json)
+        summaries = [entry for event in json.loads(receipt.events_json)
+                     if event.get("method") == "mcpServerStatus/list"
+                     for entry in event["inventory_shape"]["entries"]]
+        self.assertEqual(summaries[0]["name_type"], "dict")
+        self.assertIsNone(summaries[0]["name_sha256"])
+        for record in self.ledger.glob("*.json"):
+            self.assertNotIn(secret, record.read_text())
 
     def test_readback_missing_wrong_prompt_ids_tool_or_outcome_reject(self):
         for changed in ("prompt", "thread_id", "turn_id", "status", "tool", "missing_user", "items_view"):
