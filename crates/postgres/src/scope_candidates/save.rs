@@ -95,9 +95,14 @@ pub(crate) async fn save_draft(
         request.candidate_set_id,
     )
     .await?;
-    if request.draft.boundary != previous.context.candidate_set.boundary {
-        return Err(Error::InvalidArguments);
-    }
+    validate_draft_boundary(
+        transaction,
+        tenant_id,
+        workspace_id,
+        request.draft.boundary,
+        &previous,
+    )
+    .await?;
     let resolved = resolve::resolve(
         transaction,
         &resolve::ResolveContext {
@@ -128,18 +133,7 @@ pub(crate) async fn save_draft(
     .execute(&mut **transaction)
     .await
     .map_err(storage_error)?;
-    update_set(
-        transaction,
-        tenant_id,
-        workspace_id,
-        request.candidate_set_id,
-        next_revision,
-        CandidateSetStatus::ReviewRequired,
-        request.input_cursor,
-        locked.latest_input,
-        None,
-    )
-    .await?;
+    update_draft_set(transaction, tenant_id, workspace_id, request, next_revision).await?;
     let stored = required_context(
         transaction,
         tenant_id,

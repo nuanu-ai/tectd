@@ -189,7 +189,7 @@ fn help_branches_are_strict_and_descriptions_come_from_registry() {
     let candidates =
         help(parse_help(json!({"mode":"describe","method":"tectd-scope-candidates"})).unwrap())
             .unwrap();
-    assert_eq!(candidates["method_revision"], "4");
+    assert_eq!(candidates["method_revision"], "5");
     assert!(
         candidates["body"]
             .as_str()

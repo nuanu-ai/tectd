@@ -41,6 +41,8 @@ If a material source is missing or stale, follow the exact refresh-context actio
 
 Choose the planning boundary from the Program contract and the user's exact request. Never infer Program type from dates, activity, or apparent closure posture.
 
+If the initial begin captured the wrong boundary, the first draft may explicitly correct it while the set is still Draft and has no saved draft, review, or opened Scope. Context-only refreshes may advance the revision without closing this correction window. Use the current revision, snapshot, input cursor, and consumed knowledge; refresh stale context first. The corrected head and draft are saved atomically. The original begin request still replays its original boundary and revision; a different begin request returns the current head. Once any draft or review is saved, boundary changes are refused.
+
 For a finite Program, cover every remaining accepted outcome after subtracting verified existing work. Map each outcome to one or more candidates, verified existing work, or a precise blocker. Do not use an unapproved deferral, omission, or vague future note to make coverage appear complete. A candidate set does not complete the Program.
 
 For an ongoing Program, cover only the exact feature or set requested by the user now. Do not add adjacent improvements, speculative follow-ups, platform cleanup, or a complete future roadmap. A large requested feature may become several candidates when each candidate remains a useful vertical result.
