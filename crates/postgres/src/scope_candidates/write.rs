@@ -1,4 +1,4 @@
-use super::{load, status_name};
+use super::{boundary_name, load, status_name};
 use crate::storage_error;
 use sqlx::{Postgres, Transaction};
 use std::collections::BTreeSet;
@@ -267,4 +267,64 @@ fn parse_status(value: &str) -> Result<CandidateSetStatus> {
         "blocked" => Ok(CandidateSetStatus::Blocked),
         _ => Err(Error::StorageUnavailable),
     }
+}
+
+// Call only after locking the set and validating the expected revision/snapshot.
+pub(super) async fn validate_draft_boundary(
+    transaction: &mut Transaction<'_, Postgres>,
+    tenant_id: Uuid,
+    workspace_id: Uuid,
+    boundary: tect_domain::CandidateBoundary,
+    previous: &StoredCandidateContext,
+) -> Result<()> {
+    let set = &previous.context.candidate_set;
+    if boundary == set.boundary {
+        return Ok(());
+    }
+    // Context-only refreshes may advance the revision before substantive planning.
+    if set.status != CandidateSetStatus::Draft
+        || previous.draft.is_some()
+        || !previous.reviews.is_empty()
+    {
+        return Err(Error::InvalidArguments);
+    }
+    let opened_scope: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM native_scopes \
+         WHERE tenant_id=$1 AND workspace_id=$2 AND source_candidate_set_id=$3)",
+    )
+    .bind(tenant_id)
+    .bind(workspace_id)
+    .bind(set.id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(storage_error)?;
+    if opened_scope {
+        Err(Error::InvalidArguments)
+    } else {
+        Ok(())
+    }
+}
+
+// Atomically bind the corrected head, draft and receipt; preserve the begin.
+pub(super) async fn update_draft_set(
+    transaction: &mut Transaction<'_, Postgres>,
+    tenant_id: Uuid,
+    workspace_id: Uuid,
+    request: &tect_domain::SaveCandidateDraft,
+    next_revision: i64,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE scope_candidate_sets SET revision=$4,status='review_required',input_cursor=$5,\
+             boundary=$6 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
+    )
+    .bind(tenant_id)
+    .bind(workspace_id)
+    .bind(request.candidate_set_id)
+    .bind(next_revision)
+    .bind(request.input_cursor)
+    .bind(boundary_name(request.draft.boundary))
+    .execute(&mut **transaction)
+    .await
+    .map_err(storage_error)?;
+    Ok(())
 }

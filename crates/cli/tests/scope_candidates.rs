@@ -1,6 +1,8 @@
 //! Real PostgreSQL/daemon/stdio candidate planning, replay, restart, and bounded reads.
 #[path = "scope_candidates/actions.rs"]
 mod actions;
+#[path = "scope_candidates/boundary.rs"]
+mod boundary;
 #[path = "scope_candidates/covered.rs"]
 mod covered;
 mod recovery_support;
@@ -488,6 +490,7 @@ async fn candidate_set_replans_with_exact_receipts_protected_work_and_fragments(
     );
     assert_eq!(action_params(&state["actions"][0])["view"], "overview");
 
+    boundary::run(&mut first, &mut second, &pool).await;
     covered::run(&mut first, &pool).await;
 
     first.finish().await;
