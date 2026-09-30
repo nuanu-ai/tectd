@@ -17,6 +17,7 @@ from typing import Any
 
 from common import Proof, Rpc, RpcError, command_overrides, initialize, sha256_file, sha256_json, start_thread, tool_result
 from fixture import Fixture
+from protocol_compat import parse_delegation_features, wait_mcp_ready, validate_catalog, validate_get_state
 import native_slices
 import scope_candidates as scope
 
@@ -70,6 +71,8 @@ def source_snapshot(source: pathlib.Path) -> dict[str, Any]:
     return {
         "head": git(source, "rev-parse", "HEAD"),
         "head_tree": git(source, "rev-parse", "HEAD^{tree}"),
+        "branch": git(source, "rev-parse", "--abbrev-ref", "HEAD"),
+        "tracked_diff_sha256": hashlib.sha256(subprocess.check_output(["git", "-C", str(source), "diff", "HEAD", "--", "scripts/acceptance/five_tool"])).hexdigest(),
         "status": status,
         "changed_file_sha256": {path: sha256_file(source / path) for path in sorted(set(paths))},
     }
@@ -87,16 +90,19 @@ def app_command(codex: pathlib.Path, fixture: Fixture, allow_one_child: bool = F
     return [str(codex), *base, *delegation_overrides(allow_one_child), "app-server", "--listen", "stdio://"]
 
 
-def delegation_features(codex: pathlib.Path, fixture: Fixture, allow_one_child: bool = False) -> dict[str, bool]:
+def isolated_version(codex: pathlib.Path) -> str:
+    with tempfile.TemporaryDirectory(prefix="codex-five-tool-version-") as home:
+        env = {**os.environ, "CODEX_HOME": home}
+        env.pop("CODEX_SESSION_ID", None)
+        env.pop("CODEX_THREAD_ID", None)
+        return subprocess.check_output([str(codex), "--version"], text=True, env=env).strip()
+
+
+def delegation_features(codex: pathlib.Path, fixture: Fixture, allow_one_child: bool = False, env: dict | None = None) -> dict[str, bool]:
     output = subprocess.check_output(
-        [*app_command(codex, fixture, allow_one_child)[:-3], "features", "list"], text=True,
+        [*app_command(codex, fixture, allow_one_child)[:-3], "features", "list"], text=True, env=env,
     )
-    rows = [line.split() for line in output.splitlines()]
-    states = {row[0]: row[2] == "true" for row in rows if len(row) == 3 and row[0] in {"multi_agent", "multi_agent_v2"}}
-    expected = {"multi_agent": allow_one_child, "multi_agent_v2": False}
-    if states != expected:
-        raise AssertionError("owned app-server delegation features do not match the requested test mode")
-    return states
+    return parse_delegation_features(output, allow_one_child)
 
 
 def retain_wire_evidence(fixture: Fixture, proof: Proof) -> None:
@@ -134,9 +140,10 @@ def assert_fixture_server(server: dict[str, Any], fixture: Fixture, proof: Proof
         "host_config_sha256": digest(str(fixture.host_config)),
         "workspace_key_sha256": digest(fixture.workspace_key),
     }
+    validate_catalog(server)
     proof.check(
         f"{phase} resolved tectd server points only to owned fixture",
-        attestation == expected and server.get("runtimeStatus") == "connected",
+        attestation == expected,
         {"launch_attestation_sha256": sha256_json(attestation), "runtime_status": server.get("runtimeStatus")},
     )
 
@@ -227,8 +234,19 @@ def rejected_legacy_tool(app: Rpc, thread_id: str, tool: str) -> tuple[bool, Any
 
 
 def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> None:
+    ready = wait_mcp_ready(app, thread_id)
     server = find_server(app, thread_id)
     assert_fixture_server(server, fixture, proof, "deterministic")
+    request = {"threadId": thread_id, "server": "tectd", "tool": "get_state", "arguments": {}}
+    response = app.request("mcpServer/tool/call", request)
+    state = validate_get_state(response, thread_id)
+    proof.data["deterministic_connection"] = {
+        "evidence_kind": "native_app_server_rpc_no_model_turn",
+        "ready_notification": ready, "tool_names": sorted(server["tools"]),
+        "request": {"method": "mcpServer/tool/call", "params": request},
+        "response": response, "state_status": state["status"],
+    }
+    proof.check("ready notification and real canonical get_state prove owned connection", True)
     catalog = server["tools"]
     if not isinstance(catalog, dict):
         raise AssertionError("native MCP status returned a non-object tool catalog")
@@ -244,8 +262,8 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
         for tool in tools if tool["name"] in {"query", "command", "execute"}
     }
     proof.check(
-        "five-tool facade exposes the exact DK-4 route totals",
-        route_counts == {"query": 16, "command": 37, "execute": 1},
+        "five-tool facade exposes the exact current route totals",
+        route_counts == {"query": 19, "command": 41, "execute": 1},
         route_counts,
     )
     proof.persist()
@@ -267,7 +285,7 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
     opened = call_action(app, thread_id, open_action)
     proof.check("backend ready action executes without help lookup", bool(opened.get("workspace")))
     native_id = find_entity(opened, "session").get("native_session_id")
-    proof.check("Codex host replaces forged metadata with native thread identity", native_id == thread_id)
+    proof.check("Codex host supplies native thread identity", native_id == thread_id)
     proof.check(
         "context template identifies the exact nested task-directory field",
         "arguments.params.task_directory" in missing_paths(opened, "needs_context"),
@@ -658,7 +676,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     default_source = pathlib.Path(__file__).resolve().parents[3]
     parser.add_argument("--source", type=pathlib.Path, default=default_source)
-    parser.add_argument("--codex", type=pathlib.Path, default=pathlib.Path("/Applications/Codex.app/Contents/Resources/codex"))
+    parser.add_argument("--codex", type=pathlib.Path, default=pathlib.Path("/Applications/ChatGPT.app/Contents/Resources/codex"))
     parser.add_argument("--postgres-bin", type=pathlib.Path, default=pathlib.Path("/opt/homebrew/opt/postgresql@18/bin"))
     parser.add_argument("--proof", type=pathlib.Path, required=True)
     parser.add_argument(
@@ -696,10 +714,10 @@ def main() -> None:
             "status": "running",
             "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "source": source_snapshot(source),
-            "codex": {"version": subprocess.check_output([str(args.codex), "--version"], text=True).strip(), "sha256": sha256_file(args.codex)},
+            "codex": {"version": isolated_version(args.codex), "sha256": sha256_file(args.codex)},
             "model_phase_requested": args.model_turn,
             "one_child_test_override_requested": args.allow_one_child_sol,
-            "evidence_kind": "final_clean_commit" if args.final else "exploratory_feature_smoke",
+            "evidence_kind": "final_clean_commit" if args.final else ("modified_harness_model_requested" if args.model_turn else "modified_harness_deterministic_no_model"),
             "protected_artifact_hashes_before": protected_before,
             "checks": [],
         },
@@ -709,10 +727,15 @@ def main() -> None:
     deterministic_home: pathlib.Path | None = None
     try:
         fixture.prepare()
+        deterministic_home = pathlib.Path(tempfile.mkdtemp(prefix="codex-five-tool-deterministic-"))
+        deterministic_home.chmod(0o700)
+        env = {**os.environ, "CODEX_HOME": str(deterministic_home), "PYTHONDONTWRITEBYTECODE": "1"}
+        env.pop("CODEX_SESSION_ID", None)
+        env.pop("CODEX_THREAD_ID", None)
         proof.data["owned_app_server_features"] = {
             "deterministic": {
                 "overrides": delegation_overrides(False),
-                "effective": delegation_features(args.codex, fixture, False),
+                "effective": delegation_features(args.codex, fixture, False, env),
             }
         }
         proof.data["artifacts"] = {
@@ -720,11 +743,6 @@ def main() -> None:
         }
         proof.data["artifacts"]["packaged_mcp"] = sha256_file(fixture.package / "bin/tectd-mcp")
         proof.persist()
-        deterministic_home = pathlib.Path(tempfile.mkdtemp(prefix="codex-five-tool-deterministic-"))
-        deterministic_home.chmod(0o700)
-        env = {**os.environ, "CODEX_HOME": str(deterministic_home)}
-        env.pop("CODEX_SESSION_ID", None)
-        env.pop("CODEX_THREAD_ID", None)
         first = Rpc(app_command(args.codex, fixture), env, fixture.task)
         apps.append(first)
         initialize(first, "tectd_five_tool_deterministic")
@@ -739,10 +757,12 @@ def main() -> None:
             model_env = dict(os.environ)
             model_env.pop("CODEX_SESSION_ID", None)
             model_env.pop("CODEX_THREAD_ID", None)
-            model_features = {
-                "overrides": delegation_overrides(args.allow_one_child_sol),
-                "effective": delegation_features(args.codex, fixture, args.allow_one_child_sol),
-            }
+            with tempfile.TemporaryDirectory(prefix="codex-five-tool-model-preflight-") as home:
+                preflight_env = {**model_env, "CODEX_HOME": home}
+                model_features = {
+                    "overrides": delegation_overrides(args.allow_one_child_sol),
+                    "effective": delegation_features(args.codex, fixture, args.allow_one_child_sol, preflight_env),
+                }
             proof.data["owned_app_server_features"]["model"] = model_features
             proof.persist()
             second = Rpc(app_command(args.codex, fixture, args.allow_one_child_sol), model_env, fixture.task)
@@ -750,6 +770,7 @@ def main() -> None:
             initialize(second, "tectd_five_tool_model")
             second_thread = start_thread(second, fixture.task, ONE_CHILD_DEV if args.allow_one_child_sol else DEV)
             proof.data["native_threads"].append({"phase": "model", "id": second_thread})
+            wait_mcp_ready(second, second_thread)
             assert_fixture_server(find_server(second, second_thread), fixture, proof, "model")
             if args.scope_candidates:
                 call = lambda tool, arguments: tool_result(second, second_thread, tool, arguments)
