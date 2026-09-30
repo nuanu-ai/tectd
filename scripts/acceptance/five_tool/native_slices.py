@@ -13,7 +13,7 @@ SLICE_RUN_PIPELINES = {
 PROMOTION_PIPELINE = "slice.promote-to-durable-knowledge"
 ALL_PIPELINES = SLICE_RUN_PIPELINES | {PROMOTION_PIPELINE}
 PIPELINE_MODES = {
-    "slice.lightweight-tdd-development": ("whole", ["whole", "phasewise"], 15),
+    "slice.lightweight-tdd-development": ("phasewise", ["whole", "phasewise"], 15),
     "slice.full-design-to-execution": ("phasewise", ["phasewise"], 21),
     "slice.debug-root-cause": ("whole", ["whole", "phasewise"], 18),
     "slice.operational-preparation": ("whole", ["whole", "phasewise"], 16),

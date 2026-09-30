@@ -11,10 +11,14 @@ configuration, host credential, grants, or a real workspace AGENTS.md.
   hash are bound into the proof;
 - build-ready `target/debug/tectd`, `tectd-mcp`, and `tect-admin` from that exact tree;
 - PostgreSQL 18 command directory, default `/opt/homebrew/opt/postgresql@18/bin`;
-- bundled Codex executable, default `/Applications/Codex.app/Contents/Resources/codex`.
+- bundled Codex executable, default `/Applications/ChatGPT.app/Contents/Resources/codex`.
 
 The deterministic phase uses a new unauthenticated temporary `CODEX_HOME`. It exercises native
-MCP discovery and calls but does not start a model turn. `--model-turn` additionally starts one
+MCP discovery and calls but does not start a model turn. Connection requires a thread-bound
+`mcpServer/startupStatus/updated` ready notification, exactly five discovered tools, an
+owned launcher attestation, and a successful typed `mcpServer/tool/call` on the genuine
+app-server thread. An explicitly reported `runtimeStatus` must still be `connected`.
+This proves deterministic protocol connectivity, not a model turn or a refreshed Desktop worker. `--model-turn` additionally starts one
 ephemeral `gpt-5.6-sol` medium turn through the ordinary existing Codex auth store. The script
 does not read, copy, link, print, or hash account credentials. Omit the flag when that ordinary
 authenticated runtime is unavailable; the proof then records the model phase as `not_run`, not
@@ -29,7 +33,7 @@ python3 scripts/acceptance/five_tool/run.py \
   --proof /absolute/nonsecret/evidence/five-tool-native-proof.json
 ```
 
-This default run is labeled `exploratory_feature_smoke`, because a parallel feature worktree may
+This default run is labeled `modified_harness_deterministic_no_model`, because a parallel feature worktree may
 be dirty. The release-quality rerun must use binaries rebuilt from the clean final commit and add
 `--final`; the harness then refuses a dirty source tree and labels the proof `final_clean_commit`.
 
@@ -42,8 +46,8 @@ terminal when completed. This proves five-tool persistence, freshness, history a
 mechanics. It does not claim that TectD executed either selected pipeline or
 independently verified caller-supplied evidence.
 
-The deterministic discovery checks keep the five public tools and verify the exact `16` query,
-`37` command, and `1` execute routes, including `slice.pipeline.checkpoint.resolve`.
+The deterministic discovery checks keep the five public tools and verify the exact `19` query,
+`41` command, and `1` execute routes, including `slice.pipeline.checkpoint.resolve`.
 Knowledge discovery covers the exact eighteen DK-1 through
 DK-4 routes: six DK-1 routes, seven DK-2 lifecycle routes, DK-3 search, the DK-4 Program knowledge
 refresh, and three DK-4 maintenance routes. Strict maintenance help

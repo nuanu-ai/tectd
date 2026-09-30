@@ -148,7 +148,6 @@ def raw_tool_result(app: Rpc, thread_id: str, tool: str, arguments: dict[str, An
             "server": "tectd",
             "tool": tool,
             "arguments": arguments,
-            "_meta": {"threadId": "00000000-0000-4000-8000-000000000099"},
         },
     )
 
