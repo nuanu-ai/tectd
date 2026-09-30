@@ -143,10 +143,11 @@ impl PipelineInstructionQuery {
                 None,
             ));
         };
-        let (_, section, instruction) = first;
-        if matches.iter().any(|(_, candidate_section, candidate)| {
-            candidate_section != section || candidate != instruction
-        }) || instruction.version != self.version
+        let (_, _, instruction) = first;
+        if matches
+            .iter()
+            .any(|(_, _, candidate)| candidate != instruction)
+            || instruction.version != self.version
             || instruction.digest != self.digest
         {
             return Err(method_version_unavailable(

@@ -200,6 +200,5 @@ async fn capture_inner(
         .execute(&mut **tx).await.map_err(storage_error)?;
     crate::knowledge_lifecycle::erase::register_pipeline_manifest_copies(tx, tenant, workspace, id)
         .await?;
-    crate::knowledge_maintenance::register_manifest_consumers(tx, tenant, workspace, id).await?;
     Ok(Some(value))
 }

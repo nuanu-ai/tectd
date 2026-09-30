@@ -76,25 +76,55 @@ async fn units_for_manifest(
         .bind(tenant).bind(workspace).bind(manifest).fetch_all(&mut **tx).await.map_err(storage_error)
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn register_manifest_units(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    manifest: Uuid,
+    kind: &str,
+    relation: CopyRelation,
+    row: Uuid,
+) -> Result<()> {
+    let units = units_for_manifest(tx, tenant, workspace, manifest).await?;
+    let ids = units.iter().map(|value| value.0).collect::<Vec<_>>();
+    let revisions = units.iter().map(|value| value.1).collect::<Vec<_>>();
+    sqlx::query(
+        "INSERT INTO knowledge_owned_copies \
+         (id,tenant_id,workspace_id,unit_id,copy_kind,relation_name,row_id,row_revision) \
+         SELECT pg_catalog.gen_random_uuid(),$1,$2,u.unit_id,$3,$4,$5,u.revision \
+         FROM ROWS FROM(pg_catalog.unnest($6::uuid[]),pg_catalog.unnest($7::bigint[])) AS u(unit_id,revision) \
+         ORDER BY u.unit_id,u.revision ON CONFLICT DO NOTHING",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(kind)
+    .bind(relation.name())
+    .bind(row)
+    .bind(&ids)
+    .bind(&revisions)
+    .execute(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    Ok(())
+}
+
 pub(crate) async fn register_pipeline_manifest_copies(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     workspace: Uuid,
     manifest: Uuid,
 ) -> Result<()> {
-    for (unit, revision) in units_for_manifest(tx, tenant, workspace, manifest).await? {
-        register(
-            tx,
-            tenant,
-            workspace,
-            unit,
-            "pipeline_manifest",
-            CopyRelation::Manifest,
-            manifest,
-            revision,
-        )
-        .await?;
-    }
+    register_manifest_units(
+        tx,
+        tenant,
+        workspace,
+        manifest,
+        "pipeline_manifest",
+        CopyRelation::Manifest,
+        manifest,
+    )
+    .await?;
     crate::knowledge_maintenance::register_manifest_consumers(tx, tenant, workspace, manifest)
         .await?;
     Ok(())
@@ -107,19 +137,16 @@ pub(crate) async fn register_pipeline_run_origin_copies(
     run: Uuid,
     manifest: Uuid,
 ) -> Result<()> {
-    for (unit, revision) in units_for_manifest(tx, tenant, workspace, manifest).await? {
-        register(
-            tx,
-            tenant,
-            workspace,
-            unit,
-            "pipeline_run_origin",
-            CopyRelation::PipelineRun,
-            run,
-            revision,
-        )
-        .await?;
-    }
+    register_manifest_units(
+        tx,
+        tenant,
+        workspace,
+        manifest,
+        "pipeline_run_origin",
+        CopyRelation::PipelineRun,
+        run,
+    )
+    .await?;
     Ok(())
 }
 
