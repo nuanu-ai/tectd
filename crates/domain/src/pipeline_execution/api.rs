@@ -135,7 +135,7 @@ impl PipelineInstructionQuery {
                 }
             }
         }
-        let Some((phase_id, section, instruction)) = matches.first() else {
+        let Some(first) = matches.first() else {
             return Err(method_version_unavailable(
                 &self.instruction_id,
                 &self.version,
@@ -143,8 +143,10 @@ impl PipelineInstructionQuery {
                 None,
             ));
         };
-        if matches.len() != 1
-            || instruction.version != self.version
+        let (_, section, instruction) = first;
+        if matches.iter().any(|(_, candidate_section, candidate)| {
+            candidate_section != section || candidate != instruction
+        }) || instruction.version != self.version
             || instruction.digest != self.digest
         {
             return Err(method_version_unavailable(
@@ -154,6 +156,12 @@ impl PipelineInstructionQuery {
                 Some(instruction),
             ));
         }
+        let (phase_id, section, instruction) = matches
+            .iter()
+            .find(|(phase_id, _, _)| {
+                phase_id.is_some() && *phase_id == context.run.current_phase_id
+            })
+            .unwrap_or(first);
         Ok(PipelineInstructionResponse {
             run_id: context.run.id,
             phase_id: phase_id.clone(),
@@ -307,6 +315,8 @@ pub struct PipelineMutationOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod repeated;
 
     fn snapshot(id: &str, version: &str, digest: &str) -> PipelineInstructionSnapshot {
         PipelineInstructionSnapshot {
