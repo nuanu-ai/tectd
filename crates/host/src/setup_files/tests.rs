@@ -7,6 +7,7 @@ use tect_domain::SetupDirectory;
 
 mod inspection;
 mod publication;
+mod publication_cleanup;
 
 struct Fixture {
     _temporary: tempfile::TempDir,
