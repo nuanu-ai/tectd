@@ -108,6 +108,45 @@ pub(crate) async fn unit(
     principal: Uuid,
     query: &KnowledgeUnitQuery,
 ) -> Result<Option<KnowledgeUnitResponse>> {
+    unit_inner(tx, tenant, workspace, principal, query, None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn unit_with_proofs(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    query: &KnowledgeUnitQuery,
+    session: Uuid,
+    proofs: &mut event::PublicationProofScope,
+) -> Result<Option<KnowledgeUnitResponse>> {
+    unit_inner(
+        tx,
+        tenant,
+        workspace,
+        principal,
+        query,
+        Some((principal, session, proofs)),
+    )
+    .await
+}
+
+async fn unit_inner(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal_id: Uuid,
+    query: &KnowledgeUnitQuery,
+    proofs: Option<event::PublicationProofContext<'_>>,
+) -> Result<Option<KnowledgeUnitResponse>> {
+    if let Some((principal, session, scope)) = proofs.as_ref() {
+        scope.require_identity(tenant, workspace, *principal, *session)?;
+        if *principal != principal_id {
+            return Err(Error::InternalInvariant);
+        }
+    }
+    let principal = principal_id;
     let row:Option<UnitRevisionRow>=sqlx::query_as(
         "SELECT h.lifecycle,h.access_scope,r.access_scope,r.revision,r.contract_version,r.payload_erased,r.document_payload,r.rdf_digest,r.unit_iri,r.revision_iri,r.publication_event_id FROM knowledge_unit_heads h JOIN knowledge_revisions r ON r.tenant_id=h.tenant_id AND r.workspace_id=h.workspace_id AND r.unit_id=h.unit_id AND r.revision=COALESCE($4,h.accepted_revision) WHERE h.tenant_id=$1 AND h.workspace_id=$2 AND h.unit_id=$3"
     ).bind(tenant).bind(workspace).bind(query.unit_id).bind(query.revision).fetch_optional(&mut **tx).await.map_err(storage_error)?;
@@ -150,7 +189,7 @@ pub(crate) async fn unit(
         .await?
         .map(|value| KnowledgeUnitResponse::LegacyConstraint(Box::new(value))));
     }
-    let verified = event::verify_publication_event(
+    let verified = event::verify_publication_event_with_proofs(
         tx,
         tenant,
         workspace,
@@ -158,6 +197,7 @@ pub(crate) async fn unit(
         revision,
         event,
         true,
+        proofs,
     )
     .await?;
     let input = verified.input;

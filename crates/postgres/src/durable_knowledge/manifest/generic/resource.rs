@@ -8,12 +8,20 @@ pub(super) struct TypedResource {
     pub review_due_at: Option<String>,
 }
 
+pub(super) fn verify_revision_digest(stored: Option<&str>, verified: &str) -> Result<()> {
+    if stored != Some(verified) {
+        return Err(Error::InternalInvariant);
+    }
+    Ok(())
+}
+
 async fn latest_validation(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     workspace: Uuid,
     unit: Uuid,
     revision: i64,
+    proofs: Option<crate::knowledge_lifecycle::PublicationProofContext<'_>>,
 ) -> Result<Option<PipelineKnowledgeValidationPin>> {
     let row: Option<(Uuid, i64)> = sqlx::query_as(
         "SELECT v.id,(SELECT count(*) FROM knowledge_validation_events x WHERE x.tenant_id=v.tenant_id AND x.workspace_id=v.workspace_id AND x.unit_id=v.unit_id AND x.unit_revision=v.unit_revision AND NOT x.payload_erased AND (x.created_at,x.id)<=(v.created_at,v.id)) FROM knowledge_validation_events v WHERE v.tenant_id=$1 AND v.workspace_id=$2 AND v.unit_id=$3 AND v.unit_revision=$4 AND NOT v.payload_erased ORDER BY v.created_at DESC,v.id DESC LIMIT 1",
@@ -21,8 +29,8 @@ async fn latest_validation(
     let Some((event_id, sequence)) = row else {
         return Ok(None);
     };
-    let verified = crate::knowledge_lifecycle::verify_publication_event(
-        tx, tenant, workspace, unit, revision, event_id, false,
+    let verified = crate::knowledge_lifecycle::verify_publication_event_with_proofs(
+        tx, tenant, workspace, unit, revision, event_id, false, proofs,
     )
     .await?;
     if verified.input.planned.operation != KnowledgeLifecycleOperation::Revalidate {
@@ -75,8 +83,42 @@ pub(super) async fn typed(
     projection: Option<&crate::durable_knowledge::manifest::inquiry::Projection>,
     purpose: KnowledgeBindingPurpose,
 ) -> Result<TypedResource> {
+    typed_inner(tx, tenant, workspace, row, projection, purpose, None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn typed_with_proofs(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    row: &BindingRow,
+    projection: Option<&crate::durable_knowledge::manifest::inquiry::Projection>,
+    purpose: KnowledgeBindingPurpose,
+    proofs: crate::knowledge_lifecycle::PublicationProofContext<'_>,
+) -> Result<TypedResource> {
+    typed_inner(
+        tx,
+        tenant,
+        workspace,
+        row,
+        projection,
+        purpose,
+        Some(proofs),
+    )
+    .await
+}
+
+async fn typed_inner(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    row: &BindingRow,
+    projection: Option<&crate::durable_knowledge::manifest::inquiry::Projection>,
+    purpose: KnowledgeBindingPurpose,
+    mut proofs: Option<crate::knowledge_lifecycle::PublicationProofContext<'_>>,
+) -> Result<TypedResource> {
     let event_id = row.event_id.ok_or(Error::InternalInvariant)?;
-    let verified = crate::knowledge_lifecycle::verify_publication_event(
+    let verified = crate::knowledge_lifecycle::verify_publication_event_with_proofs(
         tx,
         tenant,
         workspace,
@@ -84,11 +126,12 @@ pub(super) async fn typed(
         row.revision,
         event_id,
         true,
+        proofs
+            .as_mut()
+            .map(|(principal, session, scope)| (*principal, *session, &mut **scope)),
     )
     .await?;
-    if row.rdf_digest.as_deref() != Some(verified.rdf_digest.as_str()) {
-        return Err(Error::InternalInvariant);
-    }
+    verify_revision_digest(row.rdf_digest.as_deref(), &verified.rdf_digest)?;
     let input = verified.input;
     let Some(document) = input.planned.document.as_ref() else {
         return Ok(TypedResource {
@@ -146,7 +189,17 @@ pub(super) async fn typed(
         ),
     };
     let expected = rdf::build(&input)?;
-    let latest = latest_validation(tx, tenant, workspace, row.unit_id, row.revision).await?;
+    let latest = latest_validation(
+        tx,
+        tenant,
+        workspace,
+        row.unit_id,
+        row.revision,
+        proofs
+            .as_mut()
+            .map(|(principal, session, scope)| (*principal, *session, &mut **scope)),
+    )
+    .await?;
     let valid_until = latest
         .as_ref()
         .and_then(|value| value.valid_until.clone())

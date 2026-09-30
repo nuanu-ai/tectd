@@ -8,7 +8,9 @@ mod sections;
 mod tests;
 
 pub(crate) use model::RdfDocument;
-pub(crate) use native::{native_publish, native_rows, qualify_native};
+pub(crate) use native::{
+    NativeReadRequest, native_publish, native_rows, native_rows_batch, qualify_native,
+};
 
 use serde::{Deserialize, Serialize};
 use tect_domain::{KnowledgePlannedOperation, KnowledgeResolvedSourcePin, Result};
