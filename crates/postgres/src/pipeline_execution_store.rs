@@ -88,6 +88,23 @@ impl PipelineExecutionStore for PgUnitOfWork {
         .await
     }
 
+    async fn pipeline_run_completion_context(
+        &mut self,
+        workspace_id: Uuid,
+        principal_id: Uuid,
+        run_id: Uuid,
+    ) -> Result<Option<PipelineRunContext>> {
+        let tenant = self.tenant_id()?;
+        pipeline_execution::load_completion_context(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            principal_id,
+            run_id,
+        )
+        .await
+    }
+
     async fn pipeline_run_context_without_delivery_receipt(
         &mut self,
         workspace_id: Uuid,

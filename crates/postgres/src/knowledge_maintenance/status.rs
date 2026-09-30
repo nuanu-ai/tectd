@@ -10,6 +10,47 @@ pub(crate) async fn current_unit_review_status(
     unit: Uuid,
     revision: i64,
 ) -> Result<KnowledgeUnitReviewStatus> {
+    current_unit_review_status_inner(tx, tenant, workspace, principal, unit, revision, None).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn current_unit_review_status_with_proofs(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    unit: Uuid,
+    revision: i64,
+    session: Uuid,
+    proofs: &mut crate::knowledge_lifecycle::PublicationProofScope,
+) -> Result<KnowledgeUnitReviewStatus> {
+    current_unit_review_status_inner(
+        tx,
+        tenant,
+        workspace,
+        principal,
+        unit,
+        revision,
+        Some((principal, session, proofs)),
+    )
+    .await
+}
+
+async fn current_unit_review_status_inner(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    unit: Uuid,
+    revision: i64,
+    mut proofs: Option<crate::knowledge_lifecycle::PublicationProofContext<'_>>,
+) -> Result<KnowledgeUnitReviewStatus> {
+    if let Some((proof_principal, session, scope)) = proofs.as_ref() {
+        scope.require_identity(tenant, workspace, *proof_principal, *session)?;
+        if *proof_principal != principal {
+            return Err(Error::InternalInvariant);
+        }
+    }
     require_identity(tx).await?;
     let row: Option<StatusRow> = sqlx::query_as(
         "SELECT h.accepted_revision,h.lifecycle,h.access_scope,r.access_scope, \
@@ -37,18 +78,20 @@ pub(crate) async fn current_unit_review_status(
     if head_erased || erased || matches!(lifecycle.as_str(), "erased" | "erasure_pending") {
         return Err(Error::KnowledgePayloadErased);
     }
-    let response = crate::knowledge_lifecycle::unit(
-        tx,
-        tenant,
-        workspace,
-        principal,
-        &KnowledgeUnitQuery {
-            unit_id: unit,
-            revision: Some(revision),
-            fragment: None,
-        },
-    )
-    .await?
+    let query = KnowledgeUnitQuery {
+        unit_id: unit,
+        revision: Some(revision),
+        fragment: None,
+    };
+    let response = match proofs.as_mut() {
+        Some((_, session, scope)) => {
+            crate::knowledge_lifecycle::unit_with_proofs(
+                tx, tenant, workspace, principal, &query, *session, scope,
+            )
+            .await?
+        }
+        None => crate::knowledge_lifecycle::unit(tx, tenant, workspace, principal, &query).await?,
+    }
     .ok_or(Error::NotFound)?;
     let (valid_from, mut valid_until, mut review_due_at, access_scope) = match response {
         KnowledgeUnitResponse::Document(value) => (
@@ -75,8 +118,17 @@ pub(crate) async fn current_unit_review_status(
     .await
     .map_err(storage_error)?;
     if let Some(validation) = validation_event {
-        let verified = crate::knowledge_lifecycle::verify_publication_event(
-            tx, tenant, workspace, unit, revision, validation, false,
+        let verified = crate::knowledge_lifecycle::verify_publication_event_with_proofs(
+            tx,
+            tenant,
+            workspace,
+            unit,
+            revision,
+            validation,
+            false,
+            proofs
+                .as_mut()
+                .map(|(principal, session, scope)| (*principal, *session, &mut **scope)),
         )
         .await?;
         if verified.input.planned.operation != KnowledgeLifecycleOperation::Revalidate {

@@ -216,6 +216,57 @@ pub(crate) async fn resource_status(
     phase: Option<&str>,
     manifest: Option<&PipelineKnowledgeResourceManifest>,
 ) -> Result<Option<PipelineKnowledgeResourceStatus>> {
+    resource_status_inner(
+        tx, tenant, workspace, principal, run, scope, slice, phase, manifest, None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn resource_status_with_proofs(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    run: Uuid,
+    scope: Uuid,
+    slice: Uuid,
+    phase: Option<&str>,
+    manifest: Option<&PipelineKnowledgeResourceManifest>,
+    session: Uuid,
+    proofs: &mut crate::knowledge_lifecycle::PublicationProofScope,
+) -> Result<Option<PipelineKnowledgeResourceStatus>> {
+    resource_status_inner(
+        tx,
+        tenant,
+        workspace,
+        principal,
+        run,
+        scope,
+        slice,
+        phase,
+        manifest,
+        Some((session, proofs)),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn resource_status_inner(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    run: Uuid,
+    scope: Uuid,
+    slice: Uuid,
+    phase: Option<&str>,
+    manifest: Option<&PipelineKnowledgeResourceManifest>,
+    mut proofs: Option<(Uuid, &mut crate::knowledge_lifecycle::PublicationProofScope)>,
+) -> Result<Option<PipelineKnowledgeResourceStatus>> {
+    if let Some((session, proofs)) = proofs.as_ref() {
+        proofs.require_identity(tenant, workspace, principal, *session)?;
+    }
     let Some(phase) = phase else { return Ok(None) };
     let state: Option<(i64, bool, i64)> = sqlx::query_as("SELECT k.generation,k.capability_ready,r.revision FROM workspace_knowledge_state k JOIN slice_pipeline_runs r ON r.tenant_id=k.tenant_id AND r.workspace_id=k.workspace_id WHERE k.tenant_id=$1 AND k.workspace_id=$2 AND r.id=$3 AND r.scope_id=$4 AND r.slice_id=$5")
         .bind(tenant).bind(workspace).bind(run).bind(scope).bind(slice)
@@ -233,20 +284,42 @@ pub(crate) async fn resource_status(
         }));
     }
     require_identity_ready(tx).await?;
-    let current = super::generic::snapshot(
-        tx,
-        tenant,
-        workspace,
-        principal,
-        run,
-        run_revision,
-        scope,
-        slice,
-        phase,
-        manifest.map_or_else(Uuid::nil, |v| v.id),
-        manifest.map_or_else(String::new, |v| v.digest.clone()),
-    )
-    .await?;
+    let current = match proofs.as_mut() {
+        Some((session, proofs)) => {
+            super::generic::snapshot_with_proofs(
+                tx,
+                tenant,
+                workspace,
+                principal,
+                run,
+                run_revision,
+                scope,
+                slice,
+                phase,
+                manifest.map_or_else(Uuid::nil, |v| v.id),
+                manifest.map_or_else(String::new, |v| v.digest.clone()),
+                *session,
+                proofs,
+            )
+            .await?
+        }
+        None => {
+            super::generic::snapshot(
+                tx,
+                tenant,
+                workspace,
+                principal,
+                run,
+                run_revision,
+                scope,
+                slice,
+                phase,
+                manifest.map_or_else(Uuid::nil, |v| v.id),
+                manifest.map_or_else(String::new, |v| v.digest.clone()),
+            )
+            .await?
+        }
+    };
     let Some(old) = manifest else {
         return Ok(Some(PipelineKnowledgeResourceStatus {
             state: PipelineKnowledgeResourceState::NeedsContext,

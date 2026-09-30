@@ -23,7 +23,7 @@ pub(crate) use registry::{
     retire_planning_owner_consumers,
 };
 pub(crate) use signal::observe;
-pub(crate) use status::current_unit_review_status;
+pub(crate) use status::{current_unit_review_status, current_unit_review_status_with_proofs};
 
 fn json<T: Serialize + ?Sized>(value: &T) -> Result<serde_json::Value> {
     serde_json::to_value(value).map_err(storage_error)

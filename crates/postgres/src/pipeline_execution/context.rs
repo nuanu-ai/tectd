@@ -1,6 +1,9 @@
 use super::*;
 
-type OwnedCopyKey = (String, Uuid, i64, Option<String>, Option<Uuid>);
+mod authorization;
+
+use authorization::authorize_context_copies;
+pub(super) use authorization::{authorize_run_origin, authorize_run_origin_if_present};
 
 #[derive(serde::Deserialize)]
 struct StoredRunRow {
@@ -85,69 +88,6 @@ fn decode_evidence_refs(value: serde_json::Value) -> Result<Vec<PipelineEvidence
         .collect())
 }
 
-async fn authorize_copy_keys(
-    tx: &mut Transaction<'_, Postgres>,
-    tenant: Uuid,
-    workspace: Uuid,
-    principal: Uuid,
-    keys: Vec<OwnedCopyKey>,
-) -> Result<()> {
-    for (relation, row, revision, operation, request) in keys {
-        crate::durable_knowledge::manifest::authorize_owned_copy(
-            tx,
-            tenant,
-            workspace,
-            principal,
-            &relation,
-            row,
-            revision,
-            operation.as_deref(),
-            request,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-pub(super) async fn authorize_run_origin(
-    tx: &mut Transaction<'_, Postgres>,
-    tenant: Uuid,
-    workspace: Uuid,
-    principal: Uuid,
-    run: Uuid,
-) -> Result<()> {
-    let keys:Vec<OwnedCopyKey>=sqlx::query_as("SELECT relation_name,row_id,row_revision,row_operation,row_request_id FROM knowledge_owned_copies WHERE tenant_id=$1 AND workspace_id=$2 AND relation_name='slice_pipeline_runs' AND row_id=$3 ORDER BY row_revision,row_operation,row_request_id")
-        .bind(tenant).bind(workspace).bind(run).fetch_all(&mut **tx).await.map_err(storage_error)?;
-    if keys.is_empty() {
-        return Err(Error::InternalInvariant);
-    }
-    authorize_copy_keys(tx, tenant, workspace, principal, keys).await
-}
-
-pub(super) async fn authorize_run_origin_if_present(
-    tx: &mut Transaction<'_, Postgres>,
-    tenant: Uuid,
-    workspace: Uuid,
-    principal: Uuid,
-    run: Uuid,
-) -> Result<()> {
-    let keys:Vec<OwnedCopyKey>=sqlx::query_as("SELECT relation_name,row_id,row_revision,row_operation,row_request_id FROM knowledge_owned_copies WHERE tenant_id=$1 AND workspace_id=$2 AND relation_name='slice_pipeline_runs' AND row_id=$3 ORDER BY row_revision,row_operation,row_request_id")
-        .bind(tenant).bind(workspace).bind(run).fetch_all(&mut **tx).await.map_err(storage_error)?;
-    authorize_copy_keys(tx, tenant, workspace, principal, keys).await
-}
-
-async fn authorize_context_copies(
-    tx: &mut Transaction<'_, Postgres>,
-    tenant: Uuid,
-    workspace: Uuid,
-    principal: Uuid,
-    run: Uuid,
-) -> Result<()> {
-    let keys:Vec<OwnedCopyKey>=sqlx::query_as("SELECT DISTINCT c.relation_name,c.row_id,c.row_revision,c.row_operation,c.row_request_id FROM knowledge_owned_copies c WHERE c.tenant_id=$1 AND c.workspace_id=$2 AND ((c.relation_name='slice_pipeline_runs' AND c.row_id=$3) OR (c.relation_name='slice_pipeline_phase_attempts' AND EXISTS(SELECT 1 FROM slice_pipeline_phase_attempts a WHERE a.tenant_id=c.tenant_id AND a.workspace_id=c.workspace_id AND a.id=c.row_id AND a.run_id=$3)) OR (c.relation_name='slice_pipeline_phase_outputs' AND EXISTS(SELECT 1 FROM slice_pipeline_phase_outputs o WHERE o.tenant_id=c.tenant_id AND o.workspace_id=c.workspace_id AND o.id=c.row_id AND o.run_id=$3)) OR (c.relation_name='slice_pipeline_inputs' AND EXISTS(SELECT 1 FROM slice_pipeline_inputs i WHERE i.tenant_id=c.tenant_id AND i.workspace_id=c.workspace_id AND i.id=c.row_id AND i.run_id=$3)) OR (c.relation_name='slice_pipeline_receipts' AND c.row_id=$3) OR (c.relation_name='slice_results' AND EXISTS(SELECT 1 FROM slice_results r WHERE r.tenant_id=c.tenant_id AND r.workspace_id=c.workspace_id AND r.id=c.row_id AND r.pipeline_run_id=$3))) ORDER BY c.relation_name,c.row_id,c.row_revision,c.row_operation,c.row_request_id")
-        .bind(tenant).bind(workspace).bind(run).fetch_all(&mut **tx).await.map_err(storage_error)?;
-    authorize_copy_keys(tx, tenant, workspace, principal, keys).await
-}
-
 #[allow(clippy::type_complexity)]
 pub(crate) async fn load_context(
     tx: &mut Transaction<'_, Postgres>,
@@ -156,7 +96,8 @@ pub(crate) async fn load_context(
     principal: Uuid,
     run_id: Uuid,
 ) -> Result<Option<PipelineRunContext>> {
-    load_context_with_delivery_receipt(tx, tenant, workspace, principal, run_id, true).await
+    load_context_with_delivery_receipt(tx, tenant, workspace, principal, run_id, true, true, None)
+        .await
 }
 
 pub(crate) async fn load_context_without_delivery_receipt(
@@ -166,10 +107,47 @@ pub(crate) async fn load_context_without_delivery_receipt(
     principal: Uuid,
     run_id: Uuid,
 ) -> Result<Option<PipelineRunContext>> {
-    load_context_with_delivery_receipt(tx, tenant, workspace, principal, run_id, false).await
+    load_context_with_delivery_receipt(tx, tenant, workspace, principal, run_id, false, true, None)
+        .await
 }
 
-#[allow(clippy::type_complexity)]
+/// Completion preflight keeps all context authorization and decoding. Its
+/// resource status is recomputed under the workspace lock by phase completion.
+pub(crate) async fn load_completion_context(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    run_id: Uuid,
+) -> Result<Option<PipelineRunContext>> {
+    load_context_with_delivery_receipt(tx, tenant, workspace, principal, run_id, true, false, None)
+        .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn load_context_with_proofs(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    run_id: Uuid,
+    session: Uuid,
+    proofs: &mut crate::knowledge_lifecycle::PublicationProofScope,
+) -> Result<Option<PipelineRunContext>> {
+    load_context_with_delivery_receipt(
+        tx,
+        tenant,
+        workspace,
+        principal,
+        run_id,
+        true,
+        true,
+        Some((session, proofs)),
+    )
+    .await
+}
+
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 async fn load_context_with_delivery_receipt(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -177,7 +155,12 @@ async fn load_context_with_delivery_receipt(
     principal: Uuid,
     run_id: Uuid,
     issue_delivery_receipt: bool,
+    verify_resource_status: bool,
+    mut proofs: Option<(Uuid, &mut crate::knowledge_lifecycle::PublicationProofScope)>,
 ) -> Result<Option<PipelineRunContext>> {
+    if let Some((session, proofs)) = proofs.as_ref() {
+        proofs.require_identity(tenant, workspace, principal, *session)?;
+    }
     let row:Option<serde_json::Value>=sqlx::query_scalar(
         "SELECT pg_catalog.jsonb_build_object('id',id,'scope_id',scope_id,'slice_id',slice_id,'slice_revision',slice_revision,'revision',revision,'definition_kind',definition_kind,'definition_version',definition_version,'definition_digest',definition_digest,'definition',definition,'delivery_mode',delivery_mode,'qualification_reason',qualification_reason,'status',status,'current_phase_id',current_phase_id,'current_phase_ordinal',current_phase_ordinal,'knowledge_manifest_id',knowledge_manifest_id,'payload_erased',payload_erased,'inquiry',inquiry,'source_checkpoint_id',source_checkpoint_id,'source_checkpoint_digest',source_checkpoint_digest) FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
         .bind(tenant).bind(workspace).bind(run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
@@ -365,18 +348,42 @@ async fn load_context_with_delivery_receipt(
         principal,
     )
     .await?;
-    let knowledge_resource_status = crate::durable_knowledge::manifest::resource_status(
-        tx,
-        tenant,
-        workspace,
-        principal,
-        run.id,
-        run.scope_id,
-        run.slice_id,
-        run.current_phase_id.as_deref(),
-        knowledge_resources.as_ref(),
-    )
-    .await?;
+    let knowledge_resource_status = if verify_resource_status {
+        match proofs.as_mut() {
+            Some((session, proofs)) => {
+                crate::durable_knowledge::manifest::resource_status_with_proofs(
+                    tx,
+                    tenant,
+                    workspace,
+                    principal,
+                    run.id,
+                    run.scope_id,
+                    run.slice_id,
+                    run.current_phase_id.as_deref(),
+                    knowledge_resources.as_ref(),
+                    *session,
+                    proofs,
+                )
+                .await?
+            }
+            None => {
+                crate::durable_knowledge::manifest::resource_status(
+                    tx,
+                    tenant,
+                    workspace,
+                    principal,
+                    run.id,
+                    run.scope_id,
+                    run.slice_id,
+                    run.current_phase_id.as_deref(),
+                    knowledge_resources.as_ref(),
+                )
+                .await?
+            }
+        }
+    } else {
+        None
+    };
     let (delivery_receipt, delivery_fresh) = if issue_delivery_receipt {
         let (receipt, fresh) = load_or_create_delivery_receipt(
             tx,

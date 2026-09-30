@@ -264,7 +264,7 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
             "GRANT UPDATE(request_payload,result_payload,payload_erased,owner_unit_ids) ON TABLE scope_candidate_receipts TO {quoted_role}"
         ),
         format!(
-            "GRANT EXECUTE ON FUNCTION public.tect_dk2_native_publish(uuid,uuid,uuid,text,text,text),public.tect_dk2_native_read(uuid,uuid,uuid,bigint,uuid,boolean),public.tect_dk_native_erase(uuid,uuid,uuid) TO {quoted_role}"
+            "GRANT EXECUTE ON FUNCTION public.tect_dk2_native_publish(uuid,uuid,uuid,text,text,text),public.tect_dk2_native_read(uuid,uuid,uuid,bigint,uuid,boolean),public.tect_dk2_native_read_batch(uuid,uuid,jsonb),public.tect_dk_native_erase(uuid,uuid,uuid) TO {quoted_role}"
         ),
         format!(
             "REVOKE ALL PRIVILEGES ON FUNCTION public.tect_dk_internal_native_publish(uuid,uuid,uuid,text,text,text),public.tect_dk_internal_native_read(uuid,uuid,uuid,bigint,uuid),public.tect_dk_internal_native_owned_residual(uuid,uuid,uuid),public.tect_dk2_internal_native_publish(uuid,uuid,uuid,text,text,text),public.tect_dk2_internal_native_read(uuid,uuid,uuid,bigint,uuid,boolean),public.tect_dk_internal_native_erase(uuid,uuid,uuid),public.tect_dk_internal_capability() FROM {quoted_role}"

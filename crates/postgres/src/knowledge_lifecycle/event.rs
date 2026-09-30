@@ -12,6 +12,13 @@ type PublicationEventRow = (
     bool,
 );
 
+mod proof;
+pub(crate) use proof::{PublicationProofKey, PublicationProofScope};
+pub(crate) type PublicationProofContext<'a> = (Uuid, Uuid, &'a mut PublicationProofScope);
+
+type PublisherReceiptRow = (Option<serde_json::Value>, Option<serde_json::Value>);
+
+#[derive(Clone)]
 pub(crate) struct VerifiedPublicationEvent {
     pub input: rdf::RdfPublicationInput,
     pub rdf_digest: String,
@@ -100,6 +107,47 @@ pub(crate) async fn verify_publication_event(
     Ok(verified)
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn verify_publication_event_with_proofs(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    unit: Uuid,
+    revision: i64,
+    event: Uuid,
+    include_revision: bool,
+    proofs: Option<PublicationProofContext<'_>>,
+) -> Result<VerifiedPublicationEvent> {
+    match proofs {
+        Some((principal, session, proofs)) => {
+            proofs.require_identity(tenant, workspace, principal, session)?;
+            proofs
+                .verify(
+                    tx,
+                    PublicationProofKey {
+                        unit_id: unit,
+                        revision,
+                        event_id: event,
+                        include_revision,
+                    },
+                )
+                .await
+        }
+        None => {
+            verify_publication_event(
+                tx,
+                tenant,
+                workspace,
+                unit,
+                revision,
+                event,
+                include_revision,
+            )
+            .await
+        }
+    }
+}
+
 pub(crate) async fn verify_native_publication_event(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
@@ -119,6 +167,38 @@ pub(crate) async fn verify_native_publication_event(
     .fetch_optional(&mut **tx)
     .await
     .map_err(storage_error)?;
+    let verified = verify_event_payload(
+        tenant,
+        workspace,
+        unit,
+        revision,
+        event,
+        row.ok_or(Error::InternalInvariant)?,
+    )?;
+    let expected = rdf::build(&verified.input)?;
+    let rows = rdf::native_rows(
+        tx,
+        tenant,
+        workspace,
+        unit,
+        revision,
+        event,
+        include_revision,
+    )
+    .await?;
+    rdf::validate_rows(&rows, &expected)?;
+
+    Ok(verified)
+}
+
+fn verify_event_payload(
+    tenant: Uuid,
+    workspace: Uuid,
+    unit: Uuid,
+    revision: i64,
+    event: Uuid,
+    row: PublicationEventRow,
+) -> Result<VerifiedPublicationEvent> {
     let (
         payload,
         event_digest,
@@ -128,7 +208,7 @@ pub(crate) async fn verify_native_publication_event(
         change,
         operation_id,
         erased,
-    ) = row.ok_or(Error::InternalInvariant)?;
+    ) = row;
     if erased {
         return Err(Error::KnowledgePayloadErased);
     }
@@ -147,19 +227,6 @@ pub(crate) async fn verify_native_publication_event(
     {
         return Err(Error::InternalInvariant);
     }
-    let expected = rdf::build(&input)?;
-    let rows = rdf::native_rows(
-        tx,
-        tenant,
-        workspace,
-        unit,
-        revision,
-        event,
-        include_revision,
-    )
-    .await?;
-    rdf::validate_rows(&rows, &expected)?;
-
     Ok(VerifiedPublicationEvent {
         input,
         rdf_digest: event_digest,
@@ -172,7 +239,7 @@ async fn verify_receipt_proof(
     workspace: Uuid,
     verified: &VerifiedPublicationEvent,
 ) -> Result<()> {
-    let stored: Option<(Option<serde_json::Value>, Option<serde_json::Value>)> = sqlx::query_as(
+    let stored: Option<PublisherReceiptRow> = sqlx::query_as(
         "SELECT publisher_receipt,erased_publisher_receipt FROM knowledge_change_runs \
              WHERE tenant_id=$1 AND workspace_id=$2 AND change_id=$3",
     )
@@ -182,7 +249,21 @@ async fn verify_receipt_proof(
     .fetch_optional(&mut **tx)
     .await
     .map_err(storage_error)?;
-    let receipt = match stored.ok_or(Error::InternalInvariant)? {
+    verify_receipt_row(
+        tenant,
+        workspace,
+        verified,
+        stored.ok_or(Error::InternalInvariant)?,
+    )
+}
+
+fn verify_receipt_row(
+    tenant: Uuid,
+    workspace: Uuid,
+    verified: &VerifiedPublicationEvent,
+    stored: PublisherReceiptRow,
+) -> Result<()> {
+    let receipt = match stored {
         (Some(value), None) => {
             let mut full: KnowledgePublisherReceipt = decode(value)?;
             let stored_digest = std::mem::take(&mut full.digest);

@@ -260,7 +260,7 @@ impl WorkspaceService {
             .await?;
         let principal_id = tx.session_principal(session.id).await?;
         let stored = tx
-            .pipeline_run_context(workspace.id, principal_id, request.run_id)
+            .pipeline_run_completion_context(workspace.id, principal_id, request.run_id)
             .await?
             .ok_or(Error::NotFound)?;
         request.validate(&stored.definition)?;

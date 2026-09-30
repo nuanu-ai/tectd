@@ -70,6 +70,12 @@ pub trait PipelineExecutionStore: Send {
         principal_id: Uuid,
         run_id: Uuid,
     ) -> Result<Option<PipelineRunContext>>;
+    async fn pipeline_run_completion_context(
+        &mut self,
+        workspace_id: Uuid,
+        principal_id: Uuid,
+        run_id: Uuid,
+    ) -> Result<Option<PipelineRunContext>>;
     async fn pipeline_run_context_without_delivery_receipt(
         &mut self,
         workspace_id: Uuid,

@@ -51,6 +51,79 @@ pub(crate) async fn native_rows(
         .map_err(native_error)
 }
 
+/// One independent scalar-read scope. Repeated and mixed scopes retain ordinals.
+#[derive(Clone, serde::Serialize)]
+pub(crate) struct NativeReadRequest {
+    pub unit_id: Uuid,
+    pub revision: i64,
+    pub event_id: Uuid,
+    pub include_revision: bool,
+}
+
+/// Candidate adapter: only the guarded public SQL surface is callable here.
+/// Every returned group passes the existing typed RDF decoder and equality check.
+#[allow(dead_code)] // Wired into consumers only after private scalar/batch qualification.
+pub(crate) async fn native_rows_batch(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    requests: &[(&NativeReadRequest, &RdfDocument)],
+) -> Result<Vec<Vec<serde_json::Value>>> {
+    type BatchRow = (i64, Uuid, i64, Uuid, bool, Option<serde_json::Value>);
+    let payload = serde_json::to_value(
+        requests
+            .iter()
+            .map(|(request, _)| request)
+            .collect::<Vec<_>>(),
+    )
+    .map_err(storage_error)?;
+    let rows: Vec<BatchRow> = sqlx::query_as(
+        "SELECT request_ordinal,unit_id,revision,event_id,include_revision,triple FROM public.tect_dk2_native_read_batch($1,$2,$3)",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(payload)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(native_error)?;
+    let mut groups = vec![Vec::new(); requests.len()];
+    let mut seen = vec![false; requests.len()];
+    let mut empty = vec![false; requests.len()];
+    for (ordinal, unit, revision, event, include_revision, row) in rows {
+        let index = ordinal
+            .checked_sub(1)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|value| *value < requests.len())
+            .ok_or(Error::InternalInvariant)?;
+        let request = requests[index].0;
+        if unit != request.unit_id
+            || revision != request.revision
+            || event != request.event_id
+            || include_revision != request.include_revision
+            || empty[index]
+        {
+            return Err(Error::InternalInvariant);
+        }
+        match row {
+            Some(row) => groups[index].push(row),
+            None => {
+                if seen[index] {
+                    return Err(Error::InternalInvariant);
+                }
+                empty[index] = true;
+            }
+        }
+        seen[index] = true;
+    }
+    for (index, (_, document)) in requests.iter().enumerate() {
+        if !seen[index] {
+            return Err(Error::InternalInvariant);
+        }
+        super::validate_rows(&groups[index], document)?;
+    }
+    Ok(groups)
+}
+
 pub(crate) async fn qualify_native(tx: &mut Transaction<'_, Postgres>) -> Result<()> {
     let identity: (String, String, String) = sqlx::query_as(
         "SELECT pgrdf.version(),pgrdf.build_id(),(SELECT extversion FROM pg_catalog.pg_extension WHERE extname='pgrdf')",

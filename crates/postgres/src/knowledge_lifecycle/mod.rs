@@ -23,11 +23,16 @@ mod settle;
 
 pub(crate) use begin::begin;
 pub(crate) use commit::commit;
-pub(crate) use context::{current_knowledge_output, eligible_unit, lifecycle, load_context, unit};
+pub(crate) use context::{
+    current_knowledge_output, eligible_unit, lifecycle, load_context, unit, unit_with_proofs,
+};
 pub(crate) use erased_no_change::{
     qualify_begin as qualify_erased_no_change, validate_current as validate_erased_no_change,
 };
-pub(crate) use event::verify_publication_event;
+pub(crate) use event::{
+    PublicationProofContext, PublicationProofKey, PublicationProofScope, verify_publication_event,
+    verify_publication_event_with_proofs,
+};
 pub(crate) use input::record_input;
 pub(crate) use phase::complete_phase;
 pub(crate) use plan::compile_plan;

@@ -31,10 +31,20 @@ pub(crate) async fn complete_phase(
     .fetch_optional(&mut **tx).await.map_err(storage_error)? {
         if erased{return Err(Error::KnowledgePayloadErased)}
         if stored != Some(payload.clone()) { return Err(Error::InputConflict) }
-        return decode(result.ok_or(Error::InternalInvariant)?);
+        let outcome = decode(result.ok_or(Error::InternalInvariant)?)?;
+        // Replay proof uses current run resources under the workspace lock;
+        // the consumed manifest belongs to the historical completed phase.
+        let _ = crate::durable_knowledge::lock_state(tx, tenant, workspace).await?;
+        let principal = session_principal(tx, session).await?;
+        let mut proofs = crate::knowledge_lifecycle::PublicationProofScope::new(tenant, workspace, principal, session);
+        return verify_replay_current_context(tx, tenant, workspace, principal, session, request.run_id, outcome, &mut proofs).await;
     }
     // DK lock order: workspace knowledge state precedes the run lock.
     let _ = crate::durable_knowledge::lock_state(tx, tenant, workspace).await?;
+    let principal = session_principal(tx, session).await?;
+    let mut proofs = crate::knowledge_lifecycle::PublicationProofScope::new(
+        tenant, workspace, principal, session,
+    );
     let run_row:LockedRun=sqlx::query_as(
         "SELECT scope_id,slice_id,slice_revision,revision,status,definition_version,definition_digest,definition,delivery_mode,current_phase_id,current_phase_ordinal,knowledge_manifest_id,knowledge_manifest_digest FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
         .bind(tenant).bind(workspace).bind(request.run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?.ok_or(Error::NotFound)?;
@@ -45,7 +55,8 @@ pub(crate) async fn complete_phase(
     .fetch_optional(&mut **tx).await.map_err(storage_error)? {
         if erased{return Err(Error::KnowledgePayloadErased)}
         if stored != Some(payload.clone()) { return Err(Error::InputConflict) }
-        return decode(result.ok_or(Error::InternalInvariant)?);
+        let outcome = decode(result.ok_or(Error::InternalInvariant)?)?;
+        return verify_replay_current_context(tx, tenant, workspace, principal, session, request.run_id, outcome, &mut proofs).await;
     }
     if run_row.3 != request.run_revision {
         return Err(Error::StaleRevision);
@@ -153,7 +164,7 @@ pub(crate) async fn complete_phase(
     .await?;
     let knowledge =
         phase_validation::load_manifest(tx, tenant, workspace, session, run_row.11).await?;
-    crate::durable_knowledge::manifest::validate_completion(
+    crate::durable_knowledge::manifest::validate_completion_with_proofs(
         tx,
         tenant,
         workspace,
@@ -164,6 +175,7 @@ pub(crate) async fn complete_phase(
         session,
         knowledge.as_ref(),
         request.consumed_knowledge.as_ref(),
+        &mut proofs,
     )
     .await?;
     if !run_row.5.starts_with("0.7") {
@@ -284,7 +296,7 @@ pub(crate) async fn complete_phase(
         .bind(tenant).bind(workspace).bind(request.run_id).bind(next_revision).bind(status).bind(next_id.as_deref()).bind(next_ordinal.map(|value| value as i32))
         .execute(&mut **tx).await.map_err(storage_error)?;
     if let Some(next_phase) = next_id.as_deref() {
-        let manifest = crate::durable_knowledge::manifest::capture(
+        let manifest = crate::durable_knowledge::manifest::capture_with_proofs(
             tx,
             tenant,
             workspace,
@@ -294,6 +306,7 @@ pub(crate) async fn complete_phase(
             run_row.1,
             next_phase,
             session,
+            &mut proofs,
         )
         .await?;
         sqlx::query("UPDATE slice_pipeline_runs SET knowledge_manifest_id=$4,knowledge_manifest_digest=$5 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
@@ -377,14 +390,42 @@ pub(crate) async fn complete_phase(
     }
     let principal = session_principal(tx, session).await?;
     let outcome = PipelineMutationOutcome {
-        context: load_context(tx, tenant, workspace, principal, request.run_id)
-            .await?
-            .ok_or(Error::InternalInvariant)?,
+        context: load_context_with_proofs(
+            tx,
+            tenant,
+            workspace,
+            principal,
+            request.run_id,
+            session,
+            &mut proofs,
+        )
+        .await?
+        .ok_or(Error::InternalInvariant)?,
         result,
     };
     let outcome_payload = json(&outcome)?;
     sqlx::query("UPDATE slice_pipeline_phase_attempts SET result_payload=$4 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
         .bind(tenant).bind(workspace).bind(attempt_id).bind(outcome_payload).execute(&mut **tx).await.map_err(storage_error)?;
+    Ok(outcome)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn verify_replay_current_context(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    session: Uuid,
+    run: Uuid,
+    outcome: PipelineMutationOutcome,
+    proofs: &mut crate::knowledge_lifecycle::PublicationProofScope,
+) -> Result<PipelineMutationOutcome> {
+    // Preserve the original application preflight behavior: full current
+    // authorization and proof errors propagate, while status values alone do
+    // not introduce a new replay policy. Never revalidate old consumed inputs.
+    let _ = load_context_with_proofs(tx, tenant, workspace, principal, run, session, proofs)
+        .await?
+        .ok_or(Error::NotFound)?;
     Ok(outcome)
 }
 
