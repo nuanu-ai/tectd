@@ -4,11 +4,12 @@ import json
 import tempfile
 import unittest
 from copy import deepcopy
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError, replace, asdict
 from pathlib import Path
 
 from scripts.codex_app_server_observer import (
-    AppServerObserver, ExecutionIntent, ObservationRejected, _sha,
+    AppServerObserver, CallerExecutionIntent, CallerRouteSelection, ExecutionIntent,
+    ObservationRejected, _caller_intent_from_trusted_source, _mint_caller_source_ticket, _json, _sha,
 )
 from scripts.codex_route_catalogue import development_catalogue, select_route
 
@@ -95,6 +96,85 @@ class OfflineRpc:
 
 
 class ObserverTests(unittest.TestCase):
+    def caller_intent(self, source="trusted-source-wiring-logic-only", observer=None):
+        # Deliberate PRIVATE source-composition seam, never production authority.
+        observer = observer or self.observer
+        if observer._caller_source_issuer is None:
+            observer._caller_source_issuer = object()
+        selected = CallerRouteSelection("selected", "openai", "gpt-6.1-sol", "medium")
+        requested = CallerRouteSelection("requested", "openai", "gpt-6-luna", "xhigh")
+        recommended = CallerRouteSelection("recommended", "openai", "gpt-6.1-sol", "medium")
+        material = _json({"offline_fixture": source, "input_sha256": _sha(PROMPT), "invocation_key": "fresh-s05-key",
+            "selected_route": asdict(selected), "configured_route": asdict(selected),
+            "requested_route": asdict(requested), "recommended_route": asdict(recommended)})
+        ticket = _mint_caller_source_ticket(observer=observer, issuer=observer._caller_source_issuer,
+            selection=selected, requested=requested, recommended=recommended, invocation_key="fresh-s05-key",
+            input_sha256=_sha(PROMPT), source_binding_json=material, source_binding_digest=_sha(material))
+        return _caller_intent_from_trusted_source(source_ticket=ticket, prompt=PROMPT, cwd=CWD)
+
+    def test_caller_public_constructor_and_unsealed_values_deny(self):
+        with self.assertRaises(ObservationRejected):
+            CallerExecutionIntent(accepted=True)
+        forged = object.__new__(CallerExecutionIntent)
+        with self.assertRaises(ObservationRejected):
+            self.observer.run_once(forged)
+        self.assertEqual(self.rpc.calls, [])
+        with self.assertRaises(ObservationRejected):
+            _caller_intent_from_trusted_source(source_ticket={"accepted": True}, prompt=PROMPT, cwd=CWD)
+
+    def test_private_caller_persisted_binding_and_direct_replay(self):
+        case = self.caller_intent()
+        self.rpc.started["thread"]["ephemeral"] = False
+        receipt = self.observer.run_once(case)
+        self.assertEqual(receipt.status, "completed_configured_route")
+        self.assertIs(self.observer.run_once(case), receipt)
+        self.assertIsNone(receipt.observed_actual)
+        self.assertEqual(receipt.requested.route_id, "requested")
+        self.assertEqual(receipt.recommended.route_id, "recommended")
+        self.assertEqual(receipt.selection.route_id, "selected")
+        self.assertEqual(receipt.source_binding_json, case.source_binding_json)
+        self.assertEqual(receipt.source_binding_digest, case.source_binding_digest)
+        self.assertIs(dict(self.rpc.calls)["thread/start"]["ephemeral"], False)
+        reservation = json.loads((self.ledger / (_sha(case.invocation_key) + ".00-reserved.json")).read_text())
+        self.assertEqual(reservation["source_binding_json"], case.source_binding_json)
+        self.assertEqual(reservation["intent_digest"], case.digest)
+        before = list(self.rpc.calls)
+        reopened = self.offline_observer()
+        with self.assertRaisesRegex(ObservationRejected, "already reserved"):
+            reopened.run_once(self.caller_intent(observer=reopened))
+        self.assertEqual(self.rpc.calls, before)
+        reopened = self.offline_observer()
+        with self.assertRaisesRegex(ObservationRejected, "conflicts"):
+            reopened.run_once(self.caller_intent("changed-binding", observer=reopened))
+        self.assertEqual(self.rpc.calls, before)
+
+    def test_caller_unknown_send_and_resumed_reservation_never_retry(self):
+        case = self.caller_intent()
+        self.rpc.started["thread"]["ephemeral"] = False
+        self.rpc.fail_method = "turn/start"
+        receipt = self.observer.run_once(case)
+        self.assertEqual(receipt.status, "unknown_after_reservation")
+        before = list(self.rpc.calls)
+        for observer in (self.observer, self.offline_observer()):
+            with self.assertRaisesRegex(ObservationRejected, "already reserved"):
+                observer.run_once(self.caller_intent(observer=observer))
+        self.assertEqual(self.rpc.calls, before)
+
+    def test_caller_reservation_symlink_and_bad_permissions_fail_closed(self):
+        case = self.caller_intent()
+        self.ledger.mkdir(mode=0o700)
+        reservation = self.ledger / (_sha(case.invocation_key) + ".00-reserved.json")
+        reservation.symlink_to(self.ledger / "missing-reservation")
+        with self.assertRaisesRegex(ObservationRejected, "invalid reservation"):
+            self.observer.run_once(case)
+        self.assertEqual(self.rpc.calls, [])
+        reservation.unlink()
+        reservation.write_text(json.dumps({"intent_digest": case.digest}))
+        reservation.chmod(0o644)
+        with self.assertRaisesRegex(ObservationRejected, "invalid reservation"):
+            self.observer.run_once(case)
+        self.assertEqual(self.rpc.calls, [])
+
     def test_one_off_exact_configuration_gates_and_durable_replay(self):
         from scripts.codex_app_server_one_off_case import prepare_one_off_case
         case = prepare_one_off_case(CWD).intent

@@ -99,6 +99,145 @@ class ExecutionIntent:
 
 
 @dataclass(frozen=True)
+class CallerRouteSelection:
+    """Configuration projected from a privately validated current source result.
+
+    This value alone is neither catalogue authority nor dispatch permission.
+    """
+
+    route_id: str
+    provider: str
+    model: str
+    effort: str
+
+    def __post_init__(self) -> None:
+        for name in ("route_id", "provider", "model", "effort"):
+            _exact(getattr(self, name), name)
+
+
+_CALLER_INTENT_SEAL = object()
+_CALLER_SOURCE_TICKET_SEAL = object()
+
+
+@dataclass(frozen=True, init=False)
+class _CallerSourceTicket:
+    """Opaque private bridge-issued provenance, never parsed from source JSON.
+
+    Bound to one installed bridge/observer. This gates ordinary API use, not
+    arbitrary Python code in the trusted owner composition process.
+    """
+
+    observer: Any
+    issuer: Any
+    selection: CallerRouteSelection
+    requested: CallerRouteSelection | None
+    recommended: CallerRouteSelection | None
+    invocation_key: str
+    input_sha256: str
+    source_binding_json: str
+    source_binding_digest: str
+    _seal: Any = field(repr=False)
+
+    def __init__(self, *args: Any, **kwargs: Any):
+        raise ObservationRejected("current-source ticket requires private bridge issuance")
+
+
+def _mint_caller_source_ticket(*, observer: Any, issuer: Any, selection: CallerRouteSelection,
+        requested: CallerRouteSelection | None, recommended: CallerRouteSelection | None,
+        invocation_key: str, input_sha256: str, source_binding_json: str,
+        source_binding_digest: str) -> _CallerSourceTicket:
+    """Private bridge call only, after its trusted-source and closed-wire checks."""
+    if issuer is None or type(observer) is not AppServerObserver or getattr(observer, "_caller_source_issuer", None) is not issuer:
+        raise ObservationRejected("ticket issuer differs from the installed caller composition")
+    if type(selection) is not CallerRouteSelection or any(value is not None and
+            type(value) is not CallerRouteSelection for value in (requested, recommended)):
+        raise ObservationRejected("immutable caller route configurations required")
+    if _sha(source_binding_json) != source_binding_digest:
+        raise ObservationRejected("ticket source material digest differs")
+    material = json.loads(source_binding_json)
+    dimensions = lambda value: None if value is None else asdict(value)
+    if (material.get("input_sha256") != input_sha256 or material.get("invocation_key") != invocation_key or
+            material.get("selected_route") != dimensions(selection) or material.get("configured_route") != dimensions(selection) or
+            material.get("requested_route") != dimensions(requested) or material.get("recommended_route") != dimensions(recommended)):
+        raise ObservationRejected("ticket input/key/configuration projection differs from source material")
+    ticket = object.__new__(_CallerSourceTicket)
+    for name, value in {"observer": observer, "issuer": issuer, "selection": selection,
+            "requested": requested, "recommended": recommended, "invocation_key": invocation_key,
+            "input_sha256": input_sha256, "source_binding_json": source_binding_json,
+            "source_binding_digest": source_binding_digest, "_seal": _CALLER_SOURCE_TICKET_SEAL}.items():
+        object.__setattr__(ticket, name, value)
+    return ticket
+
+
+@dataclass(frozen=True, init=False)
+class CallerExecutionIntent:
+    """Private caller composition output, distinct from fixed Owner-policy cases.
+
+    Only the trusted-source bridge creates these values. The private seal gates
+    normal API use; arbitrary code inside the owner process is still trusted.
+    No imported JSON or caller boolean authenticates the source result.
+    """
+
+    selection: CallerRouteSelection
+    prompt: str
+    invocation_key: str
+    cwd: str
+    requested: CallerRouteSelection | None
+    recommended: CallerRouteSelection | None
+    source_binding_json: str
+    source_binding_digest: str
+    ephemeral_thread: bool = field(default=False, init=False)
+    _seal: Any = field(repr=False, compare=False)
+    _source_ticket: Any = field(repr=False, compare=False)
+
+    def __init__(self, *args: Any, **kwargs: Any):
+        raise ObservationRejected("caller intent requires the private trusted-source composition")
+
+    @property
+    def prompt_digest(self) -> str:
+        return _sha(self.prompt)
+
+    @property
+    def digest(self) -> str:
+        return _sha(_json({"selection": asdict(self.selection), "prompt_sha256": self.prompt_digest,
+                          "invocation_key": self.invocation_key, "cwd": self.cwd,
+                          "ephemeral_thread": False, "source_binding_digest": self.source_binding_digest,
+                          "requested": None if self.requested is None else asdict(self.requested),
+                          "recommended": None if self.recommended is None else asdict(self.recommended)}))
+
+
+def _caller_intent_from_trusted_source(*, source_ticket: _CallerSourceTicket, prompt: str,
+        cwd: str) -> CallerExecutionIntent:
+    """Private bridge wiring only; not a public source authentication function."""
+    if (type(source_ticket) is not _CallerSourceTicket or source_ticket._seal is not _CALLER_SOURCE_TICKET_SEAL or source_ticket.issuer is None or
+            getattr(source_ticket.observer, "_caller_source_issuer", None) is not source_ticket.issuer):
+        raise ObservationRejected("opaque ticket from the installed caller composition required")
+    selection, requested, recommended = source_ticket.selection, source_ticket.requested, source_ticket.recommended
+    invocation_key, source_binding_json = source_ticket.invocation_key, source_ticket.source_binding_json
+    if selection.provider != "openai":
+        raise ObservationRejected("only the owned openai App Server transport is supported")
+    _exact(invocation_key, "invocation key")
+    _exact(cwd, "cwd")
+    if not Path(cwd).is_absolute() or not isinstance(prompt, str) or not prompt.strip() or len(prompt.encode()) > 16384:
+        raise ObservationRejected("caller task must have an absolute cwd and bounded prompt")
+    if _sha(prompt) != source_ticket.input_sha256 or _sha(source_binding_json) != source_ticket.source_binding_digest:
+        raise ObservationRejected("ticket task or source binding differs")
+    try:
+        material = json.loads(source_binding_json)
+        if not isinstance(material, dict) or _json(material) != source_binding_json:
+            raise ValueError("noncanonical material")
+    except (ValueError, TypeError) as error:
+        raise ObservationRejected("canonical trusted-source binding required") from error
+    intent = object.__new__(CallerExecutionIntent)
+    for name, value in {"selection": selection, "prompt": prompt, "invocation_key": invocation_key,
+            "cwd": cwd, "requested": requested, "recommended": recommended,
+            "source_binding_json": source_binding_json, "source_binding_digest": _sha(source_binding_json),
+            "ephemeral_thread": False, "_seal": _CALLER_INTENT_SEAL, "_source_ticket": source_ticket}.items():
+        object.__setattr__(intent, name, value)
+    return intent
+
+
+@dataclass(frozen=True)
 class DispatchedConfiguration:
     model: str
     provider: str
@@ -108,9 +247,9 @@ class DispatchedConfiguration:
 @dataclass(frozen=True)
 class AppServerReceipt:
     intent_digest: str
-    selection: RouteSelection
-    requested: RouteSelection | None
-    recommended: RouteSelection | None
+    selection: RouteSelection | CallerRouteSelection
+    requested: RouteSelection | CallerRouteSelection | None
+    recommended: RouteSelection | CallerRouteSelection | None
     prompt_digest: str
     invocation_key: str
     evidence_kind: str
@@ -124,6 +263,8 @@ class AppServerReceipt:
     notification_capture_complete: bool
     host_kind: str = field(default="APP_SERVER", init=False)
     observed_actual: None = field(default=None, init=False)
+    source_binding_json: str | None = None
+    source_binding_digest: str | None = None
 
 
 class _Ledger:
@@ -151,6 +292,26 @@ class _Ledger:
             os.fsync(stream.fileno())
         os.fsync(self.fd)
 
+    def consumed_error(self, filename: str, intent_digest: str) -> ObservationRejected:
+        """Diagnostic conflict classification only; disk never authorizes replay."""
+        try:
+            fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self.fd)
+            try:
+                info = os.fstat(fd)
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > 262144:
+                    raise ValueError("invalid reservation permissions or shape")
+                raw = os.read(fd, 262145)
+            finally:
+                os.close(fd)
+            saved = json.loads(raw)
+            if not isinstance(saved, dict) or not isinstance(saved.get("intent_digest"), str):
+                raise ValueError("missing intent binding")
+            if saved["intent_digest"] != intent_digest:
+                return ObservationRejected("invocation key conflicts with durable reserved intent; no retry")
+        except (OSError, ValueError, TypeError):
+            return ObservationRejected("invocation key has an unreadable or invalid reservation; no retry")
+        return ObservationRejected("invocation key already reserved; no new start or retry")
+
     def close(self) -> None:
         os.close(self.fd)
 
@@ -177,6 +338,12 @@ class AppServerObserver:
         self._evidence_kind = evidence_kind
         self._lock = threading.Lock()
         self._terminal: dict[str, tuple[str, AppServerReceipt]] = {}
+        self._direct_observations: dict[str, tuple[str, AppServerReceipt]] = {}
+        self._caller_source_issuer = None
+
+    def _owns_direct_receipt(self, intent: CallerExecutionIntent, receipt: AppServerReceipt) -> bool:
+        observed = self._direct_observations.get(_sha(intent.invocation_key))
+        return observed is not None and observed[0] == intent.digest and observed[1] is receipt
 
     def _inventory(self, method: str, params: dict[str, Any], events: list[Any]) -> list[Any]:
         rows, seen = [], set()
@@ -284,7 +451,7 @@ class AppServerObserver:
             raise ObservationRejected("effective configured MCP entries are not fully reported")
 
     @staticmethod
-    def _turn(read: Any, intent: ExecutionIntent, thread_id: str, turn_id: str) -> dict[str, Any]:
+    def _turn(read: Any, intent: ExecutionIntent | CallerExecutionIntent, thread_id: str, turn_id: str) -> dict[str, Any]:
         thread = read.get("thread") if isinstance(read, dict) else None
         if not isinstance(thread, dict) or thread.get("id") != thread_id:
             raise ObservationRejected("thread/read identity mismatch")
@@ -315,10 +482,18 @@ class AppServerObserver:
             raise ObservationRejected("missing completed agent output")
         return turn
 
-    def run_once(self, intent: ExecutionIntent, *, completion_timeout: float = 60) -> AppServerReceipt:
-        if type(intent) is not ExecutionIntent:
+    def run_once(self, intent: ExecutionIntent | CallerExecutionIntent, *, completion_timeout: float = 60) -> AppServerReceipt:
+        if type(intent) not in (ExecutionIntent, CallerExecutionIntent):
             raise ObservationRejected("immutable execution intent required")
-        maximum_timeout = 180 if intent.selection.catalogue_digest in {
+        caller = type(intent) is CallerExecutionIntent
+        if caller and (getattr(intent, "_seal", None) is not _CALLER_INTENT_SEAL or
+                intent.ephemeral_thread is not False or _sha(intent.source_binding_json) != intent.source_binding_digest):
+            raise ObservationRejected("private current-source caller intent required")
+        if caller and (type(intent._source_ticket) is not _CallerSourceTicket or
+                intent._source_ticket._seal is not _CALLER_SOURCE_TICKET_SEAL or intent._source_ticket.issuer is None or
+                intent._source_ticket.observer is not self or intent._source_ticket.issuer is not self._caller_source_issuer):
+            raise ObservationRejected("caller intent belongs to another source/observer composition")
+        maximum_timeout = 180 if not caller and intent.selection.catalogue_digest in {
             one_off_catalogue().digest, persisted_catalogue().digest} else 60
         if isinstance(completion_timeout, bool) or not isinstance(completion_timeout, (int, float)) or not 0 < completion_timeout <= maximum_timeout:
             raise ObservationRejected(f"completion timeout must be within {maximum_timeout} seconds")
@@ -331,15 +506,20 @@ class AppServerObserver:
                 return previous[1]
             return self._run_reserved(intent, key_digest, completion_timeout)
 
-    def _run_reserved(self, intent: ExecutionIntent, key_digest: str, timeout: float) -> AppServerReceipt:
+    def _run_reserved(self, intent: ExecutionIntent | CallerExecutionIntent, key_digest: str, timeout: float) -> AppServerReceipt:
         ledger = _Ledger(self._ledger_dir)
         try:
-            ledger.write(key_digest + ".00-reserved.json", {"stage": "reserved",
+            reservation = {"stage": "reserved",
                          "intent_digest": intent.digest, "prompt_digest": intent.prompt_digest,
-                         "invocation_key": intent.invocation_key, "selection": asdict(intent.selection)})
+                         "invocation_key": intent.invocation_key, "selection": asdict(intent.selection)}
+            if type(intent) is CallerExecutionIntent:
+                reservation.update(source_binding_json=intent.source_binding_json,
+                                   source_binding_digest=intent.source_binding_digest)
+            ledger.write(key_digest + ".00-reserved.json", reservation)
         except FileExistsError as error:
+            rejection = ledger.consumed_error(key_digest + ".00-reserved.json", intent.digest)
             ledger.close()
-            raise ObservationRejected("invocation key already reserved; no new start or retry") from error
+            raise rejection from error
         except Exception:
             ledger.close()
             raise
@@ -497,11 +677,14 @@ class AppServerObserver:
             receipt = AppServerReceipt(intent.digest, intent.selection, intent.requested, intent.recommended,
                         intent.prompt_digest, intent.invocation_key, self._evidence_kind, status,
                         thread_id, turn_id, configured, outcome, failure, _json(events),
-                        notification_capture_complete)
+                        notification_capture_complete,
+                        source_binding_json=intent.source_binding_json if type(intent) is CallerExecutionIntent else None,
+                        source_binding_digest=intent.source_binding_digest if type(intent) is CallerExecutionIntent else None)
             try:
                 ledger.write(key_digest + ".02-observation.json", {"stage": "observation", "receipt": asdict(receipt)})
             finally:
                 ledger.close()
         if outcome in {"completed", "failed", "interrupted"}:
             self._terminal[key_digest] = (intent.digest, receipt)
+        self._direct_observations[key_digest] = (intent.digest, receipt)
         return receipt

@@ -39,6 +39,7 @@ mod matrix_tasks;
 mod matrix_verification;
 mod matrix_verification_ports;
 mod model_route_decision;
+mod model_route_execution;
 mod model_route_provider;
 mod model_route_provider_ports;
 mod model_route_recommendation;
@@ -125,6 +126,7 @@ pub use matrix_verification_ports::{
 pub use model_route_decision::{
     DecideModelRouteRecommendation, DispositionModelRouteRecommendation,
 };
+pub use model_route_execution::{CurrentModelRouteHostSelection, PrepareModelRouteHostSelection};
 pub use model_route_provider::{
     ModelRouteSendStart, attempt_model_route_after_commit,
     attempt_model_route_observed_after_commit, finalize_model_route_provider_response,
