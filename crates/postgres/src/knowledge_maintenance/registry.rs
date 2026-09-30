@@ -202,19 +202,32 @@ pub(crate) async fn register_manifest_consumers(
         return Err(Error::CapacityExceeded);
     }
     let consumer_ref = format!("pipeline-manifest:{manifest}");
-    for (unit, revision, required) in rows {
-        register_consumer(
-            tx,
-            tenant,
-            workspace,
-            unit,
-            revision,
-            &consumer_ref,
-            required,
-            MANIFEST_RELATION,
-            manifest,
+    if !rows.is_empty() {
+        if !consumer_row_current(tx, tenant, workspace, MANIFEST_RELATION, manifest).await? {
+            return Err(Error::InvalidArguments);
+        }
+        let units = rows.iter().map(|value| value.0).collect::<Vec<_>>();
+        let revisions = rows.iter().map(|value| value.1).collect::<Vec<_>>();
+        let required = rows.iter().map(|value| value.2).collect::<Vec<_>>();
+        sqlx::query(
+            "WITH consumers AS ( \
+             INSERT INTO knowledge_maintenance_consumers \
+             (id,tenant_id,workspace_id,unit_id,unit_revision,consumer_ref,required,relation_name,row_id) \
+             SELECT pg_catalog.gen_random_uuid(),$1,$2,u.unit_id,u.revision,$3,u.required,$4,$5 \
+             FROM ROWS FROM(pg_catalog.unnest($6::uuid[]),pg_catalog.unnest($7::bigint[]),pg_catalog.unnest($8::boolean[])) AS u(unit_id,revision,required) \
+             ORDER BY u.unit_id,u.revision \
+             ON CONFLICT(tenant_id,workspace_id,unit_id,unit_revision,consumer_ref,relation_name,row_id) \
+             DO UPDATE SET active=true,required=(knowledge_maintenance_consumers.required OR EXCLUDED.required) \
+             RETURNING id,unit_id,unit_revision) \
+             INSERT INTO knowledge_owned_copies \
+             (id,tenant_id,workspace_id,unit_id,copy_kind,relation_name,row_id,source_revision) \
+             SELECT pg_catalog.gen_random_uuid(),$1,$2,unit_id,'maintenance_consumer', \
+             'knowledge_maintenance_consumers',id,unit_revision FROM consumers \
+             ORDER BY unit_id,unit_revision ON CONFLICT DO NOTHING",
         )
-        .await?;
+        .bind(tenant).bind(workspace).bind(&consumer_ref).bind(MANIFEST_RELATION).bind(manifest)
+        .bind(&units).bind(&revisions).bind(&required)
+        .execute(&mut **tx).await.map_err(storage_error)?;
     }
     Ok(())
 }
@@ -250,3 +263,6 @@ pub(crate) async fn reconcile_unit_consumers(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
