@@ -37,7 +37,12 @@ for manifest in sorted((ROOT / "crates").glob("*/Cargo.toml")):
     forbidden = packages - ALLOWED.get(name, set())
     if forbidden:
         errors.append(f"{name}: forbidden dependencies {sorted(forbidden)}")
-    if data.get("build-dependencies") or data.get("target"):
+    # Claude secure ancestor traversal needs Darwin O_SEARCH, exposed by libc.
+    # Approve only this exact platform dependency; all other target escapes fail.
+    approved_target = {
+        'cfg(target_os = "macos")': {"dependencies": {"libc": "=0.2.189"}}
+    } if name == "tect-host" else {}
+    if data.get("build-dependencies") or data.get("target", {}) != approved_target:
         errors.append(f"{name}: unreviewed build/target dependency escape")
     if name in {"tect-domain", "tect-application"}:
         for source in manifest.parent.rglob("*.rs"):

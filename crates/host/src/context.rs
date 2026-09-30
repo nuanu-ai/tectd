@@ -1,4 +1,6 @@
 use crate::Result;
+use crate::native_identity::{ClaudeIdentityConfig, NativeIdentityProvider};
+use serde_json::{Map, Value};
 use std::env;
 use std::fs::{self, File};
 use std::io::Read;
@@ -12,6 +14,7 @@ const MAX_CONFIG_BYTES: u64 = 4 * 1024;
 pub struct HostContext {
     auth: HostAuth,
     workspace_key: String,
+    native_identity: NativeIdentityProvider,
 }
 
 impl HostContext {
@@ -20,7 +23,29 @@ impl HostContext {
         Ok(Self {
             auth,
             workspace_key,
+            native_identity: NativeIdentityProvider::default(),
         })
+    }
+
+    pub fn with_claude_identity(mut self, config: ClaudeIdentityConfig) -> Result<Self> {
+        if config.destination_host_id != self.auth.host_id {
+            return Err(Error::InvalidConfiguration);
+        }
+        self.native_identity = NativeIdentityProvider::ClaudePreToolUse(config);
+        Ok(self)
+    }
+
+    pub(crate) fn resolve_request_context(
+        &self,
+        metadata: Option<&Map<String, Value>>,
+        tool: &str,
+        arguments: &Value,
+        arguments_present: bool,
+    ) -> Result<RequestContext> {
+        let id = self
+            .native_identity
+            .resolve(metadata, tool, arguments, arguments_present)?;
+        self.request_context(&id)
     }
 
     pub(crate) fn request_context(&self, native_session_id: &str) -> Result<RequestContext> {
@@ -39,7 +64,20 @@ pub fn host_context_from_env() -> Result<HostContext> {
     let config_path = required_env("TECT_HOST_CONFIG")?;
     let workspace_key = required_env("TECT_WORKSPACE_KEY")?;
     let auth = read_host_auth_file(Path::new(&config_path))?;
-    HostContext::new(auth, workspace_key)
+    let host_id = auth.host_id;
+    let context = HostContext::new(auth, workspace_key)?;
+    match env::var("TECT_NATIVE_IDENTITY_PROVIDER") {
+        Err(env::VarError::NotPresent) => Ok(context),
+        Ok(provider) if provider == "codex" => Ok(context),
+        Ok(provider) if provider == "claude_pre_tool_use" => {
+            let directory = required_env("TECT_CLAUDE_ATTESTATION_DIR")?;
+            let alias = required_env("TECT_CLAUDE_MCP_SERVER_ALIAS")?;
+            let config = ClaudeIdentityConfig::new(PathBuf::from(directory), alias, host_id)
+                .map_err(|_| Error::InvalidConfiguration)?;
+            context.with_claude_identity(config)
+        }
+        _ => Err(Error::InvalidConfiguration),
+    }
 }
 
 fn required_env(name: &str) -> Result<String> {

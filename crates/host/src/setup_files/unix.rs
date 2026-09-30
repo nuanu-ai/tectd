@@ -10,6 +10,11 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
+mod publication_comparison;
+use publication_comparison::{
+    exact_target, publication_target_state, same_cleanup_fields, stage_cleanup_transition,
+};
+
 const TARGET: &str = "AGENTS.md";
 const STAGE_ATTEMPTS: usize = 4;
 const DIRECTORY_FLAGS: OFlags = OFlags::RDONLY
@@ -36,6 +41,7 @@ enum TargetState {
         reason: Option<&'static str>,
     },
     Unavailable(&'static str),
+    StageCleanup(fs::Stat),
 }
 
 struct Stage {
@@ -69,6 +75,9 @@ fn observation(state: TargetState) -> FileObservation {
     match state {
         TargetState::Missing => FileObservation::missing(),
         TargetState::Unavailable(reason) => FileObservation::unavailable(reason),
+        TargetState::StageCleanup(_) => {
+            FileObservation::unavailable("file_changed_during_inspection")
+        }
         TargetState::Existing {
             byte_length,
             sha256,
@@ -83,10 +92,54 @@ fn observation(state: TargetState) -> FileObservation {
 }
 
 pub(super) fn publish(directory: &SetupDirectory, content: &str) -> Result<FilePublication> {
+    publish_after_metadata(directory, content, || {})
+}
+
+pub(super) fn publish_after_metadata<F: FnMut()>(
+    directory: &SetupDirectory,
+    content: &str,
+    after_metadata: F,
+) -> Result<FilePublication> {
+    publish_with_hook(directory, content, false, after_metadata, || {})
+}
+
+#[cfg(test)]
+pub(super) fn publish_after_file_metadata<F: FnMut()>(
+    directory: &SetupDirectory,
+    content: &str,
+    after_metadata: F,
+) -> Result<FilePublication> {
+    publish_with_hook(directory, content, true, after_metadata, || {})
+}
+
+#[cfg(test)]
+pub(super) fn publish_before_retry<F: FnMut(), G: FnMut()>(
+    directory: &SetupDirectory,
+    content: &str,
+    after_metadata: F,
+    before_retry: G,
+) -> Result<FilePublication> {
+    publish_with_hook(directory, content, false, after_metadata, before_retry)
+}
+
+fn publish_with_hook<F: FnMut(), G: FnMut()>(
+    directory: &SetupDirectory,
+    content: &str,
+    after_read: bool,
+    mut after_metadata: F,
+    before_retry: G,
+) -> Result<FilePublication> {
     let dir = checked_directory(directory)?;
     let expected = digest(content.as_bytes());
     let byte_length = u64::try_from(content.len()).map_err(|_| Error::RequestTooLarge)?;
-    match target_state(&dir, content.len()) {
+    match publication_target_state(
+        directory,
+        &dir,
+        content.len(),
+        after_read,
+        &mut after_metadata,
+        before_retry,
+    )? {
         TargetState::Existing {
             byte_length: actual,
             sha256: Some(ref hash),
@@ -100,7 +153,9 @@ pub(super) fn publish(directory: &SetupDirectory, content: &str) -> Result<FileP
             ));
         }
         TargetState::Missing => {}
-        TargetState::Existing { .. } | TargetState::Unavailable(_) => {
+        TargetState::Existing { .. }
+        | TargetState::Unavailable(_)
+        | TargetState::StageCleanup(_) => {
             return Err(Error::SetupFileConflict);
         }
     }
@@ -113,11 +168,11 @@ pub(super) fn publish(directory: &SetupDirectory, content: &str) -> Result<FileP
     match fs::linkat(&dir, stage.name.as_str(), &dir, TARGET, AtFlags::empty()) {
         Ok(()) => finish_created(directory, &dir, &stage, &expected, byte_length),
         Err(error) if error == Errno::EXIST => {
-            let winner = exact_target(&dir, &expected, byte_length);
+            let winner = exact_target(directory, &dir, &expected, byte_length);
             cleanup_stage(&dir, &stage)?;
             fs::fsync(&dir).map_err(storage)?;
             revalidate_directory(directory)?;
-            if winner {
+            if winner? {
                 Ok(publication(
                     PublicationOutcome::AlreadyMatches,
                     expected,
@@ -142,7 +197,8 @@ fn finish_created(
     byte_length: u64,
 ) -> Result<FilePublication> {
     let first_sync = fs::fsync(dir).map_err(storage);
-    let verified = first_sync.is_ok() && exact_target(dir, expected, byte_length);
+    let verified =
+        first_sync.is_ok() && exact_target(directory, dir, expected, byte_length).unwrap_or(false);
     let identity_result = revalidate_directory(directory);
     let cleanup_result = cleanup_stage(dir, stage);
     let second_sync = cleanup_result
@@ -204,10 +260,16 @@ fn revalidate_directory(directory: &SetupDirectory) -> Result<()> {
 }
 
 fn target_state(dir: &OwnedFd, max_bytes: usize) -> TargetState {
-    target_state_after_metadata(dir, max_bytes, || {})
+    target_state_after_metadata(dir, max_bytes, None, false, || {})
 }
 
-fn target_state_after_metadata<F>(dir: &OwnedFd, max_bytes: usize, after_metadata: F) -> TargetState
+fn target_state_after_metadata<F>(
+    dir: &OwnedFd,
+    max_bytes: usize,
+    pinned: Option<&fs::Stat>,
+    after_read: bool,
+    after_metadata: F,
+) -> TargetState
 where
     F: FnOnce(),
 {
@@ -221,6 +283,13 @@ where
         Ok(stat) => stat,
         Err(_) => return TargetState::Unavailable("inspection_failed"),
     };
+    if pinned.is_some_and(|expected| {
+        !same_file(expected, &before)
+            || !same_cleanup_fields(expected, &before)
+            || before.st_nlink != 1
+    }) {
+        return TargetState::Unavailable("file_changed_during_inspection");
+    }
     if !FileType::from_raw_mode(before.st_mode).is_file() {
         return TargetState::Unavailable("unsupported_file_type");
     }
@@ -241,7 +310,10 @@ where
             reason: Some("comparison_capacity_exceeded"),
         };
     }
-    after_metadata();
+    let mut hook = Some(after_metadata);
+    if !after_read {
+        hook.take().unwrap()();
+    }
     let mut bytes = Vec::with_capacity(size.saturating_add(1));
     if Read::by_ref(&mut file)
         .take((max_bytes as u64).saturating_add(1))
@@ -254,6 +326,9 @@ where
         Ok(stat) => stat,
         Err(_) => return TargetState::Unavailable("inspection_failed"),
     };
+    if after_read {
+        hook.take().unwrap()();
+    }
     let named = match fs::statat(dir, TARGET, AtFlags::SYMLINK_NOFOLLOW) {
         Ok(stat) => stat,
         Err(_) => return TargetState::Unavailable("file_changed_during_inspection"),
@@ -262,6 +337,20 @@ where
         || !same_file(&before, &after)
         || !same_file(&before, &named)
         || !FileType::from_raw_mode(named.st_mode).is_file()
+    {
+        if pinned.is_none()
+            && bytes.len() == size
+            && stage_cleanup_transition(&before, &after, &named)
+        {
+            return TargetState::StageCleanup(named);
+        }
+        return TargetState::Unavailable("file_changed_during_inspection");
+    }
+    if pinned.is_some()
+        && (!same_cleanup_fields(&before, &after)
+            || !same_cleanup_fields(&before, &named)
+            || after.st_nlink != 1
+            || named.st_nlink != 1)
     {
         return TargetState::Unavailable("file_changed_during_inspection");
     }
@@ -282,15 +371,9 @@ where
     F: FnOnce(),
 {
     let fd = checked_directory(directory)?;
-    let state = target_state_after_metadata(&fd, max_bytes, after_metadata);
+    let state = target_state_after_metadata(&fd, max_bytes, None, false, after_metadata);
     revalidate_directory(directory)?;
     Ok(observation(state))
-}
-
-fn exact_target(dir: &OwnedFd, expected: &str, byte_length: u64) -> bool {
-    matches!(target_state(dir, usize::try_from(byte_length).unwrap_or(usize::MAX)),
-        TargetState::Existing { byte_length: actual, sha256: Some(ref hash), reason: None }
-            if actual == byte_length && hash == expected)
 }
 
 fn create_stage(dir: &OwnedFd) -> Result<Stage> {

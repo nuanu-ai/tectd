@@ -20,6 +20,7 @@ mod knowledge_search_output;
 mod knowledge_search_tools;
 mod knowledge_tools;
 mod mcp;
+pub mod native_identity;
 mod pipeline_definitions;
 mod pipeline_dispatch;
 mod pipeline_output;

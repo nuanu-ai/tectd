@@ -1,0 +1,63 @@
+{
+  "schema": "tectd.claude.native-acceptance.v1",
+  "accepted_date": "2026-09-30",
+  "source": {
+    "commit": "f8bb326a300b116257986b494e3fc66c523ac196",
+    "tree": "9a5ba4ec4420e13b334b50690ac1caba2af4574f"
+  },
+  "product": {
+    "name": "Claude Code",
+    "version": "2.1.283"
+  },
+  "binary": {
+    "name": "tectd-mcp",
+    "sha256": "98274a34a744ebca8b75738d9f0306e71796ded7f17f038b4caba824591b037d"
+  },
+  "acceptance": {
+    "status": "passed",
+    "read_only": true,
+    "native_fresh_and_same_uuid_resume": true,
+    "preseeded_fixture_mapping": true,
+    "preseeded_mapping_count": 1,
+    "mapping_preseeded_before_both_launches": true,
+    "native_mapping_creation_tested": false,
+    "actual_global_installation_accepted": false,
+    "native_session_uuid": "476a5d96-bfab-4322-8b07-50bdb23a46a8",
+    "mapped_fixture_session_id": "73640cca-07fe-44a4-b0c3-6ed412b7e5ea",
+    "rpc_tool": "get_state",
+    "successful_calls_per_launch": 1,
+    "returned_state": "ready",
+    "hook_record_matches_rpc_metadata": true,
+    "relay_sha256": "eb28f017afc366d12ced96783931ebdb4849eede267a4408afb230441931d8e2"
+  },
+  "launches": [
+    {
+      "phase": "fresh",
+      "claude_pid": 72855,
+      "mcp_pid": 72901,
+      "tool_use_id": "toolu_01Ad9mrc8vX7uib3ZfEGfsju",
+      "successful_get_state_calls": 1,
+      "tool_result_success": true,
+      "hook_record_matches_rpc_metadata": true,
+      "hook_record_to_rpc_ms": 19,
+      "returned_session_id": "73640cca-07fe-44a4-b0c3-6ed412b7e5ea"
+    },
+    {
+      "phase": "resume",
+      "claude_pid": 74941,
+      "mcp_pid": 75309,
+      "tool_use_id": "toolu_01UXEi4rebjCoF1Q96SbQo82",
+      "successful_get_state_calls": 1,
+      "tool_result_success": true,
+      "hook_record_matches_rpc_metadata": true,
+      "hook_record_to_rpc_ms": 14,
+      "returned_session_id": "73640cca-07fe-44a4-b0c3-6ed412b7e5ea"
+    }
+  ],
+  "cleanup": {
+    "owned_fixture_cleanup_completed": true,
+    "live_configuration_touched": false,
+    "temporary_host_credential_removed": true,
+    "source_unchanged_clean": true
+  }
+}
