@@ -126,7 +126,7 @@ class OwnedAppServerRpc:
             request_id = self._next_id
             self._pending[request_id] = None
 
-        message = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
+        message = {"id": request_id, "method": method, "params": params}
         try:
             encoded = self._encode(message)
             self._write(encoded, deadline)
@@ -146,7 +146,7 @@ class OwnedAppServerRpc:
         deadline = time.monotonic() + self._timeout(timeout)
         result = self.request("initialize", {"clientInfo": dict(client_info)}, timeout=timeout)
         try:
-            self._write(self._encode({"jsonrpc": "2.0", "method": "initialized"}), deadline)
+            self._write(self._encode({"method": "initialized", "params": {}}), deadline)
         except TimeoutError as error:
             self._set_terminal(error)
             self.close()
@@ -431,7 +431,9 @@ class OwnedAppServerRpc:
             frame = json.loads(raw.decode("utf-8"), parse_constant=reject_constant)
         except (UnicodeError, ValueError, RecursionError):
             raise AppServerProtocolError("App Server emitted malformed JSON-RPC data") from None
-        if not isinstance(frame, dict) or frame.get("jsonrpc") != "2.0":
+        # Codex App Server omits the JSON-RPC version field on its wire.
+        # Retain compatibility with an explicit valid version, but reject others.
+        if not isinstance(frame, dict) or ("jsonrpc" in frame and frame["jsonrpc"] != "2.0"):
             raise AppServerProtocolError("App Server emitted a malformed JSON-RPC object")
 
         has_id = "id" in frame

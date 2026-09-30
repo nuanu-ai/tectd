@@ -47,13 +47,34 @@ for raw in sys.stdin:
     if mode == "stream":
         sys.stderr.write("x" * 262144)
         sys.stderr.flush()
-        emit({"jsonrpc": "2.0", "id": request["id"] + 1, "result": {"wrong": True}})
-        emit({"jsonrpc": "2.0", "method": "server/unrelated", "params": {"n": 1}})
-        emit({"jsonrpc": "2.0", "method": "server/ready", "params": {"ready": True}})
+        emit({"id": request["id"] + 1, "result": {"wrong": True}})
+        emit({"method": "server/unrelated", "params": {"n": 1}})
+        emit({"method": "server/ready", "params": {"ready": True}})
+        emit({"id": request["id"], "result": {"ok": True}})
+        break
+    if mode == "versioned":
         emit({"jsonrpc": "2.0", "id": request["id"], "result": {"ok": True}})
         break
+    if mode.startswith("invalid-"):
+        frames = {
+            "invalid-version": {"jsonrpc": "1.0", "id": request["id"], "result": {}},
+            "invalid-null-version": {"jsonrpc": None, "id": request["id"], "result": {}},
+            "invalid-id-bool": {"id": True, "result": {}},
+            "invalid-id-string": {"id": str(request["id"]), "result": {}},
+            "invalid-id-float": {"id": float(request["id"]), "result": {}},
+            "invalid-result-error": {"id": request["id"], "result": {}, "error": {}},
+            "invalid-no-result": {"id": request["id"]},
+            "invalid-result": {"id": request["id"], "result": []},
+            "invalid-error": {"id": request["id"], "error": {"code": True, "message": "private"}},
+            "invalid-method": {"method": 1, "params": {}},
+            "invalid-server-request": {"id": request["id"], "method": "approval", "params": {}},
+            "invalid-empty": {},
+            "invalid-array": [],
+        }
+        emit(frames[mode])
+        break
     if mode == "error":
-        emit({"jsonrpc": "2.0", "id": request["id"],
+        emit({"id": request["id"],
               "error": {"code": -32600, "message": "server-controlled detail"}})
         break
     if mode == "eof":
@@ -67,16 +88,16 @@ for raw in sys.stdin:
         break
     if mode == "initialize":
         if request.get("method") == "initialize":
-            emit({"jsonrpc": "2.0", "id": request["id"], "result": {"protocolVersion": "1"}})
+            emit({"id": request["id"], "result": {"protocolVersion": "1"}})
         elif request.get("method") == "initialized":
-            emit({"jsonrpc": "2.0", "method": "fake/initialized", "params": {"seen": True}})
+            emit({"method": "fake/initialized", "params": {"seen": True}})
             break
     if mode in ("seal", "seal-hang", "seal-partial", "seal-error"):
-        emit({"jsonrpc": "2.0", "method": "server/earlier", "params": {}})
-        emit({"jsonrpc": "2.0", "id": request["id"], "result": {"ok": True}})
+        emit({"method": "server/earlier", "params": {}})
+        emit({"id": request["id"], "result": {"ok": True}})
 
 if mode == "seal":
-    emit({"jsonrpc": "2.0", "method": "model/rerouted", "params": {"late": True}})
+    emit({"method": "model/rerouted", "params": {"late": True}})
 elif mode == "seal-hang":
     time.sleep(60)
 elif mode == "seal-partial":
@@ -127,6 +148,29 @@ class OwnedAppServerRpcTests(unittest.TestCase):
         self.assertNotIn("server-controlled detail", str(caught.exception))
         self.assertEqual(len(record.read_text(encoding="utf-8").splitlines()), 1)
 
+    def test_explicit_valid_version_remains_supported(self):
+        transport = self.start("versioned")
+        self.assertEqual(transport.request("probe", {}, timeout=2), {"ok": True})
+
+    def test_outgoing_request_matches_headerless_wire_contract(self):
+        record = self.cwd / "received.jsonl"
+        transport = self.start("stream", record)
+        self.assertEqual(transport.request("probe", {"sample": True}, timeout=2), {"ok": True})
+        messages = [json.loads(line) for line in record.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(messages, [{"id": 1, "method": "probe", "params": {"sample": True}}])
+
+    def test_invalid_envelopes_fail_closed(self):
+        for suffix in (
+            "version", "null-version", "id-bool", "id-string", "id-float",
+            "result-error", "no-result", "result", "error", "method",
+            "server-request", "empty", "array",
+        ):
+            with self.subTest(suffix=suffix):
+                transport = self.start("invalid-" + suffix)
+                with self.assertRaises(AppServerProtocolError) as caught:
+                    transport.request("probe", {}, timeout=2)
+                self.assertNotIn("private", str(caught.exception))
+
     def test_eof_and_malformed_frame_fail_waiting_request(self):
         for mode, error_type in (("eof", EOFError), ("malformed", AppServerProtocolError)):
             with self.subTest(mode=mode):
@@ -154,9 +198,11 @@ class OwnedAppServerRpcTests(unittest.TestCase):
         )
         self.assertEqual(acknowledgement["method"], "fake/initialized")
         messages = [json.loads(line) for line in record.read_text(encoding="utf-8").splitlines()]
-        self.assertEqual(messages[0]["method"], "initialize")
-        self.assertEqual(messages[0]["params"], {"clientInfo": {"name": "transport-test", "version": "1"}})
-        self.assertEqual(messages[1], {"jsonrpc": "2.0", "method": "initialized"})
+        self.assertEqual(messages[0], {
+            "method": "initialize", "id": 1,
+            "params": {"clientInfo": {"name": "transport-test", "version": "1"}},
+        })
+        self.assertEqual(messages[1], {"method": "initialized", "params": {}})
 
     def test_oversized_write_has_end_to_end_deadline_and_burns_transport(self):
         transport = self.start("no-read")
