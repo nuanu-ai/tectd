@@ -122,13 +122,18 @@ pub(crate) async fn record_input(
         _ => return Err(Error::InvalidArguments),
     }
     let principal = session_principal(tx, session).await?;
-    load_context(tx, tenant, workspace, principal, request.run_id)
+    context::load_input_preflight_context(tx, tenant, workspace, principal, request.run_id)
         .await?
         .ok_or(Error::NotFound)?;
     let payload = json(request)?;
     if let Some((stored,result,erased))=sqlx::query_as::<_,(Option<serde_json::Value>,Option<serde_json::Value>,bool)>(
         "SELECT request_payload,result_payload,payload_erased FROM slice_pipeline_inputs WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3")
         .bind(tenant).bind(workspace).bind(request.request_id).fetch_optional(&mut **tx).await.map_err(storage_error)? {
+        // Replays retain full current-context verification before any stored
+        // input refusal or result decoding, without borrowing locked proofs.
+        load_context(tx, tenant, workspace, principal, request.run_id)
+            .await?
+            .ok_or(Error::NotFound)?;
         if erased { return Err(Error::KnowledgePayloadErased) }
         if stored != Some(payload.clone()) { return Err(Error::InputConflict) }
         return decode(result.ok_or(Error::InternalInvariant)?);
@@ -138,9 +143,23 @@ pub(crate) async fn record_input(
     let _ = crate::durable_knowledge::lock_state(tx, tenant, workspace).await?;
     let row:(i64,String,Option<String>,Option<i32>,String,serde_json::Value,Uuid,Uuid)=sqlx::query_as("SELECT revision,status,current_phase_id,current_phase_ordinal,definition_kind,definition,scope_id,slice_id FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
         .bind(tenant).bind(workspace).bind(request.run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?.ok_or(Error::NotFound)?;
-    load_context(tx, tenant, workspace, principal, request.run_id)
-        .await?
-        .ok_or(Error::NotFound)?;
+    // Only immutable publication material is shared across these locked reads.
+    // Every context read and manifest capture reloads all mutable selection,
+    // authorization, maintenance, freshness, and run facts.
+    let mut proofs = crate::knowledge_lifecycle::PublicationProofScope::new(
+        tenant, workspace, principal, session,
+    );
+    load_context_with_proofs(
+        tx,
+        tenant,
+        workspace,
+        principal,
+        request.run_id,
+        session,
+        &mut proofs,
+    )
+    .await?
+    .ok_or(Error::NotFound)?;
     if let Some((stored,result,erased))=sqlx::query_as::<_,(Option<serde_json::Value>,Option<serde_json::Value>,bool)>(
         "SELECT request_payload,result_payload,payload_erased FROM slice_pipeline_inputs WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3")
         .bind(tenant).bind(workspace).bind(request.request_id).fetch_optional(&mut **tx).await.map_err(storage_error)? {
@@ -201,7 +220,7 @@ pub(crate) async fn record_input(
     } else {
         sqlx::query("UPDATE slice_pipeline_runs SET revision=revision+1,status='active' WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
             .bind(tenant).bind(workspace).bind(request.run_id).execute(&mut **tx).await.map_err(storage_error)?;
-        let manifest = crate::durable_knowledge::manifest::capture(
+        let manifest = crate::durable_knowledge::manifest::capture_with_proofs(
             tx,
             tenant,
             workspace,
@@ -211,6 +230,7 @@ pub(crate) async fn record_input(
             row.7,
             &request.phase_id,
             session,
+            &mut proofs,
         )
         .await?;
         sqlx::query("UPDATE slice_pipeline_runs SET knowledge_manifest_id=$4,knowledge_manifest_digest=$5 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")
@@ -220,9 +240,17 @@ pub(crate) async fn record_input(
             .execute(&mut **tx).await.map_err(storage_error)?;
     }
     let outcome = PipelineMutationOutcome {
-        context: load_context(tx, tenant, workspace, principal, request.run_id)
-            .await?
-            .ok_or(Error::InternalInvariant)?,
+        context: load_context_with_proofs(
+            tx,
+            tenant,
+            workspace,
+            principal,
+            request.run_id,
+            session,
+            &mut proofs,
+        )
+        .await?
+        .ok_or(Error::InternalInvariant)?,
         result: None,
     };
     sqlx::query("UPDATE slice_pipeline_inputs SET result_payload=$4 WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3")

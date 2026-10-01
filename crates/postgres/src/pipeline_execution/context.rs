@@ -124,6 +124,20 @@ pub(crate) async fn load_completion_context(
         .await
 }
 
+/// Input preflight keeps context authorization, decoding, and legacy status.
+/// The caller discards this context and verifies generic resource status after
+/// acquiring both the workspace knowledge lock and the run lock.
+pub(crate) async fn load_input_preflight_context(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    run_id: Uuid,
+) -> Result<Option<PipelineRunContext>> {
+    load_context_with_delivery_receipt(tx, tenant, workspace, principal, run_id, true, false, None)
+        .await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn load_context_with_proofs(
     tx: &mut Transaction<'_, Postgres>,
