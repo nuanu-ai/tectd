@@ -149,6 +149,76 @@ async fn inherited_pipeline_units(
     Ok(units)
 }
 
+fn phase_copy_targets(
+    attempt: Uuid,
+    output: Uuid,
+    result: Option<Uuid>,
+    planning_input: Option<Uuid>,
+) -> Vec<(&'static str, &'static str, Uuid)> {
+    let mut targets = vec![
+        (
+            "pipeline_attempt",
+            CopyRelation::PipelineAttempt.name(),
+            attempt,
+        ),
+        (
+            "pipeline_output",
+            CopyRelation::PipelineOutput.name(),
+            output,
+        ),
+    ];
+    if let Some(row) = result {
+        targets.push(("slice_result", CopyRelation::SliceResult.name(), row));
+    }
+    if let Some(row) = planning_input {
+        targets.push(("planning_input", CopyRelation::PlanningInput.name(), row));
+    }
+    targets
+}
+
+async fn insert_phase_copy_batch(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    units: &[(Uuid, i64)],
+    targets: &[(&str, &str, Uuid)],
+) -> Result<()> {
+    if units.is_empty() {
+        return Ok(());
+    }
+    let unit_ids: Vec<Uuid> = units.iter().map(|&(unit, _)| unit).collect();
+    let revisions: Vec<i64> = units.iter().map(|&(_, revision)| revision).collect();
+    let kinds: Vec<String> = targets
+        .iter()
+        .map(|&(kind, _, _)| kind.to_owned())
+        .collect();
+    let relations: Vec<String> = targets
+        .iter()
+        .map(|&(_, relation, _)| relation.to_owned())
+        .collect();
+    let rows: Vec<Uuid> = targets.iter().map(|&(_, _, row)| row).collect();
+    sqlx::query(
+        "INSERT INTO knowledge_owned_copies \
+         (id,tenant_id,workspace_id,unit_id,copy_kind,relation_name,row_id,row_revision) \
+         SELECT pg_catalog.gen_random_uuid(),$1,$2,u.unit_id,h.copy_kind,h.relation_name,h.row_id,u.revision \
+         FROM ROWS FROM(pg_catalog.unnest($3::uuid[]),pg_catalog.unnest($4::bigint[])) AS u(unit_id,revision) \
+         CROSS JOIN ROWS FROM(pg_catalog.unnest($5::text[]),pg_catalog.unnest($6::text[]),pg_catalog.unnest($7::uuid[])) AS h(copy_kind,relation_name,row_id) \
+         WHERE true \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(&unit_ids)
+    .bind(&revisions)
+    .bind(&kinds)
+    .bind(&relations)
+    .bind(&rows)
+    .execute(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn register_pipeline_phase_copies(
     tx: &mut Transaction<'_, Postgres>,
@@ -167,56 +237,8 @@ pub(crate) async fn register_pipeline_phase_copies(
     units.extend(promoted);
     units.sort_unstable();
     units.dedup();
-    for (unit, revision) in units {
-        register(
-            tx,
-            tenant,
-            workspace,
-            unit,
-            "pipeline_attempt",
-            CopyRelation::PipelineAttempt,
-            attempt,
-            revision,
-        )
-        .await?;
-        register(
-            tx,
-            tenant,
-            workspace,
-            unit,
-            "pipeline_output",
-            CopyRelation::PipelineOutput,
-            output,
-            revision,
-        )
-        .await?;
-        if let Some(row) = result {
-            register(
-                tx,
-                tenant,
-                workspace,
-                unit,
-                "slice_result",
-                CopyRelation::SliceResult,
-                row,
-                revision,
-            )
-            .await?;
-        }
-        if let Some(row) = planning_input {
-            register(
-                tx,
-                tenant,
-                workspace,
-                unit,
-                "planning_input",
-                CopyRelation::PlanningInput,
-                row,
-                revision,
-            )
-            .await?;
-        }
-    }
+    let targets = phase_copy_targets(attempt, output, result, planning_input);
+    insert_phase_copy_batch(tx, tenant, workspace, &units, &targets).await?;
     let _ = run;
     Ok(())
 }
@@ -329,4 +351,79 @@ pub(in crate::knowledge_lifecycle::erase) async fn register_propagated(
         _ => return Err(Error::InternalInvariant),
     };
     register(tx, tenant, workspace, unit, kind, relation, row, revision).await
+}
+
+#[cfg(test)]
+mod phase_copy_batch_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn batch_preserves_exact_holder_keys_and_conflict_behavior() {
+        if std::env::var("TECT_TEST_DK2").as_deref() != Ok("1") {
+            return;
+        }
+        let pool = sqlx::PgPool::connect(&std::env::var("TECT_TEST_ADMIN_URL").unwrap())
+            .await
+            .unwrap();
+        let (tenant, workspace): (Uuid, Uuid) = sqlx::query_as(
+            "SELECT tenant_id,workspace_id FROM agent_sessions ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        let attempt = Uuid::new_v4();
+        let output = Uuid::new_v4();
+        let result = Uuid::new_v4();
+        let input = Uuid::new_v4();
+        let unit_a = Uuid::new_v4();
+        let unit_b = Uuid::new_v4();
+        let units = [(unit_a, 3), (unit_b, 7), (unit_a, 3)];
+        let targets = phase_copy_targets(attempt, output, Some(result), Some(input));
+        assert_eq!(targets.len(), 4);
+        insert_phase_copy_batch(&mut tx, tenant, workspace, &units, &targets)
+            .await
+            .unwrap();
+        insert_phase_copy_batch(&mut tx, tenant, workspace, &units, &targets)
+            .await
+            .unwrap();
+        let mut found: Vec<(Uuid, String, String, Uuid, i64, Option<String>, Option<Uuid>, Option<i64>)> =
+            sqlx::query_as("SELECT unit_id,copy_kind,relation_name,row_id,row_revision,row_operation,row_request_id,source_revision FROM knowledge_owned_copies WHERE tenant_id=$1 AND workspace_id=$2 AND row_id=ANY($3::uuid[])")
+                .bind(tenant).bind(workspace).bind(vec![attempt, output, result, input])
+                .fetch_all(&mut *tx).await.unwrap();
+        found.sort();
+        let mut expected = Vec::new();
+        for (unit, revision) in [(unit_a, 3), (unit_b, 7)] {
+            for (kind, relation, row) in &targets {
+                expected.push((
+                    unit,
+                    (*kind).to_owned(),
+                    (*relation).to_owned(),
+                    *row,
+                    revision,
+                    None,
+                    None,
+                    None,
+                ));
+            }
+        }
+        expected.sort();
+        assert_eq!(found, expected);
+
+        let attempt_only = Uuid::new_v4();
+        let output_only = Uuid::new_v4();
+        let two_targets = phase_copy_targets(attempt_only, output_only, None, None);
+        assert_eq!(two_targets.len(), 2);
+        insert_phase_copy_batch(&mut tx, tenant, workspace, &[], &two_targets)
+            .await
+            .unwrap();
+        insert_phase_copy_batch(&mut tx, tenant, workspace, &[(unit_a, 3)], &two_targets)
+            .await
+            .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM knowledge_owned_copies WHERE tenant_id=$1 AND workspace_id=$2 AND row_id=ANY($3::uuid[])")
+            .bind(tenant).bind(workspace).bind(vec![attempt_only, output_only])
+            .fetch_one(&mut *tx).await.unwrap();
+        assert_eq!(count, 2);
+        tx.rollback().await.unwrap();
+    }
 }

@@ -23,6 +23,52 @@ type UnitRevisionRow = (
     Uuid,
 );
 
+fn verify_revision_material(
+    expected: (&str, &str, &serde_json::Value, &str),
+    actual: (&str, &str, Option<&serde_json::Value>, Option<&str>),
+) -> Result<()> {
+    if expected.0 != actual.0
+        || expected.1 != actual.1
+        || actual.2 != Some(expected.2)
+        || actual.3 != Some(expected.3)
+    {
+        return Err(Error::InternalInvariant);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod material_tests {
+    use super::*;
+
+    #[test]
+    fn fresh_revision_fields_must_match_verified_expectations() {
+        let document = serde_json::json!({"title": "verified"});
+        let changed = serde_json::json!({"title": "changed"});
+        let expected = ("unit", "revision", &document, "digest");
+        assert_eq!(
+            verify_revision_material(
+                expected,
+                ("unit", "revision", Some(&document), Some("digest"))
+            ),
+            Ok(())
+        );
+        for actual in [
+            ("other", "revision", Some(&document), Some("digest")),
+            ("unit", "other", Some(&document), Some("digest")),
+            ("unit", "revision", Some(&changed), Some("digest")),
+            ("unit", "revision", None, Some("digest")),
+            ("unit", "revision", Some(&document), Some("other")),
+            ("unit", "revision", Some(&document), None),
+        ] {
+            assert_eq!(
+                verify_revision_material(expected, actual),
+                Err(Error::InternalInvariant)
+            );
+        }
+    }
+}
+
 mod load;
 pub(crate) use load::load_context;
 
@@ -138,7 +184,7 @@ async fn unit_inner(
     workspace: Uuid,
     principal_id: Uuid,
     query: &KnowledgeUnitQuery,
-    proofs: Option<event::PublicationProofContext<'_>>,
+    mut proofs: Option<event::PublicationProofContext<'_>>,
 ) -> Result<Option<KnowledgeUnitResponse>> {
     if let Some((principal, session, scope)) = proofs.as_ref() {
         scope.require_identity(tenant, workspace, *principal, *session)?;
@@ -197,25 +243,78 @@ async fn unit_inner(
         revision,
         event,
         true,
-        proofs,
+        proofs
+            .as_mut()
+            .map(|(principal, session, scope)| (*principal, *session, &mut **scope)),
     )
     .await?;
+    let material = proofs
+        .as_ref()
+        .map(|(principal, session, scope)| {
+            scope.expected_material(
+                tenant,
+                workspace,
+                *principal,
+                *session,
+                event::PublicationProofKey {
+                    unit_id: query.unit_id,
+                    revision,
+                    event_id: event,
+                    include_revision: true,
+                },
+            )
+        })
+        .transpose()?;
     let input = verified.input;
-    let expected = rdf::build(&input)?;
-    if expected.refs.unit != unit_iri || expected.refs.revision != revision_iri {
-        return Err(Error::InternalInvariant);
-    }
+    let unscoped_expected = if material.is_none() {
+        Some(rdf::build(&input)?)
+    } else {
+        None
+    };
+    let expected_unit = material
+        .map(|value| value.unit_iri.as_str())
+        .or_else(|| {
+            unscoped_expected
+                .as_ref()
+                .map(|value| value.refs.unit.as_str())
+        })
+        .ok_or(Error::InternalInvariant)?;
+    let expected_revision = material
+        .map(|value| value.revision_iri.as_str())
+        .or_else(|| {
+            unscoped_expected
+                .as_ref()
+                .map(|value| value.refs.revision.as_str())
+        })
+        .ok_or(Error::InternalInvariant)?;
     let verified_document = input
         .planned
         .document
         .as_ref()
         .ok_or(Error::InternalInvariant)?;
-    if document.as_ref() != Some(&json(verified_document)?) {
-        return Err(Error::InternalInvariant);
-    }
-    if revision_rdf_digest.as_deref() != Some(verified.rdf_digest.as_str()) {
-        return Err(Error::InternalInvariant);
-    }
+    let unscoped_document = if material.is_none() {
+        Some(json(verified_document)?)
+    } else {
+        None
+    };
+    let expected_document = material
+        .and_then(|value| value.document_json.as_ref())
+        .or(unscoped_document.as_ref())
+        .ok_or(Error::InternalInvariant)?;
+    verify_revision_material(
+        (
+            expected_unit,
+            expected_revision,
+            expected_document,
+            &verified.rdf_digest,
+        ),
+        (
+            &unit_iri,
+            &revision_iri,
+            document.as_ref(),
+            revision_rdf_digest.as_deref(),
+        ),
+    )?;
     let document = verified_document.clone();
     Ok(Some(KnowledgeUnitResponse::Document(Box::new(
         KnowledgeDocumentRevision {

@@ -188,7 +188,32 @@ async fn typed_inner(
             needs_context,
         ),
     };
-    let expected = rdf::build(&input)?;
+    let scoped_refs = proofs
+        .as_ref()
+        .map(|(principal, session, scope)| {
+            scope
+                .expected_material(
+                    tenant,
+                    workspace,
+                    *principal,
+                    *session,
+                    crate::knowledge_lifecycle::PublicationProofKey {
+                        unit_id: row.unit_id,
+                        revision: row.revision,
+                        event_id,
+                        include_revision: true,
+                    },
+                )
+                .map(|value| (value.unit_iri.clone(), value.revision_iri.clone()))
+        })
+        .transpose()?;
+    let (unit_iri, revision_iri) = match scoped_refs {
+        Some(value) => value,
+        None => {
+            let expected = rdf::build(&input)?;
+            (expected.refs.unit, expected.refs.revision)
+        }
+    };
     let latest = latest_validation(
         tx,
         tenant,
@@ -219,8 +244,8 @@ async fn typed_inner(
             lifecycle: decode(serde_json::Value::String(row.lifecycle.clone()))?,
             access_scope: decode(serde_json::Value::String(row.head_access.clone()))?,
             rdf_digest: row.rdf_digest.clone().ok_or(Error::InternalInvariant)?,
-            unit_iri: expected.refs.unit,
-            revision_iri: expected.refs.revision,
+            unit_iri,
+            revision_iri,
             title: document.title.clone(),
             canonical_text,
             knowledge_kind: document.knowledge_kind,
