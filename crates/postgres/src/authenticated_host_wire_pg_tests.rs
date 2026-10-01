@@ -21,6 +21,13 @@ use tect_domain::*;
 use tokio::net::UnixListener;
 use uuid::Uuid;
 mod fixture;
+mod s05_ordinary_dev;
+
+#[tokio::test]
+#[ignore = "requires fresh pinned owned PG18.6 and explicit S05 DEV mode/prompt; real mode separately authorized"]
+async fn authenticated_host_wire_pg_s05_ordinary_dev() {
+    s05_ordinary_dev::run().await;
+}
 const PROMPT: &str = "Return exactly JEV_CONTROL_OK. This is an isolated source-to-host routing control test; do not use tools or change files.";
 fn sha(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))

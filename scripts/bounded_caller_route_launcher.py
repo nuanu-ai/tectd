@@ -31,9 +31,9 @@ from scripts.codex_app_server_profile import build_launch_profile
 from scripts.codex_app_server_rpc import OwnedAppServerRpc
 
 INSTALLED_EXECUTABLE = "/Applications/Codex.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
-# Inventory pin for codex-cli 0.159.0. A legitimate app upgrade requires a fresh
+# Inventory pin for codex-cli 0.159.2. A legitimate app upgrade requires a fresh
 # owner inventory/pin; it never selects a fallback executable or model.
-INSTALLED_EXECUTABLE_SHA256 = "ccd1b9441d35ce30102059c78514a125d676e6765ea1d001033e8cbe88718314"
+INSTALLED_EXECUTABLE_SHA256 = "50ac633af64851511f9bbc71032cdae7f1ba20b3234c189687d61ba846c354c5"
 
 
 def _private_ledger(directory):

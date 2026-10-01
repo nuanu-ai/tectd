@@ -231,23 +231,34 @@ impl WorkspaceService {
             identity.principal_id,
         )?;
         let mut provider_request = None;
+        // Optional advice cannot prevent a later explicit choice. Revalidate
+        // its source independently of the provider/configuration gate, keeping
+        // the original no-call reason and never preparing a send for Skip.
+        let optional_no_call = matches!(
+            input.primary_reason,
+            AdvisoryReason::WorkspaceDisabled
+                | AdvisoryReason::SessionSkip
+                | AdvisoryReason::RequestSkip
+        );
         if matches!(
             input.primary_reason,
             AdvisoryReason::MatrixSourceUnverified
                 | AdvisoryReason::MatrixEvidenceUnresolved
                 | AdvisoryReason::CapabilityUnavailable
-        ) {
+        ) || optional_no_call
+        {
             if let (Some(binding), Some(resolved)) =
                 (source.requirements_binding.as_ref(), bound_context)
             {
                 match resolved {
-                    Err(failure) => input.primary_reason = match failure {
+                    Err(failure) if !optional_no_call => input.primary_reason = match failure {
                         crate::matrix_verification::BoundContextFailure::SnapshotMissing => AdvisoryReason::MatrixSnapshotMissing,
                         crate::matrix_verification::BoundContextFailure::BindingMismatch => AdvisoryReason::MatrixBindingMismatch,
                         crate::matrix_verification::BoundContextFailure::CurrentUnresolved => AdvisoryReason::MatrixContextUnresolved,
                         crate::matrix_verification::BoundContextFailure::CurrentStale => AdvisoryReason::MatrixContextStale,
                         crate::matrix_verification::BoundContextFailure::AuthoritySchemaUnsupported => AdvisoryReason::MatrixAuthoritySchemaUnsupported,
                     },
+                    Err(_) => {},
                     Ok(context) => {
                         let verified = binding::compose_bound_revision_with_verification(
                             tx.context_matrix_verification_store(),
@@ -256,7 +267,21 @@ impl WorkspaceService {
                             crate::matrix_verification::current_epoch_seconds()?,
                         ).await?;
                         if let Some((composition, record)) = verified {
-                            if let (Some(profile), Some(model)) = (
+                            if revision.choice_set.as_ref().is_some_and(|choice| {
+                                matches!(choice.validate(&revision.input), Ok(tect_domain::MatrixAdviceEligibility::EligibleForAdvice { .. }))
+                            }) {
+                                crate::matrix_advisory_capture::bind_verified_matrix_snapshot(
+                                    &mut input, &revision,
+                                    &crate::MatrixDispositionVerification::ContextV2 {
+                                        binding: binding.clone(),
+                                        composition: Box::new(composition.clone()),
+                                        record: Box::new(record.clone()),
+                                    },
+                                )?;
+                            }
+                            if optional_no_call {
+                                // The captured snapshot alone does not request advice.
+                            } else if let (Some(profile), Some(model)) = (
                                 config.provider_profile_ref.clone(), config.model_configuration.clone(),
                             ) {
                                 let prepared = crate::MatrixProviderRequest::new_context_verified(
@@ -266,14 +291,18 @@ impl WorkspaceService {
                                 input.primary_reason = AdvisoryReason::CapabilityUnavailable;
                                 provider_request = Some(prepared);
                             } else { input.primary_reason = AdvisoryReason::ProviderUnconfigured; }
-                        } else { input.primary_reason = AdvisoryReason::MatrixOperatingEvidenceUnresolved; }
+                        } else if !optional_no_call { input.primary_reason = AdvisoryReason::MatrixOperatingEvidenceUnresolved; }
                     }
                 }
-            } else {
+            } else if !optional_no_call {
                 input.primary_reason = AdvisoryReason::MatrixTaskUnbound;
             }
         }
-        if let Some(binding) = source.requirements_binding.as_ref() {
+        if let Some(binding) = source
+            .requirements_binding
+            .as_ref()
+            .filter(|_| input.matrix_verification_digest.is_none())
+        {
             let no_call_material = serde_json::to_vec(&(
                 "tect.context-matrix-advisory-opportunity/1",
                 &input.material_digest,

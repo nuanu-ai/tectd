@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 mod budget_authorization_test;
 mod positive;
-mod positive_input;
+pub(super) mod positive_input;
 mod positive_test;
 
 fn sqlstate(error: &sqlx::Error) -> Option<String> {

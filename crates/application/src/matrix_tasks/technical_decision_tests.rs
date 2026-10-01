@@ -187,7 +187,8 @@ async fn technical_decision_delegated_approval_preserves_owner_candidate_authors
 #[tokio::test]
 async fn technical_decision_rejects_binding_mapping_and_authority_forgery() {
     let saved = fixture();
-    let mutations: Vec<Box<dyn Fn(&mut ResolvedTechnicalDecisionEvidence)>> = vec![
+    type EvidenceMutation = Box<dyn Fn(&mut ResolvedTechnicalDecisionEvidence)>;
+    let mutations: Vec<EvidenceMutation> = vec![
         Box::new(|r| r.binding.tenant_id = Uuid::new_v4()),
         Box::new(|r| r.binding.workspace_id = Uuid::new_v4()),
         Box::new(|r| r.binding.task_revision += 1),

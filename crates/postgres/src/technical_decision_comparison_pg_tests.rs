@@ -14,8 +14,10 @@ use tect_application::*;
 use tect_domain::*;
 use uuid::Uuid;
 
-#[path = "model_route_live_tests/positive_input.rs"]
-mod input;
+use crate::model_route_live_tests::positive_input as input;
+
+#[path = "technical_decision_comparison_pg_tests/isolated_pg.rs"]
+pub(super) mod isolated_pg;
 
 pub(super) struct NoExternal;
 #[async_trait]
@@ -283,25 +285,9 @@ pub(super) struct ControlFixture {
 }
 
 pub(super) async fn control_fixture() -> ControlFixture {
-    let admin_pool = PgPool::connect(&std::env::var("TECT_TEST_ADMIN_URL").unwrap())
-        .await
-        .unwrap();
-    let identity:(String,i32,String)=sqlx::query_as("SELECT current_setting('data_directory'),current_setting('server_version_num')::integer,current_database()")
-        .fetch_one(&admin_pool).await.unwrap();
-    assert_eq!(
-        identity,
-        (
-            "/private/tmp/jev-pg-proof.BptdZTGr/data".into(),
-            180006,
-            "jev_contention".into()
-        )
-    );
-    let role = std::env::var("TECT_TEST_RUNTIME_ROLE").unwrap();
-    admin::migrate(&admin_pool, &role).await.unwrap();
-    let runtime = PgPool::connect(&std::env::var("TECT_TEST_RUNTIME_URL").unwrap())
-        .await
-        .unwrap();
-    crate::runtime::verify_runtime_role(&runtime).await.unwrap();
+    // Explicit fresh cluster pins authorize only synthetic test plumbing.
+    // They never supply business evidence or owner approval.
+    let (admin_pool, runtime) = isolated_pg::connect_and_migrate().await;
     let owner = admin::enroll_host(&admin_pool, None, vec![]).await.unwrap();
     let workspace = Uuid::new_v4();
     let program = Uuid::new_v4();
