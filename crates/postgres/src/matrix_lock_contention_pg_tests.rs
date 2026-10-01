@@ -9,8 +9,7 @@ use tect_application::{
 use tect_domain::{Error, RequirementsAnchor};
 use uuid::Uuid;
 
-#[path = "model_route_live_tests/positive_input.rs"]
-mod input;
+use crate::model_route_live_tests::positive_input as input;
 
 async fn authenticated(pool: &PgPool, owner: &admin::Enrollment, native: &str) -> PgUnitOfWork {
     let mut uow = PgUnitOfWork::test_begin(pool, owner.tenant_id).await;

@@ -7,6 +7,30 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
+/// Bind independently revalidated source material even when advice is skipped.
+/// This captures no provider request, budget grant, or disposition authority.
+pub(crate) fn bind_verified_matrix_snapshot(
+    input: &mut AdvisoryOpportunityInput,
+    revision: &crate::MatrixTaskRevision,
+    verification: &crate::MatrixDispositionVerification,
+) -> tect_domain::Result<()> {
+    let choice_set = revision
+        .choice_set
+        .as_ref()
+        .ok_or(Error::InternalInvariant)?;
+    if input.target_id != Some(revision.task_id)
+        || input.matrix_task_revision != Some(revision.revision)
+        || input.matrix_choice_set_digest != revision.choice_set_digest
+        || revision.choice_set_digest.as_deref()
+            != Some(choice_set.canonical_digest(&revision.input)?.as_str())
+    {
+        return Err(Error::InternalInvariant);
+    }
+    input.material_digest = verification.disposition_digest(&revision.input, choice_set)?;
+    input.matrix_verification_digest = Some(verification.record_digest().to_owned());
+    input.validate().map_err(|_| Error::InternalInvariant)
+}
+
 /// Captured preparation is retained for the later, transaction-bound dispatch
 /// flow. NoCall carries no provider body or budget grant.
 pub(crate) enum PreparedMatrixOpportunity {
@@ -76,8 +100,8 @@ pub(crate) async fn prepare_eligible_matrix_opportunity(
                 valid_policy_id(&auth.policy_id) && auth.policy_id == policy.id().to_string()
             }) =>
         {
-            // Positive opportunities bind the exact Matrix evaluation. The
-            // legacy no-call digest remains unchanged for existing receipts.
+            // Dispatch uses the same independently verified evaluation as
+            // an explicit choice; saved historical receipts are unchanged.
             input.material_digest = request.binding().evaluation_digest.clone();
             input.matrix_verification_digest =
                 request.binding().verification.digest().map(str::to_owned);

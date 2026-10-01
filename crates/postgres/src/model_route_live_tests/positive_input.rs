@@ -1,6 +1,6 @@
 use tect_domain::EngineeringMatrixInput;
 
-pub(super) fn matrix_input() -> EngineeringMatrixInput {
+pub(crate) fn matrix_input() -> EngineeringMatrixInput {
     serde_json::from_value(serde_json::json!({
         "mode":{"state":"known","value":"demo","provenance":"synthetic owner"},
         "envelope":{"scale":{"state":"known","value":"one request","provenance":"synthetic owner"},
