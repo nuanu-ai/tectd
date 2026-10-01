@@ -117,7 +117,7 @@ pub(crate) async fn verify_publication_event_with_proofs(
     event: Uuid,
     include_revision: bool,
     proofs: Option<PublicationProofContext<'_>>,
-) -> Result<VerifiedPublicationEvent> {
+) -> Result<std::sync::Arc<VerifiedPublicationEvent>> {
     match proofs {
         Some((principal, session, proofs)) => {
             proofs.require_identity(tenant, workspace, principal, session)?;
@@ -133,18 +133,17 @@ pub(crate) async fn verify_publication_event_with_proofs(
                 )
                 .await
         }
-        None => {
-            verify_publication_event(
-                tx,
-                tenant,
-                workspace,
-                unit,
-                revision,
-                event,
-                include_revision,
-            )
-            .await
-        }
+        None => verify_publication_event(
+            tx,
+            tenant,
+            workspace,
+            unit,
+            revision,
+            event,
+            include_revision,
+        )
+        .await
+        .map(std::sync::Arc::new),
     }
 }
 

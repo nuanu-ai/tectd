@@ -1,5 +1,6 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) struct PublicationProofKey {
@@ -24,7 +25,7 @@ pub(crate) struct PublicationProofScope {
     workspace: Uuid,
     principal: Uuid,
     session: Uuid,
-    verified: BTreeMap<PublicationProofKey, VerifiedPublicationEvent>,
+    verified: BTreeMap<PublicationProofKey, Arc<VerifiedPublicationEvent>>,
     expected: BTreeMap<PublicationProofKey, ExpectedPublicationMaterial>,
 }
 
@@ -217,7 +218,7 @@ impl PublicationProofScope {
         // Publish both caches only after every requested proof and derived
         // expectation has passed. No mutable relational state is retained.
         for ((key, (_, _, verified)), material) in keys.into_iter().zip(pending).zip(expected) {
-            self.verified.insert(key, verified);
+            self.verified.insert(key, Arc::new(verified));
             self.expected.insert(key, material);
         }
         Ok(())
@@ -227,11 +228,13 @@ impl PublicationProofScope {
         &mut self,
         tx: &mut Transaction<'_, Postgres>,
         key: PublicationProofKey,
-    ) -> Result<VerifiedPublicationEvent> {
+    ) -> Result<Arc<VerifiedPublicationEvent>> {
         self.preload(tx, &[key]).await?;
+        // Share only immutable verified publication material within this
+        // workspace-locked operation; mutable authority remains freshly read.
         self.verified
             .get(&key)
-            .cloned()
+            .map(Arc::clone)
             .ok_or(Error::InternalInvariant)
     }
 }

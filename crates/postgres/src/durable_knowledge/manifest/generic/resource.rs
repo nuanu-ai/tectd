@@ -54,22 +54,22 @@ async fn latest_validation(
     Ok(Some(PipelineKnowledgeValidationPin {
         event_id,
         event_iri: format!("urn:tect:dk:event:{tenant}:{workspace}:{event_id}"),
-        event_digest: verified.rdf_digest,
+        event_digest: verified.rdf_digest.clone(),
         sequence,
         valid_until: revalidation.valid_until.clone(),
         review_due_at: revalidation.review_due_at.clone(),
         source_pins: verified
             .input
             .resolved_sources
-            .into_iter()
+            .iter()
             .map(|value| PipelineKnowledgeSourcePin {
-                source_iri: value.pin.source_iri,
-                digest: value.pin.digest,
+                source_iri: value.pin.source_iri.clone(),
+                digest: value.pin.digest.clone(),
                 evidence_kind: value.pin.evidence_kind,
-                observed_at: value.pin.observed_at,
-                evidence_scope: value.pin.evidence_scope,
-                title: value.title,
-                uri: value.uri,
+                observed_at: value.pin.observed_at.clone(),
+                evidence_scope: value.pin.evidence_scope.clone(),
+                title: value.title.clone(),
+                uri: value.uri.clone(),
             })
             .collect(),
     }))
@@ -132,7 +132,7 @@ async fn typed_inner(
     )
     .await?;
     verify_revision_digest(row.rdf_digest.as_deref(), &verified.rdf_digest)?;
-    let input = verified.input;
+    let input = &verified.input;
     let Some(document) = input.planned.document.as_ref() else {
         return Ok(TypedResource {
             resource: None,
@@ -210,7 +210,7 @@ async fn typed_inner(
     let (unit_iri, revision_iri) = match scoped_refs {
         Some(value) => value,
         None => {
-            let expected = rdf::build(&input)?;
+            let expected = rdf::build(input)?;
             (expected.refs.unit, expected.refs.revision)
         }
     };
@@ -258,15 +258,15 @@ async fn typed_inner(
             inquiry_briefs,
             source_pins: input
                 .resolved_sources
-                .into_iter()
+                .iter()
                 .map(|value| PipelineKnowledgeSourcePin {
-                    source_iri: value.pin.source_iri,
-                    digest: value.pin.digest,
+                    source_iri: value.pin.source_iri.clone(),
+                    digest: value.pin.digest.clone(),
                     evidence_kind: value.pin.evidence_kind,
-                    observed_at: value.pin.observed_at,
-                    evidence_scope: value.pin.evidence_scope,
-                    title: value.title,
-                    uri: value.uri,
+                    observed_at: value.pin.observed_at.clone(),
+                    evidence_scope: value.pin.evidence_scope.clone(),
+                    title: value.title.clone(),
+                    uri: value.uri.clone(),
                 })
                 .collect(),
             latest_validation: latest,

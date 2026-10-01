@@ -231,10 +231,10 @@ fn scope_identity_and_revision_proof_mode_are_distinct() {
     ));
     scope.verified.insert(
         key,
-        VerifiedPublicationEvent {
+        Arc::new(VerifiedPublicationEvent {
             input: input.clone(),
             rdf_digest: "rdf-digest".into(),
-        },
+        }),
     );
     assert!(
         scope

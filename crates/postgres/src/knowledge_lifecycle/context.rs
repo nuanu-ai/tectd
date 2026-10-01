@@ -265,9 +265,9 @@ async fn unit_inner(
             )
         })
         .transpose()?;
-    let input = verified.input;
+    let input = &verified.input;
     let unscoped_expected = if material.is_none() {
-        Some(rdf::build(&input)?)
+        Some(rdf::build(input)?)
     } else {
         None
     };
@@ -324,10 +324,10 @@ async fn unit_inner(
             document,
             source_digests: input
                 .resolved_sources
-                .into_iter()
-                .map(|value| value.pin.digest)
+                .iter()
+                .map(|value| value.pin.digest.clone())
                 .collect(),
-            rdf_digest: verified.rdf_digest,
+            rdf_digest: verified.rdf_digest.clone(),
             unit_iri,
             revision_iri,
         },
