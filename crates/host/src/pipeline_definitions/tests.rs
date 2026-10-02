@@ -11,8 +11,8 @@ fn embedded_definition_inventory_is_exact() {
         ),
         (
             PipelineKind::FullDesignToExecution,
-            "0.6.0-native.engineering.3",
-            "79c01395855e0be1ffb4fca6eec7a09a5326a44d64ad3aa545c1e1da7d829ff3",
+            "0.6.0-native.engineering.4",
+            "85ec63bae1903fedb0c86ecd5326380ea8d524fe0ee29c5dce6e90b9a30cdd3d",
         ),
         (
             PipelineKind::DebugRootCause,

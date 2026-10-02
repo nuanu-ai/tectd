@@ -8,6 +8,13 @@ mod paths;
 use paths::{beneath, contains, normalized_path, path};
 
 pub const NATIVE_WORK_CONTRACT_VERSION: &str = "0.6.0-native.engineering.3";
+pub const NATIVE_WORK_CONTRACT_SUCCESSOR_VERSION: &str = "0.6.0-native.engineering.4";
+pub fn native_work_contract_version(version: &str) -> bool {
+    matches!(
+        version,
+        NATIVE_WORK_CONTRACT_VERSION | NATIVE_WORK_CONTRACT_SUCCESSOR_VERSION
+    )
+}
 pub const NATIVE_WORK_CONTRACT_SCHEMA: &str = "tect:native-slice-work-contract-schema";
 pub const NATIVE_WORK_CONTRACT_PHASE: &str = "slice-contract-writer";
 pub const NATIVE_WORK_CONTRACT_ARTIFACT: &str = "work-order-contract.json";
@@ -214,7 +221,7 @@ pub fn native_work_contract_refusal(reason: &str) -> Error {
 }
 pub fn native_work_contract_definition(definition: &PipelineDefinitionSnapshot) -> bool {
     definition.kind == PipelineKind::FullDesignToExecution
-        && definition.version == NATIVE_WORK_CONTRACT_VERSION
+        && native_work_contract_version(&definition.version)
 }
 pub fn native_work_contract_phase(
     definition: &PipelineDefinitionSnapshot,
@@ -270,7 +277,7 @@ impl NativeSliceWorkContract {
         if self.contract_kind != "native_slice_work_contract_v1"
             || t.phase_id != NATIVE_WORK_CONTRACT_PHASE
             || t.definition_kind != PipelineKind::FullDesignToExecution.as_str()
-            || t.definition_version != NATIVE_WORK_CONTRACT_VERSION
+            || !native_work_contract_version(&t.definition_version)
             || t.slice_revision < 1
             || t.run_revision < 1
             || !sha(&t.definition_digest)
@@ -471,6 +478,7 @@ pub fn validate_native_work_contract_output(
         }
         if c.target.run_id != request.run_id
             || c.target.run_revision != request.run_revision
+            || c.target.definition_version != definition.version
             || c.target.definition_digest != definition.digest
         {
             return Err(native_work_contract_refusal(

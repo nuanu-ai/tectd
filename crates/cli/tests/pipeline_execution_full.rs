@@ -41,8 +41,10 @@ fn full_draft() -> Value {
 
 async fn advance(client: &mut Mcp, context: Value) -> Value {
     let (verdict, outcome, transition) = successful_route(&context);
-    let request = if context["run"]["definition_version"] == "0.6.0-native.engineering.3"
-        && context["run"]["current_phase_id"] == "slice-contract-writer"
+    let request = if matches!(
+        context["run"]["definition_version"].as_str(),
+        Some("0.6.0-native.engineering.3" | "0.6.0-native.engineering.4")
+    ) && context["run"]["current_phase_id"] == "slice-contract-writer"
     {
         let facts = full_support::native_contract_fixture_facts(client).await;
         full_support::completion_with_contract(

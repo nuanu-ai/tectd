@@ -128,7 +128,7 @@ fn engineering_gate_instructions_and_active_ordinals_are_exact() {
         assert_eq!(
             definition.version,
             if kind == PipelineKind::FullDesignToExecution {
-                "0.6.0-native.engineering.3"
+                "0.6.0-native.engineering.4"
             } else {
                 "0.6.0-native.engineering.2"
             }

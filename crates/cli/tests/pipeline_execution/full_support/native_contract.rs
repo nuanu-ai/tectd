@@ -36,8 +36,10 @@ pub(crate) fn completion_with_contract(
     mut request: Value,
     facts: &NativeContractFixtureFacts,
 ) -> Value {
-    if context["run"]["definition_version"] != "0.6.0-native.engineering.3"
-        || context["run"]["current_phase_id"] != "slice-contract-writer"
+    if !matches!(
+        context["run"]["definition_version"].as_str(),
+        Some("0.6.0-native.engineering.3" | "0.6.0-native.engineering.4")
+    ) || context["run"]["current_phase_id"] != "slice-contract-writer"
         || request["output"]["verdict"] != "contract_ready"
     {
         return request;

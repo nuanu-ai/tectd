@@ -16,6 +16,8 @@ use sqlx::PgPool;
 use support::{open_slice, ready_source_candidate, repository, review, route, route_error, save};
 use tect_postgres::admin;
 use uuid::Uuid;
+#[path = "native_planning/local_result.rs"]
+mod local_result;
 fn full_draft() -> Value {
     json!({"coverage_summary":"Full design through execution lifecycle","nodes":[{
         "kind":"work","identity":{"local":"full"},
@@ -105,6 +107,13 @@ async fn refuses_with_code_without_persistence(
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn native_contract_semantic_refusal_precedes_persistence_and_consumers_recheck_provenance() {
+    native_contract_fixture("0.6.0-native.engineering.3").await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn native4_contract_preserves_all_provenance_negatives_and_local_result_gate() {
+    native_contract_fixture("0.6.0-native.engineering.4").await;
+}
+async fn native_contract_fixture(version: &str) {
     assert_eq!(
         std::env::var("TECT_TEST_NATIVE_CONTRACT_FIXTURE").as_deref(),
         Ok("1"),
@@ -154,7 +163,7 @@ async fn native_contract_semantic_refusal_precedes_persistence_and_consumers_rec
         open_slice(&reviewed, &reviewed["draft"]["nodes"][0], Uuid::new_v4()),
     )
     .await;
-    let begun=route(&mut client,"command","slice.pipeline.begin",json!({"request_id":Uuid::new_v4(),"scope_id":reviewed["scope"]["id"],"slice_id":opened["created"]["id"],"slice_revision":opened["created"]["revision"],"definition_version":"0.6.0-native.engineering.3","qualification_reason":"Isolated native contract validator fixture."})).await;
+    let begun=route(&mut client,"command","slice.pipeline.begin",json!({"request_id":Uuid::new_v4(),"scope_id":reviewed["scope"]["id"],"slice_id":opened["created"]["id"],"slice_revision":opened["created"]["revision"],"definition_version":version,"qualification_reason":"Isolated native contract validator fixture."})).await;
     let mut c = begun["created"].clone();
     for _ in 0..3 {
         c = advance(&mut client, c).await;
@@ -248,6 +257,15 @@ async fn native_contract_semantic_refusal_precedes_persistence_and_consumers_rec
         install_artifact(&mut r, &v);
         refuses_without_persistence(&mut client, &c, r).await;
     }
+    let mut wrong_version = valid.clone();
+    wrong_version["target"]["definition_version"] = json!(if version.ends_with(".3") {
+        "0.6.0-native.engineering.4"
+    } else {
+        "0.6.0-native.engineering.3"
+    });
+    let mut wrong_request = completion(&c, "contract_ready", "completed", "continue", None, None);
+    install_artifact(&mut wrong_request, &wrong_version);
+    refuses_without_persistence(&mut client, &c, wrong_request).await;
     // The successful lineage has actual owner input granting planning/testing only.
     let answer = route(&mut client, "command", "slice.pipeline.input", json!({
         "request_id":Uuid::new_v4(),"run_id":c["run"]["id"],"run_revision":c["run"]["revision"],
@@ -338,6 +356,10 @@ async fn native_contract_semantic_refusal_precedes_persistence_and_consumers_rec
         .unwrap()
         .retain(|r| r["phase_id"] != "slice-contract-writer");
     refuses_without_persistence(&mut client, &c, missing).await;
+    if version.ends_with(".4") {
+        c = local_result::validate(&mut client, &pool, c).await;
+        assert_eq!(c["run"]["current_phase_ordinal"], 18);
+    }
     assert_eq!(std::fs::read(&fixture_source).unwrap(), original_source);
     client.finish().await;
 }

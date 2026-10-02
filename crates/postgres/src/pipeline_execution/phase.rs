@@ -201,6 +201,7 @@ pub(crate) async fn complete_phase(
         )
         .await?;
     }
+    helpers::validate_local_result_gate(tx, tenant, workspace, request, &definition).await?;
     validate_review_authorization(
         tx,
         tenant,
