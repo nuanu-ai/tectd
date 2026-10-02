@@ -70,6 +70,15 @@ pub trait PipelineExecutionStore: Send {
         principal_id: Uuid,
         run_id: Uuid,
     ) -> Result<Option<PipelineRunContext>>;
+    /// Ordinary context delivery: one existing-state fence and lexical proof
+    /// scope, using the currently authorized reader session.
+    async fn pipeline_run_ordinary_context(
+        &mut self,
+        workspace_id: Uuid,
+        principal_id: Uuid,
+        session_id: Uuid,
+        run_id: Uuid,
+    ) -> Result<Option<PipelineRunContext>>;
     async fn pipeline_run_completion_context(
         &mut self,
         workspace_id: Uuid,

@@ -187,6 +187,10 @@ fn scope_identity_and_revision_proof_mode_are_distinct() {
         input.principal_id,
         input.session_id,
     );
+    assert!(
+        scope.eager_preload(),
+        "shared mutation scopes stay eager by default"
+    );
     assert_eq!(
         scope.require_identity(
             input.tenant,

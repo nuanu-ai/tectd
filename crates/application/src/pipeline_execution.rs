@@ -201,11 +201,6 @@ impl WorkspaceService {
             .await?;
         let principal_id = tx.session_principal(session.id).await?;
         let value = match query.view {
-            PipelineRunContextView::Current => PipelineContextResponse::Current(Box::new(
-                tx.pipeline_run_context(workspace.id, principal_id, query.run_id)
-                    .await?
-                    .ok_or(Error::NotFound)?,
-            )),
             PipelineRunContextView::Output => PipelineContextResponse::Output(Box::new(
                 tx.pipeline_phase_output(
                     workspace.id,
@@ -216,14 +211,23 @@ impl WorkspaceService {
                 .await?
                 .ok_or(Error::NotFound)?,
             )),
-            PipelineRunContextView::DeliveryReceipt => {
+            PipelineRunContextView::Current | PipelineRunContextView::DeliveryReceipt => {
                 let context = tx
-                    .pipeline_run_context(workspace.id, principal_id, query.run_id)
+                    .pipeline_run_ordinary_context(
+                        workspace.id,
+                        principal_id,
+                        session.id,
+                        query.run_id,
+                    )
                     .await?
                     .ok_or(Error::NotFound)?;
-                PipelineContextResponse::DeliveryReceipt(Box::new(
-                    context.delivery_receipt.ok_or(Error::InternalInvariant)?,
-                ))
+                if matches!(query.view, PipelineRunContextView::Current) {
+                    PipelineContextResponse::Current(Box::new(context))
+                } else {
+                    PipelineContextResponse::DeliveryReceipt(Box::new(
+                        context.delivery_receipt.ok_or(Error::InternalInvariant)?,
+                    ))
+                }
             }
         };
         tx.commit().await?;

@@ -152,7 +152,10 @@ async fn snapshot_inner(
         })).collect::<Result<Vec<_>>>()?;
     // Only accessible, active, definition-matched DK-2 resources enter proof
     // preloading. Relational selection is rebuilt on every snapshot.
-    if let Some((_, _, proof_scope)) = proofs.as_mut() {
+    if let Some((_, _, proof_scope)) = proofs
+        .as_mut()
+        .filter(|(_, _, scope)| scope.eager_preload())
+    {
         let typed_rows = rows
             .iter()
             .filter(|row| {

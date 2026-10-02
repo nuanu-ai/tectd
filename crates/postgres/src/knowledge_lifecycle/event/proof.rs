@@ -27,6 +27,7 @@ pub(crate) struct PublicationProofScope {
     session: Uuid,
     verified: BTreeMap<PublicationProofKey, Arc<VerifiedPublicationEvent>>,
     expected: BTreeMap<PublicationProofKey, ExpectedPublicationMaterial>,
+    eager_preload: bool,
 }
 
 impl PublicationProofScope {
@@ -38,7 +39,39 @@ impl PublicationProofScope {
             session,
             verified: BTreeMap::new(),
             expected: BTreeMap::new(),
+            eager_preload: true,
         }
+    }
+
+    /// Only ordinary context reads use lazy first-resource proof ordering.
+    /// Creating this scope itself acquires the existing workspace fence; it
+    /// never creates knowledge state or moves inactive/absent identity gates.
+    /// Keep the same transaction alive for the entire scope.
+    pub(crate) async fn ordinary_context(
+        tx: &mut Transaction<'_, Postgres>,
+        tenant: Uuid,
+        workspace: Uuid,
+        principal: Uuid,
+        session: Uuid,
+    ) -> Result<Option<Self>> {
+        let ready: Option<bool> = sqlx::query_scalar(
+            "SELECT capability_ready FROM workspace_knowledge_state WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE",
+        )
+        .bind(tenant)
+        .bind(workspace)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(storage_error)?;
+        if ready != Some(true) {
+            return Ok(None);
+        }
+        let mut scope = Self::new(tenant, workspace, principal, session);
+        scope.eager_preload = false;
+        Ok(Some(scope))
+    }
+
+    pub(crate) fn eager_preload(&self) -> bool {
+        self.eager_preload
     }
 
     pub(crate) fn require_identity(

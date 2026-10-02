@@ -88,6 +88,43 @@ impl PipelineExecutionStore for PgUnitOfWork {
         .await
     }
 
+    async fn pipeline_run_ordinary_context(
+        &mut self,
+        workspace_id: Uuid,
+        principal_id: Uuid,
+        session_id: Uuid,
+        run_id: Uuid,
+    ) -> Result<Option<PipelineRunContext>> {
+        let tenant = self.tenant_id()?;
+        let tx = self.transaction()?;
+        let mut proofs = crate::knowledge_lifecycle::PublicationProofScope::ordinary_context(
+            tx,
+            tenant,
+            workspace_id,
+            principal_id,
+            session_id,
+        )
+        .await?;
+        match proofs.as_mut() {
+            Some(proofs) => {
+                pipeline_execution::load_context_with_proofs(
+                    tx,
+                    tenant,
+                    workspace_id,
+                    principal_id,
+                    run_id,
+                    session_id,
+                    proofs,
+                )
+                .await
+            }
+            None => {
+                pipeline_execution::load_context(tx, tenant, workspace_id, principal_id, run_id)
+                    .await
+            }
+        }
+    }
+
     async fn pipeline_run_completion_context(
         &mut self,
         workspace_id: Uuid,
