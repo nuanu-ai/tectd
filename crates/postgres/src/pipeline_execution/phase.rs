@@ -120,6 +120,18 @@ pub(crate) async fn complete_phase(
         }
     }
     phase_validation::validate_output_integrity(&request.output, &run_row.5)?;
+    native_contract::validate(
+        tx,
+        tenant,
+        workspace,
+        session,
+        request,
+        &definition,
+        run_row.0,
+        run_row.1,
+        run_row.2,
+    )
+    .await?;
     let open_checkpoint = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM pipeline_research_checkpoints WHERE tenant_id=$1 AND workspace_id=$2 AND producer_run_id=$3 AND status='open')",
     )

@@ -125,13 +125,27 @@ fn engineering_gate_instructions_and_active_ordinals_are_exact() {
         ),
     ] {
         let definition = StaticPipelineDefinitions.definition(kind).unwrap();
-        assert_eq!(definition.version, "0.6.0-native.engineering.2");
+        assert_eq!(
+            definition.version,
+            if kind == PipelineKind::FullDesignToExecution {
+                "0.6.0-native.engineering.3"
+            } else {
+                "0.6.0-native.engineering.2"
+            }
+        );
         let phase = definition
             .phases
             .iter()
             .find(|phase| phase.id == phase_id)
             .unwrap();
-        assert_eq!(phase.instructions.len(), 1);
+        assert_eq!(
+            phase.instructions.len(),
+            if kind == PipelineKind::FullDesignToExecution {
+                2
+            } else {
+                1
+            }
+        );
         assert_eq!(
             phase.instructions[0].id,
             "internal-instruction.engineering-review-gate"

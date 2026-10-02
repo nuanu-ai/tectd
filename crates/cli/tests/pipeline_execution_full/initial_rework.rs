@@ -26,13 +26,18 @@ pub(super) async fn run(client: &mut Mcp, pool: &PgPool, mut context: Value) -> 
     context = advance(client, context).await;
     let (phase_four_verdict, phase_four_outcome, phase_four_transition) =
         successful_route(&context);
-    let mut malformed_json = completion(
+    let facts = full_support::native_contract_fixture_facts(client).await;
+    let mut malformed_json = full_support::completion_with_contract(
         &context,
-        phase_four_verdict,
-        phase_four_outcome,
-        phase_four_transition,
-        None,
-        None,
+        completion(
+            &context,
+            phase_four_verdict,
+            phase_four_outcome,
+            phase_four_transition,
+            None,
+            None,
+        ),
+        &facts,
     );
     malformed_json["output"]["artifacts"][0]["body"] = json!("not json");
     malformed_json["output"]["artifacts"][0]["digest"] =

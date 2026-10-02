@@ -357,6 +357,17 @@ pub(in crate::knowledge_lifecycle::erase) async fn register_propagated(
 mod phase_copy_batch_tests {
     use super::*;
 
+    type StoredOwnedCopy = (
+        Uuid,
+        String,
+        String,
+        Uuid,
+        i64,
+        Option<String>,
+        Option<Uuid>,
+        Option<i64>,
+    );
+
     #[tokio::test]
     async fn batch_preserves_exact_holder_keys_and_conflict_behavior() {
         if std::env::var("TECT_TEST_DK2").as_deref() != Ok("1") {
@@ -387,7 +398,7 @@ mod phase_copy_batch_tests {
         insert_phase_copy_batch(&mut tx, tenant, workspace, &units, &targets)
             .await
             .unwrap();
-        let mut found: Vec<(Uuid, String, String, Uuid, i64, Option<String>, Option<Uuid>, Option<i64>)> =
+        let mut found: Vec<StoredOwnedCopy> =
             sqlx::query_as("SELECT unit_id,copy_kind,relation_name,row_id,row_revision,row_operation,row_request_id,source_revision FROM knowledge_owned_copies WHERE tenant_id=$1 AND workspace_id=$2 AND row_id=ANY($3::uuid[])")
                 .bind(tenant).bind(workspace).bind(vec![attempt, output, result, input])
                 .fetch_all(&mut *tx).await.unwrap();

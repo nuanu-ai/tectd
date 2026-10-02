@@ -15,6 +15,7 @@ jobs:
       TECT_TEST_ADMIN_URL: postgres://postgres:postgres@127.0.0.1:5432/tect_test
       TECT_TEST_RUNTIME_URL: postgres://tect_ci:ci-fixture-only@127.0.0.1:5432/tect_test
       TECT_TEST_RUNTIME_ROLE: tect_ci
+      TECT_TEST_NATIVE_CONTRACT_FIXTURE: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.93.0

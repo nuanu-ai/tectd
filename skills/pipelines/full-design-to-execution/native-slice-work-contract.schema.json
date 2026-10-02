@@ -1,0 +1,598 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tect:native-slice-work-contract-schema",
+  "title": "Native Slice source planning contract v1",
+  "description": "Canonical successful Phase4 declaration. The canonical artifact is eligible only for contract_ready. Blocked outputs use artifactless metadata/body. Typed backend checks enforce native provenance, source registration, scope containment, unique obligation IDs and proof links; this schema and source registration never attest live filesystem bytes or grant product, Git or external-effect authority.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_kind",
+    "target",
+    "session_declaration",
+    "source_checkpoint",
+    "required_reads",
+    "write_scope",
+    "authority",
+    "proof_requirements",
+    "validation_requirements",
+    "result_closure",
+    "refresh_resume"
+  ],
+  "properties": {
+    "contract_kind": {
+      "const": "native_slice_work_contract_v1"
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope_id",
+        "slice_id",
+        "slice_revision",
+        "run_id",
+        "run_revision",
+        "phase_id",
+        "definition_kind",
+        "definition_version",
+        "definition_digest"
+      ],
+      "properties": {
+        "scope_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "slice_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "slice_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "run_revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "phase_id": {
+          "const": "slice-contract-writer"
+        },
+        "definition_kind": {
+          "const": "slice.full-design-to-execution"
+        },
+        "definition_version": {
+          "const": "0.6.0-native.engineering.3"
+        },
+        "definition_digest": {
+          "$ref": "#/$defs/digest"
+        }
+      }
+    },
+    "session_declaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workspace_id",
+        "session_id",
+        "host_id",
+        "native_session_id"
+      ],
+      "properties": {
+        "workspace_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "session_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "host_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "native_session_id": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "source_checkpoint": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "checkpoint_id",
+            "digest"
+          ],
+          "properties": {
+            "checkpoint_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "digest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        }
+      ]
+    },
+    "required_reads": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "reference",
+          "required"
+        ],
+        "properties": {
+          "reference": {
+            "$ref": "#/$defs/reference"
+          },
+          "required": {
+            "const": true
+          }
+        }
+      }
+    },
+    "write_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed_roots",
+        "allowed_paths",
+        "denied_roots",
+        "before_hash_required"
+      ],
+      "properties": {
+        "allowed_roots": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/source_root"
+          }
+        },
+        "allowed_paths": {
+          "type": "array",
+          "minItems": 0,
+          "items": {
+            "$ref": "#/$defs/source_path"
+          }
+        },
+        "denied_roots": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/denied_root"
+          }
+        },
+        "before_hash_required": {
+          "const": true
+        }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "source",
+        "scope",
+        "limitations"
+      ],
+      "properties": {
+        "status": {
+          "const": "authorized"
+        },
+        "source": {
+          "$ref": "#/$defs/reference"
+        },
+        "scope": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "action",
+              "targets"
+            ],
+            "properties": {
+              "action": {
+                "enum": [
+                  "source_plan",
+                  "source_edit",
+                  "source_test"
+                ]
+              },
+              "targets": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "$ref": "#/$defs/source_path"
+                }
+              }
+            }
+          }
+        },
+        "limitations": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      }
+    },
+    "proof_requirements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "obligation",
+          "evidence_kind",
+          "completion_required"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "obligation": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "evidence_kind": {
+            "enum": [
+              "native_output",
+              "native_input",
+              "native_evidence_artifact",
+              "source_file"
+            ]
+          },
+          "completion_required": {
+            "const": true
+          }
+        }
+      }
+    },
+    "validation_requirements": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "obligation",
+          "proof_requirement_ids",
+          "completion_required"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "obligation": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "proof_requirement_ids": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "uniqueItems": true
+          },
+          "completion_required": {
+            "const": true
+          }
+        }
+      }
+    },
+    "result_closure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "native_result_required",
+        "summary_required",
+        "evidence_required",
+        "scope_impact_required",
+        "remaining_work_required",
+        "handoff_when_blocked"
+      ],
+      "properties": {
+        "native_result_required": {
+          "const": true
+        },
+        "summary_required": {
+          "const": true
+        },
+        "evidence_required": {
+          "const": true
+        },
+        "scope_impact_required": {
+          "const": true
+        },
+        "remaining_work_required": {
+          "const": true
+        },
+        "handoff_when_blocked": {
+          "const": true
+        }
+      }
+    },
+    "refresh_resume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "refresh_before_write",
+        "recheck_authority",
+        "rehash_required_reads",
+        "verify_before_hash",
+        "reconcile_unknown_outcome",
+        "resume_from_current_native_context"
+      ],
+      "properties": {
+        "refresh_before_write": {
+          "const": true
+        },
+        "recheck_authority": {
+          "const": true
+        },
+        "rehash_required_reads": {
+          "const": true
+        },
+        "verify_before_hash": {
+          "const": true
+        },
+        "reconcile_unknown_outcome": {
+          "const": true
+        },
+        "resume_from_current_native_context": {
+          "const": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^(?!00000000-0000-0000-0000-000000000000$)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)(?!.*(?:^|/)(?:\\.git|\\.tect)(?:/|$))(?!tect/workspace(?:/|$))[^\\x00:/]+(?:/[^\\x00:/]+)*$"
+    },
+    "source_path": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "path"
+      ],
+      "properties": {
+        "source_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "path": {
+          "$ref": "#/$defs/path"
+        }
+      }
+    },
+    "source_root": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "path"
+      ],
+      "properties": {
+        "source_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/path"
+            },
+            {
+              "const": "."
+            }
+          ]
+        }
+      }
+    },
+    "reference": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "phase_id",
+            "output_revision",
+            "digest"
+          ],
+          "properties": {
+            "kind": {
+              "const": "native_output"
+            },
+            "phase_id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "output_revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "digest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "input_id",
+            "sequence",
+            "digest"
+          ],
+          "properties": {
+            "kind": {
+              "const": "native_input"
+            },
+            "input_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "sequence": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "digest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "artifact_id",
+            "revision",
+            "digest"
+          ],
+          "properties": {
+            "kind": {
+              "const": "native_evidence_artifact"
+            },
+            "artifact_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "digest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "source_id",
+            "path",
+            "content_sha256"
+          ],
+          "properties": {
+            "kind": {
+              "const": "source_file"
+            },
+            "source_id": {
+              "$ref": "#/$defs/uuid"
+            },
+            "path": {
+              "$ref": "#/$defs/path"
+            },
+            "content_sha256": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        }
+      ]
+    },
+    "denied_root": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "path"
+      ],
+      "properties": {
+        "source_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?!/)(?![A-Za-z]:)(?!.*\\\\)(?!.*(?:^|/)\\.{1,2}(?:/|$))(?!.*//)[^\\x00:/]+(?:/[^\\x00:/]+)*$"
+            },
+            {
+              "const": "."
+            }
+          ]
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "authority": {
+            "properties": {
+              "scope": {
+                "contains": {
+                  "properties": {
+                    "action": {
+                      "const": "source_edit"
+                    }
+                  },
+                  "required": [
+                    "action"
+                  ]
+                }
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          }
+        },
+        "required": [
+          "authority"
+        ]
+      },
+      "then": {
+        "properties": {
+          "write_scope": {
+            "properties": {
+              "allowed_paths": {
+                "minItems": 1
+              }
+            },
+            "required": [
+              "allowed_paths"
+            ]
+          }
+        },
+        "required": [
+          "write_scope"
+        ]
+      }
+    }
+  ]
+}

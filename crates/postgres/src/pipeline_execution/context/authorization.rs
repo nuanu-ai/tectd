@@ -284,7 +284,7 @@ mod tests {
             Uuid::new_v4(),
             workspace,
             owner,
-            &[nullable.clone()],
+            std::slice::from_ref(&nullable),
             Err(Error::InternalInvariant),
         )
         .await;
@@ -293,7 +293,7 @@ mod tests {
             tenant,
             Uuid::new_v4(),
             owner,
-            &[nullable.clone()],
+            std::slice::from_ref(&nullable),
             Err(Error::InternalInvariant),
         )
         .await;
@@ -314,7 +314,7 @@ mod tests {
             tenant,
             workspace,
             non_owner,
-            &[exact.clone()],
+            std::slice::from_ref(&exact),
             Err(Error::Forbidden),
         )
         .await;

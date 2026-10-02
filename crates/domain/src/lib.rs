@@ -73,6 +73,8 @@ pub use setup_page::{
 
 mod candidate_delta;
 mod native_planning;
+mod native_slice_work_contract;
+pub use native_slice_work_contract::*;
 mod native_planning_receipt;
 mod native_planning_validation;
 mod pipeline_artifacts;

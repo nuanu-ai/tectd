@@ -65,7 +65,7 @@ Minimal positive validator proof uses one covered in-scope `REQ-001`, one decisi
 
 ## Native projection and loops
 
-The definition preserves all 20 ordered V1 phases, 73 typed verdict routes, 33 artifact requirements, 12 rework routes, and the sole independent-review phase at ordinal 6. Required order is Shaper (3) -> Contract (4) -> Interrogation (5) -> Cross Review (6) -> Reconciliation (7) -> Synthesis (8) -> Readiness (9) -> Plan (10). Rework targets are exact route-owned predecessors; a backward disposition cannot accidentally advance. Phase 12 uses `reconciliation_required` retry after partial source mutation; other phases are repeatable under native request-id replay and revision rules.
+The current definition has 21 ordered native phases, including the inserted engineering-plan review; it preserves the source-owned verdict, artifact and rework obligations and the independent cross-review phase at ordinal 6. Required order is Shaper (3) -> Contract (4) -> Interrogation (5) -> Cross Review (6) -> Reconciliation (7) -> Synthesis (8) -> Readiness (9) -> Plan (10). Rework targets are exact route-owned predecessors; a backward disposition cannot accidentally advance. Phase 13 uses `reconciliation_required` retry after partial source mutation; other phases are repeatable under native request-id replay and revision rules.
 
 Native output body, fields, typed artifacts, references, and route receipts replace V1 Markdown progress-carrier and control-plane bookkeeping only. Phase 7 maps legacy `reconciliation.md` progress to output body while still requiring synchronized sidecars, closure, amended review, validator proof, and gate. Backend Slice/admission state replaces duplicate `slice.md`/FSM persistence. It does not replace semantic design, decision, spec, plan, execution, proof, Result, deployment, deferred, maintenance, or handoff content.
 
@@ -77,7 +77,8 @@ Phase 19 preserves the union of the selected body and manifest maintenance contr
 
 - Update class: selected upstream bodies only; native phase order and output contracts are unchanged.
 - Previous active snapshot: `crates/host/pipeline-definitions/full-design-to-execution-0.1.0-native.1.json`, version `0.1.0-native.1`, semantic digest `5e4fd372ee9c07c720732f444056a32a512171c202c2d2c53af74f81568a98c7`, physical SHA-256 `5ad905f9153b780b2f6303fa3214b1a23f72471902bf0f1acc71397076891919`.
-- Current snapshot: `crates/host/pipeline-definitions/full-design-to-execution.json`, version `0.6.0-native.engineering.2`, semantic digest `1274c531dfd433bf01e6b2354adcd0082c906749e1c8e34a158604f77e77a9a5`, physical SHA-256 `f08130bdf758bce57c52c69c1af865dfe8c069c69beff6bee2373113195db9e2`.
+- Archived engineering.2 snapshot: `crates/host/pipeline-definitions/full-design-to-execution-0.6.0-native.engineering.2.json`, version `0.6.0-native.engineering.2`, semantic digest `1274c531dfd433bf01e6b2354adcd0082c906749e1c8e34a158604f77e77a9a5`, physical SHA-256 `f08130bdf758bce57c52c69c1af865dfe8c069c69beff6bee2373113195db9e2`.
+- Current snapshot: `crates/host/pipeline-definitions/full-design-to-execution.json`, version `0.6.0-native.engineering.3`, semantic digest `79c01395855e0be1ffb4fca6eec7a09a5326a44d64ad3aa545c1e1da7d829ff3`, physical SHA-256 `fb2cfe631cd0110ff33c12f6226031859c20c334646666347950ae79f9e834ba`.
 - Exact selected source package: `skills/references/superpowers-v6.3.0-b36e0829`, upstream commit `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`, tag `v6.3.0`, package manifest SHA-256 `2973ac33ed683d9c50e15fab14a5045f768b6b765d29849237f95371d99b5dde`, MIT license SHA-256 `a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400`.
 
 ### Selected body replacements
@@ -120,3 +121,11 @@ Phase 19 preserves the union of the selected body and manifest maintenance contr
 | `superpowers:verification-before-completion` | `5.0.7` | `ea52d15aabaf72bc6b558efe2c126f161b53961090ddcd712000273bfe8c7b6c` | `skills/references/superpowers/verification-before-completion/SKILL.md` |
 
 The archived snapshot remains the exact carrier for stored runs created against the previous definition version.
+
+## Native Phase4 source-planning contract (engineering.3)
+
+The canonical closed JSON schema is `native-slice-work-contract.schema.json`, delivered as `tect:native-slice-work-contract-schema` v1.0.0, SHA-256 `9222bcaf40113fa0563015d2d2829b3980d89e95dc0649b6118f9d16982ae258`. The native writer is `native-slice-contract-writer.step.md`, SHA-256 `78c6bfd86b9199baa8793b0b73b6161e1ce1fb7e8ef4884e96af459f8820ab06`. `work-order-contract.json` remains the carrier name; kind is `native_slice_work_contract_v1`. P4 binds its actual schema resource, and P10/P11/P13 require current Phase4 and native-read provenance. Canonical success requires authenticated session/source pins and declared bounded source-plan/edit/test authority. External effects and Git operations require separate authorization. Backend native provenance checks do not attest current filesystem hashes, execute writes or confer product permission. Those freshness/before-write/authority obligations remain with the executor. Old engineering.2 definitions and stored run snapshots remain immutable and retrievable. New .3 migration starts a separate Phase1 successor; predecessor outputs are historical, not successor receipts.
+
+The existing isolated PostgreSQL CI job explicitly sets `TECT_TEST_NATIVE_CONTRACT_FIXTURE=1` alongside its admin/runtime roles for `cargo test --workspace`, so the new native contract integration gate executes and cannot silently skip. This configures functional QA coverage; it is not evidence that CI ran, a business acceptance result, or external-effect authority. Local DB-free gates compile this test without executing it; actual private fixture execution is recorded separately.
+
+Plan/test-only contracts may declare `allowed_paths=[]` without invented source-write authority. Source edits require nonempty targets contained in explicit allowed paths; zero-write scope cannot authorize them.

@@ -384,7 +384,7 @@ pub(super) async fn run(state: ColdRecovery<'_>) {
     assert_eq!(completed["context"]["run"]["status"], "completed");
     assert_eq!(
         completed["result"]["pipeline_definition_digest"],
-        "1274c531dfd433bf01e6b2354adcd0082c906749e1c8e34a158604f77e77a9a5"
+        "79c01395855e0be1ffb4fca6eec7a09a5326a44d64ad3aa545c1e1da7d829ff3"
     );
     assert_eq!(
         completed["context"]["attempts"].as_array().unwrap().len(),
