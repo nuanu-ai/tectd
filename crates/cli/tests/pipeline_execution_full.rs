@@ -181,8 +181,12 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     assert!(!id(&context["run"]["id"]).is_nil());
     assert_eq!(context["run"]["delivery_mode"], "phasewise");
     assert_eq!(
+        context["run"]["definition_version"],
+        "0.6.0-native.engineering.4"
+    );
+    assert_eq!(
         context["run"]["definition_digest"],
-        "79c01395855e0be1ffb4fca6eec7a09a5326a44d64ad3aa545c1e1da7d829ff3"
+        "85ec63bae1903fedb0c86ecd5326380ea8d524fe0ee29c5dce6e90b9a30cdd3d"
     );
     assert_eq!(context["definition"]["phases"].as_array().unwrap().len(), 1);
     assert_eq!(context["delivered_phases"].as_array().unwrap().len(), 1);
