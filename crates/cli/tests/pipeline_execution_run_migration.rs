@@ -1,6 +1,9 @@
 #[path = "pipeline_execution/full_support.rs"]
 #[allow(dead_code)]
 mod full_support;
+#[path = "pipeline_execution/knowledge_lifecycle_support.rs"]
+#[allow(dead_code)]
+mod knowledge_lifecycle_support;
 #[path = "pipeline_execution/lifecycle_support.rs"]
 #[allow(dead_code)]
 mod lifecycle_support;
@@ -10,6 +13,7 @@ mod recovery_support;
 #[allow(dead_code)]
 mod support;
 
+use projection::assert_slice_projection;
 use recovery_support::{
     Daemon, Mcp, action_name, action_params, host_file, private_temp, tagged_url,
 };
@@ -18,6 +22,8 @@ use sqlx::PgPool;
 use std::path::Path;
 use support::{open_slice, ready_source_candidate, repository, review, route, route_error, save};
 use tect_postgres::admin;
+#[path = "pipeline_execution_run_migration/projection.rs"]
+mod projection;
 use uuid::Uuid;
 
 fn mapping() -> Value {
@@ -93,6 +99,14 @@ async fn run_fixture(client: &mut Mcp, repo: &Path) -> (Value, Value) {
     )
     .await;
     let slice = opened_slice["created"].clone();
+    assert_slice_projection(
+        client,
+        &reviewed["scope"]["id"],
+        &slice["id"],
+        &Value::Null,
+        "not_started",
+    )
+    .await;
     let begun = route(
         client,
         "command",
@@ -100,6 +114,14 @@ async fn run_fixture(client: &mut Mcp, repo: &Path) -> (Value, Value) {
         json!({"request_id":Uuid::new_v4(),"scope_id":reviewed["scope"]["id"],
             "slice_id":slice["id"],"slice_revision":slice["revision"],
             "qualification_reason":"Legacy v0.6 run requires an explicit successor mapping."}),
+    )
+    .await;
+    assert_slice_projection(
+        client,
+        &reviewed["scope"]["id"],
+        &slice["id"],
+        &begun["created"]["run"]["id"],
+        "active",
     )
     .await;
     (begun["created"].clone(), reviewed["scope"]["id"].clone())
@@ -141,7 +163,7 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
     )
     .await;
 
-    let (context, _scope_id) = run_fixture(&mut client, &repo).await;
+    let (context, scope_id) = run_fixture(&mut client, &repo).await;
     let predecessor = context["run"].clone();
     assert!(
         !predecessor["definition_version"]
@@ -162,6 +184,15 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
         migrated["successor_definition_version"],
         "0.7.0-native.k1k5"
     );
+
+    assert_slice_projection(
+        &mut client,
+        &scope_id,
+        &predecessor["slice_id"],
+        &migrated["successor_run_id"],
+        "active",
+    )
+    .await;
 
     let old = route(
         &mut client,
@@ -376,7 +407,19 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
         "LEGACY_MIGRATION_REQUIRED"
     );
     assert_complete_pipeline_refusal(&missing);
+
+    projection::assert_persisted_status_boundaries(
+        &pool,
+        &mut client,
+        &scope_id,
+        &predecessor["slice_id"],
+        &migrated["successor_run_id"],
+    )
+    .await;
 }
 
 #[path = "pipeline_execution_run_migration/full_engineering.rs"]
 mod full_engineering;
+
+#[path = "pipeline_execution_run_migration/current_binding.rs"]
+mod current_binding;

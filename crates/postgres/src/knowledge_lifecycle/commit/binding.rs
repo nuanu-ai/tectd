@@ -76,7 +76,7 @@ async fn validate_binding_target(
         KnowledgeBindingTarget::Slice{scope_id,slice_id} => sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM native_slices WHERE tenant_id=$1 AND workspace_id=$2 AND scope_id=$3 AND id=$4)").bind(tenant).bind(workspace).bind(scope_id).bind(slice_id).fetch_one(&mut **tx).await.map_err(storage_error)?,
         KnowledgeBindingTarget::SlicePhase{scope_id,slice_id,phase_id} => {
             let pin = pin.ok_or(Error::InvalidArguments)?;
-            let row:Option<SliceDefinitionRow>=sqlx::query_as("SELECT s.pipeline,r.definition_kind,r.definition_version,r.definition_digest FROM native_slices s LEFT JOIN slice_pipeline_runs r ON r.tenant_id=s.tenant_id AND r.workspace_id=s.workspace_id AND r.scope_id=s.scope_id AND r.slice_id=s.id WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.scope_id=$3 AND s.id=$4")
+            let row:Option<SliceDefinitionRow>=sqlx::query_as("SELECT s.pipeline,r.definition_kind,r.definition_version,r.definition_digest FROM native_slices s LEFT JOIN LATERAL (SELECT definition_kind,definition_version,definition_digest FROM slice_pipeline_runs WHERE tenant_id=s.tenant_id AND workspace_id=s.workspace_id AND scope_id=s.scope_id AND slice_id=s.id AND status<>'superseded' ORDER BY created_at DESC,id DESC LIMIT 1) r ON true WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.scope_id=$3 AND s.id=$4")
                 .bind(tenant).bind(workspace).bind(scope_id).bind(slice_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
             let Some((pipeline, run_kind, run_version, run_digest)) = row else { return Err(Error::InvalidArguments) };
             if pipeline != pin.definition_kind.as_str() || pin.phase_id != *phase_id {
