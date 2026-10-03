@@ -30,8 +30,8 @@ pub(crate) use erased_no_change::{
     qualify_begin as qualify_erased_no_change, validate_current as validate_erased_no_change,
 };
 pub(crate) use event::{
-    PublicationProofContext, PublicationProofKey, PublicationProofScope, verify_publication_event,
-    verify_publication_event_with_proofs,
+    CandidateBudget, CandidateProofError, PublicationProofContext, PublicationProofKey,
+    PublicationProofScope, verify_publication_event, verify_publication_event_with_proofs,
 };
 pub(crate) use input::record_input;
 pub(crate) use phase::complete_phase;

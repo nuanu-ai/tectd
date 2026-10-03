@@ -1,6 +1,8 @@
 //! Owned private-database regression fixture. Instrumentation is restored even
 //! if the measured task panics; it never changes production function sources.
 use super::*;
+#[path = "ordinary_context/candidate_cases.rs"]
+mod candidate_cases;
 use tect_application::{Store, TransactionMode};
 use tect_domain::{HostAuth, PipelineRunContext};
 use tect_postgres::PgStore;
@@ -209,6 +211,7 @@ async fn ordinary_context_reuses_exact_creation_proof_under_existing_fence() {
     // Test-only wrappers count actual SQL calls and exact arguments. Their
     // original SECURITY DEFINER bodies and ACLs remain intact and are restored.
     let table = format!("ordinary_proof_count_{}", Uuid::new_v4().simple());
+    let sequence = format!("ordinary_proof_attempts_{}", Uuid::new_v4().simple());
     let mut installation = pool.begin().await.unwrap();
     sqlx::query(&format!(
         "CREATE TABLE public.{table}(workspace uuid,kind text,requests jsonb)"
@@ -216,6 +219,10 @@ async fn ordinary_context_reuses_exact_creation_proof_under_existing_fence() {
     .execute(&mut *installation)
     .await
     .unwrap();
+    sqlx::query(&format!("CREATE SEQUENCE public.{sequence}"))
+        .execute(&mut *installation)
+        .await
+        .unwrap();
     let mut originals = Vec::new();
     for (signature, injection) in [
         (
@@ -251,6 +258,7 @@ async fn ordinary_context_reuses_exact_creation_proof_under_existing_fence() {
     let measured_pool = pool.clone();
     let measured_table = table.clone();
     let measured_originals = originals.clone();
+    let measured_sequence = sequence.clone();
     let measured = tokio::spawn(async move {
         let scalar = context(&store, &enrollment.auth, &native, workspace, run_id, false).await.unwrap().unwrap();
         let counts: (i64, i64) = sqlx::query_as(&format!("SELECT count(*) FILTER(WHERE kind='scalar'),count(*) FILTER(WHERE kind='batch') FROM public.{measured_table} WHERE workspace=$1"))
@@ -261,15 +269,15 @@ async fn ordinary_context_reuses_exact_creation_proof_under_existing_fence() {
         assert_eq!(scalar, lazy, "DTO, manifest, resource status and backend receipt parity");
         let counts: (i64, i64, i64, i64) = sqlx::query_as(&format!("SELECT count(*) FILTER(WHERE kind='scalar'),count(*) FILTER(WHERE kind='batch'),sum(jsonb_array_length(requests)),count(DISTINCT requests) FROM public.{measured_table} WHERE workspace=$1"))
             .bind(workspace).fetch_one(&measured_pool).await.unwrap();
-        assert_eq!(counts, (0, 22, 22, 22));
-        eprintln!("ordinary_context actual SQL proof: scalar=44; lazy single-key batch=22; distinct exact request keys=22; DTO+receipt equal");
+        assert_eq!(counts, (0, 1, 22, 1));
+        eprintln!("ordinary_context actual SQL proof: scalar=44; successful vector batch=1; exact requested keys=22; DTO+receipt equal");
         route(&mut foreign, "query", "slice.pipeline.context", json!({"run_id":foreign_run["run"]["id"]})).await;
         route(&mut foreign, "query", "knowledge.unit", json!({"unit_id":foreign_unit,"revision":1})).await;
         let own_unit = run["knowledge_resources"]["selected"][0]["unit_id"].clone();
         route(&mut client, "query", "knowledge.unit", json!({"unit_id":own_unit,"revision":1})).await;
         let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM public.{measured_table}"))
             .fetch_one(&measured_pool).await.unwrap();
-        assert_eq!(total, 22, "foreign workspace and read-only knowledge calls add no counter writes");
+        assert_eq!(total, 1, "foreign workspace and read-only knowledge calls add no counter writes");
 
         let units: Vec<(Uuid, Uuid, String)> = sqlx::query_as("SELECT r.unit_id,r.publication_event_id,r.rdf_digest FROM knowledge_bindings b JOIN knowledge_revisions r ON r.tenant_id=b.tenant_id AND r.workspace_id=b.workspace_id AND r.unit_id=b.unit_id AND r.revision=b.revision WHERE b.tenant_id=$1 AND b.workspace_id=$2 ORDER BY b.id")
             .bind(enrollment.tenant_id).bind(workspace).fetch_all(&measured_pool).await.unwrap();
@@ -292,7 +300,46 @@ async fn ordinary_context_reuses_exact_creation_proof_under_existing_fence() {
                 Err(tect_domain::Error::KnowledgePayloadErased));
         }
         sqlx::query("UPDATE knowledge_publication_events SET payload_erased=false,event_payload=$2,rdf_digest=$3 WHERE id=$1")
-            .bind(units[1].1).bind(later_event.0).bind(later_event.1).execute(&measured_pool).await.unwrap();
+            .bind(units[1].1).bind(&later_event.0).bind(&later_event.1).execute(&measured_pool).await.unwrap();
+        // A later malformed payload codec must not hide an earlier digest failure.
+        sqlx::query("UPDATE knowledge_revisions SET rdf_digest=$3 WHERE workspace_id=$1 AND unit_id=$2")
+            .bind(workspace).bind(units[0].0).bind("0".repeat(64)).execute(&measured_pool).await.unwrap();
+        sqlx::query("UPDATE knowledge_publication_events SET event_payload='{}'::jsonb WHERE id=$1")
+            .bind(units[1].1).execute(&measured_pool).await.unwrap();
+        assert_eq!(context(&store, &enrollment.auth, &native, workspace, run_id, true).await, Err(tect_domain::Error::InternalInvariant));
+        sqlx::query("UPDATE knowledge_publication_events SET event_payload=$2 WHERE id=$1")
+            .bind(units[1].1).bind(&later_event.0).execute(&measured_pool).await.unwrap();
+        sqlx::query("UPDATE knowledge_revisions SET rdf_digest=$3 WHERE workspace_id=$1 AND unit_id=$2")
+            .bind(workspace).bind(units[0].0).bind(&units[0].2).execute(&measured_pool).await.unwrap();
+
+        // Sequence increments survive rollback, providing actual dispatch counts
+        // for terminal failures. No speculative retry is permitted for57014,
+        // unknown SQLSTATE, or unsupported engine55000.
+        for (code,message) in [("57014","canceling statement due to user request"),("XX000","owned unknown storage fault"),("55000","unsupported durable knowledge native batch engine")] {
+            sqlx::query(&format!("ALTER SEQUENCE public.{measured_sequence} RESTART WITH 1")).execute(&measured_pool).await.unwrap();
+            let injection = format!("IF p_workspace='{workspace}'::uuid THEN PERFORM nextval('public.{measured_sequence}'); IF jsonb_array_length(p_requests)>1 THEN RAISE EXCEPTION USING ERRCODE='{code}',MESSAGE='{message}'; END IF; END IF;");
+            let fault = measured_originals[1].replacen("BEGIN", &format!("BEGIN\n{injection}"),1);
+            sqlx::raw_sql(&fault).execute(&measured_pool).await.unwrap();
+            assert_eq!(context(&store, &enrollment.auth, &native, workspace, run_id, true).await, Err(tect_domain::Error::StorageUnavailable));
+            let attempts:i64=sqlx::query_scalar(&format!("SELECT last_value FROM public.{measured_sequence}")).fetch_one(&measured_pool).await.unwrap();
+            assert_eq!(attempts,1,"terminal SQL failure must not dispatch lazy fallback");
+        }
+        // Inject the exact verified server malformed-term refusal only for a
+        // vector. Savepoint recovery must permit the unchanged first lazy proof.
+        sqlx::query(&format!("ALTER SEQUENCE public.{measured_sequence} RESTART WITH 1")).execute(&measured_pool).await.unwrap();
+        let injection = format!("IF p_workspace='{workspace}'::uuid THEN PERFORM nextval('public.{measured_sequence}'); IF jsonb_array_length(p_requests)>1 THEN RAISE EXCEPTION USING ERRCODE='55000',MESSAGE='invalid durable knowledge native batch term'; END IF; END IF;");
+        sqlx::raw_sql(&measured_originals[1].replacen("BEGIN", &format!("BEGIN\n{injection}"),1)).execute(&measured_pool).await.unwrap();
+        sqlx::query("UPDATE knowledge_revisions SET rdf_digest=$3 WHERE workspace_id=$1 AND unit_id=$2")
+            .bind(workspace).bind(units[0].0).bind("0".repeat(64)).execute(&measured_pool).await.unwrap();
+        assert_eq!(context(&store, &enrollment.auth, &native, workspace, run_id, true).await, Err(tect_domain::Error::InternalInvariant));
+        let attempts:i64=sqlx::query_scalar(&format!("SELECT last_value FROM public.{measured_sequence}")).fetch_one(&measured_pool).await.unwrap();
+        assert_eq!(attempts,2,"known refusal rolls back candidate and preserves first lazy digest refusal");
+        sqlx::query("UPDATE knowledge_revisions SET rdf_digest=$3 WHERE workspace_id=$1 AND unit_id=$2")
+            .bind(workspace).bind(units[0].0).bind(&units[0].2).execute(&measured_pool).await.unwrap();
+        sqlx::raw_sql(&measured_originals[1]).execute(&measured_pool).await.unwrap();
+
+        candidate_cases::failure_paths(&store, &enrollment.auth, &native, workspace, run_id, &lazy, &measured_pool, &measured_originals[1], &measured_sequence, &reader_tag).await;
+
         // Fresh relational identity is compared even when the creation proof
         // can be reused inside this request.
         let iri: String = sqlx::query_scalar("SELECT unit_iri FROM knowledge_revisions WHERE workspace_id=$1 AND unit_id=$2")
@@ -331,8 +378,8 @@ async fn ordinary_context_reuses_exact_creation_proof_under_existing_fence() {
 
         // The counter INSERT is only for measured read-write context calls;
         // restore before the publisher's genuinely read-only knowledge reads.
-        for original in measured_originals {
-            sqlx::raw_sql(&original).execute(&measured_pool).await.unwrap();
+        for original in &measured_originals {
+            sqlx::raw_sql(original).execute(&measured_pool).await.unwrap();
         }
 
         // An actual independently bound publication waits for the context's
@@ -361,6 +408,21 @@ async fn ordinary_context_reuses_exact_creation_proof_under_existing_fence() {
         let refreshed = context(&store, &enrollment.auth, &native, workspace, run_id, true).await.unwrap().unwrap();
         assert_ne!(refreshed.knowledge_resource_status, lazy.knowledge_resource_status);
         assert_eq!(Some(refreshed), context(&store, &enrollment.auth, &native, workspace, run_id, false).await.unwrap());
+        candidate_cases::mixed(&mut client, &repo, &store, &enrollment.auth, &native, workspace, &measured_pool, &measured_originals[1], &measured_table).await;
+        //66 binding rows (65 unique units) exceed admission before SQL. The
+        // ordinary reader still succeeds using65 creation+2 revalidation singleton proofs.
+        for index in 24..65 { commit_create(&mut client, runbook("procedure", &format!("cap-proof-{index}"))).await; }
+        let cap_run=begin(&mut client,&repo,"candidate-cap").await;
+        let cap_id=Uuid::parse_str(cap_run["run"]["id"].as_str().unwrap()).unwrap();
+        let scalar_cap=context(&store,&enrollment.auth,&native,workspace,cap_id,false).await.unwrap();
+        let injection=format!("IF p_workspace='{workspace}'::uuid AND current_setting('transaction_read_only')='off' THEN INSERT INTO public.{measured_table} VALUES(p_workspace,'batch',p_requests); END IF;");
+        sqlx::raw_sql(&measured_originals[1].replacen("BEGIN", &format!("BEGIN\n{injection}"),1)).execute(&measured_pool).await.unwrap();
+        sqlx::query(&format!("DELETE FROM public.{measured_table}")).execute(&measured_pool).await.unwrap();
+        assert_eq!(context(&store,&enrollment.auth,&native,workspace,cap_id,true).await.unwrap(),scalar_cap);
+        let counts:(i64,i64)=sqlx::query_as(&format!("SELECT count(*),sum(jsonb_array_length(requests)) FROM public.{measured_table}")).fetch_one(&measured_pool).await.unwrap();
+        assert_eq!(counts,(67,67),"over-cap bindings dispatch no vector candidate");
+        sqlx::raw_sql(&measured_originals[1]).execute(&measured_pool).await.unwrap();
+
     }).await;
     let mut recovery = pool.begin().await.unwrap();
     for original in &originals {
@@ -370,6 +432,10 @@ async fn ordinary_context_reuses_exact_creation_proof_under_existing_fence() {
             .unwrap();
     }
     sqlx::query(&format!("DROP TABLE public.{table}"))
+        .execute(&mut *recovery)
+        .await
+        .unwrap();
+    sqlx::query(&format!("DROP SEQUENCE public.{sequence}"))
         .execute(&mut *recovery)
         .await
         .unwrap();

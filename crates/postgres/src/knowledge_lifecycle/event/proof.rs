@@ -3,6 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use tect_application::request_diagnostics::{count, enabled, measure};
 
+mod candidate;
+pub(crate) use candidate::{CandidateBudget, CandidateProofError};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) struct PublicationProofKey {
     pub unit_id: Uuid,
@@ -29,6 +32,7 @@ pub(crate) struct PublicationProofScope {
     verified: BTreeMap<PublicationProofKey, Arc<VerifiedPublicationEvent>>,
     expected: BTreeMap<PublicationProofKey, ExpectedPublicationMaterial>,
     eager_preload: bool,
+    candidate_budget: Option<CandidateBudget>,
 }
 
 impl PublicationProofScope {
@@ -41,6 +45,7 @@ impl PublicationProofScope {
             verified: BTreeMap::new(),
             expected: BTreeMap::new(),
             eager_preload: true,
+            candidate_budget: None,
         }
     }
 
@@ -107,11 +112,33 @@ impl PublicationProofScope {
         self.expected.get(&key).ok_or(Error::InternalInvariant)
     }
 
-    pub(crate) async fn preload(
+    pub(crate) fn candidate(&self) -> Self {
+        Self {
+            tenant: self.tenant,
+            workspace: self.workspace,
+            principal: self.principal,
+            session: self.session,
+            verified: self.verified.clone(),
+            expected: self.expected.clone(),
+            eager_preload: false,
+            candidate_budget: Some(CandidateBudget::default()),
+        }
+    }
+    pub(crate) fn record_candidate_budget(&self) {
+        if let Some(budget) = self.candidate_budget.as_ref() {
+            budget.record();
+        }
+    }
+    pub(crate) fn adopt_candidate(&mut self, candidate: Self) {
+        candidate.record_candidate_budget();
+        self.verified = candidate.verified;
+        self.expected = candidate.expected;
+    }
+    pub(crate) async fn preload_candidate(
         &mut self,
         tx: &mut Transaction<'_, Postgres>,
         keys: &[PublicationProofKey],
-    ) -> Result<()> {
+    ) -> std::result::Result<(), CandidateProofError> {
         measure("pg.publication_proof_preload", async {
         count("proof.requested_key_occurrences", keys.len());
         if enabled() {
@@ -130,6 +157,7 @@ impl PublicationProofScope {
         if keys.is_empty() {
             return Ok(());
         }
+        if let Some(budget) = self.candidate_budget.as_mut() { budget.reserve_keys(keys.len())?; }
         let event_ids = keys.iter().map(|key| key.event_id).collect::<BTreeSet<_>>();
         type EventBatchRow = (
             Uuid,
@@ -142,6 +170,12 @@ impl PublicationProofScope {
             Uuid,
             bool,
         );
+        if let Some(budget) = self.candidate_budget.as_mut() {
+            let bytes: i64 = sqlx::query_scalar("SELECT COALESCE(sum(pg_catalog.octet_length(event_payload::text)),0)::bigint FROM knowledge_publication_events WHERE tenant_id=$1 AND workspace_id=$2 AND id=ANY($3) AND contract_version='dk-2'")
+                .bind(self.tenant).bind(self.workspace).bind(event_ids.iter().copied().collect::<Vec<_>>())
+                .fetch_one(&mut **tx).await.map_err(CandidateProofError::storage)?;
+            budget.reserve_bytes(usize::try_from(bytes).map_err(|_| CandidateProofError::refusal(Error::InternalInvariant))?)?;
+        }
         let rows: Vec<EventBatchRow> = sqlx::query_as(
             "SELECT id,event_payload,rdf_digest,unit_id,unit_revision,operation,lifecycle_change_id,operation_id,payload_erased \
              FROM knowledge_publication_events WHERE tenant_id=$1 AND workspace_id=$2 AND id=ANY($3) AND contract_version='dk-2'",
@@ -151,7 +185,7 @@ impl PublicationProofScope {
         .bind(event_ids.iter().copied().collect::<Vec<_>>())
         .fetch_all(&mut **tx)
         .await
-        .map_err(storage_error)?;
+        .map_err(CandidateProofError::storage)?;
         count("proof.event_rows", rows.len());
         let mut events = BTreeMap::new();
         for (id, payload, digest, unit, revision, operation, change, operation_id, erased) in rows {
@@ -172,11 +206,11 @@ impl PublicationProofScope {
                     )
                     .is_some()
             {
-                return Err(Error::InternalInvariant);
+                return Err(CandidateProofError::refusal(Error::InternalInvariant));
             }
         }
         if events.len() != event_ids.len() {
-            return Err(Error::InternalInvariant);
+            return Err(CandidateProofError::refusal(Error::InternalInvariant));
         }
         let mut pending = Vec::with_capacity(keys.len());
         for key in &keys {
@@ -188,10 +222,14 @@ impl PublicationProofScope {
                 key.event_id,
                 events
                     .get(&key.event_id)
-                    .ok_or(Error::InternalInvariant)?
+                    .ok_or_else(|| CandidateProofError::refusal(Error::InternalInvariant))?
                     .clone(),
-            )?;
-            let document = rdf::build(&verified.input)?;
+            ).map_err(CandidateProofError::proof_refusal)?;
+            let document = rdf::build(&verified.input).map_err(CandidateProofError::proof_refusal)?;
+            if let Some(budget) = self.candidate_budget.as_mut() {
+                budget.reserve_expected_rows(document.triple_count().max(1))?;
+                budget.reserve_bytes(document.payload.len() + document.stable_payload.len())?;
+            }
             let request = rdf::NativeReadRequest {
                 unit_id: key.unit_id,
                 revision: key.revision,
@@ -206,14 +244,24 @@ impl PublicationProofScope {
             .iter()
             .map(|(key, document, _)| (key, document))
             .collect::<Vec<_>>();
-        let groups = measure("pg.publication_native_batch", rdf::native_rows_batch(tx, self.tenant, self.workspace, &requests)).await?;
+        let groups = if let Some(budget) = self.candidate_budget.as_mut() {
+            measure("pg.publication_native_batch", rdf::native_rows_batch_candidate(tx, self.tenant, self.workspace, &requests, budget)).await?
+        } else {
+            measure("pg.publication_native_batch", rdf::native_rows_batch(tx, self.tenant, self.workspace, &requests)).await.map_err(CandidateProofError::from)?
+        };
         if groups.len() != pending.len() {
-            return Err(Error::InternalInvariant);
+            return Err(CandidateProofError::refusal(Error::InternalInvariant));
         }
         let change_ids = pending
             .iter()
             .map(|(_, _, value)| value.input.change_id)
             .collect::<BTreeSet<_>>();
+        if let Some(budget) = self.candidate_budget.as_mut() {
+            let bytes: i64 = sqlx::query_scalar("SELECT COALESCE(sum(COALESCE(pg_catalog.octet_length(publisher_receipt::text),0)+COALESCE(pg_catalog.octet_length(erased_publisher_receipt::text),0)),0)::bigint FROM knowledge_change_runs WHERE tenant_id=$1 AND workspace_id=$2 AND change_id=ANY($3)")
+                .bind(self.tenant).bind(self.workspace).bind(change_ids.iter().copied().collect::<Vec<_>>())
+                .fetch_one(&mut **tx).await.map_err(CandidateProofError::storage)?;
+            budget.reserve_bytes(usize::try_from(bytes).map_err(|_| CandidateProofError::refusal(Error::InternalInvariant))?)?;
+        }
         let rows: Vec<(Uuid, Option<serde_json::Value>, Option<serde_json::Value>)> = sqlx::query_as(
             "SELECT change_id,publisher_receipt,erased_publisher_receipt FROM knowledge_change_runs \
              WHERE tenant_id=$1 AND workspace_id=$2 AND change_id=ANY($3)",
@@ -223,16 +271,16 @@ impl PublicationProofScope {
         .bind(change_ids.iter().copied().collect::<Vec<_>>())
         .fetch_all(&mut **tx)
         .await
-        .map_err(storage_error)?;
+        .map_err(CandidateProofError::storage)?;
         count("proof.receipt_rows", rows.len());
         let mut receipts = BTreeMap::new();
         for (change, full, erased) in rows {
             if !change_ids.contains(&change) || receipts.insert(change, (full, erased)).is_some() {
-                return Err(Error::InternalInvariant);
+                return Err(CandidateProofError::refusal(Error::InternalInvariant));
             }
         }
         if receipts.len() != change_ids.len() {
-            return Err(Error::InternalInvariant);
+            return Err(CandidateProofError::refusal(Error::InternalInvariant));
         }
         for (_, _, verified) in &pending {
             verify_receipt_row(
@@ -241,9 +289,9 @@ impl PublicationProofScope {
                 verified,
                 receipts
                     .get(&verified.input.change_id)
-                    .ok_or(Error::InternalInvariant)?
+                    .ok_or_else(|| CandidateProofError::refusal(Error::InternalInvariant))?
                     .clone(),
-            )?;
+            ).map_err(CandidateProofError::proof_refusal)?;
         }
         let mut expected = Vec::with_capacity(pending.len());
         for (_, document, verified) in &pending {
@@ -256,7 +304,7 @@ impl PublicationProofScope {
                     .document
                     .as_ref()
                     .map(json)
-                    .transpose()?,
+                    .transpose().map_err(CandidateProofError::refusal)?,
             });
         }
         // Publish both caches only after every requested proof and derived
@@ -274,6 +322,15 @@ impl PublicationProofScope {
         tx: &mut Transaction<'_, Postgres>,
         key: PublicationProofKey,
     ) -> Result<Arc<VerifiedPublicationEvent>> {
+        self.verify_candidate(tx, key)
+            .await
+            .map_err(CandidateProofError::public)
+    }
+    pub(crate) async fn verify_candidate(
+        &mut self,
+        tx: &mut Transaction<'_, Postgres>,
+        key: PublicationProofKey,
+    ) -> std::result::Result<Arc<VerifiedPublicationEvent>, CandidateProofError> {
         count("proof.verify_calls", 1);
         if enabled() {
             count(
@@ -281,13 +338,13 @@ impl PublicationProofScope {
                 usize::from(self.verified.contains_key(&key)),
             );
         }
-        self.preload(tx, &[key]).await?;
+        self.preload_candidate(tx, &[key]).await?;
         // Share only immutable verified publication material within this
         // workspace-locked operation; mutable authority remains freshly read.
         self.verified
             .get(&key)
             .map(Arc::clone)
-            .ok_or(Error::InternalInvariant)
+            .ok_or_else(|| CandidateProofError::refusal(Error::InternalInvariant))
     }
 }
 

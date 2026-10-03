@@ -1,4 +1,16 @@
 use super::RdfDocument;
+use crate::knowledge_lifecycle::{CandidateBudget, CandidateProofError};
+type BatchRow = (i64, Uuid, i64, Uuid, bool, Option<serde_json::Value>);
+type CandidateBatchRow = (
+    i64,
+    Uuid,
+    i64,
+    Uuid,
+    bool,
+    Option<serde_json::Value>,
+    i64,
+    bool,
+);
 use crate::storage_error;
 use sqlx::{Postgres, Transaction};
 use tect_application::request_diagnostics::{count, measure};
@@ -70,7 +82,6 @@ pub(crate) async fn native_rows_batch(
     workspace: Uuid,
     requests: &[(&NativeReadRequest, &RdfDocument)],
 ) -> Result<Vec<Vec<serde_json::Value>>> {
-    type BatchRow = (i64, Uuid, i64, Uuid, bool, Option<serde_json::Value>);
     let payload = serde_json::to_value(
         requests
             .iter()
@@ -93,6 +104,13 @@ pub(crate) async fn native_rows_batch(
         "proof.native_batch_returned_rows_including_sentinels",
         rows.len(),
     );
+    decode_batch_rows(requests, rows)
+}
+
+fn decode_batch_rows(
+    requests: &[(&NativeReadRequest, &RdfDocument)],
+    rows: Vec<BatchRow>,
+) -> Result<Vec<Vec<serde_json::Value>>> {
     let mut groups = vec![Vec::new(); requests.len()];
     let mut seen = vec![false; requests.len()];
     let mut empty = vec![false; requests.len()];
@@ -135,6 +153,71 @@ pub(crate) async fn native_rows_batch(
         );
     }
     Ok(groups)
+}
+
+/// Candidate only: bound transport rows and bytes without changing native SQL semantics.
+pub(crate) async fn native_rows_batch_candidate(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    requests: &[(&NativeReadRequest, &RdfDocument)],
+    budget: &mut CandidateBudget,
+) -> std::result::Result<Vec<Vec<serde_json::Value>>, CandidateProofError> {
+    let payload = serde_json::to_value(requests.iter().map(|(r, _)| r).collect::<Vec<_>>())
+        .map_err(storage_error)
+        .map_err(CandidateProofError::from)?;
+    // LIMIT allows one overflow row. Byte overflow returns no caller RDF values.
+    count("proof.native_batch_calls", 1);
+    count("proof.native_batch_requested_keys", requests.len());
+    let rows: Vec<CandidateBatchRow> = measure("pg.native_batch_sql", sqlx::query_as(
+        "WITH bounded AS MATERIALIZED (SELECT request_ordinal,unit_id,revision,event_id,include_revision,triple FROM public.tect_dk2_native_read_batch($1,$2,$3) LIMIT $4 + 1), sized AS (SELECT *,COALESCE(sum(pg_catalog.octet_length(triple::text)) OVER(),0)::bigint AS bytes,count(*) OVER() AS rows FROM bounded) SELECT request_ordinal,unit_id,revision,event_id,include_revision,CASE WHEN bytes<=$5 AND rows<=$4 THEN triple ELSE NULL END,bytes,(bytes<=$5 AND rows<=$4) FROM sized"
+    ).bind(tenant).bind(workspace).bind(payload).bind(budget.remaining_rows() as i64)
+        .bind(budget.remaining_bytes() as i64).fetch_all(&mut **tx)).await.map_err(candidate_native_error)?;
+    count(
+        "proof.native_batch_returned_rows_including_sentinels",
+        rows.len(),
+    );
+    if rows.iter().any(|row| !row.7) {
+        if rows.len() > budget.remaining_rows() {
+            count("proof.candidate_cap_rows", 1);
+        }
+        if rows
+            .first()
+            .is_some_and(|row| row.6 > budget.remaining_bytes() as i64)
+        {
+            count("proof.candidate_cap_bytes", 1);
+        }
+        return Err(CandidateProofError::refusal(Error::InternalInvariant));
+    }
+    let bytes = rows.first().map_or(0, |row| row.6);
+    budget.reserve_bytes(
+        usize::try_from(bytes)
+            .map_err(|_| CandidateProofError::refusal(Error::InternalInvariant))?,
+    )?;
+    budget.returned_rows += rows.len();
+
+    let rows = rows
+        .into_iter()
+        .map(|(a, b, c, d, e, f, _, _)| (a, b, c, d, e, f))
+        .collect();
+    decode_batch_rows(requests, rows).map_err(CandidateProofError::refusal)
+}
+
+fn candidate_native_error(error: sqlx::Error) -> CandidateProofError {
+    let known = error.as_database_error().is_some_and(|database| {
+        candidate_native_refusal(database.code().as_deref(), database.message())
+    });
+    let public = native_error(error);
+    if known {
+        CandidateProofError::Refusal(public)
+    } else {
+        CandidateProofError::Terminal(public)
+    }
+}
+fn candidate_native_refusal(code: Option<&str>, message: &str) -> bool {
+    // This exact server constant originates in migration0041. Unknown storage,
+    // engine/recovery failures and57014 cancellation never authorize a retry.
+    code == Some("55000") && message == "invalid durable knowledge native batch term"
 }
 
 pub(crate) async fn qualify_native(tx: &mut Transaction<'_, Postgres>) -> Result<()> {
@@ -234,5 +317,119 @@ fn native_error(error: sqlx::Error) -> Error {
         Some("23514") | Some("22023") => Error::InvalidArguments,
         Some("42501") => Error::KnowledgeUnavailable,
         _ => Error::StorageUnavailable,
+    }
+}
+
+#[cfg(test)]
+mod candidate_tests {
+    use super::*;
+    #[test]
+    fn only_verified_native_term_refusal_can_fall_back() {
+        assert!(candidate_native_refusal(
+            Some("55000"),
+            "invalid durable knowledge native batch term"
+        ));
+        for code in [
+            Some("57014"),
+            Some("22023"),
+            Some("23514"),
+            Some("42501"),
+            None,
+        ] {
+            assert!(!candidate_native_refusal(
+                code,
+                "invalid durable knowledge native batch term"
+            ));
+        }
+        assert!(!candidate_native_refusal(
+            Some("55000"),
+            "unsupported durable knowledge native batch engine"
+        ));
+        assert!(!candidate_native_refusal(
+            Some("55000"),
+            "durable knowledge recovery required"
+        ));
+    }
+}
+
+#[cfg(test)]
+mod batch_decoder_tests {
+    use super::super::model::{Builder, RdfRefs};
+    use super::*;
+    fn document(nonempty: bool) -> RdfDocument {
+        let mut b = Builder::new(RdfRefs {
+            unit: "urn:u".into(),
+            revision: "urn:r".into(),
+            event: "urn:e".into(),
+            event_content: "urn:c".into(),
+        });
+        if nonempty {
+            b.iri("urn:s", "urn:p", "urn:o").unwrap();
+        }
+        b.finish(false).unwrap()
+    }
+    fn request() -> NativeReadRequest {
+        NativeReadRequest {
+            unit_id: Uuid::new_v4(),
+            revision: 1,
+            event_id: Uuid::new_v4(),
+            include_revision: true,
+        }
+    }
+    fn row(ordinal: i64, r: &NativeReadRequest, triple: Option<serde_json::Value>) -> BatchRow {
+        (
+            ordinal,
+            r.unit_id,
+            r.revision,
+            r.event_id,
+            r.include_revision,
+            triple,
+        )
+    }
+    #[test]
+    fn ordinals_preserve_requested_groups_with_valid_empty_sentinels() {
+        let a = request();
+        let b = request();
+        let d = document(false);
+        let groups = decode_batch_rows(
+            &[(&a, &d), (&b, &d)],
+            vec![row(2, &b, None), row(1, &a, None)],
+        )
+        .unwrap();
+        assert_eq!(groups, vec![Vec::<serde_json::Value>::new(); 2]);
+        for rows in [
+            vec![row(1, &a, None)],
+            vec![row(3, &a, None)],
+            vec![row(1, &a, None), row(1, &a, None)],
+            vec![row(1, &b, None), row(2, &b, None)],
+        ] {
+            assert_eq!(
+                decode_batch_rows(&[(&a, &d), (&b, &d)], rows),
+                Err(Error::InternalInvariant)
+            );
+        }
+    }
+    #[test]
+    fn exact_triple_groups_reject_duplicates_mixed_sentinel_and_missing_content() {
+        let r = request();
+        let d = document(true);
+        let triple = serde_json::json!({"subject":{"type":"iri","value":"urn:s"},"predicate":{"type":"iri","value":"urn:p"},"object":{"type":"iri","value":"urn:o"}});
+        assert_eq!(
+            decode_batch_rows(&[(&r, &d)], vec![row(1, &r, Some(triple.clone()))]).unwrap(),
+            vec![vec![triple.clone()]]
+        );
+        for rows in [
+            vec![row(1, &r, None)],
+            vec![row(1, &r, None), row(1, &r, Some(triple.clone()))],
+            vec![
+                row(1, &r, Some(triple.clone())),
+                row(1, &r, Some(triple.clone())),
+            ],
+        ] {
+            assert_eq!(
+                decode_batch_rows(&[(&r, &d)], rows),
+                Err(Error::InternalInvariant)
+            );
+        }
     }
 }

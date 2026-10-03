@@ -13,7 +13,9 @@ type PublicationEventRow = (
 );
 
 mod proof;
-pub(crate) use proof::{PublicationProofKey, PublicationProofScope};
+pub(crate) use proof::{
+    CandidateBudget, CandidateProofError, PublicationProofKey, PublicationProofScope,
+};
 pub(crate) type PublicationProofContext<'a> = (Uuid, Uuid, &'a mut PublicationProofScope);
 
 type PublisherReceiptRow = (Option<serde_json::Value>, Option<serde_json::Value>);

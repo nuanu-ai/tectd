@@ -41,6 +41,12 @@ pub(crate) struct RdfDocument {
     pub(super) triples: BTreeSet<TypedTriple>,
 }
 
+impl RdfDocument {
+    pub(crate) fn triple_count(&self) -> usize {
+        self.triples.len()
+    }
+}
+
 pub(super) struct Builder {
     pub refs: RdfRefs,
     triples: BTreeSet<TypedTriple>,
