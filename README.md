@@ -220,6 +220,14 @@ allowlisted methods after host authentication. It never accepts a file
 path. The packaged binary therefore carries the same methods without installing
 client-side PRD files or the former WorkOrder artifact lifecycle.
 
+Full engineering.3 ships a native Phase4 source-planning contract schema as an
+exact run-pinned resource. Its `work-order-contract.json` carrier declares native
+target/read provenance and bounded source-plan/edit/test obligations. It does not
+restore the former WorkOrder runtime or grant filesystem, Git, deployment or live
+product authority. P10/P11/P13 consume current Phase4/native-read provenance;
+executors still recheck source bytes, before-write hashes and actual authority.
+Existing engineering.2 stored snapshots remain immutable.
+
 ## Scope candidate planning
 
 One Program has one current, versioned candidate-set head. The backend captures an

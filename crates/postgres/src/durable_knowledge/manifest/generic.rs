@@ -3,6 +3,7 @@ use crate::knowledge_lifecycle::rdf;
 use sqlx::Row;
 use std::collections::BTreeSet;
 
+mod preload;
 mod resource;
 mod selection;
 
@@ -120,6 +121,7 @@ async fn snapshot_inner(
     shared_digest: String,
     mut proofs: Option<crate::knowledge_lifecycle::PublicationProofContext<'_>>,
 ) -> Result<Snapshot> {
+    tect_application::request_diagnostics::measure("pg.manifest_snapshot", async {
     if let Some((proof_principal, session, proof_scope)) = proofs.as_ref() {
         proof_scope.require_identity(tenant, workspace, *proof_principal, *session)?;
         if *proof_principal != principal {
@@ -150,102 +152,13 @@ async fn snapshot_inner(
             revision_contract: row.try_get(16).map_err(storage_error)?, revision_access: row.try_get(17).map_err(storage_error)?, revision_payload_erased: row.try_get(18).map_err(storage_error)?, event_id: row.try_get(19).map_err(storage_error)?,
             event_payload: row.try_get(20).map_err(storage_error)?, rdf_digest: row.try_get(21).map_err(storage_error)?, lifecycle: row.try_get(22).map_err(storage_error)?, head_access: row.try_get(23).map_err(storage_error)?,
         })).collect::<Result<Vec<_>>>()?;
-    // Only accessible, active, definition-matched DK-2 resources enter proof
-    // preloading. Relational selection is rebuilt on every snapshot.
     if let Some((_, _, proof_scope)) = proofs.as_mut() {
-        let typed_rows = rows
-            .iter()
-            .filter(|row| {
-                let projection_allows = projection
-                    .as_ref()
-                    .is_none_or(|value| value.allows_binding(&row.binding_kind));
-                let pin_matches = row.binding_kind != "slice_phase"
-                    || (row.definition_kind.as_deref() == Some(definition.kind.as_str())
-                        && row.definition_version.as_deref() == Some(&definition_version)
-                        && row.definition_digest.as_deref() == Some(&definition_digest));
-                let inaccessible = (row.head_access == "owners_only"
-                    || row.revision_access.as_deref() == Some("owners_only"))
-                    && !owner;
-                projection_allows
-                    && row.revision_contract.as_deref() == Some("dk-2")
-                    && !inaccessible
-                    && row.binding_active
-                    && row.head_active
-                    && !row.head_payload_erased
-                    && row.revision_payload_erased == Some(false)
-                    && row.lifecycle == "active"
-                    && pin_matches
-                    && row.event_id.is_some()
-            })
-            .collect::<Vec<_>>();
-        let mut keys = typed_rows
-            .iter()
-            .map(|row| {
-                Ok(crate::knowledge_lifecycle::PublicationProofKey {
-                    unit_id: row.unit_id,
-                    revision: row.revision,
-                    event_id: row.event_id.ok_or(Error::InternalInvariant)?,
-                    include_revision: true,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        proof_scope.preload(tx, &keys).await?;
-        keys.clear();
-        let mut requested = BTreeSet::new();
-        for row in &typed_rows {
-            let verified = proof_scope
-                .verify(
-                    tx,
-                    crate::knowledge_lifecycle::PublicationProofKey {
-                        unit_id: row.unit_id,
-                        revision: row.revision,
-                        event_id: row.event_id.ok_or(Error::InternalInvariant)?,
-                        include_revision: true,
-                    },
-                )
-                .await?;
-            // Preserve scalar same-resource refusal order: creation proof,
-            // selected revision digest, then latest revalidation proof.
-            resource::verify_revision_digest(row.rdf_digest.as_deref(), &verified.rdf_digest)?;
-            let Some(document) = verified.input.planned.document.as_ref() else {
-                continue;
-            };
-            let purpose: KnowledgeBindingPurpose =
-                decode(serde_json::Value::String(row.purpose.clone()))?;
-            let selection = projection
-                .as_ref()
-                .map(|value| value.select(document, purpose))
-                .unwrap_or(super::inquiry::BriefSelection::Full);
-            if !matches!(selection, super::inquiry::BriefSelection::Omit { .. }) {
-                requested.insert((row.unit_id, row.revision));
-            }
+        if proof_scope.eager_preload() {
+            preload::selected(tx, tenant, workspace, &rows, &projection, &definition, &definition_version, &definition_digest, owner, proof_scope)
+                .await.map_err(crate::knowledge_lifecycle::CandidateProofError::public)?;
+        } else {
+            preload::ordinary(tx, tenant, workspace, &rows, &projection, &definition, &definition_version, &definition_digest, owner, proof_scope).await?;
         }
-        if !requested.is_empty() {
-            // Revalidation is read only for documents rendered by the current
-            // projection, matching typed()'s early return for omitted resources.
-            // Consumers still re-read metadata and check exact source pins.
-            let units = requested.iter().map(|(unit, _)| *unit).collect::<Vec<_>>();
-            let revisions = requested
-                .iter()
-                .map(|(_, revision)| *revision)
-                .collect::<Vec<_>>();
-            let latest: Vec<(Uuid, i64, Uuid)> = sqlx::query_as(
-                "SELECT requested.unit_id,requested.revision,latest.id FROM unnest($3::uuid[],$4::bigint[]) AS requested(unit_id,revision) CROSS JOIN LATERAL (SELECT v.id FROM knowledge_validation_events v WHERE v.tenant_id=$1 AND v.workspace_id=$2 AND v.unit_id=requested.unit_id AND v.unit_revision=requested.revision AND NOT v.payload_erased ORDER BY v.created_at DESC,v.id DESC LIMIT 1) latest",
-            ).bind(tenant).bind(workspace).bind(&units).bind(&revisions).fetch_all(&mut **tx).await.map_err(storage_error)?;
-            let mut seen = BTreeSet::new();
-            for (unit, revision, event) in latest {
-                if !requested.contains(&(unit, revision)) || !seen.insert((unit, revision)) {
-                    return Err(Error::InternalInvariant);
-                }
-                keys.push(crate::knowledge_lifecycle::PublicationProofKey {
-                    unit_id: unit,
-                    revision,
-                    event_id: event,
-                    include_revision: false,
-                });
-            }
-        }
-        proof_scope.preload(tx, &keys).await?;
     }
     let mut selected = Vec::new();
     let mut gaps = Vec::new();
@@ -469,4 +382,5 @@ async fn snapshot_inner(
             freshness_warnings: warnings,
         },
     })
+    }).await
 }

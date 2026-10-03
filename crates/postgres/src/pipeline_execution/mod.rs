@@ -65,6 +65,7 @@ mod input;
 mod inquiry_contract;
 mod knowledge_publication;
 mod migration;
+mod native_contract;
 mod phase;
 mod phase_validation;
 mod run;

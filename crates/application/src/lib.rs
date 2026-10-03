@@ -2,6 +2,7 @@
 mod planning_knowledge_ports;
 mod ports;
 mod programs;
+pub mod request_diagnostics;
 mod service;
 
 pub use planning_knowledge_ports::PlanningKnowledgeStore;

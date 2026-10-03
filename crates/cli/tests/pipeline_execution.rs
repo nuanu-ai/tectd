@@ -1,3 +1,5 @@
+#[path = "pipeline_execution/delivery_contract.rs"]
+mod delivery_contract;
 #[path = "pipeline_execution/knowledge_refresh.rs"]
 mod knowledge_refresh;
 #[path = "pipeline_execution/lifecycle_support.rs"]
@@ -176,17 +178,7 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
     .await;
     assert_eq!(wrong_consumption["error"]["code"], "stale_context");
 
-    let escalated = route(
-        &mut client,
-        "command",
-        "slice.pipeline.delivery.escalate",
-        json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
-            "run_revision":context["run"]["revision"],
-            "phase_id":context["run"]["current_phase_id"],
-            "reason":"The remaining context now warrants phasewise delivery."}),
-    )
-    .await;
-    context = escalated["context"].clone();
+    context = delivery_contract::escalate_and_verify(&mut client, &context).await;
     assert_eq!(context["run"]["delivery_mode"], "phasewise");
     assert_eq!(context["delivered_phases"].as_array().unwrap().len(), 1);
     assert_eq!(
@@ -429,6 +421,20 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
         blocked_result["slice_revision"].as_i64().unwrap() + 1
     );
     assert_ne!(completed_result["id"], blocked_result["id"]);
+    let completed_bypass = json!({"request_id":Uuid::new_v4(),"scope_id":reviewed["scope"]["id"],
+        "slice_id":slice["id"],"slice_revision":completed_result["slice_revision"],"outcome":"completed",
+        "summary":"Bypass completed managed history","evidence":[{"kind":"test","reference":"fixture","observation":"Must remain managed"}],
+        "scope_impact":"None","remaining_work":"None"});
+    assert_eq!(
+        route_error(
+            &mut client,
+            "command",
+            "slice.result.record",
+            completed_bypass
+        )
+        .await["error"]["code"],
+        "forbidden"
+    );
     assert_eq!(
         completed["context"]["attempts"].as_array().unwrap().len(),
         17

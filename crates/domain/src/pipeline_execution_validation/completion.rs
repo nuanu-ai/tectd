@@ -136,6 +136,7 @@ impl CompletePipelinePhase {
         }
         validate_completion_constraints(self, definition, phase)?;
         validate_artifacts(phase, &self.output)?;
+        validate_native_work_contract_output(self, definition, phase)?;
         if let Some(verdict) = &self.output.verdict {
             let route = phase
                 .verdict_routes

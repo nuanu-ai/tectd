@@ -41,7 +41,20 @@ fn full_draft() -> Value {
 
 async fn advance(client: &mut Mcp, context: Value) -> Value {
     let (verdict, outcome, transition) = successful_route(&context);
-    let request = completion(&context, verdict, outcome, transition, None, None);
+    let request = if matches!(
+        context["run"]["definition_version"].as_str(),
+        Some("0.6.0-native.engineering.3" | "0.6.0-native.engineering.4")
+    ) && context["run"]["current_phase_id"] == "slice-contract-writer"
+    {
+        let facts = full_support::native_contract_fixture_facts(client).await;
+        full_support::completion_with_contract(
+            &context,
+            completion(&context, verdict, outcome, transition, None, None),
+            &facts,
+        )
+    } else {
+        completion(&context, verdict, outcome, transition, None, None)
+    };
     let response = client
         .exchange(
             "tools/call",
@@ -100,6 +113,11 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     let root = temp.path().canonicalize().unwrap();
     let repo = root.join("source");
     repository(&repo);
+    std::fs::write(
+        repo.join("native-contract-fixture.txt"),
+        b"Private native work contract QA fixture.\n",
+    )
+    .unwrap();
     let socket = root.join("pipeline-full.sock");
     let runtime = tagged_url(
         &runtime_url,
@@ -163,8 +181,12 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
     assert!(!id(&context["run"]["id"]).is_nil());
     assert_eq!(context["run"]["delivery_mode"], "phasewise");
     assert_eq!(
+        context["run"]["definition_version"],
+        "0.6.0-native.engineering.4"
+    );
+    assert_eq!(
         context["run"]["definition_digest"],
-        "1274c531dfd433bf01e6b2354adcd0082c906749e1c8e34a158604f77e77a9a5"
+        "85ec63bae1903fedb0c86ecd5326380ea8d524fe0ee29c5dce6e90b9a30cdd3d"
     );
     assert_eq!(context["definition"]["phases"].as_array().unwrap().len(), 1);
     assert_eq!(context["delivered_phases"].as_array().unwrap().len(), 1);

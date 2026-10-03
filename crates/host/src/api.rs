@@ -322,8 +322,8 @@ pub(crate) fn attach_route_contract(action: &mut Value) -> Result<()> {
 fn tool_summary(tool: &str) -> &'static str {
     match tool {
         "get_state" => "Read bounded DB-only state for the current native session.",
-        "query" => "Run one of sixteen named read-only routes.",
-        "command" => "Run one of thirty-six named logical state-transition routes.",
+        "query" => "Run one of nineteen named read-only routes.",
+        "command" => "Run one of forty-one named logical state-transition routes.",
         "execute" => "Run the single explicit external-effect route setup.apply.",
         "help" => "Search or describe this API and its four embedded methods.",
         _ => "",

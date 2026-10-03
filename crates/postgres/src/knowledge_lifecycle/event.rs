@@ -13,7 +13,9 @@ type PublicationEventRow = (
 );
 
 mod proof;
-pub(crate) use proof::{PublicationProofKey, PublicationProofScope};
+pub(crate) use proof::{
+    CandidateBudget, CandidateProofError, PublicationProofKey, PublicationProofScope,
+};
 pub(crate) type PublicationProofContext<'a> = (Uuid, Uuid, &'a mut PublicationProofScope);
 
 type PublisherReceiptRow = (Option<serde_json::Value>, Option<serde_json::Value>);
@@ -117,7 +119,7 @@ pub(crate) async fn verify_publication_event_with_proofs(
     event: Uuid,
     include_revision: bool,
     proofs: Option<PublicationProofContext<'_>>,
-) -> Result<VerifiedPublicationEvent> {
+) -> Result<std::sync::Arc<VerifiedPublicationEvent>> {
     match proofs {
         Some((principal, session, proofs)) => {
             proofs.require_identity(tenant, workspace, principal, session)?;
@@ -133,18 +135,17 @@ pub(crate) async fn verify_publication_event_with_proofs(
                 )
                 .await
         }
-        None => {
-            verify_publication_event(
-                tx,
-                tenant,
-                workspace,
-                unit,
-                revision,
-                event,
-                include_revision,
-            )
-            .await
-        }
+        None => verify_publication_event(
+            tx,
+            tenant,
+            workspace,
+            unit,
+            revision,
+            event,
+            include_revision,
+        )
+        .await
+        .map(std::sync::Arc::new),
     }
 }
 

@@ -399,7 +399,7 @@ async fn canonical_operation_guards_reject_stale_or_unverified_truth() {
     );
 
     let run = Uuid::parse_str(current.receipt["run_id"].as_str().unwrap()).unwrap();
-    let output:(Uuid,String)=sqlx::query_as("SELECT id,digest FROM knowledge_change_outputs WHERE run_id=$1 AND phase_id='kc-domain-checks' ORDER BY revision DESC LIMIT 1")
+    let output:(Uuid,String,sqlx::types::Json<Value>)=sqlx::query_as("SELECT id,digest,output FROM knowledge_change_outputs WHERE run_id=$1 AND phase_id='kc-domain-checks' ORDER BY revision DESC LIMIT 1")
         .bind(run).fetch_one(&pool).await.unwrap();
     sqlx::query("UPDATE knowledge_change_outputs SET output=jsonb_set(output,'{body}','\"tampered retained digest\"'::jsonb) WHERE id=$1")
         .bind(output.0).execute(&pool).await.unwrap();
@@ -424,12 +424,30 @@ async fn canonical_operation_guards_reject_stale_or_unverified_truth() {
         "a stored Knowledge output body changed under its retained digest must be refused"
     );
 
+    sqlx::query("UPDATE knowledge_change_outputs SET output=$2,digest=$3 WHERE id=$1")
+        .bind(output.0)
+        .bind(&output.2)
+        .bind(&output.1)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let restored_output: (sqlx::types::Json<Value>, String) =
+        sqlx::query_as("SELECT output,digest FROM knowledge_change_outputs WHERE id=$1")
+            .bind(output.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(restored_output, (output.2, output.1));
+
     let event = Uuid::parse_str(
         current.receipt["applied_operations"][0]["event_id"]
             .as_str()
             .unwrap(),
     )
     .unwrap();
+    let original_digests: (String, String) = sqlx::query_as(
+        "SELECT e.rdf_digest,r.rdf_digest FROM knowledge_publication_events e JOIN knowledge_revisions r ON r.publication_event_id=e.id WHERE e.id=$1",
+    ).bind(event).fetch_one(&pool).await.unwrap();
     sqlx::query(
         "UPDATE knowledge_publication_events SET rdf_digest='bogus-projection-digest' WHERE id=$1",
     )
@@ -450,5 +468,29 @@ async fn canonical_operation_guards_reject_stale_or_unverified_truth() {
         refused["error"]["code"], "internal_invariant",
         "matching bogus SQL event/revision digests must not override intact native and unit-owned receipt truth"
     );
+    sqlx::query("UPDATE knowledge_publication_events SET rdf_digest=$2 WHERE id=$1")
+        .bind(event)
+        .bind(&original_digests.0)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE knowledge_revisions SET rdf_digest=$2 WHERE publication_event_id=$1")
+        .bind(event)
+        .bind(&original_digests.1)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let restored_digests: (String, String) = sqlx::query_as(
+        "SELECT e.rdf_digest,r.rdf_digest FROM knowledge_publication_events e JOIN knowledge_revisions r ON r.publication_event_id=e.id WHERE e.id=$1",
+    ).bind(event).fetch_one(&pool).await.unwrap();
+    assert_eq!(restored_digests, original_digests);
+    let restored = route(
+        &mut client,
+        "query",
+        "knowledge.unit",
+        json!({"unit_id":unit,"revision":1}),
+    )
+    .await;
+    assert_eq!(restored["document"]["unit_id"], unit);
     client.finish().await;
 }

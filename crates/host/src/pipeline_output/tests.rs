@@ -231,3 +231,6 @@ fn open_checkpoint(
 
 #[path = "tests/action_guidance.rs"]
 mod action_guidance;
+
+#[path = "tests/conditional_fields.rs"]
+mod conditional_fields;

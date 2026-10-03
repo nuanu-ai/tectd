@@ -292,6 +292,25 @@ fn validate_report(
     } else {
         ReviewVerdict::Rework
     };
+    if let Some(index) = report
+        .files
+        .iter()
+        .position(|file| unsafe_file_path(&file.path))
+    {
+        return Err(Error::PipelineRefused {
+            source: Box::new(Error::InvalidArguments),
+            refusal: Box::new(
+                Refusal::new(RefusalCode::InputSchemaInvalid)
+                    .with_message(RefusalCode::InputSchemaInvalid.message())
+                    .with_rule("ENG-REVIEW-FILE-PATH-01")
+                    .with_path(format!("engineering-review.json/files/{index}/path"))
+                    .with_expected("safe repository-relative path")
+                    .with_actual("unsafe path")
+                    .with_next_action("correct_input_and_retry")
+                    .with_required("schema_valid_input"),
+            ),
+        });
+    }
     if report.stage.as_str() != stage
         || report.rules_digest != rules_digest
         || report.verdict != expected_report_verdict
@@ -438,14 +457,16 @@ fn invalid_finding(value: &EngineeringFinding) -> bool {
         || value.status == FindingStatus::Resolved && value.resolution.is_none()
 }
 
-fn invalid_file(value: &EngineeringFile) -> bool {
-    let path = std::path::Path::new(&value.path);
-    blank(&value.path)
-        || value.path.contains('\\')
-        || path
+fn unsafe_file_path(value: &str) -> bool {
+    blank(value)
+        || value.contains('\\')
+        || std::path::Path::new(value)
             .components()
             .any(|part| !matches!(part, Component::Normal(_)))
-        || blank(&value.responsibility)
+}
+
+fn invalid_file(value: &EngineeringFile) -> bool {
+    blank(&value.responsibility)
         || value.justification.as_ref().is_some_and(|text| blank(text))
         || value.line_count > 1500
         || value.line_count > 1000 && value.content_kind != ContentKind::Declarative

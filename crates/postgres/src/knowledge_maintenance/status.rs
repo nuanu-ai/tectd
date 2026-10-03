@@ -138,9 +138,10 @@ async fn current_unit_review_status_inner(
             .input
             .planned
             .revalidation
+            .as_ref()
             .ok_or(Error::InternalInvariant)?;
-        valid_until = value.valid_until.or(valid_until);
-        review_due_at = value.review_due_at.or(review_due_at);
+        valid_until = value.valid_until.clone().or(valid_until);
+        review_due_at = value.review_due_at.clone().or(review_due_at);
     }
     let (due, not_yet_valid, expired): (bool, bool, bool) = sqlx::query_as(
         "SELECT ($1::timestamptz IS NOT NULL AND $1::timestamptz<=pg_catalog.clock_timestamp()), \

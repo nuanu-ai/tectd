@@ -40,7 +40,12 @@ impl PgUnitOfWork {
 #[async_trait]
 impl Store for PgStore {
     async fn begin(&self, mode: TransactionMode) -> Result<Box<dyn UnitOfWork>> {
-        let mut transaction = self.pool.begin().await.map_err(storage_error)?;
+        let mut transaction = tect_application::request_diagnostics::measure(
+            "pg.transaction_begin_including_acquire",
+            self.pool.begin(),
+        )
+        .await
+        .map_err(storage_error)?;
         if mode == TransactionMode::ReadOnly {
             sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
                 .execute(&mut *transaction)
@@ -110,13 +115,16 @@ impl UnitOfWork for PgUnitOfWork {
         {
             return Err(Error::Forbidden);
         }
-        sqlx::query(
-            "SELECT pg_catalog.pg_advisory_xact_lock(\
+        tect_application::request_diagnostics::measure(
+            "pg.native_session_advisory_lock",
+            sqlx::query(
+                "SELECT pg_catalog.pg_advisory_xact_lock(\
                  pg_catalog.hashtextextended($1::text || ':' || $2, 0))",
+            )
+            .bind(host_id)
+            .bind(native_id)
+            .execute(&mut **self.transaction()?),
         )
-        .bind(host_id)
-        .bind(native_id)
-        .execute(&mut **self.transaction()?)
         .await
         .map_err(storage_error)?;
         Ok(())
@@ -470,11 +478,14 @@ impl UnitOfWork for PgUnitOfWork {
     }
 
     async fn commit(mut self: Box<Self>) -> Result<()> {
-        self.transaction
-            .take()
-            .ok_or(Error::StorageUnavailable)?
-            .commit()
-            .await
-            .map_err(storage_error)
+        tect_application::request_diagnostics::measure(
+            "pg.commit",
+            self.transaction
+                .take()
+                .ok_or(Error::StorageUnavailable)?
+                .commit(),
+        )
+        .await
+        .map_err(storage_error)
     }
 }

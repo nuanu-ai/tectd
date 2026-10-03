@@ -175,7 +175,23 @@ fn phase_completion_contract(phase: &PipelinePhaseDefinition, mechanical: &Value
     });
     let mut properties = serde_json::Map::new();
     let mut values = serde_json::Map::new();
-    for field in &phase.required_fields {
+    let mut required = phase.required_fields.clone();
+    let mut declared = required.clone();
+    for constraint in &phase.output_constraints {
+        if let PipelineOutputConstraint::FieldRequired {
+            field,
+            when_verdict,
+        } = constraint
+        {
+            if !declared.contains(field) {
+                declared.push(field.clone());
+            }
+            if when_verdict.is_none() && !required.contains(field) {
+                required.push(field.clone());
+            }
+        }
+    }
+    for field in &declared {
         let command_constraint = phase.output_constraints.iter().find_map(|constraint| {
             if let PipelineOutputConstraint::CommandReceipt {
                 field: constrained,
@@ -238,8 +254,12 @@ fn phase_completion_contract(phase: &PipelinePhaseDefinition, mechanical: &Value
         "fields_schema":{
             "type":"object","additionalProperties":false,
             "properties":Value::Object(properties),
-            "required":phase.required_fields
+            "required":required
         },
+        // The field-map schema cannot inspect the sibling output.verdict or
+        // compare field values. Preserve exact predicates without making a
+        // conditional requirement/value global for unrelated verdicts.
+        "output_constraints":phase.output_constraints,
         "verdict_routes":phase.verdict_routes,
         "call_template":{"tool":"command","arguments":{"route":"slice.pipeline.phase.complete","params":params}}
     })

@@ -1,6 +1,7 @@
 use super::*;
 
 mod authorization;
+mod delivery_receipt;
 
 use authorization::authorize_context_copies;
 pub(super) use authorization::{authorize_run_origin, authorize_run_origin_if_present};
@@ -124,6 +125,20 @@ pub(crate) async fn load_completion_context(
         .await
 }
 
+/// Input preflight keeps context authorization, decoding, and legacy status.
+/// The caller discards this context and verifies generic resource status after
+/// acquiring both the workspace knowledge lock and the run lock.
+pub(crate) async fn load_input_preflight_context(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    run_id: Uuid,
+) -> Result<Option<PipelineRunContext>> {
+    load_context_with_delivery_receipt(tx, tenant, workspace, principal, run_id, true, false, None)
+        .await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn load_context_with_proofs(
     tx: &mut Transaction<'_, Postgres>,
@@ -158,6 +173,7 @@ async fn load_context_with_delivery_receipt(
     verify_resource_status: bool,
     mut proofs: Option<(Uuid, &mut crate::knowledge_lifecycle::PublicationProofScope)>,
 ) -> Result<Option<PipelineRunContext>> {
+    tect_application::request_diagnostics::measure("pg.context_assembly", async {
     if let Some((session, proofs)) = proofs.as_ref() {
         proofs.require_identity(tenant, workspace, principal, *session)?;
     }
@@ -166,7 +182,8 @@ async fn load_context_with_delivery_receipt(
         .bind(tenant).bind(workspace).bind(run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     let Some(row) = row else { return Ok(None) };
     let row: StoredRunRow = decode(row)?;
-    authorize_context_copies(tx, tenant, workspace, principal, run_id).await?;
+    tect_application::request_diagnostics::measure("pg.context_authorization",
+        authorize_context_copies(tx, tenant, workspace, principal, run_id)).await?;
     if row.payload_erased {
         return Err(Error::KnowledgePayloadErased);
     }
@@ -385,7 +402,7 @@ async fn load_context_with_delivery_receipt(
         None
     };
     let (delivery_receipt, delivery_fresh) = if issue_delivery_receipt {
-        let (receipt, fresh) = load_or_create_delivery_receipt(
+        let (receipt, fresh) = delivery_receipt::load_or_create_delivery_receipt(
             tx,
             tenant,
             workspace,
@@ -419,55 +436,7 @@ async fn load_context_with_delivery_receipt(
         delivery_receipt,
         delivery_fresh,
     }))
-}
-
-/// Allocate exactly one backend-owned receipt for each immutable run revision.
-/// The receipt binds the delivery to the definition snapshot persisted on the
-/// run; no agent-provided digest or consumed list participates in this proof.
-async fn load_or_create_delivery_receipt(
-    tx: &mut Transaction<'_, Postgres>,
-    tenant: Uuid,
-    workspace: Uuid,
-    run: Uuid,
-    context_epoch: i64,
-    manifest_digest: &str,
-) -> Result<(PipelineDeliveryReceipt, bool)> {
-    let inserted = sqlx::query("INSERT INTO pipeline_delivery_receipts(tenant_id,workspace_id,delivery_id,run_id,context_epoch,manifest_digest) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT (tenant_id,workspace_id,run_id,context_epoch) DO NOTHING")
-        .bind(tenant)
-        .bind(workspace)
-        .bind(Uuid::new_v4())
-        .bind(run)
-        .bind(context_epoch)
-        .bind(manifest_digest)
-        .execute(&mut **tx)
-        .await
-        .map_err(storage_error)?;
-    let row: Option<(Uuid, i64, String, String)> = sqlx::query_as(
-        "SELECT delivery_id,context_epoch,manifest_digest,delivered_at::text FROM pipeline_delivery_receipts WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND context_epoch=$4",
-    )
-    .bind(tenant)
-    .bind(workspace)
-    .bind(run)
-    .bind(context_epoch)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(storage_error)?;
-    let Some((delivery_id, epoch, digest, delivered_at)) = row else {
-        return Err(Error::InternalInvariant);
-    };
-    if digest != manifest_digest {
-        return Err(Error::InternalInvariant);
-    }
-    Ok((
-        PipelineDeliveryReceipt {
-            delivery_id,
-            run_id: run,
-            context_epoch: epoch,
-            manifest_digest: digest,
-            delivered_at,
-        },
-        inserted.rows_affected() == 1,
-    ))
+    }).await
 }
 
 pub(crate) async fn load_output(

@@ -480,3 +480,11 @@ pub(super) async fn refresh_knowledge(client: &mut Mcp, context: &Value) -> Valu
     assert_eq!(current["knowledge_resource_status"]["state"], "current");
     current
 }
+
+#[path = "full_support/native_contract.rs"]
+mod native_contract;
+
+#[allow(unused_imports)] // Shared helper is used only by native Full contract fixtures.
+pub(super) use native_contract::{
+    NativeContractFixtureFacts, completion_with_contract, native_contract_fixture_facts,
+};
