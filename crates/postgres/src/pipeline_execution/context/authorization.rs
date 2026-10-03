@@ -11,6 +11,10 @@ async fn authorize_context_copy_keys(
     principal: Uuid,
     keys: &[OwnedCopyKey],
 ) -> Result<()> {
+    tect_application::request_diagnostics::count(
+        "context.authorization_requested_keys",
+        keys.len(),
+    );
     if keys.is_empty() {
         return Ok(());
     }
@@ -49,6 +53,10 @@ async fn authorize_context_copy_keys(
     .fetch_all(&mut **tx)
     .await
     .map_err(storage_error)?;
+    tect_application::request_diagnostics::count(
+        "context.authorization_returned_rows",
+        checks.len(),
+    );
     if checks.len() != keys.len() {
         return Err(Error::InternalInvariant);
     }

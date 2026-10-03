@@ -1,6 +1,7 @@
 use super::RdfDocument;
 use crate::storage_error;
 use sqlx::{Postgres, Transaction};
+use tect_application::request_diagnostics::{count, measure};
 use tect_domain::{Error, KnowledgeLifecycleOperation, Result};
 use uuid::Uuid;
 
@@ -77,15 +78,21 @@ pub(crate) async fn native_rows_batch(
             .collect::<Vec<_>>(),
     )
     .map_err(storage_error)?;
-    let rows: Vec<BatchRow> = sqlx::query_as(
+    count("proof.native_batch_calls", 1);
+    count("proof.native_batch_requested_keys", requests.len());
+    let rows: Vec<BatchRow> = measure("pg.native_batch_sql", sqlx::query_as(
         "SELECT request_ordinal,unit_id,revision,event_id,include_revision,triple FROM public.tect_dk2_native_read_batch($1,$2,$3)",
     )
     .bind(tenant)
     .bind(workspace)
     .bind(payload)
-    .fetch_all(&mut **tx)
+    .fetch_all(&mut **tx))
     .await
     .map_err(native_error)?;
+    count(
+        "proof.native_batch_returned_rows_including_sentinels",
+        rows.len(),
+    );
     let mut groups = vec![Vec::new(); requests.len()];
     let mut seen = vec![false; requests.len()];
     let mut empty = vec![false; requests.len()];
@@ -120,6 +127,12 @@ pub(crate) async fn native_rows_batch(
             return Err(Error::InternalInvariant);
         }
         super::validate_rows(&groups[index], document)?;
+    }
+    if tect_application::request_diagnostics::enabled() {
+        count(
+            "proof.native_batch_validated_triples",
+            groups.iter().map(Vec::len).sum(),
+        );
     }
     Ok(groups)
 }

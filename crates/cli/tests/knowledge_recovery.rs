@@ -264,7 +264,14 @@ async fn managed_restore_reapplies_complete_suppression_and_preserves_survivor()
     let older_manifest = tect_postgres::prepare_knowledge_suppression_manifest(&pool)
         .await
         .unwrap();
-    assert_eq!(older_manifest.high_water_erasure_sequence, 0);
+    let baseline_sequence = older_manifest.high_water_erasure_sequence;
+    let baseline_entries = older_manifest.entries.len();
+    assert!(
+        !older_manifest
+            .entries
+            .iter()
+            .any(|entry| entry.unit_id == target_uuid)
+    );
     let older_checkpoint =
         tect_postgres::record_knowledge_suppression_export(&pool, &older_manifest)
             .await
@@ -305,7 +312,45 @@ async fn managed_restore_reapplies_complete_suppression_and_preserves_survivor()
     let manifest = tect_postgres::prepare_knowledge_suppression_manifest(&pool)
         .await
         .unwrap();
-    assert_eq!(manifest.high_water_erasure_sequence, 1);
+    assert_eq!(manifest.high_water_erasure_sequence, baseline_sequence + 1);
+    assert_eq!(manifest.entries.len(), baseline_entries + 1);
+    for prior in &older_manifest.entries {
+        assert!(manifest.entries.contains(prior));
+    }
+    let added: Vec<_> = manifest
+        .entries
+        .iter()
+        .filter(|entry| !older_manifest.entries.contains(entry))
+        .collect();
+    assert_eq!(added.len(), 1);
+    let receipt = &erased["applied_erased"];
+    let operation = &receipt["operations"][0]["receipt"];
+    assert_eq!(added[0].unit_id, target_uuid);
+    assert_eq!(
+        added[0].event_id.to_string(),
+        operation["event_id"].as_str().unwrap()
+    );
+    assert_eq!(
+        added[0].change_id.to_string(),
+        receipt["change_id"].as_str().unwrap()
+    );
+    assert_eq!(
+        added[0].run_id.to_string(),
+        receipt["run_id"].as_str().unwrap()
+    );
+    let begin_request: Uuid =
+        sqlx::query_scalar("SELECT request_id FROM knowledge_lifecycle_changes WHERE id=$1")
+            .bind(added[0].change_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(added[0].request_id, begin_request);
+    assert_eq!(added[0].erasure_sequence, baseline_sequence + 1);
+    eprintln!(
+        "recovery suppression baseline={baseline_sequence}/{baseline_entries} final={}/{} exact_target={target_uuid}",
+        manifest.high_water_erasure_sequence,
+        manifest.entries.len()
+    );
     let checkpoint = tect_postgres::record_knowledge_suppression_export(&pool, &manifest)
         .await
         .unwrap();

@@ -120,6 +120,7 @@ async fn snapshot_inner(
     shared_digest: String,
     mut proofs: Option<crate::knowledge_lifecycle::PublicationProofContext<'_>>,
 ) -> Result<Snapshot> {
+    tect_application::request_diagnostics::measure("pg.manifest_snapshot", async {
     if let Some((proof_principal, session, proof_scope)) = proofs.as_ref() {
         proof_scope.require_identity(tenant, workspace, *proof_principal, *session)?;
         if *proof_principal != principal {
@@ -472,4 +473,5 @@ async fn snapshot_inner(
             freshness_warnings: warnings,
         },
     })
+    }).await
 }

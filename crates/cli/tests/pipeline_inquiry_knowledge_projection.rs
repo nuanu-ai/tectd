@@ -23,6 +23,8 @@ use support::{open_slice, ready_source_candidate, repository, review, route, sav
 use tect_postgres::admin;
 use uuid::Uuid;
 
+static ACTIVATION_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 const DETAIL_MARKER: &str = "DETAIL-CANONICAL-MARKER ExampleDriver 7.4.2";
 const LEGACY_MARKER: &str = "LEGACY-PHASE-ONLY-MARKER";
 const PROGRAM_INSTRUCTION: &str = "Plan service operation within region R1.";

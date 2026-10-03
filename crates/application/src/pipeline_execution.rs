@@ -11,7 +11,6 @@ use tect_domain::{
     SliceState,
 };
 use uuid::Uuid;
-
 /// Proof that the application hashed the successor body for one exact request.
 ///
 /// The fields are private and there is no public constructor, so host and adapter
@@ -30,7 +29,6 @@ pub struct VerifiedPipelineSourceDigest {
     request_id: Uuid,
     digest: String,
 }
-
 impl VerifiedPipelineSourceDigest {
     fn new(request_id: Uuid, declared_digest: &str, actual_digest: String) -> Result<Self> {
         if declared_digest != actual_digest {
@@ -41,16 +39,13 @@ impl VerifiedPipelineSourceDigest {
             digest: actual_digest,
         })
     }
-
     pub fn request_id(&self) -> Uuid {
         self.request_id
     }
-
     pub fn digest(&self) -> &str {
         &self.digest
     }
 }
-
 impl WorkspaceService {
     pub async fn pipeline_evidence_artifact_register(
         &self,
@@ -67,7 +62,6 @@ impl WorkspaceService {
         tx.commit().await?;
         Ok(value)
     }
-
     pub async fn pipeline_evidence_artifact_finalize(
         &self,
         context: &tect_domain::RequestContext,
@@ -83,7 +77,6 @@ impl WorkspaceService {
         tx.commit().await?;
         Ok(value)
     }
-
     pub async fn pipeline_evidence_artifact_read(
         &self,
         context: &tect_domain::RequestContext,
@@ -100,7 +93,6 @@ impl WorkspaceService {
         tx.commit().await?;
         Ok(value)
     }
-
     pub async fn pipeline_run_begin(
         &self,
         context: &tect_domain::RequestContext,
@@ -145,7 +137,6 @@ impl WorkspaceService {
         tx.commit().await?;
         Ok(value)
     }
-
     pub async fn pipeline_run_migrate(
         &self,
         context: &tect_domain::RequestContext,
@@ -186,7 +177,6 @@ impl WorkspaceService {
         tx.commit().await?;
         Ok(value)
     }
-
     pub async fn pipeline_context(
         &self,
         context: &tect_domain::RequestContext,
@@ -200,40 +190,42 @@ impl WorkspaceService {
             .native_planning_transaction(context, TransactionMode::ReadWrite)
             .await?;
         let principal_id = tx.session_principal(session.id).await?;
-        let value = match query.view {
-            PipelineRunContextView::Output => PipelineContextResponse::Output(Box::new(
-                tx.pipeline_phase_output(
-                    workspace.id,
-                    query.run_id,
-                    query.output_id.ok_or(Error::InvalidArguments)?,
-                    query.digest.as_deref().ok_or(Error::InvalidArguments)?,
-                )
-                .await?
-                .ok_or(Error::NotFound)?,
-            )),
-            PipelineRunContextView::Current | PipelineRunContextView::DeliveryReceipt => {
-                let context = tx
-                    .pipeline_run_ordinary_context(
+        let value = crate::request_diagnostics::measure("application.context_assembly", async {
+            Ok::<_, Error>(match query.view {
+                PipelineRunContextView::Output => PipelineContextResponse::Output(Box::new(
+                    tx.pipeline_phase_output(
                         workspace.id,
-                        principal_id,
-                        session.id,
                         query.run_id,
+                        query.output_id.ok_or(Error::InvalidArguments)?,
+                        query.digest.as_deref().ok_or(Error::InvalidArguments)?,
                     )
                     .await?
-                    .ok_or(Error::NotFound)?;
-                if matches!(query.view, PipelineRunContextView::Current) {
-                    PipelineContextResponse::Current(Box::new(context))
-                } else {
-                    PipelineContextResponse::DeliveryReceipt(Box::new(
-                        context.delivery_receipt.ok_or(Error::InternalInvariant)?,
-                    ))
+                    .ok_or(Error::NotFound)?,
+                )),
+                PipelineRunContextView::Current | PipelineRunContextView::DeliveryReceipt => {
+                    let context = tx
+                        .pipeline_run_ordinary_context(
+                            workspace.id,
+                            principal_id,
+                            session.id,
+                            query.run_id,
+                        )
+                        .await?
+                        .ok_or(Error::NotFound)?;
+                    if matches!(query.view, PipelineRunContextView::Current) {
+                        PipelineContextResponse::Current(Box::new(context))
+                    } else {
+                        PipelineContextResponse::DeliveryReceipt(Box::new(
+                            context.delivery_receipt.ok_or(Error::InternalInvariant)?,
+                        ))
+                    }
                 }
-            }
-        };
-        tx.commit().await?;
+            })
+        })
+        .await?;
+        crate::request_diagnostics::measure("application.commit", tx.commit()).await?;
         Ok(value)
     }
-
     pub async fn pipeline_instruction(
         &self,
         context: &tect_domain::RequestContext,
@@ -252,30 +244,39 @@ impl WorkspaceService {
         tx.commit().await?;
         Ok(value)
     }
-
     pub async fn pipeline_phase_complete(
         &self,
         context: &tect_domain::RequestContext,
         request: &CompletePipelinePhase,
         guard: &dyn PipelineExecutionOutputGuard,
     ) -> Result<PipelineMutationOutcome> {
+        use crate::request_diagnostics::measure;
         let (mut tx, workspace, session) = self
             .native_planning_transaction(context, TransactionMode::ReadWrite)
             .await?;
         let principal_id = tx.session_principal(session.id).await?;
-        let stored = tx
-            .pipeline_run_completion_context(workspace.id, principal_id, request.run_id)
-            .await?
-            .ok_or(Error::NotFound)?;
-        request.validate(&stored.definition)?;
-        let value = tx
-            .complete_pipeline_phase(workspace.id, session.id, request)
-            .await?;
-        guard.check_mutation(&value)?;
-        tx.commit().await?;
+        let stored = measure(
+            "application.completion_preflight",
+            tx.pipeline_run_completion_context(workspace.id, principal_id, request.run_id),
+        )
+        .await?
+        .ok_or(Error::NotFound)?;
+        measure("application.completion_validation", async {
+            request.validate(&stored.definition)
+        })
+        .await?;
+        let value = measure(
+            "application.phase_mutation",
+            tx.complete_pipeline_phase(workspace.id, session.id, request),
+        )
+        .await?;
+        measure("application.output_guard", async {
+            guard.check_mutation(&value)
+        })
+        .await?;
+        measure("application.commit", tx.commit()).await?;
         Ok(value)
     }
-
     pub async fn pipeline_input_record(
         &self,
         context: &tect_domain::RequestContext,
@@ -311,7 +312,6 @@ impl WorkspaceService {
         tx.commit().await?;
         Ok(value)
     }
-
     pub async fn pipeline_delivery_escalate(
         &self,
         context: &tect_domain::RequestContext,
@@ -327,7 +327,6 @@ impl WorkspaceService {
         tx.commit().await?;
         Ok(value)
     }
-
     pub async fn pipeline_checkpoint_resolve(
         &self,
         context: &tect_domain::RequestContext,
@@ -346,7 +345,6 @@ impl WorkspaceService {
         Ok(value)
     }
 }
-
 #[cfg(test)]
 mod digest_attestation_tests {
     use super::*;
@@ -360,9 +358,7 @@ mod digest_attestation_tests {
         PipelineSourceArtifactDraft, PipelineSourcePredecessor, PipelineSourceSuccessor,
         RequestContext, SetupDirectory, SourceLocation,
     };
-
     struct CountingStore(AtomicUsize);
-
     #[async_trait]
     impl crate::Store for CountingStore {
         async fn begin(&self, _mode: TransactionMode) -> Result<Box<dyn crate::UnitOfWork>> {
@@ -370,16 +366,13 @@ mod digest_attestation_tests {
             Err(Error::InternalInvariant)
         }
     }
-
     struct UnusedAdapters;
-
     #[async_trait]
     impl crate::SourceInspector for UnusedAdapters {
         async fn inspect(&self, _path: &str, _allowed_roots: &[String]) -> Result<SourceLocation> {
             Err(Error::InternalInvariant)
         }
     }
-
     impl crate::SetupFiles for UnusedAdapters {
         fn resolve_directory(
             &self,
@@ -388,7 +381,6 @@ mod digest_attestation_tests {
         ) -> Result<SetupDirectory> {
             Err(Error::InternalInvariant)
         }
-
         fn inspect(
             &self,
             _directory: &SetupDirectory,
@@ -396,12 +388,10 @@ mod digest_attestation_tests {
         ) -> Result<FileObservation> {
             Err(Error::InternalInvariant)
         }
-
         fn publish(&self, _directory: &SetupDirectory, _content: &str) -> Result<FilePublication> {
             Err(Error::InternalInvariant)
         }
     }
-
     fn amendment_request(body: &str, declared_digest: &str) -> RecordPipelineInput {
         RecordPipelineInput {
             request_id: Uuid::new_v4(),
@@ -435,7 +425,6 @@ mod digest_attestation_tests {
             }),
         }
     }
-
     #[test]
     fn forged_declared_digest_cannot_mint_an_attestation() {
         let request = amendment_request("arbitrary body", &"0".repeat(64));
@@ -445,7 +434,6 @@ mod digest_attestation_tests {
             .iter()
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
-
         assert!(matches!(
             VerifiedPipelineSourceDigest::new(
                 request.request_id,
@@ -455,7 +443,6 @@ mod digest_attestation_tests {
             Err(Error::InvalidArguments)
         ));
     }
-
     #[tokio::test]
     async fn public_service_rejects_forged_digest_before_entering_store() {
         let store = Arc::new(CountingStore(AtomicUsize::new(0)));
@@ -473,14 +460,12 @@ mod digest_attestation_tests {
             workspace_key: "workspace".to_owned(),
         };
         let request = amendment_request("arbitrary body", &"0".repeat(64));
-
         assert!(matches!(
             service.pipeline_input_record(&context, &request).await,
             Err(Error::InvalidArguments)
         ));
         assert_eq!(store.0.load(Ordering::SeqCst), 0);
     }
-
     #[test]
     fn attestation_is_bound_to_request_and_actual_digest() {
         let body = "amended body";
@@ -492,7 +477,6 @@ mod digest_attestation_tests {
         let verified =
             VerifiedPipelineSourceDigest::new(request.request_id, &digest, digest.clone())
                 .expect("application-computed digest matches declaration");
-
         assert_eq!(verified.request_id(), request.request_id);
         assert_eq!(verified.digest(), digest);
     }

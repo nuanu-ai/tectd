@@ -158,6 +158,13 @@ async fn native_scope_slice_result_replans_and_recovers() {
         "summary":"Caller reports bounded diagnosis complete","evidence":[{"kind":"test",
         "reference":"native fixture","observation":"Result persisted"}],
         "scope_impact":"Decision can be resolved","remaining_work":"Refresh and review correction"});
+    let mut stale_result = result_request.clone();
+    stale_result["request_id"] = json!(Uuid::new_v4());
+    stale_result["slice_revision"] = json!(slice["revision"].as_i64().unwrap() + 1);
+    assert_eq!(
+        route_error(&mut client, "command", "slice.result.record", stale_result).await["error"]["code"],
+        "stale_revision"
+    );
     let recorded = route(
         &mut client,
         "command",

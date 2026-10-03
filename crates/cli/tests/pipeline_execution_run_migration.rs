@@ -1,3 +1,6 @@
+#[path = "pipeline_execution/full_support.rs"]
+#[allow(dead_code)]
+mod full_support;
 #[path = "pipeline_execution/lifecycle_support.rs"]
 #[allow(dead_code)]
 mod lifecycle_support;
@@ -111,7 +114,12 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
     let pool = PgPool::connect(&admin_url).await.unwrap();
     admin::migrate(&pool, &role).await.unwrap();
     let temp = private_temp();
-    let root = temp.path().canonicalize().unwrap();
+    let root = if std::env::var("TECT_TEST_KEEP_FAILURE_EVIDENCE").as_deref() == Ok("1") {
+        temp.keep().canonicalize().unwrap()
+    } else {
+        temp.path().canonicalize().unwrap()
+    };
+    eprintln!("migration_fixture_root={}", root.display());
     let repo = root.join("source");
     repository(&repo);
     let socket = root.join("pipeline-run-migration.sock");
@@ -369,3 +377,6 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
     );
     assert_complete_pipeline_refusal(&missing);
 }
+
+#[path = "pipeline_execution_run_migration/full_engineering.rs"]
+mod full_engineering;

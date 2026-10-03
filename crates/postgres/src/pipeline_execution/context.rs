@@ -173,6 +173,7 @@ async fn load_context_with_delivery_receipt(
     verify_resource_status: bool,
     mut proofs: Option<(Uuid, &mut crate::knowledge_lifecycle::PublicationProofScope)>,
 ) -> Result<Option<PipelineRunContext>> {
+    tect_application::request_diagnostics::measure("pg.context_assembly", async {
     if let Some((session, proofs)) = proofs.as_ref() {
         proofs.require_identity(tenant, workspace, principal, *session)?;
     }
@@ -181,7 +182,8 @@ async fn load_context_with_delivery_receipt(
         .bind(tenant).bind(workspace).bind(run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     let Some(row) = row else { return Ok(None) };
     let row: StoredRunRow = decode(row)?;
-    authorize_context_copies(tx, tenant, workspace, principal, run_id).await?;
+    tect_application::request_diagnostics::measure("pg.context_authorization",
+        authorize_context_copies(tx, tenant, workspace, principal, run_id)).await?;
     if row.payload_erased {
         return Err(Error::KnowledgePayloadErased);
     }
@@ -434,6 +436,7 @@ async fn load_context_with_delivery_receipt(
         delivery_receipt,
         delivery_fresh,
     }))
+    }).await
 }
 
 pub(crate) async fn load_output(

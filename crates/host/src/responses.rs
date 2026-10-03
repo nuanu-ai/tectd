@@ -480,3 +480,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod engineering_path_tests;

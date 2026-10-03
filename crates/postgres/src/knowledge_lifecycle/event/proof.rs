@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use tect_application::request_diagnostics::{count, enabled, measure};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub(crate) struct PublicationProofKey {
@@ -54,12 +55,12 @@ impl PublicationProofScope {
         principal: Uuid,
         session: Uuid,
     ) -> Result<Option<Self>> {
-        let ready: Option<bool> = sqlx::query_scalar(
+        let ready: Option<bool> = measure("pg.workspace_knowledge_lock", sqlx::query_scalar(
             "SELECT capability_ready FROM workspace_knowledge_state WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE",
         )
         .bind(tenant)
         .bind(workspace)
-        .fetch_optional(&mut **tx)
+        .fetch_optional(&mut **tx))
         .await
         .map_err(storage_error)?;
         if ready != Some(true) {
@@ -111,6 +112,13 @@ impl PublicationProofScope {
         tx: &mut Transaction<'_, Postgres>,
         keys: &[PublicationProofKey],
     ) -> Result<()> {
+        measure("pg.publication_proof_preload", async {
+        count("proof.requested_key_occurrences", keys.len());
+        if enabled() {
+            let unique = keys.iter().copied().collect::<BTreeSet<_>>();
+            count("proof.requested_unique_keys", unique.len());
+            count("proof.already_verified_unique_keys", unique.iter().filter(|key| self.verified.contains_key(*key)).count());
+        }
         let keys = keys
             .iter()
             .copied()
@@ -118,6 +126,7 @@ impl PublicationProofScope {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
+        count("proof.unique_unverified_keys", keys.len());
         if keys.is_empty() {
             return Ok(());
         }
@@ -143,6 +152,7 @@ impl PublicationProofScope {
         .fetch_all(&mut **tx)
         .await
         .map_err(storage_error)?;
+        count("proof.event_rows", rows.len());
         let mut events = BTreeMap::new();
         for (id, payload, digest, unit, revision, operation, change, operation_id, erased) in rows {
             if !event_ids.contains(&id)
@@ -196,7 +206,7 @@ impl PublicationProofScope {
             .iter()
             .map(|(key, document, _)| (key, document))
             .collect::<Vec<_>>();
-        let groups = rdf::native_rows_batch(tx, self.tenant, self.workspace, &requests).await?;
+        let groups = measure("pg.publication_native_batch", rdf::native_rows_batch(tx, self.tenant, self.workspace, &requests)).await?;
         if groups.len() != pending.len() {
             return Err(Error::InternalInvariant);
         }
@@ -214,6 +224,7 @@ impl PublicationProofScope {
         .fetch_all(&mut **tx)
         .await
         .map_err(storage_error)?;
+        count("proof.receipt_rows", rows.len());
         let mut receipts = BTreeMap::new();
         for (change, full, erased) in rows {
             if !change_ids.contains(&change) || receipts.insert(change, (full, erased)).is_some() {
@@ -255,6 +266,7 @@ impl PublicationProofScope {
             self.expected.insert(key, material);
         }
         Ok(())
+        }).await
     }
 
     pub(crate) async fn verify(
@@ -262,6 +274,13 @@ impl PublicationProofScope {
         tx: &mut Transaction<'_, Postgres>,
         key: PublicationProofKey,
     ) -> Result<Arc<VerifiedPublicationEvent>> {
+        count("proof.verify_calls", 1);
+        if enabled() {
+            count(
+                "proof.verify_cache_hits",
+                usize::from(self.verified.contains_key(&key)),
+            );
+        }
         self.preload(tx, &[key]).await?;
         // Share only immutable verified publication material within this
         // workspace-locked operation; mutable authority remains freshly read.
