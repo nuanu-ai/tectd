@@ -310,8 +310,122 @@ async fn exact_slice_phase_binding_is_validated_and_does_not_flow_to_next_phase(
             .get("source")
             .is_none()
     );
-    let (completed, _) =
-        complete(&mut client, &current, "completed", "continue", None, false).await;
+    // Ordinary input must verify the selected publication before committing,
+    // and an idempotent replay must still verify its current context.
+    let input_request = json!({"request_id":Uuid::new_v4(),"run_id":current["run"]["id"],
+        "run_revision":current["run"]["revision"],"phase_id":current["run"]["current_phase_id"],
+        "input":"Retain exact source provenance in this phase."});
+    let input = route(
+        &mut client,
+        "command",
+        "slice.pipeline.input",
+        input_request.clone(),
+    )
+    .await;
+    let current = input["context"].clone();
+    assert_eq!(current["knowledge_resource_status"]["state"], "current");
+    assert_eq!(
+        current["knowledge_resources"]["run_revision"],
+        current["run"]["revision"]
+    );
+    let (event_id, event_payload): (Uuid, Value) = sqlx::query_as(
+        "SELECT e.id,e.event_payload FROM knowledge_publication_events e \
+         JOIN knowledge_revisions r ON r.tenant_id=e.tenant_id AND r.workspace_id=e.workspace_id \
+         AND r.publication_event_id=e.id WHERE r.unit_id=$1 AND r.revision=1",
+    )
+    .bind(unit_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    // This is the newly enrolled fixture's own publication, never shared data.
+    sqlx::query("UPDATE knowledge_publication_events SET event_payload=pg_catalog.jsonb_set(event_payload,'{event_id}',pg_catalog.to_jsonb($3::text)) WHERE id=$1 AND unit_id=$2")
+        .bind(event_id)
+        .bind(unit_id)
+        .bind(Uuid::new_v4().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let before_corruption_refusal = run_manifest_checkpoint(&pool, run_id).await;
+    let inputs_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM slice_pipeline_inputs WHERE run_id=$1")
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let fresh_input = json!({"request_id":Uuid::new_v4(),"run_id":current["run"]["id"],
+        "run_revision":current["run"]["revision"],"phase_id":current["run"]["current_phase_id"],
+        "input":"Fresh input must refuse corrupted selected publication."});
+    for request in [fresh_input, input_request.clone()] {
+        assert_eq!(
+            route_error(&mut client, "command", "slice.pipeline.input", request).await["error"]["code"],
+            "internal_invariant"
+        );
+        assert_eq!(
+            run_manifest_checkpoint(&pool, run_id).await,
+            before_corruption_refusal
+        );
+        let inputs_after: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM slice_pipeline_inputs WHERE run_id=$1")
+                .bind(run_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(inputs_after, inputs_before);
+    }
+    sqlx::query(
+        "UPDATE knowledge_publication_events SET event_payload=$3 WHERE id=$1 AND unit_id=$2",
+    )
+    .bind(event_id)
+    .bind(unit_id)
+    .bind(event_payload)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        route(
+            &mut client,
+            "command",
+            "slice.pipeline.input",
+            input_request
+        )
+        .await,
+        input
+    );
+    // Whole-delivery mutations return compact state; completion requires an
+    // explicit reread of the current definition after the new input revision.
+    let completion_context = route(
+        &mut client,
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":current["run"]["id"],"refresh":true}),
+    )
+    .await;
+    assert_eq!(completion_context["run"]["id"], current["run"]["id"]);
+    assert_eq!(
+        completion_context["run"]["revision"],
+        current["run"]["revision"]
+    );
+    for phases in [
+        &completion_context["definition"]["phases"],
+        &completion_context["delivered_phases"],
+    ] {
+        assert!(
+            phases
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|phase| phase["id"] == completion_context["run"]["current_phase_id"])
+        );
+    }
+    let (completed, _) = complete(
+        &mut client,
+        &completion_context,
+        "completed",
+        "continue",
+        None,
+        false,
+    )
+    .await;
     let next = &completed["context"];
     assert_eq!(next["run"]["current_phase_ordinal"], 2);
     assert!(
@@ -327,171 +441,5 @@ async fn exact_slice_phase_binding_is_validated_and_does_not_flow_to_next_phase(
     pool.close().await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
-async fn erased_origin_begin_replay_refuses_the_frozen_knowledge_copy() {
-    if std::env::var("TECT_TEST_DK2").as_deref() != Ok("1") {
-        return;
-    }
-    let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
-    let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
-    let role = std::env::var("TECT_TEST_RUNTIME_ROLE").unwrap();
-    let pool = PgPool::connect(&admin_url).await.unwrap();
-    admin::migrate(&pool, &role).await.unwrap();
-    tect_postgres::enable_durable_knowledge(&pool, &role)
-        .await
-        .unwrap();
-    let temp = private_temp();
-    let root = temp.path().canonicalize().unwrap();
-    let repo = root.join("source");
-    repository(&repo);
-    let socket = root.join("erased-origin.sock");
-    let runtime = tagged_url(
-        &runtime_url,
-        &format!("dk2-erased-origin-{}", Uuid::new_v4()),
-    );
-    let enrollment = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
-        .await
-        .unwrap();
-    let _daemon = Daemon::start(&runtime, socket.clone()).await;
-    let config = root.join("host.json");
-    host_file(&config, &enrollment.auth);
-    let mut client = Mcp::start(
-        &socket,
-        &config,
-        &Uuid::new_v4().to_string(),
-        &format!("origin-{}", Uuid::new_v4()),
-    )
-    .await;
-    let (source, candidate) = ready_source_candidate(&mut client, &repo).await;
-    let opened_scope=route(&mut client,"command","scope.open",json!({"request_id":Uuid::new_v4(),
-        "candidate_set_id":source["candidate_set"]["id"],"candidate_set_revision":source["candidate_set"]["revision"],
-        "candidate_snapshot_id":source["snapshot"]["id"],"candidate_id":candidate["id"],"candidate_revision":candidate["revision"]})).await;
-    let mut pipeline_draft = lightweight_draft();
-    pipeline_draft["nodes"][0]["pipeline"] = json!("slice.custom-procedure-capture");
-    pipeline_draft["nodes"][0]["pipeline_reason"] =
-        json!("Exercise frozen origin replay without invoking Promotion routing.");
-    let saved = save(
-        &mut client,
-        &opened_scope["created"]["planning"],
-        pipeline_draft,
-    )
-    .await;
-    let reviewed = review(&mut client, &saved).await;
-    let opened_slice = route(
-        &mut client,
-        "command",
-        "slice.open",
-        open_slice(&reviewed, &reviewed["draft"]["nodes"][0], Uuid::new_v4()),
-    )
-    .await;
-    let fixture: serde_json::Value = serde_json::from_str(include_str!(
-        "../../postgres/src/knowledge_lifecycle/rdf/fixtures/general-constraint.json"
-    ))
-    .unwrap();
-    let committed = commit_create(&mut client, fixture["document"].clone()).await;
-    let unit = committed.receipt["applied_operations"][0]["unit_id"].clone();
-    let persisted_pipeline: String =
-        sqlx::query_scalar("SELECT pipeline FROM native_slices WHERE id=$1")
-            .bind(Uuid::parse_str(opened_slice["created"]["id"].as_str().unwrap()).unwrap())
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-    assert_eq!(persisted_pipeline, "slice.custom-procedure-capture");
-    let begin_request = json!({"request_id":Uuid::new_v4(),"scope_id":reviewed["scope"]["id"],
-        "slice_id":opened_slice["created"]["id"],"slice_revision":opened_slice["created"]["revision"],
-        "qualification_reason":"Frozen erased-origin replay fixture."});
-    let begun = route(
-        &mut client,
-        "command",
-        "slice.pipeline.begin",
-        begin_request.clone(),
-    )
-    .await;
-    assert_eq!(
-        begun["created"]["knowledge_resources"]["selected"][0]["unit_id"],
-        unit
-    );
-    let retracted = commit_single(
-        &mut client,
-        SingleOperation {
-            operation: "retract",
-            unit_id: Some(unit.clone()),
-            expected_revision: Some(1),
-            expected_lifecycle: Some("active"),
-            document: None,
-            revalidation: None,
-            successor: None,
-            replacement_bindings: json!([]),
-            sources: json!([]),
-            knowledge_kind: json!("constraint"),
-            profiles: json!(["general"]),
-            erasure: "not_required",
-            authored_followup: false,
-        },
-    )
-    .await;
-    assert_eq!(
-        retracted["applied"]["applied_operations"][0]["operation"],
-        "retract"
-    );
-    let stale = route(
-        &mut client,
-        "query",
-        "slice.pipeline.context",
-        json!({"run_id":begun["created"]["run"]["id"]}),
-    )
-    .await;
-    let refresh = find_action(&stale, "pipeline.knowledge_refresh").unwrap();
-    assert_eq!(stale["knowledge_resource_status"]["state"], "needs_context");
-    assert!(
-        stale["knowledge_resource_status"]["changed_unit_ids"]
-            .as_array()
-            .unwrap()
-            .contains(&unit)
-    );
-    assert_eq!(
-        route_error(
-            &mut client,
-            "command",
-            "pipeline.knowledge_refresh",
-            action_params(refresh).clone(),
-        )
-        .await["error"]["code"],
-        "needs_context"
-    );
-    let erased = commit_single(
-        &mut client,
-        SingleOperation {
-            operation: "erase",
-            unit_id: Some(unit),
-            expected_revision: Some(1),
-            expected_lifecycle: Some("retracted"),
-            document: None,
-            revalidation: None,
-            successor: None,
-            replacement_bindings: json!([]),
-            sources: json!([]),
-            knowledge_kind: json!("constraint"),
-            profiles: json!(["general"]),
-            erasure: "owned_live_copies",
-            authored_followup: false,
-        },
-    )
-    .await;
-    assert_eq!(
-        erased["applied_erased"]["operations"][0]["state"],
-        "payload_erased"
-    );
-    assert_eq!(
-        route_error(
-            &mut client,
-            "command",
-            "slice.pipeline.begin",
-            begin_request
-        )
-        .await["error"]["code"],
-        "knowledge_payload_erased"
-    );
-    client.finish().await;
-    pool.close().await;
-}
+#[path = "pipeline_execution_knowledge_binding/erased_origin_replay.rs"]
+mod erased_origin_replay;

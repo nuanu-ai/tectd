@@ -104,8 +104,8 @@ fn repeated_standards_reject_conflicting_authoritative_fields() {
 }
 
 #[test]
-fn published_contract_resolves_identical_guidance_and_resource_with_honest_attribution() {
-    let mut context = full_context();
+fn archived_contract_resolves_identical_guidance_and_resource_with_honest_attribution() {
+    let mut context = legacy_full_context();
     context.run.current_phase_id = Some("slice-contract-writer".into());
     context.run.current_phase_ordinal = Some(4);
     let phase = &context.definition.phases[3];
@@ -129,9 +129,9 @@ fn published_contract_resolves_identical_guidance_and_resource_with_honest_attri
 }
 
 #[test]
-fn cross_section_bindings_still_reject_conflicting_authoritative_fields() {
+fn archived_cross_section_bindings_still_reject_conflicting_authoritative_fields() {
     for field in ["body", "origin", "version", "digest"] {
-        let mut context = full_context();
+        let mut context = legacy_full_context();
         let resource = context.definition.phases[3]
             .resources
             .iter_mut()
@@ -187,5 +187,47 @@ fn repeated_standards_still_require_exact_requested_pins() {
             .unwrap()
             .code,
         RefusalCode::DeliveryRefreshRequired
+    );
+}
+
+fn legacy_full_context() -> PipelineRunContext {
+    let mut context = full_context();
+    context.definition = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../host/pipeline-definitions/full-design-to-execution-0.6.0-native.engineering.2.json"
+    )))
+    .unwrap();
+    context.run.definition_version = context.definition.version.clone();
+    context.run.definition_digest = context.definition.digest.clone();
+    context
+}
+
+#[test]
+fn native_contract_schema_is_exactly_readable_at_writer_and_consumers() {
+    let mut context = full_context();
+    for ordinal in [4, 10, 11, 13] {
+        context.run.current_phase_id = Some(context.definition.phases[ordinal - 1].id.clone());
+        context.run.current_phase_ordinal = Some(ordinal as u32);
+        let resource = context.definition.phases[ordinal - 1]
+            .resources
+            .iter()
+            .find(|r| r.id == "tect:native-slice-work-contract-schema")
+            .unwrap()
+            .clone();
+        let response = query(&context, &resource.id, &resource.version, &resource.digest)
+            .resolve(&context)
+            .unwrap();
+        assert_eq!(response.section, PipelineInstructionSection::Resource);
+        assert_eq!(response.phase_id, context.run.current_phase_id);
+        assert_eq!(response.instruction, resource);
+        assert_unavailable(&context, &resource.id, "wrong-version", &resource.digest);
+        assert_unavailable(&context, &resource.id, &resource.version, "wrong-digest");
+    }
+    let legacy = legacy_full_context();
+    assert_unavailable(
+        &legacy,
+        "tect:native-slice-work-contract-schema",
+        "1.0.0",
+        "wrong-digest",
     );
 }

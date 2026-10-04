@@ -23,6 +23,9 @@ use support::{open_slice, ready_source_candidate, repository, review, route, rou
 use tect_postgres::admin;
 use uuid::Uuid;
 
+#[path = "pipeline_execution/ordinary_context.rs"]
+mod ordinary_context;
+
 fn pipeline_draft(label: &str) -> Value {
     json!({"coverage_summary":"Generic knowledge consumer fixture","nodes":[{
         "kind":"work","identity":{"local":label},"title":"Consume typed knowledge",

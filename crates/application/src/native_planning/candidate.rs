@@ -10,12 +10,23 @@ impl WorkspaceService {
         tect_domain::Workspace,
         tect_domain::Session,
     )> {
-        let (mut tx, identity) = self.authorized(context, mode).await?;
+        let (mut tx, identity) = crate::request_diagnostics::measure(
+            "application.native_planning_authorization",
+            self.authorized(context, mode),
+        )
+        .await?;
         if mode == TransactionMode::ReadWrite {
-            tx.lock_native_session(identity.host_id, &context.native_session_id)
-                .await?;
+            crate::request_diagnostics::measure(
+                "application.native_session_lock",
+                tx.lock_native_session(identity.host_id, &context.native_session_id),
+            )
+            .await?;
         }
-        let (workspace, session) = Self::bound_session(&mut *tx, context, &identity).await?;
+        let (workspace, session) = crate::request_diagnostics::measure(
+            "application.native_session_binding",
+            Self::bound_session(&mut *tx, context, &identity),
+        )
+        .await?;
         Ok((tx, workspace, session))
     }
 

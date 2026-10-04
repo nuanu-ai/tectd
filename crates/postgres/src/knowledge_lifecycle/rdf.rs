@@ -9,7 +9,8 @@ mod tests;
 
 pub(crate) use model::RdfDocument;
 pub(crate) use native::{
-    NativeReadRequest, native_publish, native_rows, native_rows_batch, qualify_native,
+    NativeReadRequest, native_publish, native_rows, native_rows_batch, native_rows_batch_candidate,
+    qualify_native,
 };
 
 use serde::{Deserialize, Serialize};

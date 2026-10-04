@@ -102,8 +102,8 @@ pub(crate) async fn lock_state(
     workspace: Uuid,
 ) -> Result<(i64, bool, Option<String>)> {
     let _ = ensure_state(tx, tenant, workspace).await?;
-    sqlx::query_as("SELECT generation,capability_ready AND tect_dk_database_identity_ready(),pgrdf_version FROM workspace_knowledge_state WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE")
-        .bind(tenant).bind(workspace).fetch_one(&mut **tx).await.map_err(storage_error)
+    tect_application::request_diagnostics::measure("pg.workspace_knowledge_lock", sqlx::query_as("SELECT generation,capability_ready AND tect_dk_database_identity_ready(),pgrdf_version FROM workspace_knowledge_state WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE")
+        .bind(tenant).bind(workspace).fetch_one(&mut **tx)).await.map_err(storage_error)
 }
 
 pub(crate) async fn publisher_gate(tx: &mut Transaction<'_, Postgres>) -> Result<()> {

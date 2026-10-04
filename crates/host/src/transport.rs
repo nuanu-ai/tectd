@@ -21,7 +21,7 @@ use tokio::io::{AsyncWriteExt, WriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
-
+mod diagnostics;
 const MAX_CONNECTIONS: usize = 32;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(45);
@@ -29,7 +29,6 @@ const SUPER_WIDE_TIMEOUT: Duration = Duration::from_secs(60);
 const KNOWLEDGE_WRITE_TIMEOUT: Duration = Duration::from_secs(120);
 // The bridge allows the daemon's response write cap plus additional scheduling margin.
 const RESPONSE_MARGIN: Duration = Duration::from_secs(5);
-
 fn operation_timeout_for(invocation: &Invocation) -> Duration {
     match invocation {
         Invocation::KnowledgeSearch(query) if query.mode == KnowledgeSearchMode::SuperWide => {
@@ -45,11 +44,9 @@ fn operation_timeout_for(invocation: &Invocation) -> Duration {
         _ => OPERATION_TIMEOUT,
     }
 }
-
 fn response_read_timeout_for(invocation: Option<&Invocation>) -> Duration {
     invocation.map_or(OPERATION_TIMEOUT, operation_timeout_for) + IO_TIMEOUT + RESPONSE_MARGIN
 }
-
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireRequest {
@@ -74,6 +71,7 @@ enum WireResponse {
 }
 
 pub async fn serve(listener: UnixListener, service: Arc<WorkspaceService>) -> Result<()> {
+    diagnostics::initialize();
     let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     loop {
         let permit = permits
@@ -209,8 +207,8 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
         }
     };
     let operation_timeout = operation_timeout_for(&invocation);
-
-    let result = timeout(operation_timeout, async {
+    let capture = diagnostics::capture(&invocation);
+    diagnostics::timed(capture, operation_timeout, request.output_capacity, async {
         let context = &request.context;
         let capacity = request.output_capacity;
         match invocation {
@@ -302,8 +300,7 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
             }
         }
     })
-    .await;
-    operation_response(result, request.output_capacity)
+    .await
 }
 
 fn operation_response(

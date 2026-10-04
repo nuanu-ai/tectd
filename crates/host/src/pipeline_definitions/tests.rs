@@ -11,8 +11,8 @@ fn embedded_definition_inventory_is_exact() {
         ),
         (
             PipelineKind::FullDesignToExecution,
-            "0.6.0-native.engineering.2",
-            "1274c531dfd433bf01e6b2354adcd0082c906749e1c8e34a158604f77e77a9a5",
+            "0.6.0-native.engineering.4",
+            "85ec63bae1903fedb0c86ecd5326380ea8d524fe0ee29c5dce6e90b9a30cdd3d",
         ),
         (
             PipelineKind::DebugRootCause,
@@ -404,3 +404,6 @@ fn non_coding_pipeline_definitions_reject_forged_engineering_authority_constrain
         );
     }
 }
+
+#[path = "tests/native_contract.rs"]
+mod native_contract;

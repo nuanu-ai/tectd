@@ -116,13 +116,7 @@ pub(crate) async fn read(
 ) -> Result<PipelineEvidenceArtifactPage> {
     let row: (String,String,i64,String,String,String,i64,String,String) = sqlx::query_as("SELECT digest,format,size,provenance,target,readiness,revision,body,body FROM pipeline_evidence_artifacts WHERE tenant_id=$1 AND workspace_id=$2 AND artifact_id=$3 AND revision=$4")
         .bind(tenant).bind(workspace).bind(request.artifact_id).bind(request.revision).fetch_optional(&mut **tx).await.map_err(storage_error)?.ok_or(Error::NotFound)?;
-    let start = request.offset as usize;
-    let end = start
-        .saturating_add(request.limit as usize)
-        .min(row.7.len());
-    if start > row.7.len() {
-        return Err(Error::InvalidArguments);
-    }
+    let (start, end) = page_bounds(&row.7, request.offset, request.limit)?;
     let complete = end == row.7.len();
     Ok(PipelineEvidenceArtifactPage {
         artifact: artifact((
@@ -141,4 +135,69 @@ pub(crate) async fn read(
         complete,
         next_offset: (!complete).then_some(end as u32),
     })
+}
+
+fn page_bounds(body: &str, offset: u32, limit: u32) -> Result<(usize, usize)> {
+    let start = offset as usize;
+    if limit == 0 || start > body.len() || !body.is_char_boundary(start) {
+        return Err(Error::InvalidArguments);
+    }
+    let mut end = start.saturating_add(limit as usize).min(body.len());
+    while !body.is_char_boundary(end) {
+        end -= 1;
+    }
+    if end == start && start < body.len() {
+        return Err(Error::InvalidArguments);
+    }
+    Ok((start, end))
+}
+
+#[cfg(test)]
+mod paging_tests {
+    use super::*;
+
+    #[test]
+    fn evidence_paging_handles_unicode_boundaries_and_byte_budgets() {
+        let body = "aé🙂z";
+        assert_eq!(page_bounds(body, 0, 2), Ok((0, 1)));
+        assert_eq!(page_bounds(body, 1, 2), Ok((1, 3)));
+        assert_eq!(page_bounds(body, 3, 4), Ok((3, 7)));
+        assert_eq!(page_bounds(body, 7, 1), Ok((7, 8)));
+        for (offset, limit) in [
+            (2, 4),
+            (4, 4),
+            (1, 1),
+            (3, 3),
+            (9, 1),
+            (u32::MAX, 1),
+            (0, 0),
+        ] {
+            assert_eq!(
+                page_bounds(body, offset, limit),
+                Err(Error::InvalidArguments)
+            );
+        }
+        assert_eq!(page_bounds(body, 8, 1), Ok((8, 8)));
+        assert_eq!(page_bounds("", 0, 1), Ok((0, 0)));
+        assert_eq!(page_bounds("ascii", 1, 2), Ok((1, 3)));
+        assert_eq!(page_bounds(body, 0, u32::MAX), Ok((0, 8)));
+    }
+
+    #[test]
+    fn evidence_paging_reconstructs_unicode_with_bounded_advancing_cursors() {
+        let body = "é🙂aé🙂z";
+        let mut offset = 0;
+        let mut reconstructed = String::new();
+        loop {
+            let (start, end) = page_bounds(body, offset, 4).unwrap();
+            assert!(end - start <= 4);
+            reconstructed.push_str(&body[start..end]);
+            if end == body.len() {
+                break;
+            }
+            assert!(end > start);
+            offset = end as u32;
+        }
+        assert_eq!(reconstructed, body);
+    }
 }

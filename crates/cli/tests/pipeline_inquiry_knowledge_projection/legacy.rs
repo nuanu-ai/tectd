@@ -5,6 +5,7 @@ async fn upgraded_dk1_is_hidden_from_high_inquiry_and_retained_for_slice_topic()
     if std::env::var("TECT_TEST_DK1_UPGRADE").as_deref() != Ok("1") {
         return;
     }
+    let _activation_guard = ACTIVATION_TEST_LOCK.lock().await;
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
     let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
     let runtime_role = std::env::var("TECT_TEST_RUNTIME_ROLE").unwrap();

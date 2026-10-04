@@ -58,6 +58,26 @@ impl PipelineDefinitionProvider for StaticPipelineDefinitions {
                 _ => {}
             }
         }
+        if kind == PipelineKind::FullDesignToExecution
+            && requested_version == Some("0.6.0-native.engineering.2")
+        {
+            return load(
+                include_str!(
+                    "../pipeline-definitions/full-design-to-execution-0.6.0-native.engineering.2.json"
+                ),
+                kind,
+            );
+        }
+        if kind == PipelineKind::FullDesignToExecution
+            && requested_version == Some("0.6.0-native.engineering.3")
+        {
+            return load(
+                include_str!(
+                    "../pipeline-definitions/full-design-to-execution-0.6.0-native.engineering.3.json"
+                ),
+                kind,
+            );
+        }
         let definition = self.definition(kind)?;
         if requested_version.is_some_and(|version| version != definition.version) {
             return Err(Error::InvalidArguments);

@@ -298,3 +298,89 @@ fn implementation_review_requires_observed_counts_and_sha256() {
     replace_report(&mut request, value);
     assert!(request.validate(&definition).is_err());
 }
+
+#[test]
+fn engineering_review_paths_have_safe_indexed_diagnostics() {
+    for path in [
+        "/private/secret-marker.txt",
+        "../secret-marker.txt",
+        "src/../secret-marker.txt",
+        "src\\secret-marker.txt",
+        "",
+    ] {
+        let (definition, mut request) = completion();
+        let mut value = report(&request);
+        value["summary"] = json!("distinct-body-secret-marker");
+        let mut invalid = value["files"][0].clone();
+        invalid["path"] = json!(path);
+        value["files"].as_array_mut().unwrap().push(invalid);
+        replace_report(&mut request, value);
+        let error = request.validate(&definition).unwrap_err();
+        assert_eq!(error.code(), "invalid_arguments");
+        let refusal = error.refusal().unwrap();
+        assert_eq!(refusal.code, tect_domain::RefusalCode::InputSchemaInvalid);
+        assert_eq!(refusal.rule.as_deref(), Some("ENG-REVIEW-FILE-PATH-01"));
+        assert_eq!(
+            refusal.path.as_deref(),
+            Some("engineering-review.json/files/1/path")
+        );
+        assert_eq!(refusal.actual.as_deref(), Some("unsafe path"));
+        assert!(refusal.is_complete_pipeline_refusal());
+        let diagnostic = serde_json::to_string(&refusal).unwrap();
+        assert!(!diagnostic.contains("secret-marker"));
+        assert!(!diagnostic.contains("distinct-body-secret-marker"));
+        assert!(diagnostic.len() < 600);
+    }
+    {
+        let (definition, mut request) = completion();
+        let mut value = report(&request);
+        value["summary"] = json!("duplicate-body-secret-marker");
+        let mut duplicate = value["files"][0].clone();
+        duplicate["path"] = json!("../duplicate-path-secret-marker.txt");
+        value["files"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate.clone());
+        value["files"].as_array_mut().unwrap().push(duplicate);
+        replace_report(&mut request, value);
+        let error = request.validate(&definition).unwrap_err();
+        assert_eq!(error.code(), "invalid_arguments");
+        let refusal = error.refusal().unwrap();
+        assert_eq!(refusal.code, tect_domain::RefusalCode::InputSchemaInvalid);
+        assert_eq!(refusal.rule.as_deref(), Some("ENG-REVIEW-FILE-PATH-01"));
+        assert_eq!(
+            refusal.path.as_deref(),
+            Some("engineering-review.json/files/1/path")
+        );
+        let diagnostic = serde_json::to_string(&refusal).unwrap();
+        assert!(!diagnostic.contains("duplicate-path-secret-marker"));
+        assert!(!diagnostic.contains("duplicate-body-secret-marker"));
+    }
+    {
+        let (definition, mut request) = completion();
+        let mut value = report(&request);
+        value["summary"] = json!("invalid-field-body-secret-marker");
+        value["files"][0]["path"] = json!("../invalid-field-secret-marker.txt");
+        value["files"][0]["responsibility"] = json!(" ");
+        replace_report(&mut request, value);
+        let error = request.validate(&definition).unwrap_err();
+        assert_eq!(error.code(), "invalid_arguments");
+        let refusal = error.refusal().unwrap();
+        assert_eq!(refusal.code, tect_domain::RefusalCode::InputSchemaInvalid);
+        assert_eq!(refusal.rule.as_deref(), Some("ENG-REVIEW-FILE-PATH-01"));
+        assert_eq!(
+            refusal.path.as_deref(),
+            Some("engineering-review.json/files/0/path")
+        );
+        let diagnostic = serde_json::to_string(&refusal).unwrap();
+        assert!(!diagnostic.contains("invalid-field-secret-marker"));
+        assert!(!diagnostic.contains("invalid-field-body-secret-marker"));
+    }
+    for path in ["src/service.rs", "README.md", "src/é🙂.rs"] {
+        let (definition, mut request) = completion();
+        let mut value = report(&request);
+        value["files"][0]["path"] = json!(path);
+        replace_report(&mut request, value);
+        assert!(request.validate(&definition).is_ok());
+    }
+}

@@ -5,6 +5,7 @@ async fn inquiry_topic_projects_only_exact_brief_height_and_preserves_full_slice
     if std::env::var("TECT_TEST_DK2").as_deref() != Ok("1") {
         return;
     }
+    let _activation_guard = ACTIVATION_TEST_LOCK.lock().await;
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").unwrap();
     let runtime_url = std::env::var("TECT_TEST_RUNTIME_URL").unwrap();
     let role = std::env::var("TECT_TEST_RUNTIME_ROLE").unwrap();
@@ -45,6 +46,14 @@ async fn inquiry_topic_projects_only_exact_brief_height_and_preserves_full_slice
     )
     .await;
     let (empty_scope, empty_slices) = open_targets(&mut inactive, &pool, &repo).await;
+    let inactive_ready: bool = sqlx::query_scalar(
+        "UPDATE workspace_knowledge_state k SET capability_ready=false FROM native_scopes s WHERE s.id=$1 AND k.tenant_id=s.tenant_id AND k.workspace_id=s.workspace_id RETURNING k.capability_ready",
+    ).bind(Uuid::parse_str(empty_scope["id"].as_str().unwrap()).unwrap())
+        .fetch_one(&pool).await.unwrap();
+    assert!(
+        !inactive_ready,
+        "the exact negative fixture workspace must be inactive"
+    );
     let inactive_run = begin(
         &mut inactive,
         &empty_scope,

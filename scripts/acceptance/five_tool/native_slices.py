@@ -24,7 +24,7 @@ PIPELINE_MODES = {
 }
 PIPELINE_DEFINITIONS = {
     "slice.lightweight-tdd-development": ("0.6.0-native.engineering.2", "bef9f376f187b985684005b075275a072625f1c08125991062bb38c47ac884b1"),
-    "slice.full-design-to-execution": ("0.6.0-native.engineering.2", "1274c531dfd433bf01e6b2354adcd0082c906749e1c8e34a158604f77e77a9a5"),
+    "slice.full-design-to-execution": ("0.6.0-native.engineering.3", "79c01395855e0be1ffb4fca6eec7a09a5326a44d64ad3aa545c1e1da7d829ff3"),
     "slice.debug-root-cause": ("0.4.0-native.skills.2", "afb0f21932a11eceb8e3aba01d3d07ec9f74160203085391f7de1758118a6574"),
     "slice.operational-preparation": ("0.4.0-native.skills.2", "6dcf48ec7712fcc3a9dc1f40c83c2337313bfadb33cbfdbe5d76b71da455d2b4"),
     "slice.operational-execution": ("0.4.0-native.skills.2", "47046a703413f6e3048c6923b87dae6ceb0bbecb3c9e0f9d60ca614562267e79"),

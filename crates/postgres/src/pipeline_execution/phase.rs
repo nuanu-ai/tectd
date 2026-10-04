@@ -1,4 +1,5 @@
 use super::*;
+mod diagnostics;
 pub(super) type LockedRun = (
     Uuid,
     Uuid,
@@ -45,9 +46,9 @@ pub(crate) async fn complete_phase(
     let mut proofs = crate::knowledge_lifecycle::PublicationProofScope::new(
         tenant, workspace, principal, session,
     );
-    let run_row:LockedRun=sqlx::query_as(
+    let run_row:LockedRun=tect_application::request_diagnostics::measure("pg.run_for_update", sqlx::query_as(
         "SELECT scope_id,slice_id,slice_revision,revision,status,definition_version,definition_digest,definition,delivery_mode,current_phase_id,current_phase_ordinal,knowledge_manifest_id,knowledge_manifest_digest FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
-        .bind(tenant).bind(workspace).bind(request.run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?.ok_or(Error::NotFound)?;
+        .bind(tenant).bind(workspace).bind(request.run_id).fetch_optional(&mut **tx)).await.map_err(storage_error)?.ok_or(Error::NotFound)?;
     if let Some((stored, result, erased)) = sqlx::query_as::<_, (Option<serde_json::Value>, Option<serde_json::Value>,bool)>(
         "SELECT request_payload,result_payload,payload_erased FROM slice_pipeline_phase_attempts WHERE tenant_id=$1 AND workspace_id=$2 AND request_id=$3",
     )
@@ -120,6 +121,18 @@ pub(crate) async fn complete_phase(
         }
     }
     phase_validation::validate_output_integrity(&request.output, &run_row.5)?;
+    native_contract::validate(
+        tx,
+        tenant,
+        workspace,
+        session,
+        request,
+        &definition,
+        run_row.0,
+        run_row.1,
+        run_row.2,
+    )
+    .await?;
     let open_checkpoint = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM pipeline_research_checkpoints WHERE tenant_id=$1 AND workspace_id=$2 AND producer_run_id=$3 AND status='open')",
     )
@@ -164,7 +177,7 @@ pub(crate) async fn complete_phase(
     .await?;
     let knowledge =
         phase_validation::load_manifest(tx, tenant, workspace, session, run_row.11).await?;
-    crate::durable_knowledge::manifest::validate_completion_with_proofs(
+    diagnostics::selected_manifest_validation(
         tx,
         tenant,
         workspace,
@@ -189,6 +202,7 @@ pub(crate) async fn complete_phase(
         )
         .await?;
     }
+    helpers::validate_local_result_gate(tx, tenant, workspace, request, &definition).await?;
     validate_review_authorization(
         tx,
         tenant,
@@ -296,7 +310,7 @@ pub(crate) async fn complete_phase(
         .bind(tenant).bind(workspace).bind(request.run_id).bind(next_revision).bind(status).bind(next_id.as_deref()).bind(next_ordinal.map(|value| value as i32))
         .execute(&mut **tx).await.map_err(storage_error)?;
     if let Some(next_phase) = next_id.as_deref() {
-        let manifest = crate::durable_knowledge::manifest::capture_with_proofs(
+        let manifest = diagnostics::next_input_capture(
             tx,
             tenant,
             workspace,
@@ -390,7 +404,7 @@ pub(crate) async fn complete_phase(
     }
     let principal = session_principal(tx, session).await?;
     let outcome = PipelineMutationOutcome {
-        context: load_context_with_proofs(
+        context: diagnostics::returned_context(
             tx,
             tenant,
             workspace,
@@ -423,7 +437,7 @@ async fn verify_replay_current_context(
     // Preserve the original application preflight behavior: full current
     // authorization and proof errors propagate, while status values alone do
     // not introduce a new replay policy. Never revalidate old consumed inputs.
-    let _ = load_context_with_proofs(tx, tenant, workspace, principal, run, session, proofs)
+    let _ = diagnostics::returned_context(tx, tenant, workspace, principal, run, session, proofs)
         .await?
         .ok_or(Error::NotFound)?;
     Ok(outcome)
