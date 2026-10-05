@@ -344,14 +344,14 @@ impl Error {
     }
 
     pub fn argument_diagnostic(&self) -> Option<&ArgumentDiagnostic> {
-        match self {
+        match self.pipeline_source() {
             Self::InvalidArgumentsDetail(diagnostic) => Some(diagnostic),
             _ => None,
         }
     }
 
     pub fn pipeline_artifact_diagnostic(&self) -> Option<&PipelineArtifactDiagnostic> {
-        match self {
+        match self.pipeline_source() {
             Self::InvalidPipelineArtifact(diagnostic) => Some(diagnostic),
             _ => None,
         }

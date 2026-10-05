@@ -85,6 +85,7 @@ pub(crate) async fn begin(
     if let Some(replay) = begin_replay(tx, tenant, workspace, principal, request).await? {
         return Ok(replay);
     }
+    tect_domain::ensure_pipeline_definition_selectable(definition)?;
     if scope != request.scope_id || revision != request.slice_revision {
         return Err(Error::StaleRevision);
     }

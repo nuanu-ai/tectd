@@ -4,6 +4,7 @@ import json, uuid
 from typing import Any, Callable
 import pipeline_execution
 import scope_candidates
+from common import hydrate_pipeline_payload
 
 SLICE_RUN_PIPELINES = {
     "slice.lightweight-tdd-development", "slice.full-design-to-execution",
@@ -13,7 +14,7 @@ SLICE_RUN_PIPELINES = {
 PROMOTION_PIPELINE = "slice.promote-to-durable-knowledge"
 ALL_PIPELINES = SLICE_RUN_PIPELINES | {PROMOTION_PIPELINE}
 PIPELINE_MODES = {
-    "slice.lightweight-tdd-development": ("phasewise", ["whole", "phasewise"], 15),
+    "slice.lightweight-tdd-development": ("phasewise", ["whole", "phasewise"], 5),
     "slice.full-design-to-execution": ("phasewise", ["phasewise"], 21),
     "slice.debug-root-cause": ("whole", ["whole", "phasewise"], 18),
     "slice.operational-preparation": ("whole", ["whole", "phasewise"], 16),
@@ -23,8 +24,8 @@ PIPELINE_MODES = {
     "slice.custom-procedure-capture": ("whole", ["whole", "phasewise"], 17),
 }
 PIPELINE_DEFINITIONS = {
-    "slice.lightweight-tdd-development": ("0.6.0-native.engineering.2", "bef9f376f187b985684005b075275a072625f1c08125991062bb38c47ac884b1"),
-    "slice.full-design-to-execution": ("0.6.0-native.engineering.3", "79c01395855e0be1ffb4fca6eec7a09a5326a44d64ad3aa545c1e1da7d829ff3"),
+    "slice.lightweight-tdd-development": (pipeline_execution.LIGHTWEIGHT_VERSION, pipeline_execution.LIGHTWEIGHT_PINS[pipeline_execution.LIGHTWEIGHT_VERSION]),
+    "slice.full-design-to-execution": ("0.6.0-native.engineering.4", "85ec63bae1903fedb0c86ecd5326380ea8d524fe0ee29c5dce6e90b9a30cdd3d"),
     "slice.debug-root-cause": ("0.4.0-native.skills.2", "afb0f21932a11eceb8e3aba01d3d07ec9f74160203085391f7de1758118a6574"),
     "slice.operational-preparation": ("0.4.0-native.skills.2", "6dcf48ec7712fcc3a9dc1f40c83c2337313bfadb33cbfdbe5d76b71da455d2b4"),
     "slice.operational-execution": ("0.4.0-native.skills.2", "47046a703413f6e3048c6923b87dae6ceb0bbecb3c9e0f9d60ca614562267e79"),
@@ -41,7 +42,7 @@ def ok(call, tool: str, route: str, params: dict[str, Any]) -> dict[str, Any]:
     payload, failed = call(tool, {"route": route, "params": params})
     if failed:
         raise AssertionError(f"{route} failed: {payload.get('error', {}).get('code')}")
-    return payload
+    return hydrate_pipeline_payload(call, payload)
 
 def probe_inquiry(kind: str) -> dict[str, Any] | None:
     if kind == "slice.research":
@@ -151,13 +152,13 @@ def assert_exact_pipeline_delivery(context: dict[str, Any], kind: str, check: Ca
     items = [item for phase in phases for field in ("instructions", "skills", "resources")
              for item in phase.get(field, [])]
     expected = phase_count if mode == "whole" else 1
-    check(f"{kind} delivers exact pinned bodies through the native Codex MCP surface",
+    check(f"{kind} delivers exact pinned bodies through pinned snapshot and history reads",
           context["definition"].get("kind") == kind
           and context["definition"].get("version") == version
           and context["definition"].get("digest") == digest
           and context["run"].get("definition_version") == version
           and context["run"].get("definition_digest") == digest
-          and len(phases) == expected
+          and len(phases) == phase_count
           and len(delivered) == expected and bool(items)
           and all(isinstance(item.get("id"),str) and item["id"].strip()
                   and isinstance(item.get("version"),str) and item["version"].strip()
@@ -183,7 +184,7 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
           and "slice.hybrid-implementation-operation" not in json.dumps(catalogue)
           and catalogue.get("revision") == "4"
           and catalogue.get("executable") is True and catalogue.get("executable_count") == 9
-          and catalogue.get("phase_counts", {}).get("slice_pipeline_run_phases") == 127
+          and catalogue.get("phase_counts", {}).get("slice_pipeline_run_phases") == 117
           and all(by_kind[kind].get("implementation_status") == "executable"
                   and by_kind[kind].get("description_status") == "refined"
                   and by_kind[kind].get("refinement_required") is False
@@ -327,7 +328,7 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
           not refreshed["stale_reasons"] and result["id"] in refreshed["snapshot"]["result_ids"] and rr==RULES,
           {"result_ids":refreshed["snapshot"]["result_ids"],"rule_ids":sorted(rr)})
 
-    probe_kinds = [kind for kind in PIPELINE_MODES if kind != "slice.lightweight-tdd-development"]
+    probe_kinds = list(PIPELINE_MODES)
     probe_nodes = [{"kind":"work","identity":{"local":f"probe-{index}"},
         "title":f"Inspect native delivery for {kind}",
         "outcome":"The pinned definition and current exact step bodies are delivered through MCP.",
@@ -365,7 +366,7 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
     probe_runs = {}
     for kind in probe_kinds:
         candidate = next(node for node in final["draft"]["nodes"] if node.get("pipeline") == kind
-                         and node.get("id") != debug["id"])
+                         and node.get("title") == f"Inspect native delivery for {kind}")
         probe = variant(ok(call,"command","slice.open",open_params(final,candidate)),"created")
         begin = pipeline_execution.begin_params(
             final["scope"]["id"],probe["id"],probe["revision"],delivery_mode=None,
@@ -376,9 +377,13 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
         begun_probe = ok(call,"command","slice.pipeline.begin",begin)
         probe_context = pipeline_execution.outcome(begun_probe,"created")
         assert_exact_pipeline_delivery(probe_context,kind,check)
+        if kind == pipeline_execution.LIGHTWEIGHT_KIND:
+            check("omitted selector uses current K1-K5 and phasewise default", probe_context["run"]["definition_version"] == pipeline_execution.LIGHTWEIGHT_VERSION
+                  and probe_context["run"]["delivery_mode"] == "phasewise", {"run_id":probe_context["run"]["id"]})
         probe_runs[kind] = probe_context["run"]["id"]
     begun=ok(call,"command","slice.pipeline.begin",pipeline_execution.begin_params(
-        final["scope"]["id"],follow["id"],follow["revision"]))
+        final["scope"]["id"],follow["id"],follow["revision"], delivery_mode="whole",
+        definition_version=pipeline_execution.LIGHTWEIGHT_VERSION))
     context=pipeline_execution.outcome(begun,"created")
     pipeline_execution.assert_lightweight_whole_context(context,check)
     assert_exact_pipeline_delivery(context,"slice.lightweight-tdd-development",check)
@@ -417,9 +422,18 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
     resumed=ok(call,"command","slice.pipeline.phase.complete",
                pipeline_execution.completion_params(context))
     context=resumed["context"]
-    while context["run"]["current_phase_ordinal"] < 15:
+    k3_reworked = False
+    while context["run"]["current_phase_ordinal"] < len(pipeline_execution.LIGHTWEIGHT_PHASES):
+        if context["run"]["current_phase_id"] == "K3" and not k3_reworked:
+            context = pipeline_execution.rework_and_resume(call, context, "K2")
+            k3_reworked = True
         context=ok(call,"command","slice.pipeline.phase.complete",
                    pipeline_execution.completion_params(context))["context"]
+
+    context = pipeline_execution.rework_and_resume(call, context, "K4")
+    context = ok(call,"command","slice.pipeline.phase.complete", pipeline_execution.completion_params(context))["context"]
+    check("declared K3-to-K2 and K5-to-K4 rework resume at current revisions",
+          k3_reworked and context["run"]["current_phase_id"] == "K5", {"run_revision":context["run"]["revision"]})
 
     terminal_result={
         "summary":"Caller reports the final Lightweight phase temporarily blocked.",
@@ -436,10 +450,15 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
         "request_id":str(uuid.uuid4()),"run_id":context["run"]["id"],
         "run_revision":context["run"]["revision"],"phase_id":context["run"]["current_phase_id"],
         "input":"Owned fixture reports that the final blocker is resolved."})["context"]
-    terminal_result["summary"]="Caller reports the managed Lightweight Slice complete."
-    terminal_result["remaining_work"]="None for this Slice."
+    completed_result={
+        "summary":"Structural fixture reports the managed local result complete; no commands executed.",
+        "evidence":[{"kind":"fixture_observation","reference":"fixture:current-resumed-K5",
+                     "observation":"A new completion carrier uses the exact current resumed revision; this is structural fixture evidence."}],
+        "scope_impact":"Fixture future planning receives the local result carrier.",
+        "remaining_work":"Actual command execution and independent semantic verification are not proven by this fixture.",
+    }
     completed_payload=ok(call,"command","slice.pipeline.phase.complete",
-        pipeline_execution.completion_params(context,transition="complete",terminal_result=terminal_result))
+        pipeline_execution.completion_params(context,transition="complete",terminal_result=completed_result))
     completed=completed_payload["result"]
     terminal=ok(call,"query","slice.context",{"slice_id":follow["id"]})
     results=ok(call,"query","slice.candidates.context",{
@@ -464,4 +483,4 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
         "slice_run_pipeline_ids":sorted(slice_run_ids),
         "rule_ids":sorted(rule_ids),"result_provenance":result["provenance"],
         "pipeline_probe_run_ids":probe_runs,
-        "claim_boundary":"Proves native API persistence, exact pipeline delivery, durable managed transitions and structural receipt enforcement; caller-supplied fixture evidence does not prove independent semantic verification."}
+        "claim_boundary":"Fixture protocol assertions and structural receipt carriers only; no actual command execution, independent semantic QA, deployment, live verification or paid acceptance is established by fixture evidence."}

@@ -159,9 +159,27 @@ impl PipelineExecutionStore for PgUnitOfWork {
         .await
     }
 
+    async fn pipeline_existing_delivery_receipt(
+        &mut self,
+        workspace_id: Uuid,
+        principal_id: Uuid,
+        run_id: Uuid,
+    ) -> Result<Option<tect_domain::PipelineDeliveryReceipt>> {
+        let tenant = self.tenant_id()?;
+        pipeline_execution::load_existing_delivery_receipt(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            principal_id,
+            run_id,
+        )
+        .await
+    }
+
     async fn pipeline_phase_output(
         &mut self,
         workspace_id: Uuid,
+        principal_id: Uuid,
         run_id: Uuid,
         output_id: Uuid,
         digest: &str,
@@ -171,6 +189,7 @@ impl PipelineExecutionStore for PgUnitOfWork {
             self.transaction()?,
             tenant,
             workspace_id,
+            principal_id,
             run_id,
             output_id,
             digest,
@@ -195,6 +214,16 @@ impl PipelineExecutionStore for PgUnitOfWork {
             definition,
         )
         .await
+    }
+
+    async fn pipeline_migration_replay(
+        &mut self,
+        workspace_id: Uuid,
+        request: &PipelineRunMigrationCommand,
+    ) -> Result<Option<PipelineRunMigrationOutcome>> {
+        let tenant = self.tenant_id()?;
+        pipeline_execution::migration_replay(self.transaction()?, tenant, workspace_id, request)
+            .await
     }
 
     async fn migrate_pipeline_run(

@@ -1,5 +1,9 @@
 use super::*;
+mod backend_evidence;
 mod diagnostics;
+mod replay;
+use backend_evidence::backend_evidence_refs;
+use replay::verify_replay_current_context;
 pub(super) type LockedRun = (
     Uuid,
     Uuid,
@@ -59,6 +63,8 @@ pub(crate) async fn complete_phase(
         let outcome = decode(result.ok_or(Error::InternalInvariant)?)?;
         return verify_replay_current_context(tx, tenant, workspace, principal, session, request.run_id, outcome, &mut proofs).await;
     }
+    let stored_definition: PipelineDefinitionSnapshot = decode(run_row.7.clone())?;
+    tect_domain::ensure_pipeline_run_mutable(&stored_definition, &run_row.4)?;
     if run_row.3 != request.run_revision {
         return Err(Error::StaleRevision);
     }
@@ -237,7 +243,16 @@ pub(crate) async fn complete_phase(
         &request.consumed_knowledge,
     )
     .await?;
-    validate_reviewer_boundary(tx, tenant, workspace, request.run_id, phase, request).await?;
+    validate_reviewer_boundary(
+        tx,
+        tenant,
+        workspace,
+        request.run_id,
+        session,
+        phase,
+        request,
+    )
+    .await?;
     enforce_retry_policy(tx, tenant, workspace, request.run_id, phase).await?;
     let attempt:i64=sqlx::query_scalar("SELECT COALESCE(MAX(attempt),0)+1 FROM slice_pipeline_phase_attempts WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND phase_id=$4")
         .bind(tenant).bind(workspace).bind(request.run_id).bind(&request.phase_id).fetch_one(&mut **tx).await.map_err(storage_error)?;
@@ -423,76 +438,7 @@ pub(crate) async fn complete_phase(
     Ok(outcome)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn verify_replay_current_context(
-    tx: &mut Transaction<'_, Postgres>,
-    tenant: Uuid,
-    workspace: Uuid,
-    principal: Uuid,
-    session: Uuid,
-    run: Uuid,
-    outcome: PipelineMutationOutcome,
-    proofs: &mut crate::knowledge_lifecycle::PublicationProofScope,
-) -> Result<PipelineMutationOutcome> {
-    // Preserve the original application preflight behavior: full current
-    // authorization and proof errors propagate, while status values alone do
-    // not introduce a new replay policy. Never revalidate old consumed inputs.
-    let _ = diagnostics::returned_context(tx, tenant, workspace, principal, run, session, proofs)
-        .await?
-        .ok_or(Error::NotFound)?;
-    Ok(outcome)
-}
-
 pub(super) mod helpers;
-
-async fn backend_evidence_refs(
-    tx: &mut Transaction<'_, Postgres>,
-    tenant: Uuid,
-    workspace: Uuid,
-    run: Uuid,
-    phase_id: &str,
-    phase_ordinal: u32,
-    consumed_knowledge: &Option<ConsumedKnowledgeManifestRef>,
-) -> Result<(serde_json::Value, Option<PipelineKnowledgeBindingReceipt>)> {
-    let outputs: Vec<(String, i64, Uuid, String)> = sqlx::query_as(
-        "SELECT b.phase_id,b.output_revision,o.id,o.body_digest FROM slice_pipeline_output_bindings b JOIN slice_pipeline_phase_outputs o ON o.tenant_id=b.tenant_id AND o.workspace_id=b.workspace_id AND o.id=b.output_id WHERE b.tenant_id=$1 AND b.workspace_id=$2 AND b.run_id=$3 AND b.phase_ordinal < $4 AND b.stale=false AND NOT o.payload_erased ORDER BY b.phase_ordinal",
-    )
-    .bind(tenant).bind(workspace).bind(run).bind(phase_ordinal as i32)
-    .fetch_all(&mut **tx).await.map_err(storage_error)?;
-    let inputs: Vec<(Uuid, i64, String)> = sqlx::query_as(
-        "SELECT id,sequence,input_digest FROM slice_pipeline_inputs WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND phase_id=$4 AND NOT payload_erased ORDER BY sequence",
-    )
-    .bind(tenant).bind(workspace).bind(run).bind(phase_id)
-    .fetch_all(&mut **tx).await.map_err(storage_error)?;
-    let mut refs = Vec::with_capacity(outputs.len() + inputs.len() + 1);
-    refs.extend(outputs.into_iter().map(|(phase, revision, id, digest)| {
-        serde_json::json!({
-            "kind":"output", "reference":id, "phase_id":phase, "revision":revision, "digest":digest
-        })
-    }));
-    refs.extend(inputs.into_iter().map(|(id, sequence, digest)| {
-        serde_json::json!({
-            "kind":"input", "reference":id, "sequence":sequence, "digest":digest
-        })
-    }));
-    let binding = if let Some(consumed) = consumed_knowledge {
-        let row: Option<(Uuid, String, i64)> = sqlx::query_as(
-            "SELECT id,digest,workspace_generation FROM pipeline_knowledge_manifests WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND digest=$4 AND run_id=$5 AND NOT payload_erased",
-        )
-        .bind(tenant).bind(workspace).bind(consumed.manifest_id).bind(&consumed.digest).bind(run)
-        .fetch_optional(&mut **tx).await.map_err(storage_error)?;
-        let (manifest_id, digest, generation) = row.ok_or(Error::StaleContext)?;
-        refs.push(serde_json::json!({"kind":"knowledge_manifest","reference":manifest_id,"revision":generation,"digest":digest}));
-        Some(PipelineKnowledgeBindingReceipt {
-            manifest_id,
-            digest,
-            workspace_generation: generation,
-        })
-    } else {
-        None
-    };
-    Ok((serde_json::Value::Array(refs), binding))
-}
 
 use helpers::{
     enforce_retry_policy, publish_result, validate_consumed_inputs, validate_consumed_outputs,

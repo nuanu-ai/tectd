@@ -46,6 +46,14 @@ pub(super) fn search(text: Option<&str>, tool_filter: Option<&str>) -> Value {
             hits.push(json!({"kind":"method","tool":"help","method":method,"summary":summary}));
         }
     }
+    if tool_filter.is_none_or(|filter| filter == "help")
+        && matches(&[
+            "response-rules",
+            "complete rules for replies and follow-up work",
+        ])
+    {
+        hits.push(json!({"kind":"response_rules","tool":"help","text":"response-rules","summary":"Complete rules for replies and follow-up work."}));
+    }
     let total_matches = hits.len();
     hits.truncate(HELP_LIMIT);
     let truncated = total_matches > hits.len();

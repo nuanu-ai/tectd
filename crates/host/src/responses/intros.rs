@@ -35,6 +35,9 @@ pub(super) fn intro(data: &Value) -> &'static str {
     if data["name"] == "tectd-program" && data.get("body").is_some() {
         return INTROS[6];
     }
+    if data["operation"] == "begin" && data["program"]["status"] == "draft" {
+        return "A Program Draft and its original narrative are recorded. Read the save contract and original inputs before composing the PRD.";
+    }
     if let Some(step) = data["program"]["current_step"].as_str() {
         return match step {
             "compose" => INTROS[3],
@@ -79,6 +82,12 @@ pub(super) fn intro(data: &Value) -> &'static str {
 }
 
 pub(crate) fn error_intro(error: &Error) -> &'static str {
+    if error
+        .refusal()
+        .is_some_and(|refusal| refusal.code == tect_domain::RefusalCode::InvalidOutput)
+    {
+        return "The submitted output does not satisfy the required contract. Correct the reported issue and retry.";
+    }
     match error.pipeline_source() {
         Error::StaleRevision => {
             "A newer revision exists. Reload the saved record and merge before saving."
@@ -114,7 +123,7 @@ pub(crate) fn error_intro(error: &Error) -> &'static str {
             "This initial setup is already applied and cannot be edited through setup. Reload its saved content and current file observation."
         }
         Error::TaskDirectoryUnbound => {
-            "Supply the launch directory already known from this Codex task context through the exact inspection action; do not ask the human to choose a folder."
+            "Supply the launch directory already known from this task context through the exact inspection action; do not ask the human to choose a folder."
         }
         Error::SetupExists => {
             "A setup already exists for this task directory. Read workspace state and resume that same setup."
@@ -133,16 +142,19 @@ pub(crate) fn error_intro(error: &Error) -> &'static str {
             "The result is uncertain. Recover with the exact call below; do not create a replacement record."
         }
         Error::InvalidArguments => {
-            "The arguments do not match the selected route schema. Correct the input using the returned route contract and retry."
+            "The arguments do not match the selected route schema. Correct the input and retry."
         }
         Error::InvalidArgumentsDetail(_) => {
-            "The arguments do not match the selected route schema. The response includes the violation, pointer, and complete route contract for a direct retry."
+            "The arguments do not match the selected route schema. Correct the input using the reported diagnostic."
         }
         Error::InvalidPipelineArtifact(_) => {
             "A pipeline artifact failed its phase contract. Correct every reported violation and retry the supplied phase action."
         }
         Error::InternalInvariant => {
             "TectD could not construct a valid next call. No follow-up action was emitted."
+        }
+        Error::Refused(refusal) if refusal.code != tect_domain::RefusalCode::AuthorityRequired => {
+            "The request was refused. Follow the reported rule and next action."
         }
         _ => {
             "The request cannot proceed with the current identity or access. No protected data is included."
@@ -174,6 +186,107 @@ pub(super) fn failure_intro(error: &Error, call: Option<(&str, &Value)>) -> &'st
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wrap(error: Error, code: tect_domain::RefusalCode) -> Error {
+        Error::PipelineRefused {
+            source: Box::new(error),
+            refusal: Box::new(
+                tect_domain::Refusal::new(code)
+                    .with_rule("outer-rule")
+                    .with_path("outer/path"),
+            ),
+        }
+    }
+
+    #[test]
+    fn refusal_classification_and_diagnostics_survive_real_failure_serialization() {
+        use tect_domain::{PipelineArtifactDiagnostic, PipelineArtifactViolation, RefusalCode};
+        let output_intro = "The submitted output does not satisfy the required contract. Correct the reported issue and retry.";
+        let schema_intro =
+            "The arguments do not match the selected route schema. Correct the input and retry.";
+        let diagnostic_intro = "The arguments do not match the selected route schema. Correct the input using the reported diagnostic.";
+        let refused_intro = "The request was refused. Follow the reported rule and next action.";
+        let access_intro = "The request cannot proceed with the current identity or access. No protected data is included.";
+        let artifact =
+            Error::InvalidPipelineArtifact(Box::new(PipelineArtifactDiagnostic::bounded(
+                "invalid_artifact".into(),
+                "review".into(),
+                "review.json".into(),
+                vec![PipelineArtifactViolation {
+                    code: "missing".into(),
+                    path: "/decision".into(),
+                    expected: Some("ready".into()),
+                    actual: None,
+                }],
+                true,
+                "correct_output".into(),
+            )));
+        let cases = [
+            (
+                Error::refused(RefusalCode::InvalidOutput, "correct_output", "output"),
+                output_intro,
+            ),
+            (artifact, output_intro),
+            (Error::InvalidArguments, schema_intro),
+            (
+                Error::invalid_arguments_at("missing field `decision`", "/output/decision"),
+                diagnostic_intro,
+            ),
+            (
+                Error::refused(RefusalCode::EvidenceMissing, "supply_evidence", "evidence"),
+                refused_intro,
+            ),
+            (
+                Error::refused(
+                    RefusalCode::AuthorityRequired,
+                    "obtain_authority",
+                    "authority",
+                ),
+                access_intro,
+            ),
+            (Error::Unauthorized, access_intro),
+        ];
+        for (mut error, expected_intro) in cases {
+            let expected_details = error
+                .argument_diagnostic()
+                .map(|d| serde_json::to_value(d).unwrap())
+                .or_else(|| {
+                    error
+                        .pipeline_artifact_diagnostic()
+                        .map(|d| serde_json::to_value(d).unwrap())
+                });
+            let code = error
+                .refusal()
+                .map_or(RefusalCode::AuthorityRequired, |r| r.code);
+            for depth in 0..3 {
+                let expected_refusal = serde_json::to_value(error.refusal().unwrap()).unwrap();
+                let response = failure(error.clone(), None);
+                assert_eq!(response["isError"], true);
+                assert_eq!(response["content"][0]["text"], expected_intro);
+                let body: Value =
+                    serde_json::from_str(response["content"][1]["text"].as_str().unwrap()).unwrap();
+                assert_eq!(body["error"]["code"], error.code());
+                if super::super::access_denial(&error) {
+                    assert_eq!(body["error"]["refusal"]["code"], expected_refusal["code"]);
+                    assert!(body["error"]["refusal"].get("path").is_none());
+                } else {
+                    assert_eq!(body["error"]["refusal"], expected_refusal);
+                }
+                assert_eq!(body["error"].get("details"), expected_details.as_ref());
+                if depth > 0 && !super::super::access_denial(&error) {
+                    assert_eq!(body["error"]["refusal"]["rule"], "outer-rule");
+                    assert_eq!(body["error"]["refusal"]["path"], "outer/path");
+                }
+                error = wrap(error, code);
+            }
+        }
+        // An explicit outer output refusal governs classification even for a schema source.
+        let response = failure(
+            wrap(Error::InvalidArguments, RefusalCode::InvalidOutput),
+            None,
+        );
+        assert_eq!(response["content"][0]["text"], output_intro);
+    }
 
     #[test]
     fn internal_read_timeout_guidance_matches_catalogue() {

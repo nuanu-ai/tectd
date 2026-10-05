@@ -13,16 +13,18 @@ fn lightweight_v07_accepts_rework_route_and_rejects_disposition_mismatch() {
     assert!(request.validate(&definition).is_ok());
 
     request.output.dispositions = vec!["satisfied".into()];
-    assert_eq!(
-        request.validate(&definition),
-        Err(tect_domain::Error::InvalidArguments)
+    assert_named_completion_refusal(
+        request.validate(&definition).unwrap_err(),
+        "WP6-COMPLETE-OUTPUT-12",
+        "arguments.params.output.dispositions",
     );
 
     let (_, mut pass_with_rework) = v07_completion("K3");
     pass_with_rework.output.dispositions = vec!["rework".into()];
-    assert_eq!(
-        pass_with_rework.validate(&definition),
-        Err(tect_domain::Error::InvalidArguments)
+    assert_named_completion_refusal(
+        pass_with_rework.validate(&definition).unwrap_err(),
+        "WP6-COMPLETE-OUTPUT-06",
+        "arguments.params.output.dispositions",
     );
 }
 
@@ -56,18 +58,20 @@ fn lightweight_v07_binds_independent_and_self_review_context() {
         producer_context_ids: vec!["current-context".into()],
         fresh_input: true,
     });
-    assert_eq!(
-        request.validate(&definition),
-        Err(tect_domain::Error::InvalidArguments)
+    assert_named_completion_refusal(
+        request.validate(&definition).unwrap_err(),
+        "WP6-REVIEW-PRODUCERS-05",
+        "arguments.params.output.reviewer_context.producer_context_ids",
     );
 
     request
         .output
         .fields
         .insert("review_mode".into(), "self".into());
-    assert_eq!(
-        request.validate(&definition),
-        Err(tect_domain::Error::InvalidArguments)
+    assert_named_completion_refusal(
+        request.validate(&definition).unwrap_err(),
+        "WP6-REVIEW-PRODUCERS-05",
+        "arguments.params.output.reviewer_context.producer_context_ids",
     );
     request.output.reviewer_context = None;
     assert!(request.validate(&definition).is_ok());
@@ -84,9 +88,10 @@ fn legacy_required_disposition_behavior_is_unchanged() {
     request.outcome = PipelinePhaseOutcome::WaitingInput;
     request.transition = PipelineTransition::Continue;
     request.revisit_phase_id = Some("K2".into());
-    assert_eq!(
-        request.validate(&definition),
-        Err(tect_domain::Error::InvalidArguments)
+    assert_named_completion_refusal(
+        request.validate(&definition).unwrap_err(),
+        "WP6-COMPLETE-OUTPUT-06",
+        "arguments.params.output.dispositions",
     );
 }
 
@@ -114,9 +119,10 @@ fn lightweight_v07_body_is_optional_but_legacy_body_remains_required() {
 
     let mut legacy = definition;
     legacy.version = "0.6.0-compatibility-fixture".into();
-    assert_eq!(
-        omitted.validate(&legacy),
-        Err(tect_domain::Error::InvalidArguments)
+    assert_named_completion_refusal(
+        omitted.validate(&legacy).unwrap_err(),
+        "WP6-COMPLETE-OUTPUT-01",
+        "arguments.params.output.body",
     );
 }
 
@@ -318,9 +324,7 @@ fn lightweight_v07_accepts_one_bounded_k1_through_k5_contract_path() {
 
 #[test]
 fn lightweight_definition_has_exact_complete_bodies() {
-    let definition = StaticPipelineDefinitions
-        .definition(PipelineKind::LightweightTddDevelopment)
-        .unwrap();
+    let definition = historical_lightweight();
     assert_eq!(definition.phases.len(), 15);
     assert!(definition.phases.iter().all(|phase| {
         !phase.instructions.is_empty()
@@ -333,19 +337,23 @@ fn lightweight_definition_has_exact_complete_bodies() {
 }
 
 #[test]
-fn explicit_definition_selection_keeps_v06_default_and_exposes_v07_k1k5() {
+fn explicit_definition_selection_retires_v06_and_defaults_to_v07_k1k5() {
     let provider = StaticPipelineDefinitions;
-    let legacy = provider
+    let default = provider
         .definition(PipelineKind::LightweightTddDevelopment)
         .unwrap();
-    let explicit_legacy = provider
-        .definition_for(
-            PipelineKind::LightweightTddDevelopment,
-            Some("0.6.0-native.engineering.2"),
-        )
-        .unwrap();
-    assert_eq!(explicit_legacy.version, legacy.version);
-    assert_eq!(explicit_legacy.digest, legacy.digest);
+    assert_eq!(default.version, "0.7.1-native.k1k5");
+    assert_eq!(default.phases.len(), 5);
+    assert_eq!(
+        provider
+            .definition_for(
+                PipelineKind::LightweightTddDevelopment,
+                Some("0.6.0-native.engineering.2")
+            )
+            .unwrap_err()
+            .code(),
+        "LEGACY_MIGRATION_REQUIRED"
+    );
 
     let compact = provider
         .definition_for(
@@ -391,4 +399,12 @@ fn explicit_definition_selection_keeps_v06_default_and_exposes_v07_k1k5() {
             )
             .is_err()
     );
+}
+
+fn assert_named_completion_refusal(error: tect_domain::Error, rule: &str, path: &str) {
+    assert_eq!(error.code(), "INVALID_OUTPUT");
+    let refusal = error.refusal().unwrap();
+    assert_eq!(refusal.code, tect_domain::RefusalCode::InvalidOutput);
+    assert_eq!(refusal.rule.as_deref(), Some(rule));
+    assert_eq!(refusal.path.as_deref(), Some(path));
 }

@@ -12,17 +12,18 @@ pub(crate) async fn execute(
 ) -> Result<Value> {
     let boundary = invocation.refusal_boundary();
     let result = match invocation {
-        PipelineInvocation::Context(query) => {
-            let refresh = query.refresh;
-            service
-                .pipeline_context(context, &query)
-                .await
-                .and_then(|value| crate::pipeline_output::context(value, capacity, refresh))
-        }
+        PipelineInvocation::Context(query) => service
+            .pipeline_context(
+                context,
+                &query,
+                &crate::pipeline_output::PipelineEncoding::new(capacity),
+            )
+            .await
+            .and_then(|value| crate::pipeline_output::context_pinned(value, capacity, &query)),
         PipelineInvocation::Instruction(query) => service
             .pipeline_instruction(context, &query)
             .await
-            .and_then(|value| crate::pipeline_output::instruction(value, capacity)),
+            .and_then(|value| crate::pipeline_output::instruction_pinned(value, capacity, &query)),
         PipelineInvocation::Begin(request) => service
             .pipeline_run_begin(
                 context,
@@ -36,9 +37,13 @@ pub(crate) async fn execute(
             .pipeline_run_migrate(context, &request, &StaticPipelineDefinitions)
             .await
             .and_then(|value| {
-                serde_json::to_value(value)
-                    .map(|value| crate::responses::with_actions(value, Vec::new(), None))
-                    .map_err(tect_domain::Error::invalid_arguments_from)
+                let action = crate::responses::action(
+                    "slice_pipeline_context",
+                    serde_json::json!({"run_id":value.successor_run_id}),
+                )?;
+                let value = serde_json::to_value(value)
+                    .map_err(tect_domain::Error::invalid_arguments_from)?;
+                Ok(crate::responses::with_actions(value, vec![action], None))
             }),
         PipelineInvocation::Complete(request) => service
             .pipeline_phase_complete(

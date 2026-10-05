@@ -12,7 +12,7 @@ pub(crate) async fn response(
     socket: &Path,
     context: &RequestContext,
     capacity: usize,
-) -> Value {
+) -> std::result::Result<Value, responses::FailureBuildError> {
     let call = Some((name, arguments));
     let setup_tool = matches!(
         name,
@@ -24,7 +24,7 @@ pub(crate) async fn response(
             | "apply_setup"
     );
     if !setup_tool || access_denial(&error) || error == Error::WorkspaceNotOpen {
-        return responses::failure(error, call);
+        return responses::failure_bounded(error, call, None, capacity);
     }
     match transport::call_tool_bounded(
         socket,
@@ -36,16 +36,18 @@ pub(crate) async fn response(
     .await
     {
         Ok(state) if state["status"] == "ready" => {
-            responses::failure_with_state(error, call, Some(&state))
+            responses::failure_bounded(error, call, Some(&state), capacity)
         }
-        Err(current) if access_denial(&current) => responses::failure(current, call),
-        _ => responses::failure(error, call),
+        Err(current) if access_denial(&current) => {
+            responses::failure_bounded(current, call, None, capacity)
+        }
+        _ => responses::failure_bounded(error, call, None, capacity),
     }
 }
 
 fn access_denial(error: &Error) -> bool {
     matches!(
-        error,
+        error.pipeline_source(),
         Error::Unauthorized
             | Error::InvalidNativeSession
             | Error::SessionRevoked

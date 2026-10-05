@@ -10,10 +10,10 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
             "Requires an authenticated open native session and an accessible Program. Omitted after_input starts at the saved input cursor; explicit null is invalid.",
             "Reads a consistent database snapshot only.",
             "Safe to repeat. Follow next_after_input exactly when present.",
-            object_schema(
-                json!({"program_id":uuid(),"after_input":{"type":"integer","minimum":0},"limit":page_limit()}),
+            crate::planning_read::schema(object_schema(
+                json!({"program_id":uuid(),"program_revision":{"type":"integer","minimum":1},"after_input":{"type":"integer","minimum":0},"limit":page_limit()}),
                 json!(["program_id"]),
-            ),
+            )),
             json!({"program_id":example_id,"after_input":0,"limit":25}),
         ),
         route!(

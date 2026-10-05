@@ -341,6 +341,7 @@ pub struct SliceCandidateContext {
 #[serde(rename_all = "snake_case")]
 pub enum SliceCandidateContextView {
     Overview,
+    Details,
     Inputs,
     Candidates,
     Reviews,

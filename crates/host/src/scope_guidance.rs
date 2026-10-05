@@ -10,7 +10,7 @@ use tect_domain::{
 };
 
 pub(crate) const METHOD_ID: &str = "tectd-scope-candidates";
-pub(crate) const METHOD_REVISION: &str = "5";
+pub(crate) const METHOD_REVISION: &str = "6";
 pub(crate) const METHOD_BODY: &str =
     include_str!("../../../skills/tectd-scope-candidates/SKILL.md");
 pub(crate) const REGISTRY_REVISION: &str = "3";
@@ -366,22 +366,17 @@ impl CandidateOutputGuard for CandidateEncoding {
     }
 
     fn check_material(&self, material: &CandidateSnapshotMaterial) -> Result<()> {
-        self.check_value(json!({
-            "program":material.program,
-            "selected_worktrees":material.selected_worktrees,
-            "method":material.method,
-            "rules":material.rules,
-            "registry_revision":material.registry_revision,
-            "registry_digest":material.registry_digest
-        }))
+        self.check_value(json!({"program_id":material.program.id,"program_revision":material.program.revision,"method":{"id":material.method.id,"revision":material.method.revision,"digest":material.method.digest},"counts":{"selected_worktrees":material.selected_worktrees.len(),"rules":material.rules.len()}}))
     }
 
     fn check_draft(&self, draft: &ResolvedCandidateDraft) -> Result<()> {
-        self.check_value(json!({"draft":draft}))
+        self.check_value(json!({"counts":{"candidates":draft.candidates.len(),"goals":draft.goals.len(),"evidence":draft.evidence.len(),"blockers":draft.blockers.len()}}))
     }
 
     fn check_stored(&self, stored: &tect_domain::StoredCandidateContext) -> Result<()> {
-        crate::scope_candidate_output::stored(stored.clone(), self.capacity).map(|_| ())
+        crate::scope_candidate_output::stored_mutation(stored.clone(), self.capacity)?;
+        crate::scope_candidate_output::stored(stored.clone(), self.capacity)?;
+        Ok(())
     }
 
     fn check_begin(&self, outcome: &tect_domain::BeginCandidateSetOutcome) -> Result<()> {
@@ -399,7 +394,7 @@ impl CandidateEncoding {
             Vec::new(),
             None,
         );
-        if responses::encoded_len(&value)? <= self.capacity {
+        if responses::encoded_len(&value)? <= self.capacity.min(crate::json_fragment::READ_BUDGET) {
             Ok(())
         } else {
             Err(Error::RequestTooLarge)

@@ -15,7 +15,7 @@
 
 The compact definition intentionally changes the default from V1 `whole` to `phasewise`: backend gates, resumability, revision invalidation, and state/receipt bindings remain visible at each K checkpoint. `whole` remains allowed and obeys the same ordered K1–K5 semantics. This is a declared native runtime adaptation, not a claim that V1 used phasewise by default.
 
-All files in `v1/` are byte-for-byte snapshots from that V1 revision. Their bodies remain immutable provenance. The native definition delivers those exact bodies together with a phase-specific `output_contract`. The native contract has precedence only for the carrier and runtime boundary: backend fields and output bindings replace V1 control-plane Markdown/FSM persistence, retired Tect route/tool calls, and package self-validator commands. Substantive scope, evidence, authority, TDD, verification, escalation, result, promotion, and handoff obligations remain mandatory. Product source and test edits are allowed only in the TDD phase and only within the run's recorded authority and preflight boundary.
+All files in `v1/` are byte-for-byte snapshots from that V1 revision and remain immutable historical provenance. The current five-checkpoint definition carries derived compact methods and explicit output constraints; it is not a one-to-one transcription or delivery of fourteen V1 bodies or fifteen retired runtime phases. The K anchors below identify retained obligations and their current owners. K3 is a derived strengthened gate, not a V1 step. Product source and test edits belong only to authorized K4 work within its recorded boundary.
 
 ## V1 instruction snapshots
 
@@ -47,7 +47,9 @@ The V1 external-skill registry recorded primary paths under `skills/references/s
 | mandatory TDD include `@testing-anti-patterns.md` | `../../references/superpowers/test-driven-development/testing-anti-patterns.md` | `bde453bc258f06543987477c837939afaa774ea2acbd9f308d702fc452bc4283` | Required 8 nested mandatory reference; its obligations are included in the phase output contract |
 | `superpowers:verification-before-completion` | `../../references/superpowers/verification-before-completion/SKILL.md` | `ea52d15aabaf72bc6b558efe2c126f161b53961090ddcd712000273bfe8c7b6c` | Phase 10 direct invocation |
 
-## Native projection rules
+## Historical retired native projection rules
+
+The following rules document the retired fourteen/fifteen-phase carrier. They are historical compatibility provenance, not selectors or instructions for a new current run. Current runtime ownership is the K1–K5 contract below.
 
 1. Each phase returns one native output body, typed fields, one allowed verdict, and a reference when an external artifact or source change exists. The backend owns durable phase state, ordering, revision checks, idempotency, current-phase selection, and output bindings.
 2. V1 artifact names remain carrier obligations. They appear in phase fields and references so a cold resume can reconstruct the source contract, but the agent does not create duplicate lifecycle Markdown solely to advance the pipeline.
@@ -61,11 +63,11 @@ The V1 external-skill registry recorded primary paths under `skills/references/s
 
 The top-level definition digest is lowercase SHA256 of the `serde_json` serialization of `PipelineDefinitionSnapshot` after setting only its top-level `digest` field to the empty string. Instruction and skill digests are lowercase SHA256 of their exact body bytes.
 
-## Superpowers v6.3.0 native adaptation
+## Historical Superpowers v6.3.0 native adaptation
 
 - Update class: selected upstream bodies only; native phase order and output contracts are unchanged.
-- Previous active snapshot: `crates/host/pipeline-definitions/lightweight-tdd-0.1.0-native.1.json`, version `0.1.0-native.1`, semantic digest `5a5152233000b741f6364666a539917395a72cfa8e592271a96216ec2e69c40a`, physical SHA-256 `a844609332cfd35943cf77599b1140eba5a4102a8e15afc57136dd33c350bb1c`.
-- Current snapshot: `crates/host/pipeline-definitions/lightweight-tdd.json`, version `0.6.0-native.engineering.2`, semantic digest `bef9f376f187b985684005b075275a072625f1c08125991062bb38c47ac884b1`, physical SHA-256 `bc7968632aba4aefe6ec39b516dfc362d6db7c0025847a1070f2fc31300122e3`.
+- Retired historical snapshot: `crates/host/src/pipeline_definitions/tests/fixtures/lightweight-tdd-0.1.0-native.1.json`, version `0.1.0-native.1`, semantic digest `5a5152233000b741f6364666a539917395a72cfa8e592271a96216ec2e69c40a`, physical SHA-256 `a844609332cfd35943cf77599b1140eba5a4102a8e15afc57136dd33c350bb1c`.
+- Retired fifteen-phase snapshot: `crates/host/src/pipeline_definitions/tests/fixtures/lightweight-tdd.json`, version `0.6.0-native.engineering.2`, semantic digest `bef9f376f187b985684005b075275a072625f1c08125991062bb38c47ac884b1`, physical SHA-256 `bc7968632aba4aefe6ec39b516dfc362d6db7c0025847a1070f2fc31300122e3`.
 - Exact selected source package: `skills/references/superpowers-v6.3.0-b36e0829`, upstream commit `b36e0829c6d0140e93cfef2ca599b1b07d4a7797`, tag `v6.3.0`, package manifest SHA-256 `2973ac33ed683d9c50e15fab14a5045f768b6b765d29849237f95371d99b5dde`, MIT license SHA-256 `a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400`.
 
 ### Selected body replacements
@@ -91,7 +93,7 @@ The top-level definition digest is lowercase SHA256 of the `serde_json` serializ
 |---|---:|---|---|
 | `superpowers:verification-before-completion` | `5.0.7` | `ea52d15aabaf72bc6b558efe2c126f161b53961090ddcd712000273bfe8c7b6c` | `skills/references/superpowers/verification-before-completion/SKILL.md` |
 
-The archived snapshot remains the exact carrier for stored runs created against the previous definition version.
+The archived snapshots remain exact provenance for their immutable stored definition/history identities. They cannot be selected for new runs or continued through new phase, input, or delivery mutations. Historical reads and exact prior receipt replay remain separate compatibility operations.
 
 ## Compact K1–K5 anchors and fourteen-step disposition
 
@@ -149,3 +151,11 @@ The v0.7 runtime rejects agent-supplied skill/resource read receipts and derives
 | `superpowers:systematic-debugging` | K1/K2/K4 on unknown cause or repeated failure | Escalate to `slice.debug-root-cause`; Lightweight does not perform the debugging lifecycle. |
 | `superpowers:writing-skills` | K5 when reusable skill work is discovered | External skill-authoring owner; record handoff/defer, do not author or publish here. |
 | `superpowers:finishing-a-development-branch` | K5 when cleanup/branch finalization remains | External cleanup/maintenance owner; record handoff/defer, do not finish or clean the branch here. |
+
+## Retired-run fresh restart
+
+New Lightweight work selects current `0.7.1-native.k1k5` by default or explicit selector. The independently pinned five-phase `0.7.0-native.k1k5` remains a compatibility selector; its digest is distinct and it is not the retirement restart target. The retired `0.6.0-native.engineering.2` semantic digest is `bef9f376f187b985684005b075275a072625f1c08125991062bb38c47ac884b1`; its byte-identical historical file SHA256 is `bc7968632aba4aefe6ec39b516dfc362d6db7c0025847a1070f2fc31300122e3`.
+
+A fresh current context for an unfinished retired run supplies the exact `slice.pipeline.run.migrate` action at its current revision. Its canonical current successor uses `mappings: []`: restart at K1 with empty outputs, attempts and bindings, no copied evidence, and a distinct successor identity. The predecessor becomes superseded with immutable definition/history preserved. Completed or escalated predecessors cannot restart; superseded runs allow exact prior migration receipt replay and historical reads. Ordinary migrations still require explicit obligation/evidence mappings. The structurally empty command is an exception only after the actual retired predecessor and freshly hashed canonical current successor are resolved.
+
+Begin, mutation and Current delivery is a compact `snapshot_reference`, not a body-read or consumption assertion. Retrieve the pinned `snapshot`, exact `phase_contract` and revision-bound `details` destinations. Reassemble their JSON fragments using original UTF-8 byte offsets and representation SHA256 before parsing; those representation hashes differ from the semantic definition digest and physical source-file hash.

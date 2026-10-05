@@ -20,9 +20,11 @@ fn completion() -> (
     tect_domain::PipelineDefinitionSnapshot,
     CompletePipelinePhase,
 ) {
-    let definition = StaticPipelineDefinitions
-        .definition(PipelineKind::LightweightTddDevelopment)
-        .unwrap();
+    let definition = load(
+        include_str!("tests/fixtures/lightweight-tdd.json"),
+        PipelineKind::LightweightTddDevelopment,
+    )
+    .unwrap();
     let phase = definition
         .phases
         .iter()
@@ -124,7 +126,11 @@ fn engineering_gate_instructions_and_active_ordinals_are_exact() {
             "slice-engineering-plan-review",
         ),
     ] {
-        let definition = StaticPipelineDefinitions.definition(kind).unwrap();
+        let definition = if kind == PipelineKind::LightweightTddDevelopment {
+            load(include_str!("tests/fixtures/lightweight-tdd.json"), kind).unwrap()
+        } else {
+            StaticPipelineDefinitions.definition(kind).unwrap()
+        };
         assert_eq!(
             definition.version,
             if kind == PipelineKind::FullDesignToExecution {
@@ -156,9 +162,11 @@ fn engineering_gate_instructions_and_active_ordinals_are_exact() {
             digest(&phase.instructions[0].body)
         );
     }
-    let lightweight = StaticPipelineDefinitions
-        .definition(PipelineKind::LightweightTddDevelopment)
-        .unwrap();
+    let lightweight = load(
+        include_str!("tests/fixtures/lightweight-tdd.json"),
+        PipelineKind::LightweightTddDevelopment,
+    )
+    .unwrap();
     assert!(
         lightweight
             .completion_contract
@@ -249,9 +257,11 @@ fn every_engineering_gate_pins_exact_standards_schema_and_reviewer_resources() {
 #[test]
 fn engineering_definition_rejects_missing_substituted_or_wrong_version_resources() {
     for mutation in 0..4 {
-        let mut definition = StaticPipelineDefinitions
-            .definition(PipelineKind::LightweightTddDevelopment)
-            .unwrap();
+        let mut definition = load(
+            include_str!("tests/fixtures/lightweight-tdd.json"),
+            PipelineKind::LightweightTddDevelopment,
+        )
+        .unwrap();
         let phase = definition
             .phases
             .iter_mut()
@@ -314,9 +324,11 @@ fn engineering_review_requires_typed_independent_reviewer_authority() {
 
 #[test]
 fn lightweight_review_precedes_tdd_and_current_review_binding_is_mandatory() {
-    let definition = StaticPipelineDefinitions
-        .definition(PipelineKind::LightweightTddDevelopment)
-        .unwrap();
+    let definition = load(
+        include_str!("tests/fixtures/lightweight-tdd.json"),
+        PipelineKind::LightweightTddDevelopment,
+    )
+    .unwrap();
     let review = definition
         .phases
         .iter()
@@ -344,8 +356,7 @@ mod validation;
 
 #[test]
 fn archived_active_snapshots_remain_valid_and_byte_exact() {
-    let lightweight =
-        include_str!("../../pipeline-definitions/lightweight-tdd-0.4.0-native.skills.1.json");
+    let lightweight = include_str!("tests/fixtures/lightweight-tdd-0.4.0-native.skills.1.json");
     let full = include_str!(
         "../../pipeline-definitions/full-design-to-execution-0.4.0-native.skills.1.json"
     );

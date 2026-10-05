@@ -263,7 +263,7 @@ async fn seed_schema_eight(pool: &PgPool) -> Result<SeedIds, String> {
     let result = Uuid::new_v4();
     let run = Uuid::new_v4();
     let legacy_definition: serde_json::Value = serde_json::from_str(include_str!(
-        "../../host/pipeline-definitions/lightweight-tdd-0.4.0-native.skills.1.json"
+        "../../host/src/pipeline_definitions/tests/fixtures/lightweight-tdd-0.4.0-native.skills.1.json"
     ))
     .map_err(|error| error.to_string())?;
 

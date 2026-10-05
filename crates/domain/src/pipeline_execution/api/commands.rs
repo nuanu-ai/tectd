@@ -1,0 +1,124 @@
+use super::*;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BeginPipelineRun {
+    pub request_id: Uuid,
+    pub scope_id: Uuid,
+    pub slice_id: Uuid,
+    pub slice_revision: i64,
+    #[serde(default)]
+    pub delivery_mode: Option<PipelineDeliveryMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub definition_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inquiry: Option<PipelineInquiryContract>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_checkpoint: Option<PipelineCheckpointRef>,
+    pub qualification_reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineTerminalResultDraft {
+    pub summary: String,
+    pub evidence: Vec<SliceResultEvidence>,
+    pub scope_impact: String,
+    pub remaining_work: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompletePipelinePhase {
+    pub request_id: Uuid,
+    pub run_id: Uuid,
+    pub run_revision: i64,
+    pub phase_id: String,
+    pub outcome: PipelinePhaseOutcome,
+    pub transition: PipelineTransition,
+    pub output: PipelinePhaseOutputDraft,
+    #[serde(default)]
+    pub consumed_outputs: Vec<PipelineConsumedOutput>,
+    #[serde(default)]
+    pub consumed_inputs: Vec<PipelineConsumedInput>,
+    #[serde(default)]
+    pub revisit_phase_id: Option<String>,
+    #[serde(default)]
+    pub escalation_target: Option<PipelineKind>,
+    #[serde(default)]
+    pub terminal_result: Option<PipelineTerminalResultDraft>,
+    #[serde(default)]
+    pub publish_blocked_result: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_knowledge: Option<ConsumedKnowledgeManifestRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub research_checkpoint: Option<ResearchCheckpointDraft>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordPipelineInput {
+    pub request_id: Uuid,
+    pub run_id: Uuid,
+    pub run_revision: i64,
+    pub phase_id: String,
+    pub input: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_amendment: Option<PipelineSourceAmendment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineSourceAmendment {
+    pub target_phase_id: String,
+    pub predecessor: PipelineSourcePredecessor,
+    pub successor: PipelineSourceSuccessor,
+    pub authorization_scope: String,
+    pub authorization_provenance: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineSourcePredecessor {
+    pub output_id: Uuid,
+    pub output_revision: i64,
+    pub output_digest: String,
+    pub artifact_name: String,
+    pub artifact_digest: String,
+    pub source_path: String,
+    pub source_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineSourceSuccessor {
+    pub path: String,
+    pub artifact: PipelineSourceArtifactDraft,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PipelineSourceArtifactDraft {
+    pub name: String,
+    pub media_type: String,
+    pub body: String,
+    pub digest: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EscalatePipelineDelivery {
+    pub request_id: Uuid,
+    pub run_id: Uuid,
+    pub run_revision: i64,
+    pub phase_id: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PipelineMutationOutcome {
+    pub context: PipelineRunContext,
+    pub result: Option<SliceResult>,
+}

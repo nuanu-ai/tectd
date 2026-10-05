@@ -5,6 +5,18 @@ database, daemon, package, socket, enrollment, source, setup, and AGENTS.md effe
 one owned temporary directory. It does not use the installed daemon, PostgreSQL, package,
 configuration, host credential, grants, or a real workspace AGENTS.md.
 
+## Current Lightweight fixture contract
+
+The source drivers select `0.7.1-native.k1k5`, semantic digest `93df97f4cb4458a18411b76005b29025a56234dc47650e4147ac5fdab3d30d89`, with exactly K1–K5. Its physical JSON file SHA256 is separately `f3c09714c8040d08d5aff64026cf9dceb5ad1e343033641f27f5629cc0e4e2c5`. Default delivery is phasewise; whole and phasewise are allowed. An omitted-selector probe tests that default independently; the execution fixture explicitly pins the current version and whole delivery, completes K1, then switches delivery at unfinished K2. This delivery change is distinct from a phase verdict's escalation disposition. Catalogue revision 4 advertises nine executable entries (eight Slice-run owners and Promotion's Knowledge Change owner), totaling 117 Slice phases.
+
+Lifecycle replies contain compact pinned snapshot references. The drivers read the complete stored snapshot, exact current phase contract and revision-bound details, validating original UTF-8 fragment bytes, source pins and representation digest before JSON parsing. Full snapshots retain all five checkpoints in either delivery mode; delivered-phase history and available output payloads are retrieved separately. Snapshot-reference receipts assert availability, not body reading or consumption. Current five-phase completions omit all caller-owned consumption and skill/resource receipt keys. The separately pinned five-phase `.7.0` compatibility contract is recognized with its own digest; retired fifteen-phase fixtures are not executable driver paths.
+
+K checkpoint output builders emit labeled structural fixtures. K3 uses honest self review, and K4/K5 receipt strings explicitly identify simulated commands. These carriers do not prove command execution, independent semantic QA, deployment, live verification or paid acceptance. Pure Python fake-transport tests establish request construction, fragment integrity and scenario scaffolding only. They do not establish native acceptance, PostgreSQL atomicity or concurrency. The Scope/Decision correction, managed Result bypass refusal, input/resume, declared K3→K2 and K5→K4 rework, blocked Result history and fresh final completion scenarios remain in the driver.
+
+Generic phase builders require explicit caller reviewer context for fresh-review phases or requested independent mode; they preserve only contract fields and never invent actors, session labels or freshness. Supplied context permits request construction only. Backend authentication, actor independence, freshness and semantic quality remain unproven by fixtures. The Full pipeline is inspected through pinned reads; this driver does not complete an independent Full review.
+
+Unfinished retired Lightweight runs restart only through the exact current migration action: canonical `.7.1`, `mappings: []`, empty K1 evidence state, no output copying and immutable predecessor history. Generic mapped migrations continue to require explicit mappings; this is a conditional retirement exception. Production and archived JSON are not rewritten by the source-driver update.
+
 ## Prerequisites
 
 - source worktree containing the exact feature candidate; HEAD, status, and every changed file

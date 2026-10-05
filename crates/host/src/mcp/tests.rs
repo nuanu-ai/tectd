@@ -269,3 +269,22 @@ async fn claude_attestation_is_required_even_when_thread_id_is_present_before_tr
         serde_json::from_str(response["result"]["content"][1]["text"].as_str().unwrap()).unwrap();
     assert_eq!(data["error"]["code"], "transport_unavailable");
 }
+
+#[test]
+fn bounded_failure_below_mcp_shell_uses_existing_minimal_wire_error() {
+    let response = super::failure_response(
+        json!(7),
+        Err(crate::responses::FailureBuildError::EnvelopeCannotFit),
+        1,
+    );
+    assert_eq!(response["error"]["message"], "request_too_large");
+    assert!(response.get("result").is_none());
+    let construction = super::failure_response(
+        json!(7),
+        Err(crate::responses::FailureBuildError::construction(
+            Error::InternalInvariant,
+        )),
+        1,
+    );
+    assert_eq!(construction, response);
+}

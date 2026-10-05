@@ -1,11 +1,38 @@
 use super::*;
 
+#[cfg(test)]
 pub(super) fn actions(context: &PipelineRunContext) -> Result<Vec<Value>> {
+    actions_for(context, true)
+}
+
+pub(super) fn actions_for(context: &PipelineRunContext, fresh_current: bool) -> Result<Vec<Value>> {
     let run = &context.run;
     if run.status == PipelineRunStatus::Superseded {
         return with_route_contracts(vec![responses::action(
-            "slice_pipeline_context",
-            json!({"run_id":run.id}),
+            "slice_context",
+            json!({"slice_id":run.slice_id}),
+        )?]);
+    }
+    if tect_domain::is_retired_lightweight(&context.definition) {
+        if !fresh_current
+            || matches!(
+                run.status,
+                PipelineRunStatus::Completed | PipelineRunStatus::Escalated
+            )
+        {
+            return with_route_contracts(vec![responses::action(
+                "slice_pipeline_context",
+                json!({"run_id":run.id}),
+            )?]);
+        }
+        return with_route_contracts(vec![responses::action(
+            "slice_pipeline_run_migrate",
+            json!({
+                "request_id":request_id(run.id,run.revision,"retirement-migrate"),
+                "predecessor_run_id":run.id,"expected_revision":run.revision,
+                "idempotency_key":format!("retire:{}:{}:{}",run.id,run.revision,tect_domain::CURRENT_LIGHTWEIGHT_VERSION),
+                "successor_definition_version":tect_domain::CURRENT_LIGHTWEIGHT_VERSION,"mappings":[]
+            }),
         )?]);
     }
     let Some(phase_id) = &run.current_phase_id else {

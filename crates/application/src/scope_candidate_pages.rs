@@ -64,7 +64,9 @@ pub(crate) async fn context_page(
             });
             items
         }
-        CandidateContextView::Overview | CandidateContextView::Program => Vec::new(),
+        CandidateContextView::Overview
+        | CandidateContextView::Program
+        | CandidateContextView::Details => Vec::new(),
         CandidateContextView::Fragment => return Err(Error::InvalidArguments),
     };
     if !matches!(
@@ -97,7 +99,7 @@ pub(crate) async fn context_page(
         Some("Historical candidate context is immutable and read-only. Return to the current head before continuing planning.".to_owned())
     } else if matches!(view, CandidateContextView::Reviews) {
         Some(match stored.context.candidate_set.status {
-            tect_domain::CandidateSetStatus::Ready => "Candidate set is ready for user selection. Native Scope opening is not available; record input only for an explicit amendment.",
+            tect_domain::CandidateSetStatus::Ready => "When the supplied scope.open action is available, select the candidate and use that call. Record input only for an explicit amendment.",
             tect_domain::CandidateSetStatus::Blocked => "Candidate set remains blocked. Inspect the preserved findings and record input only when new authority or context is available.",
             _ => "Continue with the schema-described draft or critical review action.",
         }.to_owned())
@@ -139,7 +141,13 @@ pub(crate) async fn context_page(
             field_refs,
         }
     });
+    let draft = if view == CandidateContextView::Details {
+        stored.draft
+    } else {
+        None
+    };
     Ok(CandidateContextPage {
+        draft,
         context: stored.context,
         view,
         program,

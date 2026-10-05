@@ -12,8 +12,8 @@ pub(super) fn context() -> Value {
             json!(["candidate_set_id", "view", "limit"]),
         )
     };
-    json!({"oneOf":[
-        page("overview"),page("program"),page("inputs"),page("candidates"),page("reviews"),page("history"),
+    let mut schema = json!({"oneOf":[
+        page("overview"),page("details"),page("program"),page("inputs"),page("candidates"),page("reviews"),page("history"),
         object_schema(
             json!({
                 "candidate_set_id":uuid(),"view":{"const":"historical"},
@@ -31,7 +31,14 @@ pub(super) fn context() -> Value {
             }),
             json!(["candidate_set_id","view","source_ref_id","cursor"])
         )
-    ]})
+    ]});
+    crate::planning_read::add_schema(&mut schema);
+    for variant in schema["oneOf"].as_array_mut().unwrap() {
+        if variant["properties"]["view"]["const"] != "fragment" {
+            variant["properties"]["candidate_set_revision"] = json!({"type":"integer","minimum":1});
+        }
+    }
+    schema
 }
 
 pub(super) fn begin() -> Value {

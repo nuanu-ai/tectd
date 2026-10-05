@@ -29,33 +29,9 @@ fn generic_current_selection_supplies_exact_consumed_manifest_guard() {
         complete["arguments"]["params"]["consumed_knowledge"],
         json!({"manifest_id":manifest.id,"digest":manifest.digest})
     );
-    let complete_help = crate::api::help(
-        crate::api::parse_help(json!({
-            "mode":"describe","tool":"command","route":"slice.pipeline.phase.complete"
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(complete["route_contract"], complete_help);
-    assert_eq!(
-        complete["route_contract"]["params_schema"]["properties"]["output"]["properties"]["producer_context_id"]
-            ["type"],
-        "string"
-    );
-
+    assert!(complete.get("route_contract").is_none());
     let context_call = action(&values, "slice.pipeline.context");
-    let context_help = crate::api::help(
-        crate::api::parse_help(json!({
-            "mode":"describe","tool":"query","route":"slice.pipeline.context"
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(context_call["route_contract"], context_help);
-    assert_eq!(
-        context_call["route_contract"]["params_schema"]["properties"]["run_id"]["format"],
-        "uuid"
-    );
+    assert!(context_call.get("route_contract").is_none());
 
     let inactive = context(PipelineKnowledgeResourceState::Inactive, false);
     let values = actions(&inactive).unwrap();
@@ -155,20 +131,24 @@ fn v07_completion_action_omits_backend_owned_proof_echoes() {
 }
 
 #[test]
-fn delivery_is_reused_within_epoch_and_only_explicit_refresh_rereads() {
+fn receipt_freshness_and_refresh_never_trigger_body_replay() {
     let mut current = context(PipelineKnowledgeResourceState::Current, true);
-    current.delivery_fresh = false;
-    let reused = Delivery::reread(&current, false);
-    assert!(!reused.reread);
-    assert!(Delivery::reread(&current, true).reread);
-    current.delivery_fresh = true;
-    assert!(Delivery::reread(&current, false).reread);
-
+    let original_definition = current.definition.clone();
     current.run.delivery_mode = PipelineDeliveryMode::Whole;
-    current.delivered_phases = vec![phase()];
-    restrict_definition_delivery(&mut current, false);
-    assert!(current.definition.phases.is_empty());
-    assert!(current.delivered_phases.is_empty());
+    for fresh in [false, true] {
+        for refresh in [false, true] {
+            current.delivery_fresh = fresh;
+            let value = super::super::context(
+                PipelineContextResponse::Current(Box::new(current.clone())),
+                8192,
+                refresh,
+            )
+            .unwrap();
+            assert!(value["definition"].get("phases").is_none());
+            assert_eq!(value["delivery_scope"], "snapshot_reference");
+        }
+    }
+    assert_eq!(current.definition, original_definition);
 }
 
 #[test]

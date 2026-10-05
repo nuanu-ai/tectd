@@ -1,51 +1,32 @@
 use super::*;
 
-pub(super) fn phase_read_receipt_details(
-    expected: &[(&str, &str, &str)],
-    actual: &[(&str, &str, &str)],
-) -> (String, String) {
-    for &(id, version, digest) in expected {
-        if let Some((_, _, actual_digest)) = actual
-            .iter()
-            .copied()
-            .find(|(actual_id, actual_version, _)| *actual_id == id && *actual_version == version)
-            && actual_digest != digest
-        {
-            return (
-                format!("{id}@{version} digest={digest}"),
-                format!("{id}@{version} digest={actual_digest}"),
-            );
-        }
-    }
-
-    let missing = expected
-        .iter()
-        .copied()
-        .filter(|receipt| !actual.contains(receipt))
-        .take(3)
-        .map(|(id, version, digest)| format!("digest={digest} for {id}@{version}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let unexpected = actual
-        .iter()
-        .copied()
-        .filter(|receipt| !expected.contains(receipt))
-        .take(3)
-        .map(|(id, version, digest)| format!("digest={digest} for {id}@{version}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    (missing, unexpected)
+pub(super) fn completion_refusal(
+    code: RefusalCode,
+    rule: &'static str,
+    path: impl Into<String>,
+    expected: impl Into<String>,
+    actual: impl Into<String>,
+    next_action: &'static str,
+    required: impl Into<String>,
+) -> Error {
+    Error::Refused(Box::new(
+        Refusal::new(code)
+            .with_message(code.message())
+            .with_rule(rule)
+            .with_path(path)
+            .with_expected(expected)
+            .with_actual(actual)
+            .with_next_action(next_action)
+            .with_required(required),
+    ))
 }
 
 pub(super) fn phase_read_receipt_refusal(
     kind: &str,
     rule: &'static str,
     path: &'static str,
-    expected_reads: &str,
-    actual_reads: &str,
-    submitted_count: usize,
-    unique_count: usize,
-) -> Error {
+    diff: &FullReceiptDiff,
+) -> Result<Error> {
     let (next_action, required) = match kind {
         "skill" => ("supply_exact_phase_skill_reads", "exact_phase_skill_reads"),
         _ => (
@@ -53,15 +34,10 @@ pub(super) fn phase_read_receipt_refusal(
             "exact_phase_resource_reads",
         ),
     };
-    let expected = bounded_refusal_detail(format!(
-        "exact pinned phase {kind} read receipts: [{expected_reads}]"
-    ));
-    let actual = bounded_refusal_detail(format!(
-        "submitted {submitted_count} receipt(s) ({} unique, {} duplicate): [{actual_reads}]",
-        unique_count,
-        submitted_count.saturating_sub(unique_count)
-    ));
-    Error::refused_at(
+    let (expected, actual) = diff
+        .diagnostic_sections()
+        .map_err(|_| Error::InternalInvariant)?;
+    Ok(completion_refusal(
         RefusalCode::InvalidOutput,
         rule,
         path,
@@ -69,7 +45,7 @@ pub(super) fn phase_read_receipt_refusal(
         actual,
         next_action,
         required,
-    )
+    ))
 }
 
 fn bounded_refusal_detail(value: String) -> String {
@@ -159,13 +135,7 @@ pub(super) fn output_constraint_refusal(
     let actual = output
         .fields
         .get(field)
-        .map(|value| {
-            if value.len() > 240 {
-                format!("{}...[truncated]", &value[..240])
-            } else {
-                value.clone()
-            }
-        })
+        .map(|value| bounded_refusal_detail(value.clone()))
         .unwrap_or_else(|| "missing".to_owned());
     Error::Refused(Box::new(
         Refusal::new(RefusalCode::InvalidOutput)
@@ -222,18 +192,101 @@ pub(super) fn reject_agent_supplied_proof(request: &CompletePipelinePhase) -> Re
 }
 
 pub(super) fn validate_terminal(value: &PipelineTerminalResultDraft) -> Result<()> {
-    if value.summary.trim().is_empty()
-        || value.scope_impact.trim().is_empty()
-        || value.remaining_work.trim().is_empty()
-        || value.evidence.is_empty()
-        || value.evidence.iter().any(|e| {
-            e.kind.trim().is_empty()
-                || e.reference.trim().is_empty()
-                || e.observation.trim().is_empty()
-        })
-    {
-        Err(Error::InvalidArguments)
-    } else {
-        Ok(())
+    for (field, empty) in [
+        ("summary", value.summary.trim().is_empty()),
+        ("scope_impact", value.scope_impact.trim().is_empty()),
+        ("remaining_work", value.remaining_work.trim().is_empty()),
+        ("evidence", value.evidence.is_empty()),
+    ] {
+        if empty {
+            return Err(completion_refusal(
+                RefusalCode::InvalidOutput,
+                "WP6-COMPLETE-OUTPUT-20",
+                format!("arguments.params.terminal_result.{field}"),
+                "non-empty terminal result field",
+                "empty",
+                "supply_terminal_result_field",
+                field,
+            ));
+        }
+    }
+    for (index, evidence) in value.evidence.iter().enumerate() {
+        for (field, empty) in [
+            ("kind", evidence.kind.trim().is_empty()),
+            ("reference", evidence.reference.trim().is_empty()),
+            ("observation", evidence.observation.trim().is_empty()),
+        ] {
+            if empty {
+                return Err(completion_refusal(
+                    RefusalCode::InvalidOutput,
+                    "WP6-COMPLETE-OUTPUT-21",
+                    format!("arguments.params.terminal_result.evidence[{index}].{field}"),
+                    "non-empty evidence field",
+                    "empty",
+                    "supply_terminal_evidence",
+                    "terminal_evidence",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_constraint_refusal_bounds_actual_at_utf8_boundaries() {
+        let constraint = PipelineOutputConstraint::FieldEquals {
+            field: "decision".to_owned(),
+            value: "ready".to_owned(),
+            when_verdict: None,
+        };
+        for value in [
+            Some("no".to_owned()),
+            Some("Ж🙂".to_owned()),
+            Some("a".repeat(300)),
+            Some(format!("{}🙂", "a".repeat(239))),
+            Some(format!("a{}", "Ж".repeat(120))),
+            None,
+        ] {
+            let fields = value.as_ref().map_or_else(
+                || serde_json::json!({}),
+                |value| serde_json::json!({"decision":value}),
+            );
+            let output: PipelinePhaseOutputDraft = serde_json::from_value(serde_json::json!({
+                "producer_context_id":"test", "fields":fields
+            }))
+            .unwrap();
+            let error = output_constraint_refusal(&constraint, &output);
+            let Error::Refused(refusal) = error else {
+                panic!("expected named refusal")
+            };
+            assert_eq!(refusal.code, RefusalCode::InvalidOutput);
+            assert_eq!(refusal.rule.as_deref(), Some("WP6-OUTPUT-CONSTRAINT-01"));
+            assert_eq!(
+                refusal.path.as_deref(),
+                Some("arguments.params.output.fields.decision")
+            );
+            assert_eq!(refusal.expected.as_deref(), Some("exact string `ready`"));
+            assert_eq!(refusal.next_action.as_deref(), Some("correct_field"));
+            assert_eq!(refusal.required.as_deref(), Some("decision"));
+            let actual = refusal.actual.as_ref().unwrap();
+            assert!(actual.len() <= 240);
+            if let Some(value) = value {
+                if value.len() <= 240 {
+                    assert_eq!(actual, &value);
+                } else {
+                    assert!(actual.ends_with("...[truncated]"));
+                    assert!(value.starts_with(actual.strip_suffix("...[truncated]").unwrap()));
+                }
+            } else {
+                assert_eq!(actual, "missing");
+            }
+            let bytes = serde_json::to_vec(&refusal).unwrap();
+            assert!(std::str::from_utf8(&bytes).is_ok());
+            assert_eq!(serde_json::from_slice::<Refusal>(&bytes).unwrap(), *refusal);
+        }
     }
 }

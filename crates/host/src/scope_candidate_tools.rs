@@ -7,6 +7,12 @@ use tect_domain::{
 use uuid::Uuid;
 
 pub(crate) enum ScopeCandidateInvocation {
+    Window {
+        request: Box<ScopeCandidateInvocation>,
+        window: crate::planning_read::Window,
+        params: Value,
+        candidate_set_revision: Option<i64>,
+    },
     Context {
         candidate_set_id: Uuid,
         view: CandidateContextView,
@@ -36,6 +42,10 @@ pub(crate) enum ScopeCandidateInvocation {
 #[serde(tag = "view", rename_all = "snake_case", deny_unknown_fields)]
 enum ContextArguments {
     Overview {
+        #[serde(flatten)]
+        args: PageArguments,
+    },
+    Details {
         #[serde(flatten)]
         args: PageArguments,
     },
@@ -111,13 +121,45 @@ enum SaveArguments {
     },
 }
 
-pub(crate) fn parse(name: &str, arguments: Value) -> Result<ScopeCandidateInvocation> {
+pub(crate) fn parse(name: &str, mut arguments: Value) -> Result<ScopeCandidateInvocation> {
+    if name == "candidate_context"
+        && [
+            "offset_bytes",
+            "limit_bytes",
+            "representation_digest",
+            "candidate_set_revision",
+        ]
+        .iter()
+        .any(|field| arguments.get(field).is_some())
+    {
+        if arguments["view"] == "fragment" && arguments.get("candidate_set_revision").is_some() {
+            return Err(Error::InvalidArguments);
+        }
+        let params = arguments.clone();
+        let window = crate::planning_read::extract(&mut arguments)?;
+        let candidate_set_revision = arguments
+            .as_object_mut()
+            .and_then(|arguments| arguments.remove("candidate_set_revision"))
+            .map(serde_json::from_value::<i64>)
+            .transpose()
+            .map_err(Error::invalid_arguments_from)?;
+        if candidate_set_revision.is_some_and(|revision| revision < 1) {
+            return Err(Error::InvalidArguments);
+        }
+        return Ok(ScopeCandidateInvocation::Window {
+            request: Box::new(parse(name, arguments)?),
+            window,
+            params,
+            candidate_set_revision,
+        });
+    }
     reject_optional_nulls(&arguments)?;
     match name {
         "candidate_context" => {
             let args: ContextArguments = decode(arguments)?;
             match args {
                 ContextArguments::Overview { args } => page(args, CandidateContextView::Overview),
+                ContextArguments::Details { args } => page(args, CandidateContextView::Details),
                 ContextArguments::Program { args } => page(args, CandidateContextView::Program),
                 ContextArguments::Inputs { args } => page(args, CandidateContextView::Inputs),
                 ContextArguments::Candidates { args } => {

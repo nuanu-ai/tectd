@@ -76,16 +76,14 @@ fn archived_snapshot_reads_validate_but_do_not_cover_updated_definition() {
     }
 
     let old = load(
-        include_str!("../../../pipeline-definitions/lightweight-tdd-0.1.0-native.1.json"),
+        include_str!("fixtures/lightweight-tdd-0.1.0-native.1.json"),
         PipelineKind::LightweightTddDevelopment,
     )
     .unwrap();
     let (old, old_completion) = completion_for(old);
     assert!(old_completion.validate(&old).is_ok());
 
-    let current = StaticPipelineDefinitions
-        .definition(PipelineKind::LightweightTddDevelopment)
-        .unwrap();
+    let current = historical_lightweight();
     let (current, mut current_completion) = completion_for(current);
     assert!(current_completion.validate(&current).is_ok());
     current_completion.output.skill_reads = old_completion.output.skill_reads;
@@ -239,7 +237,7 @@ fn v07_rejects_agent_supplied_proof_and_legacy_payloads_still_decode() {
     }
 
     let legacy = load(
-        include_str!("../../../pipeline-definitions/lightweight-tdd-0.1.0-native.1.json"),
+        include_str!("fixtures/lightweight-tdd-0.1.0-native.1.json"),
         PipelineKind::LightweightTddDevelopment,
     )
     .unwrap();

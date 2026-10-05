@@ -325,7 +325,16 @@ mod tests {
                 .len(),
             12
         );
-        assert_eq!(catalog["phase_counts"]["slice_pipeline_run_phases"], 127);
+        assert_eq!(catalog["phase_counts"]["slice_pipeline_run_phases"], 117);
+        let current_lightweight = crate::pipeline_definitions::StaticPipelineDefinitions
+            .definition(PipelineKind::LightweightTddDevelopment)
+            .unwrap();
+        assert_eq!(
+            current_lightweight.version,
+            tect_domain::CURRENT_LIGHTWEIGHT_VERSION
+        );
+        assert_eq!(current_lightweight.phases.len(), 5);
+        assert!(!tect_domain::is_retired_lightweight(&current_lightweight));
         assert_eq!(catalog["phase_counts"]["knowledge_change_phases"], 12);
         assert_eq!(
             catalog["promotion_method"]["source_ref"],

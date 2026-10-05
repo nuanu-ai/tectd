@@ -1,3 +1,4 @@
+mod socket_path;
 use crate::Result;
 use crate::frame::{Frame, FrameReader, MAX_FRAME_BYTES};
 use crate::knowledge_lifecycle_tools::KnowledgeLifecycleInvocation;
@@ -8,6 +9,7 @@ use crate::tools::{Invocation, parse_invocation};
 use crate::{program_output, responses};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use socket_path::validate_socket;
 use std::fs;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Component, Path, PathBuf};
@@ -215,7 +217,7 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
             Invocation::OpenWorkspace => service
                 .open_workspace(&request.context)
                 .await
-                .and_then(|state| program_output::workspace(state, request.output_capacity)),
+                .and_then(|state| crate::workspace_output::opened(state, request.output_capacity)),
             Invocation::GetState => crate::slice_dispatch::state(&request.context, service)
                 .await
                 .and_then(|state| program_output::workspace(state, request.output_capacity)),
@@ -282,11 +284,7 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
             }
             Invocation::Help(help_request) => {
                 service.authenticate_host(&request.context).await?;
-                Ok(responses::with_actions(
-                    crate::api::help(help_request)?,
-                    Vec::new(),
-                    None,
-                ))
+                crate::planning_read::help(help_request, capacity)
             }
             Invocation::RegisterSource { path } => {
                 serialize(service.register_source(&request.context, &path).await)
@@ -381,15 +379,26 @@ async fn execute_program(
                 &guard,
             )
             .await
-            .and_then(program_output::program),
+            .and_then(program_output::begun),
         ProgramInvocation::Get {
             program_id,
             after_input,
             limit,
+            window,
+            program_revision,
         } => service
             .get_program(context, program_id, after_input, limit, &guidance)
             .await
-            .and_then(|page| program_output::page(page, capacity)),
+            .and_then(|page| {
+                program_output::page_read(
+                    page,
+                    after_input,
+                    limit,
+                    &window,
+                    program_revision,
+                    capacity,
+                )
+            }),
         ProgramInvocation::Save(changes) => service
             .save_program(context, &changes, &guidance, &guard)
             .await
@@ -453,43 +462,6 @@ fn encode_line<T: Serialize>(value: &T) -> Result<Vec<u8>> {
 struct SocketIdentity {
     device: u64,
     inode: u64,
-}
-
-fn validate_socket(path: &Path) -> Result<SocketIdentity> {
-    if !path.is_absolute() {
-        return Err(Error::InvalidConfiguration);
-    }
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::RootDir | Component::Normal(_) => current.push(component.as_os_str()),
-            _ => return Err(Error::InvalidConfiguration),
-        }
-        let metadata = fs::symlink_metadata(&current).map_err(|error| {
-            if error.kind() == std::io::ErrorKind::NotFound {
-                Error::TransportUnavailable
-            } else {
-                Error::InvalidConfiguration
-            }
-        })?;
-        if metadata.file_type().is_symlink() {
-            return Err(Error::InvalidConfiguration);
-        }
-    }
-
-    let parent = path.parent().ok_or(Error::InvalidConfiguration)?;
-    let parent_metadata = fs::symlink_metadata(parent).map_err(|_| Error::InvalidConfiguration)?;
-    if !parent_metadata.is_dir() || parent_metadata.mode() & 0o7777 != 0o700 {
-        return Err(Error::InvalidConfiguration);
-    }
-    let metadata = fs::symlink_metadata(path).map_err(|_| Error::TransportUnavailable)?;
-    if !metadata.file_type().is_socket() || metadata.mode() & 0o7777 != 0o600 {
-        return Err(Error::InvalidConfiguration);
-    }
-    Ok(SocketIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    })
 }
 
 #[cfg(test)]

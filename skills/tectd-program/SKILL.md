@@ -69,3 +69,12 @@ The Program record has only `draft` and `open` states. Continue saving a draft w
 Opening confirms that the strategy-level PRD is ready to guide later work. It does not create a Scope, start coding, produce an implementation plan, or authorize execution.
 
 Persist through MCP only. Do not create a client-side `PRD.md`, use the former WorkOrder/preflight/temporary-file/promote/close/release lifecycle, or introduce Epochs, registers, companion-file ceremony, or mandatory review gates.
+
+
+## Effective save contract and downstream success sources
+
+Before the first `program.save`, read its exact schema with `help` describe and use the supplied save action. `arguments.params.success` contains observable outcomes that demonstrate the Program achieved its intent, for example “A user can complete the stated workflow and its recorded acceptance checks pass.” There is no `program_success` argument. A later frozen planning snapshot classifies this field's issued source reference as `program_success`; finite goals use that exact success source reference and quote. Ongoing planning goals use an issued `planning_input` source reference.
+
+The six PRD fields are `name`, `intent`, `basis`, `boundaries`, `constraints`, and `success`. Each save patch may omit a field to preserve it, set null to clear it, or supply a string to replace it. A partial Draft may save with `complete:false` while fields remain absent. `complete:true`, or editing an already Open Program, requires all six fields nonblank and every original input incorporated through the current consumed-input cursor. `complete:true` also requires no pending question. Supply the values that are still missing in the effective draft before requesting completion; do not invent them.
+
+`program.begin` creates a durable Draft and records the original narrative. It does not claim that a PRD has been composed or opened. Only a successful save confirms that the submitted patches were saved; only the actual backend Open status confirms that the Program is open.

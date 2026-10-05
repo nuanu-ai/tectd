@@ -189,7 +189,7 @@ fn help_branches_are_strict_and_descriptions_come_from_registry() {
     let candidates =
         help(parse_help(json!({"mode":"describe","method":"tectd-scope-candidates"})).unwrap())
             .unwrap();
-    assert_eq!(candidates["method_revision"], "5");
+    assert_eq!(candidates["method_revision"], "6");
     assert!(
         candidates["body"]
             .as_str()
@@ -311,10 +311,19 @@ fn internal_legacy_phase_actions_can_retain_backend_receipts() {
 #[test]
 fn help_search_is_bounded_stable_filtered_and_bilingual() {
     let all = help(parse_help(json!({"mode":"search"})).unwrap()).unwrap();
-    assert_eq!(all["total_matches"], 70);
+    assert_eq!(all["total_matches"], 71);
     assert_eq!(all["returned"], 25);
     assert_eq!(all["truncated"], true);
     assert_eq!(all["hits"][0]["tool"], "get_state");
+    let rules =
+        help(parse_help(json!({"mode":"search","text":"rules","tool":"help"})).unwrap()).unwrap();
+    assert!(
+        rules["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| hit["text"] == "response-rules")
+    );
 
     let russian = help(
         parse_help(json!({"mode":"search","text":"создать программу","tool":"command"})).unwrap(),
@@ -382,8 +391,11 @@ fn route_contract_enrichment_validates_help_as_a_meta_call() {
     attach_route_contract(&mut action).unwrap();
     assert_eq!(action["kind"], "ready_call");
     assert_eq!(action["tool"], "help");
-    assert_eq!(action["route_contract"]["route"], "scope.candidates.begin");
-    assert!(action["route_contract"]["params_schema"].is_object());
+    assert!(action.get("route_contract").is_none());
+    assert!(
+        help(parse_help(action["arguments"].clone()).unwrap()).unwrap()["params_schema"]
+            .is_object()
+    );
 
     action["arguments"]["route"] = json!("unknown");
     assert_eq!(
@@ -397,6 +409,7 @@ fn route_contract_enrichment_validates_help_as_a_meta_call() {
     )
     .unwrap();
     attach_route_contract(&mut routed).unwrap();
-    assert_eq!(routed["route_contract"]["tool"], "query");
-    assert_eq!(routed["route_contract"]["route"], "program.get");
+    assert!(routed.get("route_contract").is_none());
+    assert_eq!(routed["schema_help"]["arguments"]["tool"], "query");
+    assert_eq!(routed["schema_help"]["arguments"]["route"], "program.get");
 }

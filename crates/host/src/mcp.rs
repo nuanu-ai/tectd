@@ -227,6 +227,11 @@ impl McpSession {
             Some(params) => params,
             None => return error_response(id, -32602, "invalid_params"),
         };
+        let envelope_bytes = serde_json::to_vec(&success_response(id.clone(), Value::Null))
+            .expect("JSON response")
+            .len()
+            - 4;
+        let capacity = MAX_FRAME_BYTES.saturating_sub(envelope_bytes);
         let context = match request_context(
             &self.context,
             params.metadata.as_ref(),
@@ -235,13 +240,14 @@ impl McpSession {
             arguments_present,
         ) {
             Ok(context) => context,
-            Err(error) => return success_response(id, failed_tool_result(error)),
+            Err(error) => {
+                return failure_response(
+                    id,
+                    responses::failure_bounded(error, None, None, capacity),
+                    capacity,
+                );
+            }
         };
-        let envelope_bytes = serde_json::to_vec(&success_response(id.clone(), Value::Null))
-            .expect("JSON response")
-            .len()
-            - 4;
-        let capacity = MAX_FRAME_BYTES.saturating_sub(envelope_bytes);
         let routed = crate::api::decode_public_call(&params.name, params.arguments.clone());
         let public_decode_failed = routed.is_err();
         let public_decode_error = routed.as_ref().err().cloned();
@@ -258,7 +264,7 @@ impl McpSession {
                 } else {
                     (name, &arguments)
                 };
-                success_response(
+                failure_response(
                     id,
                     crate::setup_recovery::response(
                         error,
@@ -269,6 +275,7 @@ impl McpSession {
                         capacity,
                     )
                     .await,
+                    capacity,
                 )
             }
         }
@@ -334,12 +341,33 @@ fn successful_tool_result(structured: Value) -> Value {
     responses::success(structured)
 }
 
+#[cfg(test)]
 fn failed_tool_result(error: Error) -> Value {
     responses::failure(error, None)
 }
 
 fn success_response(id: Value, result: Value) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "result": result})
+}
+
+pub(crate) fn envelope_too_large(id: Value) -> Value {
+    error_response(id, -32603, Error::RequestTooLarge.code())
+}
+fn failure_response(
+    id: Value,
+    result: std::result::Result<Value, responses::FailureBuildError>,
+    capacity: usize,
+) -> Value {
+    match result {
+        Ok(value) => success_response(id, value),
+        Err(responses::FailureBuildError::EnvelopeCannotFit) => envelope_too_large(id),
+        Err(responses::FailureBuildError::Construction { .. }) => {
+            match responses::internal_failure_bounded(capacity) {
+                Some(value) => success_response(id, value),
+                None => envelope_too_large(id),
+            }
+        }
+    }
 }
 
 fn error_response(id: Value, code: i64, message: &'static str) -> Value {
@@ -369,3 +397,6 @@ async fn write_json_line<W: AsyncWrite + Unpin>(writer: &mut W, value: &Value) -
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod p7_failure_tests;

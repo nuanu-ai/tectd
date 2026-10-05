@@ -1,10 +1,44 @@
 use super::{digest, enum_text, json, storage_error};
+use sha2::{Digest, Sha256};
 use sqlx::{Postgres, Transaction};
 use tect_domain::{
     Error, PipelineDefinitionSnapshot, PipelineRunMigrationCommand, PipelineRunMigrationOutcome,
     PipelineRunMigrationRequest, Result,
 };
 use uuid::Uuid;
+
+/// Infrastructure hashes the domain's canonical typed snapshot bytes.
+struct MigrationDefinitionDigest;
+impl tect_domain::PipelineDefinitionDigestPort for MigrationDefinitionDigest {
+    fn sha256(&self, canonical_json: &[u8]) -> [u8; 32] {
+        Sha256::digest(canonical_json).into()
+    }
+}
+
+#[cfg(test)]
+mod hash_tests;
+
+pub(crate) async fn migration_replay(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    request: &PipelineRunMigrationCommand,
+) -> Result<Option<PipelineRunMigrationOutcome>> {
+    let payload = json(request)?;
+    let row: Option<(serde_json::Value, serde_json::Value)> = sqlx::query_as(
+        "SELECT request_payload,result_payload FROM slice_pipeline_run_migrations WHERE tenant_id=$1 AND workspace_id=$2 AND idempotency_key=$3")
+        .bind(tenant).bind(workspace).bind(&request.idempotency_key)
+        .fetch_optional(&mut **tx).await.map_err(storage_error)?;
+    let Some((stored, result)) = row else {
+        return Ok(None);
+    };
+    if stored != payload {
+        return Err(Error::InputConflict);
+    }
+    let mut outcome: PipelineRunMigrationOutcome = super::decode(result)?;
+    outcome.status = "replayed".into();
+    Ok(Some(outcome))
+}
 
 /// Migrate one immutable legacy run to a distinct pinned successor in the same
 /// transaction. The predecessor definition and all caller-visible history are
@@ -13,48 +47,29 @@ pub(crate) async fn migrate_run(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     workspace: Uuid,
-    _session: Uuid,
+    session: Uuid,
     request: &PipelineRunMigrationCommand,
     definition: &PipelineDefinitionSnapshot,
 ) -> Result<PipelineRunMigrationOutcome> {
     request.validate()?;
+    let principal = super::session_principal(tx, session).await?;
+    super::context::load_context_without_delivery_receipt(
+        tx,
+        tenant,
+        workspace,
+        principal,
+        request.predecessor_run_id,
+    )
+    .await?
+    .ok_or(Error::NotFound)?;
     let request_payload = json(request)?;
 
-    if let Some(existing) = sqlx::query_as::<_, (serde_json::Value, Uuid, Uuid, i64, String, String)>(
-        "SELECT request_payload, migration_id, predecessor_run_id, predecessor_revision, successor_definition_version, successor_definition_digest FROM slice_pipeline_run_migrations WHERE tenant_id=$1 AND workspace_id=$2 AND idempotency_key=$3",
-    )
-    .bind(tenant)
-    .bind(workspace)
-    .bind(&request.idempotency_key)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(storage_error)?
-    {
-        if existing.0 != request_payload {
-            return Err(Error::InputConflict);
-        }
-        let successor_run_id = sqlx::query_scalar::<_, Uuid>(
-            "SELECT successor_run_id FROM slice_pipeline_run_migrations WHERE tenant_id=$1 AND workspace_id=$2 AND migration_id=$3",
-        )
-        .bind(tenant)
-        .bind(workspace)
-        .bind(existing.1)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(storage_error)?;
-        return Ok(PipelineRunMigrationOutcome {
-            migration_id: existing.1,
-            predecessor_run_id: existing.2,
-            successor_run_id,
-            predecessor_revision: existing.3,
-            successor_definition_version: existing.4,
-            successor_definition_digest: existing.5,
-            status: "replayed".into(),
-        });
+    if let Some(replay) = migration_replay(tx, tenant, workspace, request).await? {
+        return Ok(replay);
     }
 
-    let predecessor = sqlx::query_as::<_, (Uuid, Uuid, i64, i64, String, String, String, serde_json::Value, String, Option<String>, Option<i32>)>(
-        "SELECT scope_id, slice_id, slice_revision, revision, definition_kind, definition_version, definition_digest, definition, delivery_mode, current_phase_id, current_phase_ordinal FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE",
+    let predecessor = sqlx::query_as::<_, (Uuid, Uuid, i64, i64, String, String, String, serde_json::Value, String, Option<String>, Option<i32>, String)>(
+        "SELECT scope_id, slice_id, slice_revision, revision, definition_kind, definition_version, definition_digest, definition, delivery_mode, current_phase_id, current_phase_ordinal, status FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE",
     )
     .bind(tenant)
     .bind(workspace)
@@ -64,6 +79,35 @@ pub(crate) async fn migrate_run(
     .map_err(storage_error)?
     .ok_or(Error::NotFound)?;
 
+    // Serialize concurrent same-key migrations on the predecessor, then recheck
+    // the immutable receipt before inspecting the advanced predecessor revision.
+    if let Some(replay) = migration_replay(tx, tenant, workspace, request).await? {
+        return Ok(replay);
+    }
+    tect_domain::ensure_pipeline_definition_selectable(definition)
+        .map_err(tect_domain::migration_successor_retirement_error)?;
+    if request.successor_definition_version != definition.version {
+        return Err(Error::InvalidArguments);
+    }
+    let predecessor_definition: PipelineDefinitionSnapshot = super::decode(predecessor.7.clone())?;
+    if !matches!(
+        predecessor.11.as_str(),
+        "active" | "waiting_input" | "blocked"
+    ) {
+        return Err(Error::Forbidden);
+    }
+    if tect_domain::is_retired_lightweight(&predecessor_definition)
+        && !tect_domain::is_current_lightweight_retirement_successor(
+            definition,
+            &MigrationDefinitionDigest,
+        )
+    {
+        return Err(tect_domain::lightweight_retirement_error(
+            "arguments.params.successor_definition_version",
+            definition.version.clone(),
+            "get_current_context_and_use_exact_migration_action",
+        ));
+    }
     if predecessor.3 != request.expected_revision {
         return Err(Error::StaleRevision);
     }
@@ -108,7 +152,11 @@ pub(crate) async fn migrate_run(
         successor_definition_digest: definition.digest.clone(),
         mappings: request.mappings.clone(),
     };
-    predecessor_request.validate()?;
+    predecessor_request.validate_retirement_restart(
+        &predecessor_definition,
+        definition,
+        &MigrationDefinitionDigest,
+    )?;
     let first = definition.phases.first().ok_or(Error::InternalInvariant)?;
     let successor_run_id = Uuid::new_v4();
     let successor_request_id = request.request_id;

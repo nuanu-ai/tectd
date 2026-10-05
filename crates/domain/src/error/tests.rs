@@ -391,3 +391,61 @@ fn exhaustive_pipeline_branch_table_has_complete_stable_metadata() {
         );
     }
 }
+
+#[test]
+fn diagnostics_borrow_underlying_values_through_recursive_pipeline_refusals() {
+    let errors = [
+        Error::invalid_arguments_at("missing field `decision`", "/output/decision"),
+        Error::InvalidPipelineArtifact(Box::new(PipelineArtifactDiagnostic::bounded(
+            "invalid_artifact".into(),
+            "review".into(),
+            "review.json".into(),
+            vec![PipelineArtifactViolation {
+                code: "missing".into(),
+                path: "/decision".into(),
+                expected: Some("ready".into()),
+                actual: None,
+            }],
+            true,
+            "correct_output".into(),
+        ))),
+    ];
+    for mut error in errors {
+        let argument = error
+            .argument_diagnostic()
+            .map(|value| value as *const ArgumentDiagnostic);
+        let artifact = error
+            .pipeline_artifact_diagnostic()
+            .map(|value| value as *const PipelineArtifactDiagnostic);
+        for _ in 0..3 {
+            assert_eq!(
+                error
+                    .argument_diagnostic()
+                    .map(|value| value as *const ArgumentDiagnostic),
+                argument
+            );
+            assert_eq!(
+                error
+                    .pipeline_artifact_diagnostic()
+                    .map(|value| value as *const PipelineArtifactDiagnostic),
+                artifact
+            );
+            error = Error::PipelineRefused {
+                source: Box::new(error),
+                refusal: Box::new(Refusal::new(RefusalCode::InvalidOutput)),
+            };
+        }
+    }
+    for source in [
+        Error::Unauthorized,
+        Error::Forbidden,
+        Error::InvalidNativeSession,
+    ] {
+        let error = Error::PipelineRefused {
+            source: Box::new(source),
+            refusal: Box::new(Refusal::new(RefusalCode::AuthorityRequired)),
+        };
+        assert!(error.argument_diagnostic().is_none());
+        assert!(error.pipeline_artifact_diagnostic().is_none());
+    }
+}

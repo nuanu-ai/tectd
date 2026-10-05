@@ -107,3 +107,8 @@ After a crash or new session, resume the same planning run and restore its persi
 Historical context is immutable and read-only. Use it to compare prior candidate definitions, source provenance, input windows, method and rule versions, then return through the supplied current-context call before saving. Never apply a mutation template from historical material.
 
 Finish with the ordered candidate proposal and exactly one next action documented by the current backend response: answer a consequential question, complete review or revision, or select a reviewed candidate for a separate future opening operation. Do not automatically create or open a Scope, start implementation, or generate further roadmap work.
+
+
+## Issued source kinds
+
+The Program save argument is `arguments.params.success`, an observable statement of achieving the Program intent. It is not named `program_success` on the wire. In a frozen planning snapshot its issued source reference has kind `program_success`. For finite goals, use that backend-issued success source reference and an exact source quote. For ongoing planning goals use the backend-issued `planning_input` source. Preserve existing historical source kinds and identifiers; do not relabel a captured source or fabricate a source reference.

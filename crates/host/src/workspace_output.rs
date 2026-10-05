@@ -21,7 +21,7 @@ pub(crate) fn inspect_action(context: Option<&SetupContext>) -> Result<Value> {
             json!({}),
             "context_input",
             json!({"fields":[{"path":"arguments.params.task_directory",
-                "format":"Absolute physical launch directory already supplied in the current Codex task environment context. The agent supplies this known context; do not ask the human to select a folder or use the MCP package/source/worktree directory."}]}),
+                "format":"Absolute physical launch directory already supplied in the current task environment. The agent supplies this known context; do not ask the human to select a folder or use the MCP package/source/worktree directory."}]}),
         )
     }
 }
@@ -154,7 +154,12 @@ fn native_request_id(id: Uuid, revision: i64, operation: &str) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 
-fn value(state: &WorkspaceState, file: Option<&FileObservation>, fallback: bool) -> Result<Value> {
+fn value(
+    state: &WorkspaceState,
+    file: Option<&FileObservation>,
+    fallback: bool,
+    rules: bool,
+) -> Result<Value> {
     let calls = actions(state, &state.programs, &state.next_after, file, fallback)?;
     let mut result = json!(state);
     result["file"] = file.map_or_else(
@@ -168,6 +173,9 @@ fn value(state: &WorkspaceState, file: Option<&FileObservation>, fallback: bool)
             result
         },
     );
+    if rules {
+        result["response_rules"] = json!(crate::responses::RESPONSE_RULES);
+    }
     result["programs_delivery"] = json!(if fallback {
         "use_list_programs"
     } else {
@@ -183,19 +191,28 @@ fn value(state: &WorkspaceState, file: Option<&FileObservation>, fallback: bool)
 }
 
 pub(crate) fn workspace(state: WorkspaceState, capacity: usize) -> Result<Value> {
-    encode(state, None, capacity)
+    encode(state, None, capacity, false)
+}
+pub(crate) fn opened(state: WorkspaceState, capacity: usize) -> Result<Value> {
+    encode(
+        state,
+        None,
+        capacity.min(crate::json_fragment::READ_BUDGET),
+        true,
+    )
 }
 pub(crate) fn discovery(discovery: SetupDiscovery, capacity: usize) -> Result<Value> {
-    encode(discovery.state, Some(discovery.file), capacity)
+    encode(discovery.state, Some(discovery.file), capacity, false)
 }
 
 fn encode(
     mut state: WorkspaceState,
     file: Option<FileObservation>,
     capacity: usize,
+    rules: bool,
 ) -> Result<Value> {
     if state.programs.is_empty() {
-        return within_capacity(value(&state, file.as_ref(), false)?, capacity);
+        return within_capacity(value(&state, file.as_ref(), false, rules)?, capacity);
     }
     let mut programs = std::mem::take(&mut state.programs);
     let original_next = state.next_after.clone();
@@ -203,7 +220,7 @@ fn encode(
     state.next_after = next(&state.programs, programs.len() > 1, &original_next);
     let count = crate::program_output::paging::fitting_prefix(
         &programs,
-        &value(&state, file.as_ref(), false)?,
+        &value(&state, file.as_ref(), false, rules)?,
         "programs",
         "next_after",
         capacity,
@@ -220,14 +237,14 @@ fn encode(
             state.next_after = next(&programs[..count], count < programs.len(), &original_next);
             programs.truncate(count);
             state.programs = programs;
-            value(&state, file.as_ref(), false)
+            value(&state, file.as_ref(), false, rules)
         }
         Err(Error::RequestTooLarge) => {
             // An old maximum-sized name may predate setup context overhead. Its full value
             // remains available through the existing unchanged standalone Program list.
             state.programs.clear();
             state.next_after = None;
-            within_capacity(value(&state, file.as_ref(), true)?, capacity)
+            within_capacity(value(&state, file.as_ref(), true, rules)?, capacity)
         }
         Err(error) => Err(error),
     }

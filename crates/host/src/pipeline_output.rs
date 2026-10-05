@@ -1,7 +1,10 @@
 mod actions;
+pub(crate) mod receipt_diff;
 
 use crate::{response_diet, responses};
+#[cfg(test)]
 use actions::actions;
+use actions::actions_for;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tect_domain::{
@@ -22,6 +25,9 @@ impl PipelineEncoding {
 }
 
 impl tect_application::PipelineExecutionOutputGuard for PipelineEncoding {
+    fn check_context(&self, value: &PipelineRunContext) -> Result<()> {
+        compact_encode(value, value, true, self.capacity).map(|_| ())
+    }
     fn check_begin(&self, value: &BeginPipelineRunOutcome) -> Result<()> {
         begin(value.clone(), self.capacity).map(|_| ())
     }
@@ -35,144 +41,246 @@ impl tect_application::PipelineExecutionOutputGuard for PipelineEncoding {
     }
 }
 
-/// How much of the run context a reply carries; see `response_diet`.
-#[derive(Clone)]
-struct Delivery {
-    reread: bool,
-    phase_map: Option<Value>,
-    preserve_delivered_phases: bool,
-    preserve_outputs: bool,
-}
-
-impl Delivery {
-    fn reread(context: &PipelineRunContext, refresh: bool) -> Self {
-        Self {
-            reread: context.delivery_fresh || refresh,
-            phase_map: Some(phase_map(context)),
-            preserve_delivered_phases: !context.run.definition_version.starts_with("0.7"),
-            preserve_outputs: !context.run.definition_version.starts_with("0.7"),
-        }
-    }
-
-    fn mutation(context: &PipelineRunContext) -> Self {
-        Self {
-            reread: false,
-            phase_map: None,
-            preserve_delivered_phases: !context.run.definition_version.starts_with("0.7"),
-            preserve_outputs: !context.run.definition_version.starts_with("0.7"),
-        }
-    }
-}
-
-pub(crate) fn begin(mut value: BeginPipelineRunOutcome, capacity: usize) -> Result<Value> {
-    let context = match &mut value {
+pub(crate) fn begin(value: BeginPipelineRunOutcome, capacity: usize) -> Result<Value> {
+    let context = match &value {
         BeginPipelineRunOutcome::Created(context) | BeginPipelineRunOutcome::Replay(context) => {
             context
         }
     };
-    let actions = actions(context)?;
-    let mut delivery = Delivery::reread(context, true);
-    delivery.preserve_delivered_phases = !context.run.definition_version.starts_with("0.7");
-    restrict_definition_delivery(context, true);
-    encode(value, actions, capacity, Some(&delivery))
+    compact_encode(&value, context, false, capacity)
 }
-
 pub(crate) fn context(
     value: PipelineContextResponse,
     capacity: usize,
-    refresh: bool,
+    _refresh: bool,
 ) -> Result<Value> {
     match value {
-        PipelineContextResponse::Current(mut context) => {
-            let actions = actions(&context)?;
-            let delivery = Delivery::reread(&context, refresh);
-            restrict_definition_delivery(&mut context, delivery.reread);
-            encode_context(*context, actions, capacity, &delivery)
+        PipelineContextResponse::Current(context) => {
+            compact_encode(&*context, &context, true, capacity)
         }
         PipelineContextResponse::Output(output) => {
-            let mut actions = vec![responses::action(
-                "slice_pipeline_context",
-                json!({"run_id":output.run_id}),
-            )?];
-            crate::api::attach_route_contract(&mut actions[0])?;
-            encode(*output, actions, capacity, None)
+            output_read(&output, capacity, Default::default())
         }
-        PipelineContextResponse::DeliveryReceipt(receipt) => {
-            let mut actions = vec![responses::action(
-                "slice_pipeline_context",
-                json!({"run_id":receipt.run_id,"view":"delivery_receipt"}),
-            )?];
-            crate::api::attach_route_contract(&mut actions[0])?;
-            encode(*receipt, actions, capacity, None)
-        }
+        PipelineContextResponse::DeliveryReceipt(receipt) => sized(
+            serde_json::to_value(*receipt).map_err(|_| Error::TransportUnavailable)?,
+            Vec::new(),
+            capacity,
+        ),
+        _ => Err(Error::InvalidArguments),
     }
 }
 
+#[cfg(test)]
 pub(crate) fn instruction(
     value: tect_domain::PipelineInstructionResponse,
     capacity: usize,
 ) -> Result<Value> {
-    encode(value, Vec::new(), capacity, None)
+    instruction_read(&value, capacity, Default::default(), None)
 }
 
-pub(crate) fn mutation(mut value: PipelineMutationOutcome, capacity: usize) -> Result<Value> {
-    let actions = without_route_contracts(actions(&value.context)?);
-    restrict_definition_delivery(&mut value.context, false);
-    let delivery = Delivery::mutation(&value.context);
-    encode_mutation(value, actions, capacity, &delivery)
-}
-
-pub(crate) fn checkpoint_resolution(
-    mut value: ResolvePipelineCheckpointOutcome,
+pub(crate) fn context_pinned(
+    value: PipelineContextResponse,
     capacity: usize,
+    query: &tect_domain::PipelineRunContextQuery,
 ) -> Result<Value> {
-    let actions = without_route_contracts(actions(&value.context)?);
-    restrict_definition_delivery(&mut value.context, false);
-    let delivery = Delivery::mutation(&value.context);
-    encode(value, actions, capacity, Some(&delivery))
+    let window = crate::json_fragment::Window {
+        offset_bytes: query.offset_bytes,
+        limit_bytes: query.limit_bytes,
+        representation_digest: query.representation_digest.as_deref(),
+    };
+    let mut params = serde_json::to_value(query).map_err(|_| Error::TransportUnavailable)?;
+    params
+        .as_object_mut()
+        .ok_or(Error::InternalInvariant)?
+        .retain(|_, value| !value.is_null());
+    match value {
+        PipelineContextResponse::Output(output) => output_read(&output, capacity, window),
+        PipelineContextResponse::Snapshot(read) => crate::json_fragment::encode(
+            &*read,
+            Vec::new(),
+            capacity,
+            window,
+            json!({"run_id":read.run_id,"definition_digest":read.definition_digest}),
+            "slice_pipeline_context",
+            params,
+        ),
+        PipelineContextResponse::PhaseContract(read) => crate::json_fragment::encode(
+            &*read,
+            Vec::new(),
+            capacity,
+            window,
+            json!({"run_id":read.run_id,"definition_digest":read.definition_digest,"phase_id":read.phase.id}),
+            "slice_pipeline_context",
+            params,
+        ),
+        PipelineContextResponse::ReceiptDiff(read) => {
+            receipt_diff::encode(&read, capacity, query, window)
+        }
+        PipelineContextResponse::Details(read) => crate::json_fragment::encode(
+            &*read,
+            Vec::new(),
+            capacity,
+            window,
+            json!({"run_id":read.run_id,"run_revision":read.run_revision,"section":read.section}),
+            "slice_pipeline_context",
+            params,
+        ),
+        other => context(other, capacity, query.refresh),
+    }
 }
-
-/// Ordinal, id and title of every phase; replaces the legacy manifest overview.
-fn phase_map(context: &PipelineRunContext) -> Value {
-    Value::Array(
-        context
-            .definition
-            .phases
-            .iter()
-            .map(|phase| json!({"ordinal":phase.ordinal,"id":phase.id,"title":phase.title}))
-            .collect(),
+pub(crate) fn instruction_pinned(
+    value: tect_domain::PipelineInstructionResponse,
+    capacity: usize,
+    query: &tect_domain::PipelineInstructionQuery,
+) -> Result<Value> {
+    instruction_read(
+        &value,
+        capacity,
+        crate::json_fragment::Window {
+            offset_bytes: query.offset_bytes,
+            limit_bytes: query.limit_bytes,
+            representation_digest: query.representation_digest.as_deref(),
+        },
+        query.phase_id.as_deref(),
+    )
+}
+fn output_read(
+    value: &tect_domain::PipelinePhaseOutput,
+    capacity: usize,
+    window: crate::json_fragment::Window<'_>,
+) -> Result<Value> {
+    let action = responses::action("slice_pipeline_context", json!({"run_id":value.run_id}))?;
+    let pins =
+        json!({"run_id":value.run_id,"view":"output","output_id":value.id,"digest":value.digest});
+    crate::json_fragment::encode(
+        value,
+        vec![action],
+        capacity,
+        window,
+        pins.clone(),
+        "slice_pipeline_context",
+        pins,
+    )
+}
+fn instruction_read(
+    value: &tect_domain::PipelineInstructionResponse,
+    capacity: usize,
+    window: crate::json_fragment::Window<'_>,
+    phase_id: Option<&str>,
+) -> Result<Value> {
+    let pins = json!({"run_id":value.run_id,"instruction_id":value.instruction.id,"version":value.instruction.version,"digest":value.instruction.digest,"refresh":true});
+    let params = if let Some(phase_id) = phase_id {
+        json!({"run_id":value.run_id,"phase_id":phase_id})
+    } else {
+        pins.clone()
+    };
+    crate::json_fragment::encode(
+        value,
+        Vec::new(),
+        capacity,
+        window,
+        pins.clone(),
+        "slice_pipeline_instruction",
+        params,
     )
 }
 
-/// Mutation replies repeat routes the agent has just used; their contracts stay
-/// available through begin, context and help.
-fn without_route_contracts(mut actions: Vec<Value>) -> Vec<Value> {
-    for action in &mut actions {
+pub(crate) fn mutation(value: PipelineMutationOutcome, capacity: usize) -> Result<Value> {
+    compact_encode(&value, &value.context, false, capacity)
+}
+pub(crate) fn checkpoint_resolution(
+    value: ResolvePipelineCheckpointOutcome,
+    capacity: usize,
+) -> Result<Value> {
+    compact_encode(&value, &value.context, false, capacity)
+}
+fn with_route_contracts(actions: Vec<Value>) -> Result<Vec<Value>> {
+    Ok(actions)
+}
+
+/// Every lifecycle response uses one projection and an exact fixed set of reads.
+fn compact_encode<T: Serialize>(
+    value: &T,
+    context: &PipelineRunContext,
+    fresh_current: bool,
+    capacity: usize,
+) -> Result<Value> {
+    let mut data = serde_json::to_value(value).map_err(|_| Error::TransportUnavailable)?;
+    let compact = response_diet::pipeline_context_mut(&mut data).ok_or(Error::InternalInvariant)?;
+    response_diet::compact_pipeline(compact);
+    if let Some(object) = data.as_object_mut() {
+        if let Some(result) = object.remove("result") {
+            object.insert(
+                "result_reference".into(),
+                json!({"result_id":result["id"],"view":"details","section":"history"}),
+            );
+        }
+        if let Some(checkpoint) = object.remove("checkpoint") {
+            object.insert("checkpoint_reference".into(),json!({"checkpoint":checkpoint["checkpoint"],"status":checkpoint["status"],"view":"details","section":"history"}));
+        }
+    }
+    let mut available = actions_for(context, fresh_current)?;
+    for action in &mut available {
         if let Some(object) = action.as_object_mut() {
             object.remove("route_contract");
+            object.remove("next_action_contract");
         }
     }
-    actions
+    let run = &context.run;
+    available.push(responses::action(
+        "slice_pipeline_context",
+        json!({"run_id":run.id,"view":"snapshot","definition_digest":run.definition_digest}),
+    )?);
+    if let Some(phase_id) = &run.current_phase_id {
+        available.push(responses::action("slice_pipeline_context",json!({"run_id":run.id,"view":"phase_contract","definition_digest":run.definition_digest,"phase_id":phase_id}))?);
+    }
+    available.push(responses::action(
+        "slice_pipeline_context",
+        json!({"run_id":run.id,"view":"details","run_revision":run.revision,"section":"all"}),
+    )?);
+    if let Some(action) = available.first()
+        && let Some(mut help) = crate::api::schema_help_action(
+            action["tool"].as_str().ok_or(Error::InternalInvariant)?,
+            &action["arguments"],
+        )?
+    {
+        help.as_object_mut()
+            .ok_or(Error::InternalInvariant)?
+            .remove("route_contract");
+        available.push(help);
+    }
+    match sized(data.clone(), available.clone(), capacity) {
+        Ok(value) => Ok(value),
+        Err(Error::RequestTooLarge) => {
+            // Only a size failure permits moving legacy consumption parameters.
+            for action in &mut available {
+                let Some(params) = action
+                    .pointer_mut("/arguments/params")
+                    .and_then(Value::as_object_mut)
+                else {
+                    continue;
+                };
+                let moved = params.remove("consumed_outputs").is_some()
+                    | params.remove("consumed_inputs").is_some()
+                    | params.remove("consumed_knowledge").is_some();
+                if moved {
+                    action["kind"] = json!("needs_context");
+                    action["context_input"] = json!({"kind":"context_input","fields":[{"path":"arguments.params.consumed_outputs","format":"Read pinned details section inputs for this exact run_revision and copy its consumed_outputs array before submitting."},{"path":"arguments.params.consumed_inputs","format":"Read pinned details section inputs for this exact run_revision and copy its consumed_inputs array before submitting."},{"path":"arguments.params.consumed_knowledge","format":"Read pinned details section inputs for this exact run_revision; copy consumed_knowledge only when non-null, otherwise omit this parameter."},{"path":"arguments.params.output","format":"Read the exact pinned phase_contract; supply its required output and transition."}]});
+                }
+            }
+            available.push(responses::action("slice_pipeline_context",json!({"run_id":run.id,"view":"details","run_revision":run.revision,"section":"inputs"}))?);
+            sized(data, available, capacity)
+        }
+        Err(error) => Err(error),
+    }
 }
-
-fn restrict_definition_delivery(context: &mut PipelineRunContext, explicit_reread: bool) {
-    match context.run.delivery_mode {
-        tect_domain::PipelineDeliveryMode::Phasewise => {
-            context.definition.phases = context.delivered_phases.clone();
-        }
-        tect_domain::PipelineDeliveryMode::Whole if !explicit_reread => {
-            context.definition.phases.clear();
-            context.delivered_phases.clear();
-        }
-        tect_domain::PipelineDeliveryMode::Whole => {}
+fn sized(data: Value, actions: Vec<Value>, capacity: usize) -> Result<Value> {
+    let value = responses::with_actions(data, actions, Some(0));
+    if responses::encoded_len(&value)? > capacity.min(crate::json_fragment::READ_BUDGET) {
+        Err(Error::RequestTooLarge)
+    } else {
+        Ok(value)
     }
-}
-
-fn with_route_contracts(mut actions: Vec<Value>) -> Result<Vec<Value>> {
-    for action in &mut actions {
-        crate::api::attach_route_contract(action)?;
-    }
-    Ok(actions)
 }
 
 fn knowledge_is_stale(context: &PipelineRunContext) -> bool {
@@ -239,75 +347,6 @@ fn checkpoint_wait_actions(
         json!({"run_id":run.id}),
     )?);
     Ok(actions)
-}
-
-fn encode<T: Serialize>(
-    value: T,
-    actions: Vec<Value>,
-    capacity: usize,
-    delivery: Option<&Delivery>,
-) -> Result<Value> {
-    let mut data = serde_json::to_value(value).map_err(|_| Error::TransportUnavailable)?;
-    if let Some(delivery) = delivery
-        && let Some(context) = response_diet::pipeline_context_mut(&mut data)
-    {
-        response_diet::pipeline_context_with_delivery(
-            context,
-            delivery.reread,
-            delivery.phase_map.clone(),
-            delivery.preserve_delivered_phases,
-            delivery.preserve_outputs,
-        );
-    }
-    let result = responses::with_actions(data, actions, Some(0));
-    if responses::encoded_len(&result)? > capacity {
-        Err(Error::RequestTooLarge)
-    } else {
-        Ok(result)
-    }
-}
-
-fn encode_context(
-    mut value: PipelineRunContext,
-    mut actions: Vec<Value>,
-    capacity: usize,
-    delivery: &Delivery,
-) -> Result<Value> {
-    if let Ok(result) = encode(value.clone(), actions.clone(), capacity, Some(delivery)) {
-        return Ok(result);
-    }
-    add_output_actions(&value, &mut actions)?;
-    value.outputs.clear();
-    value.outputs_complete = false;
-    encode(value, actions, capacity, Some(delivery))
-}
-
-fn encode_mutation(
-    mut value: PipelineMutationOutcome,
-    mut actions: Vec<Value>,
-    capacity: usize,
-    delivery: &Delivery,
-) -> Result<Value> {
-    if let Ok(result) = encode(value.clone(), actions.clone(), capacity, Some(delivery)) {
-        return Ok(result);
-    }
-    add_output_actions(&value.context, &mut actions)?;
-    value.context.outputs.clear();
-    value.context.outputs_complete = false;
-    encode(value, actions, capacity, Some(delivery))
-}
-
-fn add_output_actions(context: &PipelineRunContext, actions: &mut Vec<Value>) -> Result<()> {
-    for binding in &context.bindings {
-        let mut action = responses::action(
-            "slice_pipeline_context",
-            json!({"run_id":context.run.id,"view":"output","output_id":binding.output_id,
-                "digest":binding.output_digest}),
-        )?;
-        crate::api::attach_route_contract(&mut action)?;
-        actions.push(action);
-    }
-    Ok(())
 }
 
 fn request_id(id: uuid::Uuid, revision: i64, operation: &str) -> uuid::Uuid {

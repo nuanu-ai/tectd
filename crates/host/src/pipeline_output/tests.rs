@@ -234,3 +234,156 @@ mod action_guidance;
 
 #[path = "tests/conditional_fields.rs"]
 mod conditional_fields;
+
+#[test]
+fn retired_current_context_has_exact_restart_and_replayed_context_has_only_read_action() {
+    let mut value = context(PipelineKnowledgeResourceState::Current, false);
+    value.definition.version = "0.6.0-native.engineering.2".into();
+    value.run.definition_version = value.definition.version.clone();
+    let actions = super::actions::actions_for(&value, true).unwrap();
+    let action = &actions[0];
+    let params = &action["arguments"]["params"];
+    assert_eq!(
+        params["predecessor_run_id"],
+        serde_json::json!(value.run.id)
+    );
+    assert_eq!(params["expected_revision"], value.run.revision);
+    assert_eq!(
+        params["successor_definition_version"],
+        tect_domain::CURRENT_LIGHTWEIGHT_VERSION
+    );
+    assert_eq!(params["mappings"], serde_json::json!([]));
+    assert!(params["idempotency_key"].as_str().unwrap().len() <= 128);
+    assert_eq!(super::actions::actions_for(&value, true).unwrap(), actions);
+    let archived = super::actions::actions_for(&value, false).unwrap();
+    assert_eq!(archived.len(), 1);
+    assert_eq!(archived[0]["arguments"]["route"], "slice.pipeline.context");
+    for status in [PipelineRunStatus::Completed, PipelineRunStatus::Escalated] {
+        value.run.status = status;
+        let history = super::actions::actions_for(&value, true).unwrap();
+        assert_eq!(history[0]["arguments"]["route"], "slice.pipeline.context");
+    }
+    value.run.status = PipelineRunStatus::Superseded;
+    let successor = super::actions::actions_for(&value, true).unwrap();
+    assert_eq!(successor[0]["arguments"]["route"], "slice.context");
+}
+
+#[test]
+fn pinned_output_and_instruction_fragments_preserve_full_sources_and_routes() {
+    use tect_domain::{
+        PipelineInstructionQuery, PipelinePhaseOutput, PipelineRunContextQuery,
+        PipelineRunContextView,
+    };
+    let run_id = uuid::Uuid::new_v4();
+    let output: PipelinePhaseOutput = serde_json::from_value(json!({
+        "id":uuid::Uuid::new_v4(),"run_id":run_id,"phase_id":"exact-phase","phase_ordinal":1,"revision":2,
+        "body":"🙂\\\"\n".repeat(2000),"producer_context_id":"producer","digest":"body-digest","reference":null,
+        "fields":{"all-fields":"field".repeat(4000)},"verdict":null,"dispositions":[],"skill_reads":[],"resource_reads":[],
+        "artifacts":[{"name":"oversized","media_type":"application/json","body":"artifact🙂".repeat(3000),"digest":"artifact-pin","reference":null}],"validator_receipts":[],"followup_proposal":null,"stale":false,"stale_reason":null
+    })).unwrap();
+    let mut small = output.clone();
+    small.body = "small".into();
+    small.fields.clear();
+    small.artifacts.clear();
+    let legacy = super::context(
+        PipelineContextResponse::Output(Box::new(small.clone())),
+        8192,
+        false,
+    )
+    .unwrap();
+    assert_eq!(legacy["body"], "small");
+    assert_eq!(legacy["id"], small.id.to_string());
+    assert!(legacy.get("kind").is_none());
+    let mut query = PipelineRunContextQuery {
+        run_id,
+        view: PipelineRunContextView::Output,
+        definition_digest: None,
+        phase_id: None,
+        run_revision: None,
+        section: None,
+        receipt_kind: None,
+        submitted_receipts: None,
+        submitted_digest: None,
+        output_id: Some(output.id),
+        digest: Some(output.digest.clone()),
+        refresh: false,
+        offset_bytes: None,
+        limit_bytes: None,
+        representation_digest: None,
+    };
+    let mut assembled = Vec::new();
+    loop {
+        let page = context_pinned(
+            PipelineContextResponse::Output(Box::new(output.clone())),
+            8192,
+            &query,
+        )
+        .unwrap();
+        assert!(responses::encoded_len(&page).unwrap() <= 8192);
+        assembled.extend_from_slice(page["text"].as_str().unwrap().as_bytes());
+        let Some(next) = page["next_offset_bytes"].as_u64() else {
+            break;
+        };
+        let params = &page["actions"][0]["arguments"]["params"];
+        assert_eq!(params["run_id"], run_id.to_string());
+        assert_eq!(params["output_id"], output.id.to_string());
+        assert_eq!(params["digest"], output.digest);
+        query = serde_json::from_value(params.clone()).unwrap();
+        assert_eq!(query.offset_bytes, Some(next));
+        query.validate().unwrap();
+    }
+    assert_eq!(
+        assembled,
+        serde_json::to_vec(&serde_json::to_value(&output).unwrap()).unwrap()
+    );
+    let mut snapshot = instruction();
+    snapshot.body = "instruction🙂\\\"".repeat(3000);
+    snapshot.origin_refs.push("large-origin".repeat(1000));
+    let instruction_value = PipelineInstructionResponse {
+        run_id,
+        phase_id: Some("not-an-instruction-alias".into()),
+        section: PipelineInstructionSection::Instruction,
+        instruction: snapshot,
+    };
+    let mut query = PipelineInstructionQuery {
+        run_id,
+        phase_id: None,
+        instruction_id: Some(instruction_value.instruction.id.clone()),
+        version: Some(instruction_value.instruction.version.clone()),
+        digest: Some(instruction_value.instruction.digest.clone()),
+        refresh: Some(true),
+        offset_bytes: None,
+        limit_bytes: None,
+        representation_digest: None,
+    };
+    let mut assembled = Vec::new();
+    loop {
+        let page = instruction_pinned(instruction_value.clone(), 8192, &query).unwrap();
+        assert!(responses::encoded_len(&page).unwrap() <= 8192);
+        assembled.extend_from_slice(page["text"].as_str().unwrap().as_bytes());
+        if page["next_offset_bytes"].is_null() {
+            break;
+        }
+        let params = &page["actions"][0]["arguments"]["params"];
+        assert_eq!(params["refresh"], true);
+        assert_eq!(params["instruction_id"], instruction_value.instruction.id);
+        assert_eq!(params["version"], instruction_value.instruction.version);
+        assert_eq!(params["digest"], instruction_value.instruction.digest);
+        assert!(params.get("phase_id").is_none());
+        query = serde_json::from_value(params.clone()).unwrap();
+        query.validate().unwrap();
+    }
+    assert_eq!(
+        assembled,
+        serde_json::to_vec(&serde_json::to_value(&instruction_value).unwrap()).unwrap()
+    );
+}
+
+#[path = "tests/compact_reads.rs"]
+mod compact_reads;
+
+#[path = "tests/phase_instruction.rs"]
+mod phase_instruction;
+
+#[path = "tests/receipt_diff.rs"]
+mod receipt_diff;

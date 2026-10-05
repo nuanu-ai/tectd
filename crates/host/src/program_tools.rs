@@ -15,6 +15,8 @@ pub(crate) enum ProgramInvocation {
         program_id: Uuid,
         after_input: Option<i64>,
         limit: u32,
+        window: crate::planning_read::Window,
+        program_revision: Option<i64>,
     },
     Save(Box<SaveProgram>),
     Record {
@@ -83,7 +85,7 @@ fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T> {
     serde_json::from_value(value).map_err(Error::invalid_arguments_from)
 }
 
-pub(crate) fn parse(name: &str, arguments: Value) -> Result<ProgramInvocation> {
+pub(crate) fn parse(name: &str, mut arguments: Value) -> Result<ProgramInvocation> {
     match name {
         "begin_program" => {
             let args: BeginArguments = decode(arguments)?;
@@ -95,11 +97,24 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<ProgramInvocation> {
         }
         "get_program" => {
             reject_null(&arguments, "after_input")?;
+            reject_null(&arguments, "program_revision")?;
+            let window = crate::planning_read::extract(&mut arguments)?;
+            let program_revision = arguments
+                .as_object_mut()
+                .and_then(|arguments| arguments.remove("program_revision"))
+                .map(serde_json::from_value::<i64>)
+                .transpose()
+                .map_err(Error::invalid_arguments_from)?;
+            if program_revision.is_some_and(|revision| revision < 1) {
+                return Err(Error::InvalidArguments);
+            }
             let args: GetArguments = decode(arguments)?;
             Ok(ProgramInvocation::Get {
                 program_id: args.program_id,
                 after_input: args.after_input,
                 limit: args.limit,
+                window,
+                program_revision,
             })
         }
         "save_program" => {

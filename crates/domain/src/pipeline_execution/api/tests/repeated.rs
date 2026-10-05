@@ -178,7 +178,7 @@ fn repeated_standards_still_require_exact_requested_pins() {
     assert_unavailable(&context, STANDARDS, VERSION, "different-digest");
     assert_unavailable(&context, "missing-resource", VERSION, DIGEST);
     let mut without_refresh = query(&context, STANDARDS, VERSION, DIGEST);
-    without_refresh.refresh = false;
+    without_refresh.refresh = Some(false);
     assert_eq!(
         without_refresh
             .resolve(&context)
