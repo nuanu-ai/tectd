@@ -1,18 +1,32 @@
+mod advisory_schema;
+mod anti_bloat_schema;
 mod help_requests;
 pub(crate) use help_requests::{help, help_arguments, parse_help};
 mod candidate_schema;
 mod catalog;
 mod catalog_aliases;
 mod catalog_support;
+mod dynamic_help;
 mod help;
 mod knowledge_lifecycle_schema;
 mod knowledge_maintenance_schema;
 mod knowledge_schema;
 mod knowledge_search_schema;
+mod matrix_core_schema;
+mod matrix_disposition_schema;
+mod matrix_requirements_schema;
+mod matrix_task_schema;
+mod model_route_schema;
 mod slice_schema;
+
+#[cfg(test)]
+pub(crate) fn core_matrix_test_routes() -> &'static [RouteSpec] {
+    routes()
+}
 
 use crate::tools::{annotations, object_schema};
 use catalog::{RouteSpec, routes};
+use dynamic_help::tool_summary;
 use help::{describe_route, describe_tool, search};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -242,17 +256,6 @@ pub(crate) fn attach_route_contract(action: &mut Value) -> Result<()> {
     Ok(())
 }
 
-fn tool_summary(tool: &str) -> &'static str {
-    match tool {
-        "get_state" => "Read bounded DB-only state for the current native session.",
-        "query" => "Run one of nineteen named read-only routes.",
-        "command" => "Run one of forty-one named logical state-transition routes.",
-        "execute" => "Run the single explicit external-effect route setup.apply.",
-        "help" => "Search or describe this API and its four embedded methods.",
-        _ => "",
-    }
-}
-
 fn route_for(tool: &str, route: &str) -> Option<RouteSpec> {
     routes()
         .iter()
@@ -381,6 +384,8 @@ fn empty_object(value: &Value) -> bool {
     value.as_object().is_some_and(Map::is_empty)
 }
 
+#[cfg(test)]
+mod advisory_tests;
 #[cfg(test)]
 mod tests;
 

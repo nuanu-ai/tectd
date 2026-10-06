@@ -11,7 +11,8 @@ pub(super) fn search(text: Option<&str>, tool_filter: Option<&str>) -> Value {
     let mut hits = Vec::new();
     for tool in PUBLIC_TOOLS {
         let description = tool_summary(tool);
-        if tool_filter.is_none_or(|filter| filter == tool) && matches(&[tool, description]) {
+        if tool_filter.is_none_or(|filter| filter == tool) && matches(&[tool, description.as_str()])
+        {
             hits.push(json!({"kind":"tool","tool":tool,"summary":description}));
         }
     }

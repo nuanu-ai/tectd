@@ -9,6 +9,10 @@ use tect_domain::Error;
 pub(crate) const RESPONSE_RULES: &str = include_str!("../response-rules.txt");
 pub(crate) const RESPONSE_FOOTER: &str = "Follow the rules from workspace.open or help {\"text\":\"response-rules\"}. Required checks, approvals and authority still apply. Dependencies alone grant no permission or automatic resumption. Claim monitoring or continuation only when real.";
 
+#[cfg(test)]
+#[path = "responses/verifier_tests.rs"]
+mod verifier_tests;
+
 pub(crate) const INTROS: [&str; 8] = [
     "This native session has no open workspace. Open it to continue.",
     "No Programs are registered in this workspace. Create one from your narrative.",
@@ -259,7 +263,10 @@ fn failure_data(
         error_data["details"] =
             serde_json::to_value(diagnostic).map_err(|_| Error::InternalInvariant)?;
     }
-    if let Some((name, arguments)) = call
+    if matches!(
+        error,
+        Error::InvalidArguments | Error::InvalidArgumentsDetail(_)
+    ) && let Some((name, arguments)) = call
         && let Some(help) = crate::api::schema_help_action(name, arguments)?
     {
         error_data["tool"] = help["arguments"]["tool"].clone();

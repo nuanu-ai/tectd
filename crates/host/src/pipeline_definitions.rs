@@ -1,8 +1,32 @@
 use sha2::{Digest, Sha256};
-use tect_application::PipelineDefinitionProvider;
+use tect_application::{PipelineDefinitionProvider, PipelineRecommendationDefinitionProvider};
 use tect_domain::{Error, PipelineDefinitionSnapshot, PipelineKind, Result};
 
 pub(crate) struct StaticPipelineDefinitions;
+
+/// Supplies only definitions pinned to the current published Slice catalogue.
+/// A stale catalogue cannot silently inherit definitions from this host build.
+pub struct StaticPipelineRecommendationDefinitions;
+
+impl PipelineRecommendationDefinitionProvider for StaticPipelineRecommendationDefinitions {
+    fn definition(
+        &self,
+        catalogue_revision: &str,
+        kind: PipelineKind,
+    ) -> Result<Option<PipelineDefinitionSnapshot>> {
+        if catalogue_revision != crate::slice_pipeline_catalog::CATALOG_REVISION
+            || !PipelineKind::CURRENT_SLICE_RUN_KINDS.contains(&kind)
+        {
+            return Ok(None);
+        }
+        let definition = if kind == PipelineKind::LightweightTddDevelopment {
+            lightweight_v07()?
+        } else {
+            StaticPipelineDefinitions.definition(kind)?
+        };
+        Ok((definition.kind == kind).then_some(definition))
+    }
+}
 
 impl PipelineDefinitionProvider for StaticPipelineDefinitions {
     fn definition(&self, kind: PipelineKind) -> Result<PipelineDefinitionSnapshot> {

@@ -13,16 +13,18 @@ pub mod pipeline_reads;
 use serde_json::{Value, json};
 use std::{
     fs,
-    os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt},
-    path::{Path, PathBuf},
-    process::Stdio,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::Path,
     time::Duration,
 };
 use tect_domain::HostAuth;
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{Child, ChildStdin, ChildStdout, Command},
-};
+use tokio::{io::AsyncWriteExt, process::Child};
+
+mod daemon;
+mod mcp;
+mod wire;
+pub use daemon::Daemon;
+pub use mcp::Mcp;
 
 pub fn tool_payload(response: &Value) -> Value {
     assert!(response.get("error").is_none(), "{response}");
@@ -140,209 +142,101 @@ pub fn ready_action(name: &str, arguments: Value) -> Value {
     call["kind"] = json!("ready_call");
     call
 }
-pub struct Daemon {
-    pub child: Child,
-    pub socket: PathBuf,
-    inode: (u64, u64),
+async fn normal_finish<I: tokio::io::AsyncWrite + Unpin>(
+    mut input: I,
+    child: &mut Child,
+    deadline: Duration,
+) -> Result<(), String> {
+    tokio::time::timeout(deadline, async {
+        input
+            .flush()
+            .await
+            .map_err(|e| format!("MCP stdin flush: {e}"))?;
+        input
+            .shutdown()
+            .await
+            .map_err(|e| format!("MCP stdin shutdown: {e}"))?;
+        drop(input);
+        let status = child.wait().await.map_err(|e| format!("MCP wait: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("MCP EOF exit was not successful: {status}"))
+        }
+    })
+    .await
+    .unwrap_or_else(|_| Err("MCP normal shutdown deadline exceeded".into()))
 }
-impl Daemon {
-    pub async fn start(url: &str, socket: PathBuf) -> Self {
-        Self::start_with(Path::new(env!("CARGO_BIN_EXE_tectd")), url, socket).await
+async fn kill_and_reap(child: &mut Child) -> Result<(), String> {
+    let probe = child.try_wait();
+    kill_and_reap_with_probe(child, probe).await
+}
+async fn kill_and_reap_with_probe(
+    child: &mut Child,
+    probe: std::io::Result<Option<std::process::ExitStatus>>,
+) -> Result<(), String> {
+    let mut failures = Vec::new();
+    match probe {
+        Ok(Some(_)) => return Ok(()),
+        Ok(None) => {}
+        Err(error) => failures.push(format!("owned child status: {error}")),
     }
-
-    pub async fn start_with(binary: &Path, url: &str, socket: PathBuf) -> Self {
-        Self::start_configured(binary, url, socket, None).await
+    // Probe failure is not permission to abandon cleanup of this retained Child.
+    if let Err(error) = child.start_kill() {
+        failures.push(format!("owned child kill call: {error}"));
     }
-
-    #[allow(dead_code)]
-    pub async fn start_maintenance(url: &str, socket: PathBuf, contexts: &Path) -> Self {
-        Self::start_configured(
-            Path::new(env!("CARGO_BIN_EXE_tectd")),
-            url,
-            socket,
-            Some(contexts),
-        )
-        .await
+    match tokio::time::timeout(Duration::from_secs(5), child.wait()).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => failures.push(format!("owned child reap: {error}")),
+        Err(_) => failures.push("owned child reap exceeded five seconds".into()),
     }
-
-    async fn start_configured(
-        binary: &Path,
-        url: &str,
-        socket: PathBuf,
-        maintenance_contexts: Option<&Path>,
-    ) -> Self {
-        let log = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(socket.with_extension("stderr"))
-            .unwrap();
-        let mut command = Command::new(binary);
-        command
-            .env("TECT_DATABASE_URL", url)
-            .env("TECT_SOCKET", &socket)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(log))
-            .kill_on_drop(true);
-        if let Some(contexts) = maintenance_contexts {
-            command
-                .env("TECT_KNOWLEDGE_MAINTENANCE", "1")
-                .env("TECT_KNOWLEDGE_SEARCH_CONTEXTS", contexts);
-        }
-        let mut child = command.spawn().unwrap();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                assert!(
-                    child.try_wait().unwrap().is_none(),
-                    "owned daemon exited during startup"
-                );
-                if fs::symlink_metadata(&socket).is_ok_and(|m| {
-                    m.file_type().is_socket() && m.permissions().mode() & 0o777 == 0o600
-                }) {
-                    break;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
-        let metadata = fs::symlink_metadata(&socket).unwrap();
-        assert!(metadata.file_type().is_socket());
-        Self {
-            child,
-            socket,
-            inode: (metadata.dev(), metadata.ino()),
-        }
-    }
-    pub async fn crash(&mut self) {
-        self.child.start_kill().unwrap();
-        let exit = self.child.wait().await.unwrap();
-        assert!(!exit.success());
-    }
-    pub fn remove_owned_stale_socket(&mut self) {
-        assert!(
-            self.child.try_wait().unwrap().is_some(),
-            "never clean a live child's socket"
-        );
-        let metadata = fs::symlink_metadata(&self.socket).unwrap();
-        assert!(metadata.file_type().is_socket());
-        assert_eq!((metadata.dev(), metadata.ino()), self.inode);
-        fs::remove_file(&self.socket).unwrap();
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
     }
 }
 
-pub struct Mcp {
-    pub child: Child,
-    input: ChildStdin,
-    output: BufReader<ChildStdout>,
-    sequence: u64,
-    native: String,
+// This shared module is compiled per integration binary; only normal-tail suites use these APIs.
+#[allow(dead_code)]
+pub async fn finish_and_stop(client: Mcp, daemon: &mut Daemon) {
+    let mcp = client.finish_result().await;
+    stop_after_mcp(mcp, daemon).await;
 }
-impl Mcp {
-    /// Native IDs here are explicitly synthetic integration fixtures.
-    pub async fn start(socket: &Path, config: &Path, native: &str, key: &str) -> Self {
-        Self::start_with(
-            Path::new(env!("CARGO_BIN_EXE_tectd-mcp")),
-            socket,
-            config,
-            native,
-            key,
-        )
-        .await
-    }
 
-    pub async fn start_with(
-        binary: &Path,
-        socket: &Path,
-        config: &Path,
-        native: &str,
-        key: &str,
-    ) -> Self {
-        let mut child = Command::new(binary)
-            .env("TECT_SOCKET", socket)
-            .env("TECT_HOST_CONFIG", config)
-            .env("TECT_WORKSPACE_KEY", key)
-            .env_remove("CODEX_SESSION_ID")
-            .env_remove("CODEX_THREAD_ID")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
-        let input = child.stdin.take().unwrap();
-        let output = BufReader::new(child.stdout.take().unwrap());
-        let mut client = Self {
-            child,
-            input,
-            output,
-            sequence: 0,
-            native: native.to_owned(),
-        };
-        client.exchange("initialize", json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"tect-recovery-test","version":"1"}})).await;
-        client
-            .input
-            .write_all(b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n")
-            .await
-            .unwrap();
-        client.input.flush().await.unwrap();
-        client
-    }
-    pub async fn send(&mut self, method: &str, mut params: Value) {
-        if method == "tools/call" {
-            params["_meta"] = json!({"threadId": self.native});
-        }
-        self.sequence += 1;
-        let message = json!({"jsonrpc":"2.0","id":self.sequence,"method":method,"params":params});
-        self.input
-            .write_all(format!("{message}\n").as_bytes())
-            .await
-            .unwrap();
-        self.input.flush().await.unwrap();
-    }
-    pub async fn exchange(&mut self, method: &str, params: Value) -> Value {
-        self.send(method, params).await;
-        let mut line = String::new();
-        let size = tokio::time::timeout(Duration::from_secs(15), self.output.read_line(&mut line))
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(size > 0, "MCP bridge ended without a response");
-        serde_json::from_str(&line).unwrap()
-    }
-    pub async fn call(&mut self, name: &str, arguments: Value) -> Value {
-        let call = public_call(name, arguments);
-        let response = self.exchange("tools/call", call).await;
-        assert!(
-            response.get("error").is_none() && response["result"]["isError"] != true,
-            "{response}"
-        );
-        tool_payload(&response)
-    }
-    // This module is compiled once per integration binary; only refusal suites use this path.
+#[derive(Debug)]
+#[allow(dead_code)]
+pub struct CleanupReport {
+    pub mcp: Result<(), String>,
+    pub daemon_already_exited: Result<bool, String>,
+    pub socket: Result<(), String>,
+}
+impl CleanupReport {
     #[allow(dead_code)]
-    pub async fn call_error(&mut self, name: &str, arguments: Value) -> Value {
-        let call = public_call(name, arguments);
-        let response = self.exchange("tools/call", call).await;
-        assert_eq!(response["result"]["isError"], true, "{response}");
-        tool_payload(&response)
+    pub fn normal_tail_succeeded(&self) -> bool {
+        self.mcp.is_ok() && matches!(self.daemon_already_exited, Ok(false)) && self.socket.is_ok()
     }
-    // Only the process-loss binary intentionally kills a live MCP child.
-    #[allow(dead_code)]
-    pub async fn kill(&mut self) {
-        self.child.start_kill().unwrap();
-        let _ = self.child.wait().await.unwrap();
+}
+#[allow(dead_code)]
+pub async fn cleanup_after_mcp(mcp: Result<(), String>, daemon: &mut Daemon) -> CleanupReport {
+    // Normal-tail callers never request daemon exit before this cleanup.
+    let stop = daemon.stop().await;
+    let unlink = daemon.unlink_after_stop();
+    CleanupReport {
+        mcp,
+        daemon_already_exited: stop,
+        socket: unlink,
     }
-    pub async fn finish(mut self) {
-        self.input.shutdown().await.unwrap();
-        drop(self.input);
-        assert!(
-            tokio::time::timeout(Duration::from_secs(5), self.child.wait())
-                .await
-                .unwrap()
-                .unwrap()
-                .success()
-        );
+}
+#[allow(dead_code)]
+pub async fn stop_after_mcp(mcp: Result<(), String>, daemon: &mut Daemon) {
+    let report = cleanup_after_mcp(mcp, daemon).await;
+    assert!(report.normal_tail_succeeded(), "owned cleanup: {report:?}");
+}
+
+fn retain_first(original: String, cleanup: Result<(), String>) -> String {
+    match cleanup {
+        Ok(()) => original,
+        Err(cleanup) => format!("{original}; fallback cleanup: {cleanup}"),
     }
 }

@@ -11,6 +11,8 @@ use tect_domain::{
 
 mod candidate;
 mod lifecycle;
+mod matrix_selection;
+pub(crate) use matrix_selection::validate_selected_matrix_plan;
 mod validation;
 
 use validation::*;

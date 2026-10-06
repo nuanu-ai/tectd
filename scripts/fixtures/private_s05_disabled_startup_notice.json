@@ -1,0 +1,10 @@
+{
+  "emittedAtMs": 1791268580319,
+  "method": "remoteControl/status/changed",
+  "params": {
+    "environmentId": null,
+    "installationId": "81111485-2b71-4fb9-8240-300af8003f87",
+    "serverName": "Mykytas-MacBook-Pro.local",
+    "status": "disabled"
+  }
+}

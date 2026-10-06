@@ -1,0 +1,488 @@
+// Trusted v2 constructor material is admitted only through exact authored manifest binding.
+fn require_p1_source_grounded_manifest(manifest: &ScopeConstructorManifest) -> Result<()> {
+    if manifest.constructor == source_authored_identity() {
+        return manifest.validate(&Sha256ScopeDigest);
+    }
+    for alternative in manifest
+        .emitted
+        .iter()
+        .chain(manifest.rejected.iter().map(|value| &value.alternative))
+    {
+        alternative.material.require_source_grounded()?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct SourceObligationsAggregate {
+    source: FrozenScopeSource,
+    obligations: Vec<SourceObligation>,
+}
+
+#[derive(sqlx::FromRow)]
+struct ManifestRow {
+    candidate_set_id: Uuid,
+    candidate_set_revision: i64,
+    snapshot_id: Uuid,
+    config_revision: i64,
+    opportunity_material_digest: String,
+    authored_request_digest: Option<String>,
+    source_digest: String,
+    constructor_id: String,
+    constructor_version: String,
+    constructor_digest: String,
+    baseline_alternative_id: String,
+    eligible_set_digest: String,
+    whole_set_digest: String,
+    source_payload: serde_json::Value,
+    manifest_payload: serde_json::Value,
+}
+
+#[derive(sqlx::FromRow)]
+struct FrozenAuthorityRow {
+    candidate_set_revision: i64,
+    current_snapshot_id: Option<Uuid>,
+    input_cursor: i64,
+    candidate_latest_input: i64,
+    program_id: Uuid,
+    program_revision: i64,
+    program_current_latest: i64,
+    program_latest_input: i64,
+    planning_latest_input: i64,
+    selected_sources_digest: String,
+    method_revision: String,
+    method_digest: String,
+    registry_revision: String,
+    registry_digest: String,
+}
+
+#[derive(Clone, sqlx::FromRow)]
+struct PersistedSourceFragment {
+    id: Uuid,
+    kind: String,
+    body_digest: String,
+    body: String,
+}
+
+async fn load_persisted_fragments(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    candidate_set_id: Uuid,
+    snapshot_id: Uuid,
+) -> Result<Vec<PersistedSourceFragment>> {
+    let fragments: Vec<PersistedSourceFragment> = sqlx::query_as(
+        "SELECT r.id,r.kind,r.body_digest,c.body FROM scope_candidate_source_refs r \
+         JOIN scope_candidate_contents c ON (c.tenant_id,c.workspace_id,c.digest)=\
+           (r.tenant_id,r.workspace_id,r.body_digest) \
+         WHERE r.tenant_id=$1 AND r.workspace_id=$2 AND r.candidate_set_id=$3 \
+           AND r.snapshot_id=$4 ORDER BY r.id",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(candidate_set_id)
+    .bind(snapshot_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    Ok(fragments)
+}
+
+fn source_inputs_and_obligations(
+    fragments: Vec<PersistedSourceFragment>,
+    snapshot_id: Uuid,
+) -> Result<(Vec<FrozenSourceInput>, Vec<SourceObligation>)> {
+    let mut expected_inputs = Vec::new();
+    let mut expected_obligations = Vec::new();
+    for fragment in fragments {
+        if fragment.body.trim().is_empty() {
+            continue;
+        }
+        let id = fragment.id.to_string();
+        expected_inputs.push(FrozenSourceInput {
+            id: id.clone(),
+            version: snapshot_id.to_string(),
+            digest: fragment.body_digest.clone(),
+            provenance: format!("scope_candidate_source_ref:{id}"),
+            applicability: SourceApplicability::Applicable,
+        });
+        expected_obligations.push(SourceObligation {
+            id: id.clone(),
+            source_input_id: id,
+            statement_digest: fragment.body_digest,
+            conditions: vec![],
+            exceptions: vec![],
+        });
+    }
+    if expected_inputs.is_empty() {
+        return Err(Error::InvalidSource);
+    }
+    expected_inputs.sort_by(|a, b| a.id.cmp(&b.id));
+    expected_obligations.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok((expected_inputs, expected_obligations))
+}
+
+pub(crate) async fn require_persisted_fragments(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    source: &FrozenScopeSource,
+    obligations: &[SourceObligation],
+) -> Result<()> {
+    // The candidate-set revision and current snapshot were checked and locked
+    // in this transaction by require_frozen_authority.
+    let fragments = load_persisted_fragments(
+        tx,
+        tenant,
+        workspace,
+        source.candidate_set_id,
+        source.snapshot_id,
+    )
+    .await?;
+    let (expected_inputs, expected_obligations) =
+        source_inputs_and_obligations(fragments, source.snapshot_id)?;
+    if source.inputs != expected_inputs || obligations != expected_obligations {
+        return Err(Error::InvalidSource);
+    }
+    Ok(())
+}
+
+pub(crate) async fn require_frozen_authority(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    source: &FrozenScopeSource,
+) -> Result<()> {
+    require_frozen_authority_with_lock(tx, tenant, workspace, source, true).await
+}
+
+pub(crate) async fn require_frozen_authority_with_lock(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    source: &FrozenScopeSource,
+    lock: bool,
+) -> Result<()> {
+    let query =
+        "SELECT c.revision AS candidate_set_revision,c.current_snapshot_id,c.input_cursor,\
+                c.latest_input AS candidate_latest_input,c.program_id,\
+                p.revision AS program_revision,p.latest_input AS program_current_latest,\
+                s.program_latest_input,s.planning_latest_input,\
+                s.selected_sources_digest,s.method_revision,s.method_digest,s.registry_revision,s.registry_digest \
+         FROM scope_candidate_sets c JOIN programs p \
+           ON (p.tenant_id,p.workspace_id,p.id)=(c.tenant_id,c.workspace_id,c.program_id) \
+         JOIN scope_candidate_snapshots s \
+           ON (s.tenant_id,s.workspace_id,s.candidate_set_id,s.id)=\
+              (c.tenant_id,c.workspace_id,c.id,c.current_snapshot_id) \
+         WHERE c.tenant_id=$1 AND c.workspace_id=$2 AND c.id=$3";
+    let query = if lock { format!("{query} FOR UPDATE OF c,p") } else { query.to_owned() };
+    let authority: Option<FrozenAuthorityRow> = sqlx::query_as(&query)
+    .bind(tenant)
+    .bind(workspace)
+    .bind(source.candidate_set_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    let Some(authority) = authority else {
+        return Err(Error::NotFound);
+    };
+    if authority.candidate_set_revision != source.candidate_set_revision
+        || authority.current_snapshot_id != Some(source.snapshot_id)
+        || authority.input_cursor != source.input_cursor
+        || authority.candidate_latest_input != source.planning_latest_input
+        || authority.program_id != source.program_id
+        || authority.program_revision != source.program_revision
+        || authority.program_current_latest != source.program_latest_input
+        || authority.program_latest_input != source.program_latest_input
+        || authority.planning_latest_input != source.planning_latest_input
+        || authority.selected_sources_digest != source.selected_sources_digest
+        || authority.method_revision != source.method_revision
+        || authority.method_digest != source.method_digest
+        || authority.registry_revision != source.registry_revision
+        || authority.registry_digest != source.registry_digest
+    {
+        return Err(Error::StaleRevision);
+    }
+    Ok(())
+}
+
+async fn prepare_manifest(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    record: &ScopeManifestRecord,
+    authored_request_digest: Option<&str>,
+) -> Result<ScopeConstructorManifest> {
+    record.manifest.validate(&Sha256ScopeDigest)?;
+    require_p1_source_grounded_manifest(&record.manifest)?;
+    if authored_request_digest.is_some_and(|value| !valid_authored_request_digest(value)) {
+        return Err(Error::InvalidArguments);
+    }
+    let opportunity: Option<(Option<Uuid>, Option<String>, i64, String)> = sqlx::query_as(
+        "SELECT work_item_id,source_revision,config_revision,material_digest FROM advisory_opportunity \
+         WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 \
+         AND scope_id IS NULL AND work_item_kind='scope_candidate_set' \
+         AND capability='scope_decomposition' \
+         AND decision_point='scope.decomposition.before_selection' \
+         AND state='prepared' AND primary_reason='dispatch_authorized' FOR UPDATE",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(record.opportunity_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    if opportunity
+        != Some((
+            Some(record.candidate_set_id),
+            Some(record.manifest.source.candidate_set_revision.to_string()),
+            record.config_revision,
+            record.opportunity_material_digest.clone(),
+        ))
+    {
+        return Err(Error::InputConflict);
+    }
+    let source = &record.manifest.source;
+    if source.candidate_set_id != record.candidate_set_id {
+        return Err(Error::InputConflict);
+    }
+    require_frozen_authority(tx, tenant, workspace, source).await?;
+    require_persisted_fragments(tx, tenant, workspace, source, &record.manifest.obligations)
+        .await?;
+    if let Some(existing) = load_manifest_record(
+        tx,
+        tenant,
+        workspace,
+        record.opportunity_id,
+        Some(record.candidate_set_id),
+    )
+    .await?
+    {
+        return if existing.record.manifest == record.manifest
+            && existing.authored_request_digest.as_deref() == authored_request_digest
+        {
+            Ok(existing.record.manifest)
+        } else {
+            Err(Error::InputConflict)
+        };
+    }
+
+    let aggregate = SourceObligationsAggregate {
+        source: record.manifest.source.clone(),
+        obligations: record.manifest.obligations.clone(),
+    };
+    let source_payload = serde_json::to_value(&aggregate).map_err(storage_error)?;
+    let manifest_payload = serde_json::to_value(&record.manifest).map_err(storage_error)?;
+    sqlx::query(
+        "INSERT INTO advisory_scope_source_snapshot \
+         (tenant_id,workspace_id,opportunity_id,candidate_set_id,config_revision,opportunity_material_digest,\
+          candidate_set_revision,snapshot_id,source_digest,aggregate_schema,aggregate_payload) \
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'tect.scope-source-obligations/1',$10)",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(record.opportunity_id)
+    .bind(record.candidate_set_id)
+    .bind(record.config_revision)
+    .bind(&record.opportunity_material_digest)
+    .bind(source.candidate_set_revision)
+    .bind(source.snapshot_id)
+    .bind(&source.digest)
+    .bind(source_payload)
+    .execute(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    sqlx::query(
+        "INSERT INTO advisory_scope_manifest \
+         (tenant_id,workspace_id,opportunity_id,candidate_set_id,source_digest,constructor_id,constructor_version,\
+          constructor_digest,baseline_alternative_id,eligible_set_digest,whole_set_digest,authored_request_digest,\
+          aggregate_schema,aggregate_payload) \
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'tect.scope-constructor-manifest/2',$13)",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(record.opportunity_id)
+    .bind(record.candidate_set_id)
+    .bind(&source.digest)
+    .bind(&record.manifest.constructor.id)
+    .bind(&record.manifest.constructor.version)
+    .bind(&record.manifest.constructor.digest)
+    .bind(&record.manifest.baseline_id.0)
+    .bind(&record.manifest.eligible_set_digest)
+    .bind(&record.manifest.whole_set_digest)
+    .bind(authored_request_digest)
+    .bind(manifest_payload)
+    .execute(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    if is_source_authored_identity(&record.manifest.constructor) {
+        insert_authored_graph_binding(tx, tenant, workspace, record).await?;
+    }
+    Ok(record.manifest.clone())
+}
+
+async fn load_manifest(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    opportunity: Uuid,
+    expected_candidate: Option<Uuid>,
+) -> Result<Option<ScopeConstructorManifest>> {
+    Ok(
+        load_manifest_record(tx, tenant, workspace, opportunity, expected_candidate)
+            .await?
+            .map(|value| value.record.manifest),
+    )
+}
+
+fn valid_authored_request_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+async fn load_manifest_by_request_key(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    request_key: &str,
+) -> Result<Option<StoredScopeManifestRecord>> {
+    let opportunity: Option<Uuid> = sqlx::query_scalar(
+        "SELECT o.id FROM advisory_opportunity o JOIN advisory_scope_manifest m \
+           ON (m.tenant_id,m.workspace_id,m.opportunity_id)=(o.tenant_id,o.workspace_id,o.id) \
+         WHERE o.tenant_id=$1 AND o.workspace_id=$2 AND o.request_key=$3 \
+           AND o.scope_id IS NULL AND o.work_item_kind='scope_candidate_set' \
+           AND o.capability='scope_decomposition' \
+           AND o.decision_point='scope.decomposition.before_selection'",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(request_key)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    let Some(opportunity) = opportunity else {
+        return Ok(None);
+    };
+    load_manifest_record(tx, tenant, workspace, opportunity, None)
+        .await?
+        .map(Some)
+        .ok_or(Error::StorageUnavailable)
+}
+
+async fn load_manifest_record(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    opportunity: Uuid,
+    expected_candidate: Option<Uuid>,
+) -> Result<Option<StoredScopeManifestRecord>> {
+    let row: Option<ManifestRow> = sqlx::query_as(
+        "SELECT m.candidate_set_id,s.candidate_set_revision,s.snapshot_id,\
+                s.config_revision,s.opportunity_material_digest,m.authored_request_digest,m.source_digest,\
+                m.constructor_id,m.constructor_version,m.constructor_digest,\
+                m.baseline_alternative_id,m.eligible_set_digest,\
+                m.whole_set_digest,s.aggregate_payload AS source_payload,\
+                m.aggregate_payload AS manifest_payload \
+         FROM advisory_scope_manifest m JOIN advisory_scope_source_snapshot s \
+           USING(tenant_id,workspace_id,opportunity_id,candidate_set_id,source_digest) \
+         WHERE m.tenant_id=$1 AND m.workspace_id=$2 AND m.opportunity_id=$3",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(opportunity)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    let Some(row) = row else { return Ok(None) };
+    if expected_candidate.is_some_and(|value| value != row.candidate_set_id) {
+        return Err(Error::InputConflict);
+    }
+    let source: SourceObligationsAggregate =
+        serde_json::from_value(row.source_payload).map_err(storage_error)?;
+    let manifest: ScopeConstructorManifest =
+        serde_json::from_value(row.manifest_payload).map_err(storage_error)?;
+    manifest.validate(&Sha256ScopeDigest)?;
+    require_p1_source_grounded_manifest(&manifest)?;
+    if row
+        .authored_request_digest
+        .as_deref()
+        .is_some_and(|value| !valid_authored_request_digest(value))
+    {
+        return Err(Error::StorageUnavailable);
+    }
+    if manifest.source != source.source
+        || manifest.obligations != source.obligations
+        || manifest.source.candidate_set_id != row.candidate_set_id
+        || manifest.source.candidate_set_revision != row.candidate_set_revision
+        || manifest.source.snapshot_id != row.snapshot_id
+        || manifest.source.digest != row.source_digest
+        || manifest.constructor.id != row.constructor_id
+        || manifest.constructor.version != row.constructor_version
+        || manifest.constructor.digest != row.constructor_digest
+        || manifest.baseline_id.0 != row.baseline_alternative_id
+        || manifest.eligible_set_digest != row.eligible_set_digest
+        || manifest.whole_set_digest != row.whole_set_digest
+    {
+        return Err(Error::StorageUnavailable);
+    }
+    Ok(Some(StoredScopeManifestRecord {
+        record: ScopeManifestRecord {
+            opportunity_id: opportunity,
+            candidate_set_id: row.candidate_set_id,
+            config_revision: row.config_revision,
+            opportunity_material_digest: row.opportunity_material_digest,
+            manifest,
+        },
+        authored_request_digest: row.authored_request_digest,
+    }))
+}
+
+#[cfg(test)]
+mod p1_grounding_tests {
+    use super::*;
+
+    #[test]
+    fn forged_v2_manifest_cannot_persist_emitted_or_rejected_exploratory() {
+        for rejected in [false, true] {
+            let mut manifest = live_support::manifest(
+                Uuid::from_u128(1),
+                Uuid::from_u128(2),
+                Uuid::from_u128(3),
+                &[(Uuid::from_u128(50), "source")],
+            );
+            require_p1_source_grounded_manifest(&manifest).unwrap();
+            manifest.constructor.id = "source-authored-v2".into();
+            manifest.constructor.version = "2".into();
+            let mut alternative = manifest.emitted.remove(0);
+            let mut optional = alternative.material.candidates[0].clone();
+            optional.id = Uuid::from_u128(53);
+            optional.grounding = CandidateGrounding::ExploratoryUnrequested {
+                provenance: ExploratoryProvenance::SourceAuthoredV2,
+            };
+            optional.coverage_goal_ids.clear();
+            alternative.material.delta.added.push(CandidateAdded {
+                candidate_id: optional.id,
+                revision: optional.revision,
+            });
+            alternative.material.candidates.push(optional);
+            alternative.material.validate().unwrap();
+            if rejected {
+                manifest.rejected.push(RejectedScopeAlternative {
+                    alternative,
+                    reason_codes: vec!["test".into()],
+                });
+            } else {
+                manifest.emitted.push(alternative);
+            }
+            assert_eq!(
+                require_p1_source_grounded_manifest(&manifest),
+                Err(Error::InvalidArguments),
+            );
+        }
+    }
+}
+
+include!("anti_bloat_source_partition.rs");

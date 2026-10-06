@@ -23,7 +23,11 @@ use tokio::io::{AsyncWriteExt, WriteHalf};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
+
 mod diagnostics;
+mod program;
+use program::execute_program;
+
 const MAX_CONNECTIONS: usize = 32;
 const IO_TIMEOUT: Duration = Duration::from_secs(5);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(45);
@@ -31,6 +35,7 @@ const SUPER_WIDE_TIMEOUT: Duration = Duration::from_secs(60);
 const KNOWLEDGE_WRITE_TIMEOUT: Duration = Duration::from_secs(120);
 // The bridge allows the daemon's response write cap plus additional scheduling margin.
 const RESPONSE_MARGIN: Duration = Duration::from_secs(5);
+
 fn operation_timeout_for(invocation: &Invocation) -> Duration {
     match invocation {
         Invocation::KnowledgeSearch(query) if query.mode == KnowledgeSearchMode::SuperWide => {
@@ -46,9 +51,11 @@ fn operation_timeout_for(invocation: &Invocation) -> Duration {
         _ => OPERATION_TIMEOUT,
     }
 }
+
 fn response_read_timeout_for(invocation: Option<&Invocation>) -> Duration {
     invocation.map_or(OPERATION_TIMEOUT, operation_timeout_for) + IO_TIMEOUT + RESPONSE_MARGIN
 }
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WireRequest {
@@ -195,117 +202,7 @@ async fn handle_connection(stream: UnixStream, service: Arc<WorkspaceService>) -
     write_response(&mut write, response).await
 }
 
-async fn execute(request: WireRequest, service: &WorkspaceService) -> WireResponse {
-    if let Err(error) = validate_wire_version(&request) {
-        return WireResponse::Error { error };
-    }
-    if request.output_capacity > MAX_FRAME_BYTES {
-        return authenticate_invalid_request(service, &request.context).await;
-    }
-    let invocation = match parse_invocation(&request.tool_name, request.arguments) {
-        Ok(invocation) => invocation,
-        Err(_) => {
-            return authenticate_invalid_request(service, &request.context).await;
-        }
-    };
-    let operation_timeout = operation_timeout_for(&invocation);
-    let capture = diagnostics::capture(&invocation);
-    diagnostics::timed(capture, operation_timeout, request.output_capacity, async {
-        let context = &request.context;
-        let capacity = request.output_capacity;
-        match invocation {
-            Invocation::OpenWorkspace => {
-                service
-                    .open_workspace_prepared(&request.context, |state| {
-                        crate::workspace_output::opened(state, request.output_capacity)
-                    })
-                    .await
-            }
-            Invocation::WorkspaceState(query) => {
-                crate::workspace_state::execute(context, service, query, capacity).await
-            }
-            Invocation::GetState => crate::slice_dispatch::state(&request.context, service)
-                .await
-                .and_then(|state| program_output::workspace(state, request.output_capacity)),
-            Invocation::Program(invocation) => {
-                execute_program(
-                    &request.context,
-                    invocation,
-                    service,
-                    request.output_capacity,
-                )
-                .await
-            }
-            Invocation::Setup(invocation) => {
-                crate::setup_dispatch::execute(
-                    &request.context,
-                    invocation,
-                    service,
-                    request.output_capacity,
-                )
-                .await
-            }
-            Invocation::ScopeCandidate(invocation) => {
-                crate::scope_candidate_dispatch::execute(
-                    &request.context,
-                    invocation,
-                    service,
-                    request.output_capacity,
-                )
-                .await
-            }
-            Invocation::Slice(invocation) => {
-                crate::slice_dispatch::execute(
-                    &request.context,
-                    invocation,
-                    service,
-                    request.output_capacity,
-                )
-                .await
-            }
-            Invocation::Pipeline(invocation) => {
-                crate::pipeline_dispatch::execute(
-                    &request.context,
-                    invocation,
-                    service,
-                    request.output_capacity,
-                )
-                .await
-            }
-            Invocation::Knowledge(invocation) => {
-                crate::knowledge_dispatch::execute(context, invocation, service, capacity).await
-            }
-            Invocation::KnowledgeLifecycle(invocation) => {
-                crate::knowledge_lifecycle_dispatch::execute(context, invocation, service, capacity)
-                    .await
-            }
-            Invocation::KnowledgeSearch(query) => {
-                crate::knowledge_search_dispatch::execute(context, query, service, capacity).await
-            }
-            Invocation::KnowledgeMaintenance(invocation) => {
-                crate::knowledge_maintenance_dispatch::execute(
-                    context, invocation, service, capacity,
-                )
-                .await
-            }
-            Invocation::Help(help_request) => {
-                service.authenticate_host(&request.context).await?;
-                crate::planning_read::help(help_request, capacity)
-            }
-            Invocation::RegisterSource { path } => {
-                serialize(service.register_source(&request.context, &path).await)
-            }
-            Invocation::SelectWorktrees { worktree_ids } => service
-                .select_worktrees(&request.context, &worktree_ids)
-                .await
-                .and_then(|state| program_output::workspace(state, request.output_capacity)),
-            Invocation::ListSources { after, limit } => {
-                serialize(service.list_sources(&request.context, after, limit).await)
-            }
-        }
-    })
-    .await
-}
+include!("transport/execute.rs");
 
 fn operation_response(
     result: std::result::Result<Result<Value>, tokio::time::error::Elapsed>,
@@ -334,11 +231,53 @@ fn validate_wire_version(request: &WireRequest) -> Result<()> {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum InvalidRequestAuthority {
+    Verifier,
+    MatrixVerifier,
+    CandidateRead,
+    WorkspaceState,
+}
+
+fn invalid_request_authority(tool_name: &str) -> InvalidRequestAuthority {
+    match tool_name {
+        "candidate_advisory_verify" => InvalidRequestAuthority::Verifier,
+        "verify_matrix_task"
+        | "get_pipeline_open_effect"
+        | "verify_pipeline_open_effect"
+        | "get_pipeline_phase_effect"
+        | "verify_pipeline_phase_effect" => InvalidRequestAuthority::MatrixVerifier,
+        "candidate_advisory_get" | "candidate_advisory_audit" | "get_matrix_disposition" => {
+            InvalidRequestAuthority::CandidateRead
+        }
+        _ => InvalidRequestAuthority::WorkspaceState,
+    }
+}
+
 async fn authenticate_invalid_request(
     service: &WorkspaceService,
     context: &RequestContext,
+    tool_name: &str,
 ) -> WireResponse {
-    let authorization = timeout(OPERATION_TIMEOUT, service.get_state(context)).await;
+    let authorization = timeout(OPERATION_TIMEOUT, async {
+        match invalid_request_authority(tool_name) {
+            InvalidRequestAuthority::Verifier => {
+                service
+                    .authenticate_candidate_advisory_verifier_session(context)
+                    .await
+            }
+            InvalidRequestAuthority::MatrixVerifier => {
+                service.authenticate_matrix_verifier_session(context).await
+            }
+            InvalidRequestAuthority::CandidateRead => {
+                service
+                    .authenticate_candidate_advisory_session(context)
+                    .await
+            }
+            InvalidRequestAuthority::WorkspaceState => service.get_state(context).await.map(|_| ()),
+        }
+    })
+    .await;
     match authorization {
         Ok(Ok(_)) => WireResponse::Error {
             error: Error::InvalidArguments,
@@ -360,102 +299,6 @@ fn serialize<T: Serialize>(result: Result<T>) -> Result<Value> {
                 Some(0),
             ))
         })
-}
-
-async fn execute_program(
-    context: &RequestContext,
-    invocation: ProgramInvocation,
-    service: &WorkspaceService,
-    capacity: usize,
-) -> Result<Value> {
-    let guard = ProgramEncoding { capacity };
-    let guidance = program_output::StaticProgramGuidance;
-    match invocation {
-        ProgramInvocation::Begin {
-            request_id,
-            input,
-            task_context,
-        } => service
-            .begin_program(
-                context,
-                request_id,
-                &input,
-                &task_context,
-                &guidance,
-                &guard,
-            )
-            .await
-            .and_then(program_output::begun),
-        ProgramInvocation::Get {
-            program_id,
-            after_input,
-            limit,
-            window,
-            program_revision,
-        } => service
-            .get_program(context, program_id, after_input, limit, &guidance)
-            .await
-            .and_then(|page| {
-                program_output::page_read(
-                    page,
-                    after_input,
-                    limit,
-                    &window,
-                    program_revision,
-                    capacity,
-                )
-            }),
-        ProgramInvocation::Save(changes) => service
-            .save_program(context, &changes, &guidance, &guard)
-            .await
-            .and_then(program_output::saved),
-        ProgramInvocation::Record {
-            program_id,
-            request_id,
-            input,
-            task_context,
-        } => service
-            .record_program_input(
-                context,
-                program_id,
-                request_id,
-                &input,
-                task_context.as_ref(),
-                &guidance,
-                &guard,
-            )
-            .await
-            .and_then(program_output::program),
-        ProgramInvocation::Refresh(request) => service
-            .refresh_program_knowledge(context, &request, &guidance, &guard)
-            .await
-            .and_then(program_output::program),
-        ProgramInvocation::List {
-            after,
-            after_selector,
-            limit,
-            window,
-            workspace_id,
-        } => {
-            let (bound_workspace_id, list) =
-                service.list_programs_bound(context, after, limit).await?;
-            if workspace_id.is_some_and(|expected| expected != bound_workspace_id) {
-                return Err(Error::InvalidArguments);
-            }
-            program_output::list_read::read(
-                list,
-                bound_workspace_id,
-                after_selector.as_deref(),
-                limit,
-                &window,
-                capacity,
-            )
-        }
-        ProgramInvocation::ReadSkill => {
-            service.read_program_skill(context).await?;
-            Ok(program_output::skill())
-        }
-    }
 }
 
 async fn write_response(writer: &mut WriteHalf<UnixStream>, response: WireResponse) -> Result<()> {

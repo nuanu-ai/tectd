@@ -1,79 +1,213 @@
 use crate::{SetupFiles, SourceInspector, Store, TransactionMode, UnitOfWork};
 use std::sync::Arc;
 use tect_domain::{
-    Error, EventKind, HostIdentity, RequestContext, Result, Session, Workspace, WorkspaceState,
+    Error, EventKind, HostIdentity, PrincipalRole, RequestContext, Result, Session, Workspace,
+    WorkspaceState,
 };
 
+mod model_route;
+mod provider_receipts;
+
 pub struct WorkspaceService {
+    model_route_catalogue_provider: Arc<dyn crate::ModelRouteCatalogueProvider>,
+    model_route_host_capabilities_provider: Arc<dyn crate::ModelRouteHostCapabilitiesProvider>,
+    pub(crate) model_route_ranking_provider: Arc<dyn crate::ModelRouteRankingProvider>,
     store: Arc<dyn Store>,
     pub(crate) inspector: Arc<dyn SourceInspector>,
     pub(crate) setup_files: Arc<dyn SetupFiles>,
+    #[allow(dead_code)]
+    pub(crate) advisory_provider: Arc<dyn crate::AdvisoryProvider>,
+    pub(crate) anti_bloat_provider: Arc<dyn crate::AntiBloatRankingProvider>,
+    pub(crate) matrix_advice_provider: Arc<dyn crate::MatrixAdviceProvider>,
+    pub(crate) matrix_budget: Arc<dyn crate::MatrixBudgetPolicy>,
+    pub(crate) matrix_evidence_validator: Arc<dyn crate::MatrixEvidenceValidator>,
+    pub(crate) technical_decision_evidence_resolver:
+        Arc<dyn crate::TechnicalDecisionEvidenceResolver>,
+    pub(crate) pipeline_recommendation_definitions:
+        Arc<dyn crate::PipelineRecommendationDefinitionProvider>,
+    pub(crate) pipeline_recommendation_provider: Arc<dyn crate::PipelineRecommendationProvider>,
+    pub(crate) pipeline_compatibility_policy: Arc<dyn crate::PipelineCompatibilityPolicyProvider>,
+    pub(crate) scope_authority: Arc<dyn crate::ScopeAuthorityObserver>,
+    pub(crate) scope_manifest_supplier: Arc<dyn crate::ScopeManifestSupplier>,
+    pub(crate) scope_budget: Arc<dyn crate::ScopeBudgetPolicy>,
+    pub(crate) scope_advice_provider: Arc<dyn crate::ScopeAdviceProvider>,
     pub(crate) knowledge_embedding_provider: Arc<dyn crate::KnowledgeEmbeddingProvider>,
     pub(crate) query_embedding_cache: std::sync::Mutex<KnowledgeQueryCache>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct KnowledgeQueryCacheKey(String);
-
-impl KnowledgeQueryCacheKey {
-    pub(crate) fn new(
-        workspace: uuid::Uuid,
-        principal: uuid::Uuid,
-        generation: i64,
-        model: &tect_domain::KnowledgeEmbeddingModelIdentity,
-        input_digest: &str,
-    ) -> Self {
-        Self(format!(
-            "{workspace}:{principal}:{generation}:{}:{}:{}:{input_digest}",
-            model.name, model.revision, model.recipe
-        ))
-    }
-}
-
-pub(crate) struct KnowledgeQueryCache {
-    entries: std::collections::VecDeque<(KnowledgeQueryCacheKey, std::time::Instant, Vec<f32>)>,
-}
-
-impl KnowledgeQueryCache {
-    fn new() -> Self {
-        Self {
-            entries: std::collections::VecDeque::new(),
-        }
-    }
-
-    pub(crate) fn get(&mut self, key: &KnowledgeQueryCacheKey) -> Option<Vec<f32>> {
-        let now = std::time::Instant::now();
-        self.entries
-            .retain(|(_, created, _)| now.duration_since(*created).as_secs() <= 60);
-        self.entries
-            .iter()
-            .find(|(candidate, _, _)| candidate == key)
-            .map(|(_, _, values)| values.clone())
-    }
-
-    pub(crate) fn put(&mut self, key: KnowledgeQueryCacheKey, values: Vec<f32>) {
-        self.entries.retain(|(candidate, _, _)| candidate != &key);
-        if self.entries.len() >= 64 {
-            self.entries.pop_front();
-        }
-        self.entries
-            .push_back((key, std::time::Instant::now(), values));
-    }
-}
+include!("service/knowledge_query_cache.rs");
 
 impl WorkspaceService {
+    pub fn with_anti_bloat_provider(
+        mut self,
+        provider: Arc<dyn crate::AntiBloatRankingProvider>,
+    ) -> Self {
+        self.anti_bloat_provider = provider;
+        self
+    }
+    /// Install a host-owned immutable model-route catalogue. This does not
+    /// select or dispatch a model and does not supply actual execution evidence.
+    pub fn with_model_route_catalogue_provider(
+        mut self,
+        provider: Arc<dyn crate::ModelRouteCatalogueProvider>,
+    ) -> Self {
+        self.model_route_catalogue_provider = provider;
+        self
+    }
+
+    pub fn model_route_catalogue(&self) -> Result<Option<tect_domain::ModelRouteCatalogue>> {
+        self.model_route_catalogue_provider.catalogue()
+    }
+
+    /// Install a host-owned capability assertion; empty known capability sets
+    /// remain distinct from absent evidence. This never dispatches a model.
+    pub fn with_model_route_host_capabilities_provider(
+        mut self,
+        provider: Arc<dyn crate::ModelRouteHostCapabilitiesProvider>,
+    ) -> Self {
+        self.model_route_host_capabilities_provider = provider;
+        self
+    }
+
+    pub fn model_route_host_capabilities(
+        &self,
+    ) -> Result<tect_domain::ModelRouteFact<Vec<String>>> {
+        self.model_route_host_capabilities_provider
+            .host_capabilities()
+    }
+
+    /// Explicit optional adviser injection; the normal constructor remains
+    /// disabled. This never installs a model-execution dispatcher.
+    pub fn with_model_route_ranking_provider(
+        mut self,
+        provider: Arc<dyn crate::ModelRouteRankingProvider>,
+    ) -> Self {
+        self.model_route_ranking_provider = provider;
+        self
+    }
+
+    /// Explicit Matrix composition seam. Both decisions are selected by the
+    /// embedding host; the normal constructor keeps the provider disabled and
+    /// the signed-policy preflight fail-closed.
+    pub fn with_matrix_advisory_adapters(
+        mut self,
+        provider: Arc<dyn crate::MatrixAdviceProvider>,
+        budget: Arc<dyn crate::MatrixBudgetPolicy>,
+    ) -> Self {
+        self.matrix_advice_provider = provider;
+        self.matrix_budget = budget;
+        self
+    }
+
+    /// Provider-only composition keeps the independent signed-policy preflight.
+    pub fn with_matrix_advice_provider(
+        mut self,
+        provider: Arc<dyn crate::MatrixAdviceProvider>,
+    ) -> Self {
+        self.matrix_advice_provider = provider;
+        self
+    }
+
+    /// Server-only composition seam; default construction stays unavailable.
+    pub fn with_technical_decision_evidence_resolver(
+        mut self,
+        resolver: Arc<dyn crate::TechnicalDecisionEvidenceResolver>,
+    ) -> Self {
+        self.technical_decision_evidence_resolver = resolver;
+        self
+    }
+
+    /// Explicit host composition; normal construction keeps evidence validation
+    /// disabled by default.
+    pub fn with_matrix_evidence_validator(
+        mut self,
+        validator: Arc<dyn crate::MatrixEvidenceValidator>,
+    ) -> Self {
+        self.matrix_evidence_validator = validator;
+        self
+    }
+
+    /// Installs only the authoritative Scope source adapters. The budget stays
+    /// deny-by-default and the transport provider stays disabled.
+    pub fn new_with_scope_sources(
+        store: Arc<dyn Store>,
+        inspector: Arc<dyn SourceInspector>,
+        setup_files: Arc<dyn SetupFiles>,
+        authority: Arc<dyn crate::ScopeAuthorityObserver>,
+        supplier: Arc<dyn crate::ScopeManifestSupplier>,
+    ) -> Self {
+        let mut service = Self::new(store, inspector, setup_files);
+        service.scope_authority = authority;
+        service.scope_manifest_supplier = supplier;
+        service
+    }
+
     pub fn new(
         store: Arc<dyn Store>,
         inspector: Arc<dyn SourceInspector>,
         setup_files: Arc<dyn SetupFiles>,
     ) -> Self {
         Self {
+            model_route_catalogue_provider: Arc::new(crate::UnavailableModelRouteCatalogue),
+            model_route_host_capabilities_provider: Arc::new(
+                crate::UnavailableModelRouteHostCapabilities,
+            ),
+            model_route_ranking_provider: Arc::new(crate::DisabledModelRouteRankingProvider),
             store,
             inspector,
             setup_files,
+            advisory_provider: Arc::new(crate::DisabledAdvisoryProvider),
+            anti_bloat_provider: Arc::new(crate::DisabledAntiBloatRankingProvider),
+            matrix_advice_provider: Arc::new(crate::DisabledMatrixAdviceProvider),
+            matrix_budget: Arc::new(crate::SignedMatrixBudgetPreflight),
+            matrix_evidence_validator: Arc::new(crate::DisabledMatrixEvidenceValidator),
+            technical_decision_evidence_resolver: Arc::new(
+                crate::DisabledTechnicalDecisionEvidenceResolver,
+            ),
+            pipeline_recommendation_definitions: Arc::new(
+                crate::UnavailablePipelineRecommendationDefinitions,
+            ),
+            pipeline_recommendation_provider: Arc::new(
+                crate::DisabledPipelineRecommendationProvider,
+            ),
+            pipeline_compatibility_policy: Arc::new(crate::UnavailablePipelineCompatibilityPolicy),
+            scope_authority: Arc::new(crate::UnavailableScopeAuthorityObserver),
+            scope_manifest_supplier: Arc::new(crate::UnavailableScopeManifestSupplier),
+            scope_budget: Arc::new(crate::SignedScopeBudgetPreflight),
+            scope_advice_provider: Arc::new(crate::DisabledScopeAdviceProvider),
             knowledge_embedding_provider: Arc::new(crate::DisabledKnowledgeEmbeddingProvider),
             query_embedding_cache: std::sync::Mutex::new(KnowledgeQueryCache::new()),
         }
+    }
+
+    /// Explicit composition seam for a host that has selected its own budget
+    /// policy and provider. Existing constructors retain their deny/disabled
+    /// defaults; the daemon does not call this constructor.
+    pub fn new_with_scope_advisory_adapters(
+        store: Arc<dyn Store>,
+        inspector: Arc<dyn SourceInspector>,
+        setup_files: Arc<dyn SetupFiles>,
+        authority: Arc<dyn crate::ScopeAuthorityObserver>,
+        supplier: Arc<dyn crate::ScopeManifestSupplier>,
+        budget: Arc<dyn crate::ScopeBudgetPolicy>,
+        provider: Arc<dyn crate::ScopeAdviceProvider>,
+    ) -> Self {
+        let mut service =
+            Self::new_with_scope_sources(store, inspector, setup_files, authority, supplier);
+        service.scope_budget = budget;
+        service.scope_advice_provider = provider;
+        service
+    }
+
+    /// Test-only fixture hook for the separate legacy advisory provider.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn with_advisory_provider(
+        mut self,
+        provider: Arc<dyn crate::AdvisoryProvider>,
+    ) -> Self {
+        self.advisory_provider = provider;
+        self
     }
 
     pub fn with_knowledge_embedding_provider(
@@ -84,7 +218,56 @@ impl WorkspaceService {
         self
     }
 
+    /// Install the immutable pipeline definitions for pre-open advice.
+    pub fn with_pipeline_recommendation_definitions(
+        mut self,
+        provider: Arc<dyn crate::PipelineRecommendationDefinitionProvider>,
+    ) -> Self {
+        self.pipeline_recommendation_definitions = provider;
+        self
+    }
+
+    /// Install an explicit provider; the normal constructor cannot dispatch.
+    pub fn with_pipeline_recommendation_provider(
+        mut self,
+        provider: Arc<dyn crate::PipelineRecommendationProvider>,
+    ) -> Self {
+        self.pipeline_recommendation_provider = provider;
+        self
+    }
+
+    pub fn with_pipeline_compatibility_policy(
+        mut self,
+        provider: Arc<dyn crate::PipelineCompatibilityPolicyProvider>,
+    ) -> Self {
+        self.pipeline_compatibility_policy = provider;
+        self
+    }
+
+    pub(crate) fn pipeline_policy_matches(&self, digest: &str) -> Result<bool> {
+        Ok(self.current_pipeline_policy()?.digest()? == digest)
+    }
+
+    pub(crate) fn current_pipeline_policy(
+        &self,
+    ) -> Result<tect_domain::PipelineCompatibilityPolicy> {
+        Ok(self
+            .pipeline_compatibility_policy
+            .policy()?
+            .unwrap_or_else(tect_domain::PipelineCompatibilityPolicy::unavailable))
+    }
+
     pub(crate) async fn authorized(
+        &self,
+        context: &RequestContext,
+        mode: TransactionMode,
+    ) -> Result<(Box<dyn UnitOfWork>, HostIdentity)> {
+        let (tx, identity) = self.authenticated(context, mode).await?;
+        require_owner(identity.role)?;
+        Ok((tx, identity))
+    }
+
+    pub(crate) async fn authenticated(
         &self,
         context: &RequestContext,
         mode: TransactionMode,
@@ -187,6 +370,7 @@ impl WorkspaceService {
         context: &RequestContext,
         identity: &HostIdentity,
     ) -> Result<(Workspace, Session)> {
+        require_owner(identity.role)?;
         let session = tx
             .session(identity.host_id, &context.native_session_id)
             .await?
@@ -232,7 +416,9 @@ impl WorkspaceService {
     where
         F: FnOnce(WorkspaceState) -> Result<T>,
     {
-        let (mut tx, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
+        let (mut tx, identity) = self
+            .authenticated(context, TransactionMode::ReadWrite)
+            .await?;
         tx.lock_native_session(identity.host_id, &context.native_session_id)
             .await?;
         if let Some(session) = tx
@@ -240,7 +426,30 @@ impl WorkspaceService {
             .await?
         {
             let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
-            let state = Self::state(&mut *tx, workspace, session).await?;
+            let state = if identity.role == PrincipalRole::Verifier {
+                verifier_opened_state(workspace, session)
+            } else {
+                Self::state(&mut *tx, workspace, session).await?
+            };
+            let prepared = prepare(state)?;
+            tx.commit().await?;
+            return Ok(prepared);
+        }
+        if identity.role == PrincipalRole::Verifier {
+            let workspace = tx
+                .workspace_by_key(&context.workspace_key)
+                .await?
+                .ok_or(Error::Forbidden)?;
+            if !tx.is_member(workspace.id, identity.principal_id).await? {
+                return Err(Error::Forbidden);
+            }
+            let session = tx
+                .ensure_session(identity.host_id, workspace.id, &context.native_session_id)
+                .await?;
+            if session.value.revoked || session.value.workspace_id != workspace.id {
+                return Err(Error::Forbidden);
+            }
+            let state = verifier_opened_state(workspace, session.value);
             let prepared = prepare(state)?;
             tx.commit().await?;
             return Ok(prepared);
@@ -277,3 +486,5 @@ impl WorkspaceService {
         Ok(prepared)
     }
 }
+
+include!("service/authorization.rs");

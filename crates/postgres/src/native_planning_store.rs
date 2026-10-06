@@ -1,5 +1,6 @@
 use crate::{native_planning, store::PgUnitOfWork};
 use async_trait::async_trait;
+use sqlx::Row;
 use tect_application::NativePlanningStore;
 use tect_domain::*;
 use uuid::Uuid;
@@ -131,10 +132,117 @@ impl NativePlanningStore for PgUnitOfWork {
     async fn open_slice(
         &mut self,
         workspace_id: Uuid,
+        session_id: Uuid,
         request: &OpenSlice,
     ) -> Result<OpenSliceOutcome> {
         let tenant = self.tenant_id()?;
-        native_planning::open_slice(self.transaction()?, tenant, workspace_id, request).await
+        let selected = if request.disposition_id.is_some() {
+            // The existing receipt must remain replayable after a successful
+            // open, when the pre-open recommendation is no longer current.
+            let replay: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM native_slices WHERE tenant_id=$1 \
+                 AND workspace_id=$2 AND origin_request_id=$3)",
+            )
+            .bind(tenant)
+            .bind(workspace_id)
+            .bind(request.request_id)
+            .fetch_one(&mut **self.transaction()?)
+            .await
+            .map_err(crate::storage_error)?;
+            Some(
+                crate::pipeline_disposition_store::selection_for_open(
+                    self,
+                    workspace_id,
+                    session_id,
+                    request,
+                    replay,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let opener = self.principal_id()?;
+        native_planning::open_slice(
+            self.transaction()?,
+            tenant,
+            workspace_id,
+            opener,
+            request,
+            selected,
+        )
+        .await
+    }
+    async fn slice_open_manifest(
+        &mut self,
+        workspace_id: Uuid,
+        request: &OpenSlice,
+    ) -> Result<Option<PipelineRecommendationManifest>> {
+        let tenant = self.tenant_id()?;
+        let disposition_id = request.disposition_id.ok_or(Error::InvalidArguments)?;
+        let replay: Option<(serde_json::Value, Option<serde_json::Value>)> = sqlx::query_as(
+            "SELECT origin_payload,origin_result FROM native_slices WHERE tenant_id=$1 \
+             AND workspace_id=$2 AND origin_request_id=$3",
+        )
+        .bind(tenant)
+        .bind(workspace_id)
+        .bind(request.request_id)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(crate::storage_error)?;
+        if let Some((payload, result)) = replay {
+            if payload != serde_json::to_value(request).map_err(Error::invalid_arguments_from)? {
+                return Err(Error::InputConflict);
+            }
+            let _: OpenSliceOutcome =
+                serde_json::from_value(result.ok_or(Error::InternalInvariant)?)
+                    .map_err(|_| Error::InternalInvariant)?;
+            return Ok(None);
+        }
+        let actor = self.principal_id()?;
+        let row = sqlx::query(
+            "SELECT c.manifest_payload,c.manifest_digest \
+             FROM pipeline_advice_dispositions d \
+             JOIN pipeline_advice_contexts c ON \
+               (c.tenant_id,c.workspace_id,c.opportunity_id)= \
+               (d.tenant_id,d.workspace_id,d.opportunity_id) \
+             JOIN advisory_opportunity o ON \
+               (o.tenant_id,o.workspace_id,o.id)= \
+               (d.tenant_id,d.workspace_id,d.opportunity_id) \
+             WHERE d.tenant_id=$1 AND d.workspace_id=$2 AND d.disposition_id=$3 \
+               AND d.actor_id=$4 AND d.work_node_id=$5 AND d.work_node_revision=$6 \
+               AND c.work_node_id=$5 AND c.work_node_revision=$6 \
+               AND c.candidate_set_id=$7 AND c.candidate_set_revision=$8 \
+               AND c.planning_snapshot_id=$9 AND o.scope_id=$10",
+        )
+        .bind(tenant)
+        .bind(workspace_id)
+        .bind(disposition_id)
+        .bind(actor)
+        .bind(request.candidate_id)
+        .bind(request.candidate_revision)
+        .bind(request.candidate_set_id)
+        .bind(request.candidate_set_revision)
+        .bind(request.candidate_snapshot_id)
+        .bind(request.scope_id)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(crate::storage_error)?
+        .ok_or(Error::NotFound)?;
+        let manifest: PipelineRecommendationManifest = serde_json::from_value(
+            row.try_get::<serde_json::Value, _>("manifest_payload")
+                .map_err(crate::storage_error)?,
+        )
+        .map_err(|_| Error::InputConflict)?;
+        if row
+            .try_get::<Option<String>, _>("manifest_digest")
+            .map_err(crate::storage_error)?
+            .as_deref()
+            != Some(manifest.digest.as_str())
+        {
+            return Err(Error::InputConflict);
+        }
+        Ok(Some(manifest))
     }
     async fn native_slice(
         &mut self,

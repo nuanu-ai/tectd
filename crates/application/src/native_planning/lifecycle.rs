@@ -146,16 +146,29 @@ impl WorkspaceService {
             || request.candidate_snapshot_id.is_nil()
             || request.candidate_id.is_nil()
             || request.candidate_revision < 1
+            || request.disposition_id.is_some_and(|id| id.is_nil())
         {
             return Err(Error::InvalidArguments);
         }
-        let (mut tx, workspace, _) = self
+        let (mut tx, workspace, session) = self
             .native_planning_transaction(context, TransactionMode::ReadWrite)
             .await?;
         tx.slice_candidate_context(workspace.id, request.scope_id)
             .await?
             .ok_or(Error::NotFound)?;
-        let value = tx.open_slice(workspace.id, request).await?;
+        if request.disposition_id.is_some()
+            && let Some(manifest) = tx.slice_open_manifest(workspace.id, request).await?
+        {
+            self.validate_pipeline_recommendation_definitions(&manifest)?;
+        }
+        let value = tx.open_slice(workspace.id, session.id, request).await?;
+        let opened = match &value {
+            OpenSliceOutcome::Created(slice) | OpenSliceOutcome::Replay(slice) => slice,
+        };
+        opened.validate_verification_plan_binding()?;
+        if request.disposition_id.is_some() && opened.selected_option_id.is_none() {
+            return Err(Error::InputConflict);
+        }
         tx.commit().await?;
         Ok(value)
     }

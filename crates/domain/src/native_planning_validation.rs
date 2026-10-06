@@ -15,6 +15,7 @@ impl SliceCandidateDraft {
             let (identity, deps, sources) = match node {
                 SliceCandidateDraftNode::Work {
                     identity,
+                    model_route_facts,
                     title,
                     outcome,
                     proof,
@@ -34,6 +35,9 @@ impl SliceCandidateDraft {
                         || proof.iter().any(|v| v.trim().is_empty())
                     {
                         return Err(Error::InvalidArguments);
+                    }
+                    if let Some(facts) = model_route_facts {
+                        facts.validate()?;
                     }
                     if *pipeline == PipelineKind::FullDesignToExecution
                         && (why_lightweight_insufficient
@@ -99,6 +103,15 @@ impl SliceCandidateDraft {
 }
 
 pub fn validate_slice_graph(nodes: &[SliceCandidateNode]) -> Result<()> {
+    for node in nodes {
+        if let SliceCandidateNode::Work {
+            model_route_facts: Some(facts),
+            ..
+        } = node
+        {
+            facts.validate()?;
+        }
+    }
     let by_id = nodes
         .iter()
         .map(|n| (n.id(), n))

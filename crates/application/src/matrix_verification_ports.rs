@@ -1,0 +1,139 @@
+use async_trait::async_trait;
+use tect_domain::{
+    Error, MatrixEvidenceBinding, MatrixVerificationRecord, RequiredMatrixFact, Result,
+};
+use uuid::Uuid;
+
+/// A host-owned validator must resolve immutable content, its SHA-256, source,
+/// subject, observation time, expiry, and policy-specific trust and max age.
+/// The caller supplies only a reference; no outcome or timestamps cross this API.
+#[async_trait]
+pub trait MatrixEvidenceValidator: Send + Sync {
+    fn policy_version(&self) -> &str;
+
+    async fn validate(
+        &self,
+        workspace_id: Uuid,
+        task_id: Uuid,
+        revision: i64,
+        fact: &RequiredMatrixFact,
+        evidence_ref: &str,
+        now: i64,
+    ) -> Result<MatrixEvidenceBinding>;
+
+    /// Check that a previously accepted binding remains trusted under the
+    /// current policy and source state. Unconfigured validators deny by default.
+    async fn revalidate(
+        &self,
+        _workspace_id: Uuid,
+        _task_id: Uuid,
+        _revision: i64,
+        _fact: &RequiredMatrixFact,
+        _binding: &MatrixEvidenceBinding,
+        _now: i64,
+    ) -> Result<()> {
+        Err(tect_domain::Error::Forbidden)
+    }
+}
+
+pub struct DisabledMatrixEvidenceValidator;
+
+#[async_trait]
+impl MatrixEvidenceValidator for DisabledMatrixEvidenceValidator {
+    fn policy_version(&self) -> &str {
+        "unconfigured"
+    }
+
+    async fn validate(
+        &self,
+        _workspace_id: Uuid,
+        _task_id: Uuid,
+        _revision: i64,
+        _fact: &RequiredMatrixFact,
+        _evidence_ref: &str,
+        _now: i64,
+    ) -> Result<MatrixEvidenceBinding> {
+        Err(tect_domain::Error::Forbidden)
+    }
+}
+
+/// Called within the same unit of work that locked and checked the task head.
+/// Implementations must append atomically and reject a changed task head.
+#[async_trait]
+pub trait MatrixVerificationStore: Send {
+    /// Exact immutable V1 record and original verification time for completing
+    /// an already-sent historical dispatch. Never use this to authorize a send.
+    async fn historical_matrix_verification_by_digest(
+        &mut self,
+        _workspace_id: Uuid,
+        _task_id: Uuid,
+        _revision: i64,
+        _record_digest: &str,
+    ) -> Result<Option<(MatrixVerificationRecord, i64)>> {
+        Err(Error::Forbidden)
+    }
+    /// Returns an exact persisted record; callers must re-evaluate time-bound
+    /// evidence at use time. None never implies verified.
+    async fn matrix_verification_for_revision(
+        &mut self,
+        workspace_id: Uuid,
+        task_id: Uuid,
+        revision: i64,
+        input_digest: &str,
+    ) -> Result<Option<MatrixVerificationRecord>>;
+
+    async fn append_matrix_verification(
+        &mut self,
+        workspace_id: Uuid,
+        verifier_session_id: Uuid,
+        task_id: Uuid,
+        expected_revision: i64,
+        expected_input_digest: &str,
+        record: &MatrixVerificationRecord,
+    ) -> Result<()>;
+}
+
+/// Minted only by the application after the latest stored verification and
+/// every bound evidence item are revalidated for the saved revision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevalidatedMatrixVerification {
+    validated: tect_domain::ValidatedMatrixVerification,
+}
+
+impl RevalidatedMatrixVerification {
+    pub(crate) fn from_revalidated(validated: tect_domain::ValidatedMatrixVerification) -> Self {
+        Self { validated }
+    }
+
+    pub(crate) fn evaluation_digest(
+        &self,
+        input: &tect_domain::EngineeringMatrixInput,
+        composition: &tect_domain::EngineeringMatrixComposition,
+        choice_set: &tect_domain::EngineeringChoiceSet,
+    ) -> Result<String> {
+        tect_domain::matrix_verified_evaluation_digest(
+            input,
+            composition,
+            choice_set,
+            &self.validated,
+        )
+    }
+
+    pub fn record_digest(&self) -> &str {
+        self.validated.record_digest()
+    }
+
+    pub fn disposition_digest(
+        &self,
+        input: &tect_domain::EngineeringMatrixInput,
+        composition: &tect_domain::EngineeringMatrixComposition,
+        choice_set: &tect_domain::EngineeringChoiceSet,
+    ) -> Result<String> {
+        tect_domain::matrix_verified_disposition_digest(
+            input,
+            composition,
+            choice_set,
+            &self.validated,
+        )
+    }
+}

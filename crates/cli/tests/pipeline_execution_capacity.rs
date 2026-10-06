@@ -70,7 +70,7 @@ async fn large_current_context_falls_back_to_exact_immutable_output_reads() {
         &runtime_url,
         &format!("tect-pipeline-capacity-{}", Uuid::new_v4()),
     );
-    let _daemon = Daemon::start(&runtime, socket.clone()).await;
+    let mut daemon = Daemon::start(&runtime, socket.clone()).await;
     let enrollment = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
         .await
         .unwrap();
@@ -282,4 +282,5 @@ async fn large_current_context_falls_back_to_exact_immutable_output_reads() {
         assert!(exact.provenance.representation_digest.is_some());
         assert!(exact.provenance.pages > 1);
     }
+    recovery_support::finish_and_stop(client, &mut daemon).await;
 }

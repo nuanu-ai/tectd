@@ -12,26 +12,26 @@ fn names(definitions: &Value) -> BTreeSet<&str> {
 }
 
 #[test]
-fn public_surface_is_exactly_five_tools_and_sixty_two_registry_routes() {
+fn public_surface_preserves_exact_five_tools_and_registry_counts() {
     let definitions = definitions();
     assert_eq!(
         names(&definitions),
         BTreeSet::from(["command", "execute", "get_state", "help", "query"])
     );
-    assert_eq!(routes().len(), 62);
+    assert_eq!(routes().len(), 104);
     assert_eq!(
         routes()
             .iter()
             .filter(|route| route.tool == "query")
             .count(),
-        20
+        39
     );
     assert_eq!(
         routes()
             .iter()
             .filter(|route| route.tool == "command")
             .count(),
-        41
+        64
     );
     assert_eq!(
         routes()
@@ -44,6 +44,7 @@ fn public_surface_is_exactly_five_tools_and_sixty_two_registry_routes() {
         route.tool == "command" && route.route == "slice.pipeline.checkpoint.resolve"
     }));
     for (tool, route) in [
+        ("query", "matrix.technical.compare"),
         ("command", "scope.candidates.delta"),
         ("query", "scope.candidates.delta.status"),
         ("command", "slice.pipeline.evidence_artifact.register"),
@@ -101,18 +102,101 @@ fn every_route_example_uses_the_authoritative_strict_decoder() {
             explicit_null[field] = Value::Null;
             let accepted = decode_public_call(
                 spec.tool,
-                json!({"route":spec.route,"params":explicit_null}),
+                json!({"route":spec.route,"params":explicit_null.clone()}),
             )
             .is_ok();
-            let nullable = property["type"]
+            let nullable_by_type = property["type"]
                 .as_array()
                 .is_some_and(|types| types.iter().any(|kind| kind == "null"));
+            let nullable = nullable_by_type
+                && applicable_conditions_allow_null(&spec.schema, &explicit_null, field);
             assert_eq!(
                 accepted, nullable,
                 "{} null behavior diverged for {field}",
                 spec.route
             );
         }
+    }
+}
+
+// Evaluate only the conditional property shapes advertised by this registry.
+fn condition_matches(condition: &Value, value: &Value) -> bool {
+    if condition
+        .get("const")
+        .is_some_and(|expected| expected != value)
+    {
+        return false;
+    }
+    if condition["enum"]
+        .as_array()
+        .is_some_and(|values| !values.contains(value))
+    {
+        return false;
+    }
+    if condition["required"].as_array().is_some_and(|fields| {
+        fields
+            .iter()
+            .any(|field| value.get(field.as_str().unwrap()).is_none())
+    }) {
+        return false;
+    }
+    condition["properties"]
+        .as_object()
+        .is_none_or(|properties| {
+            properties.iter().all(|(field, schema)| {
+                value
+                    .get(field)
+                    .is_none_or(|actual| condition_matches(schema, actual))
+            })
+        })
+}
+
+fn applicable_conditions_allow_null(schema: &Value, value: &Value, field: &str) -> bool {
+    schema["allOf"].as_array().is_none_or(|conditions| {
+        conditions.iter().all(|branch| {
+            if !condition_matches(&branch["if"], value) {
+                return true;
+            }
+            match &branch["then"]["properties"][field]["type"] {
+                Value::String(kind) => kind == "null",
+                Value::Array(kinds) => kinds.iter().any(|kind| kind == "null"),
+                Value::Null => true,
+                other => panic!("unexpected advertised conditional type: {other}"),
+            }
+        })
+    })
+}
+
+#[test]
+fn disposition_conditional_nulls_preserve_no_call_and_exact_advice_bindings() {
+    let spec = routes()
+        .into_iter()
+        .find(|s| s.route == "engineering.matrix.disposition.record")
+        .unwrap();
+    let decode =
+        |params| decode_public_call(spec.tool, json!({"route":spec.route,"params":params}));
+    let mut blocked = spec.example.clone();
+    blocked["decision"] =
+        json!({"outcome":"blocked","blocked_reason":"No current eligible choice"});
+    blocked["expected_choice_set_digest"] = Value::Null;
+    assert!(decode(blocked.clone()).is_ok());
+    for field in ["advice_id", "advice_digest", "expected_choice_set_digest"] {
+        let mut missing = blocked.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(decode(missing).is_err());
+    }
+    let mut selected = spec.example.clone();
+    selected["expected_choice_set_digest"] = Value::Null;
+    assert!(decode(selected).is_err());
+    let mut advised = spec.example.clone();
+    advised["basis"] = json!("after_advice");
+    advised["advice_id"] = json!("00000000-0000-4000-8000-000000000002");
+    advised["advice_digest"] = json!("c".repeat(64));
+    assert!(decode(advised.clone()).is_ok());
+    for field in ["advice_id", "advice_digest"] {
+        let mut invalid = advised.clone();
+        invalid[field] = Value::Null;
+        assert!(decode(invalid).is_err());
     }
 }
 
@@ -311,7 +395,7 @@ fn internal_legacy_phase_actions_can_retain_backend_receipts() {
 #[test]
 fn help_search_is_bounded_stable_filtered_and_bilingual() {
     let all = help(parse_help(json!({"mode":"search"})).unwrap()).unwrap();
-    assert_eq!(all["total_matches"], 72);
+    assert_eq!(all["total_matches"], routes().len() + 10);
     assert_eq!(all["returned"], 25);
     assert_eq!(all["truncated"], true);
     assert_eq!(all["hits"][0]["tool"], "get_state");

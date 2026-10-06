@@ -9,17 +9,39 @@ pub(crate) enum Invocation {
     ScopeCandidate(crate::scope_candidate_tools::ScopeCandidateInvocation),
     Slice(crate::slice_tools::SliceInvocation),
     Pipeline(crate::pipeline_tools::PipelineInvocation),
+    PipelineRecommendationPrepare(tect_application::PreparePipelineRecommendation),
+    PipelineRecommendationRun(tect_application::RunPipelineRecommendation),
+    PipelineRecommendationDisposition(tect_domain::PipelineDispositionRequest),
+    PipelineOpenEffect(crate::pipeline_open_effect_tools::PipelineOpenEffectInvocation),
+    PipelinePhaseEffect(crate::pipeline_phase_effect_tools::PipelinePhaseEffectInvocation),
     Knowledge(crate::knowledge_tools::KnowledgeInvocation),
     KnowledgeLifecycle(crate::knowledge_lifecycle_tools::KnowledgeLifecycleInvocation),
     KnowledgeMaintenance(crate::knowledge_maintenance_tools::KnowledgeMaintenanceInvocation),
     KnowledgeSearch(tect_domain::KnowledgeSearchQuery),
+    AntiBloat(crate::anti_bloat_tools::AntiBloatInvocation),
+    Advisory(crate::advisory_tools::AdvisoryInvocation),
+    MatrixAdvisory(crate::matrix_advisory_tools::MatrixAdvisoryInvocation),
+    MatrixTask(crate::matrix_task_tools::MatrixTaskInvocation),
+    MatrixDisposition(crate::matrix_disposition_tools::MatrixDispositionInvocation),
+    MatrixRequirementsContext(
+        crate::matrix_requirements_context_tools::MatrixRequirementsContextInvocation,
+    ),
+    MatrixVerification(tect_application::VerifyMatrixTask),
+    ModelRoute(crate::model_route_tools::ModelRouteInvocation),
     Help(crate::api::HelpRequest),
     OpenWorkspace,
     GetState,
     WorkspaceState(crate::workspace_state::Query),
-    RegisterSource { path: String },
-    SelectWorktrees { worktree_ids: Vec<Uuid> },
-    ListSources { after: Option<Uuid>, limit: u32 },
+    RegisterSource {
+        path: String,
+    },
+    SelectWorktrees {
+        worktree_ids: Vec<Uuid>,
+    },
+    ListSources {
+        after: Option<Uuid>,
+        limit: u32,
+    },
 }
 
 #[derive(Deserialize)]
@@ -44,6 +66,38 @@ struct ListSourcesArguments {
 
 pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocation> {
     match name {
+        "anti_bloat_prepare"
+        | "anti_bloat_get"
+        | "anti_bloat_run"
+        | "anti_bloat_apply"
+        | "anti_bloat_preservation_get"
+        | "anti_bloat_preservation_verify" => {
+            crate::anti_bloat_tools::parse(name, arguments).map(Invocation::AntiBloat)
+        }
+        "prepare_model_route_host_selection"
+        | "model_route_prepare"
+        | "model_route_run"
+        | "model_route_get"
+        | "model_route_disposition" => {
+            crate::model_route_tools::parse(name, arguments).map(Invocation::ModelRoute)
+        }
+        "pipeline_recommendation_prepare" => crate::pipeline_recommendation_tools::parse(arguments)
+            .map(Invocation::PipelineRecommendationPrepare),
+        "pipeline_recommendation_run" => crate::pipeline_recommendation_tools::parse_run(arguments)
+            .map(Invocation::PipelineRecommendationRun),
+        "pipeline_recommendation_disposition" => {
+            crate::pipeline_recommendation_tools::parse_disposition(arguments)
+                .map(Invocation::PipelineRecommendationDisposition)
+        }
+        "get_pipeline_open_effect" | "verify_pipeline_open_effect" => {
+            crate::pipeline_open_effect_tools::parse(name, arguments)
+                .map(Invocation::PipelineOpenEffect)
+        }
+        "get_pipeline_phase_effect" | "verify_pipeline_phase_effect" => {
+            crate::pipeline_phase_effect_tools::parse(name, arguments)
+                .map(Invocation::PipelinePhaseEffect)
+        }
+
         "open_workspace" if empty_object(&arguments) => Ok(Invocation::OpenWorkspace),
         "get_state" if empty_object(&arguments) => Ok(Invocation::GetState),
         "workspace_state" => {
@@ -74,9 +128,47 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
                 limit: arguments.limit,
             })
         }
+        "request_engineering_advisory" | "get_engineering_advisory" => {
+            crate::matrix_advisory_tools::parse(name, arguments).map(Invocation::MatrixAdvisory)
+        }
+        "record_matrix_disposition" | "get_matrix_disposition" => {
+            crate::matrix_disposition_tools::parse(name, arguments)
+                .map(Invocation::MatrixDisposition)
+        }
+        "record_matrix_task"
+        | "get_matrix_task"
+        | "get_verified_matrix_cards"
+        | "compare_technical_delivery_mechanisms" => {
+            crate::matrix_task_tools::parse(name, arguments).map(Invocation::MatrixTask)
+        }
+        "matrix_context_propose" | "matrix_context_confirm" | "matrix_context_effective_get" => {
+            crate::matrix_requirements_context_tools::parse(name, arguments)
+                .map(Invocation::MatrixRequirementsContext)
+        }
+        "verify_matrix_task" => {
+            crate::matrix_verification_tools::parse(arguments).map(Invocation::MatrixVerification)
+        }
         "help" => crate::api::parse_help(arguments).map(Invocation::Help),
         "knowledge_search" => {
             crate::knowledge_search_tools::parse(name, arguments).map(Invocation::KnowledgeSearch)
+        }
+        _ if matches!(
+            name,
+            "get_session_advisory_preference"
+                | "set_session_advisory_preference"
+                | "scope_advisory_request"
+                | "candidate_advisory_verify"
+                | "scope_advisory_disposition"
+                | "get_advisory_config"
+                | "configure_advisory"
+                | "workspace_advisory_audit"
+                | "scope_advisory_get"
+                | "scope_advisory_audit"
+                | "candidate_advisory_get"
+                | "candidate_advisory_audit"
+        ) =>
+        {
+            crate::advisory_tools::parse(name, arguments).map(Invocation::Advisory)
         }
         _ if matches!(
             name,
@@ -186,7 +278,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            41
+            60
         );
     }
 
@@ -215,5 +307,42 @@ mod tests {
             parse_invocation("list_sources", json!({"limit": 1.5})),
             Err(Error::InvalidArguments | Error::InvalidArgumentsDetail(_))
         ));
+    }
+    #[test]
+    fn matrix_core_routes_delegate_only_to_their_typed_invocation_family() {
+        for spec in crate::api::core_matrix_test_routes().iter().filter(|spec| {
+            matches!(
+                spec.internal,
+                "record_matrix_task"
+                    | "get_matrix_task"
+                    | "get_verified_matrix_cards"
+                    | "matrix_context_propose"
+                    | "matrix_context_confirm"
+                    | "matrix_context_effective_get"
+                    | "verify_matrix_task"
+            )
+        }) {
+            let invocation = parse_invocation(spec.internal, spec.example.clone()).unwrap();
+            match spec.internal {
+                "record_matrix_task"
+                | "get_matrix_task"
+                | "get_verified_matrix_cards"
+                | "compare_technical_delivery_mechanisms" => {
+                    assert!(matches!(invocation, Invocation::MatrixTask(_)))
+                }
+                "verify_matrix_task" => {
+                    assert!(matches!(invocation, Invocation::MatrixVerification(_)))
+                }
+                _ => assert!(matches!(
+                    invocation,
+                    Invocation::MatrixRequirementsContext(_)
+                )),
+            }
+            let mut forged = spec.example.clone();
+            forged["workspace_key"] = json!("foreign");
+            assert!(parse_invocation(spec.internal, forged).is_err());
+        }
+        assert!(parse_invocation("matrix_context_unknown", json!({})).is_err());
+        assert!(parse_invocation("compare_technical_delivery_mechanisms", json!({})).is_err());
     }
 }

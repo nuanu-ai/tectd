@@ -30,6 +30,24 @@ impl ScopeCandidateStore for PgUnitOfWork {
         let tenant_id = self.tenant_id()?;
         scope_candidates::replay(self.transaction()?, tenant_id, workspace_id, request).await
     }
+    async fn selected_candidate_receipt(
+        &mut self,
+        workspace_id: Uuid,
+        actor_id: Uuid,
+        session_id: Uuid,
+        request: &SaveCandidateDraft,
+    ) -> Result<Option<StoredCandidateContext>> {
+        let tenant_id = self.tenant_id()?;
+        crate::scope_advisory::selected_candidate_receipt(
+            self.transaction()?,
+            tenant_id,
+            workspace_id,
+            actor_id,
+            session_id,
+            request,
+        )
+        .await
+    }
     async fn ensure_candidate_set(
         &mut self,
         workspace_id: Uuid,
@@ -64,6 +82,42 @@ impl ScopeCandidateStore for PgUnitOfWork {
             candidate_set_id,
         )
         .await
+    }
+
+    async fn candidate_revision(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+    ) -> Result<Option<i64>> {
+        let tenant_id = self.tenant_id()?;
+        sqlx::query_scalar(
+            "SELECT revision FROM scope_candidate_sets \
+             WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
+        )
+        .bind(tenant_id)
+        .bind(workspace_id)
+        .bind(candidate_set_id)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(crate::storage_error)
+    }
+
+    async fn lock_candidate_revision(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+    ) -> Result<Option<i64>> {
+        let tenant_id = self.tenant_id()?;
+        sqlx::query_scalar(
+            "SELECT revision FROM scope_candidate_sets \
+             WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR SHARE",
+        )
+        .bind(tenant_id)
+        .bind(workspace_id)
+        .bind(candidate_set_id)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(crate::storage_error)
     }
 
     async fn candidate_history(
@@ -159,8 +213,30 @@ impl ScopeCandidateStore for PgUnitOfWork {
         workspace_id: Uuid,
         request: &SaveCandidateDraft,
     ) -> Result<StoredCandidateContext> {
+        if request.selected_advisory.is_some() {
+            return Err(tect_domain::Error::InvalidArguments);
+        }
         let tenant_id = self.tenant_id()?;
         scope_candidates::save_draft(self.transaction()?, tenant_id, workspace_id, request).await
+    }
+
+    async fn save_selected_candidate_draft(
+        &mut self,
+        workspace_id: Uuid,
+        actor_id: Uuid,
+        session_id: Uuid,
+        request: &SaveCandidateDraft,
+    ) -> Result<StoredCandidateContext> {
+        let tenant_id = self.tenant_id()?;
+        crate::scope_advisory::save_selected_candidate_draft(
+            self.transaction()?,
+            tenant_id,
+            workspace_id,
+            actor_id,
+            session_id,
+            request,
+        )
+        .await
     }
 
     async fn save_candidate_review(

@@ -21,8 +21,19 @@ pub(crate) async fn verify_runtime_role(pool: &PgPool) -> Result<()> {
                    WHERE n.nspname = 'public'
                      AND c.relname IN (
                          'tenants', 'principals', 'hosts', 'workspaces', 'memberships',
+                         'matrix_tasks', 'matrix_task_revisions', 'matrix_verifications',
+                         'matrix_verification_bindings', 'matrix_requirements_proposals',
+                         'matrix_requirements_confirmations', 'matrix_requirements_snapshots',
+                         'matrix_task_requirements_bindings',
                          'agent_sessions', 'source_repositories', 'source_worktrees',
                          'session_worktrees', 'workspace_events', 'programs', 'program_inputs',
+                         'advisory_workspace_config', 'advisory_workspace_config_history',
+                         'advisory_opportunity', 'advisory_dispatch',
+                         'advisory_scope_source_snapshot', 'advisory_scope_manifest',
+                         'advisory_scope_advice', 'advisory_scope_disposition',
+                         'advisory_scope_preservation_receipt',
+                         'advisory_scope_caller_link', 'advisory_scope_verifier_receipt',
+                         'advisory_scope_selected_save_observation',
                          'setup_session_directories', 'workspace_setups', 'workspace_setup_inputs',
                          'scope_candidate_sets', 'scope_candidate_inputs',
                          'scope_candidate_contents', 'scope_candidate_snapshots',
@@ -56,7 +67,10 @@ pub(crate) async fn verify_runtime_role(pool: &PgPool) -> Result<()> {
                    FROM pg_catalog.pg_proc p
                    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
                    WHERE n.nspname = 'public'
-                     AND p.proname IN ('tect_authenticate_host', 'tect_preserve_created_at',
+                     AND p.proname IN ('matrix_tasks_enforce_revision_step',
+                         'matrix_task_revisions_require_active_owner', 'matrix_verifications_require_active_verifier',
+                         'matrix_verification_deny_mutation', 'matrix_requirements_anchor_guard',
+                         'matrix_task_requirements_binding_guard', 'tect_authenticate_host', 'tect_preserve_created_at',
                          'tect_dk_native_publish','tect_dk_native_read','tect_dk_session_principal','tect_dk_is_owner','tect_dk_ensure_workspace_state','tect_dk_capability','tect_dk_database_identity_ready',
                          'tect_dk_internal_native_publish','tect_dk_internal_native_read','tect_dk_internal_native_owned_residual','tect_dk2_internal_native_publish','tect_dk2_internal_native_read','tect_dk_internal_native_erase','tect_dk_internal_capability','tect_dk_search_vector_ready')
                      AND pg_catalog.pg_has_role(r.oid, p.proowner, 'MEMBER')

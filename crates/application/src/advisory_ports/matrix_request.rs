@@ -1,0 +1,302 @@
+impl MatrixProviderRequest {
+    /// Build only from the accepted revision and its complete composition.
+    /// Domain contracts remain the authority for eligibility and evaluation.
+    pub fn new(
+        revision: MatrixTaskRevision,
+        composition: EngineeringMatrixComposition,
+        provider_profile_ref: AdvisoryProviderProfileRef,
+        model_configuration: AdvisoryModelConfiguration,
+    ) -> Result<Self> {
+        provider_profile_ref.validate()?;
+        model_configuration.validate()?;
+        if revision.task_id.is_nil() || revision.revision < 1 {
+            return Err(Error::InvalidArguments);
+        }
+        validate_saved_revision_source_provenance(&composition)?;
+        let choice_set = revision
+            .choice_set
+            .as_ref()
+            .ok_or(Error::InvalidArguments)?;
+        if choice_set.task_id != revision.task_id.to_string()
+            || choice_set.task_revision != revision.revision.to_string()
+        {
+            return Err(Error::StaleRevision);
+        }
+        let input = serde_json::to_value(&revision.input).map_err(|_| Error::InvalidArguments)?;
+        let input_digest = canonical_matrix_input_digest(&input)?;
+        let choice_set_digest = choice_set.canonical_digest(&revision.input)?;
+        if revision.input_digest != input_digest
+            || revision.choice_set_digest.as_deref() != Some(choice_set_digest.as_str())
+        {
+            return Err(Error::InvalidArguments);
+        }
+        let eligibility = choice_set.validate(&revision.input)?;
+        if !matches!(
+            &eligibility,
+            MatrixAdviceEligibility::EligibleForAdvice { .. }
+        ) {
+            return Err(Error::InvalidArguments);
+        }
+        let evaluation_digest =
+            matrix_evaluation_digest(&revision.input, &composition, choice_set)?
+                .ok_or(Error::InvalidArguments)?;
+        let binding = MatrixProviderBinding {
+            task_id: revision.task_id,
+            task_revision: revision.revision,
+            input_digest,
+            choice_set_id: choice_set.choice_set_id.clone(),
+            choice_set_version: choice_set.version,
+            choice_set_digest,
+            evaluation_digest,
+            verification: MatrixVerificationAuthority::Unverified,
+        };
+        Ok(Self {
+            binding,
+            revision,
+            composition,
+            provider_profile_ref,
+            model_configuration,
+            eligibility,
+        })
+    }
+
+    /// Construct the v2 positive binding from the application's validated
+    /// verification token. The token is tied to the exact input and revision.
+    pub fn new_verified(
+        revision: MatrixTaskRevision,
+        composition: EngineeringMatrixComposition,
+        verification: &RevalidatedMatrixVerification,
+        provider_profile_ref: AdvisoryProviderProfileRef,
+        model_configuration: AdvisoryModelConfiguration,
+    ) -> Result<Self> {
+        let mut request = Self::new_for_verified_composition(
+            revision,
+            composition,
+            provider_profile_ref,
+            model_configuration,
+        )?;
+        let choice_set = request
+            .revision
+            .choice_set
+            .as_ref()
+            .ok_or(Error::InvalidArguments)?;
+        request.binding.evaluation_digest = verification.evaluation_digest(
+            &request.revision.input,
+            &request.composition,
+            choice_set,
+        )?;
+        request.binding.verification = MatrixVerificationAuthority::LegacyV1 {
+            digest: verification.record_digest().to_owned(),
+        };
+        Ok(request)
+    }
+
+    /// Only the application may mint a provider request from a freshly
+    /// revalidated, context-bound verification.
+    pub(crate) fn new_context_verified(
+        revision: MatrixTaskRevision,
+        composition: &tect_domain::ContextEngineeringMatrixComposition,
+        record: &tect_domain::ContextMatrixVerificationRecord,
+        snapshot_id: Uuid,
+        provider_profile_ref: AdvisoryProviderProfileRef,
+        model_configuration: AdvisoryModelConfiguration,
+    ) -> Result<Self> {
+        if record.task_id != revision.task_id.to_string()
+            || record.task_revision != revision.revision.to_string()
+            || record.frozen_snapshot_id != snapshot_id.to_string()
+            || record.input_digest != revision.input_digest
+            || record.digest != composition.operating_verification_digest()
+            || record.requirements_semantic_digest != composition.requirements_semantic_digest()
+            || !composition.is_resolved()
+        {
+            return Err(Error::InvalidArguments);
+        }
+        let mut request = Self::new(
+            revision,
+            composition.composition().clone(),
+            provider_profile_ref,
+            model_configuration,
+        )?;
+        let choice = request
+            .revision
+            .choice_set
+            .as_ref()
+            .ok_or(Error::InvalidArguments)?;
+        request.binding.evaluation_digest = context_matrix_verified_evaluation_digest(
+            &request.revision.input,
+            composition,
+            choice,
+            record,
+        )?;
+        request.binding.verification = MatrixVerificationAuthority::ContextV2 {
+            digest: record.digest.clone(),
+            snapshot_id,
+            authority_schema: record.authority_schema.clone(),
+            semantic_digest: record.requirements_semantic_digest.clone(),
+        };
+        Ok(request)
+    }
+
+    fn new_for_verified_composition(
+        revision: MatrixTaskRevision,
+        composition: EngineeringMatrixComposition,
+        provider_profile_ref: AdvisoryProviderProfileRef,
+        model_configuration: AdvisoryModelConfiguration,
+    ) -> Result<Self> {
+        // Reuse all revision, choice-set, digest and eligibility guards while
+        // changing only the provenance status accepted by this constructor.
+        if composition.source_verification_status
+            != MatrixSourceVerificationStatus::IndependentlyVerifiedOwnerReported
+        {
+            return Err(Error::InvalidArguments);
+        }
+        let mut provisional = composition.clone();
+        provisional.source_verification_status =
+            MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification;
+        let mut request = Self::new(
+            revision,
+            provisional,
+            provider_profile_ref,
+            model_configuration,
+        )?;
+        request.composition = composition;
+        Ok(request)
+    }
+
+    pub fn binding(&self) -> &MatrixProviderBinding {
+        &self.binding
+    }
+
+    pub fn revision(&self) -> &MatrixTaskRevision {
+        &self.revision
+    }
+
+    pub fn composition(&self) -> &EngineeringMatrixComposition {
+        &self.composition
+    }
+
+    pub fn provider_profile_ref(&self) -> &AdvisoryProviderProfileRef {
+        &self.provider_profile_ref
+    }
+
+    pub fn model_configuration(&self) -> &AdvisoryModelConfiguration {
+        &self.model_configuration
+    }
+
+    pub fn eligibility(&self) -> &MatrixAdviceEligibility {
+        &self.eligibility
+    }
+}
+
+/// Versioned positive material; historical V1 digest preimages are unchanged.
+pub fn context_matrix_verified_evaluation_digest(
+    input: &tect_domain::EngineeringMatrixInput,
+    composition: &tect_domain::ContextEngineeringMatrixComposition,
+    choice_set: &tect_domain::EngineeringChoiceSet,
+    record: &tect_domain::ContextMatrixVerificationRecord,
+) -> Result<String> {
+    if !composition.is_resolved()
+        || record.digest != composition.operating_verification_digest()
+        || record.requirements_semantic_digest != composition.requirements_semantic_digest()
+        || record.task_id != choice_set.task_id
+        || record.task_revision != choice_set.task_revision
+    {
+        return Err(Error::InvalidArguments);
+    }
+    let material =
+        tect_domain::matrix_evaluation_digest(input, composition.composition(), choice_set)?
+            .ok_or(Error::InvalidArguments)?;
+    let bytes = serde_json::to_vec(&(
+        "tect.context-matrix-verified-evaluation/1",
+        material,
+        &record.digest,
+        &record.frozen_snapshot_id,
+        &record.authority_schema,
+        &record.requirements_semantic_digest,
+    ))
+    .map_err(|_| Error::InternalInvariant)?;
+    Ok(format!("{:x}", sha2::Sha256::digest(bytes)))
+}
+
+/// Explicit selection material. Optional ranking remains inapplicable to one
+/// valid owner-authored choice; eligible ranking preimages remain unchanged.
+pub fn context_matrix_verified_disposition_digest(
+    input: &tect_domain::EngineeringMatrixInput,
+    composition: &tect_domain::ContextEngineeringMatrixComposition,
+    choice_set: &tect_domain::EngineeringChoiceSet,
+    record: &tect_domain::ContextMatrixVerificationRecord,
+) -> Result<String> {
+    if !composition.is_resolved()
+        || record.digest != composition.operating_verification_digest()
+        || record.requirements_semantic_digest != composition.requirements_semantic_digest()
+        || record.task_id != choice_set.task_id
+        || record.task_revision != choice_set.task_revision
+    {
+        return Err(Error::InvalidArguments);
+    }
+    if tect_domain::matrix_evaluation_digest(input, composition.composition(), choice_set)?
+        .is_some()
+    {
+        return context_matrix_verified_evaluation_digest(input, composition, choice_set, record);
+    }
+    if choice_set.candidates.len() != 1
+        || record.canonical_digest()? != record.digest
+        || record.input_digest != tect_domain::matrix_input_digest(input)?
+        || record.frozen_snapshot_id != composition.frozen_snapshot_id()
+        || record.authority_schema != composition.authority_schema()
+    {
+        return Err(Error::InvalidArguments);
+    }
+    let bytes = serde_json::to_vec(&(
+        "tect.context-matrix-verified-disposition/1",
+        input,
+        composition,
+        choice_set.canonical_digest(input)?,
+        record,
+    ))
+    .map_err(|_| Error::InternalInvariant)?;
+    Ok(format!("{:x}", sha2::Sha256::digest(bytes)))
+}
+
+fn validate_saved_revision_source_provenance(
+    composition: &EngineeringMatrixComposition,
+) -> Result<()> {
+    if composition.source_verification_status
+        != MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification
+    {
+        return Err(Error::InvalidArguments);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod matrix_provider_request_tests {
+    use super::*;
+
+    fn composition(status: MatrixSourceVerificationStatus) -> EngineeringMatrixComposition {
+        EngineeringMatrixComposition {
+            catalogue_version: "EM02-INITIAL@0.1",
+            task_id: "task-1".into(),
+            task_revision: "1".into(),
+            source_verification_status: status,
+            mandatory_cards: Vec::new(),
+            unresolved_evidence: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn saved_revision_rejects_caller_verified_composition() {
+        assert_eq!(
+            validate_saved_revision_source_provenance(&composition(
+                MatrixSourceVerificationStatus::VerifiedByCaller,
+            )),
+            Err(Error::InvalidArguments)
+        );
+        assert_eq!(
+            validate_saved_revision_source_provenance(&composition(
+                MatrixSourceVerificationStatus::OwnerReportedPendingIndependentVerification,
+            )),
+            Ok(())
+        );
+    }
+}

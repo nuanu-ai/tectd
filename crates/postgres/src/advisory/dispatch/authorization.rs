@@ -1,0 +1,387 @@
+const DISPATCH_COLUMNS: &str = "id,opportunity_id,predecessor_dispatch_id,attempt_number,provider,model,configuration_snapshot,configuration_digest,material_digest,payload_digest,request_payload,response_payload,input_tokens,output_tokens,latency_ms,state,send_certainty,outcome,retry_basis,raw_response_ref";
+
+#[path = "authorization/matrix.rs"]
+mod authorization_matrix;
+use authorization_matrix::{
+    MatrixChoiceStatus, require_current_matrix_choice, require_v2_matrix_dispatch_payload,
+    supported_dispatch_opportunity,
+};
+
+fn finalized_opportunity(
+    opportunity: AdvisoryOpportunity,
+    state: AdvisoryOpportunityState,
+    reason: AdvisoryReason,
+) -> AdvisoryOpportunity {
+    AdvisoryOpportunity {
+        state,
+        primary_reason: reason,
+        ..opportunity
+    }
+}
+
+async fn terminalize_stale_matrix_dispatch(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    row: &mut DispatchRow,
+    opportunity: &AdvisoryOpportunity,
+    reason: AdvisoryReason,
+) -> Result<()> {
+    let state = match reason {
+        AdvisoryReason::DeterministicInputInvalid => "no_call",
+        AdvisoryReason::ConfigurationChanged | AdvisoryReason::MatrixVerificationStale => {
+            "invalidated"
+        }
+        _ => return Err(Error::InvalidArguments),
+    };
+    let cancelled = sqlx::query(
+        "UPDATE advisory_dispatch \
+         SET state='cancelled',send_certainty='not_sent',sealed_at=pg_catalog.clock_timestamp() \
+         WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND state='authorized' \
+           AND send_started_at IS NULL AND outcome IS NULL AND response_payload IS NULL",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(row.id)
+    .execute(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    if cancelled.rows_affected() != 1 {
+        return Err(Error::InputConflict);
+    }
+    let terminalized = sqlx::query(
+        "UPDATE advisory_opportunity \
+         SET state=$4,primary_reason=$5,updated_at=pg_catalog.clock_timestamp() \
+         WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 \
+           AND state IN ('prepared','failed') \
+           AND capability='engineering_profile' \
+           AND decision_point='engineering.profile.before_selection' \
+           AND work_item_kind='matrix_task' \
+           AND matrix_choice_set_digest IS NOT NULL",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(opportunity.id)
+    .bind(state)
+    .bind(reason.as_str())
+    .execute(&mut **tx)
+    .await
+    .map_err(storage_error)?;
+    if terminalized.rows_affected() != 1 {
+        return Err(Error::InputConflict);
+    }
+    row.state = "cancelled".into();
+    row.send_certainty = "not_sent".into();
+    Ok(())
+}
+
+async fn dispatch_by_id(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    dispatch_id: Uuid,
+    for_update: bool,
+) -> Result<DispatchRow> {
+    let suffix = if for_update { " FOR UPDATE" } else { "" };
+    let sql = format!(
+        "SELECT {DISPATCH_COLUMNS} FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3{suffix}"
+    );
+    sqlx::query_as(&sql)
+        .bind(tenant)
+        .bind(workspace)
+        .bind(dispatch_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(storage_error)?
+        .ok_or(Error::NotFound)
+}
+
+async fn authorize_scope_dispatch(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    expected_config_revision: i64,
+    input: &AdvisoryDispatchAuthorization,
+) -> Result<AdvisoryDispatch> {
+    input.validate()?;
+    let opportunity = opportunity_by_id(tx, tenant, workspace, input.opportunity_id, true).await?;
+    let existing_sql = format!(
+        "SELECT {DISPATCH_COLUMNS} FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3 AND attempt_number=$4 FOR UPDATE"
+    );
+    let existing: Option<DispatchRow> = sqlx::query_as(&existing_sql)
+        .bind(tenant)
+        .bind(workspace)
+        .bind(input.opportunity_id)
+        .bind(input.attempt_number)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(storage_error)?;
+    if let Some(existing) = existing {
+        if !dispatch_matches_authorization(&existing, input)? {
+            return Err(Error::InputConflict);
+        }
+        return dispatch_from_row(&existing);
+    }
+    if opportunity.capability != AdvisoryCapability::ScopeDecomposition
+        || opportunity.material_digest != input.material_digest
+    {
+        return Err(Error::InputConflict);
+    }
+    if input.retry_basis == AdvisoryRetryBasis::Initial {
+        if opportunity.state != AdvisoryOpportunityState::Prepared {
+            return Err(Error::InputConflict);
+        }
+    } else if !matches!(
+        opportunity.state,
+        AdvisoryOpportunityState::Prepared | AdvisoryOpportunityState::Failed
+    ) {
+        return Err(Error::InputConflict);
+    }
+    let current: (i64, String, Option<String>, Option<serde_json::Value>) = sqlx::query_as(
+        "SELECT revision,mode,provider_profile_ref,model_configuration FROM advisory_workspace_config WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE",
+    )
+    .bind(tenant).bind(workspace).fetch_one(&mut **tx).await.map_err(storage_error)?;
+    if current.0 != expected_config_revision || current.0 != opportunity.config_revision {
+        return Err(Error::StaleRevision);
+    }
+    if current.1 != "optional" || current.2.is_none() || current.3.is_none() {
+        return Err(Error::InvalidConfiguration);
+    }
+    if let Some(predecessor) = input.predecessor_dispatch_id {
+        let previous = dispatch_by_id(tx, tenant, workspace, predecessor, true).await?;
+        if previous.opportunity_id != input.opportunity_id
+            || previous.attempt_number + 1 != input.attempt_number
+            || previous.material_digest != input.material_digest
+            || previous.payload_digest != input.payload_digest
+            || !matches!(
+                dispatch_state(&previous.state)?,
+                AdvisoryDispatchState::Cancelled | AdvisoryDispatchState::Sealed
+            )
+            || !advisory_retry_permitted(
+                send_certainty(&previous.send_certainty)?,
+                input.retry_basis,
+            )
+        {
+            return Err(Error::InputConflict);
+        }
+        let child_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3 AND predecessor_dispatch_id=$4)",
+        )
+        .bind(tenant)
+        .bind(workspace)
+        .bind(input.opportunity_id)
+        .bind(predecessor)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(storage_error)?;
+        if child_exists {
+            return Err(Error::InputConflict);
+        }
+    }
+    if let Some(source) = authored_scope_source(
+        tx,
+        tenant,
+        workspace,
+        input.opportunity_id,
+        opportunity.target_id,
+    )
+    .await?
+    {
+        if input.attempt_number != 1
+            || input.retry_basis != AdvisoryRetryBasis::Initial
+            || opportunity.state != AdvisoryOpportunityState::Prepared
+        {
+            return Err(Error::InputConflict);
+        }
+        require_current_authored_scope_source(tx, tenant, workspace, &source).await?;
+    }
+    let inserted = sqlx::query("INSERT INTO advisory_dispatch(id,tenant_id,workspace_id,opportunity_id,attempt_number,predecessor_dispatch_id,provider,model,configuration_snapshot,configuration_digest,material_digest,payload_digest,request_payload,state,send_certainty,retry_basis) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'authorized','not_sent',$14) ON CONFLICT DO NOTHING")
+        .bind(input.dispatch_id).bind(tenant).bind(workspace).bind(input.opportunity_id).bind(input.attempt_number).bind(input.predecessor_dispatch_id).bind(&input.provider).bind(&input.model).bind(&input.configuration_snapshot).bind(&input.configuration_digest).bind(&input.material_digest).bind(&input.payload_digest).bind(&input.request_payload).bind(input.retry_basis.as_str()).execute(&mut **tx).await.map_err(storage_error)?;
+    let row: Option<DispatchRow> = sqlx::query_as(&existing_sql)
+        .bind(tenant)
+        .bind(workspace)
+        .bind(input.opportunity_id)
+        .bind(input.attempt_number)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(storage_error)?;
+    let Some(row) = row else {
+        return Err(Error::InputConflict);
+    };
+    if inserted.rows_affected() == 0 && !dispatch_matches_authorization(&row, input)? {
+        return Err(Error::InputConflict);
+    }
+    if !dispatch_matches_authorization(&row, input)? {
+        return Err(Error::InputConflict);
+    }
+    dispatch_from_row(&row)
+}
+
+async fn authorize_matrix_dispatch(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    expected_config_revision: i64,
+    input: &AdvisoryDispatchAuthorization,
+) -> Result<AdvisoryDispatch> {
+    input.validate()?;
+    let opportunity = opportunity_by_id(tx, tenant, workspace, input.opportunity_id, true).await?;
+    if opportunity.capability != AdvisoryCapability::EngineeringProfile
+        || !supported_dispatch_opportunity(&opportunity)
+    {
+        return Err(Error::InputConflict);
+    }
+    if opportunity.capability == AdvisoryCapability::EngineeringProfile
+        && (opportunity.state == AdvisoryOpportunityState::NoCall
+            || opportunity.matrix_choice_set_digest.is_none())
+    {
+        return Err(Error::InputConflict);
+    }
+    let existing_sql = format!(
+        "SELECT {DISPATCH_COLUMNS} FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3 AND attempt_number=$4 FOR UPDATE"
+    );
+    let existing: Option<DispatchRow> = sqlx::query_as(&existing_sql)
+        .bind(tenant)
+        .bind(workspace)
+        .bind(input.opportunity_id)
+        .bind(input.attempt_number)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(storage_error)?;
+    if let Some(existing) = existing {
+        if !dispatch_matches_authorization(&existing, input)? {
+            return Err(Error::InputConflict);
+        }
+        // An already started or sealed attempt remains reconcilable after
+        // context drift. An authorized but unsent attempt still needs fresh
+        // authority before the caller can proceed to sending it.
+        if opportunity.capability == AdvisoryCapability::EngineeringProfile
+            && existing.state == "authorized"
+            && existing.send_certainty == "not_sent"
+        {
+            let current: (i64, String) = sqlx::query_as(
+                "SELECT revision,mode FROM advisory_workspace_config \
+                 WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE",
+            )
+            .bind(tenant)
+            .bind(workspace)
+            .fetch_one(&mut **tx)
+            .await
+            .map_err(storage_error)?;
+            if current.0 != expected_config_revision || current.0 != opportunity.config_revision {
+                return Err(Error::StaleRevision);
+            }
+            if current.1 != "optional" {
+                return Err(Error::InvalidConfiguration);
+            }
+            if require_current_matrix_choice(tx, tenant, workspace, &opportunity).await?
+                != MatrixChoiceStatus::Current
+            {
+                return Err(Error::StaleContext);
+            }
+        }
+        return dispatch_from_row(&existing);
+    }
+    if opportunity.material_digest != input.material_digest {
+        return Err(Error::InputConflict);
+    }
+    if opportunity.primary_reason == AdvisoryReason::BudgetExhaustedAfterResponse {
+        return Err(Error::BudgetExhaustedBeforeDispatch);
+    }
+    if input.retry_basis == AdvisoryRetryBasis::Initial {
+        if opportunity.state != AdvisoryOpportunityState::Prepared {
+            return Err(Error::InputConflict);
+        }
+    } else if !matches!(
+        opportunity.state,
+        AdvisoryOpportunityState::Prepared | AdvisoryOpportunityState::Failed
+    ) {
+        return Err(Error::InputConflict);
+    }
+    let current: (i64, String, Option<String>, Option<serde_json::Value>) = sqlx::query_as(
+        "SELECT revision,mode,provider_profile_ref,model_configuration FROM advisory_workspace_config WHERE tenant_id=$1 AND workspace_id=$2 FOR UPDATE",
+    )
+    .bind(tenant).bind(workspace).fetch_one(&mut **tx).await.map_err(storage_error)?;
+    if current.0 != expected_config_revision || current.0 != opportunity.config_revision {
+        return Err(Error::StaleRevision);
+    }
+    if current.1 != "optional" || current.2.is_none() || current.3.is_none() {
+        return Err(Error::InvalidConfiguration);
+    }
+    if opportunity.capability == AdvisoryCapability::EngineeringProfile
+        && require_current_matrix_choice(tx, tenant, workspace, &opportunity).await?
+            != MatrixChoiceStatus::Current
+    {
+        return Err(Error::StaleContext);
+    }
+    if opportunity.capability == AdvisoryCapability::EngineeringProfile {
+        require_v2_matrix_dispatch_payload(tx, tenant, workspace, &opportunity, input).await?;
+    }
+    if let Some(predecessor) = input.predecessor_dispatch_id {
+        let previous = dispatch_by_id(tx, tenant, workspace, predecessor, true).await?;
+        if previous.opportunity_id != input.opportunity_id
+            || previous.attempt_number + 1 != input.attempt_number
+            || previous.material_digest != input.material_digest
+            || previous.payload_digest != input.payload_digest
+            || !matches!(
+                dispatch_state(&previous.state)?,
+                AdvisoryDispatchState::Cancelled | AdvisoryDispatchState::Sealed
+            )
+            || !advisory_retry_permitted(
+                send_certainty(&previous.send_certainty)?,
+                input.retry_basis,
+            )
+        {
+            return Err(Error::InputConflict);
+        }
+        let child_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM advisory_dispatch WHERE tenant_id=$1 AND workspace_id=$2 AND opportunity_id=$3 AND predecessor_dispatch_id=$4)",
+        )
+        .bind(tenant)
+        .bind(workspace)
+        .bind(input.opportunity_id)
+        .bind(predecessor)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(storage_error)?;
+        if child_exists {
+            return Err(Error::InputConflict);
+        }
+    }
+    let inserted = sqlx::query("INSERT INTO advisory_dispatch(id,tenant_id,workspace_id,opportunity_id,attempt_number,predecessor_dispatch_id,provider,model,configuration_snapshot,configuration_digest,material_digest,payload_digest,request_payload,state,send_certainty,retry_basis) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'authorized','not_sent',$14) ON CONFLICT DO NOTHING")
+        .bind(input.dispatch_id).bind(tenant).bind(workspace).bind(input.opportunity_id).bind(input.attempt_number).bind(input.predecessor_dispatch_id).bind(&input.provider).bind(&input.model).bind(&input.configuration_snapshot).bind(&input.configuration_digest).bind(&input.material_digest).bind(&input.payload_digest).bind(&input.request_payload).bind(input.retry_basis.as_str()).execute(&mut **tx).await.map_err(storage_error)?;
+    let row: Option<DispatchRow> = sqlx::query_as(&existing_sql)
+        .bind(tenant)
+        .bind(workspace)
+        .bind(input.opportunity_id)
+        .bind(input.attempt_number)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(storage_error)?;
+    let Some(row) = row else {
+        return Err(Error::InputConflict);
+    };
+    if inserted.rows_affected() == 0 && !dispatch_matches_authorization(&row, input)? {
+        return Err(Error::InputConflict);
+    }
+    if !dispatch_matches_authorization(&row, input)? {
+        return Err(Error::InputConflict);
+    }
+    dispatch_from_row(&row)
+}
+
+async fn authorize_dispatch(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    expected_config_revision: i64,
+    input: &AdvisoryDispatchAuthorization,
+) -> Result<AdvisoryDispatch> {
+    input.validate()?;
+    let opportunity = opportunity_by_id(tx, tenant, workspace, input.opportunity_id, true).await?;
+    if opportunity.capability == AdvisoryCapability::EngineeringProfile {
+        authorize_matrix_dispatch(tx, tenant, workspace, expected_config_revision, input).await
+    } else {
+        authorize_scope_dispatch(tx, tenant, workspace, expected_config_revision, input).await
+    }
+}

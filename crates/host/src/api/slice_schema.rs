@@ -65,6 +65,7 @@ pub(super) fn save() -> Value {
             common.clone(),
             json!({
                 "kind":{"const":"work"},"outcome":text(),
+                "model_route_facts":model_route_facts(),
                 "includes":{"type":"array","items":text(),"maxItems":100},
                 "excludes":{"type":"array","items":text(),"maxItems":100},
                 "proof":{"type":"array","items":text(),"minItems":1,"maxItems":100},
@@ -148,7 +149,12 @@ pub(super) fn save() -> Value {
             ]),
         )
     };
-    json!({"oneOf":[envelope("draft",("draft",draft)),envelope("review",("review",review))]})
+    let mut draft_envelope = envelope("draft", ("draft", draft));
+    draft_envelope["properties"]
+        .as_object_mut()
+        .unwrap()
+        .insert("matrix_selection".into(), matrix_selection());
+    json!({"oneOf":[draft_envelope,envelope("review",("review",review))]})
 }
 
 pub(super) fn save_example() -> Value {
@@ -179,7 +185,7 @@ pub(super) fn refresh() -> Value {
 
 pub(super) fn open_slice() -> Value {
     object_schema(
-        json!({"request_id":uuid(),"scope_id":uuid(),"scope_revision":{"type":"integer","minimum":1},"candidate_set_id":uuid(),"candidate_set_revision":{"type":"integer","minimum":1},"candidate_snapshot_id":uuid(),"candidate_id":uuid(),"candidate_revision":{"type":"integer","minimum":1}}),
+        json!({"request_id":uuid(),"scope_id":uuid(),"scope_revision":{"type":"integer","minimum":1},"candidate_set_id":uuid(),"candidate_set_revision":{"type":"integer","minimum":1},"candidate_snapshot_id":uuid(),"candidate_id":uuid(),"candidate_revision":{"type":"integer","minimum":1},"disposition_id":uuid()}),
         json!([
             "request_id",
             "scope_id",
@@ -277,4 +283,131 @@ fn merge(mut left: Value, right: Value) -> Value {
         .unwrap()
         .extend(right.as_object().unwrap().clone());
     left
+}
+
+fn model_route_facts() -> Value {
+    let label =
+        json!({"type":"string","minLength":1,"maxLength":128,"pattern":"^[A-Za-z0-9._/:\\-]+$"});
+    json!({"type":"object","additionalProperties":false,"minProperties":1,"properties":{
+        "role":label,"tool":label,"data_class":label,
+        "remaining_budget_units":{"type":"integer","minimum":0,"maximum":18446744073709551615u64},
+        "available_latency_ms":{"type":"integer","minimum":0,"maximum":18446744073709551615u64}
+    },"description":"Caller-authored route constraints for this Work revision; independently verified evidence is separate."})
+}
+
+fn matrix_selection() -> Value {
+    let digest = json!({"type":"string","minLength":64,"maxLength":64,"pattern":"^[0-9a-f]{64}$"});
+    object_schema(
+        json!({
+            "task_id":uuid(),"task_revision":{"type":"integer","minimum":1,"maximum":i64::MAX},
+            "disposition_id":uuid(),"selected_choice_id":{"type":"string","minLength":1,"maxLength":4096},
+            "expected_input_digest":digest,"expected_choice_set_digest":digest,"expected_verification_digest":digest,
+            "mapped_draft_node_indices":{"type":"array","items":{"type":"integer","minimum":0,"maximum":u64::MAX},"minItems":1,"maxItems":100,"uniqueItems":true,"description":"Strictly increasing draft node positions attributed to the selected choice."}
+        }),
+        json!([
+            "task_id",
+            "task_revision",
+            "disposition_id",
+            "selected_choice_id",
+            "expected_input_digest",
+            "expected_choice_set_digest",
+            "expected_verification_digest",
+            "mapped_draft_node_indices"
+        ]),
+    )
+}
+
+#[cfg(test)]
+mod s05_schema_tests {
+    use super::*;
+
+    #[test]
+    fn s05_work_model_route_schema_and_strict_decoder_match() {
+        let schema = save();
+        let route_facts = &schema["oneOf"][0]["properties"]["draft"]["properties"]["nodes"]["items"]
+            ["oneOf"][0]["properties"]["model_route_facts"];
+        assert_eq!(route_facts["additionalProperties"], false);
+        assert_eq!(route_facts["minProperties"], 1);
+        let keys: std::collections::BTreeSet<_> = route_facts["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            std::collections::BTreeSet::from([
+                "role",
+                "tool",
+                "data_class",
+                "remaining_budget_units",
+                "available_latency_ms"
+            ])
+        );
+        let mut example = save_example();
+        example["draft"]["nodes"][0]["model_route_facts"] = json!({"role":"agent","tool":"code","data_class":"internal","remaining_budget_units":u64::MAX,"available_latency_ms":u64::MAX});
+        assert!(
+            crate::api::decode_public_call(
+                "command",
+                json!({"route":"slice.candidates.save","params":example})
+            )
+            .is_ok()
+        );
+        example["draft"]["nodes"][0]["model_route_facts"]["forged_authority"] = json!("accepted");
+        assert!(
+            crate::api::decode_public_call(
+                "command",
+                json!({"route":"slice.candidates.save","params":example})
+            )
+            .is_err()
+        );
+        let invalid: tect_domain::ModelRouteCallerFacts =
+            serde_json::from_value(json!({"role":" agent"})).unwrap();
+        assert!(invalid.validate().is_err());
+    }
+    #[test]
+    fn s05_selected_draft_schema_matches_exact_typed_selection() {
+        let schema = save();
+        let selection = &schema["oneOf"][0]["properties"]["matrix_selection"];
+        assert_eq!(selection["additionalProperties"], false);
+        assert_eq!(selection["required"].as_array().unwrap().len(), 8);
+        assert!(
+            schema["oneOf"][1]["properties"]
+                .get("matrix_selection")
+                .is_none()
+        );
+        let mut example = save_example();
+        let id = "00000000-0000-4000-8000-000000000001";
+        example["matrix_selection"] = json!({"task_id":id,"task_revision":1,"disposition_id":id,"selected_choice_id":"owner-choice","expected_input_digest":"a".repeat(64),"expected_choice_set_digest":"b".repeat(64),"expected_verification_digest":"c".repeat(64),"mapped_draft_node_indices":[0]});
+        assert!(
+            crate::api::decode_public_call(
+                "command",
+                json!({"route":"slice.candidates.save","params":example})
+            )
+            .is_ok()
+        );
+        example["matrix_selection"]["forged_authority"] = json!("accepted");
+        assert!(
+            crate::api::decode_public_call(
+                "command",
+                json!({"route":"slice.candidates.save","params":example})
+            )
+            .is_err()
+        );
+        example["matrix_selection"]
+            .as_object_mut()
+            .unwrap()
+            .remove("forged_authority");
+        example["matrix_selection"]
+            .as_object_mut()
+            .unwrap()
+            .remove("expected_verification_digest");
+        assert!(
+            crate::api::decode_public_call(
+                "command",
+                json!({"route":"slice.candidates.save","params":example})
+            )
+            .is_err()
+        );
+    }
 }

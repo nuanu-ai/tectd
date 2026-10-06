@@ -6,10 +6,14 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+sha2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 oxrdf.workspace = true
+
+[dev-dependencies]
+sha2.workspace = true
 
 [lints]
 workspace = true

@@ -5,6 +5,32 @@ use std::os::unix::fs::PermissionsExt;
 use tect_domain::{CompleteKnowledgeChangePhase, HostAuth};
 use uuid::Uuid;
 
+#[test]
+fn model_route_output_preserves_projection_and_has_no_actions() {
+    let material = json!({"source":"exact serialized source"});
+    let projection = json!({"material":material,"material_json":material.to_string(),
+        "material_sha256":"a".repeat(64),
+        "authorization_scope":"current_authenticated_read_only_snapshot"});
+    let response = model_route_output(projection.clone(), MAX_FRAME_BYTES).unwrap();
+    for (key, value) in projection.as_object().unwrap() {
+        assert_eq!(&response[key], value);
+    }
+    assert_eq!(response["actions"], json!([]));
+    assert!(response["recommended_action"].is_null());
+}
+
+#[test]
+fn model_route_output_enforces_encoded_capacity_including_envelope() {
+    let value = json!({"material_json":"界".repeat(16)});
+    let response = model_route_output(value.clone(), MAX_FRAME_BYTES).unwrap();
+    let size = responses::encoded_len(&response).unwrap();
+    assert_eq!(model_route_output(value.clone(), size).unwrap(), response);
+    assert!(matches!(
+        model_route_output(value, size - 1),
+        Err(Error::RequestTooLarge)
+    ));
+}
+
 fn context() -> RequestContext {
     RequestContext {
         auth: HostAuth {
@@ -13,6 +39,39 @@ fn context() -> RequestContext {
         },
         native_session_id: Uuid::new_v4().to_string(),
         workspace_key: "wire-version-test".into(),
+    }
+}
+
+#[test]
+fn malformed_verification_requires_strict_verifier_authority() {
+    assert_eq!(
+        invalid_request_authority("candidate_advisory_verify"),
+        InvalidRequestAuthority::Verifier
+    );
+}
+
+#[test]
+fn malformed_candidate_reads_preserve_owner_and_verifier_authority() {
+    for tool in ["candidate_advisory_get", "candidate_advisory_audit"] {
+        assert_eq!(
+            invalid_request_authority(tool),
+            InvalidRequestAuthority::CandidateRead
+        );
+    }
+}
+
+#[test]
+fn other_malformed_routes_preserve_workspace_state_authority() {
+    for tool in [
+        "get_state",
+        "open_workspace",
+        "candidate_advisory_save",
+        "unknown",
+    ] {
+        assert_eq!(
+            invalid_request_authority(tool),
+            InvalidRequestAuthority::WorkspaceState
+        );
     }
 }
 
@@ -219,4 +278,62 @@ async fn delayed_daemon_response_preserves_wire_error_and_socket_absence_is_tran
         Err(Error::OperationTimeout)
     );
     daemon.await.unwrap();
+}
+
+#[test]
+fn malformed_matrix_verification_requires_its_distinct_verifier_session_gate() {
+    for tool in [
+        "verify_matrix_task",
+        "get_pipeline_open_effect",
+        "verify_pipeline_open_effect",
+        "get_pipeline_phase_effect",
+        "verify_pipeline_phase_effect",
+    ] {
+        assert_eq!(
+            invalid_request_authority(tool),
+            InvalidRequestAuthority::MatrixVerifier
+        );
+        assert_ne!(
+            invalid_request_authority(tool),
+            InvalidRequestAuthority::WorkspaceState
+        );
+        assert_ne!(
+            invalid_request_authority(tool),
+            InvalidRequestAuthority::Verifier
+        );
+    }
+}
+
+#[test]
+fn matrix_core_auth_classification_preserves_existing_routes_and_timeouts() {
+    assert_eq!(
+        invalid_request_authority("candidate_advisory_verify"),
+        InvalidRequestAuthority::Verifier
+    );
+    for tool in ["candidate_advisory_get", "candidate_advisory_audit"] {
+        assert_eq!(
+            invalid_request_authority(tool),
+            InvalidRequestAuthority::CandidateRead
+        );
+    }
+    for tool in [
+        "record_matrix_task",
+        "get_matrix_task",
+        "get_verified_matrix_cards",
+        "matrix_context_propose",
+        "matrix_context_confirm",
+        "matrix_context_effective_get",
+    ] {
+        assert_eq!(
+            invalid_request_authority(tool),
+            InvalidRequestAuthority::WorkspaceState
+        );
+    }
+    let invocation =
+        parse_invocation("get_matrix_task", json!({"task_id":Uuid::new_v4()})).unwrap();
+    assert_eq!(operation_timeout_for(&invocation), OPERATION_TIMEOUT);
+    assert_eq!(
+        response_read_timeout_for(Some(&invocation)),
+        Duration::from_secs(55)
+    );
 }

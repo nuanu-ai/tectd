@@ -2,39 +2,14 @@ use super::{resolve, snapshot, write::*};
 use crate::storage_error;
 use sqlx::{Postgres, Transaction};
 use tect_domain::{
-    CandidateReceiptRequest, CandidateSetStatus, CandidateSnapshotMaterial, Error,
-    RecordCandidateInput, RefreshCandidateSet, Result, ReviewCandidateSet, ReviewVerdict,
+    AntiBloatApplyReceipt, CandidateReceiptRequest, CandidateSetStatus, CandidateSnapshotMaterial,
+    Error, RecordCandidateInput, RefreshCandidateSet, Result, ReviewCandidateSet, ReviewVerdict,
     SaveCandidateDraft, ScopeCandidateReview, StoredCandidateContext,
 };
 use uuid::Uuid;
 
-pub(crate) async fn replay(
-    transaction: &mut Transaction<'_, Postgres>,
-    tenant_id: Uuid,
-    workspace_id: Uuid,
-    request: &CandidateReceiptRequest,
-) -> Result<Option<StoredCandidateContext>> {
-    let payload = match request {
-        CandidateReceiptRequest::SaveDraft(value) => serde_json::to_value(value),
-        CandidateReceiptRequest::Review(value) => serde_json::to_value(value),
-        CandidateReceiptRequest::RecordInput(value) => serde_json::to_value(value),
-        CandidateReceiptRequest::Refresh(value) => serde_json::to_value(value),
-    }
-    .map_err(storage_error)?;
-    receipt(
-        transaction,
-        tenant_id,
-        workspace_id,
-        request.candidate_set_id(),
-        request.operation(),
-        request.request_id(),
-        &payload,
-    )
-    .await?
-    .map(serde_json::from_value)
-    .transpose()
-    .map_err(storage_error)
-}
+mod replay;
+pub(crate) use replay::replay;
 
 pub(crate) async fn save_draft(
     transaction: &mut Transaction<'_, Postgres>,
@@ -42,6 +17,22 @@ pub(crate) async fn save_draft(
     workspace_id: Uuid,
     request: &SaveCandidateDraft,
 ) -> Result<StoredCandidateContext> {
+    save_draft_with_material(transaction, tenant_id, workspace_id, request, None).await
+}
+
+pub(crate) async fn save_draft_with_material(
+    transaction: &mut Transaction<'_, Postgres>,
+    tenant_id: Uuid,
+    workspace_id: Uuid,
+    request: &SaveCandidateDraft,
+    selected_material: Option<&tect_domain::ResolvedCandidateDraft>,
+) -> Result<StoredCandidateContext> {
+    if selected_material.is_none() {
+        request.draft.require_source_grounded()?;
+    }
+    if request.selected_advisory.is_some() != selected_material.is_some() {
+        return Err(Error::InvalidArguments);
+    }
     let request_payload = serde_json::to_value(request).map_err(storage_error)?;
     if let Some(result) = receipt(
         transaction,
@@ -103,19 +94,23 @@ pub(crate) async fn save_draft(
         &previous,
     )
     .await?;
-    let resolved = resolve::resolve(
-        transaction,
-        &resolve::ResolveContext {
-            tenant_id,
-            workspace_id,
-            candidate_set_id: request.candidate_set_id,
-            snapshot_id: request.snapshot_id,
-            latest_input: locked.latest_input,
-        },
-        &request.draft,
-        previous.draft.as_ref(),
-    )
-    .await?;
+    let resolved = if let Some(material) = selected_material {
+        material.clone()
+    } else {
+        resolve::resolve(
+            transaction,
+            &resolve::ResolveContext {
+                tenant_id,
+                workspace_id,
+                candidate_set_id: request.candidate_set_id,
+                snapshot_id: request.snapshot_id,
+                latest_input: locked.latest_input,
+            },
+            &request.draft,
+            previous.draft.as_ref(),
+        )
+        .await?
+    };
     let next_revision = locked
         .revision
         .checked_add(1)
@@ -487,3 +482,5 @@ pub(crate) async fn refresh(
     .await?;
     Ok(stored)
 }
+
+include!("save/anti_bloat.rs");
