@@ -1,17 +1,18 @@
 use super::*;
 use tect_application::AntiBloatAttemptState;
 use tect_host::{JevAntiBloatConfig, JevAntiBloatProvider};
-pub(super) async fn run(
-    admin_pool: &sqlx::PgPool,
-    runtime_pool: &sqlx::PgPool,
-    store: &PgStore,
-    enrollment: &crate::admin::Enrollment,
-    tenant: Uuid,
-    actor: Uuid,
-    workspace: Uuid,
-    session: Uuid,
-    candidate: Uuid,
-) {
+pub(super) async fn run(case: NativeBridgeContext<'_>) {
+    let NativeBridgeContext {
+        admin_pool,
+        runtime_pool,
+        store,
+        enrollment,
+        tenant,
+        actor,
+        workspace,
+        session,
+        candidate,
+    } = case;
     let (policy, keys) = super::native_support::signed_scope_budget_fixture(workspace, actor, 1);
     let trusted = store.clone().with_budget_owner_keys(keys);
     let mut tx = rw(&trusted, &enrollment.auth, tenant).await;

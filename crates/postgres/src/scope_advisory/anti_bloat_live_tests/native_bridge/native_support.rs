@@ -69,19 +69,22 @@ pub(super) fn signed_scope_budget_fixture(
 }
 
 pub(super) async fn run(
-    admin_pool: &sqlx::PgPool,
-    runtime_pool: &sqlx::PgPool,
-    store: &PgStore,
-    enrollment: &crate::admin::Enrollment,
-    tenant: Uuid,
-    actor: Uuid,
-    workspace: Uuid,
-    session: Uuid,
-    candidate: Uuid,
+    case: NativeBridgeContext<'_>,
     old: &StoredAntiBloatReview,
     authored_delta: &AntiBloatAuthoredDelta,
     resolved: &ResolvedCandidateDraft,
 ) {
+    let NativeBridgeContext {
+        admin_pool,
+        runtime_pool,
+        store,
+        enrollment,
+        tenant,
+        actor,
+        workspace,
+        session,
+        candidate,
+    } = case;
     let (policy, keys) = signed_scope_budget_fixture(workspace, actor, 2);
     let trusted = store.clone().with_budget_owner_keys(keys);
     let mut tx = rw(&trusted, &enrollment.auth, tenant).await;

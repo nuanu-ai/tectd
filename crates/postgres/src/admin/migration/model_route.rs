@@ -58,7 +58,7 @@ pub(super) async fn grant_runtime(
     .execute(&mut **transaction)
     .await
     .map_err(storage_error)?;
-    validate_connection(&mut **transaction, runtime_role, true).await
+    validate_connection(transaction, runtime_role, true).await
 }
 
 pub(super) async fn validate_runtime_role(pool: &PgPool, role: &str, grants: bool) -> Result<()> {
@@ -120,7 +120,7 @@ async fn validate_connection(
          AND NOT EXISTS(SELECT 1 FROM pg_catalog.aclexplode(COALESCE(p.proacl,pg_catalog.acldefault('f',p.proowner))) a WHERE a.grantee=0 AND a.privilege_type='EXECUTE')),false) \
          FROM pg_catalog.pg_proc p JOIN pg_catalog.pg_namespace n ON n.oid=p.pronamespace \
          WHERE n.nspname='public' AND p.pronargs=0 AND p.proname=ANY($2)"
-    ).bind(role).bind(&["model_route_receipt_immutable", "model_route_attempt_guard", "model_route_budget_guard", "model_route_budget_visibility_guard", "model_route_native_observation_guard", "advisory_budget_global_reservation_guard", "advisory_budget_global_consumption_guard"])
+    ).bind(role).bind(["model_route_receipt_immutable", "model_route_attempt_guard", "model_route_budget_guard", "model_route_budget_visibility_guard", "model_route_native_observation_guard", "advisory_budget_global_reservation_guard", "advisory_budget_global_consumption_guard"])
         .fetch_one(&mut *connection).await.map_err(storage_error)?;
     if !safe {
         return Err(Error::InvalidConfiguration);

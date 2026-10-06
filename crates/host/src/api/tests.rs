@@ -170,7 +170,7 @@ fn applicable_conditions_allow_null(schema: &Value, value: &Value, field: &str) 
 #[test]
 fn disposition_conditional_nulls_preserve_no_call_and_exact_advice_bindings() {
     let spec = routes()
-        .into_iter()
+        .iter()
         .find(|s| s.route == "engineering.matrix.disposition.record")
         .unwrap();
     let decode =

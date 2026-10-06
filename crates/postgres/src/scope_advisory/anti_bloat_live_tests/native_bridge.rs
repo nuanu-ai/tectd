@@ -4,6 +4,18 @@ mod native_support;
 mod native_transport;
 mod race_support;
 
+struct NativeBridgeContext<'a> {
+    admin_pool: &'a sqlx::PgPool,
+    runtime_pool: &'a sqlx::PgPool,
+    store: &'a PgStore,
+    enrollment: &'a crate::admin::Enrollment,
+    tenant: Uuid,
+    actor: Uuid,
+    workspace: Uuid,
+    session: Uuid,
+    candidate: Uuid,
+}
+
 #[tokio::test]
 #[ignore = "requires owned disposable PG fixture"]
 async fn current_native_choice_seals_usage_then_explicit_apply_and_distinct_verify() {
@@ -207,15 +219,17 @@ async fn current_native_choice_seals_usage_then_explicit_apply_and_distinct_veri
     );
     assert_ne!(stale_review.review_id, prepared.review_id);
     native_support::run(
-        &admin_pool,
-        &runtime_pool,
-        &store,
-        &enrollment,
-        tenant,
-        actor,
-        workspace,
-        session,
-        candidate,
+        NativeBridgeContext {
+            admin_pool: &admin_pool,
+            runtime_pool: &runtime_pool,
+            store: &store,
+            enrollment: &enrollment,
+            tenant,
+            actor,
+            workspace,
+            session,
+            candidate,
+        },
         &prepared,
         &authored_delta,
         &resolved,
@@ -426,16 +440,16 @@ async fn two_valid_native_reviews_race_for_one_global_policy_call() {
     );
     assert_ne!(stale_review.review_id, prepared.review_id);
     assert_eq!(authored_delta.delta.expected_revision, 4);
-    race_support::run(
-        &admin_pool,
-        &runtime_pool,
-        &store,
-        &enrollment,
+    race_support::run(NativeBridgeContext {
+        admin_pool: &admin_pool,
+        runtime_pool: &runtime_pool,
+        store: &store,
+        enrollment: &enrollment,
         tenant,
         actor,
         workspace,
         session,
         candidate,
-    )
+    })
     .await;
 }

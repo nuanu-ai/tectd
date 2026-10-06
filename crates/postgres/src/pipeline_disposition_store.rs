@@ -353,6 +353,24 @@ pub(crate) async fn capture(
         .ok_or(Error::InputConflict)
 }
 
+pub(crate) async fn load_basis_for_verifier(
+    store: &mut PgUnitOfWork,
+    workspace_id: Uuid,
+    opportunity_id: Uuid,
+) -> Result<Option<PipelineDispositionBasis>> {
+    // The independent verifier may read the same saved basis but must not
+    // acquire owner-side locks while preparing its attestation.
+    load_basis_with_lock(store, workspace_id, opportunity_id, false).await
+}
+
+pub(crate) async fn is_current_for_verifier(
+    store: &mut PgUnitOfWork,
+    workspace_id: Uuid,
+    saved: &PipelineDispositionBasis,
+) -> Result<bool> {
+    is_current_with_lock(store, workspace_id, saved, false).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,22 +406,4 @@ mod tests {
             Err(Error::InputConflict)
         );
     }
-}
-
-pub(crate) async fn load_basis_for_verifier(
-    store: &mut PgUnitOfWork,
-    workspace_id: Uuid,
-    opportunity_id: Uuid,
-) -> Result<Option<PipelineDispositionBasis>> {
-    // The independent verifier may read the same saved basis but must not
-    // acquire owner-side locks while preparing its attestation.
-    load_basis_with_lock(store, workspace_id, opportunity_id, false).await
-}
-
-pub(crate) async fn is_current_for_verifier(
-    store: &mut PgUnitOfWork,
-    workspace_id: Uuid,
-    saved: &PipelineDispositionBasis,
-) -> Result<bool> {
-    is_current_with_lock(store, workspace_id, saved, false).await
 }

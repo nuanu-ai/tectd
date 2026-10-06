@@ -1,5 +1,5 @@
 // Owned synthetic Matrix transport fixture. No real credentials or Owner signature.
-use ring::signature::{Ed25519KeyPair,KeyPair};
+use ring::signature::{Ed25519KeyPair, KeyPair};
 use tokio::net::TcpListener;
 fn signed_test_budget(
     workspace: Uuid,
@@ -18,7 +18,7 @@ fn signed_test_budget(
         provider_calls: 1,
         input_tokens: 1024,
         output_tokens: 1024,
-        request_utf8_bytes: 45_000 as i64,
+        request_utf8_bytes: 45_000_i64,
         elapsed_monotonic_ms: 10_000,
         retry_dispatches: 1,
     };
@@ -58,5 +58,3 @@ fn signed_test_budget(
     .unwrap();
     (signed, keys)
 }
-
-

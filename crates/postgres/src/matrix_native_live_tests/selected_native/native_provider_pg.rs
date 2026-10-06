@@ -1,6 +1,6 @@
 //! Actual native adapter authorization rejection on owned synthetic PG only.
 use super::*;
-use serde_json::{Value, json};
+use serde_json::json;
 use tect_application::{SignedMatrixBudgetPreflight, Store};
 use tect_host::jev_matrix_advice::native_provider::{
     JevNativeMatrixConfig, JevNativeMatrixProvider,

@@ -19,7 +19,7 @@ fn fixture(
         session: "session".into(),
     };
     let proposal = MatrixRequirementsProposal::new(
-        anchor.clone(),
+        anchor,
         1,
         vec![
             DeclaredRequirementValue::Mode(EngineeringMode::Mvp),

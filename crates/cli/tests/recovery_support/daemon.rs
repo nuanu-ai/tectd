@@ -108,7 +108,7 @@ impl Daemon {
                 if (current.dev(), current.ino()) != parent_identity {
                     return Err("daemon parent replaced".into());
                 }
-                match fs::symlink_metadata(&socket) {
+                match fs::symlink_metadata(socket) {
                     Ok(metadata) => {
                         if !metadata.file_type().is_socket() {
                             return Err("daemon readiness path is not a socket".into());
