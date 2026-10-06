@@ -4,6 +4,8 @@ import json, uuid
 from typing import Any, Callable
 import pipeline_execution
 import scope_candidates
+import planning_reads
+import catalog_reads
 from common import hydrate_pipeline_payload
 
 SLICE_RUN_PIPELINES = {
@@ -72,10 +74,13 @@ def source_candidate(call, source_path: str) -> dict[str, Any]:
         "program_revision": program["program_revision"], "boundary": "ongoing",
         "input": "Diagnose the incorrect notification preview, then select its smallest correction.",
     })
-    context, candidate_set = begun["context"], begun["context"]["candidate_set"]
-    inputs = ok(call, "query", "scope.candidates.context", {
+    context = planning_reads.candidate_page(call, begun).value["context"]
+    candidate_set = context["candidate_set"]
+    inputs_read = planning_reads.read_query(call, "scope.candidates.context", {
         "candidate_set_id": candidate_set["id"], "view": "inputs", "limit": 25,
     })
+    planning_reads.candidate_pins(inputs_read, begun)
+    inputs = inputs_read.value
     ref = inputs["items"][0]["input"]["source_ref_id"]
     saved = ok(call, "command", "scope.candidates.save", {
         "kind": "draft", "candidate_set_id": candidate_set["id"],
@@ -94,21 +99,23 @@ def source_candidate(call, source_path: str) -> dict[str, Any]:
             "dependencies":[], "coverage_goals":[{"local":"goal"}], "evidence":[],
         }], "blockers":[], "protected_changes":[]},
     })
-    candidate = saved["draft"]["candidates"][0]
+    saved_details = planning_reads.candidate_page(call, saved, "draft", "details").value
+    candidate = saved_details["draft"]["candidates"][0]
     reviewed = ok(call, "command", "scope.candidates.save", {
         "kind":"review", "candidate_set_id":candidate_set["id"],
-        "revision":saved["context"]["candidate_set"]["revision"],
+        "revision":saved_details["context"]["candidate_set"]["revision"],
         "snapshot_id":context["snapshot"]["id"],
-        "input_cursor":saved["context"]["candidate_set"]["input_cursor"],
+        "input_cursor":saved_details["context"]["candidate_set"]["input_cursor"],
         "request_id":str(uuid.uuid4()), "review":{
             "verdict":"ready", "summary":"Bounded, vertical, traceable and ready.", "findings":[],
             "candidate_decisions":[{"candidate_id":candidate["id"], "decision":"accept",
                                     "rationale":"One coherent Scope."}],
         },
     })
-    if reviewed["context"]["candidate_set"]["status"] != "ready":
+    reviewed_context = planning_reads.candidate_page(call, reviewed).value["context"]
+    if reviewed_context["candidate_set"]["status"] != "ready":
         raise AssertionError("source candidate did not become ready")
-    return {"context":reviewed["context"], "candidate":candidate}
+    return {"context":reviewed_context, "candidate":candidate}
 
 def existing_work(node: dict[str, Any]) -> dict[str, Any]:
     return {"kind":"work", "identity":{"candidate_id":node["id"],"revision":node["revision"]},
@@ -118,22 +125,24 @@ def existing_work(node: dict[str, Any]) -> dict[str, Any]:
             "source_result_ids":node["source_result_ids"]}
 
 def save_plan(call, context, draft):
-    return ok(call, "command", "slice.candidates.save", {
+    receipt = ok(call, "command", "slice.candidates.save", {
         "kind":"draft", "scope_id":context["scope"]["id"],
         "candidate_set_id":context["candidate_set"]["id"],
         "revision":context["candidate_set"]["revision"], "snapshot_id":context["snapshot"]["id"],
         "input_cursor":context["candidate_set"]["input_cursor"], "request_id":str(uuid.uuid4()),
         "draft":draft,
     })
+    return planning_reads.slice_planning_details(call, receipt).value
 
 def review_plan(call, context, summary):
-    return ok(call, "command", "slice.candidates.save", {
+    receipt = ok(call, "command", "slice.candidates.save", {
         "kind":"review", "scope_id":context["scope"]["id"],
         "candidate_set_id":context["candidate_set"]["id"],
         "revision":context["candidate_set"]["revision"], "snapshot_id":context["snapshot"]["id"],
         "input_cursor":context["candidate_set"]["input_cursor"], "request_id":str(uuid.uuid4()),
         "review":{"verdict":"ready", "summary":summary, "findings":[]},
     })
+    return planning_reads.slice_planning_details(call, receipt).value
 
 def open_params(context, candidate, request_id=None):
     return {"request_id":request_id or str(uuid.uuid4()), "scope_id":context["scope"]["id"],
@@ -173,7 +182,8 @@ def assert_exact_pipeline_delivery(context: dict[str, Any], kind: str, check: Ca
 
 def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
     source = source_candidate(call, source_path)
-    catalogue = ok(call, "query", "slice.pipelines", {})
+    catalogue_read = catalog_reads.read(call, {})
+    catalogue = catalogue_read.value
     entries = catalogue.get("pipelines", []); ids = {entry.get("kind") for entry in entries}
     by_kind = {entry.get("kind"):entry for entry in entries}
     promotion = by_kind.get(PROMOTION_PIPELINE, {})
@@ -254,13 +264,15 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
         "candidate_snapshot_id":sc["snapshot"]["id"], "candidate_id":cand["id"],
         "candidate_revision":cand["revision"]}
     scope_opened = ok(call,"command","scope.open",scope_request)
-    created = variant(scope_opened,"created")
-    replay = variant(ok(call,"command","scope.open",scope_request),"replay")
+    created_scope, created_planning = planning_reads.open_scope_reads(call, scope_opened, "created")
+    replay_receipt = ok(call,"command","scope.open",scope_request)
+    replay_scope, replay_planning = planning_reads.open_scope_reads(call, replay_receipt, "replay")
     check("scope.open creates Scope plus initial snapshot with exact replay",
-          created==replay and created["scope"]["source_candidate_id"]==cand["id"]
-          and created["planning"]["snapshot"]["sequence"]==1,
-          {"scope_id":created["scope"]["id"]})
-    planning=created["planning"]; rules=planning["snapshot"]["rules"]
+          created_scope.value == replay_scope.value and created_planning.value == replay_planning.value
+          and created_scope.value["source_candidate_id"]==cand["id"]
+          and created_planning.value["snapshot"]["sequence"]==1,
+          {"scope_id":created_scope.value["id"]})
+    planning=created_planning.value; rules=planning["snapshot"]["rules"]
     rule_ids={rule.get("id") for rule in rules}
     check("initial Slice design carries all four full rule bodies",
           rule_ids==RULES and all(len(rule.get("text","").strip())>100 for rule in rules),
@@ -277,9 +289,9 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
          "resolution_criteria":["The diagnosis identifies boundaries and irreducible complexity."],
          "dependencies":[{"local":"diagnose"}],"source_result_ids":[]},
     ],"supersessions":[]}
-    offered_save=action_params(scope_opened,"slice.candidates.save")
-    offered_save["request_id"]=str(uuid.uuid4()); offered_save["draft"]=initial
-    saved=ok(call,"command","slice.candidates.save",offered_save)
+    # Explicit caller command, built from the pinned Details read. Compact
+    # scope.open advertises reads, not a Slice-save Ready action.
+    saved=save_plan(call,planning,initial)
     debug=next(n for n in saved["draft"]["nodes"] if n["kind"]=="work")
     decision=next(n for n in saved["draft"]["nodes"] if n["kind"]=="decision")
     reviewed=review_plan(call,saved,"The complete initial graph preserves its material decision.")
@@ -322,7 +334,8 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
 
     refresh_params=action_params(result_payload,"slice.candidates.refresh")
     refresh_params["request_id"]=str(uuid.uuid4())
-    refreshed=ok(call,"command","slice.candidates.refresh",refresh_params)
+    refreshed_receipt=ok(call,"command","slice.candidates.refresh",refresh_params)
+    refreshed=planning_reads.slice_planning_details(call,refreshed_receipt).value
     rr={r.get("id") for r in refreshed["snapshot"]["rules"]}
     check("result refresh captures result and all four design rules",
           not refreshed["stale_reasons"] and result["id"] in refreshed["snapshot"]["result_ids"] and rr==RULES,
@@ -461,8 +474,8 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
         pipeline_execution.completion_params(context,transition="complete",terminal_result=completed_result))
     completed=completed_payload["result"]
     terminal=ok(call,"query","slice.context",{"slice_id":follow["id"]})
-    results=ok(call,"query","slice.candidates.context",{
-        "scope_id":final["scope"]["id"],"view":"results","limit":25})
+    results=planning_reads.read_query(call,"slice.candidates.context",{
+        "scope_id":final["scope"]["id"],"view":"results","limit":25}).value
     result_ids={item["id"] for item in results.get("items",[])}
     terminal_attempt,terminal_failed=call("command",{"route":"slice.result.record","params":{
         "request_id":str(uuid.uuid4()),"scope_id":final["scope"]["id"],"slice_id":follow["id"],
@@ -478,7 +491,7 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
           and terminal_failed and terminal_attempt.get("error",{}).get("code")=="forbidden",
           {"blocked_result_id":blocked["id"],
            "completed_result_id":completed["id"],"terminal_revision":terminal["revision"]})
-    return {"scope_id":created["scope"]["id"],"debug_slice_id":slice_["id"],
+    return {"scope_id":created_scope.value["id"],"debug_slice_id":slice_["id"],
         "result_id":result["id"],"followup_slice_id":follow["id"],"pipeline_ids":sorted(ids),
         "slice_run_pipeline_ids":sorted(slice_run_ids),
         "rule_ids":sorted(rule_ids),"result_provenance":result["provenance"],

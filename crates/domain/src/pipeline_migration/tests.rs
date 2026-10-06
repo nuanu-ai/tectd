@@ -236,6 +236,6 @@ fn retirement_empty_mapping_exception_still_requires_actual_metadata_and_digest(
     assert!(
         request()
             .validate_retirement_restart(&predecessor, &altered, &port)
-            .is_ok()
+            .is_err()
     );
 }

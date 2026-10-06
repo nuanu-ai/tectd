@@ -39,16 +39,13 @@ async fn erased_origin_begin_replay_refuses_the_frozen_knowledge_copy() {
     let opened_scope=route(&mut client,"command","scope.open",json!({"request_id":Uuid::new_v4(),
         "candidate_set_id":source["candidate_set"]["id"],"candidate_set_revision":source["candidate_set"]["revision"],
         "candidate_snapshot_id":source["snapshot"]["id"],"candidate_id":candidate["id"],"candidate_revision":candidate["revision"]})).await;
+    let opened_scope = ScopeOpenFixture::from_mutation(opened_scope, "created");
+    let planning = opened_scope.read_planning(&mut client).await;
     let mut pipeline_draft = lightweight_draft();
     pipeline_draft["nodes"][0]["pipeline"] = json!("slice.custom-procedure-capture");
     pipeline_draft["nodes"][0]["pipeline_reason"] =
         json!("Exercise frozen origin replay without invoking Promotion routing.");
-    let saved = save(
-        &mut client,
-        &opened_scope["created"]["planning"],
-        pipeline_draft,
-    )
-    .await;
+    let saved = save(&mut client, &planning.value, pipeline_draft).await;
     let reviewed = review(&mut client, &saved).await;
     let opened_slice = route(
         &mut client,
@@ -80,8 +77,9 @@ async fn erased_origin_begin_replay_refuses_the_frozen_knowledge_copy() {
         begin_request.clone(),
     )
     .await;
+    let begun = resolve_pipeline(&mut client, begun).await.unwrap();
     assert_eq!(
-        begun["created"]["knowledge_resources"]["selected"][0]["unit_id"],
+        begun.details_data()["knowledge_resources"]["selected"][0]["unit_id"],
         unit
     );
     let retracted = commit_single(
@@ -103,21 +101,32 @@ async fn erased_origin_begin_replay_refuses_the_frozen_knowledge_copy() {
         },
     )
     .await;
+    let retracted = reads::resolve_commit_receipt(&mut client, retracted).await;
+    if let Some(applied) = retracted.raw_response.get("applied") {
+        assert!(applied.is_object());
+    } else {
+        assert_eq!(retracted.raw_response["outcome"], "applied");
+        assert_eq!(retracted.raw_response["changed"], true);
+    }
     assert_eq!(
-        retracted["applied"]["applied_operations"][0]["operation"],
+        retracted.receipt["applied_operations"][0]["operation"],
         "retract"
     );
     let stale = route(
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":begun["created"]["run"]["id"]}),
+        json!({"run_id":begun.run()["id"]}),
     )
     .await;
-    let refresh = find_action(&stale, "pipeline.knowledge_refresh").unwrap();
-    assert_eq!(stale["knowledge_resource_status"]["state"], "needs_context");
+    let stale = resolve_pipeline(&mut client, stale).await.unwrap();
+    let refresh = find_action(&stale.raw_payload, "pipeline.knowledge_refresh").unwrap();
+    assert_eq!(
+        stale.details_data()["knowledge_resource_status"]["state"],
+        "needs_context"
+    );
     assert!(
-        stale["knowledge_resource_status"]["changed_unit_ids"]
+        stale.details_data()["knowledge_resource_status"]["changed_unit_ids"]
             .as_array()
             .unwrap()
             .contains(&unit)
@@ -151,10 +160,14 @@ async fn erased_origin_begin_replay_refuses_the_frozen_knowledge_copy() {
         },
     )
     .await;
-    assert_eq!(
-        erased["applied_erased"]["operations"][0]["state"],
-        "payload_erased"
-    );
+    let erased = reads::resolve_commit_receipt(&mut client, erased).await;
+    if let Some(applied) = erased.raw_response.get("applied_erased") {
+        assert!(applied.is_object());
+    } else {
+        assert_eq!(erased.raw_response["outcome"], "applied_erased");
+        assert_eq!(erased.raw_response["changed"], true);
+    }
+    assert_eq!(erased.receipt["operations"][0]["state"], "payload_erased");
     assert_eq!(
         route_error(
             &mut client,

@@ -212,7 +212,7 @@ pub(super) async fn mixed(
         }).await;
     }
     let begun = begin(client, repo, "mixed-projected-proofs").await;
-    let run = Uuid::parse_str(begun["run"]["id"].as_str().unwrap()).unwrap();
+    let run = Uuid::parse_str(begun.run()["id"].as_str().unwrap()).unwrap();
     sqlx::query("UPDATE slice_pipeline_runs SET inquiry=$2 WHERE id=$1").bind(run).bind(json!({"topic_level":"program","task_context":{},"completion":{"kind":"research","allow_inconclusive":false}})).execute(pool).await.unwrap();
     let scalar = context(store, auth, native, workspace, run, false)
         .await

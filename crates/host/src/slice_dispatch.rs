@@ -3,6 +3,7 @@ use crate::responses;
 use crate::scope_guidance::StaticCandidateGuidance;
 use crate::slice_guidance::StaticSliceGuidance;
 use crate::slice_tools::{PipelineView, SliceInvocation};
+pub(crate) use planning_reads::pipelines_read;
 use planning_reads::{candidate_page_read, compact_open_scope, compact_slice_planning, scope_read};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -56,6 +57,10 @@ pub(crate) async fn execute(
             window,
             params,
         } => match *request {
+            SliceInvocation::Pipelines(view) => {
+                service.authenticate_host(context).await?;
+                pipelines_read(view, &window, capacity)
+            }
             SliceInvocation::ScopeContext { scope_id } => scope_read(
                 service.scope_context(context, scope_id).await?,
                 params,
@@ -81,11 +86,7 @@ pub(crate) async fn execute(
         ),
         SliceInvocation::Pipelines(view) => {
             service.authenticate_host(context).await?;
-            let value = match view {
-                PipelineView::Full => crate::slice_pipeline_catalog::value(),
-                PipelineView::Summary => crate::slice_pipeline_catalog::summary_value(),
-            };
-            output(value, vec![])
+            pipelines_read(view, &crate::planning_read::Window::default(), capacity)
         }
         SliceInvocation::CandidateContext(query) => {
             let value = service

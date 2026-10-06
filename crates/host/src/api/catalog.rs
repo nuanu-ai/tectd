@@ -134,10 +134,10 @@ fn build_routes() -> Vec<RouteSpec> {
             "Requires host authentication.",
             "The full view returns delivery metadata and definitions; the summary returns names, descriptions, execution owners, availability, revision and digest. It starts no run.",
             "Safe to repeat.",
-            object_schema(
+            crate::planning_read::schema(object_schema(
                 json!({"view":{"type":"string","enum":["full","summary"]}}),
                 json!([])
-            ),
+            )),
             json!({}),
         ),
         route!(

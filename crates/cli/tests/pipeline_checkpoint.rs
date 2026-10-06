@@ -18,6 +18,8 @@ use pipeline_support::{
     add_opaque_authority_labels, assert_forged_implementation_phase_rejected,
     assert_non_coding_definition, completion as base_completion, successful_route,
 };
+use recovery_support::native_reads::ScopeOpenFixture;
+use recovery_support::pipeline_reads::{ResolvedPipeline, resolve_pipeline};
 use recovery_support::{
     Daemon, Mcp, action_params, find_action, host_file, private_temp, tagged_url,
 };
@@ -87,12 +89,10 @@ async fn checkpoint_handoff_is_exact_replayable_and_rework_safe() {
             "candidate_revision":candidate["revision"]}),
     )
     .await;
-    let saved = save(
-        &mut client,
-        &scope["created"]["planning"],
-        brainstorming_draft(),
-    )
-    .await;
+    let planning = ScopeOpenFixture::from_mutation(scope, "created")
+        .read_planning(&mut client)
+        .await;
+    let saved = save(&mut client, &planning.value, brainstorming_draft()).await;
     let reviewed = review(&mut client, &saved).await;
     let producer_node = reviewed["draft"]["nodes"][0].clone();
     let opened = route(
@@ -143,7 +143,8 @@ async fn checkpoint_handoff_is_exact_replayable_and_rework_safe() {
     assert_non_coding_definition(&producer, "slice.deep-brainstorming");
     let (verdict, outcome, transition) = successful_route(&producer);
     let mut first = completion(&producer, verdict, outcome, transition, None, None);
-    first["output"]["fields"]["topic_level"] = producer["inquiry"]["topic_level"].clone();
+    first["output"]["fields"]["topic_level"] =
+        producer.details_data()["inquiry"]["topic_level"].clone();
     first["output"]["fields"]["requested_outcome"] = json!("decision");
     assert_forged_implementation_phase_rejected(
         &mut client,
@@ -153,18 +154,19 @@ async fn checkpoint_handoff_is_exact_replayable_and_rework_safe() {
     )
     .await;
     add_opaque_authority_labels(&mut first);
-    producer = route(
+    let producer_raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         first,
     )
-    .await["context"]
-        .clone();
+    .await;
+    producer = resolve_pipeline(&mut client, producer_raw).await.unwrap();
+    assert!(mutation_result_id(&producer).is_null());
     assert_non_coding_definition(&producer, "slice.deep-brainstorming");
     assert!(contains_unit(&producer, &public_unit));
     assert!(!contains_unit(&producer, &private_unit));
-    while producer["run"]["current_phase_ordinal"].as_u64().unwrap() < 5 {
+    while producer.run()["current_phase_ordinal"].as_u64().unwrap() < 5 {
         producer = advance(&mut client, producer).await;
     }
     let checkpoint = create_checkpoint(&mut client, &producer).await;
@@ -283,14 +285,14 @@ async fn checkpoint_handoff_is_exact_replayable_and_rework_safe() {
             .as_str(),
         Some("forbidden" | "invalid_arguments" | "stale_context")
     ));
-    let research = route(
+    let research_raw = route(
         &mut client,
         "command",
         "slice.pipeline.begin",
         research_begin.clone(),
     )
-    .await["created"]
-        .clone();
+    .await;
+    let research = resolve_pipeline(&mut client, research_raw).await.unwrap();
     assert!(contains_unit(&research, &private_unit));
     assert!(!contains_unit(&research, &public_unit));
     let replayed_begin = route(
@@ -300,7 +302,8 @@ async fn checkpoint_handoff_is_exact_replayable_and_rework_safe() {
         research_begin.clone(),
     )
     .await;
-    assert!(contains_unit(&replayed_begin["replay"], &private_unit));
+    let replayed_begin = resolve_pipeline(&mut client, replayed_begin).await.unwrap();
+    assert!(contains_unit(&replayed_begin, &private_unit));
     assert_eq!(
         route_error(
             &mut client,
@@ -311,8 +314,11 @@ async fn checkpoint_handoff_is_exact_replayable_and_rework_safe() {
         .await["error"]["code"],
         "forbidden"
     );
-    assert_eq!(research["source_checkpoint"], checkpoint["checkpoint"]);
-    let bound_checkpoint = research["checkpoints"]
+    assert_eq!(
+        research.compact_context["source_checkpoint"],
+        checkpoint["checkpoint"]
+    );
+    let bound_checkpoint = research.details_data()["checkpoints"]
         .as_array()
         .unwrap()
         .iter()
@@ -322,7 +328,7 @@ async fn checkpoint_handoff_is_exact_replayable_and_rework_safe() {
         bound_checkpoint["producer_run_id"],
         checkpoint["producer_run_id"]
     );
-    assert_eq!(bound_checkpoint["consumer_run_id"], research["run"]["id"]);
+    assert_eq!(bound_checkpoint["consumer_run_id"], research.run()["id"]);
 
     let amended = route(
         &mut client,
@@ -404,7 +410,7 @@ async fn checkpoint_handoff_is_exact_replayable_and_rework_safe() {
         (
             "query",
             "slice.pipeline.context",
-            json!({"run_id":completed["context"]["run"]["id"]}),
+            json!({"run_id":completed.run()["id"]}),
         ),
         ("command", "slice.pipeline.begin", research_begin.clone()),
     ] {
@@ -440,7 +446,7 @@ async fn checkpoint_handoff_is_exact_replayable_and_rework_safe() {
         sqlx::query_scalar::<_, i64>(
             "SELECT count(*) FROM slice_pipeline_phase_outputs WHERE run_id=$1 AND payload_erased",
         )
-        .bind(Uuid::parse_str(decided["context"]["run"]["id"].as_str().unwrap()).unwrap())
+        .bind(Uuid::parse_str(decided.run()["id"].as_str().unwrap()).unwrap())
         .fetch_one(&pool)
         .await
         .unwrap()

@@ -1,14 +1,14 @@
 use super::*;
 
 pub(super) struct ResearchResolution {
-    pub(super) completed: Value,
-    pub(super) accepted: Value,
+    pub(super) completed: ResolvedPipeline,
+    pub(super) accepted: ResolvedPipeline,
     pub(super) replay_resolve: Value,
 }
 
 pub(super) async fn complete_research_and_accept(
     client: &mut Mcp,
-    mut research: Value,
+    mut research: ResolvedPipeline,
     checkpoint: &Value,
 ) -> ResearchResolution {
     let incomplete = json!({"request_id":Uuid::new_v4(),
@@ -28,7 +28,7 @@ pub(super) async fn complete_research_and_accept(
         .await["error"]["code"],
         "forbidden"
     );
-    while research["run"]["current_phase_ordinal"].as_u64().unwrap() < 9 {
+    while research.run()["current_phase_ordinal"].as_u64().unwrap() < 9 {
         research = advance(client, research).await;
     }
     let terminal = json!({"summary":"The exact constraint and limitation answer the checkpoint.",
@@ -36,7 +36,7 @@ pub(super) async fn complete_research_and_accept(
             "observation":"The terminal Research result is bound to the checkpoint."}],
         "scope_impact":"B05 can now reassess the exact answer criteria.",
         "remaining_work":"The producer still owns the decision."});
-    research = route(
+    let research_raw = route(
         client,
         "command",
         "slice.pipeline.phase.complete",
@@ -49,9 +49,9 @@ pub(super) async fn complete_research_and_accept(
             None,
         ),
     )
-    .await["context"]
-        .clone();
-    while research["run"]["current_phase_ordinal"].as_u64().unwrap() < 12 {
+    .await;
+    research = resolve_pipeline(client, research_raw).await.unwrap();
+    while research.run()["current_phase_ordinal"].as_u64().unwrap() < 12 {
         research = advance(client, research).await;
     }
     assert_eq!(
@@ -85,8 +85,12 @@ pub(super) async fn complete_research_and_accept(
         ),
     )
     .await;
-    let result = &completed["result"];
-    let output = completed["context"]["outputs"]
+    let completed = resolve_pipeline(client, completed).await.unwrap();
+    let result = &completed.details_data()["result"];
+    let result_id = mutation_result_id(&completed);
+    assert!(result_id.is_string());
+    assert_eq!(result_id, &result["id"]);
+    let output = completed.details_data()["outputs"]
         .as_array()
         .unwrap()
         .iter()
@@ -122,9 +126,10 @@ pub(super) async fn complete_research_and_accept(
         resolve.clone(),
     )
     .await;
-    assert_eq!(accepted["checkpoint"]["status"], "accepted");
-    assert_eq!(accepted["context"]["run"]["current_phase_id"], "B05");
-    assert_eq!(accepted["context"]["run"]["status"], "active");
+    let accepted = resolve_pipeline(client, accepted).await.unwrap();
+    assert_eq!(resolved_checkpoint(&accepted)["status"], "accepted");
+    assert_eq!(accepted.run()["current_phase_id"], "B05");
+    assert_eq!(accepted.run()["status"], "active");
     assert_eq!(
         route(
             client,
@@ -133,7 +138,7 @@ pub(super) async fn complete_research_and_accept(
             resolve.clone()
         )
         .await,
-        accepted
+        accepted.raw_payload
     );
     resolve["reason"] = json!("Changed replay payload.");
     assert_eq!(
@@ -152,4 +157,36 @@ pub(super) async fn complete_research_and_accept(
         accepted,
         replay_resolve,
     }
+}
+
+pub(super) fn resolved_checkpoint(resolved: &ResolvedPipeline) -> &Value {
+    let reference = resolved
+        .raw_payload
+        .get("checkpoint_reference")
+        .and_then(Value::as_object)
+        .expect("actual checkpoint reference object");
+    let id = reference
+        .get("checkpoint")
+        .expect("actual checkpoint identity key");
+    assert!(id.is_string(), "checkpoint identity must be present");
+    let matches: Vec<_> = resolved.details_data()["checkpoints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|value| &value["checkpoint"] == id)
+        .collect();
+    assert_eq!(
+        matches.len(),
+        1,
+        "exactly one pinned checkpoint matches the receipt"
+    );
+    let checkpoint = matches[0];
+    assert_eq!(&checkpoint["checkpoint"], id);
+    assert_eq!(
+        reference
+            .get("status")
+            .expect("actual checkpoint status key"),
+        &checkpoint["status"]
+    );
+    checkpoint
 }

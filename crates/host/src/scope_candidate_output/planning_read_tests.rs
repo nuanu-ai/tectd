@@ -1,8 +1,8 @@
 use super::*;
 #[test]
 fn complete_scope_candidate_snapshot_reassembles_with_real_parser() {
-    let id = Uuid::new_v4();
-    let mut page: CandidateContextPage=serde_json::from_value(json!({"context":{"candidate_set":{"id":id,"workspace_id":id,"program_id":id,"revision":2,"status":"draft","boundary":"finite","current_snapshot_id":id,"input_cursor":0,"latest_input":0},"snapshot":{"id":id,"sequence":1,"program_revision":1,"program_latest_input":0,"planning_latest_input":0,"selected_worktree_ids":[],"selected_sources_digest":"d","method":{"id":"m","revision":"1","digest":"d","body":"🙂\\\"\n".repeat(4000),"origin_refs":["test"]},"registry_revision":"1","registry_digest":"d","rules":[],"source_refs":[]},"current_program_revision":1,"stale_reasons":[]},"view":"overview","program":null,"historical":null,"items":[],"next_after":null,"required_protected_changes":[],"terminal_note":null})).unwrap();
+    let mut page = fixture();
+    let id = page.context.candidate_set.id;
     assert!(page.draft.is_none());
     assert!(serde_json::to_value(&page).unwrap().get("draft").is_none());
     page.view = CandidateContextView::Details;
@@ -136,4 +136,10 @@ fn complete_scope_candidate_snapshot_reassembles_with_real_parser() {
             .refusal()
             .is_some()
     );
+}
+
+pub(super) fn fixture() -> CandidateContextPage {
+    let id = Uuid::new_v4();
+    let page: CandidateContextPage=serde_json::from_value(json!({"context":{"candidate_set":{"id":id,"workspace_id":id,"program_id":id,"revision":2,"status":"draft","boundary":"finite","current_snapshot_id":id,"input_cursor":0,"latest_input":0},"snapshot":{"id":id,"sequence":1,"program_revision":1,"program_latest_input":0,"planning_latest_input":0,"selected_worktree_ids":[],"selected_sources_digest":"d","method":{"id":"m","revision":"1","digest":"d","body":"🙂\\\"\n".repeat(4000),"origin_refs":["test"]},"registry_revision":"1","registry_digest":"d","rules":[],"source_refs":[]},"current_program_revision":1,"stale_reasons":[]},"view":"overview","program":null,"historical":null,"items":[],"next_after":null,"required_protected_changes":[],"terminal_note":null})).unwrap();
+    page
 }

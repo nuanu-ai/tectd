@@ -3,8 +3,10 @@ use crate::responses::{action, encoded_len, with_actions};
 use serde_json::{Value, json};
 use sha2::Digest;
 use tect_application::{ProgramGuidance, ProgramOutputGuard};
+#[cfg(test)]
+use tect_domain::ProgramList;
 use tect_domain::{
-    Error, Program, ProgramList, ProgramPage, ProgramStep, ProgramSummary, Result, WorkspaceState,
+    Error, Program, ProgramPage, ProgramStep, ProgramSummary, Result, WorkspaceState,
 };
 use uuid::Uuid;
 
@@ -29,6 +31,7 @@ impl ProgramGuidance for StaticProgramGuidance {
     }
 }
 
+pub(crate) mod list_read;
 pub(crate) mod paging;
 
 fn skill_action() -> Result<Value> {
@@ -224,6 +227,7 @@ pub(crate) fn list_actions(
     Ok(actions)
 }
 
+#[cfg(test)]
 pub(crate) fn list(mut list: ProgramList, capacity: usize) -> Result<Value> {
     if list.programs.is_empty() {
         return within_capacity(

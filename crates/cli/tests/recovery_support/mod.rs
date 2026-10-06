@@ -1,3 +1,15 @@
+#[allow(dead_code)]
+pub mod candidate_collections;
+#[allow(dead_code)]
+pub mod candidate_reads;
+#[allow(dead_code)]
+pub mod candidate_reviews;
+pub mod help_reads;
+#[allow(dead_code)]
+pub mod native_reads;
+#[allow(dead_code)]
+pub mod pipeline_reads;
+
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -23,11 +35,9 @@ pub fn tool_payload(response: &Value) -> Value {
     assert!(!intro.is_empty() && intro.len() <= 2_000, "{response}");
     assert_eq!(content[1]["type"], "text", "{response}");
     assert_eq!(content[2]["type"], "text", "{response}");
-    assert!(
-        content[2]["text"]
-            .as_str()
-            .unwrap()
-            .contains("TECTD RESPONSE RULES")
+    assert_eq!(
+        content[2]["text"],
+        "Follow the rules from workspace.open or help {\"text\":\"response-rules\"}. Required checks, approvals and authority still apply. Dependencies alone grant no permission or automatic resumption. Claim monitoring or continuation only when real."
     );
     let payload: Value =
         serde_json::from_str(content[1]["text"].as_str().expect("JSON tool payload"))

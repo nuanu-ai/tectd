@@ -19,6 +19,7 @@ from common import Proof, Rpc, RpcError, command_overrides, initialize, sha256_f
 from fixture import Fixture
 from protocol_compat import parse_delegation_features, wait_mcp_ready, validate_catalog, validate_get_state
 import native_slices
+import help_reads
 import scope_candidates as scope
 
 
@@ -323,11 +324,9 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
         not failed and knowledge_routes == expected_knowledge_routes,
         sorted(route for route in knowledge_routes if isinstance(route, str)),
     )
-    search_description, failed = tool_result(
-        app,
-        thread_id,
-        "help",
-        {"mode": "describe", "tool": "query", "route": "knowledge.search"},
+    search_description, failed = help_reads.describe(
+        lambda tool, arguments: tool_result(app, thread_id, tool, arguments),
+        "query", "knowledge.search",
     )
     search_variants = search_description.get("params_schema", {}).get("oneOf", [])
     proof.check(
@@ -363,11 +362,9 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
         and all(key not in invalid_search for key in ("results", "vector_status", "graph")),
         {"error_code": invalid_search.get("error", {}).get("code")},
     )
-    knowledge_description, failed = tool_result(
-        app,
-        thread_id,
-        "help",
-        {"mode": "describe", "tool": "query", "route": "knowledge.context"},
+    knowledge_description, failed = help_reads.describe(
+        lambda tool, arguments: tool_result(app, thread_id, tool, arguments),
+        "query", "knowledge.context",
     )
     proof.check(
         "native help describes the exact knowledge context route",
@@ -434,8 +431,8 @@ def deterministic(app: Rpc, thread_id: str, fixture: Fixture, proof: Proof) -> N
         ("command", "knowledge.maintenance_observe"),
         ("command", "knowledge.maintenance_begin"),
     ]:
-        described, failed = tool_result(
-            app, thread_id, "help", {"mode": "describe", "tool": tool, "route": route},
+        described, failed = help_reads.describe(
+            lambda tool, arguments: tool_result(app, thread_id, tool, arguments), tool, route,
         )
         proof.check(
             f"native help describes strict {route} parameters",

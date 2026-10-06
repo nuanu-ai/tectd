@@ -187,22 +187,38 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
         )
         .await;
     assert_eq!(searched["hits"][0]["route"], "program.begin");
-    let described = client
-        .call(
-            "help",
-            json!({"mode":"describe","tool":"command","route":"program.begin"}),
-        )
-        .await;
+    let described = recovery_support::help_reads::describe(
+        async |arguments| {
+            client
+                .exchange(
+                    "tools/call",
+                    recovery_support::public_call("help", arguments),
+                )
+                .await
+        },
+        json!({"mode":"describe","tool":"command","route":"program.begin"}),
+    )
+    .await
+    .unwrap()
+    .value;
     assert_eq!(
         described["params_schema"]["required"],
         json!(["request_id", "input"])
     );
-    let knowledge = client
-        .call(
-            "help",
-            json!({"mode":"describe","tool":"command","route":"knowledge.change_phase_complete"}),
-        )
-        .await;
+    let knowledge = recovery_support::help_reads::describe(
+        async |arguments| {
+            client
+                .exchange(
+                    "tools/call",
+                    recovery_support::public_call("help", arguments),
+                )
+                .await
+        },
+        json!({"mode":"describe","tool":"command","route":"knowledge.change_phase_complete"}),
+    )
+    .await
+    .unwrap()
+    .value;
     let output = &knowledge["params_schema"]["oneOf"][1]["properties"]["output"];
     assert_eq!(
         output["properties"]["data"]["oneOf"]
@@ -218,9 +234,20 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
         planned[0]["properties"]["document"]["properties"]["sections"]["properties"]["runbook"]["additionalProperties"],
         false
     );
-    let method = client
-        .call("help", json!({"mode":"describe","method":"tectd-program"}))
-        .await;
+    let method = recovery_support::help_reads::describe(
+        async |arguments| {
+            client
+                .exchange(
+                    "tools/call",
+                    recovery_support::public_call("help", arguments),
+                )
+                .await
+        },
+        json!({"mode":"describe","method":"tectd-program"}),
+    )
+    .await
+    .unwrap()
+    .value;
     assert!(method["body"].as_str().unwrap().contains("# TectD Program"));
     let after_help: i64 = sqlx::query_scalar(
         "SELECT (SELECT count(*) FROM workspaces WHERE tenant_id=$1) + \

@@ -132,7 +132,13 @@ fn complete_slice_planning_details_reassemble_with_nonempty_draft_and_pin_every_
         limit: 25,
     };
     let expected = serde_json::to_vec(&serde_json::to_value(&context).unwrap()).unwrap();
-    let mut params = json!({"scope_id":context.scope.id,"view":"details","limit":25});
+    let mut params = serde_json::to_value(&query).unwrap();
+    assert!(params.get("after").is_none());
+    for after in [0, 3] {
+        let mut paged = query.clone();
+        paged.after = Some(after);
+        assert_eq!(serde_json::to_value(&paged).unwrap()["after"], after);
+    }
     let mut window = crate::planning_read::Window::default();
     let mut assembled = Vec::new();
     let mut maximum = 0;
@@ -151,6 +157,21 @@ fn complete_slice_planning_details_reassemble_with_nonempty_draft_and_pin_every_
             break Some(output["representation_digest"].as_str().unwrap().to_owned());
         }
         let action = &output["actions"][0];
+        assert_eq!(action["tool"], "query");
+        assert_eq!(action["arguments"]["route"], "slice.candidates.context");
+        assert_eq!(
+            action["arguments"]["params"]["scope_id"],
+            query.scope_id.to_string()
+        );
+        assert!(action["arguments"]["params"].get("after").is_none());
+        assert_eq!(
+            action["arguments"]["params"]["offset_bytes"],
+            output["next_offset_bytes"]
+        );
+        assert_eq!(
+            action["arguments"]["params"]["representation_digest"],
+            output["representation_digest"]
+        );
         let call = crate::api::decode_public_call("query", action["arguments"].clone()).unwrap();
         let crate::tools::Invocation::Slice(SliceInvocation::Window {
             window: next,

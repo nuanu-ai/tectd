@@ -418,12 +418,20 @@ def _instruction_identity_digest(instructions: list[dict[str, Any]]) -> str:
 
 def rework_and_resume(call: Callable, context: dict[str, Any], target: str) -> dict[str, Any]:
     """Exercise an explicitly declared backward fixture route and exact-revision input."""
+    before_revision = context["run"]["revision"]
     returned = ok(call, "command", "slice.pipeline.phase.complete",
                   completion_params(context, outcome_name="waiting_input", revisit_phase_id=target))
     context = returned["context"]
-    if context["run"]["current_phase_id"] != target or context["run"]["status"] != "waiting_input":
-        raise AssertionError("backward fixture route did not reach its declared target")
-    return ok(call, "command", "slice.pipeline.input", {
+    if context["run"]["current_phase_id"] != target or context["run"]["status"] != "active":
+        raise AssertionError("backward fixture route did not activate its declared target")
+    if context["run"]["revision"] != before_revision + 1:
+        raise AssertionError("backward fixture route did not increment the exact revision")
+    returned_revision = context["run"]["revision"]
+    supplied = ok(call, "command", "slice.pipeline.input", {
         "request_id":str(uuid.uuid4()), "run_id":context["run"]["id"],
-        "run_revision":context["run"]["revision"], "phase_id":target,
-        "input":"Structural fixture supplies rework resume input; no actual command executed."})["context"]
+        "run_revision":returned_revision, "phase_id":target,
+        "input":"Structural fixture supplies current-target rework input; no actual command executed."})["context"]
+    if (supplied["run"]["current_phase_id"] != target or supplied["run"]["status"] != "active"
+            or supplied["run"]["revision"] != returned_revision + 1):
+        raise AssertionError("structural rework input did not preserve target and increment exact revision")
+    return supplied

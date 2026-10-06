@@ -1,5 +1,15 @@
 use super::*;
 
+pub(super) fn mutation_result_id(context: &ResolvedPipeline) -> &Value {
+    context
+        .raw_payload
+        .get("result_reference")
+        .and_then(Value::as_object)
+        .expect("actual mutation result reference object")
+        .get("result_id")
+        .expect("actual mutation result ID key")
+}
+
 pub(super) fn decision_inquiry() -> Value {
     json!({"topic_level":"program",
         "task_context":{"target_iris":["urn:fixture:public-decision"]},
@@ -61,14 +71,14 @@ pub(super) fn erase(unit: Value) -> SingleOperation {
     }
 }
 
-pub(super) fn contains_unit(context: &Value, unit: &Value) -> bool {
-    context["knowledge_resources"]["selected"]
+pub(super) fn contains_unit(context: &ResolvedPipeline, unit: &Value) -> bool {
+    context.details_data()["knowledge_resources"]["selected"]
         .as_array()
         .is_some_and(|selected| selected.iter().any(|value| value["unit_id"] == *unit))
 }
 
 pub(super) fn completion(
-    context: &Value,
+    context: &ResolvedPipeline,
     verdict: &str,
     outcome: &str,
     transition: &str,
@@ -83,13 +93,13 @@ pub(super) fn completion(
         revisit_phase_id,
         terminal_result,
     );
-    if context["knowledge_resources"]["selected"]
+    if context.details_data()["knowledge_resources"]["selected"]
         .as_array()
         .is_some_and(|selected| !selected.is_empty())
     {
         request["consumed_knowledge"] = json!({
-            "manifest_id":context["knowledge_resources"]["id"],
-            "digest":context["knowledge_resources"]["digest"]
+            "manifest_id":context.details_data()["knowledge_resources"]["id"],
+            "digest":context.details_data()["knowledge_resources"]["digest"]
         });
     }
     request
@@ -158,18 +168,20 @@ pub(super) fn draft_request(context: &Value, draft: Value) -> Value {
     request
 }
 
-pub(super) async fn advance(client: &mut Mcp, context: Value) -> Value {
+pub(super) async fn advance(client: &mut Mcp, context: ResolvedPipeline) -> ResolvedPipeline {
     let (verdict, outcome, transition) = successful_route(&context);
     let mut request = completion(&context, verdict, outcome, transition, None, None);
-    match context["run"]["current_phase_id"].as_str() {
+    match context.run()["current_phase_id"].as_str() {
         Some("B01") => {
-            request["output"]["fields"]["topic_level"] = context["inquiry"]["topic_level"].clone();
+            request["output"]["fields"]["topic_level"] =
+                context.details_data()["inquiry"]["topic_level"].clone();
             request["output"]["fields"]["requested_outcome"] = json!("decision");
         }
         Some("R01") => {
-            request["output"]["fields"]["topic_level"] = context["inquiry"]["topic_level"].clone();
+            request["output"]["fields"]["topic_level"] =
+                context.details_data()["inquiry"]["topic_level"].clone();
             request["output"]["fields"]["allow_inconclusive"] =
-                context["inquiry"]["completion"]["allow_inconclusive"]
+                context.details_data()["inquiry"]["completion"]["allow_inconclusive"]
                     .as_bool()
                     .unwrap()
                     .to_string()
@@ -177,10 +189,13 @@ pub(super) async fn advance(client: &mut Mcp, context: Value) -> Value {
         }
         _ => {}
     }
-    route(client, "command", "slice.pipeline.phase.complete", request).await["context"].clone()
+    let raw = route(client, "command", "slice.pipeline.phase.complete", request).await;
+    let resolved = resolve_pipeline(client, raw).await.unwrap();
+    assert!(mutation_result_id(&resolved).is_null());
+    resolved
 }
 
-pub(super) async fn create_checkpoint(client: &mut Mcp, context: &Value) -> Value {
+pub(super) async fn create_checkpoint(client: &mut Mcp, context: &ResolvedPipeline) -> Value {
     let mut request = completion(
         context,
         "waiting_research",
@@ -195,17 +210,19 @@ pub(super) async fn create_checkpoint(client: &mut Mcp, context: &Value) -> Valu
         "inquiry":research_inquiry(),
         "reason":"The decisive unknown needs a separate bounded evidence synthesis."
     });
-    if context["knowledge_resources"]["selected"]
+    if context.details_data()["knowledge_resources"]["selected"]
         .as_array()
         .is_some_and(|selected| !selected.is_empty())
     {
         request["consumed_knowledge"] = json!({
-            "manifest_id":context["knowledge_resources"]["id"],
-            "digest":context["knowledge_resources"]["digest"]
+            "manifest_id":context.details_data()["knowledge_resources"]["id"],
+            "digest":context.details_data()["knowledge_resources"]["digest"]
         });
     }
     let completed = route(client, "command", "slice.pipeline.phase.complete", request).await;
-    completed["context"]["checkpoints"]
+    let completed = resolve_pipeline(client, completed).await.unwrap();
+    assert!(mutation_result_id(&completed).is_null());
+    completed.details_data()["checkpoints"]
         .as_array()
         .unwrap()
         .iter()
@@ -214,22 +231,46 @@ pub(super) async fn create_checkpoint(client: &mut Mcp, context: &Value) -> Valu
         .clone()
 }
 
-pub(super) async fn refresh_or_capture_knowledge(client: &mut Mcp, context: &Value) -> Value {
-    let current = route(
+pub(super) async fn refresh_or_capture_knowledge(
+    client: &mut Mcp,
+    context: &ResolvedPipeline,
+) -> ResolvedPipeline {
+    let current_raw = route(
         client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":context["run"]["id"]}),
+        json!({"run_id":context.run()["id"]}),
     )
     .await;
-    if current["knowledge_resource_status"]["state"] == "current" {
+    let current = resolve_pipeline(client, current_raw).await.unwrap();
+    assert_eq!(current.run()["id"], context.run()["id"]);
+    assert_eq!(current.run()["revision"], context.run()["revision"]);
+    assert_eq!(
+        current.run()["current_phase_id"],
+        context.run()["current_phase_id"]
+    );
+    if current.details_data()["knowledge_resource_status"]["state"] == "current" {
+        assert_eq!(
+            current.details_data()["knowledge_resources"]["run_revision"],
+            current.run()["revision"]
+        );
+        assert!(find_action(&current.raw_payload, "pipeline.knowledge_refresh").is_none());
         return current;
     }
     assert!(matches!(
-        current["knowledge_resource_status"]["state"].as_str(),
+        current.details_data()["knowledge_resource_status"]["state"].as_str(),
         Some("needs_context" | "stale")
     ));
-    let refresh = find_action(&current, "pipeline.knowledge_refresh").unwrap();
+    if current.details_data()["knowledge_resource_status"]["state"] == "stale" {
+        assert_eq!(
+            current.run()["revision"].as_i64().unwrap(),
+            current.details_data()["knowledge_resources"]["run_revision"]
+                .as_i64()
+                .unwrap()
+                + 1
+        );
+    }
+    let refresh = find_action(&current.raw_payload, "pipeline.knowledge_refresh").unwrap();
     route(
         client,
         "command",
@@ -237,14 +278,18 @@ pub(super) async fn refresh_or_capture_knowledge(client: &mut Mcp, context: &Val
         action_params(refresh).clone(),
     )
     .await;
-    let current = route(
+    let current_raw = route(
         client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":context["run"]["id"]}),
+        json!({"run_id":context.run()["id"]}),
     )
     .await;
-    assert_eq!(current["knowledge_resource_status"]["state"], "current");
+    let current = resolve_pipeline(client, current_raw).await.unwrap();
+    assert_eq!(
+        current.details_data()["knowledge_resource_status"]["state"],
+        "current"
+    );
     current
 }
 
@@ -270,13 +315,13 @@ pub(super) async fn begin_run(
     slice: &Value,
     inquiry: Value,
     source: Option<&Value>,
-) -> Value {
-    route(
+) -> ResolvedPipeline {
+    let raw = route(
         client,
         "command",
         "slice.pipeline.begin",
         begin_params(scope, slice, inquiry, source),
     )
-    .await["created"]
-        .clone()
+    .await;
+    resolve_pipeline(client, raw).await.unwrap()
 }

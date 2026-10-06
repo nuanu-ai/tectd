@@ -132,7 +132,7 @@ async fn ordinary_context_reuses_exact_creation_proof_under_existing_fence() {
         .await
         .unwrap();
     let empty = begin(&mut client, &repo, "empty-ordinary").await;
-    let empty_id = Uuid::parse_str(empty["run"]["id"].as_str().unwrap()).unwrap();
+    let empty_id = Uuid::parse_str(empty.run()["id"].as_str().unwrap()).unwrap();
     // Missing knowledge state remains missing: no ensure_state side effect.
     sqlx::query("DELETE FROM workspace_knowledge_state WHERE tenant_id=$1 AND workspace_id=$2")
         .bind(enrollment.tenant_id)
@@ -172,13 +172,13 @@ async fn ordinary_context_reuses_exact_creation_proof_under_existing_fence() {
     }
     let run = begin(&mut client, &repo, "twenty-two").await;
     assert_eq!(
-        run["knowledge_resources"]["selected"]
+        run.details_data()["knowledge_resources"]["selected"]
             .as_array()
             .unwrap()
             .len(),
         22
     );
-    let run_id = Uuid::parse_str(run["run"]["id"].as_str().unwrap()).unwrap();
+    let run_id = Uuid::parse_str(run.run()["id"].as_str().unwrap()).unwrap();
     let mut foreign = Mcp::start(
         &socket,
         &config,
@@ -271,9 +271,9 @@ async fn ordinary_context_reuses_exact_creation_proof_under_existing_fence() {
             .bind(workspace).fetch_one(&measured_pool).await.unwrap();
         assert_eq!(counts, (0, 1, 22, 1));
         eprintln!("ordinary_context actual SQL proof: scalar=44; successful vector batch=1; exact requested keys=22; DTO+receipt equal");
-        route(&mut foreign, "query", "slice.pipeline.context", json!({"run_id":foreign_run["run"]["id"]})).await;
+        route(&mut foreign, "query", "slice.pipeline.context", json!({"run_id":foreign_run.run()["id"]})).await;
         route(&mut foreign, "query", "knowledge.unit", json!({"unit_id":foreign_unit,"revision":1})).await;
-        let own_unit = run["knowledge_resources"]["selected"][0]["unit_id"].clone();
+        let own_unit = run.details_data()["knowledge_resources"]["selected"][0]["unit_id"].clone();
         route(&mut client, "query", "knowledge.unit", json!({"unit_id":own_unit,"revision":1})).await;
         let total: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM public.{measured_table}"))
             .fetch_one(&measured_pool).await.unwrap();
@@ -413,7 +413,7 @@ async fn ordinary_context_reuses_exact_creation_proof_under_existing_fence() {
         // ordinary reader still succeeds using65 creation+2 revalidation singleton proofs.
         for index in 24..65 { commit_create(&mut client, runbook("procedure", &format!("cap-proof-{index}"))).await; }
         let cap_run=begin(&mut client,&repo,"candidate-cap").await;
-        let cap_id=Uuid::parse_str(cap_run["run"]["id"].as_str().unwrap()).unwrap();
+        let cap_id=Uuid::parse_str(cap_run.run()["id"].as_str().unwrap()).unwrap();
         let scalar_cap=context(&store,&enrollment.auth,&native,workspace,cap_id,false).await.unwrap();
         let injection=format!("IF p_workspace='{workspace}'::uuid AND current_setting('transaction_read_only')='off' THEN INSERT INTO public.{measured_table} VALUES(p_workspace,'batch',p_requests); END IF;");
         sqlx::raw_sql(&measured_originals[1].replacen("BEGIN", &format!("BEGIN\n{injection}"),1)).execute(&measured_pool).await.unwrap();

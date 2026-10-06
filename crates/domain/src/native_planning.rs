@@ -354,7 +354,7 @@ pub enum SliceCandidateContextView {
 pub struct SliceCandidateContextQuery {
     pub scope_id: Uuid,
     pub view: SliceCandidateContextView,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<i64>,
     pub limit: u32,
 }

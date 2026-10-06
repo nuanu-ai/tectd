@@ -19,6 +19,8 @@ mod support;
 use knowledge_lifecycle_support::commit_create;
 use knowledge_operation_support::{SingleOperation, commit_single};
 use pipeline_support::{completion, successful_route};
+use recovery_support::native_reads::ScopeOpenFixture;
+use recovery_support::pipeline_reads::{ResolvedPipeline, resolve_pipeline};
 use recovery_support::{
     Daemon, Mcp, action_params, find_action, host_file, private_temp, tagged_url,
 };
@@ -37,12 +39,15 @@ fn draft() -> Value {
     "pipeline_reason":"Exercise exact producer publication binding","source_result_ids":[]}],"supersessions":[]})
 }
 
-async fn begin(client: &mut Mcp, repo: &std::path::Path) -> Value {
+async fn begin(client: &mut Mcp, repo: &std::path::Path) -> ResolvedPipeline {
     let (source, candidate) = ready_source_candidate(client, repo).await;
     let scope=route(client,"command","scope.open",json!({"request_id":Uuid::new_v4(),
         "candidate_set_id":source["candidate_set"]["id"],"candidate_set_revision":source["candidate_set"]["revision"],
         "candidate_snapshot_id":source["snapshot"]["id"],"candidate_id":candidate["id"],"candidate_revision":candidate["revision"]})).await;
-    let saved = save(client, &scope["created"]["planning"], draft()).await;
+    let planning = ScopeOpenFixture::from_mutation(scope, "created")
+        .read_planning(client)
+        .await;
+    let saved = save(client, &planning.value, draft()).await;
     let reviewed = review(client, &saved).await;
     let opened = route(
         client,
@@ -51,7 +56,7 @@ async fn begin(client: &mut Mcp, repo: &std::path::Path) -> Value {
         open_slice(&reviewed, &reviewed["draft"]["nodes"][0], Uuid::new_v4()),
     )
     .await;
-    route(
+    let raw = route(
         client,
         "command",
         "slice.pipeline.begin",
@@ -60,34 +65,36 @@ async fn begin(client: &mut Mcp, repo: &std::path::Path) -> Value {
         "slice_revision":opened["created"]["revision"],"delivery_mode":"phasewise",
         "qualification_reason":"Exact producer publication integration fixture."}),
     )
-    .await["created"]
-        .clone()
+    .await;
+    resolve_pipeline(client, raw).await.unwrap()
 }
 
-async fn advance(client: &mut Mcp, context: Value) -> Value {
+async fn advance(client: &mut Mcp, context: ResolvedPipeline) -> ResolvedPipeline {
     let (verdict, outcome, transition) = successful_route(&context);
     let mut request = completion(&context, verdict, outcome, transition, None, None);
     acknowledge_knowledge(&mut request, &context);
-    route(client, "command", "slice.pipeline.phase.complete", request).await["context"].clone()
+    let raw = route(client, "command", "slice.pipeline.phase.complete", request).await;
+    resolve_pipeline(client, raw).await.unwrap()
 }
 
-async fn promotion_context(client: &mut Mcp, repo: &std::path::Path) -> Value {
+async fn promotion_context(client: &mut Mcp, repo: &std::path::Path) -> ResolvedPipeline {
     let mut current = begin(client, repo).await;
-    while current["run"]["current_phase_ordinal"].as_u64().unwrap() < 15 {
+    while current.run()["current_phase_ordinal"].as_u64().unwrap() < 15 {
         current = advance(client, current).await;
     }
     advance(client, current).await
 }
 
-async fn refresh(client: &mut Mcp, context: &Value) -> Value {
+async fn refresh(client: &mut Mcp, context: &ResolvedPipeline) -> ResolvedPipeline {
     let stale = route(
         client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":context["run"]["id"]}),
+        json!({"run_id":context.run()["id"]}),
     )
     .await;
-    let action = find_action(&stale, "pipeline.knowledge_refresh").unwrap();
+    let stale = resolve_pipeline(client, stale).await.unwrap();
+    let action = find_action(&stale.raw_payload, "pipeline.knowledge_refresh").unwrap();
     route(
         client,
         "command",
@@ -95,13 +102,14 @@ async fn refresh(client: &mut Mcp, context: &Value) -> Value {
         action_params(action).clone(),
     )
     .await;
-    route(
+    let raw = route(
         client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":context["run"]["id"]}),
+        json!({"run_id":context.run()["id"]}),
     )
-    .await
+    .await;
+    resolve_pipeline(client, raw).await.unwrap()
 }
 
 async fn rejects(client: &mut Mcp, request: Value) {
@@ -118,7 +126,8 @@ fn terminal() -> Value {
     "scope_impact":"The producer reports the separate canonical publication.","remaining_work":"None."})
 }
 
-fn acknowledge_knowledge(request: &mut Value, context: &Value) {
+fn acknowledge_knowledge(request: &mut Value, resolved: &ResolvedPipeline) {
+    let context = resolved.details_data();
     let manifest = if context["knowledge_resources"].is_object() {
         &context["knowledge_resources"]
     } else {
@@ -133,7 +142,7 @@ fn acknowledge_knowledge(request: &mut Value, context: &Value) {
     }
 }
 
-fn promoted(context: &Value, receipt: &Value) -> Value {
+fn promoted(context: &ResolvedPipeline, receipt: &Value) -> Value {
     let mut request = completion(
         context,
         "procedure_promoted_after_approval",
@@ -190,7 +199,7 @@ async fn producer_accepts_only_exact_publisher_receipt_and_lineage() {
     .await;
     client.call("open_workspace", json!({})).await;
     let mut current = promotion_context(&mut client, &repo).await;
-    let source = current["outputs"]
+    let source = current.details_data()["outputs"]
         .as_array()
         .unwrap()
         .iter()
@@ -201,7 +210,7 @@ async fn producer_accepts_only_exact_publisher_receipt_and_lineage() {
     ))
     .unwrap();
     let unrelated_document = fixture["document"].clone();
-    fixture["document"]["sources"] = json!([{"kind":"pipeline_output","output":{"run_id":current["run"]["id"],
+    fixture["document"]["sources"] = json!([{"kind":"pipeline_output","output":{"run_id":current.run()["id"],
         "output_id":source["id"],"digest":source["digest"],"evidence_kind":"runtime_verification",
         "evidence_scope":"Exact procedure proposal output."}}]);
     let committed = commit_create(&mut client, fixture["document"].clone()).await;
@@ -239,27 +248,28 @@ async fn producer_accepts_only_exact_publisher_receipt_and_lineage() {
         accepted_request.clone(),
     )
     .await;
-    assert_eq!(accepted["context"]["run"]["current_phase_ordinal"], 17);
+    let accepted = resolve_pipeline(&mut client, accepted).await.unwrap();
+    assert_eq!(accepted.run()["current_phase_ordinal"], 17);
     let mut final_request = completion(
-        &accepted["context"],
+        &accepted,
         "handoff_not_required",
         "completed",
         "complete",
         None,
         Some(terminal()),
     );
-    acknowledge_knowledge(&mut final_request, &accepted["context"]);
+    acknowledge_knowledge(&mut final_request, &accepted);
     let completed = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         final_request,
     )
-    .await["context"]
-        .clone();
-    assert_eq!(completed["run"]["status"], "completed");
+    .await;
+    let completed = resolve_pipeline(&mut client, completed).await.unwrap();
+    assert_eq!(completed.run()["status"], "completed");
     assert_eq!(
-        completed["outputs"]
+        completed.details_data()["outputs"]
             .as_array()
             .unwrap()
             .iter()
@@ -346,14 +356,17 @@ async fn generic_workspace_runbook_requires_exact_shared_manifest_acknowledgemen
 
     let current = begin(&mut client, &repo).await;
     assert!(
-        current["knowledge"]["selected"]
+        current.details_data()["knowledge"]["selected"]
             .as_array()
             .unwrap()
             .is_empty()
     );
-    let resources = &current["knowledge_resources"];
-    assert_eq!(resources["id"], current["knowledge"]["id"]);
-    assert_eq!(resources["digest"], current["knowledge"]["digest"]);
+    let resources = &current.details_data()["knowledge_resources"];
+    assert_eq!(resources["id"], current.details_data()["knowledge"]["id"]);
+    assert_eq!(
+        resources["digest"],
+        current.details_data()["knowledge"]["digest"]
+    );
     assert_eq!(resources["selected"].as_array().unwrap().len(), 1);
     assert_eq!(resources["selected"][0]["knowledge_kind"], "procedure");
     assert_eq!(
@@ -403,10 +416,14 @@ async fn generic_workspace_runbook_requires_exact_shared_manifest_acknowledgemen
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":current["run"]["id"]}),
+        json!({"run_id":current.run()["id"]}),
     )
     .await;
-    assert_eq!(stale["knowledge_resource_status"]["state"], "stale");
+    let stale = resolve_pipeline(&mut client, stale).await.unwrap();
+    assert_eq!(
+        stale.details_data()["knowledge_resource_status"]["state"],
+        "stale"
+    );
     let mut stale_ack = without_ack;
     stale_ack["request_id"] = json!(Uuid::new_v4());
     stale_ack["consumed_knowledge"] = json!({
@@ -422,7 +439,7 @@ async fn generic_workspace_runbook_requires_exact_shared_manifest_acknowledgemen
         .await["error"]["code"],
         "context_changed"
     );
-    let refresh = find_action(&stale, "pipeline.knowledge_refresh").unwrap();
+    let refresh = find_action(&stale.raw_payload, "pipeline.knowledge_refresh").unwrap();
     route(
         &mut client,
         "command",
@@ -434,26 +451,30 @@ async fn generic_workspace_runbook_requires_exact_shared_manifest_acknowledgemen
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":current["run"]["id"]}),
+        json!({"run_id":current.run()["id"]}),
     )
     .await;
-    assert_eq!(refreshed["knowledge_resource_status"]["state"], "current");
+    let refreshed = resolve_pipeline(&mut client, refreshed).await.unwrap();
     assert_eq!(
-        refreshed["knowledge_resources"]["selected"]
+        refreshed.details_data()["knowledge_resource_status"]["state"],
+        "current"
+    );
+    assert_eq!(
+        refreshed.details_data()["knowledge_resources"]["selected"]
             .as_array()
             .unwrap()
             .len(),
         1
     );
     assert_eq!(
-        refreshed["knowledge_resources"]["selected"][0]["revision"],
+        refreshed.details_data()["knowledge_resources"]["selected"][0]["revision"],
         2
     );
     let mut with_ack = completion(&refreshed, verdict, outcome, transition, None, None);
     with_ack["request_id"] = json!(Uuid::new_v4());
     with_ack["consumed_knowledge"] = json!({
-        "manifest_id":refreshed["knowledge_resources"]["id"],
-        "digest":refreshed["knowledge_resources"]["digest"]
+        "manifest_id":refreshed.details_data()["knowledge_resources"]["id"],
+        "digest":refreshed.details_data()["knowledge_resources"]["digest"]
     });
     let completed = route(
         &mut client,
@@ -462,6 +483,7 @@ async fn generic_workspace_runbook_requires_exact_shared_manifest_acknowledgemen
         with_ack,
     )
     .await;
-    assert_eq!(completed["context"]["run"]["current_phase_ordinal"], 2);
+    let completed = resolve_pipeline(&mut client, completed).await.unwrap();
+    assert_eq!(completed.run()["current_phase_ordinal"], 2);
     client.finish().await;
 }

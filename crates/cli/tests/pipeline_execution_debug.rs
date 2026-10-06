@@ -9,6 +9,8 @@ use pipeline_support::{
     add_opaque_authority_labels, assert_forged_implementation_phase_rejected,
     assert_non_coding_definition, completion, refresh_knowledge, successful_route,
 };
+use recovery_support::native_reads::ScopeOpenFixture;
+use recovery_support::pipeline_reads::{ResolvedPipeline, resolve_pipeline};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -28,16 +30,16 @@ fn debug_draft() -> Value {
     }],"supersessions":[]})
 }
 
-async fn advance(client: &mut Mcp, context: Value) -> Value {
+async fn advance(client: &mut Mcp, context: ResolvedPipeline) -> ResolvedPipeline {
     let (verdict, outcome, transition) = successful_route(&context);
-    route(
+    let raw = route(
         client,
         "command",
         "slice.pipeline.phase.complete",
         completion(&context, verdict, outcome, transition, None, None),
     )
-    .await["context"]
-        .clone()
+    .await;
+    resolve_pipeline(client, raw).await.unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -78,7 +80,9 @@ async fn debug_pipeline_preserves_diagnosis_and_composes_fix_as_future_slice() {
             "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]}),
     )
     .await;
-    let saved = save(&mut client, &scope["created"]["planning"], debug_draft()).await;
+    let scope = ScopeOpenFixture::from_mutation(scope, "created");
+    let planning_read = scope.read_planning(&mut client).await;
+    let saved = save(&mut client, &planning_read.value, debug_draft()).await;
     let reviewed = review(&mut client, &saved).await;
     let opened = route(
         &mut client,
@@ -88,28 +92,25 @@ async fn debug_pipeline_preserves_diagnosis_and_composes_fix_as_future_slice() {
     )
     .await;
     let slice = &opened["created"];
-    let begun = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.begin",
         json!({"request_id":Uuid::new_v4(),"scope_id":reviewed["scope"]["id"],
             "slice_id":slice["id"],"slice_revision":slice["revision"],
             "qualification_reason":"Start whole, then deepen phasewise as causal evidence accumulates."}),
-    )
-    .await;
-    let mut context = begun["created"].clone();
-    assert!(!id(&context["run"]["id"]).is_nil());
-    assert_eq!(context["run"]["delivery_mode"], "whole");
+    ).await;
+    let begun = resolve_pipeline(&mut client, raw).await.unwrap();
+    let mut context = begun;
+    assert!(!id(&context.run()["id"]).is_nil());
+    assert_eq!(context.run()["delivery_mode"], "whole");
     assert_eq!(
-        context["run"]["definition_digest"],
+        context.run()["definition_digest"],
         "afb0f21932a11eceb8e3aba01d3d07ec9f74160203085391f7de1758118a6574"
     );
-    assert_eq!(
-        context["definition"]["phases"].as_array().unwrap().len(),
-        18
-    );
+    assert_eq!(context.definition()["phases"].as_array().unwrap().len(), 18);
     assert!(
-        context["definition"]["phases"]
+        context.definition()["phases"]
             .as_array()
             .unwrap()
             .iter()
@@ -139,30 +140,36 @@ async fn debug_pipeline_preserves_diagnosis_and_composes_fix_as_future_slice() {
     )
     .await;
     add_opaque_authority_labels(&mut first);
-    context = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         first,
     )
-    .await["context"]
-        .clone();
+    .await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
     assert_non_coding_definition(&context, "slice.debug-root-cause");
-    context = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.delivery.escalate",
-        json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
-            "run_revision":context["run"]["revision"],"phase_id":context["run"]["current_phase_id"],
+        json!({"request_id":Uuid::new_v4(),"run_id":context.run()["id"],
+            "run_revision":context.run()["revision"],"phase_id":context.run()["current_phase_id"],
             "reason":"The evidence graph now benefits from phase-local delivery."}),
     )
-    .await["context"]
-        .clone();
-    assert_eq!(context["run"]["delivery_mode"], "phasewise");
-    assert_eq!(context["definition"]["phases"].as_array().unwrap().len(), 1);
+    .await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
+    assert_eq!(context.run()["delivery_mode"], "phasewise");
+    assert_eq!(
+        context.details_data()["delivered_phases"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     context = refresh_knowledge(&mut client, &context).await;
 
-    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 12 {
+    while context.run()["current_phase_ordinal"].as_u64().unwrap() < 12 {
         context = advance(&mut client, context).await;
     }
     let strategy = completion(
@@ -181,14 +188,14 @@ async fn debug_pipeline_preserves_diagnosis_and_composes_fix_as_future_slice() {
         strategy["output"]["fields"]["future_slice_kind"].as_str(),
         Some("slice.lightweight-tdd-development" | "slice.full-design-to-execution")
     ));
-    context = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         strategy,
     )
-    .await["context"]
-        .clone();
+    .await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
 
     context = advance(&mut client, context).await;
     let handoff = completion(
@@ -211,14 +218,14 @@ async fn debug_pipeline_preserves_diagnosis_and_composes_fix_as_future_slice() {
         handoff["output"]["fields"]["implementation_slice_kind"].as_str(),
         Some("slice.lightweight-tdd-development" | "slice.full-design-to-execution")
     ));
-    context = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         handoff,
     )
-    .await["context"]
-        .clone();
+    .await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
 
     let verification = completion(
         &context,
@@ -236,19 +243,19 @@ async fn debug_pipeline_preserves_diagnosis_and_composes_fix_as_future_slice() {
         verification["output"]["fields"]["source_mutation_performed"],
         "false"
     );
-    context = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         verification,
     )
-    .await["context"]
-        .clone();
-    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 18 {
+    .await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
+    while context.run()["current_phase_ordinal"].as_u64().unwrap() < 18 {
         context = advance(&mut client, context).await;
     }
     let (verdict, outcome, transition) = successful_route(&context);
-    let completed = route(&mut client,"command","slice.pipeline.phase.complete",
+    let raw = route(&mut client,"command","slice.pipeline.phase.complete",
         completion(&context,verdict,outcome,transition,None,Some(json!({
             "summary":"Root cause and future implementation Slice handoff are recorded without a fix claim.",
             "evidence":[{"kind":"integration_test","reference":"pipeline_execution_debug.rs",
@@ -256,13 +263,17 @@ async fn debug_pipeline_preserves_diagnosis_and_composes_fix_as_future_slice() {
             "scope_impact":"A future reviewed implementation candidate may consume this evidence.",
             "remaining_work":"Implement and verify the correction in a separate Lightweight or Full Slice."
         })))).await;
-    assert_eq!(completed["context"]["run"]["status"], "completed");
+    let completed = resolve_pipeline(&mut client, raw).await.unwrap();
+    assert_eq!(completed.run()["status"], "completed");
     assert_eq!(
-        completed["context"]["attempts"].as_array().unwrap().len(),
+        completed.details_data()["attempts"]
+            .as_array()
+            .unwrap()
+            .len(),
         18
     );
     assert!(
-        completed["context"]["outputs"]
+        completed.details_data()["outputs"]
             .as_array()
             .unwrap()
             .iter()

@@ -3,6 +3,7 @@ mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;
 
+use recovery_support::native_reads::{ScopeOpenFixture, SlicePlanningFixture};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -96,7 +97,9 @@ async fn native_planning_rejects_cross_boundary_and_unready_graph_operations() {
         scope_request(&source, &candidate),
     )
     .await;
-    let planning = &opened["created"]["planning"];
+    let opened = ScopeOpenFixture::from_mutation(opened, "created");
+    let planning_read = opened.read_planning(&mut client).await;
+    let planning = &planning_read.value;
 
     let cycle = json!({"coverage_summary":"Cycle must fail","nodes":[
         work("a",vec![json!({"local":"b"})]),work("b",vec![json!({"local":"a"})])
@@ -182,6 +185,8 @@ async fn native_planning_rejects_cross_boundary_and_unready_graph_operations() {
             "revision":stale["candidate_set"]["revision"],"request_id":Uuid::new_v4()}),
     )
     .await;
+    let refreshed_receipt = SlicePlanningFixture::from_mutation(refreshed);
+    let refreshed = refreshed_receipt.read_details(&mut client).await.value;
 
     let missing_full = json!({"coverage_summary":"Missing Full rationale","nodes":[
         existing_work(&a,vec![]),existing_work(&b,vec![json!({"candidate_id":a["id"],"revision":a["revision"]})]),{"kind":"work","identity":{"local":"full"},
@@ -285,7 +290,9 @@ async fn native_planning_rejects_cross_boundary_and_unready_graph_operations() {
         scope_request(&source_two, &candidate_two),
     )
     .await;
-    let planning_two = &opened_two["created"]["planning"];
+    let opened_two = ScopeOpenFixture::from_mutation(opened_two, "created");
+    let planning_two_read = opened_two.read_planning(&mut client).await;
+    let planning_two = &planning_two_read.value;
     let cross_result = json!({"coverage_summary":"Cross Scope result must fail","nodes":[{
         "kind":"work","identity":{"local":"cross"},"title":"Cross","outcome":"Cross",
         "dependencies":[],"proof":["proof"],"pipeline":"slice.lightweight-tdd-development",

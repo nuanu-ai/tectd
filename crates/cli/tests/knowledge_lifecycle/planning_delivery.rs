@@ -1,3 +1,5 @@
+use super::recovery_support::candidate_reads::{CandidateFixture, read_query_json};
+use super::recovery_support::native_reads::ScopeOpenFixture;
 use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -58,7 +60,9 @@ async fn dk4_planning_briefs_are_delivered_at_their_reviewed_abstraction() {
             }),
         )
         .await;
-    let program_manifest = &begun["program"]["planning_knowledge"]["manifest"];
+    let begun_fixture = ProgramFixture::from_mutation(begun.clone());
+    let begun_page = begun_fixture.read_page(&mut client).await;
+    let program_manifest = &begun_page.program()["planning_knowledge"]["manifest"];
     assert_planning_abstraction(
         program_manifest,
         "Plan service operation within region R1; expansion beyond that boundary requires a new owner decision.",
@@ -80,26 +84,26 @@ async fn dk4_planning_briefs_are_delivered_at_their_reviewed_abstraction() {
             }),
         )
         .await;
-    let context = &candidates["context"];
+    let candidates = CandidateFixture::from_mutation(candidates);
+    let candidates_overview = candidates.read_overview(&mut client).await;
+    let context = &candidates_overview.value["context"];
     let scope_manifest = &context["planning_knowledge"]["manifest"];
     assert_planning_abstraction(
         scope_manifest,
         "Keep R1 deployment capability and regional isolation verification in the same Scope boundary; other regions remain excluded.",
     );
-    let inputs = client
-        .call(
-            "candidate_context",
-            json!({
-                "candidate_set_id":context["candidate_set"]["id"],"view":"inputs","limit":25
-            }),
-        )
-        .await;
+    let inputs = read_query_json(
+        &mut client,
+        &json!({"route":"scope.candidates.context",
+        "params":{"candidate_set_id":context["candidate_set"]["id"],"view":"inputs","limit":25}}),
+    )
+    .await;
     let saved = route(&mut client,"command","scope.candidates.save",json!({
         "kind":"draft","candidate_set_id":context["candidate_set"]["id"],"revision":1,
         "snapshot_id":context["snapshot"]["id"],"input_cursor":1,"request_id":Uuid::new_v4(),
         "consumed_knowledge":planning_guard(scope_manifest),
         "draft":{"boundary":"ongoing","goals":[{"identity":{"local":"goal"},
-          "text":"Deliver R1 operation with regional isolation proof","source_ref_id":inputs["items"][0]["input"]["source_ref_id"],
+          "text":"Deliver R1 operation with regional isolation proof","source_ref_id":inputs.value["items"][0]["input"]["source_ref_id"],
           "resolution":{"kind":"candidate","reference":{"local":"scope"}}}],"evidence":[],"candidates":[{
           "identity":{"local":"scope"},"title":"R1 operation and isolation proof",
           "outcome":"R1 works and another region is refused","trigger":"Owner-approved R1 boundary",
@@ -108,23 +112,34 @@ async fn dk4_planning_briefs_are_delivered_at_their_reviewed_abstraction() {
           "dependencies":[],"coverage_goals":[{"local":"goal"}],"evidence":[]}],
           "blockers":[],"protected_changes":[]}
     })).await;
-    let candidate = saved["draft"]["candidates"][0].clone();
+    let saved = CandidateFixture::from_mutation(saved);
+    let saved_details = saved.read_details(&mut client).await;
+    let candidate = saved_details.value["draft"]["candidates"][0].clone();
     let reviewed = route(&mut client,"command","scope.candidates.save",json!({
-        "kind":"review","candidate_set_id":saved["context"]["candidate_set"]["id"],
-        "revision":saved["context"]["candidate_set"]["revision"],"snapshot_id":context["snapshot"]["id"],
-        "input_cursor":saved["context"]["candidate_set"]["input_cursor"],"request_id":Uuid::new_v4(),
+        "kind":"review","candidate_set_id":saved_details.value["context"]["candidate_set"]["id"],
+        "revision":saved_details.value["context"]["candidate_set"]["revision"],"snapshot_id":context["snapshot"]["id"],
+        "input_cursor":saved_details.value["context"]["candidate_set"]["input_cursor"],"request_id":Uuid::new_v4(),
         "consumed_knowledge":planning_guard(scope_manifest),
         "review":{"verdict":"ready","summary":"The R1 Scope is vertical and bounded.","findings":[],
           "candidate_decisions":[{"candidate_id":candidate["id"],"decision":"accept","rationale":"One delivery boundary."}]}
     })).await;
-    let ready = &reviewed["context"];
+    let reviewed = CandidateFixture::from_mutation(reviewed);
+    let reviewed_overview = reviewed.read_overview(&mut client).await;
+    let ready = &reviewed_overview.value["context"];
     let opened = route(&mut client,"command","scope.open",json!({
         "request_id":Uuid::new_v4(),"candidate_set_id":ready["candidate_set"]["id"],
         "candidate_set_revision":ready["candidate_set"]["revision"],"candidate_snapshot_id":ready["snapshot"]["id"],
         "candidate_id":candidate["id"],"candidate_revision":candidate["revision"],
         "task_context":fixture_task_context(),"consumed_knowledge":planning_guard(scope_manifest)
     })).await;
-    let slice_manifest = &opened["created"]["planning"]["planning_knowledge"]["manifest"];
+    let opened = ScopeOpenFixture::from_mutation(opened, "created");
+    let opened_scope = opened.read_scope(&mut client).await;
+    let opened_planning = opened.read_planning(&mut client).await;
+    assert_eq!(
+        opened_planning.value["scope"]["id"],
+        opened_scope.value["id"]
+    );
+    let slice_manifest = &opened_planning.value["planning_knowledge"]["manifest"];
     assert_planning_abstraction(
         slice_manifest,
         "Plan vertical outcomes containing a working R1 path and negative proof that another region is refused.",
@@ -187,7 +202,9 @@ async fn dk4_reference_warns_required_blocks_and_overlap_preserves_purposes() {
             "input_cursor":begun["program"]["input_cursor"],"request_id":Uuid::new_v4()}),
     )
     .await;
-    let reference_status = &refreshed["program"]["planning_knowledge"];
+    let refreshed_fixture = ProgramFixture::from_mutation(refreshed.clone());
+    let refreshed_page = refreshed_fixture.read_page(&mut client).await;
+    let reference_status = &refreshed_page.program()["planning_knowledge"];
     assert_eq!(
         reference_status["warnings"],
         json!(["reference_knowledge_needs_review"])
@@ -244,7 +261,9 @@ async fn dk4_reference_warns_required_blocks_and_overlap_preserves_purposes() {
                 "task_context":{"target_iris":["urn:tect:dk4:overlap"]}}),
         )
         .await;
-    let initially_selected = &begun["program"]["planning_knowledge"]["manifest"]["selected"];
+    let begun_fixture = ProgramFixture::from_mutation(begun.clone());
+    let begun_page = begun_fixture.read_page(&mut client).await;
+    let initially_selected = &begun_page.program()["planning_knowledge"]["manifest"]["selected"];
     assert_eq!(initially_selected.as_array().unwrap().len(), 1);
     assert_eq!(
         initially_selected[0]["purposes"],
@@ -275,7 +294,9 @@ async fn dk4_reference_warns_required_blocks_and_overlap_preserves_purposes() {
             "input_cursor":begun["program"]["input_cursor"],"request_id":Uuid::new_v4()}),
     )
     .await;
-    let required_status = &refreshed["program"]["planning_knowledge"];
+    let refreshed_fixture = ProgramFixture::from_mutation(refreshed.clone());
+    let refreshed_page = refreshed_fixture.read_page(&mut client).await;
+    let required_status = &refreshed_page.program()["planning_knowledge"];
     assert!(
         required_status["stale_reasons"]
             .as_array()
@@ -304,7 +325,9 @@ async fn dk4_reference_warns_required_blocks_and_overlap_preserves_purposes() {
                 "task_context":{"target_iris":["urn:tect:dk4:future"]}}),
         )
         .await;
-    let future_manifest = &future["program"]["planning_knowledge"]["manifest"];
+    let future_fixture = ProgramFixture::from_mutation(future.clone());
+    let future_page = future_fixture.read_page(&mut client).await;
+    let future_manifest = &future_page.program()["planning_knowledge"]["manifest"];
     assert_eq!(future_manifest["selected"], json!([]));
     assert!(
         future_manifest["unresolved_needs"]
@@ -321,8 +344,10 @@ async fn dk4_reference_warns_required_blocks_and_overlap_preserves_purposes() {
                 "task_context":{}}),
         )
         .await;
+    let unknown_fixture = ProgramFixture::from_mutation(unknown.clone());
+    let unknown_page = unknown_fixture.read_page(&mut client).await;
     assert!(
-        unknown["program"]["planning_knowledge"]["manifest"]["unresolved_needs"]
+        unknown_page.program()["planning_knowledge"]["manifest"]["unresolved_needs"]
             .as_array()
             .unwrap()
             .iter()
@@ -336,7 +361,9 @@ async fn dk4_reference_warns_required_blocks_and_overlap_preserves_purposes() {
                 "task_context":{"target_iris":[]}}),
         )
         .await;
-    let known_empty_manifest = &known_empty["program"]["planning_knowledge"]["manifest"];
+    let known_empty_fixture = ProgramFixture::from_mutation(known_empty.clone());
+    let known_empty_page = known_empty_fixture.read_page(&mut client).await;
+    let known_empty_manifest = &known_empty_page.program()["planning_knowledge"]["manifest"];
     assert_eq!(known_empty_manifest["selected"], json!([]));
     assert_eq!(known_empty_manifest["unresolved_needs"], json!([]));
     client.finish().await;

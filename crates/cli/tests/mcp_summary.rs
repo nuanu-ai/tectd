@@ -1,5 +1,11 @@
 //! End-to-end MCP stdio -> daemon -> PostgreSQL contract for the compact Slice catalogue.
+#[path = "mcp_summary/catalog_reads.rs"]
+mod catalog_reads;
+#[path = "recovery_support/help_reads.rs"]
+mod help_reads;
+
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use std::{
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
@@ -142,10 +148,42 @@ async fn summary_preserves_full_catalogue_and_rejects_unauthorized_host() {
     let native_id = Uuid::new_v4().to_string();
     let mut bridge = Bridge::start(&socket, &config, &native_id).await;
 
-    let omitted = payload(&bridge.pipelines(2, json!({})).await);
-    let full = payload(&bridge.pipelines(3, json!({"view":"full"})).await);
-    assert_eq!(omitted, full);
-    let summary = payload(&bridge.pipelines(4, json!({"view":"summary"})).await);
+    let mut sequence = 100;
+    let omitted = catalog_reads::read(
+        async |arguments| {
+            sequence += 1;
+            bridge.call(sequence, "query", arguments).await
+        },
+        json!({}),
+    )
+    .await;
+    let full = catalog_reads::read(
+        async |arguments| {
+            sequence += 1;
+            bridge.call(sequence, "query", arguments).await
+        },
+        json!({"view":"full"}),
+    )
+    .await;
+    assert_eq!(omitted.initial_arguments["params"], json!({}));
+    assert_eq!(omitted.value, full.value);
+    assert_eq!(omitted.source, full.source);
+    assert_eq!(omitted.digest, full.digest);
+    assert!(
+        full.pages > 1,
+        "full catalogue must preserve its large bodies"
+    );
+    assert!(omitted.maximum_envelope_bytes <= 8192 && full.maximum_envelope_bytes <= 8192);
+    let full = full.value;
+    let summary = catalog_reads::read(
+        async |arguments| {
+            sequence += 1;
+            bridge.call(sequence, "query", arguments).await
+        },
+        json!({"view":"summary"}),
+    )
+    .await
+    .value;
     assert_eq!(summary["view"], "summary");
     for field in ["revision", "digest", "executable_count"] {
         assert_eq!(summary[field], full[field], "{field}");
@@ -153,6 +191,34 @@ async fn summary_preserves_full_catalogue_and_rejects_unauthorized_host() {
     let short = summary["pipelines"].as_array().unwrap();
     let complete = full["pipelines"].as_array().unwrap();
     assert_eq!(short.len(), 9);
+    assert_eq!(complete.len(), 9);
+    assert_eq!(
+        full["knowledge_change_entry"]["route"],
+        "knowledge.change_begin"
+    );
+    assert_eq!(
+        full["knowledge_change_entry"]["definition"]["phases"]
+            .as_array()
+            .unwrap()
+            .len(),
+        12
+    );
+    assert_eq!(
+        complete
+            .iter()
+            .filter(|entry| entry["execution_owner"] == "knowledge_change")
+            .count(),
+        1
+    );
+    let body = full["promotion_method"]["body"].as_str().unwrap();
+    assert_eq!(
+        body,
+        include_str!("../../host/knowledge-methods/promotion-slice.md")
+    );
+    assert_eq!(
+        full["promotion_method"]["digest"],
+        format!("{:x}", Sha256::digest(body.as_bytes()))
+    );
     for (short, complete) in short.iter().zip(complete) {
         for field in ["kind", "description", "executable"] {
             assert_eq!(short[field], complete[field], "{field}");
@@ -169,24 +235,29 @@ async fn summary_preserves_full_catalogue_and_rejects_unauthorized_host() {
     assert!(summary.get("knowledge_change_entry").is_none());
     let next = &summary["full_view"];
     assert_eq!(next["tool"], "query");
+    assert_eq!(next["arguments"]["route"], "slice.pipelines");
     assert_eq!(
-        payload(
-            &bridge
-                .call(5, next["tool"].as_str().unwrap(), next["arguments"].clone())
-                .await
-        ),
+        catalog_reads::read(
+            async |arguments| {
+                sequence += 1;
+                bridge.call(sequence, "query", arguments).await
+            },
+            next["arguments"]["params"].clone()
+        )
+        .await
+        .value,
         full
     );
-    let described = payload(
-        &bridge
-            .call(
-                6,
-                "help",
-                json!({"mode":"describe",
-        "tool":"query","route":"slice.pipelines"}),
-            )
-            .await,
-    );
+    let described = help_reads::describe(
+        async |arguments| {
+            sequence += 1;
+            bridge.call(sequence, "help", arguments).await
+        },
+        json!({"mode":"describe","tool":"query","route":"slice.pipelines"}),
+    )
+    .await
+    .unwrap()
+    .value;
     assert_eq!(
         described["params_schema"]["properties"]["view"]["enum"],
         json!(["full", "summary"])

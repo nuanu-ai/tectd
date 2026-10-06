@@ -400,3 +400,9 @@ mod tests;
 
 #[cfg(test)]
 mod p7_failure_tests;
+
+#[cfg(test)]
+mod help_source_tests;
+
+#[cfg(test)]
+mod catalogue_read_tests;

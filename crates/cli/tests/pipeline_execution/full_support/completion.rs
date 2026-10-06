@@ -1,8 +1,8 @@
 use super::*;
 
-pub(super) fn consumed_outputs(context: &Value) -> Vec<Value> {
-    let current = context["run"]["current_phase_ordinal"].as_u64().unwrap();
-    context["bindings"]
+pub(super) fn consumed_outputs(context: &ResolvedPipeline) -> Vec<Value> {
+    let current = context.run()["current_phase_ordinal"].as_u64().unwrap();
+    context.details_data()["bindings"]
         .as_array()
         .unwrap()
         .iter()
@@ -16,12 +16,12 @@ pub(super) fn consumed_outputs(context: &Value) -> Vec<Value> {
         .collect()
 }
 
-fn consumed_inputs(context: &Value) -> Vec<Value> {
-    context["inputs"]
+fn consumed_inputs(context: &ResolvedPipeline) -> Vec<Value> {
+    context.details_data()["inputs"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|input| input["phase_id"] == context["run"]["current_phase_id"])
+        .filter(|input| input["phase_id"] == context.run()["current_phase_id"])
         .map(|input| {
             json!({"input_id":input["id"],"sequence":input["sequence"],
             "digest":input["digest"]})
@@ -30,14 +30,16 @@ fn consumed_inputs(context: &Value) -> Vec<Value> {
 }
 
 pub(crate) fn completion(
-    context: &Value,
+    context: &ResolvedPipeline,
     verdict: &str,
     outcome: &str,
     transition: &str,
     revisit_phase_id: Option<&str>,
     terminal_result: Option<Value>,
 ) -> Value {
-    let phase = &context["definition"]["phases"][0];
+    let phase = context
+        .current_phase()
+        .expect("resolved current phase contract");
     let consumed = consumed_outputs(context);
     let artifacts = artifacts(phase, verdict, outcome, &consumed);
     let producer = format!("full-producer:{}", phase["id"].as_str().unwrap());
@@ -62,7 +64,7 @@ pub(crate) fn completion(
         "reference":format!("full-fixture/{}.md",phase["id"].as_str().unwrap())
     });
     if phase["fresh_reviewer_input"] == true {
-        let producers = context["outputs"]
+        let producers = context.details_data()["outputs"]
             .as_array()
             .unwrap()
             .iter()
@@ -74,8 +76,8 @@ pub(crate) fn completion(
         output["reviewer_context"] = json!({"reviewer_identity":"reported-independent-reviewer",
             "reviewer_context_id":producer,"producer_context_ids":producers,"fresh_input":true});
     }
-    let mut request = json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
-        "run_revision":context["run"]["revision"],"phase_id":phase["id"],
+    let mut request = json!({"request_id":Uuid::new_v4(),"run_id":context.run()["id"],
+        "run_revision":context.run()["revision"],"phase_id":phase["id"],
         "outcome":outcome,"transition":transition,"output":output,
         "consumed_outputs":consumed,"consumed_inputs":consumed_inputs(context),
         "publish_blocked_result":false});
@@ -88,8 +90,10 @@ pub(crate) fn completion(
     request
 }
 
-pub(crate) fn successful_route(context: &Value) -> (&str, &str, &str) {
-    let phase = &context["definition"]["phases"][0];
+pub(crate) fn successful_route(context: &ResolvedPipeline) -> (&str, &str, &str) {
+    let phase = context
+        .current_phase()
+        .expect("resolved current phase contract");
     let route = phase["verdict_routes"]
         .as_array()
         .unwrap()

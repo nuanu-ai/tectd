@@ -2,7 +2,7 @@ use super::*;
 use crate::knowledge_lifecycle_definitions::StaticKnowledgeLifecycleDefinitions;
 use tect_application::KnowledgeLifecycleDefinitionProvider;
 
-fn context(revision: i64) -> KnowledgeChangeContext {
+pub(super) fn context(revision: i64) -> KnowledgeChangeContext {
     let definition = StaticKnowledgeLifecycleDefinitions.definition().unwrap();
     let change_id = Uuid::new_v4();
     KnowledgeChangeContext {

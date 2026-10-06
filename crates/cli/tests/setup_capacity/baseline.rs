@@ -1,4 +1,5 @@
 use crate::legacy::{LegacyDaemon, LegacyMcp};
+use crate::recovery_support::native_reads::program_queries::read_program_query;
 use crate::recovery_support::{
     Daemon, Mcp, action_name, action_params, find_action, host_file, private_temp, public_call,
     tagged_url, tool_payload,
@@ -254,12 +255,17 @@ pub async fn run() {
     );
     assert_eq!(fallback_page["programs"][0]["name"], legacy_name);
     assert!(fallback_page["next_after"].is_null());
-    let current_get = current
-        .call(
-            "get_program",
-            json!({"program_id":legacy_program,"after_input":0,"limit":25}),
-        )
-        .await;
+    let current_get_read = read_program_query(
+        async |arguments| {
+            current
+                .exchange("tools/call", json!({"name":"query","arguments":arguments}))
+                .await
+        },
+        json!({"program_id":legacy_program,"after_input":0,"limit":25}),
+    )
+    .await
+    .unwrap();
+    let current_get = &current_get_read.value;
     assert_eq!(current_get["program"]["name"], legacy_name);
     assert_eq!(current_get["inputs"][0]["input"], original);
     assert!(current_get["next_after_input"].is_null());

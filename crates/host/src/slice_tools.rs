@@ -71,10 +71,12 @@ enum SaveArguments {
 }
 
 pub(crate) fn parse(name: &str, mut arguments: Value) -> Result<SliceInvocation> {
-    if matches!(name, "scope_context" | "slice_candidate_context")
-        && ["offset_bytes", "limit_bytes", "representation_digest"]
-            .iter()
-            .any(|field| arguments.get(field).is_some())
+    if matches!(
+        name,
+        "scope_context" | "slice_candidate_context" | "slice_pipelines"
+    ) && ["offset_bytes", "limit_bytes", "representation_digest"]
+        .iter()
+        .any(|field| arguments.get(field).is_some())
     {
         let params = arguments.clone();
         let window = crate::planning_read::extract(&mut arguments)?;

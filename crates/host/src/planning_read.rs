@@ -72,13 +72,14 @@ pub(crate) fn help(request: crate::api::HelpRequest, capacity: usize) -> Result<
             (request, arguments, Window::default())
         }
     };
+    let selectors = crate::api::help_arguments(&request);
     let value = crate::api::help(request)?;
     crate::json_fragment::encode(
         &value,
         vec![],
         capacity,
         window.borrowed(),
-        json!({"tool":"help","selectors":arguments}),
+        json!({"tool":"help","selectors":selectors}),
         "help",
         arguments,
     )

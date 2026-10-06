@@ -144,8 +144,19 @@ async fn real_daemon_crash_rolls_back_and_lost_reply_recovers_committed_identity
         without_actions(client.call("get_state", json!({})).await),
         without_actions(persisted.clone())
     );
+    let mut reopened = client.call("open_workspace", json!({})).await;
+    let opening_rules = initial["response_rules"]
+        .as_str()
+        .filter(|rules| !rules.trim().is_empty())
+        .expect("initial workspace opening has nonempty response rules");
+    let reopened_rules = reopened
+        .as_object_mut()
+        .unwrap()
+        .remove("response_rules")
+        .expect("reopened workspace delivers response rules");
+    assert_eq!(reopened_rules, json!(opening_rules));
     assert_eq!(
-        without_actions(client.call("open_workspace", json!({})).await),
+        without_actions(reopened),
         without_actions(persisted.clone())
     );
     client.finish().await;

@@ -2,6 +2,7 @@
 #[allow(dead_code)]
 mod recovery_support;
 
+use recovery_support::candidate_reads::CandidateFixture;
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -125,9 +126,15 @@ async fn method_and_registry_change_require_refresh_and_retain_old_bodies() {
                 "boundary":"ongoing","input":"Plan only the captured guidance fixture."}),
         )
         .await;
-    let candidate_set =
-        Uuid::parse_str(created["context"]["candidate_set"]["id"].as_str().unwrap()).unwrap();
-    let snapshot = &created["context"]["snapshot"];
+    let created_fixture = CandidateFixture::from_mutation(created.clone());
+    let created_overview = created_fixture.read_overview(&mut client).await.value;
+    let candidate_set = Uuid::parse_str(
+        created_overview["context"]["candidate_set"]["id"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let snapshot = &created_overview["context"]["snapshot"];
     let new = Guidance {
         revision: "new",
         selected_digest: snapshot["selected_sources_digest"]
@@ -161,7 +168,9 @@ async fn method_and_registry_change_require_refresh_and_retain_old_bodies() {
             ),
         )
         .await;
-    let candidate = saved["draft"]["candidates"][0]["id"].clone();
+    let saved_fixture = CandidateFixture::from_mutation(saved.clone());
+    let saved_details = saved_fixture.read_details(&mut client).await.value;
+    let candidate = saved_details["draft"]["candidates"][0]["id"].clone();
     let ready = client.call("save_candidate_set", json!({
         "kind":"review","candidate_set_id":candidate_set,"revision":2,
         "snapshot_id":snapshot["id"],"input_cursor":1,"request_id":Uuid::new_v4(),
@@ -169,7 +178,19 @@ async fn method_and_registry_change_require_refresh_and_retain_old_bodies() {
         "findings":[],"candidate_decisions":[{"candidate_id":candidate,"decision":"accept",
             "rationale":"Bounded and observable"}]}
     })).await;
-    assert_eq!(ready["context"]["candidate_set"]["status"], "ready");
+    let ready_fixture = CandidateFixture::from_mutation(ready.clone());
+    let ready_overview = ready_fixture.read_overview(&mut client).await.value;
+    let ready_reviews =
+        recovery_support::candidate_reviews::read_reviews(&ready_fixture, &mut client).await;
+    assert_eq!(
+        ready_reviews.exact(ready["candidate_set"]["revision"].as_i64().unwrap())["verdict"],
+        "ready"
+    );
+    assert_eq!(ready_reviews.latest()["verdict"], "ready");
+    assert_eq!(
+        ready_overview["context"]["candidate_set"]["status"],
+        "ready"
+    );
     let stale = service
         .candidate_context(
             &context,
@@ -230,7 +251,7 @@ async fn method_and_registry_change_require_refresh_and_retain_old_bodies() {
     .await
     .unwrap();
     assert_eq!(snapshots.len(), 2);
-    assert_eq!(snapshots[0].1, "5");
+    assert_eq!(snapshots[0].1, "6");
     assert!(snapshots[0].2.contains("# TectD Scope candidates"));
     assert_eq!(snapshots[0].3, "3");
     assert_eq!(snapshots[0].4.as_array().unwrap().len(), 4);

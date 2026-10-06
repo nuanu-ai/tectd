@@ -1,4 +1,5 @@
 use super::*;
+use recovery_support::pipeline_reads::resolve_pipeline;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn full_engineering_migrations_restart_without_rewriting_history() {
@@ -43,7 +44,9 @@ async fn full_engineering_migrations_restart_without_rewriting_history() {
         draft["nodes"][0]["why_further_vertical_split_not_viable"] = json!(
             "One indivisible observable outcome shares exact acceptance and ownership boundaries"
         );
-        let saved = save(&mut client, &opened["created"]["planning"], draft).await;
+        let opened = ScopeOpenFixture::from_mutation(opened, "created");
+        let planning = opened.read_planning(&mut client).await.value;
+        let saved = save(&mut client, &planning, draft).await;
         let reviewed = review(&mut client, &saved).await;
         let slice = route(
             &mut client,
@@ -55,7 +58,10 @@ async fn full_engineering_migrations_restart_without_rewriting_history() {
             .clone();
         let begun = route(&mut client,"command","slice.pipeline.begin",json!({"request_id":Uuid::new_v4(),"scope_id":reviewed["scope"]["id"],
             "slice_id":slice["id"],"slice_revision":slice["revision"],"definition_version":version,
-            "qualification_reason":"Preserve one historical output across explicit successor migration"})).await["created"].clone();
+            "qualification_reason":"Preserve one historical output across explicit successor migration"})).await;
+        let begun = resolve_pipeline(&mut client, begun)
+            .await
+            .expect("resolve actual Full begin response");
         let (verdict, outcome, transition) = full_support::successful_route(&begun);
         let before = route(
             &mut client,
@@ -63,11 +69,16 @@ async fn full_engineering_migrations_restart_without_rewriting_history() {
             "slice.pipeline.phase.complete",
             full_support::completion(&begun, verdict, outcome, transition, None, None),
         )
-        .await["context"]
-            .clone();
-        assert_eq!(before["outputs"].as_array().unwrap().len(), 1);
-        let output = &before["outputs"][0];
-        let predecessor_id = before["run"]["id"]
+        .await;
+        let before = resolve_pipeline(&mut client, before)
+            .await
+            .expect("resolve actual Full completion response");
+        assert_eq!(
+            before.details_data()["outputs"].as_array().unwrap().len(),
+            1
+        );
+        let output = &before.details_data()["outputs"][0];
+        let predecessor_id = before.run()["id"]
             .as_str()
             .unwrap()
             .parse::<Uuid>()
@@ -78,10 +89,26 @@ async fn full_engineering_migrations_restart_without_rewriting_history() {
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        let params = json!({"request_id":Uuid::new_v4(),"predecessor_run_id":before["run"]["id"],"expected_revision":before["run"]["revision"],
+        let params = json!({"request_id":Uuid::new_v4(),"predecessor_run_id":before.run()["id"],"expected_revision":before.run()["revision"],
             "idempotency_key":format!("full-migration-{}",Uuid::new_v4()),"successor_definition_version":"0.6.0-native.engineering.4",
             "mappings":[{"legacy_obligation_id":output["phase_id"],"successor_obligation_id":output["phase_id"],
                 "evidence_refs":[{"reference":output["id"],"digest":output["digest"]}]}]});
+        assert_eq!(before.run()["revision"], 2);
+        let stale_before = historical_seed::rows(&pool, predecessor_id).await;
+        let mut stale = params.clone();
+        stale["request_id"] = json!(Uuid::new_v4());
+        stale["idempotency_key"] = json!(format!("stale-{}", Uuid::new_v4()));
+        stale["expected_revision"] = json!(1);
+        assert_eq!(
+            route_error(&mut client, "command", "slice.pipeline.run.migrate", stale).await["error"]
+                ["code"],
+            "stale_revision"
+        );
+        assert_eq!(
+            stale_before,
+            historical_seed::rows(&pool, predecessor_id).await,
+            "stale migration writes nothing"
+        );
         let migrated = route(
             &mut client,
             "command",
@@ -93,13 +120,16 @@ async fn full_engineering_migrations_restart_without_rewriting_history() {
             &mut client,
             "query",
             "slice.pipeline.context",
-            json!({"run_id":before["run"]["id"]}),
+            json!({"run_id":before.run()["id"]}),
         )
         .await;
-        assert_eq!(old["run"]["status"], "superseded");
+        let old = resolve_pipeline(&mut client, old)
+            .await
+            .expect("resolve actual old context response");
+        assert_eq!(old.run()["status"], "superseded");
         assert_eq!(
-            old["run"]["revision"],
-            before["run"]["revision"].as_i64().unwrap() + 1
+            old.run()["revision"],
+            before.run()["revision"].as_i64().unwrap() + 1
         );
         // Public definition delivery depends on current status/phase; compare the persisted immutable snapshot.
         let stored_definition_after: Value =
@@ -110,15 +140,19 @@ async fn full_engineering_migrations_restart_without_rewriting_history() {
                 .unwrap();
         assert_eq!(stored_definition_after, stored_definition_before);
         assert_eq!(
-            old["run"]["definition_version"],
-            before["run"]["definition_version"]
+            old.run()["definition_version"],
+            before.run()["definition_version"]
         );
         assert_eq!(
-            old["run"]["definition_digest"],
-            before["run"]["definition_digest"]
+            old.run()["definition_digest"],
+            before.run()["definition_digest"]
         );
         for field in ["outputs", "attempts", "bindings", "inputs"] {
-            assert_eq!(old[field], before[field], "{version} {field}");
+            assert_eq!(
+                old.details_data()[field],
+                before.details_data()[field],
+                "{version} {field}"
+            );
         }
         let successor = route(
             &mut client,
@@ -127,20 +161,29 @@ async fn full_engineering_migrations_restart_without_rewriting_history() {
             json!({"run_id":migrated["successor_run_id"]}),
         )
         .await;
+        let successor = resolve_pipeline(&mut client, successor)
+            .await
+            .expect("resolve actual successor context response");
         assert_eq!(
-            successor["run"]["definition_version"],
+            successor.run()["definition_version"],
             "0.6.0-native.engineering.4"
         );
         assert_eq!(
-            successor["run"]["definition_digest"],
+            successor.run()["definition_digest"],
             "85ec63bae1903fedb0c86ecd5326380ea8d524fe0ee29c5dce6e90b9a30cdd3d"
         );
-        assert_eq!(successor["run"]["current_phase_ordinal"], 1);
-        assert_eq!(successor["run"]["revision"], 1);
-        assert_eq!(successor["run"]["scope_id"], before["run"]["scope_id"]);
-        assert_eq!(successor["run"]["slice_id"], before["run"]["slice_id"]);
+        assert_eq!(successor.run()["current_phase_ordinal"], 1);
+        assert_eq!(successor.run()["revision"], 1);
+        assert_eq!(successor.run()["scope_id"], before.run()["scope_id"]);
+        assert_eq!(successor.run()["slice_id"], before.run()["slice_id"]);
         for field in ["outputs", "attempts", "bindings", "inputs"] {
-            assert!(successor[field].as_array().unwrap().is_empty(), "{field}");
+            assert!(
+                successor.details_data()[field]
+                    .as_array()
+                    .unwrap()
+                    .is_empty(),
+                "{field}"
+            );
         }
         assert_eq!(
             route(
@@ -164,14 +207,27 @@ async fn full_engineering_migrations_restart_without_rewriting_history() {
             .await["error"]["code"],
             "input_conflict"
         );
-        let mut stale = params;
-        stale["idempotency_key"] = json!(format!("stale-{}", Uuid::new_v4()));
+        let superseded_before = historical_seed::rows(&pool, predecessor_id).await;
+        let mut superseded = params;
+        superseded["request_id"] = json!(Uuid::new_v4());
+        superseded["idempotency_key"] = json!(format!("superseded-{}", Uuid::new_v4()));
+        superseded["expected_revision"] = old.run()["revision"].clone();
         assert_eq!(
-            route_error(&mut client, "command", "slice.pipeline.run.migrate", stale).await["error"]
-                ["code"],
-            "stale_revision"
+            route_error(
+                &mut client,
+                "command",
+                "slice.pipeline.run.migrate",
+                superseded
+            )
+            .await["error"]["code"],
+            "forbidden"
         );
-        let bypass = json!({"request_id":Uuid::new_v4(),"scope_id":before["run"]["scope_id"],"slice_id":slice["id"],"slice_revision":slice["revision"],
+        assert_eq!(
+            superseded_before,
+            historical_seed::rows(&pool, predecessor_id).await,
+            "superseded migration writes nothing"
+        );
+        let bypass = json!({"request_id":Uuid::new_v4(),"scope_id":before.run()["scope_id"],"slice_id":slice["id"],"slice_revision":slice["revision"],
             "outcome":"completed","summary":"Superseded history cannot be bypassed","evidence":[{"kind":"test","reference":"fixture","observation":"Remains managed"}],"scope_impact":"None","remaining_work":"Fresh successor phases"});
         assert_eq!(
             route_error(&mut client, "command", "slice.result.record", bypass).await["error"]["code"],

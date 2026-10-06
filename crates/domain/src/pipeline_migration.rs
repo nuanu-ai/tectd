@@ -192,18 +192,36 @@ impl PipelineRunMigrationRequest {
         successor: &PipelineDefinitionSnapshot,
         digest: &dyn PipelineDefinitionDigestPort,
     ) -> Result<()> {
-        if is_retired_lightweight(predecessor)
-            && is_current_lightweight_retirement_successor(successor, digest)
-            && self.mappings.is_empty()
-            && self.predecessor_definition_version == predecessor.version
-            && self.predecessor_definition_digest == predecessor.digest
-            && self.successor_definition_version == successor.version
-            && self.successor_definition_digest == successor.digest
-        {
-            self.validate_metadata()
-        } else {
-            self.validate()
+        if !is_retired_lightweight(predecessor) {
+            return self.validate();
         }
+        if !is_current_lightweight_retirement_successor(successor, digest) {
+            return Err(retirement_restart_refusal(
+                "WP6-MIGRATION-CONTRACT-01",
+                "arguments.params.successor_definition_version",
+                "noncanonical retirement successor",
+            ));
+        }
+        if self.validate_metadata().is_err()
+            || self.predecessor_definition_version != predecessor.version
+            || self.predecessor_definition_digest != predecessor.digest
+            || self.successor_definition_version != successor.version
+            || self.successor_definition_digest != successor.digest
+        {
+            return Err(retirement_restart_refusal(
+                "WP6-MIGRATION-CONTRACT-01",
+                "arguments.params",
+                "invalid retirement contract",
+            ));
+        }
+        if !self.mappings.is_empty() {
+            return Err(retirement_restart_refusal(
+                "WP6-MIGRATION-MAPPING-01",
+                "arguments.params.mappings",
+                self.mappings.len().to_string(),
+            ));
+        }
+        Ok(())
     }
 
     fn validate_metadata(&self) -> Result<()> {
@@ -229,6 +247,22 @@ impl PipelineRunMigrationRequest {
             ))
         }
     }
+}
+
+fn retirement_restart_refusal(
+    rule: &'static str,
+    path: &'static str,
+    actual: impl Into<String>,
+) -> Error {
+    Error::refused_at(
+        RefusalCode::LegacyMigrationRequired,
+        rule,
+        path,
+        "canonical current Lightweight K1-K5 0.7.1-native.k1k5 with empty mappings",
+        actual,
+        "get_current_context_and_use_exact_migration_action",
+        "canonical_current_lightweight_k1k5_empty_mappings",
+    )
 }
 
 fn validate_mappings(mappings: &[PipelineObligationMapping]) -> Result<()> {

@@ -5,12 +5,16 @@ mod full_support;
 #[path = "pipeline_execution_full/initial_rework.rs"]
 mod initial_rework;
 mod recovery_support;
+#[path = "pipeline_execution_full/review_sessions.rs"]
+mod review_sessions;
 #[path = "pipeline_execution_full/source_amendment.rs"]
 mod source_amendment;
 #[path = "native_planning/support.rs"]
 mod support;
 
 use full_support::{completion, refresh_knowledge, replace_ledger, successful_route};
+use recovery_support::native_reads::ScopeOpenFixture;
+use recovery_support::pipeline_reads::{ResolvedPipeline, resolve_pipeline};
 use recovery_support::{
     Daemon, Mcp, host_file, private_temp, public_call, tagged_url, tool_payload,
 };
@@ -22,6 +26,16 @@ use support::{
 };
 use tect_postgres::admin;
 use uuid::Uuid;
+
+fn mutation_result_id(context: &ResolvedPipeline) -> &Value {
+    context
+        .raw_payload
+        .get("result_reference")
+        .and_then(Value::as_object)
+        .expect("actual mutation result reference object")
+        .get("result_id")
+        .expect("actual mutation result ID key")
+}
 
 fn full_draft() -> Value {
     json!({"coverage_summary":"Full design through execution lifecycle","nodes":[{
@@ -39,12 +53,12 @@ fn full_draft() -> Value {
     }],"supersessions":[]})
 }
 
-async fn advance(client: &mut Mcp, context: Value) -> Value {
+async fn advance(client: &mut Mcp, context: ResolvedPipeline) -> ResolvedPipeline {
     let (verdict, outcome, transition) = successful_route(&context);
     let request = if matches!(
-        context["run"]["definition_version"].as_str(),
+        context.run()["definition_version"].as_str(),
         Some("0.6.0-native.engineering.3" | "0.6.0-native.engineering.4")
-    ) && context["run"]["current_phase_id"] == "slice-contract-writer"
+    ) && context.run()["current_phase_id"] == "slice-contract-writer"
     {
         let facts = full_support::native_contract_fixture_facts(client).await;
         full_support::completion_with_contract(
@@ -65,13 +79,17 @@ async fn advance(client: &mut Mcp, context: Value) -> Value {
         )
         .await;
     assert_ne!(
-        response["result"]["isError"], true,
+        response["result"]["isError"],
+        true,
         "phase={} request={} response={}",
-        context["run"]["current_phase_id"], request, response
+        context.run()["current_phase_id"],
+        request,
+        response
     );
-    let result = tool_payload(&response);
-    assert!(result["result"].is_null());
-    result["context"].clone()
+    let raw = tool_payload(&response);
+    let result = resolve_pipeline(client, raw).await.unwrap();
+    assert!(mutation_result_id(&result).is_null());
+    result
 }
 
 fn replace_ledger_source(output: &mut Value, path: &str, source_digest: &str) {
@@ -144,7 +162,9 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
             "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]}),
     )
     .await;
-    let planning = &opened_scope["created"]["planning"];
+    let opened_scope = ScopeOpenFixture::from_mutation(opened_scope, "created");
+    let planning_read = opened_scope.read_planning(&mut client).await;
+    let planning = &planning_read.value;
     let saved = save(&mut client, planning, full_draft()).await;
     let reviewed = review(&mut client, &saved).await;
     let work = &reviewed["draft"]["nodes"][0];
@@ -166,9 +186,21 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
             "delivery_mode":"whole","qualification_reason":"Invalid Full whole-mode probe."}),
     )
     .await;
-    assert_eq!(whole["error"]["code"], "invalid_arguments");
+    assert_eq!(whole["error"]["code"], "INPUT_SCHEMA_INVALID");
+    for (field, expected) in json!({
+        "code":"INPUT_SCHEMA_INVALID", "rule":"WP6-BEGIN-DELIVERY-MODE",
+        "path":"arguments.params.delivery_mode",
+        "expected":"mode allowed by selected definition", "actual":"Whole",
+        "next_action":"correct_input_and_retry", "required":"schema_valid_input",
+        "message":"the submitted value does not satisfy the selected input schema"
+    })
+    .as_object()
+    .unwrap()
+    {
+        assert_eq!(whole["error"]["refusal"][field], *expected);
+    }
 
-    let begun = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.begin",
@@ -177,29 +209,44 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
             "qualification_reason":"Full phasewise delivery is required for this fixture."}),
     )
     .await;
-    let mut context = begun["created"].clone();
-    assert!(!id(&context["run"]["id"]).is_nil());
-    assert_eq!(context["run"]["delivery_mode"], "phasewise");
+    let begun = resolve_pipeline(&mut client, raw).await.unwrap();
+    let mut context = begun;
+    assert!(!id(&context.run()["id"]).is_nil());
+    assert_eq!(context.run()["delivery_mode"], "phasewise");
     assert_eq!(
-        context["run"]["definition_version"],
+        context.run()["definition_version"],
         "0.6.0-native.engineering.4"
     );
     assert_eq!(
-        context["run"]["definition_digest"],
+        context.run()["definition_digest"],
         "85ec63bae1903fedb0c86ecd5326380ea8d524fe0ee29c5dce6e90b9a30cdd3d"
     );
-    assert_eq!(context["definition"]["phases"].as_array().unwrap().len(), 1);
-    assert_eq!(context["delivered_phases"].as_array().unwrap().len(), 1);
-    assert_eq!(context["outputs_complete"], true);
+    assert_eq!(
+        context.details_data()["delivered_phases"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        context.details_data()["delivered_phases"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(context.details_data()["outputs_complete"], true);
     assert!(
-        context["definition"]["phases"][0]["instructions"][0]["body"]
+        context.current_phase().unwrap()["instructions"][0]["body"]
             .as_str()
             .unwrap()
             .len()
             > 100
     );
 
-    context = initial_rework::run(&mut client, &pool, context).await;
+    let mut review_sessions =
+        review_sessions::ReviewSessions::new(&mut client, &socket, &config, &key).await;
+    context = initial_rework::run(&mut client, &pool, context, &mut review_sessions).await;
     let (
         amendment,
         persisted_session_id,
@@ -208,6 +255,7 @@ async fn full_pipeline_reworks_reviews_resumes_and_completes_with_exact_artifact
         phase_five_output,
     ) = source_amendment::run(&mut client, &pool, context).await;
     cold_recovery::run(cold_recovery::ColdRecovery {
+        review_sessions,
         client,
         daemon,
         pool: &pool,

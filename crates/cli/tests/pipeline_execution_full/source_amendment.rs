@@ -3,16 +3,16 @@ use super::*;
 pub(super) async fn run(
     client: &mut Mcp,
     pool: &PgPool,
-    mut context: Value,
+    mut context: ResolvedPipeline,
 ) -> (Value, Uuid, Value, Value, Value) {
-    let phase_five_binding = context["bindings"]
+    let phase_five_binding = context.details_data()["bindings"]
         .as_array()
         .unwrap()
         .iter()
         .find(|binding| binding["phase_id"] == "slice-component-decision-interrogator")
         .unwrap()
         .clone();
-    let phase_five_output = context["outputs"]
+    let phase_five_output = context.details_data()["outputs"]
         .as_array()
         .unwrap()
         .iter()
@@ -27,16 +27,16 @@ pub(super) async fn run(
         .unwrap();
     let phase_five_ledger: Value =
         serde_json::from_str(phase_five_artifact["body"].as_str().unwrap()).unwrap();
-    let definition_digest_before_amendment = context["run"]["definition_digest"].clone();
+    let definition_digest_before_amendment = context.run()["definition_digest"].clone();
     let successor_body = "# Amended design source\n\nThe direct operator instruction authorizes this bounded amendment.";
     let successor_digest = format!("{:x}", Sha256::digest(successor_body.as_bytes()));
     let authority_text = "Direct operator instruction: amend the Full Design source and rerun phase 5 through reconciliation.";
     let amendment_request_id = Uuid::new_v4();
     let amendment = json!({
         "request_id":amendment_request_id,
-        "run_id":context["run"]["id"],
-        "run_revision":context["run"]["revision"],
-        "phase_id":context["run"]["current_phase_id"],
+        "run_id":context.run()["id"],
+        "run_revision":context.run()["revision"],
+        "phase_id":context.run()["current_phase_id"],
         "input":authority_text,
         "source_amendment":{
             "target_phase_id":"slice-component-decision-interrogator",
@@ -61,7 +61,7 @@ pub(super) async fn run(
         }
     });
 
-    let before_rejections = context.clone();
+    let before_rejections = (context.run().clone(), context.details_data().clone());
     for (field, wrong) in [
         ("output_id", json!(Uuid::new_v4())),
         (
@@ -124,50 +124,98 @@ pub(super) async fn run(
     missing_authority["source_amendment"]["authorization_scope"] = json!("");
     let authority_error =
         route_error(client, "command", "slice.pipeline.input", missing_authority).await;
-    assert_eq!(authority_error["error"]["code"], "invalid_arguments");
+    assert_eq!(authority_error["error"]["code"], "INPUT_SCHEMA_INVALID");
+    for (field, expected) in json!({
+        "code":"INPUT_SCHEMA_INVALID", "rule":"WP6-SOURCE-AMENDMENT-AUTHORIZATION-SCOPE-BLANK",
+        "path":"arguments.params.source_amendment.authorization_scope",
+        "expected":"nonblank authorization_scope", "actual":"blank",
+        "next_action":"correct_input_and_retry", "required":"schema_valid_input",
+        "message":"the submitted value does not satisfy the selected input schema"
+    })
+    .as_object()
+    .unwrap()
+    {
+        assert_eq!(authority_error["error"]["refusal"][field], *expected);
+    }
     let mut path_name_mismatch = amendment.clone();
     path_name_mismatch["request_id"] = json!(Uuid::new_v4());
     path_name_mismatch["source_amendment"]["successor"]["artifact"]["name"] =
         json!("other-source.md");
-    assert_eq!(
-        route_error(
-            client,
-            "command",
-            "slice.pipeline.input",
-            path_name_mismatch
-        )
-        .await["error"]["code"],
-        "invalid_arguments"
-    );
-    let after_rejections = route(
+    let schema_error = route_error(
+        client,
+        "command",
+        "slice.pipeline.input",
+        path_name_mismatch,
+    )
+    .await;
+    assert_eq!(schema_error["error"]["code"], "INPUT_SCHEMA_INVALID");
+    for (field, expected) in json!({
+        "code":"INPUT_SCHEMA_INVALID", "rule":"WP6-SOURCE-AMENDMENT-PATH-NAME-MATCH",
+        "path":"arguments.params.source_amendment.successor.artifact.name",
+        "expected":"name matching successor path", "actual":"mismatched",
+        "next_action":"correct_input_and_retry", "required":"schema_valid_input",
+        "message":"the submitted value does not satisfy the selected input schema"
+    })
+    .as_object()
+    .unwrap()
+    {
+        assert_eq!(schema_error["error"]["refusal"][field], *expected);
+    }
+    let raw_after_rejections = route(
         client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":context["run"]["id"]}),
+        json!({"run_id":context.run()["id"]}),
     )
     .await;
+    let after_rejections = resolve_pipeline(client, raw_after_rejections)
+        .await
+        .unwrap();
     for collection in ["run", "inputs", "bindings"] {
-        assert_eq!(after_rejections[collection], before_rejections[collection]);
+        assert_eq!(
+            if collection == "run" {
+                after_rejections.run()
+            } else {
+                &after_rejections.details_data()[collection]
+            },
+            if collection == "run" {
+                &before_rejections.0
+            } else {
+                &before_rejections.1[collection]
+            }
+        );
     }
     assert_eq!(
-        after_rejections["run"]["definition_digest"],
+        after_rejections.run()["definition_digest"],
         definition_digest_before_amendment
     );
 
-    let amended = route(client, "command", "slice.pipeline.input", amendment.clone()).await;
-    let replay = route(client, "command", "slice.pipeline.input", amendment.clone()).await;
-    assert_eq!(replay, amended);
-    context = amended["context"].clone();
+    let raw_amended = route(client, "command", "slice.pipeline.input", amendment.clone()).await;
+    let amended = resolve_pipeline(client, raw_amended).await.unwrap();
+    assert!(mutation_result_id(&amended).is_null());
+    let raw_replay = route(client, "command", "slice.pipeline.input", amendment.clone()).await;
+    let replay = resolve_pipeline(client, raw_replay).await.unwrap();
+    assert!(mutation_result_id(&replay).is_null());
+    assert_eq!(replay.raw_payload, amended.raw_payload);
+    context = amended;
     assert_eq!(
-        context["run"]["current_phase_id"],
+        context.run()["current_phase_id"],
         "slice-component-decision-interrogator"
     );
     assert_eq!(
-        context["inputs"].as_array().unwrap().last().unwrap()["input"],
+        context.details_data()["inputs"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["input"],
         authority_text
     );
     assert_eq!(
-        context["inputs"].as_array().unwrap().last().unwrap()["phase_id"],
+        context.details_data()["inputs"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["phase_id"],
         "slice-component-decision-interrogator"
     );
     let persisted: (String, Uuid, Value) = sqlx::query_as(

@@ -165,12 +165,20 @@ async fn native_search_uses_verified_rdf_graph_lexical_and_local_vectors() {
         tool_names,
         BTreeSet::from(["command", "execute", "get_state", "help", "query"])
     );
-    let help = first
-        .call(
-            "help",
-            json!({"mode":"describe","tool":"query","route":"knowledge.search"}),
-        )
-        .await;
+    let help = recovery_support::help_reads::describe(
+        async |arguments| {
+            first
+                .exchange(
+                    "tools/call",
+                    recovery_support::public_call("help", arguments),
+                )
+                .await
+        },
+        json!({"mode":"describe","tool":"query","route":"knowledge.search"}),
+    )
+    .await
+    .unwrap()
+    .value;
     assert_eq!(help["route"], "knowledge.search");
 
     let mut units = BTreeMap::<String, Uuid>::new();

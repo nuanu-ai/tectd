@@ -114,7 +114,9 @@ async fn program_writes_wait_for_publisher_before_native_or_program_locks() {
     )
     .await;
     client = next_client;
-    let program = &begun["program"];
+    let begun_fixture = ProgramFixture::from_mutation(begun.clone());
+    let begun_page = begun_fixture.read_page(&mut client).await;
+    let program = begun_page.program();
     let program_id = Uuid::parse_str(program["id"].as_str().unwrap()).unwrap();
     assert_eq!(
         program["planning_knowledge"]["manifest"]["selected"]

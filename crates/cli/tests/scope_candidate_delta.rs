@@ -1,6 +1,7 @@
 //! Live PostgreSQL/MCP acceptance for the normalized WP5 candidate graph.
 mod recovery_support;
 
+use recovery_support::candidate_reads::CandidateFixture;
 use recovery_support::{Daemon, Mcp, host_file, private_temp, public_call, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -97,8 +98,10 @@ async fn candidate_delta_normalized_graph_is_atomic_cyclic_safe_and_compact() {
             }),
         )
         .await;
-    let set = id(&begun["context"]["candidate_set"]["id"]);
-    let source = planning_ref(&begun["context"]);
+    let begun_fixture = CandidateFixture::from_mutation(begun.clone());
+    let begun_overview = begun_fixture.read_overview(&mut client).await.value;
+    let set = id(&begun_overview["context"]["candidate_set"]["id"]);
+    let source = planning_ref(&begun_overview["context"]);
     let [a, b, c] = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
     let [g1, g2, g3] = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
     let evidence = Uuid::new_v4();

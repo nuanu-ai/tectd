@@ -10,6 +10,9 @@ mod recovery_support;
 #[allow(dead_code)]
 mod support;
 
+use knowledge_lifecycle_support::reads::{
+    producer_action, read_unit, resolve_commit_receipt, resolve_current,
+};
 use knowledge_lifecycle_support::{
     commit_create, context, query_current, settle_and_finish_receipt,
 };
@@ -112,7 +115,9 @@ async fn exact_target_repin_reuses_one_cursor_and_invalid_amendments_roll_back()
         "The same cursor publishes this owner-qualified revision only after an exact native target repin."
     );
     let pending = ready_single(&mut client, revise_spec(unit.clone(), 1, intended.clone())).await;
-    let old_commit = action_params(&pending["actions"][0]).clone();
+    let pending = resolve_current(&mut client, pending).await;
+    let old_commit =
+        action_params(producer_action(&pending.value, "knowledge.change_commit")).clone();
 
     let mut intervening = original.clone();
     intervening["title"] = json!("Independent current target revision");
@@ -120,17 +125,14 @@ async fn exact_target_repin_reuses_one_cursor_and_invalid_amendments_roll_back()
         "An independent reviewed change advances the target before the pending change commits."
     );
     let independent = commit_single(&mut client, revise_spec(unit.clone(), 1, intervening)).await;
-    assert_eq!(
-        independent["applied"]["applied_operations"][0]["revision"],
-        2
+    let independent = resolve_commit_receipt(&mut client, independent).await;
+    assert!(
+        independent.raw_response.get("applied").is_some()
+            || independent.raw_response["outcome"] == "applied"
     );
-    let exact = route(
-        &mut client,
-        "query",
-        "knowledge.unit",
-        json!({"unit_id":unit,"revision":2}),
-    )
-    .await;
+    assert_eq!(independent.receipt["applied_operations"][0]["revision"], 2);
+    let exact = read_unit(&mut client, &unit, &json!(2)).await;
+    let exact = &exact.value;
     let stale = route_error(
         &mut client,
         "command",
@@ -139,10 +141,10 @@ async fn exact_target_repin_reuses_one_cursor_and_invalid_amendments_roll_back()
     )
     .await;
     assert_eq!(stale["error"]["code"], "stale_context");
-    let pending_ctx = context(&pending);
+    let pending_ctx = context(&pending.value);
     let operation_id = pending_ctx["origin"]["operations"][0]["operation_id"].clone();
     let valid_update = json!({"operation_id":operation_id,"previous_expected_revision":1,
-        "previous_expected_lifecycle":"active","replacement_guard":guard(&exact)});
+        "previous_expected_lifecycle":"active","replacement_guard":guard(exact)});
 
     let mut wrong_old = valid_update.clone();
     wrong_old["previous_expected_revision"] = json!(2);
@@ -150,7 +152,7 @@ async fn exact_target_repin_reuses_one_cursor_and_invalid_amendments_roll_back()
         &mut client,
         "command",
         "knowledge.change_record_input",
-        amendment_request(&pending, Uuid::new_v4(), wrong_old, None),
+        amendment_request(&pending.value, Uuid::new_v4(), wrong_old, None),
     )
     .await;
     assert_eq!(wrong["error"]["code"], "context_changed");
@@ -160,7 +162,7 @@ async fn exact_target_repin_reuses_one_cursor_and_invalid_amendments_roll_back()
         &mut client,
         "command",
         "knowledge.change_record_input",
-        amendment_request(&pending, Uuid::new_v4(), forged, None),
+        amendment_request(&pending.value, Uuid::new_v4(), forged, None),
     )
     .await;
     assert_eq!(forged["error"]["code"], "context_changed");
@@ -170,7 +172,7 @@ async fn exact_target_repin_reuses_one_cursor_and_invalid_amendments_roll_back()
         &mut client,
         "command",
         "knowledge.change_record_input",
-        amendment_request(&pending, Uuid::new_v4(), foreign, None),
+        amendment_request(&pending.value, Uuid::new_v4(), foreign, None),
     )
     .await;
     assert_eq!(foreign["error"]["code"], "invalid_arguments");
@@ -183,7 +185,7 @@ async fn exact_target_repin_reuses_one_cursor_and_invalid_amendments_roll_back()
         "command",
         "knowledge.change_record_input",
         amendment_request(
-            &pending,
+            &pending.value,
             Uuid::new_v4(),
             valid_update.clone(),
             Some(invalid_source),
@@ -206,25 +208,26 @@ async fn exact_target_repin_reuses_one_cursor_and_invalid_amendments_roll_back()
         &mut client,
         "command",
         "knowledge.change_record_input",
-        amendment_request(&pending, Uuid::new_v4(), valid_update, None),
+        amendment_request(&pending.value, Uuid::new_v4(), valid_update, None),
     )
     .await;
+    let amended = resolve_current(&mut client, amended).await;
     assert_eq!(
-        context(&amended)["run"]["current_phase_id"],
+        context(&amended.value)["run"]["current_phase_id"],
         "kc-resolve-baseline"
     );
-    assert_eq!(context(&amended)["run"]["delivery_mode"], "phasewise");
+    assert_eq!(context(&amended.value)["run"]["delivery_mode"], "phasewise");
     assert_eq!(
-        context(&amended)["origin"]["operations"][0]["expected_revision"],
+        context(&amended.value)["origin"]["operations"][0]["expected_revision"],
         2
     );
     assert_eq!(
-        context(&amended)["origin"]["operation_hints"][0]["expected_revision"],
+        context(&amended.value)["origin"]["operation_hints"][0]["expected_revision"],
         1
     );
     assert_eq!(
-        context(&amended)["inputs"][0]["applied_basis_amendment"]["target_updates"][0]["replacement_guard"],
-        guard(&exact)
+        context(&amended.value)["inputs"][0]["applied_basis_amendment"]["target_updates"][0]["replacement_guard"],
+        guard(exact)
     );
     let old_seal = route_error(
         &mut client,
@@ -235,18 +238,31 @@ async fn exact_target_repin_reuses_one_cursor_and_invalid_amendments_roll_back()
     .await;
     assert_eq!(old_seal["error"]["code"], "stale_revision");
 
-    let republished =
-        ready_single_from_baseline(&mut client, revise_spec(unit.clone(), 2, intended), amended)
-            .await;
+    let republished = ready_single_from_baseline(
+        &mut client,
+        revise_spec(unit.clone(), 2, intended),
+        amended.value.clone(),
+    )
+    .await;
+    let republished = resolve_current(&mut client, republished).await;
     let committed = route(
         &mut client,
         "command",
         "knowledge.change_commit",
-        action_params(&republished["actions"][0]).clone(),
+        action_params(producer_action(
+            &republished.value,
+            "knowledge.change_commit",
+        ))
+        .clone(),
     )
     .await;
-    assert_eq!(committed["applied"]["applied_operations"][0]["revision"], 3);
-    let committed_current = query_current(&mut client, &committed["applied"]["change_id"]).await;
+    let committed = resolve_commit_receipt(&mut client, committed).await;
+    assert!(
+        committed.raw_response.get("applied").is_some()
+            || committed.raw_response["outcome"] == "applied"
+    );
+    assert_eq!(committed.receipt["applied_operations"][0]["revision"], 3);
+    let committed_current = query_current(&mut client, &committed.receipt["change_id"]).await;
     let postcommit = route_error(
         &mut client,
         "command",
@@ -256,7 +272,7 @@ async fn exact_target_repin_reuses_one_cursor_and_invalid_amendments_roll_back()
             Uuid::new_v4(),
             json!({
             "operation_id":operation_id,"previous_expected_revision":2,
-            "previous_expected_lifecycle":"active","replacement_guard":guard(&exact)}),
+            "previous_expected_lifecycle":"active","replacement_guard":guard(exact)}),
             None,
         ),
     )
@@ -289,7 +305,12 @@ async fn exact_target_repin_reuses_one_cursor_and_invalid_amendments_roll_back()
         revise_spec(unit.clone(), 3, source_based.clone()),
     )
     .await;
-    let stale_source_commit = action_params(&source_pending["actions"][0]).clone();
+    let source_pending = resolve_current(&mut client, source_pending).await;
+    let stale_source_commit = action_params(producer_action(
+        &source_pending.value,
+        "knowledge.change_commit",
+    ))
+    .clone();
     sqlx::query(
         "UPDATE knowledge_change_output_bindings SET stale=true, \
          stale_reason='superseded-by-test-source-epoch',updated_at=pg_catalog.clock_timestamp() \
@@ -314,7 +335,7 @@ async fn exact_target_repin_reuses_one_cursor_and_invalid_amendments_roll_back()
         "uri":"urn:tect:dk2:source:fixture-owner:replacement-epoch-1",
         "text":"The fixture owner supplies a new exact declaration after the prior output became stale.",
         "evidence_kind":"declaration"}});
-    let source_ctx = context(&source_pending);
+    let source_ctx = context(&source_pending.value);
     let amendment_id = Uuid::new_v4();
     let source_amendment = json!({
         "request_id":amendment_id,"change_id":source_ctx["change_id"],
@@ -331,7 +352,8 @@ async fn exact_target_repin_reuses_one_cursor_and_invalid_amendments_roll_back()
         source_amendment.clone(),
     )
     .await;
-    let amended_source_ctx = context(&amended_source);
+    let amended_source = resolve_current(&mut client, amended_source).await;
+    let amended_source_ctx = context(&amended_source.value);
     assert_eq!(amended_source_ctx["origin"]["source_revision"], 1);
     let recorded = &amended_source_ctx["inputs"][0]["applied_basis_amendment"]["source_change"];
     assert_eq!(recorded["previous_source_revision"], 0);
@@ -357,8 +379,12 @@ async fn exact_target_repin_reuses_one_cursor_and_invalid_amendments_roll_back()
         source_amendment.clone(),
     )
     .await;
-    assert_eq!(context(&replay)["origin"]["source_revision"], 1);
-    assert_eq!(context(&replay)["inputs"].as_array().unwrap().len(), 1);
+    let replay = resolve_current(&mut client, replay).await;
+    assert_eq!(context(&replay.value)["origin"]["source_revision"], 1);
+    assert_eq!(
+        context(&replay.value)["inputs"].as_array().unwrap().len(),
+        1
+    );
     let mut conflict = source_amendment;
     conflict["reason"] = json!("A different payload must not alias the saved amendment.");
     assert_eq!(
@@ -386,29 +412,34 @@ async fn exact_target_repin_reuses_one_cursor_and_invalid_amendments_roll_back()
     let requalified = ready_single_from_baseline(
         &mut client,
         revise_spec(unit.clone(), 3, source_based),
-        amended_source,
+        amended_source.value.clone(),
     )
     .await;
+    let requalified = resolve_current(&mut client, requalified).await;
     let source_committed = route(
         &mut client,
         "command",
         "knowledge.change_commit",
-        action_params(&requalified["actions"][0]).clone(),
+        action_params(producer_action(
+            &requalified.value,
+            "knowledge.change_commit",
+        ))
+        .clone(),
     )
     .await;
+    let source_committed = resolve_commit_receipt(&mut client, source_committed).await;
+    assert!(
+        source_committed.raw_response.get("applied").is_some()
+            || source_committed.raw_response["outcome"] == "applied"
+    );
     assert_eq!(
-        source_committed["applied"]["applied_operations"][0]["revision"],
+        source_committed.receipt["applied_operations"][0]["revision"],
         4
     );
     let source_change = Uuid::parse_str(source_ctx["change_id"].as_str().unwrap()).unwrap();
-    settle_and_finish_receipt(&mut client, &source_committed["applied"]).await;
-    let exact_source_revision = route(
-        &mut client,
-        "query",
-        "knowledge.unit",
-        json!({"unit_id":unit,"revision":4}),
-    )
-    .await;
+    settle_and_finish_receipt(&mut client, &source_committed.receipt).await;
+    let exact_source_revision = read_unit(&mut client, &unit, &json!(4)).await;
+    let exact_source_revision = &exact_source_revision.value;
     assert_eq!(
         exact_source_revision["document"]["document"]["sources"],
         json!([source_b])
@@ -432,7 +463,12 @@ async fn exact_target_repin_reuses_one_cursor_and_invalid_amendments_roll_back()
         },
     )
     .await;
-    settle_and_finish_receipt(&mut client, &erased["applied_erased"]).await;
+    let erased = resolve_commit_receipt(&mut client, erased).await;
+    assert!(
+        erased.raw_response.get("applied_erased").is_some()
+            || erased.raw_response["outcome"] == "applied_erased"
+    );
+    settle_and_finish_receipt(&mut client, &erased.receipt).await;
     let scrubbed_input: (i64, bool) = sqlx::query_as(
         "SELECT count(*),bool_and(i.payload_erased AND i.input IS NULL AND i.digest IS NULL \
          AND i.reason IS NULL AND i.applied_basis_amendment IS NULL) \

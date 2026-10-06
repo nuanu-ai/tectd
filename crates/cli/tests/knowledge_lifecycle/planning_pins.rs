@@ -1,3 +1,6 @@
+use super::knowledge_lifecycle_support::reads::{
+    producer_action, read_current, resolve_commit_receipt, resolve_current,
+};
 use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -123,18 +126,13 @@ async fn dk4_pinned_revision_status_survives_maintenance_resolution() {
         "impact_recorded":true,"search":"not_required","erasure":"not_required"});
     begin["change"]["delivery_mode"] = json!("phasewise");
     let begun = route(&mut client, "command", "knowledge.maintenance_begin", begin).await;
-    let change_id = begun["created"]["change"]["created"]["change_id"].clone();
-    let change = route(
-        &mut client,
-        "query",
-        "knowledge.lifecycle",
-        json!({"change_id":change_id,"view":"current"}),
-    )
-    .await;
-    let origin = &context(&change)["origin"];
+    let begun = resolve_current(&mut client, begun).await;
+    let change_id = context(&begun.value)["change_id"].clone();
+    let change = read_current(&mut client, &change_id).await;
+    let origin = &context(&change.value)["origin"];
     let current = complete_agent(
         &mut client,
-        &change,
+        &change.value,
         json!({"phase":"kc-intake","data":{"bounded_outcome":origin["desired_outcome"],
             "operation_hints":origin["operation_hints"],
             "authority_boundary":"Current authenticated workspace owner.",
@@ -163,14 +161,20 @@ async fn dk4_pinned_revision_status_survives_maintenance_resolution() {
         std::slice::from_ref(&basis_digest),
     )
     .await;
+    let publication = resolve_current(&mut client, publication).await;
     let committed = route(
         &mut client,
         "command",
         "knowledge.change_commit",
-        action_params(&publication["actions"][0]).clone(),
+        action_params(producer_action(
+            &publication.value,
+            "knowledge.change_commit",
+        ))
+        .clone(),
     )
     .await;
-    assert_eq!(committed["applied"]["applied_operations"][0]["revision"], 2);
+    let committed = resolve_commit_receipt(&mut client, committed).await;
+    assert_eq!(committed.receipt["applied_operations"][0]["revision"], 2);
 
     let pinned_required = refresh_program(&mut client, &pinned_required, target).await;
     let pinned_reference = refresh_program(&mut client, &pinned_reference, target).await;

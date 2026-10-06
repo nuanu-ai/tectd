@@ -31,13 +31,13 @@ class ProtocolTests(unittest.TestCase):
         for bad in [{**server,"runtimeStatus":"failed"},{"tools":{"get_state":{}}},{"tools":{**server["tools"],"foreign":{}}},{"tools":[] }]:
             with self.assertRaises(AssertionError): validate_catalog(bad)
     def test_real_call_result_requires_canonical_state_and_correct_observable_identity(self):
-        def result(payload): return {"content":[{"type":"text","text":"State"},{"type":"text","text":json.dumps(payload)},{"type":"text","text":"TECTD RESPONSE RULES"}]}
+        def result(payload): return {"content":[{"type":"text","text":"State"},{"type":"text","text":json.dumps(payload)},{"type":"text",'text':'Follow the rules from workspace.open or help {"text":"response-rules"}. Required checks, approvals and authority still apply. Dependencies alone grant no permission or automatic resumption. Claim monitoring or continuation only when real.'}]}
         validate_get_state(result({"status":"uninitialized"}),ID)
         validate_get_state(result({"status":"ready","session":{"native_session_id":ID}}),ID)
         for bad in [result({"status":"ready","session":{"native_session_id":"foreign"}}),result({"status":"broken"}),{"content":[]},{**result({"status":"ready"}),"isError":True}]:
             with self.assertRaises(AssertionError): validate_get_state(bad,ID)
         with self.assertRaises(AssertionError): validate_get_state(result({"status":"ready"}),"fake")
-        for index, text in [(0, ""), (0, "x" * 2001), (2, ""), (2, "corrupt rules")]:
+        for index, text in [(0, ""), (0, "x" * 2001), (2, ""), (2, "corrupt rules"), (2, result({"status":"ready"})["content"][2]["text"] + " ")]:
             bad = result({"status":"ready"}); bad["content"][index]["text"] = text
             with self.subTest(index=index, text=text[:20]), self.assertRaises(AssertionError): validate_get_state(bad, ID)
         with self.assertRaises(AssertionError): validate_get_state({**result({"status":"ready"}), "structuredContent": {}}, ID)

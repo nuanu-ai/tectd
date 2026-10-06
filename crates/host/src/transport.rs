@@ -424,10 +424,27 @@ async fn execute_program(
             .refresh_program_knowledge(context, &request, &guidance, &guard)
             .await
             .and_then(program_output::program),
-        ProgramInvocation::List { after, limit } => service
-            .list_programs(context, after, limit)
-            .await
-            .and_then(|list| program_output::list(list, capacity)),
+        ProgramInvocation::List {
+            after,
+            after_selector,
+            limit,
+            window,
+            workspace_id,
+        } => {
+            let (bound_workspace_id, list) =
+                service.list_programs_bound(context, after, limit).await?;
+            if workspace_id.is_some_and(|expected| expected != bound_workspace_id) {
+                return Err(Error::InvalidArguments);
+            }
+            program_output::list_read::read(
+                list,
+                bound_workspace_id,
+                after_selector.as_deref(),
+                limit,
+                &window,
+                capacity,
+            )
+        }
         ProgramInvocation::ReadSkill => {
             service.read_program_skill(context).await?;
             Ok(program_output::skill())

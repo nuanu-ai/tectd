@@ -13,11 +13,16 @@ mod recovery_support;
 #[allow(dead_code)]
 mod support;
 
+#[path = "pipeline_execution/knowledge_backend_proof.rs"]
+mod knowledge_backend_proof;
+
 use knowledge_lifecycle_support::{
-    advance_create_to_review, begin_create_request, complete_review, context,
+    advance_create_to_review, begin_create_request, complete_review, context, reads,
 };
 use knowledge_operation_support::{SingleOperation, commit_single};
-use lifecycle_support::{consumed_inputs, consumed_outputs, lightweight_draft, phase_output};
+use lifecycle_support::lightweight_draft;
+use recovery_support::native_reads::ScopeOpenFixture;
+use recovery_support::pipeline_reads::{ResolvedPipeline, resolve_pipeline};
 use recovery_support::{
     Daemon, Mcp, action_params, find_action, host_file, private_temp, public_call, tagged_url,
     tool_payload,
@@ -28,21 +33,9 @@ use support::{open_slice, ready_source_candidate, repository, review, route, rou
 use tect_postgres::admin;
 use uuid::Uuid;
 
-fn constraint(source_text: &str) -> Value {
-    let mut fixture: Value = serde_json::from_str(include_str!(
-        "../../postgres/src/knowledge_lifecycle/rdf/fixtures/general-constraint.json"
-    ))
-    .unwrap();
-    fixture["document"]["canonical_text"] =
-        json!("Every active phase must retain exact source provenance.");
-    fixture["document"]["sources"][0]["snapshot"]["text"] = json!(source_text);
-    fixture["document"].clone()
-}
-
-fn knowledge_ack(context: &Value) -> Value {
-    json!({"manifest_id":context["knowledge_resources"]["id"],
-        "digest":context["knowledge_resources"]["digest"]})
-}
+#[path = "pipeline_execution_knowledge/fixture_support.rs"]
+mod fixture_support;
+use fixture_support::{assert_compact, assert_disposition, assert_state, constraint, read_current};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn durable_knowledge_lifecycle_is_bound_to_real_pipeline_and_access() {
@@ -90,18 +83,21 @@ async fn durable_knowledge_lifecycle_is_bound_to_real_pipeline_and_access() {
         begin_request.clone(),
     )
     .await;
-    let change_id = context(&begun)["change_id"].clone();
+    let begun = reads::resolve_current(&mut client, begun).await;
+    assert_disposition(&begun.raw_response, "created");
+    let change_id = context(&begun.value)["change_id"].clone();
+    let replayed_begin = route(
+        &mut client,
+        "command",
+        "knowledge.change_begin",
+        begin_request.clone(),
+    )
+    .await;
+    let replayed_begin = reads::resolve_current(&mut client, replayed_begin).await;
+    assert_disposition(&replayed_begin.raw_response, "replay");
     assert_eq!(
-        context(
-            &route(
-                &mut client,
-                "command",
-                "knowledge.change_begin",
-                begin_request.clone(),
-            )
-            .await
-        )["run"]["id"],
-        context(&begun)["run"]["id"]
+        context(&replayed_begin.value)["run"]["id"],
+        context(&begun.value)["run"]["id"]
     );
     let mut conflicting_begin = begin_request;
     conflicting_begin["intent"] = json!("Different intent under the same request identity.");
@@ -116,16 +112,21 @@ async fn durable_knowledge_lifecycle_is_bound_to_real_pipeline_and_access() {
         "input_conflict"
     );
 
-    let reviewed = advance_create_to_review(&mut client, &document, begun).await;
+    let reviewed = advance_create_to_review(&mut client, &document, begun.value).await;
     let reviewed = complete_review(&mut client, &reviewed, "ready").await;
     let publication = route(
         &mut client,
         "command",
         "knowledge.change_phase_complete",
-        action_params(&reviewed["actions"][0]).clone(),
+        action_params(reads::phase_completion_action(&reviewed)).clone(),
     )
     .await;
-    let commit_request = action_params(&publication["actions"][0]).clone();
+    let publication = reads::resolve_current(&mut client, publication).await;
+    let commit_request = action_params(reads::producer_action(
+        &publication.value,
+        "knowledge.change_commit",
+    ))
+    .clone();
     let mut publisher_peer = Mcp::start(&socket, &config, &Uuid::new_v4().to_string(), &key).await;
     publisher_peer.call("open_workspace", json!({})).await;
     let abandoned_snapshot = admin::begin_backup_snapshot(&pool).await.unwrap();
@@ -169,47 +170,46 @@ async fn durable_knowledge_lifecycle_is_bound_to_real_pipeline_and_access() {
         .expect("publisher must proceed after successful and abandoned backup guards release");
     let payload_a = tool_payload(&raw_a);
     let payload_b = tool_payload(&raw_b);
-    let (applied, replay) = if payload_a.get("applied").is_some() {
-        (payload_a, payload_b)
+    let applied_a = payload_a.get("applied").is_some() || payload_a["outcome"] == "applied";
+    let receipt_a = reads::resolve_commit_receipt(&mut client, payload_a).await;
+    let receipt_b = reads::resolve_commit_receipt(&mut publisher_peer, payload_b).await;
+    let (applied, replay) = if applied_a {
+        (receipt_a, receipt_b)
     } else {
-        (payload_b, payload_a)
+        (receipt_b, receipt_a)
     };
-    assert_eq!(replay["replay"], applied["applied"]);
-    let receipt = applied["applied"].clone();
+    assert_disposition(&applied.raw_response, "applied");
+    assert_disposition(&replay.raw_response, "replay");
+    assert!(applied.receipt.is_object());
+    assert!(replay.receipt.is_object());
+    assert_eq!(replay.receipt, applied.receipt);
+    let receipt = applied.receipt;
     assert_eq!(receipt["workspace_generation"], 1);
-    assert_eq!(
-        route(
-            &mut client,
-            "command",
-            "knowledge.change_commit",
-            commit_request.clone(),
-        )
-        .await["replay"],
-        receipt
-    );
-    publisher_peer.finish().await;
-    let unit_id = receipt["applied_operations"][0]["unit_id"].clone();
-    let exact = route(
+    let repeated_commit = route(
         &mut client,
-        "query",
-        "knowledge.unit",
-        json!({"unit_id":unit_id,"revision":1}),
+        "command",
+        "knowledge.change_commit",
+        commit_request.clone(),
     )
     .await;
+    let repeated_commit = reads::resolve_commit_receipt(&mut client, repeated_commit).await;
+    assert_disposition(&repeated_commit.raw_response, "replay");
+    assert!(repeated_commit.receipt.is_object());
+    assert_eq!(repeated_commit.receipt, receipt);
+    publisher_peer.finish().await;
+    let unit_id = receipt["applied_operations"][0]["unit_id"].clone();
+    let unit_revision = receipt["applied_operations"][0]["revision"].clone();
+    assert_eq!(unit_revision, 1);
+    let exact = reads::read_unit(&mut client, &unit_id, &unit_revision).await;
+    let exact = exact.value;
     assert_eq!(exact["document"]["document"], document);
     assert_eq!(
         exact["document"]["document"]["sources"][0]["snapshot"]["text"],
         injected
     );
     assert!(exact["document"]["rdf_digest"].as_str().unwrap().len() >= 32);
-    let cold = route(
-        &mut client,
-        "query",
-        "knowledge.lifecycle",
-        json!({"change_id":change_id,"view":"current"}),
-    )
-    .await;
-    assert_eq!(context(&cold)["publisher_receipt"], receipt);
+    let cold = reads::read_current(&mut client, &change_id).await;
+    assert_eq!(context(&cold.value)["publisher_receipt"], receipt);
 
     let (source, candidate) = ready_source_candidate(&mut client, &repo).await;
 
@@ -224,12 +224,10 @@ async fn durable_knowledge_lifecycle_is_bound_to_real_pipeline_and_access() {
             "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]}),
     )
     .await;
-    let saved = save(
-        &mut client,
-        &opened_scope["created"]["planning"],
-        lightweight_draft(),
-    )
-    .await;
+    let planning = ScopeOpenFixture::from_mutation(opened_scope, "created")
+        .read_planning(&mut client)
+        .await;
+    let saved = save(&mut client, &planning.value, lightweight_draft()).await;
     let reviewed_scope = review(&mut client, &saved).await;
     let opened_slice = route(
         &mut client,
@@ -252,10 +250,10 @@ async fn durable_knowledge_lifecycle_is_bound_to_real_pipeline_and_access() {
             "qualification_reason":"Bounded generic knowledge pipeline fixture."}),
     )
     .await;
-    let pipeline = &begun_pipeline["created"];
-    assert_eq!(pipeline["knowledge_resource_status"]["state"], "current");
+    let pipeline = resolve_pipeline(&mut client, begun_pipeline).await.unwrap();
+    assert_state(&pipeline, "current");
     assert_eq!(
-        pipeline["knowledge_resources"]["selected"][0]["unit_id"],
+        pipeline.details_data()["knowledge_resources"]["selected"][0]["unit_id"],
         unit_id
     );
 
@@ -282,44 +280,33 @@ async fn durable_knowledge_lifecycle_is_bound_to_real_pipeline_and_access() {
         },
     )
     .await;
-    assert_eq!(revision["applied"]["workspace_generation"], 2);
-    let stale_default = route(
+    let revision = reads::resolve_commit_receipt(&mut client, revision).await;
+    assert_disposition(&revision.raw_response, "applied");
+    assert_eq!(revision.receipt["workspace_generation"], 2);
+    let stale_default = read_current(&mut client, json!({"run_id":pipeline.run()["id"]})).await;
+    assert_compact(&stale_default);
+    assert_state(&stale_default, "stale");
+    let stale = read_current(
         &mut client,
-        "query",
-        "slice.pipeline.context",
-        json!({"run_id":pipeline["run"]["id"]}),
+        json!({"run_id":pipeline.run()["id"],"refresh":true}),
     )
     .await;
-    assert_eq!(stale_default["definition"]["phases"], json!([]));
-    let stale = route(
-        &mut client,
-        "query",
-        "slice.pipeline.context",
-        json!({"run_id":pipeline["run"]["id"],"refresh":true}),
-    )
-    .await;
-    assert_eq!(stale["knowledge_resource_status"]["state"], "stale");
-    let phase_id = stale["run"]["current_phase_id"].as_str().unwrap();
-    let phase = stale["definition"]["phases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|phase| phase["id"] == phase_id)
-        .unwrap();
+    assert_compact(&stale);
+    assert_state(&stale, "stale");
+    let before_stale = knowledge_backend_proof::checkpoint(&pool, &stale).await;
     let refused = route_error(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
-        json!({"request_id":Uuid::new_v4(),"run_id":stale["run"]["id"],
-            "run_revision":stale["run"]["revision"],"phase_id":phase_id,
-            "outcome":"completed","transition":"continue",
-            "output":phase_output(phase,"stale-dk2","completed","continue"),
-            "consumed_outputs":consumed_outputs(&stale),"consumed_inputs":consumed_inputs(&stale),
-            "consumed_knowledge":knowledge_ack(pipeline),"publish_blocked_result":false}),
+        knowledge_backend_proof::k1_request(&stale),
     )
     .await;
     assert_eq!(refused["error"]["code"], "context_changed");
-    let refresh = find_action(&stale, "pipeline.knowledge_refresh").unwrap();
+    assert_eq!(
+        knowledge_backend_proof::checkpoint(&pool, &stale).await,
+        before_stale
+    );
+    let refresh = find_action(&stale.raw_payload, "pipeline.knowledge_refresh").unwrap();
     route(
         &mut client,
         "command",
@@ -327,56 +314,52 @@ async fn durable_knowledge_lifecycle_is_bound_to_real_pipeline_and_access() {
         action_params(refresh).clone(),
     )
     .await;
-    let refreshed_default = route(
-        &mut client,
-        "query",
-        "slice.pipeline.context",
-        json!({"run_id":pipeline["run"]["id"]}),
-    )
-    .await;
-    // A knowledge refresh advances the run revision, so its first delivery is fresh.
+    let refreshed_default = read_current(&mut client, json!({"run_id":pipeline.run()["id"]})).await;
+    assert_compact(&refreshed_default);
+    assert_state(&refreshed_default, "current");
     assert!(
-        !refreshed_default["definition"]["phases"]
-            .as_array()
-            .unwrap()
-            .is_empty()
+        refreshed_default.run()["revision"].as_i64().unwrap()
+            > stale.run()["revision"].as_i64().unwrap()
     );
-    let refreshed = route(
+    let refreshed = read_current(
         &mut client,
-        "query",
-        "slice.pipeline.context",
-        json!({"run_id":pipeline["run"]["id"],"refresh":true}),
+        json!({"run_id":pipeline.run()["id"],"refresh":true}),
     )
     .await;
+    assert_compact(&refreshed);
     assert_eq!(
-        refreshed_default["definition"]["phases"],
-        refreshed["definition"]["phases"]
+        refreshed_default.current_phase().unwrap(),
+        refreshed.current_phase().unwrap()
     );
-    assert_eq!(refreshed["knowledge_resource_status"]["state"], "current");
     assert_eq!(
-        refreshed["knowledge_resources"]["selected"][0]["revision"],
+        refreshed_default.run()["revision"],
+        refreshed.run()["revision"]
+    );
+    assert_state(&refreshed, "current");
+    assert!(
+        refreshed.details_data()["knowledge_resources"]["run_revision"]
+            .as_i64()
+            .unwrap()
+            > stale.details_data()["knowledge_resources"]["run_revision"]
+                .as_i64()
+                .unwrap()
+    );
+    assert_eq!(
+        refreshed.details_data()["knowledge_resources"]["selected"][0]["revision"],
         2
     );
-    let phase_id = refreshed["run"]["current_phase_id"].as_str().unwrap();
-    let phase = refreshed["definition"]["phases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|phase| phase["id"] == phase_id)
-        .unwrap();
+    knowledge_backend_proof::reject_agent_ack(&mut client, &pool, &refreshed).await;
+    let completion_request = knowledge_backend_proof::k1_request(&refreshed);
     let completed = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
-        json!({"request_id":Uuid::new_v4(),"run_id":refreshed["run"]["id"],
-            "run_revision":refreshed["run"]["revision"],"phase_id":phase_id,
-            "outcome":"completed","transition":"continue",
-            "output":phase_output(phase,"current-dk2","completed","continue"),
-            "consumed_outputs":consumed_outputs(&refreshed),"consumed_inputs":consumed_inputs(&refreshed),
-            "consumed_knowledge":knowledge_ack(&refreshed),"publish_blocked_result":false}),
+        completion_request.clone(),
     )
     .await;
-    assert_eq!(completed["context"]["run"]["current_phase_ordinal"], 2);
+    knowledge_backend_proof::persisted_binding(&pool, &refreshed, &completion_request).await;
+    let completed = resolve_pipeline(&mut client, completed).await.unwrap();
+    assert_eq!(completed.run()["current_phase_ordinal"], 2);
 
     let retraction = commit_single(
         &mut client,
@@ -397,18 +380,14 @@ async fn durable_knowledge_lifecycle_is_bound_to_real_pipeline_and_access() {
         },
     )
     .await;
+    let retraction = reads::resolve_commit_receipt(&mut client, retraction).await;
+    assert_disposition(&retraction.raw_response, "applied");
     assert_eq!(
-        retraction["applied"]["applied_operations"][0]["operation"],
+        retraction.receipt["applied_operations"][0]["operation"],
         "retract"
     );
-    let gap = route(
-        &mut client,
-        "query",
-        "slice.pipeline.context",
-        json!({"run_id":completed["context"]["run"]["id"]}),
-    )
-    .await;
-    assert_eq!(gap["knowledge_resource_status"]["state"], "needs_context");
+    let gap = read_current(&mut client, json!({"run_id":completed.run()["id"]})).await;
+    assert_state(&gap, "needs_context");
 
     let sibling = admin::enroll_host(&pool, Some(enrollment.tenant_id), Vec::new())
         .await

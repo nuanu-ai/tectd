@@ -130,12 +130,13 @@ class FakePipeline:
             return FragmentTransport(value,p,page_bytes=4096)(tool,arguments)
         if route=="slice.result.record": return {"error":{"code":"forbidden"}},True
         if p.get("run_revision")!=run["revision"]: return {"error":{"code":"stale_revision"}},True
-        if run["status"]=="completed": return {"error":{"code":"forbidden"}},True
+        if run["status"] in {"completed","escalated","superseded"}: return {"error":{"code":"forbidden"}},True
         if route=="slice.pipeline.delivery.escalate":
             assert run["delivery_mode"]=="whole" and run["current_phase_id"]=="K2"
             run["delivery_mode"]="phasewise"
         elif route=="slice.pipeline.input":
-            assert run["status"] in {"waiting_input","blocked"}
+            if p.get("phase_id") != run["current_phase_id"]: return {"error":{"code":"stale_context"}},True
+            assert run["status"] in {"active","waiting_input","blocked"}
             run["status"]="active"
         elif route=="slice.pipeline.phase.complete":
             for forbidden in ("consumed_outputs","consumed_inputs","consumed_knowledge"): assert forbidden not in p
@@ -145,12 +146,13 @@ class FakePipeline:
             if p.get("revisit_phase_id"):
                 assert p["revisit_phase_id"] in phase["allowed_backward_to"]
                 run["current_phase_id"]=p["revisit_phase_id"]
+                run["status"]="active"
             elif p["outcome"]=="completed":
                 if p["transition"]=="complete":
                     assert run["current_phase_id"]=="K5" and p.get("terminal_result")
                     run["status"]="completed";run["current_phase_id"]=None
                 else: run["current_phase_id"]=pe.LIGHTWEIGHT_PHASES[run["current_phase_ordinal"]]
-            if p["outcome"] in {"waiting_input","blocked"}: run["status"]=p["outcome"]
+            if not p.get("revisit_phase_id") and p["outcome"] in {"waiting_input","blocked"}: run["status"]=p["outcome"]
             if p.get("terminal_result"):
                 result={"id":f"fixture-result-{len(self.history)+1}","outcome":p["outcome"],"provenance":"externally_reported","pipeline_run_id":run["id"],**copy.deepcopy(p["terminal_result"])}
                 self.history.append(result);self.ctx["result"]=result

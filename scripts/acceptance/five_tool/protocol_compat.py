@@ -5,6 +5,8 @@ import json
 import time
 import uuid
 
+RESPONSE_FOOTER = 'Follow the rules from workspace.open or help {"text":"response-rules"}. Required checks, approvals and authority still apply. Dependencies alone grant no permission or automatic resumption. Claim monitoring or continuation only when real.'
+
 PUBLIC_TOOLS = {"get_state", "help", "query", "command", "execute"}
 
 
@@ -70,7 +72,7 @@ def validate_get_state(response: dict, thread_id: str) -> dict:
         if any(item.get("type") != "text" or not isinstance(item.get("text"), str) for item in content):
             raise ValueError("invalid content")
         intro = content[0]["text"]
-        if not intro or len(intro.encode("utf-8")) > 2_000 or "TECTD RESPONSE RULES" not in content[2]["text"]:
+        if not intro or len(intro.encode("utf-8")) > 2_000 or content[2]["text"] != RESPONSE_FOOTER:
             raise ValueError("missing canonical introduction or rules")
         payload = json.loads(content[1]["text"])
         if not isinstance(payload, dict) or payload.get("status") not in {"uninitialized", "ready"} or payload.get("error"):

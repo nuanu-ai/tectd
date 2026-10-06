@@ -1,6 +1,8 @@
 //! Real PostgreSQL/daemon/stdio Program lifecycle and restart acceptance.
 mod recovery_support;
 
+use recovery_support::native_reads::ProgramFixture;
+use recovery_support::native_reads::program_queries::read_program_query;
 use recovery_support::{
     Daemon, Mcp, action_name, action_params, host_file, private_temp, tagged_url,
 };
@@ -74,7 +76,11 @@ async fn rich_program_draft_question_correction_and_restart_preserve_one_record(
         .await;
     assert_actions(&created);
     let id = program_id(&created);
+    let created_page = ProgramFixture::from_mutation(created.clone())
+        .read_page(&mut first)
+        .await;
     let initial = &created["program"];
+    let initial_full = created_page.program();
     assert_eq!(initial["status"], "draft");
     assert_eq!(initial["revision"], 1);
     assert_eq!(initial["current_step"], "compose");
@@ -90,15 +96,23 @@ async fn rich_program_draft_question_correction_and_restart_preserve_one_record(
         "working_notes",
         "pending_question",
     ] {
-        assert!(initial[field].is_null(), "{field}: {initial}");
+        assert!(initial_full.get(field).is_some(), "missing {field}");
+        assert!(initial_full[field].is_null(), "{field}: {initial_full}");
     }
     assert!(created.get("inputs").is_none());
     assert!(created.get("input").is_none());
     assert_eq!(
-        initial["planning_knowledge"]["manifest"]["selected"],
+        initial_full["planning_knowledge"]["manifest"]["selected"],
         json!([]),
         "inactive DK must produce a readable empty planning manifest"
     );
+    let initial_manifest_id = Uuid::parse_str(
+        initial_full["planning_knowledge"]["manifest"]["id"]
+            .as_str()
+            .expect("actual initial manifest ID"),
+    )
+    .unwrap();
+    assert!(!initial_manifest_id.is_nil());
     let manifest_count_before_query: i64 =
         sqlx::query_scalar("SELECT count(*) FROM planning_knowledge_manifests WHERE owner_id=$1")
             .bind(id)
@@ -106,9 +120,17 @@ async fn rich_program_draft_question_correction_and_restart_preserve_one_record(
             .await
             .unwrap();
 
-    let page = first
-        .call("get_program", json!({"program_id":id,"limit":1}))
-        .await;
+    let page_read = read_program_query(
+        async |arguments| {
+            first
+                .exchange("tools/call", json!({"name":"query","arguments":arguments}))
+                .await
+        },
+        json!({"program_id":id,"limit":1}),
+    )
+    .await
+    .unwrap();
+    let page = &page_read.value;
     assert_eq!(page["inputs"].as_array().unwrap().len(), 1);
     assert_eq!(page["inputs"][0]["sequence"], 1);
     assert_eq!(page["inputs"][0]["request_id"], request_id.to_string());
@@ -116,9 +138,16 @@ async fn rich_program_draft_question_correction_and_restart_preserve_one_record(
     assert_eq!(page["next_after_input"], Value::Null);
     assert_eq!(page["inputs"][0]["session_id"], first_open["session"]["id"]);
     assert!(page["inputs"][0]["id"].as_str().is_some());
+    let page_manifest_id = Uuid::parse_str(
+        page["program"]["planning_knowledge"]["manifest"]["id"]
+            .as_str()
+            .expect("actual queried manifest ID"),
+    )
+    .unwrap();
+    assert!(!page_manifest_id.is_nil());
     assert_eq!(
         page["program"]["planning_knowledge"]["manifest"]["id"],
-        initial["planning_knowledge"]["manifest"]["id"]
+        initial_full["planning_knowledge"]["manifest"]["id"]
     );
     let manifest_count_after_query: i64 =
         sqlx::query_scalar("SELECT count(*) FROM planning_knowledge_manifests WHERE owner_id=$1")
@@ -140,10 +169,14 @@ async fn rich_program_draft_question_correction_and_restart_preserve_one_record(
             }),
         )
         .await;
+    let paused_page = ProgramFixture::from_mutation(paused.clone())
+        .read_page(&mut first)
+        .await;
     assert_eq!(paused["program"]["revision"], 2);
     assert_eq!(paused["program"]["current_step"], "waiting_input");
-    assert_eq!(paused["program"]["pending_question"], question);
-    assert!(paused["program"]["basis"].is_null());
+    assert_eq!(paused_page.program()["pending_question"], question);
+    assert!(paused_page.program().get("basis").is_some());
+    assert!(paused_page.program()["basis"].is_null());
 
     let answer_id = Uuid::new_v4();
     let exact_answer =
@@ -154,25 +187,40 @@ async fn rich_program_draft_question_correction_and_restart_preserve_one_record(
             json!({"program_id":id,"request_id":answer_id,"input":exact_answer}),
         )
         .await;
+    let resumed_page = ProgramFixture::from_mutation(resumed.clone())
+        .read_page(&mut second)
+        .await;
     assert_eq!(resumed["program"]["revision"], 3);
     assert_eq!(resumed["program"]["current_step"], "compose");
-    assert_eq!(resumed["program"]["pending_question"], question);
+    assert_eq!(resumed_page.program()["pending_question"], question);
     assert_eq!(resumed["program"]["latest_input"], 2);
     assert_eq!(
-        resumed["program"]["planning_knowledge"]["manifest"]["selected"],
+        resumed_page.program()["planning_knowledge"]["manifest"]["selected"],
         json!([]),
         "a second inactive-DK capture must remain usable"
     );
+    let resumed_manifest_id = Uuid::parse_str(
+        resumed_page.program()["planning_knowledge"]["manifest"]["id"]
+            .as_str()
+            .expect("actual resumed manifest ID"),
+    )
+    .unwrap();
+    assert!(!resumed_manifest_id.is_nil());
     assert_ne!(
-        resumed["program"]["planning_knowledge"]["manifest"]["id"],
-        initial["planning_knowledge"]["manifest"]["id"]
+        resumed_page.program()["planning_knowledge"]["manifest"]["id"],
+        initial_full["planning_knowledge"]["manifest"]["id"]
     );
-    let answer_page = second
-        .call(
-            "get_program",
-            json!({"program_id":id,"after_input":1,"limit":1}),
-        )
-        .await;
+    let answer_page_read = read_program_query(
+        async |arguments| {
+            second
+                .exchange("tools/call", json!({"name":"query","arguments":arguments}))
+                .await
+        },
+        json!({"program_id":id,"after_input":1,"limit":1}),
+    )
+    .await
+    .unwrap();
+    let answer_page = &answer_page_read.value;
     assert_eq!(
         answer_page["inputs"][0]["session_id"],
         second_open["session"]["id"]
@@ -220,10 +268,14 @@ async fn rich_program_draft_question_correction_and_restart_preserve_one_record(
             }),
         )
         .await;
-    assert_eq!(notes_only["program"]["name"], "Program formation");
+    let notes_page = ProgramFixture::from_mutation(notes_only.clone())
+        .read_page(&mut first)
+        .await;
+    assert_eq!(notes_page.program()["name"], "Program formation");
     assert_eq!(notes_only["program"]["status"], "open");
     assert_eq!(notes_only["program"]["current_step"], "compose");
-    assert!(notes_only["program"]["working_notes"].is_null());
+    assert!(notes_page.program().get("working_notes").is_some());
+    assert!(notes_page.program()["working_notes"].is_null());
 
     let correction_id = Uuid::new_v4();
     let correction = "Correction: success must include later-session continuation.";
@@ -265,26 +317,110 @@ async fn rich_program_draft_question_correction_and_restart_preserve_one_record(
         .await;
     assert_eq!(program_id(&retried), id);
     assert_eq!(retried["program"]["revision"], 7);
-    let history = later
-        .call("get_program", json!({"program_id":id,"after_input":0}))
-        .await;
-    let exact: Vec<_> = history["inputs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| entry["input"].as_str().unwrap())
-        .collect();
+    let mut history_params = json!({"program_id":id,"after_input":0});
+    let mut exact = Vec::new();
+    let mut sequence = 0_i64;
+    let mut reached_eof = false;
+    for _ in 0..3 {
+        let history_read = read_program_query(
+            async |arguments| {
+                later
+                    .exchange("tools/call", json!({"name":"query","arguments":arguments}))
+                    .await
+            },
+            history_params,
+        )
+        .await
+        .unwrap();
+        let history = &history_read.value;
+        for field in [
+            "id",
+            "workspace_id",
+            "revision",
+            "input_cursor",
+            "latest_input",
+        ] {
+            assert_eq!(
+                history["program"][field], retried["program"][field],
+                "history {field}"
+            );
+        }
+        let previous = sequence;
+        for entry in history["inputs"].as_array().unwrap() {
+            let next_sequence = entry["sequence"].as_i64().unwrap();
+            assert!(
+                next_sequence > sequence,
+                "original input sequence must advance"
+            );
+            sequence = next_sequence;
+            exact.push(entry["input"].as_str().unwrap().to_owned());
+        }
+        if history["next_after_input"].is_null() {
+            reached_eof = true;
+            break;
+        }
+        assert!(sequence > previous, "collection page must advance");
+        assert_eq!(history["next_after_input"], sequence);
+        let continuations: Vec<_> = history_read
+            .provenance
+            .terminal_actions
+            .iter()
+            .filter(|action| {
+                action["kind"] == "ready_call"
+                    && action["tool"] == "query"
+                    && action["arguments"]["route"] == "program.get"
+            })
+            .collect();
+        assert_eq!(
+            continuations.len(),
+            1,
+            "unique actual collection continuation"
+        );
+        assert_eq!(
+            continuations[0]["arguments"]["params"]["after_input"],
+            sequence
+        );
+        history_params = continuations[0]["arguments"]["params"].clone();
+    }
+    assert!(
+        reached_eof,
+        "original history must reach EOF within three pages"
+    );
     assert_eq!(exact, [original, exact_answer, correction]);
-    let default_page = later.call("get_program", json!({"program_id":id})).await;
+    let default_page_read = read_program_query(
+        async |arguments| {
+            later
+                .exchange("tools/call", json!({"name":"query","arguments":arguments}))
+                .await
+        },
+        json!({"program_id":id}),
+    )
+    .await
+    .unwrap();
+    let default_page = &default_page_read.value;
     assert!(default_page["inputs"].as_array().unwrap().is_empty());
     assert!(default_page["next_after_input"].is_null());
-    let skill = later
-        .call("read_skill", json!({"name":"tectd-program"}))
-        .await;
-    assert_eq!(skill["method"], "tectd-program");
-    assert!(skill["body"].as_str().is_some_and(|body| !body.is_empty()));
-    assert_eq!(skill["actions"], json!([]));
-    assert!(skill["recommended_action"].is_null());
+    let skill = recovery_support::help_reads::describe(
+        async |arguments| {
+            later
+                .exchange(
+                    "tools/call",
+                    recovery_support::public_call("help", arguments),
+                )
+                .await
+        },
+        json!({"mode":"describe","method":"tectd-program"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(skill.value["method"], "tectd-program");
+    assert!(
+        skill.value["body"]
+            .as_str()
+            .is_some_and(|body| !body.is_empty())
+    );
+    assert!(skill.terminal_actions.is_empty());
+    assert!(skill.terminal_recommended_action.is_null());
     later.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();

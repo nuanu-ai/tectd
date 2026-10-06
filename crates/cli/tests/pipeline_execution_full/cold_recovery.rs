@@ -2,6 +2,7 @@ use super::*;
 use std::path::{Path, PathBuf};
 
 pub(super) struct ColdRecovery<'a> {
+    pub(super) review_sessions: review_sessions::ReviewSessions,
     pub(super) client: Mcp,
     pub(super) daemon: Daemon,
     pub(super) pool: &'a PgPool,
@@ -19,6 +20,7 @@ pub(super) struct ColdRecovery<'a> {
 
 pub(super) async fn run(state: ColdRecovery<'_>) {
     let ColdRecovery {
+        mut review_sessions,
         client,
         mut daemon,
         pool,
@@ -39,14 +41,19 @@ pub(super) async fn run(state: ColdRecovery<'_>) {
     daemon = Daemon::start(runtime, socket.clone()).await;
     let mut client = Mcp::start(&socket, config, native, key).await;
     client.call("open_workspace", json!({})).await;
-    let mut context = route(
+    let raw_context = route(
         &mut client,
         "query",
         "slice.pipeline.context",
         json!({"run_id":amendment["run_id"]}),
     )
     .await;
-    let cold_input = context["inputs"].as_array().unwrap().last().unwrap();
+    let mut context = resolve_pipeline(&mut client, raw_context).await.unwrap();
+    let cold_input = context.details_data()["inputs"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap();
     let cold_amendment = &cold_input["source_amendment"];
     assert_eq!(cold_input["input"], amendment["input"]);
     assert_eq!(
@@ -67,10 +74,10 @@ pub(super) async fn run(state: ColdRecovery<'_>) {
         .to_owned();
     let successor_artifact = cold_amendment["successor"]["artifact"].clone();
     assert_eq!(
-        context["run"]["definition_digest"],
+        context.run()["definition_digest"],
         definition_digest_before_amendment
     );
-    for binding in context["bindings"].as_array().unwrap() {
+    for binding in context.details_data()["bindings"].as_array().unwrap() {
         if binding["phase_ordinal"].as_u64().unwrap() >= 5 {
             assert_eq!(binding["stale"], true);
             assert_eq!(binding["stale_reason"], "source_amendment");
@@ -80,7 +87,7 @@ pub(super) async fn run(state: ColdRecovery<'_>) {
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":context["run"]["id"],"view":"output",
+        json!({"run_id":context.run()["id"],"view":"output",
             "output_id":phase_five_binding["output_id"],"digest":phase_five_binding["output_digest"]}),
     )
     .await;
@@ -115,8 +122,8 @@ pub(super) async fn run(state: ColdRecovery<'_>) {
     );
     let mut stale_predecessor = amendment.clone();
     stale_predecessor["request_id"] = json!(Uuid::new_v4());
-    stale_predecessor["run_revision"] = context["run"]["revision"].clone();
-    stale_predecessor["phase_id"] = context["run"]["current_phase_id"].clone();
+    stale_predecessor["run_revision"] = context.run()["revision"].clone();
+    stale_predecessor["phase_id"] = context.run()["current_phase_id"].clone();
     let stale_predecessor_error = route_error(
         &mut client,
         "command",
@@ -150,15 +157,29 @@ pub(super) async fn run(state: ColdRecovery<'_>) {
         wrong_lineage_error["error"]["refusal"]["rule"],
         "WP6-COMPLETE-01"
     );
-    let after_wrong_lineage = route(
+    let raw_after_wrong_lineage = route(
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":context["run"]["id"],"refresh":true}),
+        json!({"run_id":context.run()["id"],"refresh":true}),
     )
     .await;
+    let after_wrong_lineage = resolve_pipeline(&mut client, raw_after_wrong_lineage)
+        .await
+        .unwrap();
     for collection in ["run", "attempts", "outputs", "bindings", "inputs"] {
-        assert_eq!(after_wrong_lineage[collection], context[collection]);
+        assert_eq!(
+            if collection == "run" {
+                after_wrong_lineage.run()
+            } else {
+                &after_wrong_lineage.details_data()[collection]
+            },
+            if collection == "run" {
+                context.run()
+            } else {
+                &context.details_data()[collection]
+            }
+        );
     }
     context = after_wrong_lineage;
     context = refresh_knowledge(&mut client, &context).await;
@@ -170,15 +191,16 @@ pub(super) async fn run(state: ColdRecovery<'_>) {
         &successor_path,
         &successor_digest,
     );
-    context = route(
+    let raw_context = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         amended_phase_five,
     )
-    .await["context"]
-        .clone();
-    context = advance(&mut client, context).await;
+    .await;
+    context = resolve_pipeline(&mut client, raw_context).await.unwrap();
+    assert!(mutation_result_id(&context).is_null());
+    context = review_sessions.advance(context).await;
     let (verdict, outcome, transition) = successful_route(&context);
     let mut amended_phase_seven = completion(&context, verdict, outcome, transition, None, None);
     replace_ledger_source(
@@ -186,19 +208,20 @@ pub(super) async fn run(state: ColdRecovery<'_>) {
         &successor_path,
         &successor_digest,
     );
-    context = route(
+    let raw_context = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         amended_phase_seven,
     )
-    .await["context"]
-        .clone();
+    .await;
+    context = resolve_pipeline(&mut client, raw_context).await.unwrap();
+    assert!(mutation_result_id(&context).is_null());
     assert_eq!(
-        context["run"]["current_phase_id"],
+        context.run()["current_phase_id"],
         "slice-implementation-spec-synthesizer"
     );
-    let fresh_phase_five = context["outputs"]
+    let fresh_phase_five = context.details_data()["outputs"]
         .as_array()
         .unwrap()
         .iter()
@@ -221,7 +244,7 @@ pub(super) async fn run(state: ColdRecovery<'_>) {
     assert_eq!(fresh_ledger["source"]["path"], successor_path);
     assert_eq!(fresh_ledger["source"]["digest"], successor_digest);
 
-    let fresh_phase_five_binding = context["bindings"]
+    let fresh_phase_five_binding = context.details_data()["bindings"]
         .as_array()
         .unwrap()
         .iter()
@@ -235,9 +258,9 @@ pub(super) async fn run(state: ColdRecovery<'_>) {
         .unwrap();
     let no_op = json!({
         "request_id":Uuid::new_v4(),
-        "run_id":context["run"]["id"],
-        "run_revision":context["run"]["revision"],
-        "phase_id":context["run"]["current_phase_id"],
+        "run_id":context.run()["id"],
+        "run_revision":context.run()["revision"],
+        "phase_id":context.run()["current_phase_id"],
         "input":"Direct operator instruction for a no-op amendment rejection check.",
         "source_amendment":{
             "target_phase_id":"slice-component-decision-interrogator",
@@ -255,27 +278,41 @@ pub(super) async fn run(state: ColdRecovery<'_>) {
             "authorization_provenance":"exact direct operator input"
         }
     });
-    let before_no_op = context.clone();
+    let before_no_op = (context.run().clone(), context.details_data().clone());
     let no_op_error = route_error(&mut client, "command", "slice.pipeline.input", no_op).await;
     assert_eq!(no_op_error["error"]["refusal"]["code"], "INVALID_OUTPUT");
     assert_eq!(no_op_error["error"]["refusal"]["rule"], "WP6-INPUT-01");
-    let after_no_op = route(
+    let raw_after_no_op = route(
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":context["run"]["id"],"refresh":true}),
+        json!({"run_id":context.run()["id"],"refresh":true}),
     )
     .await;
+    let after_no_op = resolve_pipeline(&mut client, raw_after_no_op)
+        .await
+        .unwrap();
     for collection in ["run", "inputs", "bindings"] {
-        assert_eq!(after_no_op[collection], before_no_op[collection]);
+        assert_eq!(
+            if collection == "run" {
+                after_no_op.run()
+            } else {
+                &after_no_op.details_data()[collection]
+            },
+            if collection == "run" {
+                &before_no_op.0
+            } else {
+                &before_no_op.1[collection]
+            }
+        );
     }
     assert_eq!(
-        after_no_op["run"]["definition_digest"],
+        after_no_op.run()["definition_digest"],
         definition_digest_before_amendment
     );
 
     let synthesis = advance(&mut client, after_no_op).await;
-    let synthesis_output = synthesis["outputs"]
+    let synthesis_output = synthesis.details_data()["outputs"]
         .as_array()
         .unwrap()
         .iter()
@@ -292,22 +329,23 @@ pub(super) async fn run(state: ColdRecovery<'_>) {
     );
     context = synthesis;
 
-    let run_id = context["run"]["id"].clone();
+    let run_id = context.run()["id"].clone();
     client.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();
     let _restarted_daemon = Daemon::start(runtime, socket.clone()).await;
     let mut client = Mcp::start(&socket, config, native, key).await;
     client.call("open_workspace", json!({})).await;
-    context = route(
+    let raw_context = route(
         &mut client,
         "query",
         "slice.pipeline.context",
         json!({"run_id":run_id}),
     )
     .await;
-    assert_eq!(context["outputs_complete"], true);
-    let binding = context["bindings"]
+    context = resolve_pipeline(&mut client, raw_context).await.unwrap();
+    assert_eq!(context.details_data()["outputs_complete"], true);
+    let binding = context.details_data()["bindings"]
         .as_array()
         .unwrap()
         .iter()
@@ -338,10 +376,14 @@ pub(super) async fn run(state: ColdRecovery<'_>) {
         "not_found"
     );
 
-    while context["run"]["current_phase_id"] != "slice-human-decision-queue-manager" {
-        context = advance(&mut client, context).await;
+    while context.run()["current_phase_id"] != "slice-human-decision-queue-manager" {
+        context = if context.current_phase().unwrap()["fresh_reviewer_input"] == true {
+            review_sessions.advance(context).await
+        } else {
+            advance(&mut client, context).await
+        };
     }
-    let waiting = route(
+    let raw_waiting = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
@@ -355,43 +397,56 @@ pub(super) async fn run(state: ColdRecovery<'_>) {
         ),
     )
     .await;
-    context = waiting["context"].clone();
-    assert_eq!(context["run"]["status"], "waiting_input");
-    context = route(
+    let waiting = resolve_pipeline(&mut client, raw_waiting).await.unwrap();
+    assert!(mutation_result_id(&waiting).is_null());
+    context = waiting;
+    assert_eq!(context.run()["status"], "waiting_input");
+    let raw_context = route(
         &mut client,
         "command",
         "slice.pipeline.input",
-        json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
-            "run_revision":context["run"]["revision"],"phase_id":context["run"]["current_phase_id"],
+        json!({"request_id":Uuid::new_v4(),"run_id":context.run()["id"],
+            "run_revision":context.run()["revision"],"phase_id":context.run()["current_phase_id"],
             "input":"Recorded authority and bounded resume evidence."}),
     )
-    .await["context"]
-        .clone();
+    .await;
+    context = resolve_pipeline(&mut client, raw_context).await.unwrap();
+    assert!(mutation_result_id(&context).is_null());
     context = refresh_knowledge(&mut client, &context).await;
     context = advance(&mut client, context).await;
 
-    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 21 {
+    while context.run()["current_phase_ordinal"].as_u64().unwrap() < 21 {
         context = advance(&mut client, context).await;
     }
     let (verdict, outcome, transition) = successful_route(&context);
-    let completed = route(&mut client,"command","slice.pipeline.phase.complete",
+    let raw_completed = route(&mut client,"command","slice.pipeline.phase.complete",
         completion(&context,verdict,outcome,transition,None,Some(json!({
             "summary":"Caller reports Full Slice completion after exact phase contracts.",
             "evidence":[{"kind":"integration_test","reference":"pipeline_execution_full.rs",
                 "observation":"Twenty-one phases, rework, review, validators and cold retrieval completed."}],
             "scope_impact":"Refresh future planning once.","remaining_work":"No remaining work in this Slice."
         })))).await;
-    assert_eq!(completed["context"]["run"]["status"], "completed");
+    let completed = resolve_pipeline(&mut client, raw_completed).await.unwrap();
+    let result_id = mutation_result_id(&completed);
+    assert!(
+        !result_id.is_null(),
+        "completed mutation must publish a result"
+    );
+    assert_eq!(result_id, &completed.details_data()["result"]["id"]);
+    assert_eq!(completed.run()["status"], "completed");
     assert_eq!(
-        completed["result"]["pipeline_definition_digest"],
+        completed.details_data()["result"]["pipeline_definition_digest"],
         "85ec63bae1903fedb0c86ecd5326380ea8d524fe0ee29c5dce6e90b9a30cdd3d"
     );
     assert_eq!(
-        completed["context"]["attempts"].as_array().unwrap().len(),
+        completed.details_data()["attempts"]
+            .as_array()
+            .unwrap()
+            .len(),
         32
     );
     assert_eq!(
-        completed["context"]["run"]["definition_digest"],
+        completed.run()["definition_digest"],
         definition_digest_before_amendment
     );
     admin::revoke_session(pool, persisted_session_id)

@@ -99,3 +99,24 @@ pub(super) fn compact_open_scope(outcome: &OpenScopeOutcome) -> Result<Value> {
         Some(0),
     ))
 }
+
+/// The catalogue's logical view is stable across all byte windows.
+pub(crate) fn pipelines_read(
+    view: PipelineView,
+    window: &crate::planning_read::Window,
+    capacity: usize,
+) -> Result<Value> {
+    let (view, value) = match view {
+        PipelineView::Full => ("full", crate::slice_pipeline_catalog::value()),
+        PipelineView::Summary => ("summary", crate::slice_pipeline_catalog::summary_value()),
+    };
+    crate::json_fragment::encode(
+        &value,
+        vec![],
+        capacity,
+        window.borrowed(),
+        json!({"tool":"query","route":"slice.pipelines","view":view}),
+        "slice_pipelines",
+        json!({"view":view}),
+    )
+}

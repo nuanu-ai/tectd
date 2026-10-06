@@ -10,11 +10,13 @@ pub(crate) fn lifecycle(
     query: &KnowledgeLifecycleQuery,
     capacity: usize,
 ) -> Result<Value> {
+    let capacity = capacity.min(crate::json_fragment::READ_BUDGET);
     let actions = match &value {
         KnowledgeLifecycleResponse::Current(context) => context_actions(context)?,
         _ => Vec::new(),
     };
-    let full = responses::with_actions(json!(value), actions, Some(0));
+    let recommended = (!actions.is_empty()).then_some(0);
+    let full = responses::with_actions(json!(value), actions, recommended);
     if query.fragment.is_none() && responses::encoded_len(&full)? <= capacity {
         Ok(full)
     } else {
@@ -26,6 +28,7 @@ pub(crate) fn unit(
     query: &KnowledgeUnitQuery,
     capacity: usize,
 ) -> Result<Value> {
+    let capacity = capacity.min(crate::json_fragment::READ_BUDGET);
     let full = responses::with_actions(json!(value), Vec::new(), None);
     if query.fragment.is_none() && responses::encoded_len(&full)? <= capacity {
         Ok(full)
@@ -55,7 +58,10 @@ fn context_result(
     context: &KnowledgeChangeContext,
     capacity: usize,
 ) -> Result<Value> {
-    let value = responses::with_actions(full, context_actions(context)?, Some(0));
+    let capacity = capacity.min(crate::json_fragment::READ_BUDGET);
+    let actions = context_actions(context)?;
+    let recommended = (!actions.is_empty()).then_some(0);
+    let value = responses::with_actions(full, actions, recommended);
     if responses::encoded_len(&value)? <= capacity {
         return Ok(value);
     }
@@ -67,7 +73,7 @@ fn context_result(
             vec![responses::action(
                 "knowledge_lifecycle",
                 json!({"change_id":context.change_id,"view":"current",
-                    "fragment":{"offset":0,"limit":262144}}),
+                    "fragment":{"offset":0,"limit":4096}}),
             )?],
             Some(0),
         ),
@@ -75,6 +81,7 @@ fn context_result(
     )
 }
 pub(crate) fn commit(value: CommitKnowledgeChangeOutcome, capacity: usize) -> Result<Value> {
+    let capacity = capacity.min(crate::json_fragment::READ_BUDGET);
     let (change_id, compact) = match &value {
         CommitKnowledgeChangeOutcome::Applied(v) => (
             v.change_id,
@@ -106,7 +113,7 @@ pub(crate) fn commit(value: CommitKnowledgeChangeOutcome, capacity: usize) -> Re
             vec![responses::action(
                 "knowledge_lifecycle",
                 json!({"change_id":change_id,
-                "view":"current","fragment":{"offset":0,"limit":262144}}),
+                "view":"current","fragment":{"offset":0,"limit":4096}}),
             )?],
             Some(0),
         ),
@@ -118,6 +125,7 @@ pub(crate) fn settle(
     value: SettleKnowledgeChangeEffectsOutcome,
     capacity: usize,
 ) -> Result<Value> {
+    let capacity = capacity.min(crate::json_fragment::READ_BUDGET);
     let (report, outcome, changed) = match &value {
         SettleKnowledgeChangeEffectsOutcome::Settled(v) => (v, "settled", true),
         SettleKnowledgeChangeEffectsOutcome::Replay(v) => (v, "replay", false),
@@ -146,9 +154,13 @@ pub(crate) fn settle(
             vec![responses::action(
                 "knowledge_lifecycle",
                 json!({"change_id":change_id,
-                "view":"current","fragment":{"offset":0,"limit":262144}}),
+                "view":"current","fragment":{"offset":0,"limit":4096}}),
             )?],
-            Some(0),
+            if report.required_complete {
+                None
+            } else {
+                Some(0)
+            },
         ),
         capacity,
     )
@@ -406,6 +418,7 @@ fn request_id(change: Uuid, run: Uuid, basis: &str) -> Uuid {
     Uuid::from_bytes(bytes)
 }
 fn within<T: Serialize>(value: T, capacity: usize) -> Result<Value> {
+    let capacity = capacity.min(crate::json_fragment::READ_BUDGET);
     let value = serde_json::to_value(value).map_err(|_| Error::TransportUnavailable)?;
     if responses::encoded_len(&value)? > capacity {
         Err(Error::RequestTooLarge)
@@ -417,3 +430,7 @@ fn within<T: Serialize>(value: T, capacity: usize) -> Result<Value> {
 #[cfg(test)]
 #[path = "knowledge_lifecycle_output/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "knowledge_lifecycle_output/budget_tests.rs"]
+mod budget_tests;

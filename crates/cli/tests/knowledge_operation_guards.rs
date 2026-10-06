@@ -10,40 +10,26 @@ mod recovery_support;
 #[allow(dead_code)]
 mod support;
 
+use knowledge_lifecycle_support::reads::{
+    phase_completion_action, producer_action, read_unit, resolve_commit_receipt, resolve_current,
+};
 use knowledge_lifecycle_support::{
     advance_create_to_review_with_identity, begin_create_request, commit_create, complete_review,
     method_reads, omit_nulls, settle_and_finish, settle_and_finish_receipt,
 };
 use knowledge_operation_support::{SingleOperation, commit_single, ready_single};
+#[path = "knowledge_operation_guards/revalidation.rs"]
+mod revalidation;
 use recovery_support::{Daemon, Mcp, action_params, host_file, private_temp, tagged_url};
+use revalidation::revalidation;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use support::{repository, route, route_error};
 use tect_postgres::admin;
 use uuid::Uuid;
 
-fn revalidation(source: Value) -> SingleOperation {
-    SingleOperation {
-        operation: "revalidate",
-        unit_id: None,
-        expected_revision: Some(1),
-        expected_lifecycle: Some("active"),
-        document: None,
-        revalidation: Some(json!({"sources":[source.clone()],
-            "evidence_basis":"Fresh exact publication observation for the unchanged fixture declaration.",
-            "valid_until":"2030-09-14T09:00:00Z","review_due_at":"2027-09-14T09:00:00Z"})),
-        successor: None,
-        replacement_bindings: json!([]),
-        sources: json!([source]),
-        knowledge_kind: json!("constraint"),
-        profiles: json!(["general"]),
-        erasure: "not_required",
-        authored_followup: false,
-    }
-}
-
 fn no_change_params(current: &Value) -> Value {
-    let action = &current["actions"][0];
+    let action = phase_completion_action(current);
     let mut params = action_params(action).clone();
     params["output"]["method_reads"] = method_reads(action);
     params["output"]["body"] = json!("Exact no-change result after current-state revalidation.");
@@ -165,7 +151,11 @@ async fn canonical_operation_guards_reject_stale_or_unverified_truth() {
         },
     )
     .await;
-    settle_and_finish_receipt(&mut client, &drift["applied"]).await;
+    let drift = resolve_commit_receipt(&mut client, drift).await;
+    assert!(
+        drift.raw_response.get("applied").is_some() || drift.raw_response["outcome"] == "applied"
+    );
+    settle_and_finish_receipt(&mut client, &drift.receipt).await;
     let old_no_change = no_change_params(&no_change);
     let refused = route_error(
         &mut client,
@@ -220,7 +210,12 @@ async fn canonical_operation_guards_reject_stale_or_unverified_truth() {
         resume_request,
     )
     .await;
-    assert!(resumed.get("advanced").is_some());
+    let resumed = resolve_current(&mut client, resumed).await;
+    assert!(
+        resumed.raw_response.get("advanced").is_some()
+            || (resumed.raw_response["outcome"] == "advanced"
+                && resumed.raw_response["changed"] == true)
+    );
     assert_eq!(
         route_error(
             &mut client,
@@ -280,6 +275,7 @@ async fn canonical_operation_guards_reject_stale_or_unverified_truth() {
         },
     )
     .await;
+    let impact_ready = resolve_current(&mut client, impact_ready).await;
     let external_change =
         Uuid::parse_str(no_change_source.receipt["change_id"].as_str().unwrap()).unwrap();
     sqlx::query(
@@ -297,7 +293,11 @@ async fn canonical_operation_guards_reject_stale_or_unverified_truth() {
         &mut client,
         "command",
         "knowledge.change_commit",
-        action_params(&impact_ready["actions"][0]).clone(),
+        action_params(producer_action(
+            &impact_ready.value,
+            "knowledge.change_commit",
+        ))
+        .clone(),
     )
     .await;
     assert_eq!(
@@ -305,13 +305,8 @@ async fn canonical_operation_guards_reject_stale_or_unverified_truth() {
         "a new external backend-owned copy after review must invalidate the sealed impact subset"
     );
 
-    let observed = route(
-        &mut client,
-        "query",
-        "knowledge.unit",
-        json!({"unit_id":unit,"revision":1}),
-    )
-    .await;
+    let observed = read_unit(&mut client, &unit, &json!(1)).await;
+    let observed = &observed.value;
     let evidence_text = format!(
         "Fresh exact read of unit {} revision {} with event {}.",
         observed["document"]["unit_id"].as_str().unwrap(),
@@ -326,17 +321,23 @@ async fn canonical_operation_guards_reject_stale_or_unverified_truth() {
     let mut first_revalidation = revalidation(first_source.clone());
     first_revalidation.unit_id = Some(unit.clone());
     let accepted = commit_single(&mut client, first_revalidation).await;
-    settle_and_finish_receipt(&mut client, &accepted["applied"]).await;
+    let accepted = resolve_commit_receipt(&mut client, accepted).await;
+    assert!(
+        accepted.raw_response.get("applied").is_some()
+            || accepted.raw_response["outcome"] == "applied"
+    );
+    settle_and_finish_receipt(&mut client, &accepted.receipt).await;
     let mut date_only_source = first_source;
     date_only_source["snapshot"]["observed_at"] = json!("2026-09-14T10:01:00Z");
     let mut date_only = revalidation(date_only_source);
     date_only.unit_id = Some(unit.clone());
     let ready = ready_single(&mut client, date_only).await;
+    let ready = resolve_current(&mut client, ready).await;
     let refused = route_error(
         &mut client,
         "command",
         "knowledge.change_commit",
-        action_params(&ready["actions"][0]).clone(),
+        action_params(producer_action(&ready.value, "knowledge.change_commit")).clone(),
     )
     .await;
     assert_eq!(
@@ -386,11 +387,12 @@ async fn canonical_operation_guards_reject_stale_or_unverified_truth() {
         },
     )
     .await;
+    let ready = resolve_current(&mut client, ready).await;
     let refused = route_error(
         &mut client,
         "command",
         "knowledge.change_commit",
-        action_params(&ready["actions"][0]).clone(),
+        action_params(producer_action(&ready.value, "knowledge.change_commit")).clone(),
     )
     .await;
     assert_eq!(
@@ -484,13 +486,8 @@ async fn canonical_operation_guards_reject_stale_or_unverified_truth() {
         "SELECT e.rdf_digest,r.rdf_digest FROM knowledge_publication_events e JOIN knowledge_revisions r ON r.publication_event_id=e.id WHERE e.id=$1",
     ).bind(event).fetch_one(&pool).await.unwrap();
     assert_eq!(restored_digests, original_digests);
-    let restored = route(
-        &mut client,
-        "query",
-        "knowledge.unit",
-        json!({"unit_id":unit,"revision":1}),
-    )
-    .await;
+    let restored = read_unit(&mut client, &unit, &json!(1)).await;
+    let restored = &restored.value;
     assert_eq!(restored["document"]["unit_id"], unit);
     client.finish().await;
 }

@@ -7,6 +7,7 @@ mod recovery_support;
 mod support;
 
 use legacy::{LegacyDaemon, LegacyMcp};
+use recovery_support::native_reads::ProgramFixture;
 use recovery_support::{Daemon, Mcp, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -360,7 +361,10 @@ async fn published_and_approved_dk1_changes_survive_current_upgrade_without_byte
             }),
         )
         .await;
-    let planning = &begun["program"]["planning_knowledge"]["manifest"];
+    let begun_page = ProgramFixture::from_mutation(begun.clone())
+        .read_page(&mut current)
+        .await;
+    let planning = &begun_page.program()["planning_knowledge"]["manifest"];
     assert_eq!(planning["selected"], json!([]), "{planning}");
     assert_eq!(planning["unresolved_needs"], json!([]), "{planning}");
     let delivered = serde_json::to_string(planning).unwrap();

@@ -24,10 +24,10 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
             "Requires an authenticated open native session. Omitted after starts at the first page; explicit null is invalid.",
             "Reads a consistent database snapshot only.",
             "Safe to repeat. Use the returned cursor unchanged.",
-            object_schema(
-                json!({"after":{"type":"string","pattern":"^[wr]:[0-9a-fA-F-]+$"},"limit":page_limit()}),
+            crate::planning_read::schema(object_schema(
+                json!({"workspace_id":uuid(),"after":{"type":"string","pattern":"^[wr]:[0-9a-fA-F-]+$"},"limit":page_limit()}),
                 json!([]),
-            ),
+            )),
             json!({"limit":25}),
         ),
         route!(

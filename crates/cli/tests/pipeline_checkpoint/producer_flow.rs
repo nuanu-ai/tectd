@@ -3,10 +3,10 @@ use super::*;
 pub(super) async fn rework_and_complete_producer(
     client: &mut Mcp,
     pool: &PgPool,
-    accepted: &Value,
+    accepted: &ResolvedPipeline,
     replay_resolve: &Value,
-) -> Value {
-    let producer = refresh_or_capture_knowledge(client, &accepted["context"]).await;
+) -> ResolvedPipeline {
+    let producer = refresh_or_capture_knowledge(client, accepted).await;
     let second_checkpoint = create_checkpoint(client, &producer).await;
     assert!(second_checkpoint["basis"]["consumed_knowledge"].is_object());
     let generation: i64 = sqlx::query_scalar(
@@ -43,17 +43,19 @@ pub(super) async fn rework_and_complete_producer(
             "reason":"The exact basis became stale and the producer must refresh."}),
     )
     .await;
-    assert_eq!(cancelled["checkpoint"]["status"], "cancelled");
-    assert_eq!(cancelled["context"]["run"]["current_phase_id"], "B05");
-    let producer = refresh_or_capture_knowledge(client, &cancelled["context"]).await;
+    let cancelled = resolve_pipeline(client, cancelled).await.unwrap();
+    assert_eq!(resolved_checkpoint(&cancelled)["status"], "cancelled");
+    assert_eq!(cancelled.run()["current_phase_id"], "B05");
+    let producer = refresh_or_capture_knowledge(client, &cancelled).await;
     let second_checkpoint = create_checkpoint(client, &producer).await;
     let waiting = route(
         client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":producer["run"]["id"]}),
+        json!({"run_id":producer.run()["id"]}),
     )
     .await;
+    let waiting = resolve_pipeline(client, waiting).await.unwrap();
     let reworked = route(
         client,
         "command",
@@ -67,10 +69,10 @@ pub(super) async fn rework_and_complete_producer(
             None,
         ),
     )
-    .await["context"]
-        .clone();
-    assert_eq!(reworked["run"]["current_phase_id"], "B04");
-    let superseded = reworked["checkpoints"]
+    .await;
+    let reworked = resolve_pipeline(client, reworked).await.unwrap();
+    assert_eq!(reworked.run()["current_phase_id"], "B04");
+    let superseded = reworked.details_data()["checkpoints"]
         .as_array()
         .unwrap()
         .iter()
@@ -79,7 +81,7 @@ pub(super) async fn rework_and_complete_producer(
     assert_eq!(superseded["status"], "superseded");
 
     let mut producer = reworked;
-    while producer["run"]["current_phase_ordinal"].as_u64().unwrap() < 8 {
+    while producer.run()["current_phase_ordinal"].as_u64().unwrap() < 8 {
         producer = advance(client, producer).await;
     }
     assert_eq!(
@@ -112,28 +114,29 @@ pub(super) async fn rework_and_complete_producer(
             None,
         ),
     )
-    .await["context"]
-        .clone();
-    assert_eq!(pending["run"]["status"], "waiting_input");
-    assert_eq!(pending["run"]["current_phase_id"], "B08");
+    .await;
+    let pending = resolve_pipeline(client, pending).await.unwrap();
+    assert_eq!(pending.run()["status"], "waiting_input");
+    assert_eq!(pending.run()["current_phase_id"], "B08");
     let input = route(
         client,
         "command",
         "slice.pipeline.input",
-        json!({"request_id":Uuid::new_v4(),"run_id":pending["run"]["id"],
-            "run_revision":pending["run"]["revision"],"phase_id":"B08",
+        json!({"request_id":Uuid::new_v4(),"run_id":pending.run()["id"],
+            "run_revision":pending.run()["revision"],"phase_id":"B08",
             "input":"The decision owner now selects the supported alternative."}),
     )
     .await;
-    producer = refresh_or_capture_knowledge(client, &input["context"]).await;
-    producer = route(
+    let input = resolve_pipeline(client, input).await.unwrap();
+    producer = refresh_or_capture_knowledge(client, &input).await;
+    let producer_raw = route(
         client,
         "command",
         "slice.pipeline.phase.complete",
         completion(&producer, "selected", "completed", "continue", None, None),
     )
-    .await["context"]
-        .clone();
+    .await;
+    producer = resolve_pipeline(client, producer_raw).await.unwrap();
     let mut mismatched = completion(&producer, "ready", "completed", "continue", None, None);
     mismatched["output"]["fields"]["disposition"] = json!("recommended");
     assert_eq!(
@@ -146,14 +149,14 @@ pub(super) async fn rework_and_complete_producer(
         .await["error"]["code"],
         "stale_context"
     );
-    producer = route(
+    let producer_raw = route(
         client,
         "command",
         "slice.pipeline.phase.complete",
         completion(&producer, "ready", "completed", "continue", None, None),
     )
-    .await["context"]
-        .clone();
+    .await;
+    producer = resolve_pipeline(client, producer_raw).await.unwrap();
     assert_eq!(
         route_error(
             client,
@@ -197,7 +200,11 @@ pub(super) async fn rework_and_complete_producer(
         ),
     )
     .await;
-    assert_eq!(decided["context"]["run"]["status"], "completed");
+    let decided = resolve_pipeline(client, decided).await.unwrap();
+    let result_id = mutation_result_id(&decided);
+    assert!(result_id.is_string());
+    assert_eq!(result_id, &decided.details_data()["result"]["id"]);
+    assert_eq!(decided.run()["status"], "completed");
 
     decided
 }

@@ -1,4 +1,6 @@
 use super::recovery_support::Mcp;
+use super::recovery_support::candidate_reads::{CandidateFixture, read_ready_json};
+use super::recovery_support::native_reads::{ProgramFixture, SlicePlanningFixture};
 use serde_json::{Value, json};
 use std::{path::Path, process::Command};
 use uuid::Uuid;
@@ -73,6 +75,9 @@ pub(super) async fn ready_source_candidate(client: &mut Mcp, source: &Path) -> (
             }),
         )
         .await;
+    let begun_page = ProgramFixture::from_mutation(begun.clone())
+        .read_page(client)
+        .await;
     let mut program_save = json!({
         "program_id":begun["program"]["id"],"revision":1,"input_cursor":1,
         "name":"Notification preview","intent":"Correct preview behavior from demonstrated evidence",
@@ -80,7 +85,7 @@ pub(super) async fn ready_source_candidate(client: &mut Mcp, source: &Path) -> (
         "constraints":"No deployment or adjacent notification work","success":"The cause and correction are verified",
         "complete":true
     });
-    if let Some(guard) = planning_guard(&begun["program"]) {
+    if let Some(guard) = planning_guard(begun_page.program()) {
         program_save["consumed_knowledge"] = guard;
     }
     let program = client.call("save_program", program_save).await;
@@ -89,15 +94,18 @@ pub(super) async fn ready_source_candidate(client: &mut Mcp, source: &Path) -> (
         "program_revision":program["program"]["revision"],"boundary":"ongoing",
         "input":"Open one native Scope for diagnosis and its result-driven correction decision."
     })).await;
-    let context = &candidates["context"];
-    let inputs = client
-        .call(
-            "candidate_context",
-            json!({
-                "candidate_set_id":context["candidate_set"]["id"],"view":"inputs","limit":25
-            }),
-        )
-        .await;
+    let candidates = CandidateFixture::from_mutation(candidates);
+    let overview = candidates.read_overview(client).await;
+    let context = &overview.value["context"];
+    let inputs = read_ready_json(
+        client,
+        &json!({"kind":"ready_call","tool":"query",
+        "arguments":{"route":"scope.candidates.context","params":{
+            "candidate_set_id":context["candidate_set"]["id"],"view":"inputs","limit":25
+        }}}),
+    )
+    .await
+    .value;
     let source_ref = &inputs["items"][0]["input"]["source_ref_id"];
     let mut candidate_save = json!({
         "kind":"draft","candidate_set_id":context["candidate_set"]["id"],"revision":1,
@@ -117,6 +125,10 @@ pub(super) async fn ready_source_candidate(client: &mut Mcp, source: &Path) -> (
         candidate_save["consumed_knowledge"] = guard;
     }
     let saved = client.call("save_candidate_set", candidate_save).await;
+    let saved = CandidateFixture::from_mutation(saved)
+        .read_details(client)
+        .await
+        .value;
     let candidate = saved["draft"]["candidates"][0].clone();
     let mut candidate_review = json!({
         "kind":"review","candidate_set_id":saved["context"]["candidate_set"]["id"],
@@ -129,7 +141,10 @@ pub(super) async fn ready_source_candidate(client: &mut Mcp, source: &Path) -> (
         candidate_review["consumed_knowledge"] = guard;
     }
     let reviewed = client.call("save_candidate_set", candidate_review).await;
-    (reviewed["context"].clone(), candidate)
+    let reviewed = CandidateFixture::from_mutation(reviewed)
+        .read_overview(client)
+        .await;
+    (reviewed.value["context"].clone(), candidate)
 }
 
 #[allow(dead_code)]
@@ -151,7 +166,11 @@ pub(super) async fn save(client: &mut Mcp, context: &Value, draft: Value) -> Val
     if let Some(guard) = planning_guard(context) {
         params["consumed_knowledge"] = guard;
     }
-    route(client, "command", "slice.candidates.save", params).await
+    let mutation = route(client, "command", "slice.candidates.save", params).await;
+    SlicePlanningFixture::from_mutation(mutation)
+        .read_details(client)
+        .await
+        .value
 }
 
 #[allow(dead_code)]
@@ -165,5 +184,9 @@ pub(super) async fn review(client: &mut Mcp, context: &Value) -> Value {
     if let Some(guard) = planning_guard(context) {
         params["consumed_knowledge"] = guard;
     }
-    route(client, "command", "slice.candidates.save", params).await
+    let mutation = route(client, "command", "slice.candidates.save", params).await;
+    SlicePlanningFixture::from_mutation(mutation)
+        .read_details(client)
+        .await
+        .value
 }

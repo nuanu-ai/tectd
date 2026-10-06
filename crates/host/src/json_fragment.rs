@@ -50,9 +50,53 @@ pub(crate) fn encode_with_continuation<T: Serialize>(
     capacity: usize,
     window: Window<'_>,
     source: Value,
+    params: Value,
+    continuation: impl Fn(Value) -> Result<Value>,
+) -> Result<Value> {
+    let eof_recommended = (!legacy_actions.is_empty()).then_some(0);
+    encode_actions(
+        value,
+        (legacy_actions, eof_recommended, eof_recommended),
+        capacity,
+        window,
+        source,
+        params,
+        continuation,
+    )
+}
+
+/// Preserve the caller's intentional recommendation on full and EOF responses.
+pub(crate) fn encode_recommended<T: Serialize>(
+    value: &T,
+    terminal: (Vec<Value>, Option<usize>),
+    capacity: usize,
+    window: Window<'_>,
+    source: Value,
+    tool: &str,
+    params: Value,
+) -> Result<Value> {
+    let (actions, recommended) = terminal;
+    encode_actions(
+        value,
+        (actions, recommended, recommended),
+        capacity,
+        window,
+        source,
+        params,
+        |params| responses::action(tool, params),
+    )
+}
+
+fn encode_actions<T: Serialize>(
+    value: &T,
+    terminal: (Vec<Value>, Option<usize>, Option<usize>),
+    capacity: usize,
+    window: Window<'_>,
+    source: Value,
     mut params: Value,
     continuation: impl Fn(Value) -> Result<Value>,
 ) -> Result<Value> {
+    let (legacy_actions, ordinary_recommended, eof_recommended) = terminal;
     tect_domain::validate_pipeline_fragment(
         window.offset_bytes,
         window.limit_bytes,
@@ -84,7 +128,7 @@ pub(crate) fn encode_with_continuation<T: Serialize>(
             "restart_fragment_at_offset_zero",
         ));
     }
-    let full = responses::with_actions(full, legacy_actions.clone(), Some(0));
+    let full = responses::with_actions(full, legacy_actions.clone(), ordinary_recommended);
     if !window.explicit() && responses::encoded_len(&full)? <= capacity {
         return Ok(full);
     }
@@ -92,14 +136,13 @@ pub(crate) fn encode_with_continuation<T: Serialize>(
     params["limit_bytes"] = json!(window.limit_bytes.unwrap_or(4096));
     let page = |start: usize, end: usize| -> Result<Value> {
         let next = (end < bytes.len()).then_some(end);
-        let actions = if let Some(next) = next {
+        let (actions, recommended) = if let Some(next) = next {
             let mut next_params = params.clone();
             next_params["offset_bytes"] = json!(next);
-            vec![continuation(next_params)?]
+            (vec![continuation(next_params)?], Some(0))
         } else {
-            legacy_actions.clone()
+            (legacy_actions.clone(), eof_recommended)
         };
-        let recommended = (!actions.is_empty()).then_some(0);
         Ok(responses::with_actions(
             json!({"kind":"fragment","format":"json","encoding":"utf-8",
             "source":source,"representation_digest":digest,"total_bytes":bytes.len(),
@@ -233,12 +276,47 @@ mod tests {
         let legacy = encode_fixture(&value, None, None, 8192).unwrap();
         assert_eq!(legacy["body"], "small");
         assert!(legacy.get("kind").is_none());
+        assert_eq!(legacy["actions"], json!([]));
+        assert!(legacy["recommended_action"].is_null());
         let bytes = serde_json::to_vec(&value).unwrap();
         let digest = format!("{:x}", Sha256::digest(&bytes));
         let final_page =
             encode_fixture(&value, Some(bytes.len() as u64), Some(&digest), 8192).unwrap();
         assert_eq!(final_page["text"], "");
         assert!(final_page["next_offset_bytes"].is_null());
+        assert!(final_page["recommended_action"].is_null());
+        let action = responses::action(
+            "scope_context",
+            json!({"scope_id":"00000000-0000-4000-8000-000000000001"}),
+        )
+        .unwrap();
+        let ordinary = encode(
+            &value,
+            vec![action.clone()],
+            8192,
+            Window::default(),
+            json!({}),
+            "scope_context",
+            json!({"scope_id":"00000000-0000-4000-8000-000000000001"}),
+        )
+        .unwrap();
+        assert_eq!(ordinary["actions"], json!([action.clone()]));
+        assert_eq!(ordinary["recommended_action"], 0);
+        for actions in [vec![], vec![action]] {
+            let prefix = with_eof(&value, actions.clone(), 0, 1, 8192).unwrap();
+            assert!(prefix["next_offset_bytes"].is_number());
+            assert_eq!(prefix["recommended_action"], 0);
+            let eof = with_eof(&value, actions.clone(), bytes.len() as u64, 4096, 8192).unwrap();
+            assert_eq!(eof["actions"], json!(actions));
+            assert_eq!(
+                eof["recommended_action"],
+                if actions.is_empty() {
+                    Value::Null
+                } else {
+                    json!(0)
+                }
+            );
+        }
     }
     #[test]
     fn invalid_windows_and_changed_representation_refuse_without_body() {

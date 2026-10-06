@@ -213,3 +213,155 @@ fn successor_selection_retags_retirement_provider_and_store_errors_only() {
         unknown
     );
 }
+
+#[test]
+fn retirement_restart_is_closed_and_preserves_generic_full_mapping() {
+    use tect_domain::{
+        PipelineMigrationEvidenceRef, PipelineObligationMapping, PipelineRunMigrationRequest,
+    };
+    let current = lightweight_v07().unwrap();
+    let old = historical_lightweight();
+    let mapping = PipelineObligationMapping {
+        legacy_obligation_id: "private-legacy-obligation".into(),
+        successor_obligation_id: "private-successor-obligation".into(),
+        evidence_refs: vec![PipelineMigrationEvidenceRef {
+            reference: "private-evidence-reference".into(),
+            digest: "private-evidence-digest".into(),
+        }],
+    };
+    let request = |predecessor: &PipelineDefinitionSnapshot,
+                   successor: &PipelineDefinitionSnapshot| {
+        PipelineRunMigrationRequest {
+            request_id: uuid::Uuid::new_v4(),
+            predecessor_run_id: uuid::Uuid::new_v4(),
+            predecessor_definition_version: predecessor.version.clone(),
+            predecessor_definition_digest: predecessor.digest.clone(),
+            successor_definition_version: successor.version.clone(),
+            successor_definition_digest: successor.digest.clone(),
+            mappings: vec![],
+        }
+    };
+    let assert_refusal = |error: Error, rule: &str, path: &str, actual: &str| {
+        let refusal = error.refusal().unwrap();
+        assert_eq!(
+            refusal.code,
+            tect_domain::RefusalCode::LegacyMigrationRequired
+        );
+        assert_eq!(refusal.rule.as_deref(), Some(rule));
+        assert_eq!(refusal.path.as_deref(), Some(path));
+        assert_eq!(refusal.actual.as_deref(), Some(actual));
+        assert_eq!(
+            refusal.expected.as_deref(),
+            Some("canonical current Lightweight K1-K5 0.7.1-native.k1k5 with empty mappings")
+        );
+        assert_eq!(
+            refusal.next_action.as_deref(),
+            Some("get_current_context_and_use_exact_migration_action")
+        );
+        assert_eq!(
+            refusal.required.as_deref(),
+            Some("canonical_current_lightweight_k1k5_empty_mappings")
+        );
+        let text = serde_json::to_string(&refusal).unwrap();
+        for protected in [
+            "private-legacy-obligation",
+            "private-successor-obligation",
+            "private-evidence-reference",
+            "private-evidence-digest",
+        ] {
+            assert!(!text.contains(protected));
+        }
+    };
+    assert_eq!(
+        tect_domain::pipeline_definition_digest(&current, &DefinitionDigest).unwrap(),
+        current.digest
+    );
+    for version in [
+        "0.6.0-native.engineering.2",
+        "0.4.0-native.skills.1",
+        "0.1.0-native.1",
+        "arbitrary-fifteen-phase-version",
+    ] {
+        let mut predecessor = old.clone();
+        predecessor.version = version.into();
+        let empty = request(&predecessor, &current);
+        assert!(
+            empty
+                .validate_retirement_restart(&predecessor, &current, &DefinitionDigest)
+                .is_ok()
+        );
+        let mut nonempty = empty.clone();
+        nonempty.mappings = vec![mapping.clone()];
+        assert!(nonempty.validate().is_ok());
+        assert_refusal(
+            nonempty
+                .validate_retirement_restart(&predecessor, &current, &DefinitionDigest)
+                .unwrap_err(),
+            "WP6-MIGRATION-MAPPING-01",
+            "arguments.params.mappings",
+            "1",
+        );
+    }
+    let mut altered = current.clone();
+    altered.phases[0].instructions[0]
+        .body
+        .push_str(" altered body");
+    assert_eq!(altered.digest, current.digest);
+    assert_ne!(
+        tect_domain::pipeline_definition_digest(&altered, &DefinitionDigest).unwrap(),
+        current.digest
+    );
+    for mappings in [vec![], vec![mapping.clone()]] {
+        let mut invalid = request(&old, &altered);
+        invalid.mappings = mappings;
+        assert_refusal(
+            invalid
+                .validate_retirement_restart(&old, &altered, &DefinitionDigest)
+                .unwrap_err(),
+            "WP6-MIGRATION-CONTRACT-01",
+            "arguments.params.successor_definition_version",
+            "noncanonical retirement successor",
+        );
+    }
+    for field in 0..5 {
+        let mut invalid = request(&old, &current);
+        match field {
+            0 => invalid.predecessor_definition_version = "wrong-predecessor-version".into(),
+            1 => invalid.predecessor_definition_digest = "wrong-predecessor-digest".into(),
+            2 => invalid.successor_definition_version = "wrong-successor-version".into(),
+            3 => invalid.successor_definition_digest = "wrong-successor-digest".into(),
+            _ => invalid.request_id = uuid::Uuid::nil(),
+        }
+        assert_refusal(
+            invalid
+                .validate_retirement_restart(&old, &current, &DefinitionDigest)
+                .unwrap_err(),
+            "WP6-MIGRATION-CONTRACT-01",
+            "arguments.params",
+            "invalid retirement contract",
+        );
+    }
+    let full_old = StaticPipelineDefinitions
+        .definition_for(
+            PipelineKind::FullDesignToExecution,
+            Some("0.6.0-native.engineering.2"),
+        )
+        .unwrap();
+    let full_current = StaticPipelineDefinitions
+        .definition_for(PipelineKind::FullDesignToExecution, None)
+        .unwrap();
+    let mut generic = request(&full_old, &full_current);
+    generic.mappings = vec![mapping];
+    assert!(generic.validate().is_ok());
+    assert!(
+        generic
+            .validate_retirement_restart(&full_old, &full_current, &DefinitionDigest)
+            .is_ok()
+    );
+    let current_to_current = request(&current, &current);
+    assert_eq!(
+        current_to_current.validate_retirement_restart(&current, &current, &DefinitionDigest),
+        current_to_current.validate()
+    );
+    assert!(current_to_current.validate().is_err());
+}

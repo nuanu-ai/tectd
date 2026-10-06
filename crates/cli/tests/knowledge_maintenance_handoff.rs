@@ -10,6 +10,9 @@ mod recovery_support;
 #[allow(dead_code)]
 mod support;
 
+use knowledge_lifecycle_support::reads::{
+    producer_action, read_current, resolve_commit_receipt, resolve_current,
+};
 use knowledge_lifecycle_support::{commit_create, complete_agent, context};
 use knowledge_operation_support::{SingleOperation, ready_single_from_baseline_with_reviewed};
 use recovery_support::{Daemon, Mcp, action_params, host_file, private_temp, tagged_url};
@@ -184,16 +187,30 @@ async fn exhausted_task_handoff_requires_exact_reviewed_basis_and_resolves_once(
         begin.clone(),
     )
     .await;
-    let change_id = begun["created"]["change"]["created"]["change_id"].clone();
-    let change = support::route(
-        &mut client,
-        "query",
-        "knowledge.lifecycle",
-        json!({"change_id":change_id,"view":"current"}),
-    )
-    .await;
-    assert_eq!(begun["created"]["task"]["attempts"], 5);
-    assert_eq!(begun["created"]["task"]["state"], "linked");
+    let begun = resolve_current(&mut client, begun).await;
+    let change_id = context(&begun.value)["change_id"].clone();
+    let change_read = read_current(&mut client, &change_id).await;
+    let change = change_read.value.clone();
+    if let Some(created) = begun.raw_response.get("created") {
+        assert_eq!(created["task"]["id"], task_id);
+        assert_eq!(created["task"]["attempts"], 5);
+        assert_eq!(created["task"]["state"], "linked");
+    } else {
+        assert_eq!(begun.raw_response["outcome"], "created");
+        assert_eq!(begun.raw_response["changed"], true);
+        assert_eq!(begun.raw_response["task_id"], task_id);
+        assert_eq!(begun.raw_response["task_state"], "linked");
+    }
+    let linked_tasks = context(&begun.value)["maintenance_tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|task| task["id"] == task_id)
+        .collect::<Vec<_>>();
+    assert_eq!(linked_tasks.len(), 1);
+    let linked_task = linked_tasks[0];
+    assert_eq!(linked_task["attempts"], 5);
+    assert_eq!(linked_task["state"], "linked");
     assert_eq!(context(&change)["maintenance_tasks"][0]["id"], task_id);
     let origin = &context(&change)["origin"];
     let baseline = complete_agent(
@@ -205,13 +222,8 @@ async fn exhausted_task_handoff_requires_exact_reviewed_basis_and_resolves_once(
             "completion":origin["completion"]}}),
     )
     .await;
-    let baseline_current = support::route(
-        &mut client,
-        "query",
-        "knowledge.lifecycle",
-        json!({"change_id":change_id,"view":"current"}),
-    )
-    .await;
+    let baseline_current_read = read_current(&mut client, &change_id).await;
+    let baseline_current = baseline_current_read.value.clone();
     assert_eq!(
         context(&baseline)["candidate_baseline"],
         context(&baseline_current)["candidate_baseline"]
@@ -223,14 +235,24 @@ async fn exhausted_task_handoff_requires_exact_reviewed_basis_and_resolves_once(
         std::slice::from_ref(&basis_digest),
     )
     .await;
+    let publication = resolve_current(&mut client, publication).await;
     let committed = support::route(
         &mut client,
         "command",
         "knowledge.change_commit",
-        action_params(&publication["actions"][0]).clone(),
+        action_params(producer_action(
+            &publication.value,
+            "knowledge.change_commit",
+        ))
+        .clone(),
     )
     .await;
-    assert_eq!(committed["applied"]["applied_operations"][0]["revision"], 2);
+    let committed = resolve_commit_receipt(&mut client, committed).await;
+    assert!(
+        committed.raw_response.get("applied").is_some()
+            || committed.raw_response["outcome"] == "applied"
+    );
+    assert_eq!(committed.receipt["applied_operations"][0]["revision"], 2);
     let replacement_source_iri: String = sqlx::query_scalar(
         "SELECT e.event_payload#>>'{resolved_sources,0,pin,source_iri}' \
          FROM knowledge_revisions r JOIN knowledge_publication_events e \
@@ -256,7 +278,7 @@ async fn exhausted_task_handoff_requires_exact_reviewed_basis_and_resolves_once(
     );
     assert_eq!(
         resolved["tasks"][0]["terminal_evidence"]["change_id"],
-        committed["applied"]["change_id"]
+        committed.receipt["change_id"]
     );
 
     let replay = support::route(
@@ -266,11 +288,18 @@ async fn exhausted_task_handoff_requires_exact_reviewed_basis_and_resolves_once(
         begin.clone(),
     )
     .await;
-    assert_eq!(replay["replay"]["task"]["id"], task_id);
-    assert_eq!(
-        context(&replay["replay"]["change"])["change_id"],
-        committed["applied"]["change_id"]
-    );
+    if let Some(replayed) = replay.get("replay") {
+        assert_eq!(replayed["task"]["id"], task_id);
+        assert_eq!(
+            context(&replayed["change"])["change_id"],
+            committed.receipt["change_id"]
+        );
+    } else {
+        assert_eq!(replay["outcome"], "replay");
+        assert_eq!(replay["changed"], false);
+        assert_eq!(replay["task_id"], task_id);
+        assert_eq!(replay["change_id"], committed.receipt["change_id"]);
+    }
     let pending: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM knowledge_maintenance_tasks WHERE id=$1 AND state IN ('pending','leased')",
     )
@@ -344,14 +373,10 @@ async fn exhausted_task_handoff_requires_exact_reviewed_basis_and_resolves_once(
         wrong_begin,
     )
     .await;
-    let wrong_change_id = wrong_change["created"]["change"]["created"]["change_id"].clone();
-    let mut wrong_current = support::route(
-        &mut client,
-        "query",
-        "knowledge.lifecycle",
-        json!({"change_id":wrong_change_id,"view":"current"}),
-    )
-    .await;
+    let wrong_change = resolve_current(&mut client, wrong_change).await;
+    let wrong_change_id = context(&wrong_change.value)["change_id"].clone();
+    let wrong_current_read = read_current(&mut client, &wrong_change_id).await;
+    let mut wrong_current = wrong_current_read.value.clone();
     let wrong_origin = &context(&wrong_current)["origin"];
     wrong_current = complete_agent(
         &mut client,
@@ -369,11 +394,16 @@ async fn exhausted_task_handoff_requires_exact_reviewed_basis_and_resolves_once(
         &[wrong_observation["created"]["signal"]["basis_digest"].clone()],
     )
     .await;
+    let wrong_publication = resolve_current(&mut client, wrong_publication).await;
     let wrong_commit = support::route_error(
         &mut client,
         "command",
         "knowledge.change_commit",
-        action_params(&wrong_publication["actions"][0]).clone(),
+        action_params(producer_action(
+            &wrong_publication.value,
+            "knowledge.change_commit",
+        ))
+        .clone(),
     )
     .await;
     assert_eq!(wrong_commit["error"]["code"], "needs_context");

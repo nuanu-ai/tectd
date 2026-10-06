@@ -402,9 +402,9 @@ pub(crate) fn page_read(
         }
         Err(error) => return Err(error),
     }
-    let (actions, _) = page_actions(&page)?;
+    let (actions, recommended) = page_actions(&page)?;
     params["candidate_set_revision"] = json!(page.context.candidate_set.revision);
-    let full = with_actions(json!(&page), actions.clone(), Some(0));
+    let full = with_actions(json!(&page), actions.clone(), recommended);
     if window.offset_bytes.is_none()
         && window.limit_bytes.is_none()
         && window.representation_digest.is_none()
@@ -412,14 +412,9 @@ pub(crate) fn page_read(
     {
         return Ok(full);
     }
-    let terminal_actions = if page.next_after.is_some() {
-        actions
-    } else {
-        vec![]
-    };
-    crate::json_fragment::encode(
+    crate::json_fragment::encode_recommended(
         &page,
-        terminal_actions,
+        (actions, recommended),
         capacity,
         window.borrowed(),
         json!({"candidate_set_id":page.context.candidate_set.id,"candidate_set_revision":page.context.candidate_set.revision,"snapshot_id":page.context.candidate_set.current_snapshot_id}),
@@ -485,3 +480,6 @@ fn compact(
 
 #[cfg(test)]
 mod planning_read_tests;
+
+#[cfg(test)]
+mod terminal_read_tests;

@@ -12,7 +12,7 @@ fn research_draft() -> Value {
         "source_result_ids":[]}],"supersessions":[]})
 }
 
-async fn begin_research(client: &mut Mcp, repo: &std::path::Path) -> Value {
+async fn begin_research(client: &mut Mcp, repo: &std::path::Path) -> ResolvedPipeline {
     let (source, candidate) = ready_source_candidate(client, repo).await;
     let scope = route(
         client,
@@ -25,7 +25,10 @@ async fn begin_research(client: &mut Mcp, repo: &std::path::Path) -> Value {
         "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]}),
     )
     .await;
-    let saved = save(client, &scope["created"]["planning"], research_draft()).await;
+    let planning = ScopeOpenFixture::from_mutation(scope, "created")
+        .read_planning(client)
+        .await;
+    let saved = save(client, &planning.value, research_draft()).await;
     let reviewed = review(client, &saved).await;
     let opened = route(
         client,
@@ -34,7 +37,7 @@ async fn begin_research(client: &mut Mcp, repo: &std::path::Path) -> Value {
         open_slice(&reviewed, &reviewed["draft"]["nodes"][0], Uuid::new_v4()),
     )
     .await;
-    route(
+    let raw = route(
         client,
         "command",
         "slice.pipeline.begin",
@@ -43,20 +46,20 @@ async fn begin_research(client: &mut Mcp, repo: &std::path::Path) -> Value {
         "slice_revision":opened["created"]["revision"],"delivery_mode":"phasewise",
         "qualification_reason":"Exact Research publication handoff integration fixture."}),
     )
-    .await["created"]
-        .clone()
+    .await;
+    resolve_pipeline(client, raw).await.unwrap()
 }
 
 pub(super) async fn prove(client: &mut Mcp, repo: &std::path::Path) {
     let mut current = begin_research(client, repo).await;
     assert_eq!(
-        current["run"]["definition_kind"],
+        current.run()["definition_kind"],
         "slice.research-to-durable-knowledge"
     );
-    while current["run"]["current_phase_ordinal"].as_u64().unwrap() <= 19 {
+    while current.run()["current_phase_ordinal"].as_u64().unwrap() <= 19 {
         current = advance(client, current).await;
     }
-    let source = current["outputs"]
+    let source = current.details_data()["outputs"]
         .as_array()
         .unwrap()
         .iter()
@@ -67,11 +70,11 @@ pub(super) async fn prove(client: &mut Mcp, repo: &std::path::Path) {
     ))
     .unwrap();
     fixture["document"]["sources"] = json!([{"kind":"pipeline_output","output":{
-        "run_id":current["run"]["id"],"output_id":source["id"],"digest":source["digest"],
+        "run_id":current.run()["id"],"output_id":source["id"],"digest":source["digest"],
         "evidence_kind":"research","evidence_scope":"Exact Research promotion edge output."}}]);
     let committed = commit_create(client, fixture["document"].clone()).await;
     current = refresh(client, &current).await;
-    while current["run"]["current_phase_ordinal"].as_u64().unwrap() < 22 {
+    while current.run()["current_phase_ordinal"].as_u64().unwrap() < 22 {
         current = advance(client, current).await;
     }
     let mut request = completion(
@@ -102,10 +105,19 @@ pub(super) async fn prove(client: &mut Mcp, repo: &std::path::Path) {
         "publisher_receipt_digest":committed.receipt["digest"],
         "operation_ids":[committed.receipt["applied_operations"][0]["operation_id"]]});
     acknowledge_knowledge(&mut request, &current);
-    let completed =
-        route(client, "command", "slice.pipeline.phase.complete", request).await["context"].clone();
-    assert_eq!(completed["run"]["status"], "completed");
-    let output = completed["outputs"]
+    let raw = route(client, "command", "slice.pipeline.phase.complete", request).await;
+    let completed = resolve_pipeline(client, raw).await.unwrap();
+    let result_id = completed
+        .raw_payload
+        .get("result_reference")
+        .and_then(Value::as_object)
+        .expect("actual terminal mutation result reference")
+        .get("result_id")
+        .expect("actual terminal mutation result ID key");
+    assert!(!result_id.is_null());
+    assert_eq!(result_id, &completed.details_data()["result"]["id"]);
+    assert_eq!(completed.run()["status"], "completed");
+    let output = completed.details_data()["outputs"]
         .as_array()
         .unwrap()
         .iter()

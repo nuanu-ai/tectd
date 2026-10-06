@@ -1,6 +1,11 @@
+use super::recovery_support::pipeline_reads::{ResolvedPipeline, resolve_pipeline};
 use super::*;
 
-pub(super) async fn validate(client: &mut Mcp, pool: &PgPool, mut c: Value) -> Value {
+pub(super) async fn validate(
+    client: &mut Mcp,
+    pool: &PgPool,
+    mut c: ResolvedPipeline,
+) -> ResolvedPipeline {
     c = advance(client, c).await; // Current successful execution, P13.
     c = advance(client, c).await; // Current successful local proof, P14.
     let policy = completion(
@@ -11,8 +16,11 @@ pub(super) async fn validate(client: &mut Mcp, pool: &PgPool, mut c: Value) -> V
         None,
         None,
     );
-    c = route(client, "command", "slice.pipeline.phase.complete", policy).await["context"].clone();
-    assert_eq!(c["run"]["current_phase_ordinal"], 16);
+    let raw_policy = route(client, "command", "slice.pipeline.phase.complete", policy).await;
+    c = resolve_pipeline(client, raw_policy)
+        .await
+        .expect("resolve actual deployment policy completion");
+    assert_eq!(c.run()["current_phase_ordinal"], 16);
     let local = completion(
         &c,
         "completed_local_verified",
@@ -46,7 +54,7 @@ pub(super) async fn validate(client: &mut Mcp, pool: &PgPool, mut c: Value) -> V
     let mut fake_handoff = completion(&c, "handoff_required", "completed", "continue", None, None);
     fake_handoff["output"]["fields"]["route"] = json!("result_local_only");
     refuses_without_persistence(client, &c, fake_handoff).await;
-    let run = support::id(&c["run"]["id"]);
+    let run = support::id(&c.run()["id"]);
     for phase in [
         "slice-plan-builder",
         "slice-execution-runner",
@@ -151,7 +159,7 @@ pub(super) async fn validate(client: &mut Mcp, pool: &PgPool, mut c: Value) -> V
     .await;
     sqlx::query("UPDATE slice_pipeline_phase_attempts SET outcome='completed' WHERE id=(SELECT o.attempt_id FROM slice_pipeline_output_bindings b JOIN slice_pipeline_phase_outputs o ON o.id=b.output_id WHERE b.run_id=$1 AND b.phase_id='slice-validation-deployment-contract-shaper')").bind(run).execute(pool).await.unwrap();
     c = current(client, &c).await;
-    c = route(
+    let raw_local = route(
         client,
         "command",
         "slice.pipeline.phase.complete",
@@ -164,17 +172,21 @@ pub(super) async fn validate(client: &mut Mcp, pool: &PgPool, mut c: Value) -> V
             None,
         ),
     )
-    .await["context"]
-        .clone();
-    assert_eq!(c["run"]["current_phase_ordinal"], 17);
-    c = route(
+    .await;
+    c = resolve_pipeline(client, raw_local)
+        .await
+        .expect("resolve actual local verified completion");
+    assert_eq!(c.run()["current_phase_ordinal"], 17);
+    let raw_promotion = route(
         client,
         "command",
         "slice.pipeline.phase.complete",
         completion(&c, "not_required", "completed", "continue", None, None),
     )
-    .await["context"]
-        .clone();
-    assert_eq!(c["run"]["current_phase_ordinal"], 18);
+    .await;
+    c = resolve_pipeline(client, raw_promotion)
+        .await
+        .expect("resolve actual promotion completion");
+    assert_eq!(c.run()["current_phase_ordinal"], 18);
     c
 }

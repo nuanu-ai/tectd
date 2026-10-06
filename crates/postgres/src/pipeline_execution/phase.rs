@@ -183,20 +183,37 @@ pub(crate) async fn complete_phase(
     .await?;
     let knowledge =
         phase_validation::load_manifest(tx, tenant, workspace, session, run_row.11).await?;
-    diagnostics::selected_manifest_validation(
-        tx,
-        tenant,
-        workspace,
-        request.run_id,
-        run_row.0,
-        run_row.1,
-        &phase.id,
-        session,
-        knowledge.as_ref(),
-        request.consumed_knowledge.as_ref(),
-        &mut proofs,
-    )
-    .await?;
+    let validated_knowledge = if stored_definition.version.starts_with("0.7") {
+        diagnostics::current_backend_knowledge_validation(
+            tx,
+            tenant,
+            workspace,
+            request.run_id,
+            run_row.0,
+            run_row.1,
+            &phase.id,
+            session,
+            knowledge.as_ref(),
+            &mut proofs,
+        )
+        .await?
+    } else {
+        diagnostics::selected_manifest_validation(
+            tx,
+            tenant,
+            workspace,
+            request.run_id,
+            run_row.0,
+            run_row.1,
+            &phase.id,
+            session,
+            knowledge.as_ref(),
+            request.consumed_knowledge.as_ref(),
+            &mut proofs,
+        )
+        .await?;
+        request.consumed_knowledge.clone()
+    };
     if !run_row.5.starts_with("0.7") {
         validate_consumed_outputs(
             tx,
@@ -230,9 +247,9 @@ pub(crate) async fn complete_phase(
         )
         .await?;
     }
-    // Resolve proof pointers from backend-owned rows only after all caller
-    // declarations have matched the current bindings.  The submitted digest
-    // and read receipts are validation inputs, never persisted as proof.
+    // Resolve proof pointers from backend-owned rows after authoritative
+    // validation. Current definitions derive knowledge acknowledgment here;
+    // legacy caller declarations remain validation inputs, never proof.
     let (evidence_refs, knowledge_binding) = backend_evidence_refs(
         tx,
         tenant,
@@ -240,7 +257,7 @@ pub(crate) async fn complete_phase(
         request.run_id,
         &request.phase_id,
         phase.ordinal,
-        &request.consumed_knowledge,
+        &validated_knowledge,
     )
     .await?;
     validate_reviewer_boundary(

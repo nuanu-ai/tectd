@@ -6,6 +6,8 @@ mod knowledge_refresh;
 mod lifecycle_support;
 #[allow(dead_code)]
 mod recovery_support;
+#[path = "pipeline_execution/resource_refusals.rs"]
+mod resource_refusals;
 #[path = "native_planning/support.rs"]
 mod support;
 
@@ -13,6 +15,8 @@ use knowledge_refresh::refresh_pipeline_knowledge;
 use lifecycle_support::{
     LIGHTWEIGHT_PHASES, complete, completion_request, lightweight_draft, phase_output, terminal,
 };
+use recovery_support::native_reads::ScopeOpenFixture;
+use recovery_support::pipeline_reads::resolve_pipeline;
 use recovery_support::{
     Daemon, Mcp, action_params, find_action, host_file, private_temp, tagged_url,
 };
@@ -67,7 +71,9 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
             "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]}),
     )
     .await;
-    let planning = &opened_scope["created"]["planning"];
+    let opened_scope = ScopeOpenFixture::from_mutation(opened_scope, "created");
+    let planning_read = opened_scope.read_planning(&mut client).await;
+    let planning = &planning_read.value;
     let saved = save(&mut client, planning, lightweight_draft()).await;
     let reviewed = review(&mut client, &saved).await;
     let work = &reviewed["draft"]["nodes"][0];
@@ -82,8 +88,8 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
 
     let begin_request = json!({"request_id":Uuid::new_v4(),
         "scope_id":reviewed["scope"]["id"],"slice_id":slice["id"],
-        "slice_revision":slice["revision"],
-        "qualification_reason":"Agent selected the default whole delivery for this bounded fixture."});
+        "slice_revision":slice["revision"],"delivery_mode":"whole",
+        "qualification_reason":"Agent explicitly selected whole delivery to inspect all five current phase contracts for this structural fixture."});
     let begun = route(
         &mut client,
         "command",
@@ -91,11 +97,13 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
         begin_request.clone(),
     )
     .await;
-    let mut context = begun["created"].clone();
-    assert!(!id(&context["run"]["id"]).is_nil());
-    assert_eq!(context["run"]["delivery_mode"], "whole");
+    let mut context = resolve_pipeline(&mut client, begun).await.unwrap();
+    assert!(!id(&context.run()["id"]).is_nil());
+    assert_eq!(context.run()["delivery_mode"], "whole");
+    assert_eq!(context.run()["definition_version"], "0.7.1-native.k1k5");
+    assert_eq!(context.current_phase().unwrap()["id"], "K1");
     assert_eq!(
-        context["definition"]["phases"]
+        context.definition()["phases"]
             .as_array()
             .unwrap()
             .iter()
@@ -103,9 +111,15 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
             .collect::<Vec<_>>(),
         LIGHTWEIGHT_PHASES
     );
-    assert_eq!(context["delivered_phases"].as_array().unwrap().len(), 15);
+    assert_eq!(
+        context.details_data()["delivered_phases"]
+            .as_array()
+            .unwrap()
+            .len(),
+        5
+    );
     assert!(
-        context["definition"]["phases"]
+        context.definition()["phases"]
             .as_array()
             .unwrap()
             .iter()
@@ -117,7 +131,14 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
                         .is_some_and(|value| !value.is_empty())
             )
     );
-    let phase_two = context["definition"]["phases"][1].clone();
+    let phase_two_id = context.definition()["phases"][1]["id"].as_str().unwrap();
+    let phase_two_read = context
+        .read_phase_contract(&mut client, phase_two_id)
+        .await
+        .unwrap();
+    let phase_two = phase_two_read.value["phase"].clone();
+    assert_eq!(phase_two["id"], "K2");
+    assert_eq!(phase_two, context.definition()["phases"][1]);
 
     let replay = route(
         &mut client,
@@ -126,7 +147,7 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
         begin_request.clone(),
     )
     .await;
-    assert_eq!(replay["replay"], context);
+    assert_eq!(replay["replay"], context.compact_context);
     let mut conflict = begin_request;
     conflict["qualification_reason"] = json!("changed rationale");
     assert_eq!(
@@ -148,9 +169,9 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
 
     let (phase_one, phase_one_request) =
         complete(&mut client, &context, "completed", "continue", None, false).await;
-    context = phase_one["context"].clone();
-    assert!(phase_one["result"].is_null());
-    assert_eq!(context["run"]["current_phase_ordinal"], 2);
+    context = phase_one;
+    assert!(resource_refusals::result_reference_id(&context.raw_payload).is_null());
+    assert_eq!(context.run()["current_phase_ordinal"], 2);
     let phase_one_replay = route(
         &mut client,
         "command",
@@ -158,15 +179,16 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
         phase_one_request,
     )
     .await;
-    assert_eq!(phase_one_replay, phase_one);
-    let wrong_consumption = route_error(
+    assert_eq!(phase_one_replay, context.raw_payload);
+    // Current proof is backend-owned, even when the supplied digest is wrong.
+    let agent_supplied_proof = route_error(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         json!({
-            "request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
-            "run_revision":context["run"]["revision"],
-            "phase_id":context["run"]["current_phase_id"],
+            "request_id":Uuid::new_v4(),"run_id":context.run()["id"],
+            "run_revision":context.run()["revision"],
+            "phase_id":context.run()["current_phase_id"],
             "outcome":"completed","transition":"continue",
             "output":phase_output(&phase_two, "wrong-consumption", "completed", "continue"),
             "consumed_outputs":[{"phase_id":LIGHTWEIGHT_PHASES[0],
@@ -176,19 +198,26 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
         }),
     )
     .await;
-    assert_eq!(wrong_consumption["error"]["code"], "stale_context");
+    resource_refusals::assert_backend_proof_refusal(&mut client, &context, &agent_supplied_proof)
+        .await;
 
     context = delivery_contract::escalate_and_verify(&mut client, &context).await;
-    assert_eq!(context["run"]["delivery_mode"], "phasewise");
-    assert_eq!(context["delivered_phases"].as_array().unwrap().len(), 1);
+    assert_eq!(context.run()["delivery_mode"], "phasewise");
+    assert_eq!(
+        context.details_data()["delivered_phases"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
     assert_eq!(
         route_error(
             &mut client,
             "command",
             "slice.pipeline.delivery.escalate",
-            json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
-                "run_revision":context["run"]["revision"],
-                "phase_id":context["run"]["current_phase_id"],"reason":"repeat"})
+            json!({"request_id":Uuid::new_v4(),"run_id":context.run()["id"],
+                "run_revision":context.run()["revision"],
+                "phase_id":context.run()["current_phase_id"],"reason":"repeat"})
         )
         .await["error"]["code"],
         "forbidden"
@@ -204,41 +233,51 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
         false,
     )
     .await;
-    context = waiting["context"].clone();
-    assert_eq!(context["run"]["status"], "waiting_input");
+    context = waiting;
+    assert_eq!(context.run()["status"], "waiting_input");
     let input = route(
         &mut client,
         "command",
         "slice.pipeline.input",
-        json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
-            "run_revision":context["run"]["revision"],
-            "phase_id":context["run"]["current_phase_id"],
+        json!({"request_id":Uuid::new_v4(),"run_id":context.run()["id"],
+            "run_revision":context.run()["revision"],
+            "phase_id":context.run()["current_phase_id"],
             "input":"Operator supplied the missing bounded context without changing authority."}),
     )
     .await;
-    context = input["context"].clone();
-    assert_eq!(context["run"]["status"], "active");
-    assert_eq!(context["inputs"].as_array().unwrap().len(), 1);
+    context = resolve_pipeline(&mut client, input.clone()).await.unwrap();
+    assert_eq!(context.run()["status"], "active");
+    assert_eq!(
+        context.details_data()["inputs"].as_array().unwrap().len(),
+        1
+    );
     context = refresh_pipeline_knowledge(&mut client, &context, "current").await;
 
     let resume = route(
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":context["run"]["id"]}),
+        json!({"run_id":context.run()["id"]}),
     )
     .await;
-    assert_eq!(resume["inputs"][0]["input"], context["inputs"][0]["input"]);
-    assert_eq!(resume["outputs"][0]["body"], context["outputs"][0]["body"]);
+    let resume = resolve_pipeline(&mut client, resume).await.unwrap();
     assert_eq!(
-        resume["outputs"][0]["fields"],
-        context["outputs"][0]["fields"]
+        resume.details_data()["inputs"][0]["input"],
+        context.details_data()["inputs"][0]["input"]
     );
     assert_eq!(
-        resume["outputs"][0]["skill_reads"],
-        context["outputs"][0]["skill_reads"]
+        resume.details_data()["outputs"][0]["body"],
+        context.details_data()["outputs"][0]["body"]
     );
-    let run_id = context["run"]["id"].clone();
+    assert_eq!(
+        resume.details_data()["outputs"][0]["fields"],
+        context.details_data()["outputs"][0]["fields"]
+    );
+    assert_eq!(
+        resume.details_data()["outputs"][0]["skill_reads"],
+        context.details_data()["outputs"][0]["skill_reads"]
+    );
+    let run_id = context.run()["id"].clone();
     client.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();
@@ -252,15 +291,22 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
         json!({"run_id":run_id}),
     )
     .await;
-    assert_eq!(cold["run"], context["run"]);
-    assert_eq!(cold["inputs"], context["inputs"]);
-    assert_eq!(cold["outputs"], context["outputs"]);
+    let cold = resolve_pipeline(&mut client, cold).await.unwrap();
+    assert_eq!(cold.run(), context.run());
+    assert_eq!(
+        cold.details_data()["inputs"],
+        context.details_data()["inputs"]
+    );
+    assert_eq!(
+        cold.details_data()["outputs"],
+        context.details_data()["outputs"]
+    );
     context = cold;
 
     let (retried, _) = complete(&mut client, &context, "completed", "continue", None, false).await;
-    context = retried["context"].clone();
+    context = retried;
     assert_eq!(
-        context["attempts"]
+        context.details_data()["attempts"]
             .as_array()
             .unwrap()
             .iter()
@@ -269,107 +315,35 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
         2
     );
 
-    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 8 {
-        let (advanced, _) =
-            complete(&mut client, &context, "completed", "continue", None, false).await;
-        context = advanced["context"].clone();
-    }
-
-    assert_eq!(
-        context["run"]["current_phase_id"],
-        "slice-lightweight-pre-implementation-review"
-    );
+    assert_eq!(context.run()["current_phase_id"], "K3");
     let review_request = completion_request(&context, "completed", "continue", None, false);
-    let mut early_code = review_request.clone();
-    early_code["request_id"] = json!(Uuid::new_v4());
-    early_code["phase_id"] = json!("slice-tdd-cycle-runner");
-    assert_eq!(
-        route_error(
-            &mut client,
-            "command",
-            "slice.pipeline.phase.complete",
-            early_code,
-        )
-        .await["error"]["code"],
-        "INVALID_OUTPUT"
-    );
-    let mut substituted_resource = review_request.clone();
-    let expected_resource_digest = review_request["output"]["resource_reads"][0]["digest"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    substituted_resource["request_id"] = json!(Uuid::new_v4());
-    substituted_resource["output"]["resource_reads"][0]["digest"] = json!("substituted");
-    let substituted_resource_error = route_error(
-        &mut client,
-        "command",
-        "slice.pipeline.phase.complete",
-        substituted_resource,
-    )
-    .await;
-    assert_eq!(
-        substituted_resource_error["error"]["code"],
-        "INVALID_OUTPUT"
-    );
-    let resource_refusal = &substituted_resource_error["error"]["refusal"];
-    assert_eq!(resource_refusal["code"], "INVALID_OUTPUT");
-    assert_eq!(resource_refusal["rule"], "WP6-RESOURCE-READ-01");
-    assert_eq!(
-        resource_refusal["path"],
-        "arguments.params.output.resource_reads"
-    );
-    assert!(
-        resource_refusal["expected"]
-            .as_str()
-            .unwrap()
-            .contains(&expected_resource_digest),
-        "{resource_refusal}"
-    );
-    assert!(
-        resource_refusal["actual"]
-            .as_str()
-            .unwrap()
-            .contains("substituted")
-    );
-    assert_eq!(
-        resource_refusal["next_action"],
-        "supply_exact_phase_resource_reads"
-    );
-    assert_eq!(resource_refusal["required"], "exact_phase_resource_reads");
-    context = route(
+    let reviewed_phase = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         review_request,
     )
-    .await["context"]
-        .clone();
-    assert_eq!(context["run"]["current_phase_id"], "slice-tdd-cycle-runner");
+    .await;
+    context = resolve_pipeline(&mut client, reviewed_phase).await.unwrap();
+    assert_eq!(context.run()["current_phase_id"], "K4");
 
-    let mut stale_approval = completion_request(&context, "completed", "continue", None, false);
-    let plan_review = stale_approval["consumed_outputs"]
-        .as_array_mut()
-        .unwrap()
-        .iter_mut()
-        .find(|binding| binding["phase_id"] == "slice-lightweight-pre-implementation-review")
-        .unwrap();
-    plan_review["digest"] = json!("stale-reviewed-input-digest");
-    assert_eq!(
-        route_error(
-            &mut client,
-            "command",
-            "slice.pipeline.phase.complete",
-            stale_approval,
-        )
-        .await["error"]["code"],
-        "stale_context"
-    );
+    let mut agent_supplied_review_proof =
+        completion_request(&context, "completed", "continue", None, false);
+    agent_supplied_review_proof["consumed_outputs"] =
+        resource_refusals::supplied_review_proof(&context);
+    let refusal = route_error(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        agent_supplied_review_proof,
+    )
+    .await;
+    resource_refusals::assert_backend_proof_refusal(&mut client, &context, &refusal).await;
 
-    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 15 {
-        let (advanced, _) =
-            complete(&mut client, &context, "completed", "continue", None, false).await;
-        context = advanced["context"].clone();
-    }
+    let (implemented, _) =
+        complete(&mut client, &context, "completed", "continue", None, false).await;
+    context = implemented;
+    assert_eq!(context.run()["current_phase_id"], "K5");
 
     let (blocked, _) = complete(
         &mut client,
@@ -380,23 +354,25 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
         true,
     )
     .await;
-    let blocked_result = blocked["result"].clone();
-    context = blocked["context"].clone();
+    context = blocked;
+    let blocked_result = resource_refusals::published_result(&context).clone();
     assert_eq!(blocked_result["pipeline_result_origin"], "managed_blocked");
     assert_eq!(blocked_result["provenance"], "externally_reported");
-    assert_eq!(context["run"]["status"], "blocked");
+    assert_eq!(context.run()["status"], "blocked");
 
     let resumed = route(
         &mut client,
         "command",
         "slice.pipeline.input",
-        json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
-            "run_revision":context["run"]["revision"],
-            "phase_id":context["run"]["current_phase_id"],
+        json!({"request_id":Uuid::new_v4(),"run_id":context.run()["id"],
+            "run_revision":context.run()["revision"],
+            "phase_id":context.run()["current_phase_id"],
             "input":"Resume evidence resolves the reported terminal blocker."}),
     )
     .await;
-    context = resumed["context"].clone();
+    context = resolve_pipeline(&mut client, resumed.clone())
+        .await
+        .unwrap();
     context = refresh_pipeline_knowledge(&mut client, &context, "current").await;
     let (completed, _) = complete(
         &mut client,
@@ -409,13 +385,16 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
         false,
     )
     .await;
-    let completed_result = &completed["result"];
+    let completed_context = completed;
+    let completed_result = resource_refusals::published_result(&completed_context);
     assert_eq!(
         completed_result["pipeline_result_origin"],
         "managed_completed"
     );
     assert_eq!(completed_result["provenance"], "externally_reported");
-    assert_eq!(completed["context"]["run"]["status"], "completed");
+    assert_eq!(completed_context.run()["status"], "completed");
+    assert!(completed_context.run()["current_phase_id"].is_null());
+    assert!(completed_context.current_phase().is_err());
     assert_eq!(
         completed_result["slice_revision"].as_i64().unwrap(),
         blocked_result["slice_revision"].as_i64().unwrap() + 1
@@ -436,27 +415,70 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
         "forbidden"
     );
     assert_eq!(
-        completed["context"]["attempts"].as_array().unwrap().len(),
-        17
+        completed_context.details_data()["attempts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        7
     );
     assert_eq!(
-        completed["context"]["outputs"].as_array().unwrap().len(),
-        15
+        completed_context.details_data()["outputs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        5
+    );
+
+    for (phase_id, attempts) in [("K1", 1), ("K2", 2), ("K3", 1), ("K4", 1), ("K5", 2)] {
+        assert_eq!(
+            completed_context.details_data()["attempts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|attempt| attempt["phase_id"] == phase_id)
+                .count(),
+            attempts
+        );
+        assert_eq!(
+            completed_context.details_data()["outputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|output| output["phase_id"] == phase_id)
+                .count(),
+            1
+        );
+    }
+    assert_eq!(
+        completed_context.details_data()["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|output| output["phase_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        LIGHTWEIGHT_PHASES
     );
 
     let read = route(
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":completed["context"]["run"]["id"]}),
+        json!({"run_id":completed_context.run()["id"]}),
     )
     .await;
-    assert_eq!(read["run"], completed["context"]["run"]);
-    assert_eq!(read["result"]["id"], completed_result["id"]);
-    assert!(read["outputs"].as_array().unwrap().iter().all(|output| {
-        !output["body"].as_str().unwrap().is_empty()
-            && !output["digest"].as_str().unwrap().is_empty()
-    }));
+    let read = resolve_pipeline(&mut client, read).await.unwrap();
+    assert_eq!(read.run(), completed_context.run());
+    assert_eq!(read.details_data()["result"]["id"], completed_result["id"]);
+    assert!(
+        read.details_data()["outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|output| {
+                !output["body"].as_str().unwrap().is_empty()
+                    && !output["digest"].as_str().unwrap().is_empty()
+            })
+    );
 }
 
 #[path = "pipeline_execution/optional_body.rs"]

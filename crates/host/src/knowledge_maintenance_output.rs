@@ -29,8 +29,10 @@ pub(crate) fn query(
     query: &KnowledgeMaintenanceQuery,
     capacity: usize,
 ) -> Result<Value> {
+    let capacity = capacity.min(crate::json_fragment::READ_BUDGET);
     let actions = context_actions(&value, query)?;
-    let full = responses::with_actions(json!(value), actions, Some(0));
+    let recommended = (!actions.is_empty()).then_some(0);
+    let full = responses::with_actions(json!(value), actions, recommended);
     if query.fragment.is_none() && responses::encoded_len(&full)? <= capacity {
         Ok(full)
     } else {
@@ -39,6 +41,7 @@ pub(crate) fn query(
 }
 
 pub(crate) fn observe(value: ObserveKnowledgeMaintenanceOutcome, capacity: usize) -> Result<Value> {
+    let capacity = capacity.min(crate::json_fragment::READ_BUDGET);
     let (outcome, task, changed) = match &value {
         ObserveKnowledgeMaintenanceOutcome::Created(task) => ("created", task, true),
         ObserveKnowledgeMaintenanceOutcome::Existing(task) => ("existing", task, false),
@@ -68,6 +71,7 @@ pub(crate) fn begin(
     value: BeginKnowledgeMaintenanceChangeOutcome,
     capacity: usize,
 ) -> Result<Value> {
+    let capacity = capacity.min(crate::json_fragment::READ_BUDGET);
     let (outcome, task, change, changed) = match &value {
         BeginKnowledgeMaintenanceChangeOutcome::Created { task, change } => {
             ("created", task, change, true)
@@ -183,6 +187,7 @@ fn begin_request_id(task: &KnowledgeMaintenanceTask) -> uuid::Uuid {
 }
 
 fn within(value: Value, capacity: usize) -> Result<Value> {
+    let capacity = capacity.min(crate::json_fragment::READ_BUDGET);
     if responses::encoded_len(&value)? > capacity {
         Err(Error::RequestTooLarge)
     } else {
@@ -197,7 +202,7 @@ mod tests {
     use tect_application::KnowledgeLifecycleDefinitionProvider;
     use uuid::Uuid;
 
-    fn task(state: KnowledgeMaintenanceTaskState) -> KnowledgeMaintenanceTask {
+    pub(super) fn task(state: KnowledgeMaintenanceTaskState) -> KnowledgeMaintenanceTask {
         let id = Uuid::new_v4();
         KnowledgeMaintenanceTask {
             id,
@@ -226,7 +231,7 @@ mod tests {
         }
     }
 
-    fn change_context() -> KnowledgeChangeContext {
+    pub(super) fn change_context() -> KnowledgeChangeContext {
         let definition = StaticKnowledgeLifecycleDefinitions.definition().unwrap();
         let change_id = Uuid::new_v4();
         KnowledgeChangeContext {
@@ -396,7 +401,17 @@ mod tests {
 
     #[test]
     fn begin_guard_preserves_exact_linkage_in_compact_output() {
-        let context = change_context();
+        let mut context = change_context();
+        context.inputs.push(KnowledgeChangeInput {
+            id: Uuid::new_v4(),
+            sequence: 1,
+            revisit_phase_id: KnowledgeChangePhaseId::KcIntake,
+            reason: "maintenance fixture context".into(),
+            input: "Ж🦀".repeat(30_000),
+            digest: "fixture".into(),
+            actor_session_id: Uuid::new_v4(),
+            applied_basis_amendment: None,
+        });
         let mut linked_task = task(KnowledgeMaintenanceTaskState::Linked);
         linked_task.change_id = Some(context.change_id);
         linked_task.run_id = Some(context.run.id);
@@ -404,8 +419,34 @@ mod tests {
             task: linked_task.clone(),
             change: BeginKnowledgeChangeOutcome::Created(Box::new(context.clone())),
         };
-        let full = begin(value.clone(), usize::MAX).unwrap();
-        let compact = begin(value.clone(), responses::encoded_len(&full).unwrap() - 1).unwrap();
+        let transport_capacity = 8 * 1024 * 1024;
+        KnowledgeMaintenanceEncoding::new(transport_capacity)
+            .begin(&value)
+            .unwrap();
+        let compact = begin(value.clone(), transport_capacity).unwrap();
+        assert!(
+            serde_json::to_vec(&responses::success(compact.clone()))
+                .unwrap()
+                .len()
+                <= 8192
+        );
+        assert_eq!(compact["outcome"], "created");
+        assert_eq!(compact["changed"], true);
+        assert_eq!(compact["task_revision"], linked_task.revision);
+        assert_eq!(compact["task_state"], json!(linked_task.state));
+        assert_eq!(compact["run_revision"], context.run.revision);
+        assert_eq!(compact["run_status"], json!(context.run.status));
+        assert_eq!(
+            compact["current_phase_id"],
+            json!(context.run.current_phase_id)
+        );
+        assert_eq!(compact["actions"].as_array().unwrap().len(), 1);
+        assert_eq!(compact["actions"][0]["kind"], "ready_call");
+        assert_eq!(compact["actions"][0]["tool"], "query");
+        assert_eq!(
+            compact["actions"][0]["arguments"]["params"],
+            json!({"change_id":context.change_id,"view":"current"})
+        );
         assert_eq!(compact["task_id"], linked_task.id.to_string());
         assert_eq!(compact["change_id"], context.change_id.to_string());
         assert_eq!(compact["run_id"], context.run.id.to_string());
@@ -418,3 +459,7 @@ mod tests {
         assert_eq!(guard.begin(&value), Err(Error::RequestTooLarge));
     }
 }
+
+#[cfg(test)]
+#[path = "knowledge_maintenance_output/budget_tests.rs"]
+mod budget_tests;

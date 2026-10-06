@@ -8,6 +8,8 @@ use pipeline_support::{
     add_opaque_authority_labels, assert_forged_implementation_phase_rejected,
     assert_non_coding_definition, completion, refresh_knowledge, successful_route,
 };
+use recovery_support::native_reads::ScopeOpenFixture;
+use recovery_support::pipeline_reads::{ResolvedPipeline, resolve_pipeline};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -29,14 +31,15 @@ fn research_draft() -> Value {
     }],"supersessions":[]})
 }
 
-async fn advance(client: &mut Mcp, context: Value) -> Value {
+async fn advance(client: &mut Mcp, context: ResolvedPipeline) -> ResolvedPipeline {
     let (verdict, outcome, transition) = successful_route(&context);
     let mut request = completion(&context, verdict, outcome, transition, None, None);
-    if context["run"]["current_phase_id"] == "R01" {
+    if context.run()["current_phase_id"] == "R01" {
         request["output"]["fields"]["topic_level"] = json!("scope");
         request["output"]["fields"]["allow_inconclusive"] = json!("false");
     }
-    route(client, "command", "slice.pipeline.phase.complete", request).await["context"].clone()
+    let raw = route(client, "command", "slice.pipeline.phase.complete", request).await;
+    resolve_pipeline(client, raw).await.unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -77,7 +80,9 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
             "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]}),
     )
     .await;
-    let saved = save(&mut client, &scope["created"]["planning"], research_draft()).await;
+    let scope = ScopeOpenFixture::from_mutation(scope, "created");
+    let planning = scope.read_planning(&mut client).await.value;
+    let saved = save(&mut client, &planning, research_draft()).await;
     let reviewed = review(&mut client, &saved).await;
     let opened = route(
         &mut client,
@@ -87,7 +92,7 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
     )
     .await;
     let slice = &opened["created"];
-    let begun = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.begin",
@@ -96,26 +101,23 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
             "qualification_reason":"The bounded scope research question fits whole delivery before evidence deepening.",
             "inquiry":{"topic_level":"scope","task_context":{"target_iris":[]},
                 "completion":{"kind":"research","allow_inconclusive":false}}}),
-    )
-    .await;
-    let mut context = begun["created"].clone();
-    assert!(!id(&context["run"]["id"]).is_nil());
-    assert_eq!(context["run"]["delivery_mode"], "whole");
-    assert_eq!(context["inquiry"]["topic_level"], "scope");
+    ).await;
+    let begun = resolve_pipeline(&mut client, raw).await.unwrap();
+    let mut context = begun;
+    assert!(!id(&context.run()["id"]).is_nil());
+    assert_eq!(context.run()["delivery_mode"], "whole");
+    assert_eq!(context.details_data()["inquiry"]["topic_level"], "scope");
     assert_eq!(
-        context["inquiry"]["completion"]["allow_inconclusive"],
+        context.details_data()["inquiry"]["completion"]["allow_inconclusive"],
         false
     );
     assert_eq!(
-        context["run"]["definition_digest"],
+        context.run()["definition_digest"],
         "7d9a817dbbd4560aca33f46522027cf2aefad483bf5837bb98b494d533f115af"
     );
-    assert_eq!(
-        context["definition"]["phases"].as_array().unwrap().len(),
-        12
-    );
+    assert_eq!(context.definition()["phases"].as_array().unwrap().len(), 12);
     assert!(
-        context["definition"]["phases"]
+        context.definition()["phases"]
             .as_array()
             .unwrap()
             .iter()
@@ -141,34 +143,36 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
     )
     .await;
     add_opaque_authority_labels(&mut first);
-    context = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         first,
     )
-    .await["context"]
-        .clone();
+    .await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
     assert_non_coding_definition(&context, "slice.research");
-    assert_eq!(context["outputs"][0]["fields"]["topic_level"], "scope");
     assert_eq!(
-        context["outputs"][0]["fields"]["allow_inconclusive"],
+        context.details_data()["outputs"][0]["fields"]["topic_level"],
+        "scope"
+    );
+    assert_eq!(
+        context.details_data()["outputs"][0]["fields"]["allow_inconclusive"],
         "false"
     );
-    context = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.delivery.escalate",
-        json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
-            "run_revision":context["run"]["revision"],"phase_id":context["run"]["current_phase_id"],
+        json!({"request_id":Uuid::new_v4(),"run_id":context.run()["id"],
+            "run_revision":context.run()["revision"],"phase_id":context.run()["current_phase_id"],
             "reason":"Evidence provenance, contradictions and negative findings now warrant phase-local delivery."}),
-    )
-    .await["context"]
-        .clone();
-    assert_eq!(context["run"]["delivery_mode"], "phasewise");
+    ).await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
+    assert_eq!(context.run()["delivery_mode"], "phasewise");
     context = refresh_knowledge(&mut client, &context).await;
 
-    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 6 {
+    while context.run()["current_phase_ordinal"].as_u64().unwrap() < 6 {
         context = advance(&mut client, context).await;
     }
     let mut incomplete_custody = completion(&context, "ready", "completed", "continue", None, None);
@@ -221,14 +225,14 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
         .collect::<Vec<_>>();
     assert!(artifact_names.contains(&"negative-knowledge.md"));
     assert!(artifact_names.contains(&"contradictions-and-gaps.md"));
-    context = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         reviewed_negative,
     )
-    .await["context"]
-        .clone();
+    .await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
 
     assert_eq!(
         route_error(
@@ -247,7 +251,7 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
         .await["error"]["code"],
         "forbidden"
     );
-    context = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
@@ -260,31 +264,31 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
             None,
         ),
     )
-    .await["context"]
-        .clone();
-    assert_eq!(context["run"]["status"], "waiting_input");
-    context = route(
+    .await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
+    assert_eq!(context.run()["status"], "waiting_input");
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.input",
-        json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
-            "run_revision":context["run"]["revision"],"phase_id":"R09",
+        json!({"request_id":Uuid::new_v4(),"run_id":context.run()["id"],
+            "run_revision":context.run()["revision"],"phase_id":"R09",
             "input":"The bounded negative probe now has its exact source response."}),
     )
-    .await["context"]
-        .clone();
+    .await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
     context = refresh_knowledge(&mut client, &context).await;
-    context = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         completion(&context, "ready", "completed", "continue", None, None),
     )
-    .await["context"]
-        .clone();
+    .await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
     context = advance(&mut client, context).await;
     context = advance(&mut client, context).await;
-    assert_eq!(context["run"]["current_phase_id"], "R12");
+    assert_eq!(context.run()["current_phase_id"], "R12");
 
     let terminal = json!({
         "summary":"The inspected boundary supports a bounded negative result.",
@@ -372,7 +376,7 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
         .await["error"]["code"],
         "forbidden"
     );
-    let completed = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
@@ -386,8 +390,9 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
         ),
     )
     .await;
-    assert_eq!(completed["context"]["run"]["status"], "completed");
-    let outputs = completed["context"]["outputs"].as_array().unwrap();
+    let completed = resolve_pipeline(&mut client, raw).await.unwrap();
+    assert_eq!(completed.run()["status"], "completed");
+    let outputs = completed.details_data()["outputs"].as_array().unwrap();
     assert_eq!(outputs.len(), 12);
     assert_eq!(
         outputs
@@ -397,7 +402,10 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
         (1..=12).collect::<Vec<_>>()
     );
     assert_eq!(
-        completed["context"]["attempts"].as_array().unwrap().len(),
+        completed.details_data()["attempts"]
+            .as_array()
+            .unwrap()
+            .len(),
         13
     );
     let r08 = outputs
@@ -419,7 +427,7 @@ async fn research_preserves_provenance_negative_knowledge_and_proposal_boundary(
             .any(|artifact| artifact["name"] == "contradictions-and-gaps.md")
     );
     assert!(
-        completed["context"]["outputs"]
+        completed.details_data()["outputs"]
             .as_array()
             .unwrap()
             .iter()
