@@ -4,6 +4,17 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
     vec![
         route!(
             "query",
+            "workspace_state",
+            "workspace_state",
+            "Read the complete bound workspace state or one collection page through pinned JSON byte windows.",
+            "Requires current authenticated native binding. origin and action_seed repeat the originating root. Collection after/limit never select another workspace.",
+            "Reads current authorized state; discovery explicitly observes its original directory without binding or writes. Each page has its own digest.",
+            "Reconstruct all UTF-8 bytes and verify representation_digest before using nested business actions. Partial text is not executable. On representation change restart the originating root; collection continuation removes the previous page pin.",
+            crate::workspace_state::schema(),
+            json!({"view":"root","origin":"opened","action_seed":example_id})
+        ),
+        route!(
+            "query",
             "program.get",
             "get_program",
             "Read one Program and a bounded page of exact original inputs.",

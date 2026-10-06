@@ -15,7 +15,9 @@ pub(crate) async fn execute(
         SetupInvocation::Inspect { task_directory } => service
             .inspect_setup(context, task_directory.as_deref(), capacity)
             .await
-            .and_then(|discovery| crate::workspace_output::discovery(discovery, capacity)),
+            .and_then(|discovery| {
+                crate::workspace_output::discovery(discovery, capacity, task_directory.clone())
+            }),
         SetupInvocation::Begin { request_id, input } => service
             .begin_setup(context, request_id, &input, &guard)
             .await

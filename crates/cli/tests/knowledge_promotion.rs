@@ -93,13 +93,9 @@ async fn promotion_change_writes_one_managed_result_and_planning_input() {
         .unwrap();
     let config = root.join("host.json");
     host_file(&config, &enrollment.auth);
-    let mut client = Mcp::start(
-        &socket,
-        &config,
-        &Uuid::new_v4().to_string(),
-        &format!("dk2-promotion-{}", Uuid::new_v4()),
-    )
-    .await;
+    let native_session_id = Uuid::new_v4().to_string();
+    let workspace_key = format!("dk2-promotion-{}", Uuid::new_v4());
+    let mut client = Mcp::start(&socket, &config, &native_session_id, &workspace_key).await;
 
     let (source, candidate) = ready_source_candidate(&mut client, &repo).await;
     let scope = route(
@@ -167,6 +163,41 @@ async fn promotion_change_writes_one_managed_result_and_planning_input() {
     )
     .await;
     let begun = reads::resolve_current(&mut client, raw_begin.clone()).await;
+    // The authorized summary page retains the actual promotion run's current phase.
+    let service = tect_application::WorkspaceService::new(
+        std::sync::Arc::new(tect_postgres::PgStore::connect(&runtime, 4).await.unwrap()),
+        std::sync::Arc::new(tect_host::GitSourceInspector),
+        std::sync::Arc::new(tect_host::LocalSetupFiles),
+    );
+    let request_context = tect_domain::RequestContext {
+        auth: enrollment.auth.clone(),
+        native_session_id,
+        workspace_key,
+    };
+    let (_, _, summary_page) = service
+        .read_native_planning_bound(&request_context, None, 25)
+        .await
+        .unwrap();
+    let summary = summary_page
+        .native_planning
+        .iter()
+        .find(|summary| summary.scope_id.to_string() == slice["scope_id"].as_str().unwrap())
+        .unwrap();
+    let expected = context(&begun.value);
+    let change = summary
+        .knowledge_changes
+        .iter()
+        .find(|change| change.change_id.to_string() == expected["change_id"].as_str().unwrap())
+        .unwrap();
+    let expected_phase: Option<tect_domain::KnowledgeChangePhaseId> =
+        serde_json::from_value(expected["run"]["current_phase_id"].clone()).unwrap();
+    assert!(expected_phase.is_some());
+    assert_eq!(change.current_phase_id, expected_phase);
+    assert_eq!(
+        change.run_id.to_string(),
+        expected["run"]["id"].as_str().unwrap()
+    );
+
     let catalogue = catalog_reads::read(
         async |arguments| {
             client

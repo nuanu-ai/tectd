@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use tect_domain::{
     BeginCandidateSet, BeginCandidateSetOutcome, CandidateHistoryEntry, CandidateInputSummary,
-    CandidateReceiptRequest, CandidateSetSummary, CandidateSnapshotMaterial, CandidateTextFragment,
+    CandidateReceiptRequest, CandidateSetList, CandidateSnapshotMaterial, CandidateTextFragment,
     Program, RecordCandidateInput, RefreshCandidateSet, ResolvedCandidateDraft, Result,
     ReviewCandidateSet, SaveCandidateDraft, StoredCandidateContext, StoredHistoricalCandidateDraft,
     WorktreeSummary,
@@ -52,8 +52,9 @@ pub trait ScopeCandidateStore: Send {
     async fn candidate_heads(
         &mut self,
         workspace_id: Uuid,
+        after: Option<tect_domain::WorkspaceCollectionCursor>,
         limit: u32,
-    ) -> Result<Vec<CandidateSetSummary>>;
+    ) -> Result<CandidateSetList>;
     async fn candidate_inputs(
         &mut self,
         workspace_id: Uuid,

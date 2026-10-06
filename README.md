@@ -15,6 +15,32 @@ selects worktrees per session. `get_state` does not create or update records and
 never reads files or runs Git. Bootstrap and selection changes are atomic. Recovery, revocation
 and measured performance acceptance are included in the final vertical of this Scope.
 
+## Bounded workspace state delivery
+
+`workspace.open`, `get_state {}`, and setup discovery share the 8192 byte encoded
+response limit. Small responses keep their ordinary shape. If state and its
+business actions cannot fit, the root keeps complete workspace/session identities,
+status, and the complete response rules for an open response. `state_delivery`
+contains the SHA-256 digest and byte length of the exact `{"state": ...}` JSON
+document. Deferred fields are omitted, and one ready `query` call with route
+`workspace_state` carries the original origin and action seed.
+
+Follow that call and its byte continuations unchanged. Windows return at most
+4096 UTF-8 bytes and measure the complete encoded response. Reconstruct the whole
+document and verify its digest before using the nested business actions; partial
+fragment text is not executable. Changed authorized state or discovery file
+observations refuse an old pin: restart the originating root. This is a current
+read, with no snapshot cache. The action seed makes begin-action IDs stable across
+windows; it grants no authority.
+
+The same query has `candidate_sets` and `native_planning` views with whole-entry
+pages of at most 25 items. Their opaque cursors bind the workspace and collection;
+each page has its own representation pin. A next-page action clears the previous
+byte offset/digest. Discovery continuations observe the originally supplied task
+directory at its original observation capacity through a read-only transaction;
+they never bind or redirect a directory. The public API remains five tools, and
+`get_state` still accepts only `{}`.
+
 ## Architecture
 
 ```mermaid
@@ -140,7 +166,7 @@ not per-session secrets.
 
 ## Public MCP API
 
-The public surface has exactly five tools and 54 routes: 16 queries, 37 commands,
+The public surface has exactly five tools and 62 routes: 20 queries, 41 commands,
 and one execute route. `query`, `command`, and `execute` use
 `{"route":"...","params":{...}}`; `help` searches or describes the exact
 route schema. Unknown routes and route parameters fail before effects.

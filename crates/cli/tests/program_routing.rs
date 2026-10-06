@@ -33,6 +33,37 @@ fn action_tools(payload: &Value) -> Vec<&str> {
         .collect()
 }
 
+fn summary_ids_and_actions(payload: &Value, ready_id: Uuid) -> Vec<Uuid> {
+    let programs = payload["programs"].as_array().unwrap();
+    let tools = action_tools(payload);
+    programs
+        .iter()
+        .enumerate()
+        .map(|(index, summary)| {
+            let keys: BTreeSet<_> = summary
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            assert_eq!(
+                keys,
+                BTreeSet::from(["current_step", "id", "name", "revision", "status"])
+            );
+            let id = Uuid::parse_str(summary["id"].as_str().unwrap()).unwrap();
+            let status = if id == ready_id { "open" } else { "draft" };
+            let step = if id == ready_id { "ready" } else { "compose" };
+            assert_eq!(summary["status"], status);
+            assert_eq!(summary["current_step"], step);
+            assert_eq!(tools[index], "program.get");
+            assert_eq!(payload["actions"][index]["kind"], "ready_call");
+            let params = &payload["actions"][index]["arguments"]["params"];
+            assert_eq!(params, &json!({"program_id":id}));
+            id
+        })
+        .collect()
+}
+
 async fn complete(client: &mut Mcp, program_id: Uuid) -> Value {
     client
         .call(
@@ -90,6 +121,7 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
     assert_eq!(
         query["inputSchema"]["properties"]["route"]["enum"],
         json!([
+            "workspace_state",
             "program.get",
             "program.list",
             "source.list",
@@ -311,37 +343,68 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
         ids.push(Uuid::parse_str(created["program"]["id"].as_str().unwrap()).unwrap());
     }
 
+    let mut expected_ids: Vec<_> = ids.iter().copied().filter(|id| *id != ready_id).collect();
+    expected_ids.sort();
+    expected_ids.push(ready_id);
     let populated = client.call("get_state", json!({})).await;
-    let summaries = populated["programs"].as_array().unwrap();
-    assert_eq!(summaries.len(), 25);
-    assert!(
-        summaries
-            .iter()
-            .all(|program| program["current_step"] != "ready")
+    let n = populated["programs"].as_array().unwrap().len();
+    assert!((1..=25).contains(&n));
+    let mut delivered = summary_ids_and_actions(&populated, ready_id);
+    assert_eq!(delivered, expected_ids[..n]);
+    let tools = action_tools(&populated);
+    assert_eq!(tools.len(), n + 3);
+    assert_eq!(
+        &tools[n..],
+        ["program.list", "setup.inspect", "program.begin"]
     );
-    for summary in summaries {
-        let keys: BTreeSet<_> = summary
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect();
-        assert_eq!(
-            keys,
-            BTreeSet::from(["current_step", "id", "name", "revision", "status"])
-        );
-    }
-    let state_tools = action_tools(&populated);
-    assert_eq!(&state_tools[..25], &["program.get"; 25]);
-    assert_eq!(state_tools[25], "program.list");
-    assert_eq!(state_tools.last(), Some(&"program.begin"));
     assert_eq!(populated["recommended_action"], 0);
     let cursor = populated["next_after"].as_str().unwrap();
-    assert!(cursor.starts_with("w:"));
+    assert!(cursor.starts_with("w:") && cursor.len() > 2);
+    let mut continuation = populated["actions"][n].clone();
     assert_eq!(
-        populated["actions"][25]["arguments"]["params"],
+        continuation["arguments"]["params"],
         json!({"after":cursor,"limit":25})
     );
+    let mut previous_cursor = cursor.to_owned();
+    let mut terminal = false;
+    for _ in 0..27 {
+        let response = client
+            .exchange(
+                "tools/call",
+                json!({
+                    "name":continuation["tool"],"arguments":continuation["arguments"]
+                }),
+            )
+            .await;
+        assert!(response.get("error").is_none() && response["result"]["isError"] != true);
+        let page = tool_payload(&response);
+        let page_ids = summary_ids_and_actions(&page, ready_id);
+        assert!((1..=25).contains(&page_ids.len()));
+        let count = page_ids.len();
+        delivered.extend(page_ids);
+        assert!(delivered.len() <= expected_ids.len());
+        assert_eq!(delivered, expected_ids[..delivered.len()]);
+        assert_eq!(page["recommended_action"], 0);
+        let tools = action_tools(&page);
+        if page["next_after"].is_null() {
+            assert_eq!(&tools[count..], ["program.begin"]);
+            terminal = true;
+            break;
+        }
+        assert_eq!(&tools[count..], ["program.list", "program.begin"]);
+        let next = page["next_after"].as_str().unwrap();
+        assert!(next.starts_with("w:") && next.len() > 2);
+        assert_ne!(next, previous_cursor);
+        continuation = page["actions"][count].clone();
+        assert_eq!(
+            continuation["arguments"]["params"],
+            json!({"after":next,"limit":25})
+        );
+        previous_cursor = next.to_owned();
+    }
+    assert!(terminal, "continuation did not terminate");
+    assert_eq!(delivered, expected_ids);
+    assert_eq!(delivered.iter().collect::<BTreeSet<_>>().len(), 27);
 
     let mut after: Option<String> = None;
     let mut ordered = Vec::new();
@@ -369,10 +432,7 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
     }
     assert_eq!(ordered.len(), ids.len());
     assert_eq!(ordered.last(), Some(&ready_id));
-    let mut unfinished: Vec<_> = ids.into_iter().filter(|id| *id != ready_id).collect();
-    unfinished.sort();
-    unfinished.push(ready_id);
-    assert_eq!(ordered, unfinished);
+    assert_eq!(ordered, expected_ids);
 
     let before_invalid: i64 =
         sqlx::query_scalar("SELECT count(*) FROM programs WHERE tenant_id=$1")

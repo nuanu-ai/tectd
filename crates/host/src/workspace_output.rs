@@ -1,4 +1,4 @@
-use crate::program_output::{begin_action, input_action, within_capacity};
+use crate::program_output::{input_action, within_capacity};
 use crate::responses::{action, with_actions};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -32,6 +32,7 @@ fn actions(
     next: &Option<String>,
     file: Option<&FileObservation>,
     fallback: bool,
+    params: &crate::workspace_state::Params,
 ) -> Result<Vec<Value>> {
     if state.workspace.is_none() {
         return Ok(vec![action("open_workspace", json!({}))?]);
@@ -41,11 +42,24 @@ fn actions(
     for native in &state.native_planning {
         calls.extend(native_actions(native)?);
     }
-    for candidate in &state.candidate_sets {
-        calls.push(crate::api::ready_action(
-            "candidate_context",
-            json!({"candidate_set_id":candidate.id,"view":"overview","limit":25}),
-        )?);
+    calls.extend(candidate_actions(&state.candidate_sets)?);
+    for (view, after) in [
+        (
+            crate::workspace_state::View::CandidateSets,
+            state.candidate_sets_next_after.as_ref(),
+        ),
+        (
+            crate::workspace_state::View::NativePlanning,
+            state.native_planning_next_after.as_ref(),
+        ),
+    ] {
+        if let Some(after) = after {
+            let mut page = params.clone();
+            page.view = view;
+            page.after = Some(after.encode());
+            page.limit = Some(25);
+            calls.push(crate::workspace_state::action(&page)?);
+        }
     }
     match file.map(|file| file.status) {
         Some(SetupFileStatus::Unavailable) => {}
@@ -57,7 +71,7 @@ fn actions(
         }
         Some(SetupFileStatus::Missing) => calls.push(input_action(
             "begin_setup",
-            json!({"request_id":Uuid::new_v4()}),
+            json!({"request_id":seed_request_id(params.action_seed,"setup-begin")}),
         )?),
         None => {}
         Some(SetupFileStatus::Existing) => {}
@@ -82,11 +96,32 @@ fn actions(
     {
         calls.push(inspect_action(context)?);
     }
-    calls.push(begin_action()?);
+    calls.push(input_action(
+        "begin_program",
+        json!({"request_id":seed_request_id(params.action_seed,"program-begin")}),
+    )?);
     Ok(calls)
 }
 
-fn native_actions(summary: &NativePlanningSummary) -> Result<Vec<Value>> {
+pub(crate) fn candidate_actions(
+    candidates: &[tect_domain::CandidateSetSummary],
+) -> Result<Vec<Value>> {
+    candidates
+        .iter()
+        .map(|candidate| {
+            crate::api::ready_action(
+                "candidate_context",
+                json!({"candidate_set_id":candidate.id,"view":"overview","limit":25}),
+            )
+        })
+        .collect()
+}
+
+fn seed_request_id(seed: Uuid, label: &str) -> Uuid {
+    native_request_id(seed, 0, label)
+}
+
+pub(crate) fn native_actions(summary: &NativePlanningSummary) -> Result<Vec<Value>> {
     let mut calls = Vec::new();
     for run in &summary.pipeline_runs {
         calls.push(crate::api::ready_action(
@@ -159,8 +194,16 @@ fn value(
     file: Option<&FileObservation>,
     fallback: bool,
     rules: bool,
+    params: &crate::workspace_state::Params,
 ) -> Result<Value> {
-    let calls = actions(state, &state.programs, &state.next_after, file, fallback)?;
+    let calls = actions(
+        state,
+        &state.programs,
+        &state.next_after,
+        file,
+        fallback,
+        params,
+    )?;
     let mut result = json!(state);
     result["file"] = file.map_or_else(
         || {
@@ -190,19 +233,97 @@ fn value(
     Ok(with_actions(result, calls, Some(0)))
 }
 
+pub(crate) fn logical(
+    state: &WorkspaceState,
+    file: Option<&FileObservation>,
+    rules: bool,
+    params: &crate::workspace_state::Params,
+) -> Result<Value> {
+    value(state, file, false, rules, params)
+}
+
 pub(crate) fn workspace(state: WorkspaceState, capacity: usize) -> Result<Value> {
-    encode(state, None, capacity, false)
+    encode(
+        state,
+        None,
+        capacity,
+        false,
+        crate::workspace_state::params(
+            crate::workspace_state::Origin::State,
+            Uuid::new_v4(),
+            None,
+            None,
+        ),
+    )
 }
 pub(crate) fn opened(state: WorkspaceState, capacity: usize) -> Result<Value> {
     encode(
         state,
         None,
-        capacity.min(crate::json_fragment::READ_BUDGET),
+        capacity,
         true,
+        crate::workspace_state::params(
+            crate::workspace_state::Origin::Opened,
+            Uuid::new_v4(),
+            None,
+            None,
+        ),
     )
 }
-pub(crate) fn discovery(discovery: SetupDiscovery, capacity: usize) -> Result<Value> {
-    encode(discovery.state, Some(discovery.file), capacity, false)
+pub(crate) fn discovery(
+    discovery: SetupDiscovery,
+    capacity: usize,
+    task_directory: Option<String>,
+) -> Result<Value> {
+    encode(
+        discovery.state,
+        Some(discovery.file),
+        capacity,
+        false,
+        crate::workspace_state::params(
+            crate::workspace_state::Origin::Discovery,
+            Uuid::new_v4(),
+            task_directory,
+            Some(capacity),
+        ),
+    )
+}
+
+fn deferred(
+    original: Value,
+    params: &crate::workspace_state::Params,
+    capacity: usize,
+) -> Result<Value> {
+    let wrapper = json!({"state":original});
+    let bytes = serde_json::to_vec(&wrapper).map_err(|_| Error::TransportUnavailable)?;
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    let mut root = wrapper["state"].clone();
+    let mut fields = vec![];
+    root.as_object_mut()
+        .ok_or(Error::InternalInvariant)?
+        .retain(|key, _| {
+            let retain = matches!(
+                key.as_str(),
+                "status" | "workspace" | "session" | "response_rules"
+            );
+            if !retain {
+                fields.push(key.clone());
+            }
+            retain
+        });
+    root["state_delivery"] = json!({"kind":"deferred","representation_digest":digest,"total_bytes":bytes.len(),"deferred_fields":fields});
+    root["next_action"] = json!("workspace_state");
+    let mut args = serde_json::to_value(params).map_err(|_| Error::TransportUnavailable)?;
+    args["representation_digest"] = json!(digest);
+    args["limit_bytes"] = json!(4096);
+    within_capacity(
+        with_actions(
+            root,
+            vec![crate::api::ready_action("workspace_state", args)?],
+            Some(0),
+        ),
+        capacity,
+    )
 }
 
 fn encode(
@@ -210,9 +331,16 @@ fn encode(
     file: Option<FileObservation>,
     capacity: usize,
     rules: bool,
+    params: crate::workspace_state::Params,
 ) -> Result<Value> {
+    let capacity = capacity.min(crate::json_fragment::READ_BUDGET);
+    let original = logical(&state, file.as_ref(), rules, &params)?;
     if state.programs.is_empty() {
-        return within_capacity(value(&state, file.as_ref(), false, rules)?, capacity);
+        return match within_capacity(original.clone(), capacity) {
+            Ok(value) => Ok(value),
+            Err(Error::RequestTooLarge) => deferred(original, &params, capacity),
+            Err(error) => Err(error),
+        };
     }
     let mut programs = std::mem::take(&mut state.programs);
     let original_next = state.next_after.clone();
@@ -220,32 +348,41 @@ fn encode(
     state.next_after = next(&state.programs, programs.len() > 1, &original_next);
     let count = crate::program_output::paging::fitting_prefix(
         &programs,
-        &value(&state, file.as_ref(), false, rules)?,
+        &value(&state, file.as_ref(), false, rules, &params)?,
         "programs",
         "next_after",
         capacity,
         |prefix, more| {
             let next = next(prefix, more, &original_next);
             Ok((
-                actions(&state, prefix, &next, file.as_ref(), false)?,
+                actions(&state, prefix, &next, file.as_ref(), false, &params)?,
                 json!(next),
             ))
         },
     );
-    match count {
+    let fitted = match count {
         Ok(count) => {
             state.next_after = next(&programs[..count], count < programs.len(), &original_next);
             programs.truncate(count);
             state.programs = programs;
-            value(&state, file.as_ref(), false, rules)
+            within_capacity(
+                value(&state, file.as_ref(), false, rules, &params)?,
+                capacity,
+            )
         }
         Err(Error::RequestTooLarge) => {
-            // An old maximum-sized name may predate setup context overhead. Its full value
-            // remains available through the existing unchanged standalone Program list.
             state.programs.clear();
             state.next_after = None;
-            within_capacity(value(&state, file.as_ref(), true, rules)?, capacity)
+            within_capacity(
+                value(&state, file.as_ref(), true, rules, &params)?,
+                capacity,
+            )
         }
+        Err(error) => Err(error),
+    };
+    match fitted {
+        Ok(value) => Ok(value),
+        Err(Error::RequestTooLarge) => deferred(original, &params, capacity),
         Err(error) => Err(error),
     }
 }
@@ -265,7 +402,7 @@ mod tests {
         NativePipelineRunSummary, NativeSliceSummary, NativeWorkCandidateSummary, SliceState,
     };
 
-    fn summary() -> NativePlanningSummary {
+    pub(super) fn summary() -> NativePlanningSummary {
         NativePlanningSummary {
             scope_id: Uuid::new_v4(),
             scope_revision: 1,
@@ -351,3 +488,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod delivery_tests;

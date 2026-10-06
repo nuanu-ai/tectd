@@ -59,7 +59,7 @@ pub(super) async fn route_error(client: &mut Mcp, tool: &str, name: &str, params
         .await
 }
 
-pub(super) async fn ready_source_candidate(client: &mut Mcp, source: &Path) -> (Value, Value) {
+pub(super) async fn ready_program(client: &mut Mcp, source: &Path) -> Value {
     client.call("open_workspace", json!({})).await;
     let registered = client.call("register_source", json!({"path":source})).await;
     let worktree = registered["id"].clone();
@@ -89,9 +89,18 @@ pub(super) async fn ready_source_candidate(client: &mut Mcp, source: &Path) -> (
         program_save["consumed_knowledge"] = guard;
     }
     let program = client.call("save_program", program_save).await;
+    ProgramFixture::from_mutation(program)
+        .read_page(client)
+        .await
+        .program()
+        .clone()
+}
+
+pub(super) async fn ready_source_candidate(client: &mut Mcp, source: &Path) -> (Value, Value) {
+    let program = ready_program(client, source).await;
     let candidates = client.call("begin_candidate_set", json!({
-        "request_id":Uuid::new_v4(),"program_id":program["program"]["id"],
-        "program_revision":program["program"]["revision"],"boundary":"ongoing",
+        "request_id":Uuid::new_v4(),"program_id":program["id"],
+        "program_revision":program["revision"],"boundary":"ongoing",
         "input":"Open one native Scope for diagnosis and its result-driven correction decision."
     })).await;
     let candidates = CandidateFixture::from_mutation(candidates);

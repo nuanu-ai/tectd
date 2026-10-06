@@ -17,10 +17,11 @@ impl NativePlanningStore for PgUnitOfWork {
     async fn native_planning_summaries(
         &mut self,
         workspace_id: Uuid,
+        after: Option<tect_domain::WorkspaceCollectionCursor>,
         limit: u32,
-    ) -> Result<Vec<NativePlanningSummary>> {
+    ) -> Result<NativePlanningList> {
         let tenant = self.tenant_id()?;
-        native_planning::summaries(self.transaction()?, tenant, workspace_id, limit).await
+        native_planning::summaries(self.transaction()?, tenant, workspace_id, after, limit).await
     }
     async fn scope_open_replay(
         &mut self,

@@ -4,18 +4,47 @@ pub(crate) async fn summaries(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     workspace: Uuid,
+    after: Option<WorkspaceCollectionCursor>,
     limit: u32,
-) -> Result<Vec<NativePlanningSummary>> {
-    let scope_ids: Vec<Uuid> = sqlx::query_scalar(
+) -> Result<NativePlanningList> {
+    if !(1..=25).contains(&limit) {
+        return Err(Error::InvalidArguments);
+    }
+    if let Some(cursor) = after {
+        cursor.validate(workspace, WorkspaceCollection::NativePlanning)?;
+        let anchor: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM native_scopes WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
+        )
+        .bind(tenant)
+        .bind(workspace)
+        .bind(cursor.anchor_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(storage_error)?;
+        if anchor.is_none() {
+            return Err(Error::InvalidArguments);
+        }
+    }
+    let mut scope_ids: Vec<Uuid> = sqlx::query_scalar(
         "SELECT id FROM native_scopes WHERE tenant_id=$1 AND workspace_id=$2 \
-         ORDER BY created_at DESC,id LIMIT $3",
+         AND ($3::uuid IS NULL OR created_at < (SELECT created_at FROM native_scopes WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3) \
+         OR (created_at = (SELECT created_at FROM native_scopes WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3) AND id > $3)) \
+         ORDER BY created_at DESC,id LIMIT $4",
     )
     .bind(tenant)
     .bind(workspace)
-    .bind(i64::from(limit))
+    .bind(after.map(|cursor| cursor.anchor_id))
+    .bind(i64::from(limit) + 1)
     .fetch_all(&mut **tx)
     .await
     .map_err(storage_error)?;
+    let more = scope_ids.len() > limit as usize;
+    scope_ids.truncate(limit as usize);
+    let next_after = more.then(|| WorkspaceCollectionCursor {
+        workspace_id: workspace,
+        collection: WorkspaceCollection::NativePlanning,
+        anchor_id: *scope_ids.last().expect("nonempty bounded page"),
+    });
     let mut summaries = Vec::with_capacity(scope_ids.len());
     for scope_id in scope_ids {
         let context = load_context(tx, tenant, workspace, scope_id)
@@ -135,7 +164,10 @@ pub(crate) async fn summaries(
             knowledge_changes,
         });
     }
-    Ok(summaries)
+    Ok(NativePlanningList {
+        native_planning: summaries,
+        next_after,
+    })
 }
 
 #[allow(clippy::type_complexity)]
