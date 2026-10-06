@@ -8,6 +8,8 @@ use pipeline_support::{
     add_opaque_authority_labels, assert_forged_implementation_phase_rejected,
     assert_non_coding_definition, completion, refresh_knowledge, successful_route,
 };
+use recovery_support::native_reads::ScopeOpenFixture;
+use recovery_support::pipeline_reads::{ResolvedPipeline, resolve_pipeline};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -30,16 +32,16 @@ fn preparation_draft() -> Value {
     }],"supersessions":[]})
 }
 
-async fn advance(client: &mut Mcp, context: Value) -> Value {
+async fn advance(client: &mut Mcp, context: ResolvedPipeline) -> ResolvedPipeline {
     let (verdict, outcome, transition) = successful_route(&context);
-    route(
+    let raw = route(
         client,
         "command",
         "slice.pipeline.phase.complete",
         completion(&context, verdict, outcome, transition, None, None),
     )
-    .await["context"]
-        .clone()
+    .await;
+    resolve_pipeline(client, raw).await.unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -73,12 +75,9 @@ async fn operational_preparation_builds_safe_handoff_without_executing() {
         "candidate_set_id":source["candidate_set"]["id"],"candidate_set_revision":source["candidate_set"]["revision"],
         "candidate_snapshot_id":source["snapshot"]["id"],"candidate_id":candidate["id"],
         "candidate_revision":candidate["revision"]})).await;
-    let saved = save(
-        &mut client,
-        &scope["created"]["planning"],
-        preparation_draft(),
-    )
-    .await;
+    let scope = ScopeOpenFixture::from_mutation(scope, "created");
+    let planning = scope.read_planning(&mut client).await.value;
+    let saved = save(&mut client, &planning, preparation_draft()).await;
     let reviewed = review(&mut client, &saved).await;
     let opened = route(
         &mut client,
@@ -88,22 +87,20 @@ async fn operational_preparation_builds_safe_handoff_without_executing() {
     )
     .await;
     let slice = &opened["created"];
-    let begun=route(&mut client,"command","slice.pipeline.begin",json!({"request_id":Uuid::new_v4(),
+    let raw = route(&mut client,"command","slice.pipeline.begin",json!({"request_id":Uuid::new_v4(),
         "scope_id":reviewed["scope"]["id"],"slice_id":slice["id"],"slice_revision":slice["revision"],
         "qualification_reason":"Begin whole and deepen phasewise for the complex operational package."})).await;
-    let mut context = begun["created"].clone();
-    assert!(!id(&context["run"]["id"]).is_nil());
-    assert_eq!(context["run"]["delivery_mode"], "whole");
+    let begun = resolve_pipeline(&mut client, raw).await.unwrap();
+    let mut context = begun;
+    assert!(!id(&context.run()["id"]).is_nil());
+    assert_eq!(context.run()["delivery_mode"], "whole");
     assert_eq!(
-        context["run"]["definition_digest"],
+        context.run()["definition_digest"],
         "6dcf48ec7712fcc3a9dc1f40c83c2337313bfadb33cbfdbe5d76b71da455d2b4"
     );
-    assert_eq!(
-        context["definition"]["phases"].as_array().unwrap().len(),
-        16
-    );
+    assert_eq!(context.definition()["phases"].as_array().unwrap().len(), 16);
     assert!(
-        context["definition"]["phases"]
+        context.definition()["phases"]
             .as_array()
             .unwrap()
             .iter()
@@ -139,27 +136,28 @@ async fn operational_preparation_builds_safe_handoff_without_executing() {
     )
     .await;
     add_opaque_authority_labels(&mut first);
-    context = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         first,
     )
-    .await["context"]
-        .clone();
+    .await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
     assert_non_coding_definition(&context, "slice.operational-preparation");
-    context=route(&mut client,"command","slice.pipeline.delivery.escalate",json!({
-        "request_id":Uuid::new_v4(),"run_id":context["run"]["id"],"run_revision":context["run"]["revision"],
-        "phase_id":context["run"]["current_phase_id"],
-        "reason":"The remaining authority, rollback and proof contracts warrant phase-local delivery."})).await["context"].clone();
-    assert_eq!(context["run"]["delivery_mode"], "phasewise");
+    let raw = route(&mut client,"command","slice.pipeline.delivery.escalate",json!({
+        "request_id":Uuid::new_v4(),"run_id":context.run()["id"],"run_revision":context.run()["revision"],
+        "phase_id":context.run()["current_phase_id"],
+        "reason":"The remaining authority, rollback and proof contracts warrant phase-local delivery."})).await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
+    assert_eq!(context.run()["delivery_mode"], "phasewise");
     context = refresh_knowledge(&mut client, &context).await;
 
-    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 16 {
+    while context.run()["current_phase_ordinal"].as_u64().unwrap() < 16 {
         context = advance(&mut client, context).await;
     }
     let (verdict, outcome, transition) = successful_route(&context);
-    let completed=route(&mut client,"command","slice.pipeline.phase.complete",
+    let raw = route(&mut client,"command","slice.pipeline.phase.complete",
         completion(&context,verdict,outcome,transition,None,Some(json!({
             "summary":"The operational package is prepared without executing the operation.",
             "evidence":[{"kind":"integration_test","reference":"pipeline_execution_operational_preparation.rs",
@@ -167,12 +165,16 @@ async fn operational_preparation_builds_safe_handoff_without_executing() {
             "scope_impact":"A separately authorized Operational Execution Slice may consume the package.",
             "remaining_work":"Execute only through the separately reviewed operational pipeline."
         })))).await;
-    assert_eq!(completed["context"]["run"]["status"], "completed");
+    let completed = resolve_pipeline(&mut client, raw).await.unwrap();
+    assert_eq!(completed.run()["status"], "completed");
     assert_eq!(
-        completed["context"]["attempts"].as_array().unwrap().len(),
+        completed.details_data()["attempts"]
+            .as_array()
+            .unwrap()
+            .len(),
         16
     );
-    let outputs = completed["context"]["outputs"].as_array().unwrap();
+    let outputs = completed.details_data()["outputs"].as_array().unwrap();
     assert!(
         outputs
             .iter()

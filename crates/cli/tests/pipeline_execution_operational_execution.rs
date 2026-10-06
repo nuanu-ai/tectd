@@ -9,6 +9,8 @@ use pipeline_support::{
     add_opaque_authority_labels, assert_forged_implementation_phase_rejected,
     assert_non_coding_definition, completion, refresh_knowledge, successful_route,
 };
+use recovery_support::native_reads::ScopeOpenFixture;
+use recovery_support::pipeline_reads::{ResolvedPipeline, resolve_pipeline};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -17,6 +19,16 @@ use support::{
 };
 use tect_postgres::admin;
 use uuid::Uuid;
+
+fn mutation_result_id(context: &ResolvedPipeline) -> &Value {
+    context
+        .raw_payload
+        .get("result_reference")
+        .and_then(Value::as_object)
+        .expect("actual mutation result reference object")
+        .get("result_id")
+        .expect("actual mutation result ID key")
+}
 
 fn execution_draft() -> Value {
     json!({"coverage_summary":"Bounded operational execution with exact authority and recovery","nodes":[{
@@ -30,19 +42,19 @@ fn execution_draft() -> Value {
     }],"supersessions":[]})
 }
 
-async fn advance(client: &mut Mcp, context: Value) -> Value {
+async fn advance(client: &mut Mcp, context: ResolvedPipeline) -> ResolvedPipeline {
     let (verdict, outcome, transition) = successful_route(&context);
-    route(
+    let raw = route(
         client,
         "command",
         "slice.pipeline.phase.complete",
         completion(&context, verdict, outcome, transition, None, None),
     )
-    .await["context"]
-        .clone()
+    .await;
+    resolve_pipeline(client, raw).await.unwrap()
 }
 
-async fn setup(client: &mut Mcp, repo: &std::path::Path) -> Value {
+async fn setup(client: &mut Mcp, repo: &std::path::Path) -> ResolvedPipeline {
     let (source, candidate) = ready_source_candidate(client, repo).await;
     let scope = route(
         client,
@@ -55,7 +67,9 @@ async fn setup(client: &mut Mcp, repo: &std::path::Path) -> Value {
             "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]}),
     )
     .await;
-    let saved = save(client, &scope["created"]["planning"], execution_draft()).await;
+    let scope = ScopeOpenFixture::from_mutation(scope, "created");
+    let planning = scope.read_planning(client).await.value;
+    let saved = save(client, &planning, execution_draft()).await;
     let reviewed = review(client, &saved).await;
     let opened = route(
         client,
@@ -65,16 +79,15 @@ async fn setup(client: &mut Mcp, repo: &std::path::Path) -> Value {
     )
     .await;
     let slice = &opened["created"];
-    route(
+    let raw = route(
         client,
         "command",
         "slice.pipeline.begin",
         json!({"request_id":Uuid::new_v4(),"scope_id":reviewed["scope"]["id"],
             "slice_id":slice["id"],"slice_revision":slice["revision"],
             "qualification_reason":"The exact authorized action requires mandatory phasewise gates."}),
-    )
-    .await["created"]
-        .clone()
+    ).await;
+    resolve_pipeline(client, raw).await.unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -104,13 +117,19 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
     let native = Uuid::new_v4().to_string();
     let mut client = Mcp::start(&socket, &config, &native, &key).await;
     let mut context = setup(&mut client, &repo).await;
-    assert!(!id(&context["run"]["id"]).is_nil());
-    assert_eq!(context["run"]["delivery_mode"], "phasewise");
+    assert!(!id(&context.run()["id"]).is_nil());
+    assert_eq!(context.run()["delivery_mode"], "phasewise");
     assert_eq!(
-        context["run"]["definition_digest"],
+        context.run()["definition_digest"],
         "47046a703413f6e3048c6923b87dae6ceb0bbecb3c9e0f9d60ca614562267e79"
     );
-    assert_eq!(context["definition"]["phases"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        context.details_data()["delivered_phases"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 
     assert_non_coding_definition(&context, "slice.operational-execution");
     let (verdict, outcome, transition) = successful_route(&context);
@@ -123,17 +142,17 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
     )
     .await;
     add_opaque_authority_labels(&mut first);
-    context = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         first,
     )
-    .await["context"]
-        .clone();
+    .await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
     assert_non_coding_definition(&context, "slice.operational-execution");
 
-    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 8 {
+    while context.run()["current_phase_ordinal"].as_u64().unwrap() < 8 {
         context = advance(&mut client, context).await;
     }
     let mut missing_authority = completion(
@@ -169,16 +188,16 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
     authority["output"]["fields"]["target_unchanged"] = json!("true");
     authority["output"]["fields"]["risk_unchanged"] = json!("true");
     authority["output"]["fields"]["prior_authority_recognized"] = json!("true");
-    context = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         authority,
     )
-    .await["context"]
-        .clone();
+    .await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
     context = advance(&mut client, context).await;
-    assert_eq!(context["run"]["current_phase_ordinal"], 10);
+    assert_eq!(context.run()["current_phase_ordinal"], 10);
 
     let unknown = completion(
         &context,
@@ -188,25 +207,30 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
         None,
         None,
     );
-    let blocked = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         unknown.clone(),
     )
     .await;
-    assert_eq!(blocked["context"]["run"]["status"], "blocked");
-    assert!(blocked["result"].is_null());
-    let replay = route(
+    let blocked = resolve_pipeline(&mut client, raw).await.unwrap();
+    assert_eq!(blocked.run()["status"], "blocked");
+    assert!(mutation_result_id(&blocked).is_null());
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         unknown,
     )
     .await;
-    assert_eq!(replay, blocked);
-    assert_eq!(replay["context"]["attempts"].as_array().unwrap().len(), 10);
-    context = replay["context"].clone();
+    let replay = resolve_pipeline(&mut client, raw).await.unwrap();
+    assert_eq!(replay.raw_payload, blocked.raw_payload);
+    assert_eq!(
+        replay.details_data()["attempts"].as_array().unwrap().len(),
+        10
+    );
+    context = replay;
     assert_eq!(
         route_error(
             &mut client,
@@ -224,18 +248,17 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
         .await["error"]["code"],
         "input_pending"
     );
-    context = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.input",
-        json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
-            "run_revision":context["run"]["revision"],"phase_id":context["run"]["current_phase_id"],
+        json!({"request_id":Uuid::new_v4(),"run_id":context.run()["id"],
+            "run_revision":context.run()["revision"],"phase_id":context.run()["current_phase_id"],
             "input":"Reconciled the exact target and effect request; no repeated action occurred."}),
-    )
-    .await["context"]
-        .clone();
+    ).await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
     context = refresh_knowledge(&mut client, &context).await;
-    context = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
@@ -248,9 +271,9 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
             None,
         ),
     )
-    .await["context"]
-        .clone();
-    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 18 {
+    .await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
+    while context.run()["current_phase_ordinal"].as_u64().unwrap() < 18 {
         context = advance(&mut client, context).await;
     }
 
@@ -263,17 +286,27 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
         None,
     );
     invalid_revisit["revisit_phase_id"] = json!("slice-op-exec-authority-confirmation");
-    assert_eq!(
-        route_error(
-            &mut client,
-            "command",
-            "slice.pipeline.phase.complete",
-            invalid_revisit
-        )
-        .await["error"]["code"],
-        "invalid_arguments"
-    );
-    let partial = route(
+    let invalid_revisit_error = route_error(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        invalid_revisit,
+    )
+    .await;
+    assert_eq!(invalid_revisit_error["error"]["code"], "INVALID_OUTPUT");
+    for (field, expected) in json!({
+        "code":"INVALID_OUTPUT", "rule":"WP6-COMPLETE-OUTPUT-11",
+        "path":"arguments.params.output.verdict",
+        "expected":"verdict route matching outcome, transition and revisit phase", "actual":"no matching route",
+        "next_action":"align_completion_with_verdict_route", "required":"valid_verdict_route",
+        "message":"the submitted pipeline output violates its contract"
+    })
+    .as_object()
+    .unwrap()
+    {
+        assert_eq!(invalid_revisit_error["error"]["refusal"][field], *expected);
+    }
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
@@ -287,11 +320,12 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
         ),
     )
     .await;
-    context = partial["context"].clone();
-    assert_eq!(context["run"]["status"], "active");
-    assert_eq!(context["run"]["current_phase_ordinal"], 10);
+    let partial = resolve_pipeline(&mut client, raw).await.unwrap();
+    context = partial;
+    assert_eq!(context.run()["status"], "active");
+    assert_eq!(context.run()["current_phase_ordinal"], 10);
     assert!(
-        context["bindings"]
+        context.details_data()["bindings"]
             .as_array()
             .unwrap()
             .iter()
@@ -299,7 +333,7 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
                 && binding["stale"] == true)
     );
     assert!(
-        context["bindings"]
+        context.details_data()["bindings"]
             .as_array()
             .unwrap()
             .iter()
@@ -324,20 +358,20 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
         .await["error"]["code"],
         "input_pending"
     );
-    context = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.input",
-        json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
-            "run_revision":context["run"]["revision"],"phase_id":context["run"]["current_phase_id"],
+        json!({"request_id":Uuid::new_v4(),"run_id":context.run()["id"],
+            "run_revision":context.run()["revision"],"phase_id":context.run()["current_phase_id"],
             "input":"Authorized resume at the exact action after partial-result reconciliation."}),
     )
-    .await["context"]
-        .clone();
+    .await;
+    context = resolve_pipeline(&mut client, raw).await.unwrap();
     context = refresh_knowledge(&mut client, &context).await;
 
-    while context["run"]["current_phase_ordinal"].as_u64().unwrap() < 18 {
-        if context["run"]["current_phase_id"] == "slice-op-exec-rollback-or-recovery-runner" {
+    while context.run()["current_phase_ordinal"].as_u64().unwrap() < 18 {
+        if context.run()["current_phase_id"] == "slice-op-exec-rollback-or-recovery-runner" {
             let (verdict, outcome, transition) = successful_route(&context);
             assert_eq!(
                 route_error(
@@ -349,21 +383,20 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
                 .await["error"]["code"],
                 "input_pending"
             );
-            context = route(
+            let raw = route(
                 &mut client,
                 "command",
                 "slice.pipeline.input",
-                json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
-                    "run_revision":context["run"]["revision"],"phase_id":context["run"]["current_phase_id"],
+                json!({"request_id":Uuid::new_v4(),"run_id":context.run()["id"],
+                    "run_revision":context.run()["revision"],"phase_id":context.run()["current_phase_id"],
                     "input":"Reconciled recovery state and authority before the permitted recovery rerun."}),
-            )
-            .await["context"]
-                .clone();
+            ).await;
+            context = resolve_pipeline(&mut client, raw).await.unwrap();
             context = refresh_knowledge(&mut client, &context).await;
         }
         context = advance(&mut client, context).await;
     }
-    let completed = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
@@ -381,12 +414,20 @@ async fn operational_execution_gates_effects_replay_recovery_and_partial_resume(
                 "remaining_work":"No unproven effect is retried automatically."
             })),
         ),
-    )
-    .await;
-    assert_eq!(completed["context"]["run"]["status"], "completed");
-    assert!(completed["result"].is_object());
+    ).await;
+    let completed = resolve_pipeline(&mut client, raw).await.unwrap();
+    assert_eq!(completed.run()["status"], "completed");
+    assert!(!mutation_result_id(&completed).is_null());
     assert_eq!(
-        completed["context"]["attempts"].as_array().unwrap().len(),
+        &completed.details_data()["result"]["id"],
+        mutation_result_id(&completed)
+    );
+    assert!(completed.details_data()["result"].is_object());
+    assert_eq!(
+        completed.details_data()["attempts"]
+            .as_array()
+            .unwrap()
+            .len(),
         28
     );
     client.finish().await;

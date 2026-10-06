@@ -294,5 +294,5 @@ fn selected_superpowers_v6_bodies_require_native_category_adapters() {
             );
         }
     }
-    assert_eq!(phases, 127);
+    assert_eq!(phases, 117);
 }

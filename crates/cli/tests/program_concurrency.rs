@@ -2,6 +2,7 @@
 #[allow(dead_code)]
 mod recovery_support;
 
+use recovery_support::native_reads::program_queries::read_program_query;
 use recovery_support::{
     Daemon, Mcp, action_name, action_params, host_file, private_temp, public_call, ready_action,
     tagged_url, tool_payload,
@@ -161,12 +162,17 @@ async fn concurrent_inputs_and_saves_are_durable_idempotent_and_atomic() {
     let mut after = 0;
     let mut seen = Vec::new();
     loop {
-        let page = first
-            .call(
-                "get_program",
-                json!({"program_id":program_id,"after_input":after,"limit":1}),
-            )
-            .await;
+        let page_read = read_program_query(
+            async |arguments| {
+                first
+                    .exchange("tools/call", json!({"name":"query","arguments":arguments}))
+                    .await
+            },
+            json!({"program_id":program_id,"after_input":after,"limit":1}),
+        )
+        .await
+        .unwrap();
+        let page = &page_read.value;
         assert_eq!(page["inputs"].as_array().unwrap().len(), 1);
         let entry = &page["inputs"][0];
         after = entry["sequence"].as_i64().unwrap();
@@ -175,9 +181,14 @@ async fn concurrent_inputs_and_saves_are_durable_idempotent_and_atomic() {
             break;
         }
         assert_eq!(page["next_after_input"], after);
-        assert_eq!(action_name(&page["actions"][0]), Some("tectd-program"));
-        assert_eq!(action_name(&page["actions"][1]), Some("program.get"));
-        assert_eq!(action_params(&page["actions"][1])["after_input"], after);
+        let continuation = page_read
+            .provenance
+            .terminal_actions
+            .iter()
+            .find(|action| action_name(action) == Some("program.get"))
+            .expect("actual collection continuation");
+        assert_eq!(action_params(continuation)["after_input"], after);
+        assert_eq!(page_read.provenance.terminal_recommended_action, Some(0));
     }
     assert_eq!(seen[0], original);
     assert_eq!(seen.len(), 3);

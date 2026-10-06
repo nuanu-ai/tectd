@@ -16,6 +16,8 @@ mod support;
 use knowledge_lifecycle_support::commit_create;
 use knowledge_operation_support::{SingleOperation, commit_single};
 use pipeline_support::{completion, successful_route};
+use recovery_support::native_reads::ScopeOpenFixture;
+use recovery_support::pipeline_reads::{ResolvedPipeline, resolve_pipeline};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -37,13 +39,16 @@ fn pipeline_draft(label: &str) -> Value {
         "supersessions":[]})
 }
 
-async fn begin(client: &mut Mcp, repo: &std::path::Path, label: &str) -> Value {
+async fn begin(client: &mut Mcp, repo: &std::path::Path, label: &str) -> ResolvedPipeline {
     let (source, candidate) = ready_source_candidate(client, repo).await;
     let scope=route(client,"command","scope.open",json!({"request_id":Uuid::new_v4(),
         "candidate_set_id":source["candidate_set"]["id"],"candidate_set_revision":source["candidate_set"]["revision"],
         "candidate_snapshot_id":source["snapshot"]["id"],"candidate_id":candidate["id"],
         "candidate_revision":candidate["revision"]})).await;
-    let saved = save(client, &scope["created"]["planning"], pipeline_draft(label)).await;
+    let planning = ScopeOpenFixture::from_mutation(scope, "created")
+        .read_planning(client)
+        .await;
+    let saved = save(client, &planning.value, pipeline_draft(label)).await;
     let reviewed = review(client, &saved).await;
     let opened = route(
         client,
@@ -52,7 +57,7 @@ async fn begin(client: &mut Mcp, repo: &std::path::Path, label: &str) -> Value {
         open_slice(&reviewed, &reviewed["draft"]["nodes"][0], Uuid::new_v4()),
     )
     .await;
-    route(
+    let raw = route(
         client,
         "command",
         "slice.pipeline.begin",
@@ -61,8 +66,8 @@ async fn begin(client: &mut Mcp, repo: &std::path::Path, label: &str) -> Value {
         "slice_revision":opened["created"]["revision"],"delivery_mode":"phasewise",
         "qualification_reason":"Exact generic consumer integration fixture."}),
     )
-    .await["created"]
-        .clone()
+    .await;
+    resolve_pipeline(client, raw).await.unwrap()
 }
 
 fn runbook(purpose: &str, source: &str) -> Value {
@@ -152,7 +157,7 @@ async fn generic_consumer_enforces_time_pin_withdrawal_and_member_access() {
 
     let empty = begin(&mut owner, &repo, "empty").await;
     assert!(
-        empty["knowledge_resources"]["selected"]
+        empty.details_data()["knowledge_resources"]["selected"]
             .as_array()
             .unwrap()
             .is_empty()
@@ -163,12 +168,16 @@ async fn generic_consumer_enforces_time_pin_withdrawal_and_member_access() {
         &mut owner,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":empty["run"]["id"]}),
+        json!({"run_id":empty.run()["id"]}),
     )
     .await;
-    assert_eq!(stale["knowledge_resource_status"]["state"], "stale");
+    let stale = resolve_pipeline(&mut owner, stale).await.unwrap();
+    assert_eq!(
+        stale.details_data()["knowledge_resource_status"]["state"],
+        "stale"
+    );
     assert!(contains_unit(
-        &stale["knowledge_resource_status"]["changed_unit_ids"],
+        &stale.details_data()["knowledge_resource_status"]["changed_unit_ids"],
         &required_unit
     ));
 
@@ -205,7 +214,7 @@ async fn generic_consumer_enforces_time_pin_withdrawal_and_member_access() {
     let optional = commit_create(&mut owner, optional).await;
     let optional_unit = optional.receipt["applied_operations"][0]["unit_id"].clone();
     let current = begin(&mut owner, &repo, "pin-and-optional").await;
-    let resources = &current["knowledge_resources"];
+    let resources = &current.details_data()["knowledge_resources"];
     let selected = resources["selected"].as_array().unwrap();
     let pinned_selected = selected
         .iter()
@@ -224,17 +233,15 @@ async fn generic_consumer_enforces_time_pin_withdrawal_and_member_access() {
     let mut acknowledged = completion(&current, verdict, outcome, transition, None, None);
     acknowledged["consumed_knowledge"] =
         json!({"manifest_id":resources["id"],"digest":resources["digest"]});
-    assert!(
-        route(
-            &mut owner,
-            "command",
-            "slice.pipeline.phase.complete",
-            acknowledged
-        )
-        .await
-        .get("context")
-        .is_some()
-    );
+    let completed = route(
+        &mut owner,
+        "command",
+        "slice.pipeline.phase.complete",
+        acknowledged,
+    )
+    .await;
+    assert!(completed.get("context").is_some());
+    resolve_pipeline(&mut owner, completed).await.unwrap();
 
     let mut restricted = runbook("reference", "private-erased-marker");
     restricted["access_scope"] = json!("owners_only");
@@ -242,7 +249,7 @@ async fn generic_consumer_enforces_time_pin_withdrawal_and_member_access() {
     let restricted_unit = restricted.receipt["applied_operations"][0]["unit_id"].clone();
     let owner_cached = begin(&mut owner, &repo, "owner-private-cache").await;
     assert!(contains_unit(
-        &owner_cached["knowledge_resources"]["selected"],
+        &owner_cached.details_data()["knowledge_resources"]["selected"],
         &restricted_unit
     ));
     let (mut member, member_principal, workspace) =
@@ -251,11 +258,12 @@ async fn generic_consumer_enforces_time_pin_withdrawal_and_member_access() {
         &mut member,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":owner_cached["run"]["id"]}),
+        json!({"run_id":owner_cached.run()["id"]}),
     )
     .await;
+    let allowed = resolve_pipeline(&mut member, allowed).await.unwrap();
     assert!(contains_unit(
-        &allowed["knowledge_resources"]["selected"],
+        &allowed.details_data()["knowledge_resources"]["selected"],
         &restricted_unit
     ));
     sqlx::query(
@@ -271,7 +279,7 @@ async fn generic_consumer_enforces_time_pin_withdrawal_and_member_access() {
         &mut member,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":owner_cached["run"]["id"]}),
+        json!({"run_id":owner_cached.run()["id"]}),
     )
     .await;
     assert_eq!(denied["error"]["code"], "forbidden");
@@ -305,13 +313,13 @@ async fn generic_consumer_enforces_time_pin_withdrawal_and_member_access() {
     .await;
     let withdrawn = begin(&mut owner, &repo, "withdrawn-required").await;
     assert_eq!(
-        withdrawn["knowledge_resources"]["unresolved_needs"],
+        withdrawn.details_data()["knowledge_resources"]["unresolved_needs"],
         json!(["resource_unavailable"])
     );
     let (verdict, outcome, transition) = successful_route(&withdrawn);
     let mut blocked = completion(&withdrawn, verdict, outcome, transition, None, None);
-    blocked["consumed_knowledge"] = json!({"manifest_id":withdrawn["knowledge_resources"]["id"],
-        "digest":withdrawn["knowledge_resources"]["digest"]});
+    blocked["consumed_knowledge"] = json!({"manifest_id":withdrawn.details_data()["knowledge_resources"]["id"],
+        "digest":withdrawn.details_data()["knowledge_resources"]["digest"]});
     assert_eq!(
         route_error(
             &mut owner,
@@ -346,7 +354,7 @@ async fn generic_consumer_enforces_time_pin_withdrawal_and_member_access() {
         &mut owner,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":owner_cached["run"]["id"]}),
+        json!({"run_id":owner_cached.run()["id"]}),
     )
     .await;
     assert_eq!(erased["error"]["code"], "knowledge_payload_erased");

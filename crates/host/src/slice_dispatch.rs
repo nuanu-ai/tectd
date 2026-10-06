@@ -1,7 +1,10 @@
+mod planning_reads;
 use crate::responses;
 use crate::scope_guidance::StaticCandidateGuidance;
 use crate::slice_guidance::StaticSliceGuidance;
 use crate::slice_tools::{PipelineView, SliceInvocation};
+pub(crate) use planning_reads::pipelines_read;
+use planning_reads::{candidate_page_read, compact_open_scope, compact_slice_planning, scope_read};
 use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -49,36 +52,61 @@ pub(crate) async fn execute(
     let guidance = StaticSliceGuidance;
     let guard = NativePlanningEncoding { capacity };
     match invocation {
-        SliceInvocation::ScopeContext { scope_id } => {
-            output(service.scope_context(context, scope_id).await?, vec![])
-        }
+        SliceInvocation::Window {
+            request,
+            window,
+            params,
+        } => match *request {
+            SliceInvocation::Pipelines(view) => {
+                service.authenticate_host(context).await?;
+                pipelines_read(view, &window, capacity)
+            }
+            SliceInvocation::ScopeContext { scope_id } => scope_read(
+                service.scope_context(context, scope_id).await?,
+                params,
+                &window,
+                capacity,
+            ),
+            SliceInvocation::CandidateContext(query) => candidate_page_read(
+                service
+                    .slice_candidate_context(context, &query, &guidance)
+                    .await?,
+                &query,
+                params,
+                &window,
+                capacity,
+            ),
+            _ => Err(tect_domain::Error::InternalInvariant),
+        },
+        SliceInvocation::ScopeContext { scope_id } => scope_read(
+            service.scope_context(context, scope_id).await?,
+            json!({"scope_id":scope_id}),
+            &crate::planning_read::Window::default(),
+            capacity,
+        ),
         SliceInvocation::Pipelines(view) => {
             service.authenticate_host(context).await?;
-            let value = match view {
-                PipelineView::Full => crate::slice_pipeline_catalog::value(),
-                PipelineView::Summary => crate::slice_pipeline_catalog::summary_value(),
-            };
-            output(value, vec![])
+            pipelines_read(view, &crate::planning_read::Window::default(), capacity)
         }
         SliceInvocation::CandidateContext(query) => {
             let value = service
                 .slice_candidate_context(context, &query, &guidance)
                 .await?;
-            candidate_page(value, &query, capacity)
+            candidate_page_read(
+                value,
+                &query,
+                serde_json::to_value(&query)
+                    .map_err(|_| tect_domain::Error::TransportUnavailable)?,
+                &crate::planning_read::Window::default(),
+                capacity,
+            )
         }
         SliceInvocation::OpenScope(request) => {
             let source_guidance = StaticCandidateGuidance;
             let value = service
                 .scope_open(context, &request, &source_guidance, &guidance, &guard)
                 .await?;
-            let context = match &value {
-                OpenScopeOutcome::Created(context) | OpenScopeOutcome::Replay(context) => {
-                    context.planning.clone()
-                }
-            };
-            let mut value = output(value, candidate_actions(&context)?)?;
-            crate::response_diet::outcome_planning(&mut value, "planning", true);
-            Ok(value)
+            compact_open_scope(&value)
         }
         SliceInvocation::SaveDraft(request) => candidate_mutation(
             service
@@ -149,6 +177,9 @@ fn pipeline_begin_action(slice: &tect_domain::NativeSlice) -> Result<Value> {
         "slice_id":slice.id,
         "slice_revision":slice.revision,
     });
+    if slice.pipeline == tect_domain::PipelineKind::LightweightTddDevelopment {
+        params["definition_version"] = json!(tect_domain::CURRENT_LIGHTWEIGHT_VERSION);
+    }
     let mut fields = vec![json!({"path":"arguments.params.qualification_reason",
         "format":"Agent-supplied concrete reason this Slice fits the selected pipeline and its default delivery mode. Do not ask the human unless fit is genuinely ambiguous."})];
     if matches!(
@@ -182,11 +213,8 @@ fn candidate_mutation(value: SliceCandidateContext) -> Result<Value> {
     candidate_reply(value, false)
 }
 
-fn candidate_reply(value: SliceCandidateContext, bodies: bool) -> Result<Value> {
-    let actions = candidate_actions(&value)?;
-    let mut value = output(value, actions)?;
-    crate::response_diet::planning_context(&mut value, bodies);
-    Ok(value)
+fn candidate_reply(value: SliceCandidateContext, _bodies: bool) -> Result<Value> {
+    compact_slice_planning(&value)
 }
 
 fn candidate_page(
@@ -194,6 +222,9 @@ fn candidate_page(
     query: &SliceCandidateContextQuery,
     capacity: usize,
 ) -> Result<Value> {
+    if query.view == SliceCandidateContextView::Details {
+        return output(context, vec![]);
+    }
     let actions = candidate_actions(&context)?;
     let offset = usize::try_from(query.after.unwrap_or(0))
         .map_err(|_| tect_domain::Error::InvalidArguments)?;
@@ -210,6 +241,7 @@ fn candidate_page(
     crate::response_diet::planning_context(&mut common, true);
     let value = match query.view {
         SliceCandidateContextView::Overview => common,
+        SliceCandidateContextView::Details => unreachable!("details returned above"),
         SliceCandidateContextView::Inputs => page(common, context.inputs, offset, limit)?,
         SliceCandidateContextView::Candidates => page(
             common,
@@ -223,7 +255,9 @@ fn candidate_page(
     };
     let recommended = (!actions.is_empty()).then_some(0);
     let value = responses::with_actions(value, actions, recommended);
-    ensure_capacity(&value, capacity)?;
+    if capacity != usize::MAX {
+        ensure_capacity(&value, capacity)?;
+    }
     Ok(value)
 }
 
@@ -233,16 +267,17 @@ pub struct NativePlanningEncoding {
 
 impl NativePlanningOutputGuard for NativePlanningEncoding {
     fn check_context(&self, value: &SliceCandidateContext) -> Result<()> {
-        ensure_capacity(&candidate_context(value.clone())?, self.capacity)
+        ensure_capacity(
+            &compact_slice_planning(value)?,
+            self.capacity.min(crate::json_fragment::READ_BUDGET),
+        )
     }
 
     fn check_open_scope(&self, value: &OpenScopeOutcome) -> Result<()> {
-        let planning = match value {
-            OpenScopeOutcome::Created(context) | OpenScopeOutcome::Replay(context) => {
-                &context.planning
-            }
-        };
-        ensure_capacity(&output(value, candidate_actions(planning)?)?, self.capacity)
+        ensure_capacity(
+            &compact_open_scope(value)?,
+            self.capacity.min(crate::json_fragment::READ_BUDGET),
+        )
     }
 }
 
@@ -395,100 +430,7 @@ fn output<T: Serialize>(value: T, actions: Vec<Value>) -> Result<Value> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tect_domain::{NativeSlice, PipelineCheckpointRef, PipelineKind, SliceState};
+mod tests;
 
-    fn slice(
-        pipeline: PipelineKind,
-        source_checkpoint: Option<PipelineCheckpointRef>,
-    ) -> NativeSlice {
-        NativeSlice {
-            id: Uuid::new_v4(),
-            scope_id: Uuid::new_v4(),
-            revision: 1,
-            candidate_id: Uuid::new_v4(),
-            candidate_revision: 1,
-            opening_snapshot_id: Uuid::new_v4(),
-            title: "Bounded outcome".into(),
-            outcome: "Observed result".into(),
-            pipeline,
-            state: SliceState::Open,
-            pipeline_status: "not_started".into(),
-            pipeline_run_id: None,
-            knowledge_change_id: None,
-            knowledge_run_id: None,
-            knowledge_status: None,
-            source_checkpoint,
-            execution_claimed: false,
-        }
-    }
-
-    #[test]
-    fn opened_slice_output_is_not_started_without_design_guidance_or_execution_claim() {
-        let slice = slice(PipelineKind::LightweightTddDevelopment, None);
-        let value = output(slice, Vec::new()).unwrap();
-        assert_eq!(value["pipeline_status"], "not_started");
-        assert_eq!(value["execution_claimed"], false);
-        assert!(value.get("rules").is_none());
-        assert!(value.get("method").is_none());
-        assert!(value.get("execute").is_none());
-    }
-
-    #[test]
-    fn new_inquiry_pipelines_require_the_authored_immutable_inquiry() {
-        for pipeline in [PipelineKind::Research, PipelineKind::DeepBrainstorming] {
-            let value = pipeline_begin_action(&slice(pipeline, None)).unwrap();
-            let fields = value["context_input"]["fields"].as_array().unwrap();
-            assert_eq!(fields.len(), 2);
-            assert_eq!(fields[1]["path"], "arguments.params.inquiry");
-            assert!(
-                fields[1]["format"]
-                    .as_str()
-                    .unwrap()
-                    .starts_with("Immutable inquiry:")
-            );
-            assert!(value["arguments"]["params"].get("inquiry").is_none());
-            assert!(
-                value["arguments"]["params"]
-                    .get("source_checkpoint")
-                    .is_none()
-            );
-        }
-    }
-
-    #[test]
-    fn checkpoint_backed_research_begin_server_fills_exact_checkpoint() {
-        let checkpoint = PipelineCheckpointRef {
-            checkpoint_id: Uuid::new_v4(),
-            digest: "checkpoint-digest".into(),
-        };
-        let value = pipeline_begin_action(&slice(PipelineKind::Research, Some(checkpoint.clone())))
-            .unwrap();
-        assert_eq!(
-            value["arguments"]["params"]["source_checkpoint"],
-            json!(checkpoint)
-        );
-        assert_eq!(
-            value["context_input"]["fields"][1]["format"],
-            "Exact inquiry from that checkpoint in current Scope planning, not a new authored contract."
-        );
-        assert!(value["arguments"]["params"].get("inquiry").is_none());
-    }
-
-    #[test]
-    fn legacy_pipeline_begin_action_remains_qualification_only() {
-        let value =
-            pipeline_begin_action(&slice(PipelineKind::LightweightTddDevelopment, None)).unwrap();
-        assert_eq!(
-            value["context_input"]["fields"].as_array().unwrap().len(),
-            1
-        );
-        assert!(value["arguments"]["params"].get("inquiry").is_none());
-        assert!(
-            value["arguments"]["params"]
-                .get("source_checkpoint")
-                .is_none()
-        );
-    }
-}
+#[cfg(test)]
+mod planning_read_tests;

@@ -1,7 +1,10 @@
 use super::*;
 
 pub(in crate::api) fn scope_context() -> Value {
-    object_schema(json!({"scope_id":uuid()}), json!(["scope_id"]))
+    crate::planning_read::schema(object_schema(
+        json!({"scope_id":uuid()}),
+        json!(["scope_id"]),
+    ))
 }
 
 pub(in crate::api) fn slice_context() -> Value {
@@ -9,24 +12,39 @@ pub(in crate::api) fn slice_context() -> Value {
 }
 
 pub(in crate::api) fn pipeline_context() -> Value {
-    object_schema(
-        json!({"run_id":uuid(),"view":{"type":"string","enum":["current","output","delivery_receipt"]},
-            "output_id":uuid(),"digest":text(),"refresh":{"type":"boolean"}}),
+    let ordinary = object_schema(
+        json!({"run_id":uuid(),"view":{"type":"string","enum":["current","output","delivery_receipt","snapshot","phase_contract","details"]},
+            "definition_digest":text(),"phase_id":text(),"run_revision":{"type":"integer","minimum":1},"section":{"type":"string","enum":["all","inputs","outputs","history"]},"output_id":uuid(),"digest":text(),"refresh":{"type":"boolean"},"offset_bytes":{"type":"integer","minimum":0},"limit_bytes":{"type":"integer","minimum":1,"maximum":4096},"representation_digest":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"}}),
         json!(["run_id"]),
-    )
+    );
+    let receipt = object_schema(
+        json!({"run_id":uuid(),"view":{"const":"receipt_diff"},"phase_id":text(),
+            "receipt_kind":{"type":"string","enum":["skill","resource"]},
+            "submitted_receipts":{"type":"array","items":object_schema(json!({"instruction_id":text(),"version":text(),"digest":text()}),json!(["instruction_id","version","digest"]))},
+            "definition_digest":text(),"submitted_digest":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"},
+            "offset_bytes":{"type":"integer","minimum":0},"limit_bytes":{"type":"integer","minimum":1,"maximum":4096},
+            "representation_digest":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"},"refresh":{"type":"boolean"}}),
+        json!([
+            "run_id",
+            "view",
+            "phase_id",
+            "receipt_kind",
+            "submitted_receipts"
+        ]),
+    );
+    json!({"oneOf":[ordinary,receipt]})
 }
 
 pub(in crate::api) fn pipeline_instruction() -> Value {
-    object_schema(
-        json!({
-            "run_id":uuid(),
-            "instruction_id":text(),
-            "version":text(),
-            "digest":text(),
-            "refresh":{"type":"boolean"}
-        }),
-        json!(["run_id", "instruction_id", "version", "digest"]),
-    )
+    let common = |properties, required| object_schema(properties, required);
+    let window = json!({"run_id":uuid(),"refresh":{"type":"boolean"},"offset_bytes":{"type":"integer","minimum":0},"limit_bytes":{"type":"integer","minimum":1,"maximum":4096},"representation_digest":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"}});
+    let mut pinned = window.clone();
+    pinned["instruction_id"] = text();
+    pinned["version"] = text();
+    pinned["digest"] = text();
+    let mut phase = window;
+    phase["phase_id"] = text();
+    json!({"oneOf":[common(pinned,json!(["run_id","instruction_id","version","digest"])), common(phase,json!(["run_id","phase_id"]))]})
 }
 
 pub(in crate::api) fn pipeline_begin() -> Value {
@@ -68,7 +86,7 @@ pub(in crate::api) fn pipeline_run_migrate() -> Value {
             "expected_revision":{"type":"integer","minimum":1},
             "idempotency_key":{"type":"string","minLength":1,"maxLength":128},
             "successor_definition_version":text(),
-            "mappings":{"type":"array","items":mapping,"minItems":1,"uniqueItems":true}}),
+            "mappings":{"type":"array","items":mapping,"uniqueItems":true}}),
         json!([
             "request_id",
             "predecessor_run_id",

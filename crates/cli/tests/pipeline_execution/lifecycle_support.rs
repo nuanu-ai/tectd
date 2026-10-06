@@ -1,26 +1,14 @@
+use super::recovery_support::pipeline_reads::{ResolvedPipeline, resolve_pipeline};
 use super::{Mcp, route};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use uuid::Uuid;
 
-pub(super) const LIGHTWEIGHT_PHASES: [&str; 15] = [
-    "slice-lightweight-entry-gate",
-    "slice-lightweight-intent-capture",
-    "slice-lightweight-context-loader",
-    "slice-workspace-preflight-lite",
-    "slice-lightweight-contract-writer",
-    "slice-lightweight-escalation-checker",
-    "slice-test-target-selector",
-    "slice-lightweight-pre-implementation-review",
-    "slice-tdd-cycle-runner",
-    "slice-implementation-note-writer",
-    "slice-lightweight-verification-runner",
-    "slice-deploy-impact-checker",
-    "slice-lightweight-result-writer",
-    "slice-lightweight-promotion-router",
-    "slice-lightweight-maintenance-and-handoff",
-];
+#[path = "current_lightweight.rs"]
+mod current_lightweight;
+
+pub(super) const LIGHTWEIGHT_PHASES: [&str; 5] = ["K1", "K2", "K3", "K4", "K5"];
 
 pub(super) fn lightweight_draft() -> Value {
     json!({"coverage_summary":"One bounded TDD implementation lifecycle","nodes":[{
@@ -47,6 +35,13 @@ fn phase_output_with_consumed(
     transition: &str,
     consumed_outputs: &Value,
 ) -> Value {
+    if current_lightweight::is_canonical_phase(phase) {
+        return current_lightweight::phase_output(phase, outcome, transition);
+    }
+    assert!(
+        !LIGHTWEIGHT_PHASES.iter().any(|id| phase["id"] == *id),
+        "unsupported Lightweight phase contract"
+    );
     let mut fields = phase["required_fields"]
         .as_array()
         .unwrap()
@@ -189,10 +184,10 @@ pub(super) fn terminal(summary: &str) -> Value {
     })
 }
 
-pub(super) fn consumed_outputs(context: &Value) -> Value {
-    let current_ordinal = context["run"]["current_phase_ordinal"].as_u64().unwrap();
+pub(super) fn consumed_outputs(context: &ResolvedPipeline) -> Value {
+    let current_ordinal = context.run()["current_phase_ordinal"].as_u64().unwrap();
     Value::Array(
-        context["bindings"]
+        context.details_data()["bindings"]
             .as_array()
             .unwrap()
             .iter()
@@ -201,7 +196,7 @@ pub(super) fn consumed_outputs(context: &Value) -> Value {
                     && binding["phase_ordinal"].as_u64().unwrap() < current_ordinal
             })
             .map(|binding| {
-                let output = context["outputs"]
+                let output = context.details_data()["outputs"]
                     .as_array()
                     .unwrap()
                     .iter()
@@ -222,10 +217,10 @@ pub(super) fn consumed_outputs(context: &Value) -> Value {
     )
 }
 
-pub(super) fn consumed_inputs(context: &Value) -> Value {
-    let phase_id = &context["run"]["current_phase_id"];
+pub(super) fn consumed_inputs(context: &ResolvedPipeline) -> Value {
+    let phase_id = &context.run()["current_phase_id"];
     Value::Array(
-        context["inputs"]
+        context.details_data()["inputs"]
             .as_array()
             .unwrap()
             .iter()
@@ -239,12 +234,12 @@ pub(super) fn consumed_inputs(context: &Value) -> Value {
 
 pub(super) async fn complete(
     client: &mut Mcp,
-    context: &Value,
+    context: &ResolvedPipeline,
     outcome: &str,
     transition: &str,
     terminal_result: Option<Value>,
     publish_blocked_result: bool,
-) -> (Value, Value) {
+) -> (ResolvedPipeline, Value) {
     let params = completion_request(
         context,
         outcome,
@@ -259,29 +254,44 @@ pub(super) async fn complete(
         params.clone(),
     )
     .await;
-    (response, params)
+    let resolved = resolve_pipeline(client, response)
+        .await
+        .expect("resolve actual phase completion pipeline");
+    (resolved, params)
 }
 
 pub(super) fn completion_request(
-    context: &Value,
+    context: &ResolvedPipeline,
     outcome: &str,
     transition: &str,
     terminal_result: Option<Value>,
     publish_blocked_result: bool,
 ) -> Value {
-    let phase_id = context["run"]["current_phase_id"].as_str().unwrap();
-    let phase = context["definition"]["phases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|phase| phase["id"] == phase_id)
-        .unwrap();
+    let lightweight = context.run()["definition_kind"] == "slice.lightweight-tdd-development";
+    if lightweight {
+        assert!(
+            matches!(
+                context.run()["definition_version"].as_str(),
+                Some("0.7.1-native.k1k5" | "0.7.0-native.k1k5")
+            ),
+            "unsupported Lightweight fixture version"
+        );
+    }
+    let phase_id = context.run()["current_phase_id"].as_str().unwrap();
+    let phase = context
+        .current_phase()
+        .expect("resolved current phase contract");
+    assert_eq!(phase["id"], phase_id, "current phase contract identity");
     let request_id = Uuid::new_v4();
-    let consumed_outputs = consumed_outputs(context);
+    let consumed_outputs = if lightweight {
+        json!([])
+    } else {
+        consumed_outputs(context)
+    };
     let mut output =
         phase_output_with_consumed(phase, phase_id, outcome, transition, &consumed_outputs);
     if phase["fresh_reviewer_input"] == true {
-        let producers = context["outputs"]
+        let producers = context.details_data()["outputs"]
             .as_array()
             .unwrap()
             .iter()
@@ -298,29 +308,34 @@ pub(super) fn completion_request(
         });
     }
     let mut params = json!({
-        "request_id":request_id,"run_id":context["run"]["id"],
-        "run_revision":context["run"]["revision"],"phase_id":phase_id,
+        "request_id":request_id,"run_id":context.run()["id"],
+        "run_revision":context.run()["revision"],"phase_id":phase_id,
         "outcome":outcome,"transition":transition,
         "output":output,
-        "consumed_outputs":consumed_outputs,
-        "consumed_inputs":consumed_inputs(context),
         "publish_blocked_result":publish_blocked_result
     });
     if let Some(result) = terminal_result {
         params["terminal_result"] = result;
     }
-    let consumed_knowledge = [&context["knowledge_resources"], &context["knowledge"]]
+    if !lightweight {
+        params["consumed_outputs"] = consumed_outputs;
+        params["consumed_inputs"] = consumed_inputs(context);
+        let consumed_knowledge = [
+            &context.details_data()["knowledge_resources"],
+            &context.details_data()["knowledge"],
+        ]
         .into_iter()
         .find(|manifest| {
             manifest["selected"]
                 .as_array()
                 .is_some_and(|selected| !selected.is_empty())
         });
-    if let Some(manifest) = consumed_knowledge {
-        params["consumed_knowledge"] = json!({
-            "manifest_id":manifest["id"],
-            "digest":manifest["digest"]
-        });
+        if let Some(manifest) = consumed_knowledge {
+            params["consumed_knowledge"] = json!({
+                "manifest_id":manifest["id"],
+                "digest":manifest["digest"]
+            });
+        }
     }
     params
 }

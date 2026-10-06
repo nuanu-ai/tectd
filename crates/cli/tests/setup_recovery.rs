@@ -3,8 +3,7 @@
 mod recovery_support;
 
 use recovery_support::{
-    Daemon, Mcp, action_name, host_file, private_temp, public_call, ready_action, tagged_url,
-    tool_payload,
+    Daemon, Mcp, host_file, private_temp, public_call, ready_action, tagged_url, tool_payload,
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -120,31 +119,20 @@ fn apply_args(ready: ReadySetup) -> Value {
 fn assert_apply_retry(payload: &Value, ready: ReadySetup) {
     assert_eq!(payload["recommended_action"], 0);
     assert_eq!(
-        payload["actions"][0],
-        ready_action("apply_setup", apply_args(ready))
+        payload["actions"],
+        json!([ready_action("apply_setup", apply_args(ready))])
     );
-    assert_program_navigation(payload);
 }
 
 fn assert_reload(payload: &Value, ready: ReadySetup) {
     assert_eq!(payload["recommended_action"], 0);
     assert_eq!(
-        payload["actions"][0],
-        ready_action(
+        payload["actions"],
+        json!([ready_action(
             "get_setup",
             json!({"setup_id":ready.id,"after_input":0,"limit":25}),
-        )
+        )])
     );
-    assert_program_navigation(payload);
-}
-
-fn assert_program_navigation(payload: &Value) {
-    assert_eq!(payload["actions"].as_array().unwrap().len(), 3);
-    assert_eq!(
-        payload["actions"][1],
-        ready_action("list_programs", json!({"limit":25}))
-    );
-    assert_eq!(action_name(&payload["actions"][2]), Some("program.begin"));
 }
 
 async fn install_owned_failure(pool: &PgPool, setup_id: Uuid) -> (String, String) {

@@ -18,6 +18,7 @@ mod support;
 
 use knowledge_lifecycle_support::{commit_create, commit_create_from_current, settle_and_finish};
 use knowledge_operation_support::{SingleOperation, commit_single};
+use recovery_support::native_reads::ProgramFixture;
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -115,8 +116,11 @@ async fn managed_restore_reapplies_complete_suppression_and_preserves_survivor()
     let begun = client
         .call("begin_program", program_begin_request.clone())
         .await;
+    let begun_page = ProgramFixture::from_mutation(begun.clone())
+        .read_page(&mut client)
+        .await;
     let program_id = begun["program"]["id"].clone();
-    let program_manifest = &begun["program"]["planning_knowledge"]["manifest"];
+    let program_manifest = &begun_page.program()["planning_knowledge"]["manifest"];
     assert_eq!(program_manifest["selected"].as_array().unwrap().len(), 1);
     let draft_marker = format!("restore-program-draft-{}", Uuid::new_v4());
     let saved = client
@@ -142,8 +146,11 @@ async fn managed_restore_reapplies_complete_suppression_and_preserves_survivor()
         refresh_request.clone(),
     )
     .await;
+    let refreshed_page = ProgramFixture::from_mutation(refreshed.clone())
+        .read_page(&mut client)
+        .await;
     assert_eq!(
-        refreshed["program"]["planning_knowledge"]["manifest"]["selected"]
+        refreshed_page.program()["planning_knowledge"]["manifest"]["selected"]
             .as_array()
             .unwrap()
             .len(),

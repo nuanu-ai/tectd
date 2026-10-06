@@ -47,12 +47,9 @@ async fn checkpoint_resolution_rebinds_changed_dk_and_completes_from_returned_co
         "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]}),
     )
     .await;
-    let saved = save(
-        &mut client,
-        &scope["created"]["planning"],
-        brainstorming_draft(),
-    )
-    .await;
+    let scope = ScopeOpenFixture::from_mutation(scope, "created");
+    let planning = scope.read_planning(&mut client).await.value;
+    let saved = save(&mut client, &planning, brainstorming_draft()).await;
     let reviewed = review(&mut client, &saved).await;
     let slice = route(
         &mut client,
@@ -84,7 +81,7 @@ async fn checkpoint_resolution_rebinds_changed_dk_and_completes_from_returned_co
         None,
     )
     .await;
-    while producer["run"]["current_phase_ordinal"].as_u64().unwrap() < 5 {
+    while producer.run()["current_phase_ordinal"].as_u64().unwrap() < 5 {
         producer = advance(&mut client, producer).await;
     }
     assert!(contains_unit(&producer, &unit));
@@ -96,7 +93,8 @@ async fn checkpoint_resolution_rebinds_changed_dk_and_completes_from_returned_co
         json!({"run_id":checkpoint["producer_run_id"]}),
     )
     .await;
-    assert_eq!(waiting["run"]["status"], "waiting_input");
+    let waiting = resolve_pipeline(&mut client, waiting).await.unwrap();
+    assert_eq!(waiting.run()["status"], "waiting_input");
     let generation: i64 = sqlx::query_scalar(
         "UPDATE workspace_knowledge_state state SET generation=state.generation+1 FROM slice_pipeline_runs run WHERE run.id=$1 AND state.tenant_id=run.tenant_id AND state.workspace_id=run.workspace_id RETURNING state.generation",
     ).bind(checkpoint["producer_run_id"].as_str().unwrap().parse::<Uuid>().unwrap())
@@ -112,28 +110,31 @@ async fn checkpoint_resolution_rebinds_changed_dk_and_completes_from_returned_co
         "reason":"Cancel after a changed DK generation to reassess the decision."}),
     )
     .await;
-    let current = &resolved["context"];
-    assert_eq!(resolved["checkpoint"]["status"], "cancelled");
-    assert_eq!(current["knowledge_resource_status"]["state"], "current");
+    let current = resolve_pipeline(&mut client, resolved).await.unwrap();
+    assert_eq!(resolved_checkpoint(&current)["status"], "cancelled");
     assert_eq!(
-        current["knowledge_resources"]["run_revision"],
-        current["run"]["revision"]
+        current.details_data()["knowledge_resource_status"]["state"],
+        "current"
     );
     assert_eq!(
-        current["knowledge_resources"]["workspace_generation"],
+        current.details_data()["knowledge_resources"]["run_revision"],
+        current.run()["revision"]
+    );
+    assert_eq!(
+        current.details_data()["knowledge_resources"]["workspace_generation"],
         generation
     );
     assert_ne!(
-        current["knowledge_resources"]["id"],
-        waiting["knowledge_resources"]["id"]
+        current.details_data()["knowledge_resources"]["id"],
+        waiting.details_data()["knowledge_resources"]["id"]
     );
-    assert!(contains_unit(current, &unit));
+    assert!(contains_unit(&current, &unit));
     let reworked = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         completion(
-            current,
+            &current,
             "rework",
             "completed",
             "continue",
@@ -142,5 +143,6 @@ async fn checkpoint_resolution_rebinds_changed_dk_and_completes_from_returned_co
         ),
     )
     .await;
-    assert_eq!(reworked["context"]["run"]["current_phase_id"], "B04");
+    let reworked = resolve_pipeline(&mut client, reworked).await.unwrap();
+    assert_eq!(reworked.run()["current_phase_id"], "B04");
 }

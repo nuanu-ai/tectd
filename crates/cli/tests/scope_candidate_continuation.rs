@@ -1,8 +1,10 @@
 //! Durable candidate deltas, historical reads, and daemon restart continuation.
+use crate::recovery_support::candidate_reads::read_query_json;
 mod recovery_support;
 #[path = "scope_candidate_continuation/support.rs"]
 mod support;
-
+use recovery_support::candidate_collections::read_collection_query;
+use recovery_support::candidate_reads::CandidateFixture;
 use recovery_support::{
     Daemon, Mcp, action_name, action_params, host_file, private_temp, tagged_url,
 };
@@ -14,7 +16,6 @@ use support::{
 };
 use tect_postgres::admin;
 use uuid::Uuid;
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
     let admin_url = std::env::var("TECT_TEST_ADMIN_URL").expect("TECT_TEST_ADMIN_URL required");
@@ -42,7 +43,6 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
     let native = Uuid::new_v4().to_string();
     let mut client = Mcp::start(&socket, &config, &native, &workspace).await;
     client.call("open_workspace", json!({})).await;
-
     let started = client
         .call(
             "begin_program",
@@ -67,9 +67,11 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
             }),
         )
         .await;
-    let set = id(&created["context"]["candidate_set"]["id"]);
-    let snapshot_one = id(&created["context"]["snapshot"]["id"]);
-    let source_one = planning_ref(&created["context"], 1);
+    let created_fixture = CandidateFixture::from_mutation(created.clone());
+    let created_overview = created_fixture.read_overview(&mut client).await.value;
+    let set = id(&created_overview["context"]["candidate_set"]["id"]);
+    let snapshot_one = id(&created_overview["context"]["snapshot"]["id"]);
+    let source_one = planning_ref(&created_overview["context"], 1);
     let initial_request = json!({
         "kind":"draft","candidate_set_id":set,"revision":1,"snapshot_id":snapshot_one,
         "input_cursor":1,"request_id":Uuid::new_v4(),"draft":{"boundary":"ongoing",
@@ -84,12 +86,23 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
     let initial = client
         .call("save_candidate_set", initial_request.clone())
         .await;
+    let initial_fixture = CandidateFixture::from_mutation(initial.clone());
+    let initial_details = initial_fixture.read_details(&mut client).await.value;
     assert_eq!(
-        initial["draft"]["delta"]["added"].as_array().unwrap().len(),
+        initial_details["draft"]["delta"]["added"]
+            .as_array()
+            .unwrap()
+            .len(),
         3
     );
-    let old_goals = initial["draft"]["goals"].as_array().unwrap().clone();
-    let old_candidates = initial["draft"]["candidates"].as_array().unwrap().clone();
+    let old_goals = initial_details["draft"]["goals"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let old_candidates = initial_details["draft"]["candidates"]
+        .as_array()
+        .unwrap()
+        .clone();
     let a = id(&old_candidates[0]["id"]);
     let b = id(&old_candidates[1]["id"]);
     let c = id(&old_candidates[2]["id"]);
@@ -107,7 +120,6 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
             }),
         )
         .await;
-
     let source = client
         .call(
             "register_source",
@@ -142,22 +154,20 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
             }),
         )
         .await;
-
-    let stale_history = client
-        .call(
-            "candidate_context",
-            json!({
-                "candidate_set_id":set,"view":"history","limit":100
-            }),
-        )
-        .await;
+    let stale_history = read_collection_query(
+        &mut client,
+        &serde_json::json!({"route":"scope.candidates.context","params":json!({
+            "candidate_set_id":set,"view":"history","limit":100
+        })}),
+    )
+    .await;
     assert!(
-        !stale_history["context"]["stale_reasons"]
+        !stale_history.pages[0].value["context"]["stale_reasons"]
             .as_array()
             .unwrap()
             .is_empty()
     );
-    let stale_reasons = stale_history["context"]["stale_reasons"]
+    let stale_reasons = stale_history.pages[0].value["context"]["stale_reasons"]
         .as_array()
         .unwrap();
     assert!(stale_reasons.iter().any(|reason| reason == "program"));
@@ -167,20 +177,19 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
             .any(|reason| reason == "selected_sources")
     );
     assert!(
-        stale_history["actions"]
-            .as_array()
-            .unwrap()
+        stale_history
+            .terminal()
+            .terminal_actions
             .iter()
             .all(|action| action_name(action) != Some("scope.candidates.refresh"))
     );
-    let historical_call = stale_history["actions"]
-        .as_array()
-        .unwrap()
+    let historical_call = stale_history
+        .terminal()
+        .terminal_actions
         .iter()
         .find(|action| action_params(action)["view"] == "historical")
         .unwrap();
     assert_eq!(action_params(historical_call)["draft_revision"], 2);
-
     let refreshed = client
         .call(
             "refresh_candidate_set",
@@ -189,9 +198,11 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
             }),
         )
         .await;
-    let current = &refreshed["context"];
+    let refreshed_fixture = CandidateFixture::from_mutation(refreshed.clone());
+    let refreshed_overview = refreshed_fixture.read_overview(&mut client).await.value;
+    let current = &refreshed_overview["context"];
     assert!(current["stale_reasons"].as_array().unwrap().is_empty());
-    assert_eq!(current["snapshot"]["method"]["revision"], "5");
+    assert_eq!(current["snapshot"]["method"]["revision"], "6");
     assert_eq!(
         current["snapshot"]["selected_worktree_ids"][0],
         source["id"]
@@ -199,7 +210,6 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
     let current_one = planning_ref(current, 1);
     let current_two = planning_ref(current, 2);
     assert_ne!(current_one, source_one);
-
     let unchanged_a = existing_candidate(&old_candidates[0], None);
     let mut changed_b = existing_candidate(
         &old_candidates[1],
@@ -236,7 +246,6 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
     )).await;
     assert_eq!(rejected["error"]["code"], "invalid_arguments");
     assert_eq!(versions(&pool, set).await, before_rejections);
-
     let continued_request = json!({
         "kind":"draft","candidate_set_id":set,"revision":5,"snapshot_id":current["snapshot"]["id"],
         "input_cursor":2,"request_id":Uuid::new_v4(),"draft":{"boundary":"ongoing",
@@ -248,47 +257,60 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
             "replacements":[{"local":"cd"}]}]}}
     );
     let continued = client.call("save_candidate_set", continued_request).await;
-    assert_eq!(continued["context"]["candidate_set"]["revision"], 6);
+    let continued_fixture = CandidateFixture::from_mutation(continued.clone());
+    let continued_overview = continued_fixture.read_overview(&mut client).await.value;
+    let continued_details = continued_fixture.read_details(&mut client).await.value;
     assert_eq!(
-        continued["draft"]["delta"]["unchanged"][0]["candidate_id"],
+        continued_overview["context"]["candidate_set"]["revision"],
+        6
+    );
+    assert_eq!(
+        continued_details["draft"]["delta"]["unchanged"][0]["candidate_id"],
         a.to_string()
     );
-    assert_eq!(continued["draft"]["delta"]["unchanged"][0]["revision"], 1);
     assert_eq!(
-        continued["draft"]["delta"]["changed"][0]["candidate_id"],
+        continued_details["draft"]["delta"]["unchanged"][0]["revision"],
+        1
+    );
+    assert_eq!(
+        continued_details["draft"]["delta"]["changed"][0]["candidate_id"],
         b.to_string()
     );
     assert_eq!(
-        continued["draft"]["delta"]["changed"][0]["from_revision"],
+        continued_details["draft"]["delta"]["changed"][0]["from_revision"],
         1
     );
-    assert_eq!(continued["draft"]["delta"]["changed"][0]["to_revision"], 2);
     assert_eq!(
-        continued["draft"]["delta"]["superseded"][0]["prior"]["id"],
+        continued_details["draft"]["delta"]["changed"][0]["to_revision"],
+        2
+    );
+    assert_eq!(
+        continued_details["draft"]["delta"]["superseded"][0]["prior"]["id"],
         c.to_string()
     );
-    let d = id(&continued["draft"]["delta"]["added"][0]["candidate_id"]);
-    assert_eq!(continued["draft"]["delta"]["added"][0]["revision"], 1);
+    let d = id(&continued_details["draft"]["delta"]["added"][0]["candidate_id"]);
+    assert_eq!(
+        continued_details["draft"]["delta"]["added"][0]["revision"],
+        1
+    );
     assert_ne!(d, a);
     assert_eq!(
-        continued["draft"]["delta"]["superseded"][0]["replacement_candidate_ids"][0],
+        continued_details["draft"]["delta"]["superseded"][0]["replacement_candidate_ids"][0],
         d.to_string()
     );
-
     let before_reads = versions(&pool, set).await;
     let delayed = client
         .call("save_candidate_set", initial_request.clone())
         .await;
     assert_eq!(delayed, initial);
-    let history = client
-        .call(
-            "candidate_context",
-            json!({
-                "candidate_set_id":set,"view":"history","limit":100
-            }),
-        )
-        .await;
-    let history_items = history["items"].as_array().unwrap();
+    let history = read_collection_query(
+        &mut client,
+        &serde_json::json!({"route":"scope.candidates.context","params":json!({
+            "candidate_set_id":set,"view":"history","limit":100
+        })}),
+    )
+    .await;
+    let history_items = &history.items;
     assert!(
         history_items
             .iter()
@@ -309,55 +331,52 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
                 && item["history"]["status"] == "active"
         }));
     }
-
     let mut after = 0;
     let mut historical_candidates = Vec::new();
     loop {
-        let page = client
-            .call(
-                "candidate_context",
-                json!({
-                    "candidate_set_id":set,"view":"historical","draft_revision":2,
-                    "after":after,"limit":2
-                }),
-            )
-            .await;
-        assert_eq!(page["historical"]["set_revision"], 2);
+        let page = read_query_json(
+            &mut client,
+            &serde_json::json!({"route":"scope.candidates.context","params":json!({
+                "candidate_set_id":set,"view":"historical","draft_revision":2,
+                "after":after,"limit":2
+            })}),
+        )
+        .await;
+        assert_eq!(page.value["historical"]["set_revision"], 2);
         assert_eq!(
-            page["historical"]["snapshot"]["id"],
+            page.value["historical"]["snapshot"]["id"],
             snapshot_one.to_string()
         );
-        assert_eq!(page["historical"]["input_cursor"], 1);
+        assert_eq!(page.value["historical"]["input_cursor"], 1);
         if after == 0 {
             assert_eq!(
-                page["historical"]["snapshot"]["method"],
-                created["context"]["snapshot"]["method"]
+                page.value["historical"]["snapshot"]["method"],
+                created_overview["context"]["snapshot"]["method"]
             );
             assert_eq!(
-                page["historical"]["snapshot"]["registry_digest"],
-                created["context"]["snapshot"]["registry_digest"]
+                page.value["historical"]["snapshot"]["registry_digest"],
+                created_overview["context"]["snapshot"]["registry_digest"]
             );
             assert_eq!(
-                page["historical"]["snapshot"]["rules"],
-                created["context"]["snapshot"]["rules"]
+                page.value["historical"]["snapshot"]["rules"],
+                created_overview["context"]["snapshot"]["rules"]
             );
         }
-        for item in page["items"].as_array().unwrap() {
+        for item in page.value["items"].as_array().unwrap() {
             if let Some(candidate) = item.get("candidate") {
                 historical_candidates.push(id(&candidate["id"]));
             }
         }
-        let Some(next) = page["next_after"].as_i64() else {
+        let Some(next) = page.value["next_after"].as_i64() else {
             assert!(
-                page["actions"]
-                    .as_array()
-                    .unwrap()
+                page.provenance
+                    .terminal_actions
                     .iter()
                     .all(|action| action_name(action) != Some("scope.candidates.refresh"))
             );
             break;
         };
-        let next_action = &page["actions"][0];
+        let next_action = &page.provenance.terminal_actions[0];
         assert_eq!(action_params(next_action)["draft_revision"], 2);
         assert_eq!(action_params(next_action)["after"], next);
         assert!(next > after);
@@ -382,7 +401,6 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
         .await;
     assert_eq!(mismatch["error"]["code"], "not_found");
     assert_eq!(versions(&pool, set).await, before_reads);
-
     client.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();
@@ -390,40 +408,38 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
     let mut resumed = Mcp::start(&socket, &config, &native, &workspace).await;
     let state = resumed.call("get_state", json!({})).await;
     assert_eq!(state["candidate_sets"][0]["id"], set.to_string());
-    let restored = resumed
-        .call(
-            "candidate_context",
-            json!({
-                "candidate_set_id":set,"view":"candidates","limit":100
-            }),
-        )
-        .await;
-    let restored_ids = restored["items"]
-        .as_array()
-        .unwrap()
+    let restored = read_collection_query(
+        &mut resumed,
+        &serde_json::json!({"route":"scope.candidates.context","params":json!({
+            "candidate_set_id":set,"view":"candidates","limit":100
+        })}),
+    )
+    .await;
+    let restored_ids = restored
+        .items
         .iter()
         .filter_map(|item| item.get("candidate"))
         .map(|value| id(&value["id"]))
         .collect::<Vec<_>>();
-    assert_eq!(restored["context"]["candidate_set"]["revision"], 6);
+    assert_eq!(
+        restored.pages[0].value["context"]["candidate_set"]["revision"],
+        6
+    );
     assert!(restored_ids.contains(&a) && restored_ids.contains(&b) && restored_ids.contains(&d));
     assert!(!restored_ids.contains(&c));
-    let restored_b = restored["items"]
-        .as_array()
-        .unwrap()
+    let restored_b = restored
+        .items
         .iter()
         .filter_map(|item| item.get("candidate"))
         .find(|candidate| candidate["id"] == b.to_string())
         .unwrap();
     assert_eq!(restored_b["revision"], 2);
-    assert_eq!(restored["context"]["candidate_set"]["latest_input"], 2);
-    let restored_inputs = resumed
-        .call(
-            "candidate_context",
-            json!({"candidate_set_id":set,"view":"inputs","limit":25}),
-        )
-        .await;
-    let input_items = restored_inputs["items"].as_array().unwrap();
+    assert_eq!(
+        restored.pages[0].value["context"]["candidate_set"]["latest_input"],
+        2
+    );
+    let restored_inputs = read_collection_query(&mut resumed, &serde_json::json!({"route":"scope.candidates.context","params":json!({"candidate_set_id":set,"view":"inputs","limit":25})})).await;
+    let input_items = &restored_inputs.items;
     assert_eq!(input_items.len(), 2);
     assert_eq!(
         read_text(
@@ -459,8 +475,19 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
         "review":{"verdict":"ready","summary":"The amendment delta is explicit and each current result is bounded.",
         "findings":[],"candidate_decisions":decisions}
     })).await;
-    assert_eq!(ready["context"]["candidate_set"]["status"], "ready");
-
+    let ready_fixture = CandidateFixture::from_mutation(ready.clone());
+    let ready_overview = ready_fixture.read_overview(&mut resumed).await.value;
+    let ready_reviews =
+        recovery_support::candidate_reviews::read_reviews(&ready_fixture, &mut resumed).await;
+    assert_eq!(
+        ready_reviews.exact(ready["candidate_set"]["revision"].as_i64().unwrap())["verdict"],
+        "ready"
+    );
+    assert_eq!(ready_reviews.latest()["verdict"], "ready");
+    assert_eq!(
+        ready_overview["context"]["candidate_set"]["status"],
+        "ready"
+    );
     resumed.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();

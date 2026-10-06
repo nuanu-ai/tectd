@@ -6,61 +6,50 @@ mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;
 
-use lifecycle_support::{lightweight_draft, phase_output};
-use recovery_support::{
-    Daemon, Mcp, action_name, action_params, host_file, private_temp, tagged_url,
+use lifecycle_support::{completion_request, lightweight_draft, terminal};
+use recovery_support::native_reads::ScopeOpenFixture;
+use recovery_support::pipeline_reads::{
+    ResolvedPipeline, read_pipeline_output, resolve_pipeline, resolve_pipeline_metadata,
 };
+use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
+use std::collections::BTreeSet;
 use support::{open_slice, ready_source_candidate, repository, review, route, route_error, save};
 use tect_postgres::admin;
 use uuid::Uuid;
 
+type StoredBindingRow = (
+    String,
+    i32,
+    i64,
+    Uuid,
+    String,
+    Option<String>,
+    bool,
+    Option<String>,
+);
+
 const LARGE_BODY_BYTES: usize = 1_750_000;
 
-fn consumed_bindings(context: &Value) -> Value {
-    let current = context["run"]["current_phase_ordinal"].as_u64().unwrap();
-    Value::Array(
-        context["bindings"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|binding| {
-                binding["stale"] == false && binding["phase_ordinal"].as_u64().unwrap() < current
-            })
-            .map(|binding| {
-                json!({"phase_id":binding["phase_id"],
-                    "output_revision":binding["output_revision"],
-                    "digest":binding["output_digest"]})
-            })
-            .collect(),
-    )
-}
-
-fn completion(context: &Value, body: String) -> Value {
-    let phase_id = context["run"]["current_phase_id"].as_str().unwrap();
-    let phase = context["definition"]["phases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|phase| phase["id"].as_str() == Some(phase_id))
-        .expect("current phase must exist in the pinned definition");
-    let route = phase["verdict_routes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|route| route["outcome"] == "completed" && route["transition"] == "continue")
-        .unwrap();
-    let mut output = phase_output(phase, phase_id, "completed", "continue");
-    output["body"] = Value::String(body);
-    let mut request = json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
-        "run_revision":context["run"]["revision"],"phase_id":phase_id,
-        "outcome":"completed","transition":"continue","output":output,
-        "consumed_outputs":consumed_bindings(context),"consumed_inputs":[],
-        "publish_blocked_result":false});
-    if let Some(revisit) = route["revisit_to"].as_array().and_then(|ids| ids.first()) {
-        request["revisit_phase_id"] = revisit.clone();
-    }
+fn completion(context: &ResolvedPipeline, body: String) -> Value {
+    assert_eq!(
+        context.run()["definition_kind"],
+        "slice.lightweight-tdd-development"
+    );
+    assert!(matches!(
+        context.run()["definition_version"].as_str(),
+        Some("0.7.1-native.k1k5" | "0.7.0-native.k1k5")
+    ));
+    let phase_id = context.run()["current_phase_id"].as_str().unwrap();
+    let transition = if phase_id == "K5" {
+        "complete"
+    } else {
+        "continue"
+    };
+    let terminal_result = (transition == "complete").then(|| terminal("Caller reports the structural capacity fixture complete; no actual source command executed."));
+    let mut request = completion_request(context, "completed", transition, terminal_result, false);
+    request["output"]["body"] = Value::String(body);
     request
 }
 
@@ -106,12 +95,9 @@ async fn large_current_context_falls_back_to_exact_immutable_output_reads() {
             "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]}),
     )
     .await;
-    let saved = save(
-        &mut client,
-        &opened["created"]["planning"],
-        lightweight_draft(),
-    )
-    .await;
+    let opened = ScopeOpenFixture::from_mutation(opened, "created");
+    let planning_read = opened.read_planning(&mut client).await;
+    let saved = save(&mut client, &planning_read.value, lightweight_draft()).await;
     let reviewed = review(&mut client, &saved).await;
     let opened_slice = route(
         &mut client,
@@ -131,9 +117,8 @@ async fn large_current_context_falls_back_to_exact_immutable_output_reads() {
             "qualification_reason":"Capacity fixture uses allowed phasewise delivery."}),
     )
     .await;
-    let mut context = begun["created"].clone();
-    let mut final_actions = Value::Null;
-    for index in 0..5 {
+    let mut context = resolve_pipeline(&mut client, begun).await.unwrap();
+    for index in 0..4 {
         let body = char::from(b'a' + index)
             .to_string()
             .repeat(LARGE_BODY_BYTES);
@@ -144,63 +129,157 @@ async fn large_current_context_falls_back_to_exact_immutable_output_reads() {
             completion(&context, body),
         )
         .await;
-        final_actions = response["actions"].clone();
-        context = response["context"].clone();
+        context = resolve_pipeline(&mut client, response).await.unwrap();
     }
-    assert_eq!(context["outputs_complete"], false);
-    assert!(context["outputs"].as_array().unwrap().is_empty());
-    assert_eq!(context["bindings"].as_array().unwrap().len(), 5);
-    let output_actions = final_actions
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|action| {
-            action_name(action) == Some("slice.pipeline.context")
-                && action_params(action)["view"] == "output"
-        })
-        .count();
-    assert_eq!(output_actions, 5);
-
-    for (index, binding) in context["bindings"].as_array().unwrap().iter().enumerate() {
-        let exact = route(
+    assert_eq!(context.run()["current_phase_id"], "K5");
+    assert_eq!(context.run()["status"], "active");
+    let oversized = completion(&context, "z".repeat(2 * 1024 * 1024));
+    let oversized_error = route_error(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        oversized,
+    )
+    .await;
+    assert_eq!(oversized_error["error"]["code"], "PAYLOAD_TOO_LARGE");
+    let refusal = &oversized_error["error"]["refusal"];
+    for (field, expected) in [
+        ("code", "PAYLOAD_TOO_LARGE"),
+        ("rule", "WP6-OUTPUT-SIZE-01"),
+        ("path", "arguments.params.output"),
+        ("expected", "at most 2097152 encoded bytes"),
+        ("actual", "encoded output exceeds limit"),
+        ("next_action", "reduce_output"),
+        ("required", "pipeline_output"),
+    ] {
+        assert_eq!(refusal[field], expected, "payload refusal {field}");
+    }
+    let current = route(
+        &mut client,
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":context.run()["id"]}),
+    )
+    .await;
+    assert_eq!(current["run"], *context.run());
+    let unchanged = resolve_pipeline(&mut client, current).await.unwrap();
+    for field in ["attempts", "outputs", "bindings"] {
+        assert_eq!(
+            unchanged.details_data()[field],
+            context.details_data()[field],
+            "oversized refusal changed {field}"
+        );
+    }
+    assert_eq!(
+        unchanged.details_data()["attempts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        4
+    );
+    assert_eq!(
+        unchanged.compact_context["output_availability"]["complete"],
+        true
+    );
+    let response = route(
+        &mut client,
+        "command",
+        "slice.pipeline.phase.complete",
+        completion(&context, "e".repeat(LARGE_BODY_BYTES)),
+    )
+    .await;
+    let context = resolve_pipeline_metadata(&mut client, response)
+        .await
+        .unwrap();
+    assert_eq!(context.run()["status"], "completed");
+    assert!(
+        context
+            .run()
+            .get("current_phase_id")
+            .is_some_and(Value::is_null)
+    );
+    assert!(context.phase_contract.is_none());
+    assert_eq!(
+        context.compact_context["output_availability"]["complete"],
+        true
+    );
+    assert!(context.compact_context.get("outputs").is_none());
+    assert!(context.compact_context.get("bindings").is_none());
+    for field in ["outputs", "bindings", "attempts"] {
+        assert_eq!(context.compact_context["counts"][field], 5);
+    }
+    // Read-only owned test-PG oracle, distinct from native API-delivered History.
+    let run_id = Uuid::parse_str(context.run()["id"].as_str().unwrap()).unwrap();
+    let workspace_id: Uuid = sqlx::query_scalar(
+        "SELECT workspace_id FROM slice_pipeline_runs WHERE tenant_id=$1 AND id=$2",
+    )
+    .bind(enrollment.tenant_id)
+    .bind(run_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let stored_bindings: Vec<StoredBindingRow> = sqlx::query_as(
+        "SELECT b.phase_id,b.phase_ordinal,b.output_revision,o.id,o.body_digest,o.reference,b.stale,b.stale_reason FROM slice_pipeline_output_bindings b JOIN slice_pipeline_phase_outputs o ON o.tenant_id=b.tenant_id AND o.workspace_id=b.workspace_id AND o.run_id=b.run_id AND o.id=b.output_id WHERE b.tenant_id=$1 AND b.workspace_id=$2 AND b.run_id=$3 AND NOT o.payload_erased ORDER BY b.phase_ordinal",
+    ).bind(enrollment.tenant_id).bind(workspace_id).bind(run_id).fetch_all(&pool).await.unwrap();
+    assert_eq!(stored_bindings.len(), 5);
+    let attempts = context.history_data()["attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 5);
+    assert_eq!(
+        attempts
+            .iter()
+            .map(|attempt| attempt["phase_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["K1", "K2", "K3", "K4", "K5"]
+    );
+    let mut output_ids = BTreeSet::new();
+    let mut output_digests = BTreeSet::new();
+    for (index, (attempt, binding)) in attempts.iter().zip(&stored_bindings).enumerate() {
+        assert_eq!(binding.0, attempt["phase_id"].as_str().unwrap());
+        assert_eq!(
+            i64::from(binding.1),
+            attempt["phase_ordinal"].as_i64().unwrap()
+        );
+        assert_eq!(binding.2, attempt["output_revision"].as_i64().unwrap());
+        assert_eq!(
+            binding.3.to_string(),
+            attempt["output_id"].as_str().unwrap()
+        );
+        assert_eq!(binding.4, attempt["output_digest"].as_str().unwrap());
+        assert_eq!(json!(&binding.5), attempt["output_reference"]);
+        assert!(!binding.6 && binding.7.is_none());
+        assert_eq!(attempt["run_id"], context.run()["id"]);
+        assert_eq!(attempt["outcome"], "completed");
+        assert_eq!(attempt["attempt"], 1);
+        assert_eq!(attempt["phase_ordinal"], index + 1);
+        assert!(output_ids.insert(attempt["output_id"].as_str().unwrap()));
+        assert!(output_digests.insert(attempt["output_digest"].as_str().unwrap()));
+        let exact = read_pipeline_output(
             &mut client,
-            "query",
-            "slice.pipeline.context",
-            json!({"run_id":context["run"]["id"],"view":"output",
-                "output_id":binding["output_id"],"digest":binding["output_digest"]}),
+            run_id,
+            Uuid::parse_str(attempt["output_id"].as_str().unwrap()).unwrap(),
+            attempt["output_digest"].as_str().unwrap(),
         )
-        .await;
-        assert_eq!(exact["digest"], binding["output_digest"]);
-        assert_eq!(exact["body"].as_str().unwrap().len(), LARGE_BODY_BYTES);
+        .await
+        .unwrap();
+        assert_eq!(exact.value["id"], attempt["output_id"]);
+        assert_eq!(exact.value["run_id"], context.run()["id"]);
+        assert_eq!(exact.value["digest"], attempt["output_digest"]);
+        assert_eq!(exact.value["phase_id"], attempt["phase_id"]);
+        assert_eq!(exact.value["phase_ordinal"], attempt["phase_ordinal"]);
+        assert_eq!(exact.value["revision"], attempt["output_revision"]);
+        assert_eq!(exact.value["reference"], json!(&binding.5));
+        assert_eq!(
+            exact.value["body"].as_str().unwrap().len(),
+            LARGE_BODY_BYTES
+        );
         assert!(
-            exact["body"]
+            exact.value["body"]
                 .as_str()
                 .unwrap()
                 .bytes()
                 .all(|byte| byte == b'a' + index as u8)
         );
+        assert!(exact.provenance.representation_digest.is_some());
+        assert!(exact.provenance.pages > 1);
     }
-
-    let revision = context["run"]["revision"].clone();
-    let oversized = completion(&context, "z".repeat(2 * 1024 * 1024));
-    assert_eq!(
-        route_error(
-            &mut client,
-            "command",
-            "slice.pipeline.phase.complete",
-            oversized
-        )
-        .await["error"]["code"],
-        "invalid_arguments"
-    );
-    let current = route(
-        &mut client,
-        "query",
-        "slice.pipeline.context",
-        json!({"run_id":context["run"]["id"]}),
-    )
-    .await;
-    assert_eq!(current["run"]["revision"], revision);
-    assert_eq!(current["attempts"].as_array().unwrap().len(), 5);
-    assert_eq!(current["outputs_complete"], false);
 }

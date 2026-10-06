@@ -439,14 +439,39 @@ async fn load_context_with_delivery_receipt(
     }).await
 }
 
+pub(crate) async fn load_existing_delivery_receipt(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    principal: Uuid,
+    run_id: Uuid,
+) -> Result<Option<PipelineDeliveryReceipt>> {
+    let Some(context) =
+        load_context_without_delivery_receipt(tx, tenant, workspace, principal, run_id).await?
+    else {
+        return Ok(None);
+    };
+    delivery_receipt::load_existing(
+        tx,
+        tenant,
+        workspace,
+        run_id,
+        context.run.revision,
+        &context.run.definition_digest,
+    )
+    .await
+}
+
 pub(crate) async fn load_output(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     workspace: Uuid,
+    principal: Uuid,
     run_id: Uuid,
     output_id: Uuid,
     digest: &str,
 ) -> Result<Option<PipelinePhaseOutput>> {
+    authorize_context_copies(tx, tenant, workspace, principal, run_id).await?;
     let erased:Option<bool>=sqlx::query_scalar("SELECT payload_erased FROM slice_pipeline_phase_outputs WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND id=$4")
         .bind(tenant).bind(workspace).bind(run_id).bind(output_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     if erased == Some(true) {

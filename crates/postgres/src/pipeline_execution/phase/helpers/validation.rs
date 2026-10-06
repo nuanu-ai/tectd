@@ -138,44 +138,173 @@ pub(crate) async fn validate_review_authorization(
     Ok(())
 }
 
+// Left joins deliberately retain unavailable bindings so erased/missing proof
+// cannot disappear from the producer set. No session-status join: historical
+// producer revocation does not erase the authenticated actor provenance.
+const REVIEW_PRODUCER_PROVENANCE_SQL: &str = "SELECT o.producer_context_id,a.actor_session_id FROM slice_pipeline_output_bindings b LEFT JOIN slice_pipeline_phase_outputs o ON o.tenant_id=b.tenant_id AND o.workspace_id=b.workspace_id AND o.run_id=b.run_id AND o.id=b.output_id AND NOT o.payload_erased LEFT JOIN slice_pipeline_phase_attempts a ON a.tenant_id=o.tenant_id AND a.workspace_id=o.workspace_id AND a.run_id=o.run_id AND a.id=o.attempt_id AND NOT a.payload_erased WHERE b.tenant_id=$1 AND b.workspace_id=$2 AND b.run_id=$3 AND b.phase_ordinal<$4 AND b.stale=false ORDER BY b.phase_ordinal";
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn validate_reviewer_boundary(
     tx: &mut Transaction<'_, Postgres>,
     tenant: Uuid,
     workspace: Uuid,
     run: Uuid,
+    session: Uuid,
     phase: &PipelinePhaseDefinition,
     request: &CompletePipelinePhase,
 ) -> Result<()> {
-    if !phase.fresh_reviewer_input {
+    if reviewer_independence_path(phase, &request.output).is_none() {
         return Ok(());
     }
-    let attestation = request
-        .output
-        .reviewer_context
-        .as_ref()
-        .ok_or(Error::InvalidArguments)?;
-    let expected: Vec<String> = sqlx::query_scalar(
-        "SELECT DISTINCT o.producer_context_id FROM slice_pipeline_output_bindings b JOIN slice_pipeline_phase_outputs o ON o.tenant_id=b.tenant_id AND o.workspace_id=b.workspace_id AND o.id=b.output_id WHERE b.tenant_id=$1 AND b.workspace_id=$2 AND b.run_id=$3 AND b.phase_ordinal<$4 AND b.stale=false ORDER BY o.producer_context_id",
-    )
-    .bind(tenant)
-    .bind(workspace)
-    .bind(run)
-    .bind(phase.ordinal as i32)
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(storage_error)?;
-    let mut supplied = attestation.producer_context_ids.clone();
-    supplied.sort_unstable();
-    supplied.dedup();
-    if attestation.reviewer_context_id != request.output.producer_context_id
-        || expected != supplied
-        || expected.contains(&request.output.producer_context_id)
-        || supplied.len() != attestation.producer_context_ids.len()
-    {
-        Err(Error::InvalidArguments)
-    } else {
-        Ok(())
+    let producers: Vec<(Option<String>, Option<Uuid>)> =
+        sqlx::query_as(REVIEW_PRODUCER_PROVENANCE_SQL)
+            .bind(tenant)
+            .bind(workspace)
+            .bind(run)
+            .bind(phase.ordinal as i32)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(storage_error)?;
+    validate_reviewer_provenance(session, phase, &request.output, &producers)
+}
+
+fn reviewer_independence_path(
+    phase: &PipelinePhaseDefinition,
+    output: &PipelinePhaseOutputDraft,
+) -> Option<String> {
+    for constraint in &phase.output_constraints {
+        if let PipelineOutputConstraint::ReviewerContextMode {
+            field,
+            independent_value,
+            ..
+        } = constraint
+            && output.fields.get(field) == Some(independent_value)
+        {
+            return Some(format!("arguments.params.output.fields.{field}"));
+        }
     }
+    (phase.fresh_reviewer_input || output.reviewer_context.is_some())
+        .then(|| "arguments.params.output.reviewer_context".into())
+}
+
+pub(super) fn validate_reviewer_provenance(
+    session: Uuid,
+    phase: &PipelinePhaseDefinition,
+    output: &PipelinePhaseOutputDraft,
+    producers: &[(Option<String>, Option<Uuid>)],
+) -> Result<()> {
+    let Some(path) = reviewer_independence_path(phase, output) else {
+        return Ok(());
+    };
+    if producers.is_empty()
+        || producers
+            .iter()
+            .any(|(label, actor)| label.is_none() || actor.is_none())
+    {
+        return Err(Error::Refused(Box::new(
+            Refusal::new(RefusalCode::EvidenceMissing)
+                .with_message(RefusalCode::EvidenceMissing.message())
+                .with_rule("WP6-REVIEW-PROVENANCE-01")
+                .with_path(path)
+                .with_expected(
+                    "available backend producer provenance for every current preceding output",
+                )
+                .with_actual("backend producer provenance is missing or unavailable")
+                .with_next_action("restore_backend_producer_proof")
+                .with_required("backend_producer_provenance"),
+        )));
+    }
+    if producers.iter().any(|(_, actor)| *actor == Some(session)) {
+        let next = if !phase.fresh_reviewer_input
+            && phase
+                .output_constraints
+                .iter()
+                .any(|c| matches!(c, PipelineOutputConstraint::ReviewerContextMode { .. }))
+        {
+            "use_another_native_session_for_independent_review_or_select_permitted_self_review"
+        } else {
+            "use_another_native_session_for_independent_review"
+        };
+        return Err(Error::Refused(Box::new(
+            Refusal::new(RefusalCode::InvalidOutput)
+                .with_message(RefusalCode::InvalidOutput.message())
+                .with_rule("WP6-REVIEW-INDEPENDENCE-01")
+                .with_path(path)
+                .with_expected(
+                    "a native reviewer actor different from every current producer actor",
+                )
+                .with_actual("current authenticated session produced at least one output")
+                .with_next_action(next)
+                .with_required("independent_native_reviewer"),
+        )));
+    }
+    // Retain the existing caller-label consistency contract; labels are never
+    // interpreted as session identity or used as provenance fallback.
+    if let Some(attestation) = &output.reviewer_context {
+        let mut expected = producers
+            .iter()
+            .filter_map(|(label, _)| label.clone())
+            .collect::<Vec<_>>();
+        expected.sort_unstable();
+        expected.dedup();
+        let mut supplied = attestation.producer_context_ids.clone();
+        supplied.sort_unstable();
+        supplied.dedup();
+        for (invalid, rule, field, expected_value) in [
+            (
+                attestation.reviewer_context_id != output.producer_context_id,
+                "WP6-REVIEW-CONTEXT-05",
+                "reviewer_context_id",
+                "reviewer label equal to output producer label",
+            ),
+            (
+                expected != supplied,
+                "WP6-REVIEW-PRODUCERS-07",
+                "producer_context_ids",
+                "exact current backend producer label set",
+            ),
+            (
+                expected.contains(&output.producer_context_id),
+                "WP6-REVIEW-PRODUCERS-05",
+                "producer_context_ids",
+                "producer labels exclude reviewer label",
+            ),
+            (
+                supplied.len() != attestation.producer_context_ids.len(),
+                "WP6-REVIEW-PRODUCERS-06",
+                "producer_context_ids",
+                "unique producer labels",
+            ),
+        ] {
+            if invalid {
+                return Err(review_label_refusal(
+                    RefusalCode::InvalidOutput,
+                    rule,
+                    format!("arguments.params.output.reviewer_context.{field}"),
+                    expected_value,
+                    format!(
+                        "expected_count={}; submitted_count={}; unique_count={}",
+                        expected.len(),
+                        attestation.producer_context_ids.len(),
+                        supplied.len()
+                    ),
+                    "correct_reviewer_attestation",
+                    "valid_reviewer_attestation",
+                ));
+            }
+        }
+    } else {
+        return Err(Error::refused_at(
+            RefusalCode::InvalidOutput,
+            "WP6-REVIEW-CONTEXT-07",
+            "arguments.params.output.reviewer_context",
+            "reviewer attestation for independent review",
+            "missing",
+            "supply_reviewer_attestation",
+            "reviewer_attestation",
+        ));
+    }
+    Ok(())
 }
 
 /// Local-only admission is tied to the current backend-owned proof/policy pair.
@@ -347,4 +476,25 @@ pub(super) fn validate_local_execution(
         return Err(local_result_refusal());
     }
     Ok(())
+}
+
+fn review_label_refusal(
+    code: RefusalCode,
+    rule: &'static str,
+    path: String,
+    expected: &'static str,
+    actual: String,
+    next_action: &'static str,
+    required: &'static str,
+) -> Error {
+    Error::Refused(Box::new(
+        Refusal::new(code)
+            .with_message(code.message())
+            .with_rule(rule)
+            .with_path(path)
+            .with_expected(expected)
+            .with_actual(actual)
+            .with_next_action(next_action)
+            .with_required(required),
+    ))
 }

@@ -167,6 +167,8 @@ pub(crate) async fn record_input(
         if stored != Some(payload.clone()) { return Err(Error::InputConflict) }
         return decode(result.ok_or(Error::InternalInvariant)?);
     }
+    let definition: PipelineDefinitionSnapshot = decode(row.5.clone())?;
+    tect_domain::ensure_pipeline_run_mutable(&definition, &row.1)?;
     if row.0 != request.run_revision {
         return Err(Error::StaleRevision);
     }
@@ -434,6 +436,10 @@ pub(crate) async fn escalate_delivery(
     session: Uuid,
     request: &EscalatePipelineDelivery,
 ) -> Result<PipelineMutationOutcome> {
+    let principal = session_principal(tx, session).await?;
+    load_context(tx, tenant, workspace, principal, request.run_id)
+        .await?
+        .ok_or(Error::NotFound)?;
     let payload = json(request)?;
     if let Some((stored,result,erased))=sqlx::query_as::<_,(Option<serde_json::Value>,Option<serde_json::Value>,bool)>(
         "SELECT request_payload,result_payload,payload_erased FROM slice_pipeline_receipts WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND operation='delivery_escalate' AND request_id=$4")
@@ -442,7 +448,7 @@ pub(crate) async fn escalate_delivery(
         if stored != Some(payload.clone()) { return Err(Error::InputConflict) }
         return decode(result.ok_or(Error::InternalInvariant)?);
     }
-    let row:(i64,String,String,Option<String>)=sqlx::query_as("SELECT revision,status,delivery_mode,current_phase_id FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
+    let row:(i64,String,String,Option<String>,serde_json::Value)=sqlx::query_as("SELECT revision,status,delivery_mode,current_phase_id,definition FROM slice_pipeline_runs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 FOR UPDATE")
         .bind(tenant).bind(workspace).bind(request.run_id).fetch_optional(&mut **tx).await.map_err(storage_error)?.ok_or(Error::NotFound)?;
     if let Some((stored,result,erased))=sqlx::query_as::<_,(Option<serde_json::Value>,Option<serde_json::Value>,bool)>(
         "SELECT request_payload,result_payload,payload_erased FROM slice_pipeline_receipts WHERE tenant_id=$1 AND workspace_id=$2 AND run_id=$3 AND operation='delivery_escalate' AND request_id=$4")
@@ -451,6 +457,8 @@ pub(crate) async fn escalate_delivery(
         if stored != Some(payload.clone()) { return Err(Error::InputConflict) }
         return decode(result.ok_or(Error::InternalInvariant)?);
     }
+    let definition: PipelineDefinitionSnapshot = decode(row.4.clone())?;
+    tect_domain::ensure_pipeline_run_mutable(&definition, &row.1)?;
     if row.0 != request.run_revision {
         return Err(Error::StaleRevision);
     }

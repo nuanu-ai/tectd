@@ -32,14 +32,14 @@ pub(crate) async fn native_contract_fixture_facts(client: &mut Mcp) -> NativeCon
 
 #[allow(dead_code)]
 pub(crate) fn completion_with_contract(
-    context: &Value,
+    context: &ResolvedPipeline,
     mut request: Value,
     facts: &NativeContractFixtureFacts,
 ) -> Value {
     if !matches!(
-        context["run"]["definition_version"].as_str(),
+        context.run()["definition_version"].as_str(),
         Some("0.6.0-native.engineering.3" | "0.6.0-native.engineering.4")
-    ) || context["run"]["current_phase_id"] != "slice-contract-writer"
+    ) || context.run()["current_phase_id"] != "slice-contract-writer"
         || request["output"]["verdict"] != "contract_ready"
     {
         return request;
@@ -53,8 +53,14 @@ pub(crate) fn completion_with_contract(
     let first = output_ref("slice-full-dev-entry-gate");
     let design = output_ref("slice-design-spec-shaper");
     let source = json!({"source_id":facts.source_id,"path":"native-contract-fixture.txt"});
-    let run = &context["run"];
+    let run = context.run();
     let session = &facts.state["session"];
+    let source_checkpoint = context.compact_context.get("source_checkpoint");
+    assert_eq!(
+        source_checkpoint,
+        context.details_data().get("source_checkpoint"),
+        "compact and pinned Details source checkpoints differ"
+    );
     let contract = json!({
         "contract_kind":"native_slice_work_contract_v1",
         "target":{"scope_id":run["scope_id"],"slice_id":run["slice_id"],"slice_revision":run["slice_revision"],
@@ -62,7 +68,7 @@ pub(crate) fn completion_with_contract(
             "definition_kind":run["definition_kind"],"definition_version":run["definition_version"],"definition_digest":run["definition_digest"]},
         "session_declaration":{"workspace_id":facts.state["workspace"]["id"],"session_id":session["id"],
             "host_id":session["host_id"],"native_session_id":session["native_session_id"]},
-        "source_checkpoint":context.get("source_checkpoint").cloned().unwrap_or(Value::Null),
+        "source_checkpoint":source_checkpoint.cloned().unwrap_or(Value::Null),
         "required_reads":[{"reference":first,"required":true},{"reference":design,"required":true},
             {"reference":{"kind":"source_file","source_id":facts.source_id,"path":"native-contract-fixture.txt",
                 "content_sha256":facts.content_sha256},"required":true}],

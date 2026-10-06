@@ -1,4 +1,3 @@
-use crate::response_diet;
 use crate::responses::{encoded_len, with_actions};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -14,77 +13,26 @@ pub(crate) fn begin(outcome: BeginCandidateSetOutcome, capacity: usize) -> Resul
         BeginCandidateSetOutcome::Replay(context) => ("replay", context),
         BeginCandidateSetOutcome::Existing(context) => ("existing", context),
     };
-    let mut value = json!({"disposition":disposition,"context":context});
-    value["candidate_graph_contract"] =
-        crate::api::route_contract("command", "scope.candidates.save")
-            .ok_or(Error::InternalInvariant)?;
-    if let Some(knowledge) = value.pointer_mut("/context/planning_knowledge") {
-        response_diet::planning_knowledge(knowledge);
-    }
     within(
-        with_actions(
-            value,
-            vec![read_action(&context, CandidateContextView::Overview, None)?],
-            Some(0),
-        ),
-        capacity,
+        compact(&context, disposition, None)?,
+        capacity.min(crate::json_fragment::READ_BUDGET),
     )
 }
 
-/// Refresh reply: the refreshed snapshot is delivered with its bodies.
+/// Refresh receipt: the exact Details read preserves the whole refreshed snapshot and draft.
 pub(crate) fn stored(stored: StoredCandidateContext, capacity: usize) -> Result<Value> {
-    stored_reply(stored, capacity, true)
+    within(
+        compact(&stored.context, "refreshed", stored.draft.as_ref())?,
+        capacity.min(crate::json_fragment::READ_BUDGET),
+    )
 }
 
 /// Save, review and input replies: snapshot bodies came with the begin or context read.
 pub(crate) fn stored_mutation(stored: StoredCandidateContext, capacity: usize) -> Result<Value> {
-    stored_reply(stored, capacity, false)
-}
-
-fn stored_reply(stored: StoredCandidateContext, capacity: usize, bodies: bool) -> Result<Value> {
-    let latest_review = stored.reviews.last().cloned();
-    let actions = if !stored.context.stale_reasons.is_empty() {
-        vec![refresh_action(&stored.context)?]
-    } else {
-        let mut actions = Vec::new();
-        if stored.context.candidate_set.status == CandidateSetStatus::Ready
-            && let Some(draft) = stored.draft.as_ref()
-        {
-            for candidate in &draft.candidates {
-                let mut action = crate::api::ready_action(
-                    "scope_open",
-                    json!({
-                        "request_id":request_id(candidate.id, candidate.revision, "open_scope"),
-                        "candidate_set_id":stored.context.candidate_set.id,
-                        "candidate_set_revision":stored.context.candidate_set.revision,
-                        "candidate_snapshot_id":stored.context.candidate_set.current_snapshot_id,
-                        "candidate_id":candidate.id,
-                        "candidate_revision":candidate.revision
-                    }),
-                )?;
-                crate::api::attach_route_contract(&mut action)?;
-                actions.push(action);
-            }
-        }
-        actions.push(read_action(
-            &stored.context,
-            CandidateContextView::Candidates,
-            None,
-        )?);
-        if stored.context.candidate_set.status == CandidateSetStatus::Ready {
-            actions.push(record_input_action(
-                stored.context.candidate_set.id,
-                stored.context.candidate_set.revision,
-            )?);
-        }
-        actions
-    };
-    let mut value =
-        json!({"context":stored.context,"draft":stored.draft,"latest_review":latest_review});
-    if let Some(context) = value.get_mut("context") {
-        response_diet::planning_context(context, bodies);
-    }
-    within(with_actions(value, actions, Some(0)), capacity)
+    within(
+        compact(&stored.context, "saved", stored.draft.as_ref())?,
+        capacity.min(crate::json_fragment::READ_BUDGET),
+    )
 }
 
 pub(crate) fn page(mut page: CandidateContextPage, after: i64, capacity: usize) -> Result<Value> {
@@ -94,10 +42,7 @@ pub(crate) fn page(mut page: CandidateContextPage, after: i64, capacity: usize) 
             page.next_after = Some(after + page.items.len() as i64);
         }
         let (actions, recommended) = page_actions(&page)?;
-        let mut data = json!(&page);
-        if let Some(knowledge) = data.pointer_mut("/context/planning_knowledge") {
-            response_diet::planning_knowledge(knowledge);
-        }
+        let data = json!(&page);
         let value = with_actions(data, actions, recommended);
         if encoded_len(&value)? <= capacity {
             return Ok(value);
@@ -202,6 +147,7 @@ fn page_actions(page: &CandidateContextPage) -> Result<(Vec<Value>, Option<usize
         return Ok((vec![refresh_action(&page.context)?], Some(0)));
     }
     match page.view {
+        CandidateContextView::Details => terminal_actions(page),
         CandidateContextView::Overview => Ok((
             vec![read_action(
                 &page.context,
@@ -428,3 +374,112 @@ fn request_id(id: Uuid, revision: i64, operation: &str) -> Uuid {
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Uuid::from_bytes(bytes)
 }
+
+pub(crate) fn page_read(
+    mut page: CandidateContextPage,
+    mut params: Value,
+    window: &crate::planning_read::Window,
+    expected_revision: Option<i64>,
+    capacity: usize,
+) -> Result<Value> {
+    crate::planning_read::revision(
+        expected_revision,
+        page.context.candidate_set.revision,
+        "arguments.params.candidate_set_revision",
+    )?;
+    let after = params["after"].as_i64().unwrap_or(0);
+    match self::page(page.clone(), after, crate::json_fragment::READ_BUDGET) {
+        Ok(selected) => {
+            let count = selected["items"].as_array().map_or(0, Vec::len);
+            page.items.truncate(count);
+            page.next_after = selected["next_after"].as_i64();
+        }
+        Err(Error::RequestTooLarge) => {
+            if page.items.len() > 1 {
+                page.items.truncate(1);
+                page.next_after = Some(after + 1);
+            }
+        }
+        Err(error) => return Err(error),
+    }
+    let (actions, recommended) = page_actions(&page)?;
+    params["candidate_set_revision"] = json!(page.context.candidate_set.revision);
+    let full = with_actions(json!(&page), actions.clone(), recommended);
+    if window.offset_bytes.is_none()
+        && window.limit_bytes.is_none()
+        && window.representation_digest.is_none()
+        && encoded_len(&full)? <= capacity.min(crate::json_fragment::READ_BUDGET)
+    {
+        return Ok(full);
+    }
+    crate::json_fragment::encode_recommended(
+        &page,
+        (actions, recommended),
+        capacity,
+        window.borrowed(),
+        json!({"candidate_set_id":page.context.candidate_set.id,"candidate_set_revision":page.context.candidate_set.revision,"snapshot_id":page.context.candidate_set.current_snapshot_id}),
+        "candidate_context",
+        params,
+    )
+}
+
+pub(crate) fn fragment_read(
+    candidate_set_id: Uuid,
+    draft_revision: Option<i64>,
+    fragment: CandidateTextFragment,
+    mut params: Value,
+    window: &crate::planning_read::Window,
+    capacity: usize,
+) -> Result<Value> {
+    let legacy = self::fragment(
+        candidate_set_id,
+        draft_revision,
+        fragment.clone(),
+        usize::MAX,
+    )?;
+    let actions = legacy["actions"].as_array().cloned().unwrap_or_default();
+    for key in ["offset_bytes", "limit_bytes", "representation_digest"] {
+        params.as_object_mut().unwrap().remove(key);
+    }
+    crate::json_fragment::encode(
+        &json!({"fragment":fragment}),
+        actions,
+        capacity,
+        window.borrowed(),
+        json!({"candidate_set_id":candidate_set_id,"draft_revision":draft_revision,"source_ref_id":fragment.source_ref.id}),
+        "candidate_context",
+        params,
+    )
+}
+
+fn compact(
+    context: &CandidateContext,
+    operation: &str,
+    draft: Option<&tect_domain::ResolvedCandidateDraft>,
+) -> Result<Value> {
+    let overview = read_action(context, CandidateContextView::Overview, None)?;
+    let candidates = read_action(context, CandidateContextView::Details, None)?;
+    let program = read_action(context, CandidateContextView::Program, None)?;
+    let reviews = read_action(context, CandidateContextView::Reviews, None)?;
+    let next = if !context.stale_reasons.is_empty() {
+        refresh_action(context)?
+    } else if context.candidate_set.status == CandidateSetStatus::Draft {
+        draft_action(context)?
+    } else {
+        read_action(context, CandidateContextView::Reviews, None)?
+    };
+    Ok(with_actions(
+        json!({"operation":operation,"disposition":operation,"candidate_set":context.candidate_set,"snapshot":{"id":context.snapshot.id,"sequence":context.snapshot.sequence,"program_revision":context.snapshot.program_revision,"method":{"id":context.snapshot.method.id,"revision":context.snapshot.method.revision,"digest":context.snapshot.method.digest}},"current_program_revision":context.current_program_revision,"counts":{"candidates":draft.map_or(0,|draft|draft.candidates.len()),"source_refs":context.snapshot.source_refs.len(),"rules":context.snapshot.rules.len(),"stale_reasons":context.stale_reasons.len()},"field_destinations":{"context_snapshot_and_knowledge":overview,"draft":candidates,"program":program,"latest_review":reviews,"candidate_graph_contract":crate::api::schema_help_action("command",&json!({"route":"scope.candidates.save"}))?.ok_or(Error::InternalInvariant)?},"omitted_fields":["context.snapshot.method.body","context.snapshot.rules[].text","context.snapshot.source_refs","context.planning_knowledge","context.stale_reasons","draft","latest_review","candidate_graph_contract"]}),
+        vec![
+            read_action(context, CandidateContextView::Overview, None)?,
+            next,
+        ],
+        Some(0),
+    ))
+}
+
+#[cfg(test)]
+mod planning_read_tests;
+
+#[cfg(test)]
+mod terminal_read_tests;

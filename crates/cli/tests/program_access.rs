@@ -192,11 +192,21 @@ async fn program_tools_hide_foreign_rows_and_honor_every_revocation_layer() {
     admin::revoke_session(&pool, session_revoked.session_id)
         .await
         .unwrap();
-    let session_help = session_revoked
-        .client
-        .call("read_skill", json!({"name":"tectd-program"}))
-        .await;
-    assert_eq!(session_help["method"], "tectd-program");
+    let session_help = recovery_support::help_reads::describe(
+        async |arguments| {
+            session_revoked
+                .client
+                .exchange(
+                    "tools/call",
+                    recovery_support::public_call("help", arguments),
+                )
+                .await
+        },
+        json!({"mode":"describe","method":"tectd-program"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(session_help.value["method"], "tectd-program");
     assert_all_denied(
         &mut session_revoked.client,
         session_revoked.program_id,
@@ -220,11 +230,21 @@ async fn program_tools_hide_foreign_rows_and_honor_every_revocation_layer() {
     .execute(&pool)
     .await
     .unwrap();
-    let member_help = member_revoked
-        .client
-        .call("read_skill", json!({"name":"tectd-program"}))
-        .await;
-    assert_eq!(member_help["method"], "tectd-program");
+    let member_help = recovery_support::help_reads::describe(
+        async |arguments| {
+            member_revoked
+                .client
+                .exchange(
+                    "tools/call",
+                    recovery_support::public_call("help", arguments),
+                )
+                .await
+        },
+        json!({"mode":"describe","method":"tectd-program"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(member_help.value["method"], "tectd-program");
     assert_all_denied(
         &mut member_revoked.client,
         member_revoked.program_id,

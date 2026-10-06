@@ -2,3 +2,4 @@
 *.sock
 .env
 /local/
+__pycache__/

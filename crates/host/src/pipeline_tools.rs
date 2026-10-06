@@ -130,6 +130,9 @@ const fn boundary(
 }
 
 pub(crate) fn parse(name: &str, arguments: Value) -> Result<PipelineInvocation> {
+    if name == "slice_pipeline_context" {
+        reject_wrong_view_receipt_keys(&arguments)?;
+    }
     reject_optional_nulls(&arguments).map_err(|error| normalize_parse_error(error, name))?;
     match name {
         "slice_pipeline_context" => decode(arguments).map(PipelineInvocation::Context),
@@ -160,6 +163,26 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<PipelineInvocation> 
         _ => Err(Error::InvalidArguments),
     }
     .map_err(|error| normalize_parse_error(error, name))
+}
+
+fn reject_wrong_view_receipt_keys(arguments: &Value) -> Result<()> {
+    if arguments.get("view").and_then(Value::as_str) != Some("receipt_diff") {
+        for field in ["receipt_kind", "submitted_receipts", "submitted_digest"] {
+            if arguments.get(field).is_some() {
+                return Err(Error::Refused(Box::new(
+                    tect_domain::Refusal::new(tect_domain::RefusalCode::InputSchemaInvalid)
+                        .with_message(tect_domain::RefusalCode::InputSchemaInvalid.message())
+                        .with_rule("PIPELINE-RECEIPT-DIFF-SELECTOR")
+                        .with_path(format!("arguments.params.{field}"))
+                        .with_expected("receipt-only key omitted unless view is receipt_diff")
+                        .with_actual("key present on another view")
+                        .with_next_action("align_receipt_diff_selector")
+                        .with_required("receipt_diff_selector"),
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn normalize_parse_error(error: Error, name: &str) -> Error {
@@ -239,6 +262,13 @@ fn reject_optional_nulls(value: &Value) -> Result<()> {
         "definition_version",
         "view",
         "output_id",
+        "definition_digest",
+        "phase_id",
+        "run_revision",
+        "section",
+        "offset_bytes",
+        "limit_bytes",
+        "representation_digest",
         "digest",
         "verdict",
         "reviewer_context",

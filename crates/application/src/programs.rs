@@ -393,6 +393,18 @@ impl WorkspaceService {
         after: Option<ProgramCursor>,
         limit: u32,
     ) -> Result<ProgramList> {
+        self.list_programs_bound(context, after, limit)
+            .await
+            .map(|(_, page)| page)
+    }
+
+    /// Returns the workspace authorized in the same read snapshot as the page.
+    pub async fn list_programs_bound(
+        &self,
+        context: &RequestContext,
+        after: Option<ProgramCursor>,
+        limit: u32,
+    ) -> Result<(Uuid, ProgramList)> {
         let (mut tx, workspace, _) = self
             .program_transaction(context, TransactionMode::ReadOnly)
             .await?;
@@ -400,7 +412,7 @@ impl WorkspaceService {
         let entries = tx.list_programs(workspace.id, after, limit + 1).await?;
         let page = bounded_program_list(entries, limit);
         tx.commit().await?;
-        Ok(page)
+        Ok((workspace.id, page))
     }
 
     /// The body is build-bound in the host, but access still belongs to the application.

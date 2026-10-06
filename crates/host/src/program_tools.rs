@@ -15,6 +15,8 @@ pub(crate) enum ProgramInvocation {
         program_id: Uuid,
         after_input: Option<i64>,
         limit: u32,
+        window: crate::planning_read::Window,
+        program_revision: Option<i64>,
     },
     Save(Box<SaveProgram>),
     Record {
@@ -26,7 +28,10 @@ pub(crate) enum ProgramInvocation {
     Refresh(Box<RefreshProgramKnowledge>),
     List {
         after: Option<ProgramCursor>,
+        after_selector: Option<String>,
         limit: u32,
+        window: crate::planning_read::Window,
+        workspace_id: Option<Uuid>,
     },
     ReadSkill,
 }
@@ -64,6 +69,8 @@ struct GetArguments {
 #[serde(deny_unknown_fields)]
 struct ListArguments {
     #[serde(default)]
+    workspace_id: Option<Uuid>,
+    #[serde(default)]
     after: Option<String>,
     #[serde(default = "page_size")]
     limit: u32,
@@ -83,7 +90,7 @@ fn decode<T: serde::de::DeserializeOwned>(value: Value) -> Result<T> {
     serde_json::from_value(value).map_err(Error::invalid_arguments_from)
 }
 
-pub(crate) fn parse(name: &str, arguments: Value) -> Result<ProgramInvocation> {
+pub(crate) fn parse(name: &str, mut arguments: Value) -> Result<ProgramInvocation> {
     match name {
         "begin_program" => {
             let args: BeginArguments = decode(arguments)?;
@@ -95,11 +102,24 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<ProgramInvocation> {
         }
         "get_program" => {
             reject_null(&arguments, "after_input")?;
+            reject_null(&arguments, "program_revision")?;
+            let window = crate::planning_read::extract(&mut arguments)?;
+            let program_revision = arguments
+                .as_object_mut()
+                .and_then(|arguments| arguments.remove("program_revision"))
+                .map(serde_json::from_value::<i64>)
+                .transpose()
+                .map_err(Error::invalid_arguments_from)?;
+            if program_revision.is_some_and(|revision| revision < 1) {
+                return Err(Error::InvalidArguments);
+            }
             let args: GetArguments = decode(arguments)?;
             Ok(ProgramInvocation::Get {
                 program_id: args.program_id,
                 after_input: args.after_input,
                 limit: args.limit,
+                window,
+                program_revision,
             })
         }
         "save_program" => {
@@ -122,7 +142,12 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<ProgramInvocation> {
         }
         "list_programs" => {
             reject_null(&arguments, "after")?;
+            reject_null(&arguments, "workspace_id")?;
+            let window = crate::planning_read::extract(&mut arguments)?;
             let args: ListArguments = decode(arguments)?;
+            if args.workspace_id.is_some_and(|id| id.is_nil()) {
+                return Err(Error::InvalidArguments);
+            }
             let after = args
                 .after
                 .as_deref()
@@ -130,7 +155,10 @@ pub(crate) fn parse(name: &str, arguments: Value) -> Result<ProgramInvocation> {
                 .transpose()?;
             Ok(ProgramInvocation::List {
                 after,
+                after_selector: args.after,
                 limit: args.limit,
+                window,
+                workspace_id: args.workspace_id,
             })
         }
         "read_skill" => {
@@ -156,6 +184,41 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tect_domain::TextPatch;
+
+    #[test]
+    fn list_windows_and_workspace_pin_are_optional_but_never_null_or_nil() {
+        let workspace_id = Uuid::new_v4();
+        let ProgramInvocation::List {
+            workspace_id: pin,
+            window,
+            limit,
+            after,
+            after_selector,
+        } = parse(
+            "list_programs",
+            json!({"workspace_id":workspace_id,"limit_bytes":256}),
+        )
+        .unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(pin, Some(workspace_id));
+        assert_eq!(window.limit_bytes, Some(256));
+        assert_eq!(limit, 25);
+        assert!(after.is_none());
+        assert!(after_selector.is_none());
+        assert!(parse("list_programs", json!({})).is_ok());
+        for args in [
+            json!({"workspace_id":null}),
+            json!({"workspace_id":Uuid::nil()}),
+            json!({"workspace_id":"bad"}),
+            json!({"limit_bytes":null}),
+            json!({"limit_bytes":0}),
+            json!({"offset_bytes":1}),
+        ] {
+            assert!(parse("list_programs", args).is_err());
+        }
+    }
 
     #[test]
     fn nullable_patch_does_not_treat_missing_as_null() {

@@ -359,9 +359,10 @@ fn decode_payload(response: &Value) -> Result<Value, String> {
     if content.len() != 3 || content.iter().any(|item| item["type"] != "text") {
         return Err("invalid_tool_content_shape".to_owned());
     }
-    if !content[2]["text"]
-        .as_str()
-        .is_some_and(|text| text.contains("TECTD RESPONSE RULES"))
+    if content[2]["text"].as_str()
+        != Some(
+            "Follow the rules from workspace.open or help {\"text\":\"response-rules\"}. Required checks, approvals and authority still apply. Dependencies alone grant no permission or automatic resumption. Claim monitoring or continuation only when real.",
+        )
     {
         return Err("missing_response_rules".to_owned());
     }

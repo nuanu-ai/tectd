@@ -1,3 +1,6 @@
+use super::knowledge_lifecycle_support::reads::{
+    phase_completion_action, read_unit, resolve_commit_receipt, resolve_current,
+};
 use super::*;
 
 #[tokio::test]
@@ -89,17 +92,13 @@ async fn dk2_all_canonical_operations_reach_native_commit() {
         },
     )
     .await;
-    assert_eq!(revise["applied"]["applied_operations"][0]["revision"], 2);
-    let revise_finished = settle_and_finish_receipt(&mut client, &revise["applied"]).await;
+    let revise = resolve_commit_receipt(&mut client, revise).await;
+    assert_eq!(revise.receipt["applied_operations"][0]["revision"], 2);
+    let revise_finished = settle_and_finish_receipt(&mut client, &revise.receipt).await;
     assert_eq!(context(&revise_finished)["run"]["status"], "completed");
 
-    let revised_exact = route(
-        &mut client,
-        "query",
-        "knowledge.unit",
-        json!({"unit_id":unit.clone(),"revision":2}),
-    )
-    .await;
+    let revised_exact = read_unit(&mut client, &unit, &json!(2)).await;
+    let revised_exact = &revised_exact.value;
     let observed_at:String=sqlx::query_scalar("SELECT pg_catalog.to_char(pg_catalog.clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"')")
         .fetch_one(&pool).await.unwrap();
     let observation_text = format!(
@@ -120,11 +119,9 @@ async fn dk2_all_canonical_operations_reach_native_commit() {
         successor:None,replacement_bindings:json!([]),sources:json!([validation_source]),
         knowledge_kind:json!("constraint"),profiles:json!(["general"]),erasure:"not_required",authored_followup:false,
     }).await;
-    assert_eq!(
-        revalidate["applied"]["applied_operations"][0]["revision"],
-        2
-    );
-    let revalidate_finished = settle_and_finish_receipt(&mut client, &revalidate["applied"]).await;
+    let revalidate = resolve_commit_receipt(&mut client, revalidate).await;
+    assert_eq!(revalidate.receipt["applied_operations"][0]["revision"], 2);
+    let revalidate_finished = settle_and_finish_receipt(&mut client, &revalidate.receipt).await;
     assert_eq!(context(&revalidate_finished)["run"]["status"], "completed");
 
     let mut successor_document = original.clone();
@@ -161,11 +158,12 @@ async fn dk2_all_canonical_operations_reach_native_commit() {
         },
     )
     .await;
+    let supersede = resolve_commit_receipt(&mut client, supersede).await;
     assert_eq!(
-        supersede["applied"]["applied_operations"][0]["operation"],
+        supersede.receipt["applied_operations"][0]["operation"],
         "supersede"
     );
-    let supersede_finished = settle_and_finish_receipt(&mut client, &supersede["applied"]).await;
+    let supersede_finished = settle_and_finish_receipt(&mut client, &supersede.receipt).await;
     assert_eq!(context(&supersede_finished)["run"]["status"], "completed");
 
     let retract = commit_single(
@@ -187,11 +185,12 @@ async fn dk2_all_canonical_operations_reach_native_commit() {
         },
     )
     .await;
+    let retract = resolve_commit_receipt(&mut client, retract).await;
     assert_eq!(
-        retract["applied"]["applied_operations"][0]["operation"],
+        retract.receipt["applied_operations"][0]["operation"],
         "retract"
     );
-    let retract_finished = settle_and_finish_receipt(&mut client, &retract["applied"]).await;
+    let retract_finished = settle_and_finish_receipt(&mut client, &retract.receipt).await;
     assert_eq!(context(&retract_finished)["run"]["status"], "completed");
 
     let erased_targets = [
@@ -199,7 +198,8 @@ async fn dk2_all_canonical_operations_reach_native_commit() {
         (successor.clone(), 1, "retracted"),
     ];
     let erase = commit_pair_erase(&mut client, erased_targets.clone()).await;
-    let erased_operations = erase["applied_erased"]["operations"].as_array().unwrap();
+    let erase = resolve_commit_receipt(&mut client, erase).await;
+    let erased_operations = erase.receipt["operations"].as_array().unwrap();
     assert_eq!(erased_operations.len(), 2);
     assert!(
         erased_operations
@@ -212,12 +212,11 @@ async fn dk2_all_canonical_operations_reach_native_commit() {
         .collect::<Vec<_>>();
     sequences.sort_unstable();
     assert_eq!(sequences[1], sequences[0] + 1);
-    let erase_finished = settle_and_finish_receipt(&mut client, &erase["applied_erased"]).await;
+    let erase_finished = settle_and_finish_receipt(&mut client, &erase.receipt).await;
     let erased_context = context(&erase_finished);
     assert_eq!(erased_context["run"]["status"], "completed");
     assert_eq!(erased_context["result"]["canonical"], "applied");
-    let change_id =
-        Uuid::parse_str(erase["applied_erased"]["change_id"].as_str().unwrap()).unwrap();
+    let change_id = Uuid::parse_str(erase.receipt["change_id"].as_str().unwrap()).unwrap();
     let stored: (bool, bool, bool, bool, bool, bool, String, bool) = sqlx::query_as(
         "SELECT publisher_receipt IS NULL,erased_publisher_receipt IS NOT NULL, \
          effects_report IS NULL,erased_effects_report IS NOT NULL, \
@@ -269,7 +268,8 @@ async fn dk2_all_canonical_operations_reach_native_commit() {
         opaque_request.clone(),
     )
     .await;
-    let opaque_context = context(&opaque);
+    let opaque = resolve_current(&mut client, opaque).await;
+    let opaque_context = context(&opaque.value);
     assert!(opaque_context["origin"].is_null());
     assert_eq!(opaque_context["run"]["delivery_mode"], "phasewise");
     assert_eq!(
@@ -305,7 +305,7 @@ async fn dk2_all_canonical_operations_reach_native_commit() {
     )
     .await;
     assert_eq!(opaque_rewind["error"]["code"], "forbidden");
-    let action = &opaque["actions"][0];
+    let action = phase_completion_action(&opaque.value);
     let mut terminal = recovery_support::action_params(action).clone();
     terminal["output"]["method_reads"] = method_reads(action);
     terminal["output"]["body"] =
@@ -328,7 +328,8 @@ async fn dk2_all_canonical_operations_reach_native_commit() {
         terminal,
     )
     .await;
-    let opaque_finished_context = context(&opaque_finished);
+    let opaque_finished = resolve_current(&mut client, opaque_finished).await;
+    let opaque_finished_context = context(&opaque_finished.value);
     assert_eq!(opaque_finished_context["run"]["status"], "completed");
     assert_eq!(opaque_finished_context["result"]["canonical"], "no_change");
     assert_eq!(

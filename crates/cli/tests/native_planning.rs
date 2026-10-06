@@ -1,8 +1,14 @@
+#[path = "mcp_summary/catalog_reads.rs"]
+#[allow(dead_code)]
+mod catalog_reads;
+
 #[allow(dead_code)]
 mod recovery_support;
 #[path = "native_planning/support.rs"]
 mod support;
 
+use recovery_support::candidate_reads::read_ready_json;
+use recovery_support::native_reads::{ScopeOpenFixture, SlicePlanningFixture};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -60,7 +66,16 @@ async fn native_scope_slice_result_replans_and_recovers() {
     let mut client = Mcp::start(&socket, &config, &Uuid::new_v4().to_string(), &key).await;
     let (source, candidate) = ready_source_candidate(&mut client, &repo).await;
 
-    let pipelines = route(&mut client, "query", "slice.pipelines", json!({})).await;
+    let pipelines = catalog_reads::read(
+        async |arguments| {
+            client
+                .exchange("tools/call", json!({"name":"query","arguments":arguments}))
+                .await
+        },
+        json!({}),
+    )
+    .await
+    .value;
     assert_eq!(pipelines["pipelines"].as_array().unwrap().len(), 9);
     assert_eq!(pipelines["executable"], true);
     assert_eq!(pipelines["executable_count"], 9);
@@ -74,26 +89,28 @@ async fn native_scope_slice_result_replans_and_recovers() {
         "candidate_snapshot_id":source["snapshot"]["id"],"candidate_id":candidate["id"],
         "candidate_revision":candidate["revision"]});
     let opened = route(&mut client, "command", "scope.open", scope_request.clone()).await;
-    let created = &opened["created"];
+    let opened = ScopeOpenFixture::from_mutation(opened, "created");
     let replay = route(&mut client, "command", "scope.open", scope_request).await;
-    assert_eq!(replay["replay"], *created);
-    assert_eq!(created["planning"]["snapshot"]["sequence"], 1);
+    let replay = ScopeOpenFixture::from_mutation(replay, "replay");
+    assert_eq!(replay.mutation["scope"], opened.mutation["scope"]);
+    assert_eq!(replay.mutation["planning"], opened.mutation["planning"]);
+    let opened_scope = opened.read_scope(&mut client).await;
+    let opened_planning = opened.read_planning(&mut client).await;
+    let replay_scope = replay.read_scope(&mut client).await;
+    let replay_planning = replay.read_planning(&mut client).await;
+    assert_eq!(replay_scope.value, opened_scope.value);
+    assert_eq!(replay_planning.value, opened_planning.value);
+    let planning = &opened_planning.value;
+    assert_eq!(planning["snapshot"]["sequence"], 1);
+    assert_eq!(planning["snapshot"]["rules"].as_array().unwrap().len(), 4);
     assert_eq!(
-        created["planning"]["snapshot"]["rules"]
-            .as_array()
-            .unwrap()
-            .len(),
-        4
-    );
-    assert_eq!(
-        created["planning"]["snapshot"]["catalogue"]["entries"]
+        planning["snapshot"]["catalogue"]["entries"]
             .as_array()
             .unwrap()
             .len(),
         9
     );
 
-    let planning = &created["planning"];
     let malformed = json!({"coverage_summary":"Invalid Full","nodes":[{"kind":"work",
         "identity":{"local":"full"},"title":"Full","outcome":"Large change","proof":["proof"],
         "pipeline":"slice.full-design-to-execution","pipeline_reason":"Large"}]});
@@ -217,6 +234,10 @@ async fn native_scope_slice_result_replans_and_recovers() {
         "revision":stale["candidate_set"]["revision"],"request_id":Uuid::new_v4()}),
     )
     .await;
+    let refreshed = SlicePlanningFixture::from_mutation(refreshed)
+        .read_details(&mut client)
+        .await
+        .value;
     assert!(refreshed["stale_reasons"].as_array().unwrap().is_empty());
     assert!(
         refreshed["snapshot"]["result_ids"]
@@ -254,6 +275,10 @@ async fn native_scope_slice_result_replans_and_recovers() {
         }],"supersessions":[{"candidate_id":decision["id"],"revision":decision["revision"],
             "reason":"Result resolves decision","replacements":[{"local":"correction"}]}]});
     let revised = route(&mut client, "command", "slice.candidates.save", rewrite).await;
+    let revised = SlicePlanningFixture::from_mutation(revised)
+        .read_details(&mut client)
+        .await
+        .value;
     let light = revised["draft"]["nodes"]
         .as_array()
         .unwrap()
@@ -274,7 +299,7 @@ async fn native_scope_slice_result_replans_and_recovers() {
         "slice.lightweight-tdd-development"
     );
 
-    let scope_id = id(&created["scope"]["id"]);
+    let scope_id = id(&opened_scope.value["id"]);
     let slice_id = id(&slice["id"]);
     client.finish().await;
     daemon.crash().await;
@@ -282,13 +307,16 @@ async fn native_scope_slice_result_replans_and_recovers() {
     let _daemon = Daemon::start(&runtime, socket.clone()).await;
     let mut restored = Mcp::start(&socket, &config, &Uuid::new_v4().to_string(), &key).await;
     restored.call("open_workspace", json!({})).await;
-    let scope = route(
+    let scope = read_ready_json(
         &mut restored,
-        "query",
-        "scope.context",
-        json!({"scope_id":scope_id}),
+        &json!({"kind":"ready_call","tool":"query",
+        "arguments":{"route":"scope.context","params":{"scope_id":scope_id}}}),
     )
     .await;
+    assert_eq!(scope.value["revision"], final_plan["scope"]["revision"]);
+    if let Some(source) = &scope.provenance.source {
+        assert_eq!(source["scope_revision"], final_plan["scope"]["revision"]);
+    }
     let old_slice = route(
         &mut restored,
         "query",
@@ -296,7 +324,7 @@ async fn native_scope_slice_result_replans_and_recovers() {
         json!({"slice_id":slice_id}),
     )
     .await;
-    assert_eq!(scope["id"], scope_id.to_string());
+    assert_eq!(scope.value["id"], scope_id.to_string());
     assert_eq!(old_slice["state"], "completed");
     restored.finish().await;
 }

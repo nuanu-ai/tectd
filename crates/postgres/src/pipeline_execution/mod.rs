@@ -77,9 +77,9 @@ pub(crate) use checkpoint::{
 pub(crate) use checkpoint_resolution::resolve as resolve_checkpoint;
 pub(crate) use context::{
     load_completion_context, load_context, load_context_with_proofs,
-    load_context_without_delivery_receipt, load_output,
+    load_context_without_delivery_receipt, load_existing_delivery_receipt, load_output,
 };
 pub(crate) use input::{escalate_delivery, record_input};
-pub(crate) use migration::migrate_run;
+pub(crate) use migration::{migrate_run, migration_replay};
 pub(crate) use phase::complete_phase;
 pub(crate) use run::{begin, begin_replay};

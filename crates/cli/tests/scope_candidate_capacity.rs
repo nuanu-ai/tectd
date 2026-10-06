@@ -1,4 +1,6 @@
 //! Candidate context retains baseline-large Programs and fragments exact source text.
+use crate::recovery_support::candidate_reads::{read_query_json, read_ready_json};
+use crate::recovery_support::candidate_reviews::source_chunk_next_action;
 #[path = "pipeline_execution/knowledge_lifecycle_support.rs"]
 #[allow(dead_code)]
 mod knowledge_lifecycle_support;
@@ -9,6 +11,7 @@ mod recovery_support;
 mod support;
 
 use knowledge_lifecycle_support::commit_create;
+use recovery_support::candidate_reads::CandidateFixture;
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -27,6 +30,9 @@ use tect_postgres::PgStore;
 use tect_postgres::admin;
 use uuid::Uuid;
 
+#[path = "scope_candidate_capacity/closure.rs"]
+mod closure;
+
 const LEGACY_NAME_BYTES: usize = 5_507_620;
 
 fn id(value: &Value) -> Uuid {
@@ -40,6 +46,7 @@ async fn reconstruct(
     draft_revision: Option<i64>,
 ) -> (String, usize) {
     let mut cursor = 0_u64;
+    let mut continuation = None::<Value>;
     let mut result = String::new();
     let mut pages = 0;
     loop {
@@ -47,9 +54,17 @@ async fn reconstruct(
         if let Some(revision) = draft_revision {
             params["draft_revision"] = json!(revision);
         }
-        let page = client.call("candidate_context", params).await;
-        assert!(serde_json::to_vec(&page).unwrap().len() < 8 * 1024 * 1024);
-        let fragment = &page["fragment"];
+        let page = if let Some(action) = continuation.take() {
+            read_ready_json(client, &action).await
+        } else {
+            read_query_json(
+                client,
+                &serde_json::json!({"route":"scope.candidates.context","params":params}),
+            )
+            .await
+        };
+        assert!(page.provenance.maximum_payload_bytes < 8 * 1024 * 1024);
+        let fragment = &page.value["fragment"];
         assert_eq!(fragment["cursor"], cursor);
         let part = fragment["text"].as_str().unwrap();
         assert!(!part.is_empty());
@@ -59,6 +74,7 @@ async fn reconstruct(
             break;
         };
         assert!(next > cursor);
+        continuation = Some(source_chunk_next_action(&page, next));
         cursor = next;
     }
     (result, pages)
@@ -324,16 +340,13 @@ async fn baseline_large_program_and_input_are_exactly_fragmented_and_failed_outp
                 "task_context":{"target_iris":["urn:tect:dk4:capacity:other"]}}),
         )
         .await;
-    let set = id(&created["context"]["candidate_set"]["id"]);
+    let created_fixture = CandidateFixture::from_mutation(created.clone());
+    let created_overview = created_fixture.read_overview(&mut client).await.value;
+    let set = id(&created_overview["context"]["candidate_set"]["id"]);
     let before_reads = canonical(&pool, set).await;
 
-    let program_page = client
-        .call(
-            "candidate_context",
-            json!({"candidate_set_id":set,"view":"program","limit":25}),
-        )
-        .await;
-    let name_ref = program_page["program"]["field_refs"]
+    let program_page = read_query_json(&mut client, &serde_json::json!({"route":"scope.candidates.context","params":json!({"candidate_set_id":set,"view":"program","limit":25})})).await;
+    let name_ref = program_page.value["program"]["field_refs"]
         .as_array()
         .unwrap()
         .iter()
@@ -343,39 +356,30 @@ async fn baseline_large_program_and_input_are_exactly_fragmented_and_failed_outp
     let (read_name, name_pages) = reconstruct(&mut client, set, name_ref, None).await;
     assert_eq!(read_name, name);
     assert!(name_pages > 20);
-    let inputs = client
-        .call(
-            "candidate_context",
-            json!({"candidate_set_id":set,"view":"inputs","limit":25}),
-        )
-        .await;
-    let input_ref = id(&inputs["items"][0]["input"]["source_ref_id"]);
+    let inputs = read_query_json(&mut client, &serde_json::json!({"route":"scope.candidates.context","params":json!({"candidate_set_id":set,"view":"inputs","limit":25})})).await;
+    let input_ref = id(&inputs.value["items"][0]["input"]["source_ref_id"]);
     let (read_input, input_pages) = reconstruct(&mut client, set, input_ref, None).await;
     assert_eq!(read_input, input);
     assert!(input_pages > 2);
     assert_eq!(canonical(&pool, set).await, before_reads);
 
-    let too_large = "\"".repeat(2_500_000);
-    let refused = client
-        .call_error(
-            "save_candidate_set",
-            json!({"kind":"draft","candidate_set_id":set,"revision":1,
-                "snapshot_id":id(&created["context"]["snapshot"]["id"]),"input_cursor":1,
-                "request_id":Uuid::new_v4(),"draft":{"boundary":"ongoing","goals":[{
-                    "identity":{"local":"goal"},"text":"Read the request","source_ref_id":input_ref,
-                    "resolution":{"kind":"candidate","reference":{"local":"candidate"}}}],
-                    "evidence":[],"candidates":[{"identity":{"local":"candidate"},
-                    "title":"Oversized result","outcome":"Must roll back","trigger":"Save",
-                    "delivered_behavior":too_large,"proof":"No row persists","coverage_goals":[{"local":"goal"}]}],
-                    "blockers":[]}}),
-        )
-        .await;
-    assert_eq!(refused["error"]["code"], "request_too_large");
+    closure::rollback(
+        &direct,
+        &RequestContext {
+            auth: enrollment.auth.clone(),
+            native_session_id: native.clone(),
+            workspace_key: workspace.clone(),
+        },
+        &pool,
+        &created_overview,
+        input_ref,
+    )
+    .await;
     assert_eq!(canonical(&pool, set).await, before_reads);
 
     let saved = client.call("save_candidate_set", json!({
         "kind":"draft","candidate_set_id":set,"revision":1,
-        "snapshot_id":id(&created["context"]["snapshot"]["id"]),"input_cursor":1,
+        "snapshot_id":id(&created_overview["context"]["snapshot"]["id"]),"input_cursor":1,
         "request_id":Uuid::new_v4(),"draft":{"boundary":"ongoing","goals":[{
             "identity":{"local":"goal"},"text":"Read the request","source_ref_id":input_ref,
             "resolution":{"kind":"candidate","reference":{"local":"candidate"}}}],
@@ -384,26 +388,29 @@ async fn baseline_large_program_and_input_are_exactly_fragmented_and_failed_outp
             "delivered_behavior":"Read exact retained sources","proof":"Reconstruct every fragment",
             "coverage_goals":[{"local":"goal"}]}],"blockers":[]}}
     )).await;
-    assert_eq!(saved["context"]["candidate_set"]["revision"], 2);
+    let saved_fixture = CandidateFixture::from_mutation(saved.clone());
+    let saved_overview = saved_fixture.read_overview(&mut client).await.value;
+    assert_eq!(saved_overview["context"]["candidate_set"]["revision"], 2);
     let before_historical_reads = canonical(&pool, set).await;
-    let historical = client
-        .call(
-            "candidate_context",
-            json!({
-                "candidate_set_id":set,"view":"historical","draft_revision":2,"limit":25
-            }),
-        )
-        .await;
-    assert!(serde_json::to_vec(&historical).unwrap().len() < 8 * 1024 * 1024);
+    let historical = read_query_json(
+        &mut client,
+        &serde_json::json!({"route":"scope.candidates.context","params":json!({
+            "candidate_set_id":set,"view":"historical","draft_revision":2,"limit":25
+        })}),
+    )
+    .await;
+    assert!(historical.provenance.maximum_payload_bytes < 8 * 1024 * 1024);
     assert_eq!(
-        historical["historical"]["snapshot"]["id"],
-        created["context"]["snapshot"]["id"]
+        historical.value["historical"]["snapshot"]["id"],
+        created_overview["context"]["snapshot"]["id"]
     );
     let (historical_name, historical_pages) =
         reconstruct(&mut client, set, name_ref, Some(2)).await;
     assert_eq!(historical_name, name);
     assert!(historical_pages > 20);
     assert_eq!(canonical(&pool, set).await, before_historical_reads);
+
+    closure::accepted_large(&mut client, &pool, program_id).await;
 
     client.finish().await;
     daemon.crash().await;

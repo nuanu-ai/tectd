@@ -9,15 +9,15 @@ pub(super) use pipeline::{
 };
 
 pub(super) fn candidate_context() -> Value {
-    object_schema(
+    crate::planning_read::schema(object_schema(
         json!({
             "scope_id":uuid(),
-            "view":{"type":"string","enum":["overview","inputs","candidates","reviews","history","results"]},
+            "view":{"type":"string","enum":["overview","details","inputs","candidates","reviews","history","results"]},
             "after":{"type":"integer","minimum":0},
             "limit":{"type":"integer","minimum":1,"maximum":100}
         }),
         json!(["scope_id", "view", "limit"]),
-    )
+    ))
 }
 
 pub(super) fn open_scope() -> Value {

@@ -1,3 +1,5 @@
+mod help_requests;
+pub(crate) use help_requests::{help, help_arguments, parse_help};
 mod candidate_schema;
 mod catalog;
 mod catalog_aliases;
@@ -51,6 +53,11 @@ pub(crate) struct InternalCall {
 
 #[derive(Clone)]
 pub(crate) enum HelpRequest {
+    Window {
+        request: Box<HelpRequest>,
+        arguments: Value,
+        window: crate::planning_read::Window,
+    },
     Search {
         text: Option<String>,
         tool: Option<String>,
@@ -105,7 +112,7 @@ pub(crate) fn definitions() -> Value {
         tool_definition("query", "Run one named read-only TectD route. Use help to inspect its exact parameter contract.", routed("query"), true, true),
         tool_definition("command", "Run one named logical state transition. Use help to inspect its exact parameter contract.", routed("command"), false, false),
         tool_definition("execute", "Run one named explicit external effect. Only setup.apply is currently supported.", routed("execute"), false, true),
-        tool_definition("help", "Search or describe the bounded TectD API and its four embedded methods.", help_schema(), true, true)
+        tool_definition("help", "Search or describe the bounded TectD API and its four embedded methods. Read complete response rules with text=response-rules.", help_schema(), true, true)
     ]})
 }
 
@@ -122,7 +129,7 @@ fn tool_definition(
 }
 
 fn help_schema() -> Value {
-    json!({
+    let mut schema = json!({
         "type":"object",
         "properties":{
             "mode":{"type":"string","enum":["search","describe"]},
@@ -131,7 +138,7 @@ fn help_schema() -> Value {
             "route":{"type":"string"},
             "method":{"type":"string","enum":["tectd-program","tectd-setup","tectd-scope-candidates","tectd-slice-candidates"]}
         },
-        "required":["mode"],
+        "anyOf":[{"required":["mode"]},{"properties":{"text":{"const":"response-rules"}},"required":["text"]}],
         "additionalProperties":false,
         "oneOf":[
             {
@@ -154,7 +161,9 @@ fn help_schema() -> Value {
                 "not":{"anyOf":[{"required":["text"]},{"required":["tool"]},{"required":["route"]}]}
             }
         ]
-    })
+    });
+    crate::planning_read::add_schema(&mut schema);
+    schema
 }
 
 pub(crate) fn decode_public_call(name: &str, arguments: Value) -> Result<InternalCall> {
@@ -206,98 +215,7 @@ fn validate_internal(name: &'static str, arguments: Value) -> Result<InternalCal
     Ok(InternalCall { name, arguments })
 }
 
-pub(crate) fn parse_help(arguments: Value) -> Result<HelpRequest> {
-    for field in ["text", "tool", "route", "method"] {
-        if arguments.get(field).is_some_and(Value::is_null) {
-            return Err(Error::InvalidArguments);
-        }
-    }
-    let args: HelpArguments =
-        serde_json::from_value(arguments).map_err(Error::invalid_arguments_from)?;
-    if args.text.as_ref().is_some_and(|text| text.contains('\0'))
-        || args
-            .tool
-            .as_ref()
-            .is_some_and(|tool| !PUBLIC_TOOLS.contains(&tool.as_str()))
-        || args.method.as_ref().is_some_and(|method| {
-            !matches!(
-                method.as_str(),
-                "tectd-program"
-                    | "tectd-setup"
-                    | "tectd-scope-candidates"
-                    | "tectd-slice-candidates"
-            )
-        })
-    {
-        return Err(Error::InvalidArguments);
-    }
-    match args.mode.as_str() {
-        "search" if args.route.is_none() && args.method.is_none() => Ok(HelpRequest::Search {
-            text: args.text,
-            tool: args.tool,
-        }),
-        "describe" if args.text.is_none() => match (args.tool, args.route, args.method) {
-            (Some(tool), None, None) => Ok(HelpRequest::DescribeTool(tool)),
-            (Some(tool), Some(route), None)
-                if matches!(tool.as_str(), "query" | "command" | "execute") =>
-            {
-                Ok(HelpRequest::DescribeRoute(
-                    route_for(&tool, &route).ok_or(Error::InvalidArguments)?,
-                ))
-            }
-            (None, None, Some(method)) => Ok(HelpRequest::DescribeMethod(method)),
-            _ => Err(Error::InvalidArguments),
-        },
-        _ => Err(Error::InvalidArguments),
-    }
-}
-
-pub(crate) fn help(request: HelpRequest) -> Result<Value> {
-    Ok(match request {
-        HelpRequest::Search { text, tool } => search(text.as_deref(), tool.as_deref()),
-        HelpRequest::DescribeTool(tool) => describe_tool(&tool),
-        HelpRequest::DescribeRoute(spec) => describe_route(&spec),
-        HelpRequest::DescribeMethod(method) => {
-            let (description, body) = match method.as_str() {
-                "tectd-program" => (
-                    "Method for forming and continuing a durable Program PRD.",
-                    PROGRAM_METHOD,
-                ),
-                "tectd-setup" => (
-                    "Method for composing and safely applying initial workspace instructions.",
-                    SETUP_METHOD,
-                ),
-                "tectd-scope-candidates" => (
-                    "Method for deriving, reviewing, and continuing durable Scope candidates.",
-                    SCOPE_CANDIDATE_METHOD,
-                ),
-                "tectd-slice-candidates" => (
-                    "Method for designing and reviewing a complete revisable Slice-candidate plan.",
-                    SLICE_CANDIDATE_METHOD,
-                ),
-                _ => return Err(Error::InternalInvariant),
-            };
-            let mut value = json!({"mode":"describe","kind":"method","method":method,
-                "tool":"help","description":description,"body":body});
-            if method == "tectd-scope-candidates" {
-                value["method_revision"] = json!(crate::scope_guidance::METHOD_REVISION);
-                value["guidance_registry"] = crate::scope_guidance::help_registry()?;
-            }
-            if method == "tectd-slice-candidates" {
-                value["method_revision"] = json!(crate::slice_guidance::METHOD_REVISION);
-                let details = crate::slice_guidance::help()?;
-                value["guidance_registry"] = details["guidance_registry"].clone();
-                value["pipeline_catalog"] = details["pipeline_catalog"].clone();
-            }
-            value
-        }
-    })
-}
-
-pub(crate) fn route_contract(tool: &str, route: &str) -> Option<Value> {
-    route_for(tool, route).map(|spec| describe_route(&spec))
-}
-
+#[cfg(test)]
 pub(crate) fn attach_route_contract(action: &mut Value) -> Result<()> {
     let Some(tool) = action["tool"].as_str() else {
         return Ok(());
@@ -315,7 +233,12 @@ pub(crate) fn attach_route_contract(action: &mut Value) -> Result<()> {
         return Ok(());
     };
     let spec = route_for(tool, route).ok_or(Error::InternalInvariant)?;
-    action["route_contract"] = describe_route(&spec);
+    if planning_route(spec.route) {
+        action["schema_help"] = schema_help_action(spec.tool, &json!({"route":spec.route}))?
+            .ok_or(Error::InternalInvariant)?;
+    } else {
+        action["route_contract"] = describe_route(&spec);
+    }
     Ok(())
 }
 
@@ -361,6 +284,15 @@ pub(crate) fn method_action(method: &str) -> Result<Value> {
     Ok(json!({"kind":"ready_call","tool":"help","arguments":arguments}))
 }
 
+/// Resolve only a registered route's internal identity without interpreting caller params.
+pub(crate) fn recognized_internal_name(name: &str, arguments: &Value) -> Option<&'static str> {
+    if matches!(name, "query" | "command" | "execute") {
+        route_for(name, arguments.get("route")?.as_str()?).map(|spec| spec.internal)
+    } else {
+        route_for_internal(name).map(|spec| spec.internal)
+    }
+}
+
 /// Build the compact schema recovery call for a known routed invocation.
 ///
 /// Public routed calls retain their requested route even when their params fail
@@ -380,13 +312,10 @@ pub(crate) fn schema_help_action(name: &str, arguments: &Value) -> Result<Option
         return Ok(None);
     };
     let arguments = json!({"mode":"describe","tool":spec.tool,"route":spec.route});
-    let mut action = json!({
-        "kind":"ready_call",
-        "tool":"help",
-        "arguments":arguments
-    });
-    action["route_contract"] = describe_route(&spec);
-    Ok(Some(action))
+    parse_help(arguments.clone())?;
+    Ok(Some(
+        json!({"kind":"ready_call","tool":"help","arguments":arguments}),
+    ))
 }
 
 pub(crate) fn needs_action(
@@ -454,3 +383,8 @@ fn empty_object(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) fn planning_route(route: &str) -> bool {
+    route.starts_with("program.") || route.starts_with("scope.candidates.") || route == "scope.open"
+}

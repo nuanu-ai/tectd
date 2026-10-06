@@ -1,3 +1,6 @@
+use super::knowledge_lifecycle_support::reads::{
+    phase_completion_action, producer_action, resolve_current,
+};
 use super::knowledge_lifecycle_support::{complete_agent, context, output_data, output_digest};
 use crate::recovery_support::{Mcp, action_params};
 use crate::support::route;
@@ -11,7 +14,7 @@ pub async fn ready_create_then_supersede(
     successor_document: Value,
     replacement_bindings: Value,
 ) -> Value {
-    let mut current=route(client,"command","knowledge.change_begin",json!({
+    let begun=route(client,"command","knowledge.change_begin",json!({
         "request_id":Uuid::new_v4(),"intent":"Create an exact successor and supersede its predecessor atomically.",
         "desired_outcome":"The successor is current only after its predecessor is atomically superseded.",
         "sources":successor_document["sources"],"operation_hints":[
@@ -23,6 +26,8 @@ pub async fn ready_create_then_supersede(
                 "authority_basis":"Current authenticated workspace owner.","depends_on_labels":["successor"]}],
         "owner":{"kind":"workspace"},"completion":{"canonical_result":true,"exact_delivery":true,
             "impact_recorded":true,"search":"not_required","erasure":"not_required"},"delivery_mode":"phasewise"})).await;
+    let begun = resolve_current(client, begun).await;
+    let mut current = begun.value.clone();
     let origin = &context(&current)["origin"];
     current=complete_agent(client,&current,json!({"phase":"kc-intake","data":{
         "bounded_outcome":origin["desired_outcome"],"operation_hints":origin["operation_hints"],
@@ -161,7 +166,7 @@ pub async fn ready_create_then_supersede(
         client,
         "command",
         "knowledge.change_phase_complete",
-        action_params(&current["actions"][0]).clone(),
+        action_params(phase_completion_action(&current)).clone(),
     )
     .await
 }
@@ -181,11 +186,16 @@ pub async fn commit_create_then_supersede(
         replacement_bindings,
     )
     .await;
+    let publication = resolve_current(client, publication).await;
     route(
         client,
         "command",
         "knowledge.change_commit",
-        action_params(&publication["actions"][0]).clone(),
+        action_params(producer_action(
+            &publication.value,
+            "knowledge.change_commit",
+        ))
+        .clone(),
     )
     .await
 }

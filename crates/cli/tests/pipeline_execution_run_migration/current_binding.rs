@@ -29,10 +29,19 @@ async fn publication_action(client: &mut Mcp, document: &Value) -> Value {
         client,
         "command",
         "knowledge.change_phase_complete",
-        action_params(&reviewed["actions"][0]).clone(),
+        action_params(knowledge_lifecycle_support::reads::phase_completion_action(
+            &reviewed,
+        ))
+        .clone(),
     )
     .await;
-    action_params(&publication["actions"][0]).clone()
+    let publication =
+        knowledge_lifecycle_support::reads::resolve_current(client, publication).await;
+    action_params(knowledge_lifecycle_support::reads::producer_action(
+        &publication.value,
+        "knowledge.change_commit",
+    ))
+    .clone()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -64,36 +73,16 @@ async fn migrated_slice_binding_uses_current_head_and_rejects_stale_preparation(
         &format!("current-binding-{}", Uuid::new_v4()),
     )
     .await;
-    let (context, scope) = run_fixture(&mut client, &repo).await;
-    let predecessor = context["run"].clone();
+    let (context, scope) = run_fixture(&mut client, &repo, &pool).await;
+    let predecessor = context.run().clone();
     let committed = commit_create(
         &mut client,
         document(&scope, &predecessor, "Historical predecessor binding"),
     )
     .await;
     let historical_unit = committed.receipt["applied_operations"][0]["unit_id"].clone();
-    // Publication advances knowledge generation; refresh the predecessor's
-    // manifest through its actual action before testing retained consumption.
-    let current = route(
-        &mut client,
-        "query",
-        "slice.pipeline.context",
-        json!({"run_id":predecessor["id"]}),
-    )
-    .await;
-    let refresh = current["actions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|action| action_name(action) == Some("pipeline.knowledge_refresh"))
-        .unwrap();
-    route(
-        &mut client,
-        "command",
-        "pipeline.knowledge_refresh",
-        action_params(refresh).clone(),
-    )
-    .await;
+    let retained_manifest =
+        historical_manifest::reconstruct(&pool, &mut client, &context, &committed).await;
     let refreshed = route(
         &mut client,
         "query",
@@ -101,9 +90,12 @@ async fn migrated_slice_binding_uses_current_head_and_rejects_stale_preparation(
         json!({"run_id":predecessor["id"]}),
     )
     .await;
-    let predecessor = refreshed["run"].clone();
+    let refreshed = resolve_pipeline(&mut client, refreshed)
+        .await
+        .expect("resolve synthetic historical manifest");
+    let predecessor = refreshed.run().clone();
     assert!(
-        refreshed["knowledge_resources"]["selected"]
+        refreshed.details_data()["knowledge_resources"]["selected"]
             .as_array()
             .unwrap()
             .iter()
@@ -130,7 +122,7 @@ async fn migrated_slice_binding_uses_current_head_and_rejects_stale_preparation(
             json!({"request_id":Uuid::new_v4(),
         "predecessor_run_id":predecessor["id"],"expected_revision":predecessor["revision"],
         "idempotency_key":format!("binding-migration-{}",Uuid::new_v4()),
-        "successor_definition_version":"0.7.0-native.k1k5","mappings":mapping()}),
+        "successor_definition_version":"0.7.1-native.k1k5","mappings":[]}),
         )
         .await;
     let refused = route_error(&mut client, "command", "knowledge.change_commit", stale).await;
@@ -142,9 +134,12 @@ async fn migrated_slice_binding_uses_current_head_and_rejects_stale_preparation(
         json!({"run_id":migrated["successor_run_id"]}),
     )
     .await;
+    let successor = resolve_pipeline(&mut client, successor)
+        .await
+        .expect("resolve actual successor");
     let fresh = commit_create(
         &mut client,
-        document(&scope, &successor["run"], "Fresh successor binding"),
+        document(&scope, successor.run(), "Fresh successor binding"),
     )
     .await;
     let fresh_unit = Uuid::parse_str(
@@ -156,14 +151,14 @@ async fn migrated_slice_binding_uses_current_head_and_rejects_stale_preparation(
     let pin: (String,String,String) = sqlx::query_as(
         "SELECT definition_kind,definition_version,definition_digest FROM knowledge_bindings WHERE unit_id=$1")
         .bind(fresh_unit).fetch_one(&pool).await.unwrap();
-    assert_eq!(pin.0, successor["run"]["definition_kind"].as_str().unwrap());
+    assert_eq!(pin.0, successor.run()["definition_kind"].as_str().unwrap());
     assert_eq!(
         pin.1,
-        successor["run"]["definition_version"].as_str().unwrap()
+        successor.run()["definition_version"].as_str().unwrap()
     );
     assert_eq!(
         pin.2,
-        successor["run"]["definition_digest"].as_str().unwrap()
+        successor.run()["definition_digest"].as_str().unwrap()
     );
     let bindings_after: Vec<Value> = sqlx::query_scalar(
         "SELECT to_jsonb(b) FROM knowledge_bindings b WHERE unit_id=$1 ORDER BY id",
@@ -183,13 +178,17 @@ async fn migrated_slice_binding_uses_current_head_and_rejects_stale_preparation(
         json!({"run_id":predecessor["id"]}),
     )
     .await;
-    assert_eq!(old["run"]["status"], "superseded");
+    let old = resolve_pipeline(&mut client, old)
+        .await
+        .expect("resolve retained historical run");
+    historical_manifest::assert_unchanged(&pool, &retained_manifest).await;
+    assert_eq!(old.run()["status"], "superseded");
     assert_eq!(
-        old["run"]["definition_digest"],
+        old.run()["definition_digest"],
         predecessor["definition_digest"]
     );
     assert!(
-        old["knowledge_resources"]["selected"]
+        old.details_data()["knowledge_resources"]["selected"]
             .as_array()
             .unwrap()
             .iter()

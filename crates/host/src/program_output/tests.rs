@@ -33,23 +33,38 @@ fn encoding_cost_includes_both_json_escape_layers_exactly() {
 }
 
 #[test]
-fn later_prd_growth_cannot_make_existing_original_unreadable() {
-    let guard = ProgramEncoding {
-        capacity: MAX_FRAME_BYTES,
-    };
+fn compact_mutation_guard_keeps_large_fields_readable_and_checks_projection_capacity() {
     let mut program = draft();
-    program.max_input_bytes = guard.input_bytes(&"x".repeat(6 * 1024 * 1024)).unwrap();
-    guard.check(&program).unwrap();
+    program.max_input_bytes = 6 * 1024 * 1024;
     program.intent = Some("y".repeat(3 * 1024 * 1024));
-    assert_eq!(guard.check(&program), Err(Error::RequestTooLarge));
-    program.intent = None;
-    program.max_input_bytes = 0;
-    program.name = Some("z".repeat(6 * 1024 * 1024));
+    program.name = Some("z".repeat(1024 * 1024));
+    let guard = ProgramEncoding { capacity: 8192 };
+    guard.check(&program).unwrap();
+    for operation in ["begin", "save", "updated"] {
+        let reply = mutation(&program, operation).unwrap();
+        assert!(encoded_len(&reply).unwrap() <= 8192);
+        assert!(reply["program"].get("intent").is_none());
+        assert_eq!(
+            reply["field_destinations"]["full_program_and_original_inputs"]["arguments"]["params"]
+                ["program_id"],
+            program.id.to_string()
+        );
+        assert_eq!(reply["saved"], operation == "save");
+        println!(
+            "program.{operation} envelope_bytes={}",
+            encoded_len(&reply).unwrap()
+        );
+    }
     assert_eq!(
-        guard.check(&program),
-        Err(Error::RequestTooLarge),
-        "a stored full name must remain enumerable with the maximum worktree set"
+        super::program(program.clone()).unwrap(),
+        mutation(&program, "updated").unwrap()
     );
+    assert_eq!(
+        ProgramEncoding { capacity: 1 }.check(&program),
+        Err(Error::RequestTooLarge)
+    );
+    program.max_input_bytes = -1;
+    assert_eq!(guard.check(&program), Err(Error::InvalidArguments));
 }
 
 #[test]
@@ -146,4 +161,108 @@ fn original_history_reads_never_move_the_save_cursor_back() {
         .find(|a| a["tool"] == "command" && a["arguments"]["route"] == "program.save")
         .unwrap();
     assert_eq!(save["arguments"]["params"]["input_cursor"], 8);
+}
+
+#[test]
+fn large_program_field_and_single_input_use_pinned_lossless_fragments() {
+    let mut program = draft();
+    program.intent = Some("日本語🙂\\\"\n".repeat(4000));
+    program.latest_input = 2;
+    let original = ProgramPage {
+        program,
+        inputs: vec![input(1, &"input".repeat(6000)), input(2, "later")],
+        next_after_input: None,
+    };
+    let mut expected = original.clone();
+    expected.inputs.truncate(1);
+    expected.next_after_input = Some(1);
+    let expected = serde_json::to_vec(&serde_json::to_value(&expected).unwrap()).unwrap();
+    let mut window = crate::planning_read::Window::default();
+    let mut assembled = Vec::new();
+    let mut maximum = 0;
+    loop {
+        let page = page_read(original.clone(), Some(0), 25, &window, None, 8192).unwrap();
+        let bytes = encoded_len(&page).unwrap();
+        maximum = maximum.max(bytes);
+        assert!(bytes <= 8192);
+        assert_eq!(page["kind"], "fragment");
+        assembled.extend_from_slice(page["text"].as_str().unwrap().as_bytes());
+        let Some(next) = page["next_offset_bytes"].as_u64() else {
+            assert_eq!(page["actions"].as_array().unwrap().len(), 1);
+            let next_page = &page["actions"][0];
+            assert_eq!(next_page["arguments"]["params"]["after_input"], 1);
+            assert!(
+                next_page["arguments"]["params"]
+                    .get("representation_digest")
+                    .is_none()
+            );
+            crate::api::decode_public_call("query", next_page["arguments"].clone()).unwrap();
+            break;
+        };
+        let action = &page["actions"][0];
+        let call = crate::api::decode_public_call("query", action["arguments"].clone()).unwrap();
+        let crate::tools::Invocation::Program(crate::program_tools::ProgramInvocation::Get {
+            window: next_window,
+            program_revision,
+            after_input,
+            ..
+        }) = crate::tools::parse_invocation(call.name, call.arguments).unwrap()
+        else {
+            panic!("real program read")
+        };
+        assert_eq!(after_input, Some(0));
+        assert_eq!(program_revision, Some(original.program.revision));
+        assert_eq!(next_window.offset_bytes, Some(next));
+        window = next_window;
+    }
+    assert!(
+        assembled == expected,
+        "lossless canonical JSON bytes differ"
+    );
+    println!("program.get max_envelope_bytes={maximum}");
+    assert!(
+        page_read(original, Some(0), 25, &window, Some(999), 8192)
+            .unwrap_err()
+            .refusal()
+            .is_some()
+    );
+}
+
+#[test]
+fn guidance_revision_two_keeps_v1_archive_and_explains_actual_success_wire_field() {
+    let old = include_str!("../../../../skills/tectd-program/revisions/1.md");
+    assert!(old.contains("# TectD Program"));
+    assert!(!old.contains("## Effective save contract"));
+    let method = StaticProgramGuidance.planning_method();
+    assert_eq!(method.version, "2");
+    assert_eq!(
+        method.digest,
+        format!("{:x}", sha2::Sha256::digest(PROGRAM_SKILL.as_bytes()))
+    );
+    assert!(method.body.contains("arguments.params.success"));
+    assert!(
+        method
+            .body
+            .contains("There is no `program_success` argument")
+    );
+    let action = save_action(&draft(), 0).unwrap();
+    assert_eq!(
+        action["input"]["effective_contract"]["missing_fields"]
+            .as_array()
+            .unwrap()
+            .len(),
+        6
+    );
+    let success = action["input"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["path"] == "arguments.params.success")
+        .unwrap();
+    assert!(
+        success["format"]
+            .as_str()
+            .unwrap()
+            .contains("Observable outcomes")
+    );
 }

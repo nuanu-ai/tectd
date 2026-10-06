@@ -143,6 +143,7 @@ pub struct CandidateSnapshotMaterial {
 #[serde(rename_all = "snake_case")]
 pub enum CandidateContextView {
     Overview,
+    Details,
     Program,
     Inputs,
     Candidates,
@@ -271,6 +272,8 @@ pub struct ProtectedObjectRef {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CandidateContextPage {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draft: Option<crate::ResolvedCandidateDraft>,
     pub context: CandidateContext,
     pub view: CandidateContextView,
     pub program: Option<CandidateProgramSummary>,

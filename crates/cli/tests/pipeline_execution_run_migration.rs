@@ -14,6 +14,14 @@ mod recovery_support;
 mod support;
 
 use projection::assert_slice_projection;
+use recovery_support::native_reads::ScopeOpenFixture;
+use recovery_support::pipeline_reads::{ResolvedPipeline, resolve_pipeline};
+#[path = "pipeline_execution_run_migration/historical_manifest.rs"]
+mod historical_manifest;
+#[path = "pipeline_execution_run_migration/historical_seed.rs"]
+mod historical_seed;
+#[path = "pipeline_execution_run_migration/refresh_refusal.rs"]
+mod refresh_refusal;
 use recovery_support::{
     Daemon, Mcp, action_name, action_params, host_file, private_temp, tagged_url,
 };
@@ -26,11 +34,18 @@ use tect_postgres::admin;
 mod projection;
 use uuid::Uuid;
 
-fn mapping() -> Value {
-    json!([{"legacy_obligation_id":"legacy-phase-01",
-        "successor_obligation_id":"slice-lightweight-k1",
-        "evidence_refs":[{"reference":"artifact://migration/legacy-phase-01",
-            "digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}])
+fn mapping(context: &ResolvedPipeline) -> Value {
+    let output = &context.details_data()["outputs"][0];
+    for field in ["phase_id", "id", "digest"] {
+        assert!(
+            output[field]
+                .as_str()
+                .is_some_and(|value| !value.is_empty())
+        );
+    }
+    json!([{"legacy_obligation_id":output["phase_id"],
+        "successor_obligation_id":"K1",
+        "evidence_refs":[{"reference":output["id"],"digest":output["digest"]}]}])
 }
 
 fn assert_complete_pipeline_refusal(value: &Value) {
@@ -54,24 +69,9 @@ fn assert_complete_pipeline_refusal(value: &Value) {
     }
 }
 
-fn v07_completion(context: &Value, fields: Value) -> Value {
-    json!({
-        "request_id":Uuid::new_v4(),
-        "run_id":context["run"]["id"],
-        "run_revision":context["run"]["revision"],
-        "phase_id":context["run"]["current_phase_id"],
-        "outcome":"completed",
-        "transition":"continue",
-        "output":{
-            "producer_context_id":"pipeline-run-migration-public-mcp",
-            "fields":fields,
-            "verdict":"pass",
-            "dispositions":["satisfied"]
-        }
-    })
-}
+use historical_seed::v07_completion;
 
-async fn run_fixture(client: &mut Mcp, repo: &Path) -> (Value, Value) {
+async fn run_fixture(client: &mut Mcp, repo: &Path, pool: &PgPool) -> (ResolvedPipeline, Value) {
     let (source, candidate) = ready_source_candidate(client, repo).await;
     let opened_scope = route(
         client,
@@ -84,12 +84,9 @@ async fn run_fixture(client: &mut Mcp, repo: &Path) -> (Value, Value) {
             "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]}),
     )
     .await;
-    let saved = save(
-        client,
-        &opened_scope["created"]["planning"],
-        lifecycle_support::lightweight_draft(),
-    )
-    .await;
+    let opened_scope = ScopeOpenFixture::from_mutation(opened_scope, "created");
+    let planning = opened_scope.read_planning(client).await.value;
+    let saved = save(client, &planning, lifecycle_support::lightweight_draft()).await;
     let reviewed = review(client, &saved).await;
     let opened_slice = route(
         client,
@@ -107,24 +104,26 @@ async fn run_fixture(client: &mut Mcp, repo: &Path) -> (Value, Value) {
         "not_started",
     )
     .await;
-    let begun = route(
+    let run_id = historical_seed::seed(pool, client, &reviewed["scope"]["id"], &slice).await;
+    let raw = route(
         client,
-        "command",
-        "slice.pipeline.begin",
-        json!({"request_id":Uuid::new_v4(),"scope_id":reviewed["scope"]["id"],
-            "slice_id":slice["id"],"slice_revision":slice["revision"],
-            "qualification_reason":"Legacy v0.6 run requires an explicit successor mapping."}),
+        "query",
+        "slice.pipeline.context",
+        json!({"run_id":run_id}),
     )
     .await;
+    let context = resolve_pipeline(client, raw)
+        .await
+        .expect("resolve stored historical run");
     assert_slice_projection(
         client,
         &reviewed["scope"]["id"],
         &slice["id"],
-        &begun["created"]["run"]["id"],
+        &json!(run_id),
         "active",
     )
     .await;
-    (begun["created"].clone(), reviewed["scope"]["id"].clone())
+    (context, reviewed["scope"]["id"].clone())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -135,6 +134,9 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
     let role = std::env::var("TECT_TEST_RUNTIME_ROLE").expect("TECT_TEST_RUNTIME_ROLE required");
     let pool = PgPool::connect(&admin_url).await.unwrap();
     admin::migrate(&pool, &role).await.unwrap();
+    tect_postgres::enable_durable_knowledge(&pool, &role)
+        .await
+        .unwrap();
     let temp = private_temp();
     let root = if std::env::var("TECT_TEST_KEEP_FAILURE_EVIDENCE").as_deref() == Ok("1") {
         temp.keep().canonicalize().unwrap()
@@ -163,8 +165,9 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
     )
     .await;
 
-    let (context, scope_id) = run_fixture(&mut client, &repo).await;
-    let predecessor = context["run"].clone();
+    let (context, scope_id) = run_fixture(&mut client, &repo, &pool).await;
+    refresh_refusal::retired(&pool, &mut client, &context).await;
+    let predecessor = context.run().clone();
     assert!(
         !predecessor["definition_version"]
             .as_str()
@@ -175,14 +178,49 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
     let idempotency_key = format!("migration-{}", Uuid::new_v4());
     let params = json!({"request_id":request_id,"predecessor_run_id":predecessor["id"],
         "expected_revision":predecessor["revision"],"idempotency_key":idempotency_key,
-        "successor_definition_version":"0.7.0-native.k1k5","mappings":mapping()});
+        "successor_definition_version":"0.7.1-native.k1k5","mappings":[]});
+    historical_seed::assert_retired_boundaries(&pool, &mut client, &context, &params).await;
+    let before = historical_seed::rows(
+        &pool,
+        Uuid::parse_str(predecessor["id"].as_str().unwrap()).unwrap(),
+    )
+    .await;
+    let mut nonempty = params.clone();
+    nonempty["mappings"] = mapping(&context);
+    let denied = client.call_error("pipeline_run_migrate", nonempty).await;
+    assert_eq!(
+        denied["error"]["refusal"]["code"],
+        "LEGACY_MIGRATION_REQUIRED"
+    );
+    assert_eq!(
+        denied["error"]["refusal"]["rule"],
+        "WP6-MIGRATION-MAPPING-01"
+    );
+    assert_eq!(
+        denied["error"]["refusal"]["path"],
+        "arguments.params.mappings"
+    );
+    assert_eq!(
+        before,
+        historical_seed::rows(
+            &pool,
+            Uuid::parse_str(predecessor["id"].as_str().unwrap()).unwrap()
+        )
+        .await
+    );
+    let mut stale = params.clone();
+    stale["idempotency_key"] = json!(format!("stale-{}", Uuid::new_v4()));
+    stale["expected_revision"] = json!(predecessor["revision"].as_i64().unwrap() - 1);
+    let stale = client.call_error("pipeline_run_migrate", stale).await;
+    assert_eq!(stale["error"]["code"], "stale_revision");
+    assert_complete_pipeline_refusal(&stale);
     let migrated = client.call("pipeline_run_migrate", params.clone()).await;
     assert_eq!(migrated["status"], "committed");
     assert_eq!(migrated["predecessor_run_id"], predecessor["id"]);
     assert_ne!(migrated["successor_run_id"], predecessor["id"]);
     assert_eq!(
         migrated["successor_definition_version"],
-        "0.7.0-native.k1k5"
+        "0.7.1-native.k1k5"
     );
 
     assert_slice_projection(
@@ -201,17 +239,21 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
         json!({"run_id":predecessor["id"]}),
     )
     .await;
+    let old = resolve_pipeline(&mut client, old)
+        .await
+        .expect("resolve superseded historical run");
     assert_eq!(
-        old["run"]["definition_version"],
+        old.run()["definition_version"],
         predecessor["definition_version"]
     );
     assert_eq!(
-        old["run"]["definition_digest"],
+        old.run()["definition_digest"],
         predecessor["definition_digest"]
     );
-    assert_eq!(old["run"]["status"], "superseded");
+    assert_eq!(old.run()["status"], "superseded");
+    historical_seed::assert_superseded_write(&pool, &mut client, &old).await;
     assert_eq!(
-        old["run"]["revision"],
+        old.run()["revision"],
         predecessor["revision"].as_i64().unwrap() + 1
     );
     let mut successor = route(
@@ -242,8 +284,25 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
         )
         .await;
     }
-    assert_eq!(successor["run"]["definition_version"], "0.7.0-native.k1k5");
-    assert_eq!(successor["run"]["current_phase_id"], "K1");
+    let successor = resolve_pipeline(&mut client, successor)
+        .await
+        .expect("resolve current successor");
+    for field in ["attempts", "outputs", "bindings"] {
+        assert!(
+            successor.details_data()[field]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+    historical_seed::assert_retained(
+        &pool,
+        &before,
+        Uuid::parse_str(predecessor["id"].as_str().unwrap()).unwrap(),
+    )
+    .await;
+    assert_eq!(successor.run()["definition_version"], "0.7.1-native.k1k5");
+    assert_eq!(successor.run()["current_phase_id"], "K1");
 
     let k1 = v07_completion(
         &successor,
@@ -305,16 +364,22 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
     );
 
     let completed_k1 = route(&mut client, "command", "slice.pipeline.phase.complete", k1).await;
-    assert_eq!(completed_k1["context"]["run"]["current_phase_id"], "K2");
+    let completed_k1 = resolve_pipeline(&mut client, completed_k1)
+        .await
+        .expect("resolve K1 completion");
+    assert_eq!(completed_k1.run()["current_phase_id"], "K2");
     let k2_context = route(
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":successor["run"]["id"],"refresh":true}),
+        json!({"run_id":successor.run()["id"],"refresh":true}),
     )
     .await;
-    assert_eq!(k2_context["run"]["current_phase_id"], "K2");
-    let persisted_k1 = k2_context["outputs"]
+    let k2_context = resolve_pipeline(&mut client, k2_context)
+        .await
+        .expect("resolve actual K2 current");
+    assert_eq!(k2_context.run()["current_phase_id"], "K2");
+    let persisted_k1 = k2_context.details_data()["outputs"]
         .as_array()
         .unwrap()
         .iter()
@@ -323,12 +388,12 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
     assert!(persisted_k1.get("body").is_none());
     assert_eq!(
         persisted_k1["digest"],
-        k2_context["bindings"][0]["output_digest"]
+        k2_context.details_data()["bindings"][0]["output_digest"]
     );
     let raw_k1: (String, String) = sqlx::query_as(
         "SELECT body,body_digest FROM slice_pipeline_phase_outputs WHERE run_id=$1 AND phase_id='K1'",
     )
-    .bind(successor["run"]["id"].as_str().unwrap().parse::<Uuid>().unwrap())
+    .bind(successor.run()["id"].as_str().unwrap().parse::<Uuid>().unwrap())
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -347,14 +412,17 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
         }),
     );
     let completed_k2 = route(&mut client, "command", "slice.pipeline.phase.complete", k2).await;
-    assert_eq!(completed_k2["context"]["run"]["current_phase_id"], "K3");
-    let k2_attempt = completed_k2["context"]["attempts"]
+    let completed_k2 = resolve_pipeline(&mut client, completed_k2)
+        .await
+        .expect("resolve K2 completion");
+    assert_eq!(completed_k2.run()["current_phase_id"], "K3");
+    let k2_attempt = completed_k2.details_data()["attempts"]
         .as_array()
         .unwrap()
         .iter()
         .find(|attempt| attempt["phase_id"] == "K2")
         .unwrap();
-    let k1_binding = completed_k2["context"]["bindings"]
+    let k1_binding = completed_k2.details_data()["bindings"]
         .as_array()
         .unwrap()
         .iter()
@@ -369,8 +437,8 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
         "v07-derived-proof refusal={} unknown_refusal={} omitted_k1=true omitted_k2=true k1_next={} k2_next={} derived_reference={}",
         rejected["error"],
         unknown["error"],
-        k2_context["run"]["current_phase_id"],
-        completed_k2["context"]["run"]["current_phase_id"],
+        k2_context.run()["current_phase_id"],
+        completed_k2.run()["current_phase_id"],
         k1_binding["output_id"]
     );
 
@@ -378,19 +446,13 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
     assert_eq!(replay["status"], "replayed");
     assert_eq!(replay["successor_run_id"], migrated["successor_run_id"]);
     let mut conflict = params.clone();
-    conflict["mappings"][0]["successor_obligation_id"] = json!("slice-lightweight-k2");
+    conflict["mappings"] = mapping(&context);
     let conflict = client.call_error("pipeline_run_migrate", conflict).await;
     assert_eq!(conflict["error"]["code"], "input_conflict");
     assert_complete_pipeline_refusal(&conflict);
-    let mut stale = params.clone();
-    stale["idempotency_key"] = json!(format!("stale-{}", Uuid::new_v4()));
-    stale["expected_revision"] = json!(predecessor["revision"]);
-    let stale = client.call_error("pipeline_run_migrate", stale).await;
-    assert_eq!(stale["error"]["code"], "stale_revision");
-    assert_complete_pipeline_refusal(&stale);
     let mut ambiguous = params.clone();
     ambiguous["idempotency_key"] = json!(format!("ambiguous-{}", Uuid::new_v4()));
-    let duplicate_mapping = mapping()[0].clone();
+    let duplicate_mapping = mapping(&context)[0].clone();
     ambiguous["mappings"] = json!([duplicate_mapping.clone(), duplicate_mapping]);
     let ambiguous = client.call_error("pipeline_run_migrate", ambiguous).await;
     assert_eq!(
@@ -398,16 +460,20 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
         "LEGACY_MIGRATION_REQUIRED"
     );
     assert_complete_pipeline_refusal(&ambiguous);
-    let mut missing = params;
-    missing["idempotency_key"] = json!(format!("missing-{}", Uuid::new_v4()));
-    missing["mappings"] = json!([]);
-    let missing = client.call_error("pipeline_run_migrate", missing).await;
-    assert_eq!(
-        missing["error"]["refusal"]["code"],
-        "LEGACY_MIGRATION_REQUIRED"
-    );
-    assert_complete_pipeline_refusal(&missing);
 
+    historical_seed::assert_old_receipt_replay(
+        &pool,
+        &mut client,
+        &root,
+        &migrated["successor_run_id"],
+    )
+    .await;
+    refresh_refusal::current_replay_and_superseded(
+        &pool,
+        &mut client,
+        &migrated["successor_run_id"],
+    )
+    .await;
     projection::assert_persisted_status_boundaries(
         &pool,
         &mut client,

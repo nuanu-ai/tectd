@@ -7,7 +7,9 @@ mod recovery_support;
 #[allow(dead_code)]
 mod support;
 
-use lifecycle_support::{complete, completion_request, lightweight_draft};
+use lifecycle_support::{LIGHTWEIGHT_PHASES, complete, completion_request, lightweight_draft};
+use recovery_support::native_reads::ScopeOpenFixture;
+use recovery_support::pipeline_reads::{ResolvedPipeline, resolve_pipeline};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -15,10 +17,10 @@ use support::{open_slice, ready_source_candidate, repository, review, route, rou
 use tect_postgres::admin;
 use uuid::Uuid;
 
-fn input_request(context: &Value, text: &str) -> Value {
-    json!({"request_id":Uuid::new_v4(),"run_id":context["run"]["id"],
-        "run_revision":context["run"]["revision"],
-        "phase_id":context["run"]["current_phase_id"],"input":text})
+fn input_request(context: &ResolvedPipeline, text: &str) -> Value {
+    json!({"request_id":Uuid::new_v4(),"run_id":context.run()["id"],
+        "run_revision":context.run()["revision"],
+        "phase_id":context.run()["current_phase_id"],"input":text})
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -70,12 +72,9 @@ async fn ordinary_input_rebinds_current_manifest_and_completes_from_returned_con
         "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]}),
     )
     .await;
-    let saved = save(
-        &mut client,
-        &opened_scope["created"]["planning"],
-        lightweight_draft(),
-    )
-    .await;
+    let opened_scope = ScopeOpenFixture::from_mutation(opened_scope, "created");
+    let planning_read = opened_scope.read_planning(&mut client).await;
+    let saved = save(&mut client, &planning_read.value, lightweight_draft()).await;
     let reviewed = review(&mut client, &saved).await;
     let slice = route(
         &mut client,
@@ -91,27 +90,45 @@ async fn ordinary_input_rebinds_current_manifest_and_completes_from_returned_con
         json!({
         "request_id":Uuid::new_v4(),"scope_id":reviewed["scope"]["id"],
         "slice_id":slice["created"]["id"],"slice_revision":slice["created"]["revision"],
-        "delivery_mode":"phasewise",
         "qualification_reason":"Regression for input manifest revision binding."}),
     )
     .await;
-    let initial = begun["created"].clone();
-    assert_eq!(initial["knowledge_resource_status"]["state"], "current");
-    assert!(
-        initial["definition"]["phases"]
+    let initial = resolve_pipeline(&mut client, begun).await.unwrap();
+    assert_eq!(initial.run()["definition_version"], "0.7.1-native.k1k5");
+    assert_eq!(initial.run()["delivery_mode"], "phasewise");
+    assert_eq!(
+        initial.definition()["phases"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|phase| phase["id"] == initial["run"]["current_phase_id"]),
-        "initial phase absent: {initial}"
+            .map(|phase| phase["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        LIGHTWEIGHT_PHASES
+    );
+    let delivered = initial.details_data()["delivered_phases"]
+        .as_array()
+        .unwrap();
+    assert_eq!(delivered.len(), 1);
+    assert_eq!(delivered[0], *initial.current_phase().unwrap());
+    assert_eq!(initial.run()["current_phase_id"], "K1");
+
+    assert_eq!(
+        initial.details_data()["knowledge_resource_status"]["state"],
+        "current"
+    );
+    assert_eq!(
+        initial.current_phase().unwrap()["id"],
+        initial.run()["current_phase_id"]
     );
     let (phase_one, _) =
         complete(&mut client, &initial, "completed", "continue", None, false).await;
     assert!(
-        phase_one["context"].is_object(),
-        "phase one response: {phase_one}"
+        phase_one.raw_payload["context"].is_object(),
+        "phase one response: {}",
+        phase_one.raw_payload
     );
-    let phase_two = phase_one["context"].clone();
+    let phase_two = phase_one;
+    assert_eq!(phase_two.run()["current_phase_id"], "K2");
     let (waiting, _) = complete(
         &mut client,
         &phase_two,
@@ -122,11 +139,11 @@ async fn ordinary_input_rebinds_current_manifest_and_completes_from_returned_con
     )
     .await;
     assert!(
-        waiting["context"].is_object(),
-        "waiting response: {waiting}"
+        waiting.raw_payload["context"].is_object(),
+        "waiting response: {}",
+        waiting.raw_payload
     );
-    let waiting = waiting["context"].clone();
-    assert_eq!(waiting["run"]["status"], "waiting_input");
+    assert_eq!(waiting.run()["status"], "waiting_input");
 
     let first_request = input_request(&waiting, "First bounded operator input.");
     let first = route(
@@ -136,18 +153,18 @@ async fn ordinary_input_rebinds_current_manifest_and_completes_from_returned_con
         first_request.clone(),
     )
     .await;
-    let first_context = &first["context"];
+    let first_context = resolve_pipeline(&mut client, first.clone()).await.unwrap();
     assert_eq!(
-        first_context["knowledge_resource_status"]["state"],
+        first_context.details_data()["knowledge_resource_status"]["state"],
         "current"
     );
     assert_eq!(
-        first_context["knowledge_resources"]["run_revision"],
-        first_context["run"]["revision"]
+        first_context.details_data()["knowledge_resources"]["run_revision"],
+        first_context.run()["revision"]
     );
     assert_ne!(
-        first_context["knowledge_resources"]["id"],
-        waiting["knowledge_resources"]["id"]
+        first_context.details_data()["knowledge_resources"]["id"],
+        waiting.details_data()["knowledge_resources"]["id"]
     );
     let replay = route(
         &mut client,
@@ -172,21 +189,27 @@ async fn ordinary_input_rebinds_current_manifest_and_completes_from_returned_con
         &mut client,
         "command",
         "slice.pipeline.input",
-        input_request(first_context, "Second bounded operator input."),
+        input_request(&first_context, "Second bounded operator input."),
     )
     .await;
-    let current = &second["context"];
-    assert_eq!(current["knowledge_resource_status"]["state"], "current");
+    let current = resolve_pipeline(&mut client, second).await.unwrap();
     assert_eq!(
-        current["knowledge_resources"]["run_revision"],
-        current["run"]["revision"]
+        current.details_data()["knowledge_resource_status"]["state"],
+        "current"
+    );
+    assert_eq!(
+        current.details_data()["knowledge_resources"]["run_revision"],
+        current.run()["revision"]
     );
     assert_ne!(
-        current["knowledge_resources"]["id"],
-        first_context["knowledge_resources"]["id"]
+        current.details_data()["knowledge_resources"]["id"],
+        first_context.details_data()["knowledge_resources"]["id"]
     );
-    assert_eq!(current["inputs"].as_array().unwrap().len(), 2);
-    let stale_completion = completion_request(first_context, "completed", "continue", None, false);
+    assert_eq!(
+        current.details_data()["inputs"].as_array().unwrap().len(),
+        2
+    );
+    let stale_completion = completion_request(&first_context, "completed", "continue", None, false);
     assert_eq!(
         route_error(
             &mut client,
@@ -198,8 +221,10 @@ async fn ordinary_input_rebinds_current_manifest_and_completes_from_returned_con
         "stale_revision"
     );
     let (completed, request) =
-        complete(&mut client, current, "completed", "continue", None, false).await;
-    assert_eq!(completed["context"]["run"]["current_phase_ordinal"], 3);
+        complete(&mut client, &current, "completed", "continue", None, false).await;
+    let completed_context = completed;
+    assert_eq!(completed_context.run()["current_phase_ordinal"], 3);
+    assert_eq!(completed_context.run()["current_phase_id"], "K3");
     assert_eq!(
         route(
             &mut client,
@@ -208,6 +233,6 @@ async fn ordinary_input_rebinds_current_manifest_and_completes_from_returned_con
             request
         )
         .await,
-        completed
+        completed_context.raw_payload
     );
 }

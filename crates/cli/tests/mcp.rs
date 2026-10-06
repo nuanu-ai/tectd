@@ -1,4 +1,6 @@
 //! Actual stdio -> Unix daemon -> PostgreSQL with explicit synthetic fixture IDs.
+#[path = "recovery_support/help_reads.rs"]
+mod help_reads;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::{
@@ -25,11 +27,9 @@ fn payload(response: &Value) -> Value {
     assert!(!intro.is_empty() && intro.len() <= 2_000);
     assert_eq!(content[1]["type"], "text");
     assert_eq!(content[2]["type"], "text");
-    assert!(
-        content[2]["text"]
-            .as_str()
-            .unwrap()
-            .contains("TECTD RESPONSE RULES")
+    assert_eq!(
+        content[2]["text"],
+        "Follow the rules from workspace.open or help {\"text\":\"response-rules\"}. Required checks, approvals and authority still apply. Dependencies alone grant no permission or automatic resumption. Claim monitoring or continuation only when real."
     );
     serde_json::from_str(content[1]["text"].as_str().unwrap()).unwrap()
 }
@@ -236,11 +236,30 @@ async fn real_mcp_schema_rejects_identity_override_and_recovers_session() {
                 "mode":"describe","tool":"command","route":"scope.candidates.begin"
             })
         );
-        let route_contract = &action["route_contract"];
-        assert_eq!(route_contract["kind"], "route");
-        assert_eq!(route_contract["tool"], "command");
-        assert_eq!(route_contract["route"], "scope.candidates.begin");
-        let required = route_contract["params_schema"]["required"]
+        assert!(action.get("route_contract").is_none());
+        assert!(action.get("next_action_contract").is_none());
+        let mut help_sequence = 6;
+        let schema = help_reads::describe(
+            async |arguments| {
+                help_sequence += 1;
+                exchange(
+                    &mut input,
+                    &mut output,
+                    json!({"jsonrpc":"2.0","id":help_sequence,"method":"tools/call",
+                        "params":{"name":action["tool"],"arguments":arguments,
+                            "_meta":{"threadId":native_id}}}),
+                )
+                .await
+            },
+            action["arguments"].clone(),
+        )
+        .await
+        .unwrap()
+        .value;
+        assert_eq!(schema["kind"], "route");
+        assert_eq!(schema["tool"], "command");
+        assert_eq!(schema["route"], "scope.candidates.begin");
+        let required = schema["params_schema"]["required"]
             .as_array()
             .expect("described route has a required-parameter schema");
         for field in [
@@ -252,27 +271,6 @@ async fn real_mcp_schema_rejects_identity_override_and_recovers_session() {
         ] {
             assert!(required.iter().any(|required| required == field), "{field}");
         }
-        let described = exchange(
-            &mut input,
-            &mut output,
-            json!({
-                "jsonrpc":"2.0","id":7,"method":"tools/call",
-                "params":{"name":action["tool"],"arguments":action["arguments"],
-                    "_meta":{"threadId":native_id}}
-            }),
-        )
-        .await;
-        let schema = payload(&described);
-        assert_eq!(schema["kind"], "route");
-        assert_eq!(schema["tool"], "command");
-        assert_eq!(schema["route"], "scope.candidates.begin");
-        assert!(
-            schema["params_schema"]["required"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|field| field == "request_id")
-        );
         if reconnect == 0 {
             println!(
                 "schema_refusal_smoke={}",

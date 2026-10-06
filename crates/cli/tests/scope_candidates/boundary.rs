@@ -1,5 +1,7 @@
 use super::{create_program, draft, id, planning_ref, rows, success_ref};
 use crate::recovery_support::Mcp;
+use crate::recovery_support::candidate_reads::CandidateFixture;
+use crate::recovery_support::candidate_reads::read_query_json;
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -13,7 +15,7 @@ pub(super) async fn run(first: &mut Mcp, second: &mut Mcp, pool: &PgPool) {
         let begin = json!({"request_id":Uuid::new_v4(),"program_id":program,
             "program_revision":2,"boundary":initial,"input":"Inspect email preferences"});
         let origin = first.call("begin_candidate_set", begin.clone()).await;
-        let set = id(&origin["context"]["candidate_set"]["id"]);
+        let set = id(&origin["candidate_set"]["id"]);
         let mut current = origin.clone();
         if refresh {
             current = first
@@ -23,17 +25,19 @@ pub(super) async fn run(first: &mut Mcp, second: &mut Mcp, pool: &PgPool) {
                 "revision":1,"program_revision":2,"request_id":Uuid::new_v4()}),
                 )
                 .await;
-            assert_eq!(current["context"]["candidate_set"]["status"], "draft");
-            assert_eq!(current["context"]["candidate_set"]["revision"], 2);
+            assert_eq!(current["candidate_set"]["status"], "draft");
+            assert_eq!(current["candidate_set"]["revision"], 2);
         }
+        let current_fixture = CandidateFixture::from_mutation(current.clone());
+        let current_overview = current_fixture.read_overview(first).await.value;
         let source = if corrected == "finite" {
-            success_ref(&current["context"])
+            success_ref(&current_overview["context"])
         } else {
-            planning_ref(&current["context"], 1)
+            planning_ref(&current_overview["context"], 1)
         };
         let save = json!({"kind":"draft","candidate_set_id":set,
-            "revision":current["context"]["candidate_set"]["revision"],
-            "snapshot_id":current["context"]["snapshot"]["id"],"input_cursor":1,
+            "revision":current_overview["context"]["candidate_set"]["revision"],
+            "snapshot_id":current_overview["context"]["snapshot"]["id"],"input_cursor":1,
             "request_id":Uuid::new_v4(),"draft":draft(corrected,
                 json!({"identity":{"local":"goal"},"text":"Inspect email preferences",
                     "source_ref_id":source,"resolution":{"kind":"candidate","reference":{"local":"candidate"}}}),
@@ -59,13 +63,11 @@ pub(super) async fn run(first: &mut Mcp, second: &mut Mcp, pool: &PgPool) {
         let error = first.call_error("save_candidate_set", invalid).await;
         assert_eq!(error["error"]["code"], "invalid_arguments");
         assert_eq!(rows(pool, set).await, before);
-        let unchanged = first
-            .call(
-                "candidate_context",
-                json!({"candidate_set_id":set,"view":"overview","limit":25}),
-            )
-            .await;
-        assert_eq!(unchanged["context"]["candidate_set"]["boundary"], initial);
+        let unchanged = read_query_json(first, &serde_json::json!({"route":"scope.candidates.context","params":json!({"candidate_set_id":set,"view":"overview","limit":25})})).await;
+        assert_eq!(
+            unchanged.value["context"]["candidate_set"]["boundary"],
+            initial
+        );
 
         // Concurrent exact retries resolve to one corrected draft and one save receipt.
         let (saved, replay) = tokio::join!(
@@ -73,13 +75,22 @@ pub(super) async fn run(first: &mut Mcp, second: &mut Mcp, pool: &PgPool) {
             second.call("save_candidate_set", save.clone())
         );
         assert_eq!(saved, replay);
-        assert_eq!(saved["context"]["candidate_set"]["boundary"], corrected);
-        assert_eq!(saved["draft"]["boundary"], corrected);
-        let revision = current["context"]["candidate_set"]["revision"]
+        let saved_fixture = CandidateFixture::from_mutation(saved.clone());
+        let saved_overview = saved_fixture.read_overview(first).await.value;
+        let saved_details = saved_fixture.read_details(first).await.value;
+        assert_eq!(
+            saved_overview["context"]["candidate_set"]["boundary"],
+            corrected
+        );
+        assert_eq!(saved_details["draft"]["boundary"], corrected);
+        let revision = current_overview["context"]["candidate_set"]["revision"]
             .as_i64()
             .unwrap()
             + 1;
-        assert_eq!(saved["context"]["candidate_set"]["revision"], revision);
+        assert_eq!(
+            saved_overview["context"]["candidate_set"]["revision"],
+            revision
+        );
         let after = rows(pool, set).await;
         assert_eq!(after.3, 1);
         assert_eq!(after.5, before.5 + 1);
@@ -89,13 +100,13 @@ pub(super) async fn run(first: &mut Mcp, second: &mut Mcp, pool: &PgPool) {
         assert_eq!(error["error"]["code"], "input_conflict");
         assert_eq!(rows(pool, set).await, after);
         let replay = first.call("begin_candidate_set", begin.clone()).await;
-        assert_eq!(replay["context"]["candidate_set"]["boundary"], initial);
-        assert_eq!(replay["context"]["candidate_set"]["revision"], 1);
+        assert_eq!(replay["candidate_set"]["boundary"], initial);
+        assert_eq!(replay["candidate_set"]["revision"], 1);
         let mut different = begin.clone();
         different["request_id"] = json!(Uuid::new_v4());
         let existing = first.call("begin_candidate_set", different).await;
-        assert_eq!(existing["context"]["candidate_set"]["boundary"], corrected);
-        assert_eq!(existing["context"]["candidate_set"]["revision"], revision);
+        assert_eq!(existing["candidate_set"]["boundary"], corrected);
+        assert_eq!(existing["candidate_set"]["revision"], revision);
         let mut origin_conflict = begin;
         origin_conflict["boundary"] = json!(corrected);
         let error = first
@@ -112,13 +123,13 @@ pub(super) async fn run(first: &mut Mcp, second: &mut Mcp, pool: &PgPool) {
         assert_eq!(error["error"]["code"], "invalid_arguments");
         assert_eq!(rows(pool, set).await, after);
         let reviewed = first.call("save_candidate_set", json!({"kind":"review",
-            "candidate_set_id":set,"revision":revision,"snapshot_id":current["context"]["snapshot"]["id"],
+            "candidate_set_id":set,"revision":revision,"snapshot_id":current_overview["context"]["snapshot"]["id"],
             "input_cursor":1,"request_id":Uuid::new_v4(),"review":{"verdict":"revise",
                 "summary":"Refine the proof before readiness","findings":[],
-                "candidate_decisions":[{"candidate_id":saved["draft"]["candidates"][0]["id"],
+                "candidate_decisions":[{"candidate_id":saved_details["draft"]["candidates"][0]["id"],
                     "decision":"accept","rationale":"Useful vertical result"}]}})).await;
         late["request_id"] = json!(Uuid::new_v4());
-        late["revision"] = reviewed["context"]["candidate_set"]["revision"].clone();
+        late["revision"] = reviewed["candidate_set"]["revision"].clone();
         let after_review = rows(pool, set).await;
         let error = first.call_error("save_candidate_set", late).await;
         assert_eq!(error["error"]["code"], "invalid_arguments");

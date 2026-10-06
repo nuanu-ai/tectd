@@ -6,25 +6,18 @@ import json
 import hashlib
 import uuid
 from typing import Any, Callable
+from common import hydrate_pipeline_payload
 
 
-LIGHTWEIGHT_PHASES = [
-    "slice-lightweight-entry-gate",
-    "slice-lightweight-intent-capture",
-    "slice-lightweight-context-loader",
-    "slice-workspace-preflight-lite",
-    "slice-lightweight-contract-writer",
-    "slice-lightweight-escalation-checker",
-    "slice-test-target-selector",
-    "slice-lightweight-pre-implementation-review",
-    "slice-tdd-cycle-runner",
-    "slice-implementation-note-writer",
-    "slice-lightweight-verification-runner",
-    "slice-deploy-impact-checker",
-    "slice-lightweight-result-writer",
-    "slice-lightweight-promotion-router",
-    "slice-lightweight-maintenance-and-handoff",
-]
+LIGHTWEIGHT_KIND = "slice.lightweight-tdd-development"
+LIGHTWEIGHT_VERSION = "0.7.1-native.k1k5"
+LIGHTWEIGHT_PINS = {
+    "0.7.1-native.k1k5": "93df97f4cb4458a18411b76005b29025a56234dc47650e4147ac5fdab3d30d89",
+    "0.7.0-native.k1k5": "7f5dd6a4503078538d45d0c90c83fdcd896ff1216167556ff9bd0424f826aab0",
+}
+LIGHTWEIGHT_PHASES = ["K1", "K2", "K3", "K4", "K5"]
+FIXTURE_BOUNDARY = "Structural fixture only: no commands executed, independent semantic QA, deployment, live verification or paid acceptance."
+
 
 
 def ok(call: Callable, tool: str, route: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -32,7 +25,7 @@ def ok(call: Callable, tool: str, route: str, params: dict[str, Any]) -> dict[st
     if failed:
         code = payload.get("error", {}).get("code")
         raise AssertionError(f"{route} failed: {code}")
-    return payload
+    return hydrate_pipeline_payload(call, payload)
 
 
 def begin_params(
@@ -79,9 +72,12 @@ def assert_lightweight_whole_context(context: dict[str, Any], check: Callable) -
         for instruction in phase.get(field, [])
     ]
     check(
-        "Lightweight whole delivery binds all fifteen ordered phases",
+        "Lightweight whole retrieval binds exactly K1-K5 and distinguishes snapshot references",
         definition.get("kind") == "slice.lightweight-tdd-development"
-        and definition.get("default_mode") == "whole"
+        and definition.get("default_mode") == "phasewise"
+        and definition.get("allowed_modes") == ["whole", "phasewise"]
+        and definition.get("version") == LIGHTWEIGHT_VERSION
+        and definition.get("digest") == LIGHTWEIGHT_PINS[LIGHTWEIGHT_VERSION]
         and phase_ids == LIGHTWEIGHT_PHASES
         and delivered_ids == LIGHTWEIGHT_PHASES,
         {
@@ -211,45 +207,60 @@ def consumed_inputs(context: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def fixture_command_receipt(status: str, scope: str, target: str) -> str:
+    return json.dumps({"command": f"STRUCTURAL_FIXTURE_NOT_EXECUTED:{scope}",
+        "target": target, "status": status, "exit_code": 1 if status == "failed_as_expected" else 0,
+        "fresh": True, "skipped": False, "scopes": [scope]}, separators=(",", ":"))
+
+
+def lightweight_phase_output(phase: dict[str, Any], outcome_name: str, transition: str) -> dict[str, Any]:
+    """Build labeled structural fixtures from the actual five checkpoint contracts."""
+    marker = phase["id"]
+    if marker not in LIGHTWEIGHT_PHASES:
+        raise AssertionError("current Lightweight fixture cannot select a historical phase")
+    route = next((r for r in phase["verdict_routes"] if r["outcome"] == outcome_name and r["transition"] == transition), None)
+    if route is None:
+        raise AssertionError(f"{marker} has no declared {outcome_name}/{transition} route")
+    fields = {field: f"STRUCTURAL_FIXTURE_NOT_EXECUTED:{marker}:{field}" for field in phase["required_fields"]}
+    values = {
+        "K1": {"fit":"bounded_understood", "parent":"current_confirmed", "preflight":"current_clear", "authority":"authorized", "route":"none",
+               "request":"Structural fixture for a bounded correction.", "acceptance_checks":"Fixture consumer-path regression plus affected checks."},
+        "K2": {"source_provenance":"fixture:owned-source", "worktree_provenance":"fixture:isolated-worktree", "isolation":"confirmed", "ownership":"confirmed",
+               "overlap":"clear", "target_proof_plan":"Fixture consumer-path focused and affected test plan.", "test_target":"fixture:consumer-path", "route":"none"},
+        "K3": {"review_mode":"self", "findings":"Fixture self review considers whether the requested consumer path remains disconnected.",
+               "verdict":route["verdict"], "reviewer":"structural-fixture-self", "rules_digest":phase["instructions"][0]["digest"], "missing_proof":"none", "next_owner":"none"},
+        "K4": {"target_binding":"fixture:consumer-path", "red_receipt":fixture_command_receipt("failed_as_expected", "focused", "fixture:consumer-path"),
+               "green_receipt":fixture_command_receipt("passed", "focused", "fixture:consumer-path"), "anti_pattern_review":"reviewed_clear", "authority_boundary":"authorized", "missing_proof":"none",
+               "changes":"Fixture minimal correction; no source command executed.", "deviations":"none"},
+        "K5": {"focused_proof":fixture_command_receipt("passed", "focused", "fixture:consumer-path"),
+               "affected_proof":fixture_command_receipt("passed", "affected", "fixture:affected-path"),
+               "deploy_impact":"no_deploy_required", "truth_level":"local_verified", "missing_proof":"none", "promotion":"no_promotion", "handoff":"none",
+               "result":"Fixture local result carrier; no actual command or independent semantic verification."},
+    }
+    fields.update(values[marker])
+    if route["verdict"] != "pass":
+        if marker == "K1": fields["route"] = route["verdict"]
+        if marker == "K2": fields["route"] = "escalate" if route["verdict"] == "escalate" else "defer"
+        if "missing_proof" in fields: fields["missing_proof"] = f"fixture:{route['verdict']}"
+        if marker == "K5": fields["truth_level"] = "fixture_not_verified"
+    return {"body":FIXTURE_BOUNDARY, "producer_context_id":f"structural-fixture:{marker}", "fields":fields,
+            "verdict":route["verdict"], "dispositions":list(route["dispositions"]), "reference":f"fixture:{marker}"}
+
+
 def phase_output(
     phase: dict[str, Any],
     consumed: list[dict[str, Any]],
     outcome_name: str = "completed",
     transition: str = "continue",
+    *, compact: bool = False,
 ) -> dict[str, Any]:
+    if compact:
+        return lightweight_phase_output(phase, outcome_name, transition)
     marker = phase["id"]
     fields = {
         field: f"isolated acceptance evidence for {marker}"
         for field in phase.get("required_fields", [])
     }
-    if marker == "slice-tdd-cycle-runner":
-        fields.update(
-            {
-                "red_exit_code": "1",
-                "green_exit_code": "0",
-                "selected_test_identity_recorded": "true",
-                "red_command_evidence_recorded": "true",
-                "red_failure_observed": "true",
-                "source_change_identity_recorded": "true",
-                "green_command_evidence_recorded": "true",
-                "green_pass_observed": "true",
-                "same_target_binding_verified": "true",
-            }
-        )
-    if marker == "slice-lightweight-verification-runner":
-        fields.update(
-            {
-                "focused_exit_code": "0",
-                "affected_exit_code": "0",
-                "focused_proof_disposition_recorded": "true",
-                "affected_proof_disposition_recorded": "true",
-                "command_evidence_or_blocker_recorded": "true",
-                "proof_target_binding_or_gap_recorded": "true",
-                "verification_receipt_complete": "true",
-            }
-        )
-    if marker == "slice-deploy-impact-checker":
-        fields["deploy_impact_decision"] = "no_deploy_required"
     route = next(
         (
             item
@@ -335,31 +346,42 @@ def completion_params(
     transition: str = "continue",
     terminal_result: dict[str, Any] | None = None,
     publish_blocked_result: bool = False,
+    revisit_phase_id: str | None = None,
+    reviewer_context: dict[str, Any] | None = None,
+    review_mode: str | None = None,
 ) -> dict[str, Any]:
     phase_id = context["run"]["current_phase_id"]
     phase = next(item for item in context["definition"]["phases"] if item["id"] == phase_id)
-    consumed = consumed_outputs(context)
-    # v0.7 checkpoint context is compact and backend-derived.  Keep the
-    # binding/checkpoint validation above for the acceptance fixture, while
-    # sending an empty proof list so the caller cannot masquerade as the
-    # backend's consumed-output ledger.  Legacy v0.6 continues to send the
-    # durable consumed-output proof expected by its contract.
-    compact_v07 = context["run"].get("definition_version") == "0.7.0-native.k1k5"
-    output = phase_output(phase, consumed, outcome_name, transition)
-    if phase.get("fresh_reviewer_input") is True:
-        producer_context_ids = sorted(
-            {
-                item["producer_context_id"]
-                for item in context.get("outputs", [])
-                if item.get("stale") is False
-            }
-        )
-        output["reviewer_context"] = {
-            "reviewer_identity": "reported-independent-reviewer",
-            "reviewer_context_id": output["producer_context_id"],
-            "producer_context_ids": producer_context_ids,
-            "fresh_input": True,
-        }
+    version = context["run"].get("definition_version")
+    lightweight = context["run"].get("definition_kind", context["definition"].get("kind")) == LIGHTWEIGHT_KIND
+    if lightweight and version not in LIGHTWEIGHT_PINS:
+        raise AssertionError("retired or unsupported Lightweight cannot be executed by this driver")
+    compact_v07 = lightweight and version in LIGHTWEIGHT_PINS
+    if compact_v07 and (context["definition"].get("version") != version
+            or context["definition"].get("digest") != LIGHTWEIGHT_PINS[version]
+            or context["run"].get("definition_digest") != LIGHTWEIGHT_PINS[version]
+            or [p["id"] for p in context["definition"]["phases"]] != LIGHTWEIGHT_PHASES):
+        raise AssertionError("Lightweight snapshot does not match its five-phase version pin")
+    consumed = [] if compact_v07 else (context["consumed_outputs"] if "consumed_outputs" in context else consumed_outputs(context))
+    output = phase_output(phase, consumed, outcome_name, transition, compact=compact_v07)
+    if review_mode is not None:
+        mode_constraint = next((c for c in phase.get("output_constraints", []) if c.get("kind") == "reviewer_context_mode"), None)
+        if mode_constraint is None or review_mode not in {mode_constraint["self_value"], mode_constraint["independent_value"]}:
+            raise AssertionError("review mode is not supported by this phase contract")
+        output["fields"][mode_constraint["field"]] = review_mode
+    requires_reviewer = phase.get("fresh_reviewer_input") is True or output["fields"].get("review_mode") == "independent"
+    if requires_reviewer and reviewer_context is None:
+        raise AssertionError("explicit reviewer_context required; authenticated independence, freshness and quality remain backend checks")
+    if reviewer_context is not None:
+        supported = {"reviewer_identity", "reviewer_context_id", "producer_context_ids", "fresh_input"}
+        if not isinstance(reviewer_context, dict) or set(reviewer_context) - supported:
+            raise AssertionError("reviewer_context contains unsupported contract fields")
+        output["reviewer_context"] = json.loads(json.dumps(reviewer_context))
+        if requires_reviewer and compact_v07:
+            if not isinstance(reviewer_context.get("reviewer_identity"), str) or not reviewer_context["reviewer_identity"].strip():
+                raise AssertionError("explicit reviewer_identity required for independent request construction")
+            output["fields"]["reviewer"] = reviewer_context["reviewer_identity"]
+            output["fields"]["findings"] = "Structural fixture review carrier; authenticated independence and semantic quality require backend checks."
     params = {
         "request_id": str(uuid.uuid4()),
         "run_id": context["run"]["id"],
@@ -368,10 +390,18 @@ def completion_params(
         "outcome": outcome_name,
         "transition": transition,
         "output": output,
-        "consumed_outputs": [] if compact_v07 else consumed,
-        "consumed_inputs": consumed_inputs(context),
         "publish_blocked_result": publish_blocked_result,
     }
+    if not compact_v07:
+        params["consumed_outputs"] = consumed
+        params["consumed_inputs"] = context["consumed_inputs"] if "consumed_inputs" in context else consumed_inputs(context)
+        if context.get("consumed_knowledge") is not None:
+            params["consumed_knowledge"] = context["consumed_knowledge"]
+    if revisit_phase_id is not None:
+        route = next((r for r in phase.get("verdict_routes", []) if r["outcome"] == outcome_name and r["transition"] == transition), {})
+        if revisit_phase_id not in phase.get("allowed_backward_to", []) or revisit_phase_id not in route.get("revisit_to", []):
+            raise AssertionError("fixture requests an undeclared backward route")
+        params["revisit_phase_id"] = revisit_phase_id
     if terminal_result is not None:
         params["terminal_result"] = terminal_result
     return params
@@ -384,3 +414,24 @@ def _instruction_identity_digest(instructions: list[dict[str, Any]]) -> str:
     ]
     encoded = json.dumps(identities, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def rework_and_resume(call: Callable, context: dict[str, Any], target: str) -> dict[str, Any]:
+    """Exercise an explicitly declared backward fixture route and exact-revision input."""
+    before_revision = context["run"]["revision"]
+    returned = ok(call, "command", "slice.pipeline.phase.complete",
+                  completion_params(context, outcome_name="waiting_input", revisit_phase_id=target))
+    context = returned["context"]
+    if context["run"]["current_phase_id"] != target or context["run"]["status"] != "active":
+        raise AssertionError("backward fixture route did not activate its declared target")
+    if context["run"]["revision"] != before_revision + 1:
+        raise AssertionError("backward fixture route did not increment the exact revision")
+    returned_revision = context["run"]["revision"]
+    supplied = ok(call, "command", "slice.pipeline.input", {
+        "request_id":str(uuid.uuid4()), "run_id":context["run"]["id"],
+        "run_revision":returned_revision, "phase_id":target,
+        "input":"Structural fixture supplies current-target rework input; no actual command executed."})["context"]
+    if (supplied["run"]["current_phase_id"] != target or supplied["run"]["status"] != "active"
+            or supplied["run"]["revision"] != returned_revision + 1):
+        raise AssertionError("structural rework input did not preserve target and increment exact revision")
+    return supplied

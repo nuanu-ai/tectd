@@ -1,4 +1,6 @@
 use super::recovery_support::Mcp;
+use crate::recovery_support::candidate_reads::{read_query_json, read_ready_json};
+use crate::recovery_support::candidate_reviews::source_chunk_next_action;
 use serde_json::{Value, json};
 use sqlx::PgPool;
 use std::{path::Path, process::Command};
@@ -96,6 +98,7 @@ pub(super) async fn read_text(
     draft_revision: Option<i64>,
 ) -> String {
     let mut cursor = 0_u64;
+    let mut continuation = None::<Value>;
     let mut text = String::new();
     loop {
         let mut params = json!({
@@ -104,12 +107,21 @@ pub(super) async fn read_text(
         if let Some(revision) = draft_revision {
             params["draft_revision"] = json!(revision);
         }
-        let page = client.call("candidate_context", params).await;
-        text.push_str(page["fragment"]["text"].as_str().unwrap());
-        let Some(next) = page["fragment"]["next_cursor"].as_u64() else {
+        let page = if let Some(action) = continuation.take() {
+            read_ready_json(client, &action).await
+        } else {
+            read_query_json(
+                client,
+                &serde_json::json!({"route":"scope.candidates.context","params":params}),
+            )
+            .await
+        };
+        text.push_str(page.value["fragment"]["text"].as_str().unwrap());
+        let Some(next) = page.value["fragment"]["next_cursor"].as_u64() else {
             break;
         };
         assert!(next > cursor);
+        continuation = Some(source_chunk_next_action(&page, next));
         cursor = next;
     }
     text

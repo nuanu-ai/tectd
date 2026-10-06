@@ -1,3 +1,7 @@
+#[path = "mcp_summary/catalog_reads.rs"]
+#[allow(dead_code)]
+mod catalog_reads;
+
 #[path = "pipeline_execution/knowledge_lifecycle_support.rs"]
 #[allow(dead_code)]
 mod knowledge_lifecycle_support;
@@ -7,10 +11,13 @@ mod recovery_support;
 #[allow(dead_code)]
 mod support;
 
+use knowledge_lifecycle_support::reads;
 use knowledge_lifecycle_support::{
     begin_create_request, commit_create_from_current, complete_agent_params, context,
     settle_and_finish,
 };
+use recovery_support::candidate_reads::read_query_json;
+use recovery_support::native_reads::ScopeOpenFixture;
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -109,7 +116,9 @@ async fn promotion_change_writes_one_managed_result_and_planning_input() {
         }),
     )
     .await;
-    let planning = &scope["created"]["planning"];
+    let scope = ScopeOpenFixture::from_mutation(scope, "created");
+    let planning_read = scope.read_planning(&mut client).await;
+    let planning = &planning_read.value;
     let saved = save(&mut client, planning, promotion_draft()).await;
     let promotion = saved["draft"]["nodes"][0].clone();
     let reviewed = review(&mut client, &saved).await;
@@ -150,14 +159,24 @@ async fn promotion_change_writes_one_managed_result_and_planning_input() {
             "slice_id":slice["id"],"slice_revision":slice["revision"]}),
         Uuid::new_v4(),
     );
-    let begun = route(
+    let raw_begin = route(
         &mut client,
         "command",
         "knowledge.change_begin",
         begin_request.clone(),
     )
     .await;
-    let catalogue = route(&mut client, "query", "slice.pipelines", json!({})).await;
+    let begun = reads::resolve_current(&mut client, raw_begin.clone()).await;
+    let catalogue = catalog_reads::read(
+        async |arguments| {
+            client
+                .exchange("tools/call", json!({"name":"query","arguments":arguments}))
+                .await
+        },
+        json!({}),
+    )
+    .await
+    .value;
     let promotion_entry = catalogue["pipelines"]
         .as_array()
         .unwrap()
@@ -167,12 +186,12 @@ async fn promotion_change_writes_one_managed_result_and_planning_input() {
     assert_eq!(promotion_entry["execution_owner"], "knowledge_change");
     assert_eq!(
         catalogue["knowledge_change_entry"]["definition"]["digest"],
-        context(&begun)["definition"]["digest"]
+        context(&begun.value)["definition"]["digest"]
     );
-    assert_promotion_definition_has_no_engineering_gate(context(&begun));
-    let origin = &context(&begun)["origin"];
+    assert_promotion_definition_has_no_engineering_gate(context(&begun.value));
+    let origin = &context(&begun.value)["origin"];
     let mut forged = complete_agent_params(
-        &begun,
+        &begun.value,
         json!({"phase":"kc-intake","data":{
             "bounded_outcome":origin["desired_outcome"],
             "operation_hints":origin["operation_hints"],
@@ -207,27 +226,28 @@ async fn promotion_change_writes_one_managed_result_and_planning_input() {
         .await["error"]["code"],
         "invalid_arguments"
     );
-    let unchanged = route(
-        &mut client,
-        "query",
-        "knowledge.lifecycle",
-        json!({"change_id":context(&begun)["change_id"],"view":"current"}),
-    )
-    .await;
-    assert_eq!(context(&unchanged)["run"], context(&begun)["run"]);
+    let unchanged = reads::read_current(&mut client, &context(&begun.value)["change_id"])
+        .await
+        .value;
+    assert_eq!(context(&unchanged)["run"], context(&begun.value)["run"]);
     assert_eq!(
         context(&unchanged)["definition"]["digest"],
-        context(&begun)["definition"]["digest"]
+        context(&begun.value)["definition"]["digest"]
     );
     assert_promotion_definition_has_no_engineering_gate(context(&unchanged));
-    let replay = route(
+    let raw_replay = route(
         &mut client,
         "command",
         "knowledge.change_begin",
         begin_request,
     )
     .await;
-    assert_eq!(replay["replay"], begun["created"]);
+    assert!(
+        raw_replay.get("replay").is_some_and(Value::is_object)
+            || (raw_replay["outcome"] == "replay" && raw_replay["changed"] == false)
+    );
+    let replay = reads::resolve_current(&mut client, raw_replay).await;
+    assert_eq!(context(&replay.value), context(&begun.value));
     let second = route_error(
         &mut client,
         "command",
@@ -242,7 +262,7 @@ async fn promotion_change_writes_one_managed_result_and_planning_input() {
     .await;
     assert_eq!(second["error"]["code"], "forbidden");
 
-    let committed = commit_create_from_current(&mut client, document, begun).await;
+    let committed = commit_create_from_current(&mut client, document, begun.value).await;
     let change_id = Uuid::parse_str(committed.receipt["change_id"].as_str().unwrap()).unwrap();
     let run_id = Uuid::parse_str(committed.receipt["run_id"].as_str().unwrap()).unwrap();
     let scope_id = Uuid::parse_str(slice["scope_id"].as_str().unwrap()).unwrap();
@@ -312,16 +332,26 @@ async fn promotion_change_writes_one_managed_result_and_planning_input() {
         )
     );
 
-    let results = route(
+    let results_read = read_query_json(
         &mut client,
-        "query",
-        "slice.candidates.context",
-        json!({"scope_id":scope_id,"view":"results","limit":10}),
+        &json!({"route":"slice.candidates.context",
+            "params":{"scope_id":scope_id,"view":"results","limit":10}}),
     )
     .await;
+    let results = &results_read.value;
+    assert_eq!(results["view"], "results");
+    assert_eq!(results["scope"]["id"], scope_id.to_string());
+    Uuid::parse_str(results["candidate_set"]["id"].as_str().unwrap()).unwrap();
+    Uuid::parse_str(results["snapshot"]["id"].as_str().unwrap()).unwrap();
+    if let Some(source) = &results_read.provenance.source {
+        assert_eq!(source["scope_id"], scope_id.to_string());
+        assert_eq!(source["scope_id"], results["scope"]["id"]);
+        assert_eq!(source["candidate_set_id"], results["candidate_set"]["id"]);
+        assert_eq!(source["snapshot_id"], results["snapshot"]["id"]);
+    }
     let managed = results["items"]
         .as_array()
-        .unwrap()
+        .expect("resolved promotion Results items")
         .iter()
         .find(|value| value["id"] == result.0.to_string())
         .unwrap();
@@ -343,14 +373,22 @@ async fn promotion_change_writes_one_managed_result_and_planning_input() {
     .fetch_one(&pool)
     .await
     .unwrap();
-    let terminal_replay = route(
+    let raw_terminal_replay = route(
         &mut client,
         "command",
         "knowledge.change_phase_complete",
         terminal_request,
     )
     .await;
-    assert!(terminal_replay.get("replay").is_some());
+    assert!(
+        raw_terminal_replay
+            .get("replay")
+            .is_some_and(Value::is_object)
+            || (raw_terminal_replay["outcome"] == "replay"
+                && raw_terminal_replay["changed"] == false)
+    );
+    let terminal_replay = reads::resolve_current(&mut client, raw_terminal_replay).await;
+    assert_eq!(context(&terminal_replay.value), context(&finished));
     let counts: (i64, i64, i64) = sqlx::query_as(
         "SELECT (SELECT count(*) FROM slice_results WHERE knowledge_run_id=$1), \
          (SELECT count(*) FROM slice_planning_inputs WHERE source_result_id=$2), \

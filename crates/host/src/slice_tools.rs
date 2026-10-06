@@ -8,7 +8,14 @@ use tect_domain::{
 use uuid::Uuid;
 
 pub(crate) enum SliceInvocation {
-    ScopeContext { scope_id: Uuid },
+    Window {
+        request: Box<SliceInvocation>,
+        window: crate::planning_read::Window,
+        params: Value,
+    },
+    ScopeContext {
+        scope_id: Uuid,
+    },
     Pipelines(PipelineView),
     CandidateContext(SliceCandidateContextQuery),
     OpenScope(OpenScope),
@@ -17,7 +24,9 @@ pub(crate) enum SliceInvocation {
     RecordInput(RecordSliceCandidateInput),
     Refresh(RefreshSliceCandidateSet),
     OpenSlice(OpenSlice),
-    SliceContext { slice_id: Uuid },
+    SliceContext {
+        slice_id: Uuid,
+    },
     RecordResult(RecordSliceResult),
 }
 
@@ -61,7 +70,22 @@ enum SaveArguments {
     },
 }
 
-pub(crate) fn parse(name: &str, arguments: Value) -> Result<SliceInvocation> {
+pub(crate) fn parse(name: &str, mut arguments: Value) -> Result<SliceInvocation> {
+    if matches!(
+        name,
+        "scope_context" | "slice_candidate_context" | "slice_pipelines"
+    ) && ["offset_bytes", "limit_bytes", "representation_digest"]
+        .iter()
+        .any(|field| arguments.get(field).is_some())
+    {
+        let params = arguments.clone();
+        let window = crate::planning_read::extract(&mut arguments)?;
+        return Ok(SliceInvocation::Window {
+            request: Box::new(parse(name, arguments)?),
+            window,
+            params,
+        });
+    }
     reject_optional_nulls(&arguments)?;
     match name {
         "scope_context" => {

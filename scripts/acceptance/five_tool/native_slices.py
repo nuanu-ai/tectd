@@ -4,6 +4,9 @@ import json, uuid
 from typing import Any, Callable
 import pipeline_execution
 import scope_candidates
+import planning_reads
+import catalog_reads
+from common import hydrate_pipeline_payload
 
 SLICE_RUN_PIPELINES = {
     "slice.lightweight-tdd-development", "slice.full-design-to-execution",
@@ -13,7 +16,7 @@ SLICE_RUN_PIPELINES = {
 PROMOTION_PIPELINE = "slice.promote-to-durable-knowledge"
 ALL_PIPELINES = SLICE_RUN_PIPELINES | {PROMOTION_PIPELINE}
 PIPELINE_MODES = {
-    "slice.lightweight-tdd-development": ("phasewise", ["whole", "phasewise"], 15),
+    "slice.lightweight-tdd-development": ("phasewise", ["whole", "phasewise"], 5),
     "slice.full-design-to-execution": ("phasewise", ["phasewise"], 21),
     "slice.debug-root-cause": ("whole", ["whole", "phasewise"], 18),
     "slice.operational-preparation": ("whole", ["whole", "phasewise"], 16),
@@ -23,8 +26,8 @@ PIPELINE_MODES = {
     "slice.custom-procedure-capture": ("whole", ["whole", "phasewise"], 17),
 }
 PIPELINE_DEFINITIONS = {
-    "slice.lightweight-tdd-development": ("0.6.0-native.engineering.2", "bef9f376f187b985684005b075275a072625f1c08125991062bb38c47ac884b1"),
-    "slice.full-design-to-execution": ("0.6.0-native.engineering.3", "79c01395855e0be1ffb4fca6eec7a09a5326a44d64ad3aa545c1e1da7d829ff3"),
+    "slice.lightweight-tdd-development": (pipeline_execution.LIGHTWEIGHT_VERSION, pipeline_execution.LIGHTWEIGHT_PINS[pipeline_execution.LIGHTWEIGHT_VERSION]),
+    "slice.full-design-to-execution": ("0.6.0-native.engineering.4", "85ec63bae1903fedb0c86ecd5326380ea8d524fe0ee29c5dce6e90b9a30cdd3d"),
     "slice.debug-root-cause": ("0.4.0-native.skills.2", "afb0f21932a11eceb8e3aba01d3d07ec9f74160203085391f7de1758118a6574"),
     "slice.operational-preparation": ("0.4.0-native.skills.2", "6dcf48ec7712fcc3a9dc1f40c83c2337313bfadb33cbfdbe5d76b71da455d2b4"),
     "slice.operational-execution": ("0.4.0-native.skills.2", "47046a703413f6e3048c6923b87dae6ceb0bbecb3c9e0f9d60ca614562267e79"),
@@ -41,7 +44,7 @@ def ok(call, tool: str, route: str, params: dict[str, Any]) -> dict[str, Any]:
     payload, failed = call(tool, {"route": route, "params": params})
     if failed:
         raise AssertionError(f"{route} failed: {payload.get('error', {}).get('code')}")
-    return payload
+    return hydrate_pipeline_payload(call, payload)
 
 def probe_inquiry(kind: str) -> dict[str, Any] | None:
     if kind == "slice.research":
@@ -71,10 +74,13 @@ def source_candidate(call, source_path: str) -> dict[str, Any]:
         "program_revision": program["program_revision"], "boundary": "ongoing",
         "input": "Diagnose the incorrect notification preview, then select its smallest correction.",
     })
-    context, candidate_set = begun["context"], begun["context"]["candidate_set"]
-    inputs = ok(call, "query", "scope.candidates.context", {
+    context = planning_reads.candidate_page(call, begun).value["context"]
+    candidate_set = context["candidate_set"]
+    inputs_read = planning_reads.read_query(call, "scope.candidates.context", {
         "candidate_set_id": candidate_set["id"], "view": "inputs", "limit": 25,
     })
+    planning_reads.candidate_pins(inputs_read, begun)
+    inputs = inputs_read.value
     ref = inputs["items"][0]["input"]["source_ref_id"]
     saved = ok(call, "command", "scope.candidates.save", {
         "kind": "draft", "candidate_set_id": candidate_set["id"],
@@ -93,21 +99,23 @@ def source_candidate(call, source_path: str) -> dict[str, Any]:
             "dependencies":[], "coverage_goals":[{"local":"goal"}], "evidence":[],
         }], "blockers":[], "protected_changes":[]},
     })
-    candidate = saved["draft"]["candidates"][0]
+    saved_details = planning_reads.candidate_page(call, saved, "draft", "details").value
+    candidate = saved_details["draft"]["candidates"][0]
     reviewed = ok(call, "command", "scope.candidates.save", {
         "kind":"review", "candidate_set_id":candidate_set["id"],
-        "revision":saved["context"]["candidate_set"]["revision"],
+        "revision":saved_details["context"]["candidate_set"]["revision"],
         "snapshot_id":context["snapshot"]["id"],
-        "input_cursor":saved["context"]["candidate_set"]["input_cursor"],
+        "input_cursor":saved_details["context"]["candidate_set"]["input_cursor"],
         "request_id":str(uuid.uuid4()), "review":{
             "verdict":"ready", "summary":"Bounded, vertical, traceable and ready.", "findings":[],
             "candidate_decisions":[{"candidate_id":candidate["id"], "decision":"accept",
                                     "rationale":"One coherent Scope."}],
         },
     })
-    if reviewed["context"]["candidate_set"]["status"] != "ready":
+    reviewed_context = planning_reads.candidate_page(call, reviewed).value["context"]
+    if reviewed_context["candidate_set"]["status"] != "ready":
         raise AssertionError("source candidate did not become ready")
-    return {"context":reviewed["context"], "candidate":candidate}
+    return {"context":reviewed_context, "candidate":candidate}
 
 def existing_work(node: dict[str, Any]) -> dict[str, Any]:
     return {"kind":"work", "identity":{"candidate_id":node["id"],"revision":node["revision"]},
@@ -117,22 +125,24 @@ def existing_work(node: dict[str, Any]) -> dict[str, Any]:
             "source_result_ids":node["source_result_ids"]}
 
 def save_plan(call, context, draft):
-    return ok(call, "command", "slice.candidates.save", {
+    receipt = ok(call, "command", "slice.candidates.save", {
         "kind":"draft", "scope_id":context["scope"]["id"],
         "candidate_set_id":context["candidate_set"]["id"],
         "revision":context["candidate_set"]["revision"], "snapshot_id":context["snapshot"]["id"],
         "input_cursor":context["candidate_set"]["input_cursor"], "request_id":str(uuid.uuid4()),
         "draft":draft,
     })
+    return planning_reads.slice_planning_details(call, receipt).value
 
 def review_plan(call, context, summary):
-    return ok(call, "command", "slice.candidates.save", {
+    receipt = ok(call, "command", "slice.candidates.save", {
         "kind":"review", "scope_id":context["scope"]["id"],
         "candidate_set_id":context["candidate_set"]["id"],
         "revision":context["candidate_set"]["revision"], "snapshot_id":context["snapshot"]["id"],
         "input_cursor":context["candidate_set"]["input_cursor"], "request_id":str(uuid.uuid4()),
         "review":{"verdict":"ready", "summary":summary, "findings":[]},
     })
+    return planning_reads.slice_planning_details(call, receipt).value
 
 def open_params(context, candidate, request_id=None):
     return {"request_id":request_id or str(uuid.uuid4()), "scope_id":context["scope"]["id"],
@@ -151,13 +161,13 @@ def assert_exact_pipeline_delivery(context: dict[str, Any], kind: str, check: Ca
     items = [item for phase in phases for field in ("instructions", "skills", "resources")
              for item in phase.get(field, [])]
     expected = phase_count if mode == "whole" else 1
-    check(f"{kind} delivers exact pinned bodies through the native Codex MCP surface",
+    check(f"{kind} delivers exact pinned bodies through pinned snapshot and history reads",
           context["definition"].get("kind") == kind
           and context["definition"].get("version") == version
           and context["definition"].get("digest") == digest
           and context["run"].get("definition_version") == version
           and context["run"].get("definition_digest") == digest
-          and len(phases) == expected
+          and len(phases) == phase_count
           and len(delivered) == expected and bool(items)
           and all(isinstance(item.get("id"),str) and item["id"].strip()
                   and isinstance(item.get("version"),str) and item["version"].strip()
@@ -172,7 +182,8 @@ def assert_exact_pipeline_delivery(context: dict[str, Any], kind: str, check: Ca
 
 def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
     source = source_candidate(call, source_path)
-    catalogue = ok(call, "query", "slice.pipelines", {})
+    catalogue_read = catalog_reads.read(call, {})
+    catalogue = catalogue_read.value
     entries = catalogue.get("pipelines", []); ids = {entry.get("kind") for entry in entries}
     by_kind = {entry.get("kind"):entry for entry in entries}
     promotion = by_kind.get(PROMOTION_PIPELINE, {})
@@ -183,7 +194,7 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
           and "slice.hybrid-implementation-operation" not in json.dumps(catalogue)
           and catalogue.get("revision") == "4"
           and catalogue.get("executable") is True and catalogue.get("executable_count") == 9
-          and catalogue.get("phase_counts", {}).get("slice_pipeline_run_phases") == 127
+          and catalogue.get("phase_counts", {}).get("slice_pipeline_run_phases") == 117
           and all(by_kind[kind].get("implementation_status") == "executable"
                   and by_kind[kind].get("description_status") == "refined"
                   and by_kind[kind].get("refinement_required") is False
@@ -253,13 +264,15 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
         "candidate_snapshot_id":sc["snapshot"]["id"], "candidate_id":cand["id"],
         "candidate_revision":cand["revision"]}
     scope_opened = ok(call,"command","scope.open",scope_request)
-    created = variant(scope_opened,"created")
-    replay = variant(ok(call,"command","scope.open",scope_request),"replay")
+    created_scope, created_planning = planning_reads.open_scope_reads(call, scope_opened, "created")
+    replay_receipt = ok(call,"command","scope.open",scope_request)
+    replay_scope, replay_planning = planning_reads.open_scope_reads(call, replay_receipt, "replay")
     check("scope.open creates Scope plus initial snapshot with exact replay",
-          created==replay and created["scope"]["source_candidate_id"]==cand["id"]
-          and created["planning"]["snapshot"]["sequence"]==1,
-          {"scope_id":created["scope"]["id"]})
-    planning=created["planning"]; rules=planning["snapshot"]["rules"]
+          created_scope.value == replay_scope.value and created_planning.value == replay_planning.value
+          and created_scope.value["source_candidate_id"]==cand["id"]
+          and created_planning.value["snapshot"]["sequence"]==1,
+          {"scope_id":created_scope.value["id"]})
+    planning=created_planning.value; rules=planning["snapshot"]["rules"]
     rule_ids={rule.get("id") for rule in rules}
     check("initial Slice design carries all four full rule bodies",
           rule_ids==RULES and all(len(rule.get("text","").strip())>100 for rule in rules),
@@ -276,9 +289,9 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
          "resolution_criteria":["The diagnosis identifies boundaries and irreducible complexity."],
          "dependencies":[{"local":"diagnose"}],"source_result_ids":[]},
     ],"supersessions":[]}
-    offered_save=action_params(scope_opened,"slice.candidates.save")
-    offered_save["request_id"]=str(uuid.uuid4()); offered_save["draft"]=initial
-    saved=ok(call,"command","slice.candidates.save",offered_save)
+    # Explicit caller command, built from the pinned Details read. Compact
+    # scope.open advertises reads, not a Slice-save Ready action.
+    saved=save_plan(call,planning,initial)
     debug=next(n for n in saved["draft"]["nodes"] if n["kind"]=="work")
     decision=next(n for n in saved["draft"]["nodes"] if n["kind"]=="decision")
     reviewed=review_plan(call,saved,"The complete initial graph preserves its material decision.")
@@ -321,13 +334,14 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
 
     refresh_params=action_params(result_payload,"slice.candidates.refresh")
     refresh_params["request_id"]=str(uuid.uuid4())
-    refreshed=ok(call,"command","slice.candidates.refresh",refresh_params)
+    refreshed_receipt=ok(call,"command","slice.candidates.refresh",refresh_params)
+    refreshed=planning_reads.slice_planning_details(call,refreshed_receipt).value
     rr={r.get("id") for r in refreshed["snapshot"]["rules"]}
     check("result refresh captures result and all four design rules",
           not refreshed["stale_reasons"] and result["id"] in refreshed["snapshot"]["result_ids"] and rr==RULES,
           {"result_ids":refreshed["snapshot"]["result_ids"],"rule_ids":sorted(rr)})
 
-    probe_kinds = [kind for kind in PIPELINE_MODES if kind != "slice.lightweight-tdd-development"]
+    probe_kinds = list(PIPELINE_MODES)
     probe_nodes = [{"kind":"work","identity":{"local":f"probe-{index}"},
         "title":f"Inspect native delivery for {kind}",
         "outcome":"The pinned definition and current exact step bodies are delivered through MCP.",
@@ -365,7 +379,7 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
     probe_runs = {}
     for kind in probe_kinds:
         candidate = next(node for node in final["draft"]["nodes"] if node.get("pipeline") == kind
-                         and node.get("id") != debug["id"])
+                         and node.get("title") == f"Inspect native delivery for {kind}")
         probe = variant(ok(call,"command","slice.open",open_params(final,candidate)),"created")
         begin = pipeline_execution.begin_params(
             final["scope"]["id"],probe["id"],probe["revision"],delivery_mode=None,
@@ -376,9 +390,13 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
         begun_probe = ok(call,"command","slice.pipeline.begin",begin)
         probe_context = pipeline_execution.outcome(begun_probe,"created")
         assert_exact_pipeline_delivery(probe_context,kind,check)
+        if kind == pipeline_execution.LIGHTWEIGHT_KIND:
+            check("omitted selector uses current K1-K5 and phasewise default", probe_context["run"]["definition_version"] == pipeline_execution.LIGHTWEIGHT_VERSION
+                  and probe_context["run"]["delivery_mode"] == "phasewise", {"run_id":probe_context["run"]["id"]})
         probe_runs[kind] = probe_context["run"]["id"]
     begun=ok(call,"command","slice.pipeline.begin",pipeline_execution.begin_params(
-        final["scope"]["id"],follow["id"],follow["revision"]))
+        final["scope"]["id"],follow["id"],follow["revision"], delivery_mode="whole",
+        definition_version=pipeline_execution.LIGHTWEIGHT_VERSION))
     context=pipeline_execution.outcome(begun,"created")
     pipeline_execution.assert_lightweight_whole_context(context,check)
     assert_exact_pipeline_delivery(context,"slice.lightweight-tdd-development",check)
@@ -417,9 +435,18 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
     resumed=ok(call,"command","slice.pipeline.phase.complete",
                pipeline_execution.completion_params(context))
     context=resumed["context"]
-    while context["run"]["current_phase_ordinal"] < 15:
+    k3_reworked = False
+    while context["run"]["current_phase_ordinal"] < len(pipeline_execution.LIGHTWEIGHT_PHASES):
+        if context["run"]["current_phase_id"] == "K3" and not k3_reworked:
+            context = pipeline_execution.rework_and_resume(call, context, "K2")
+            k3_reworked = True
         context=ok(call,"command","slice.pipeline.phase.complete",
                    pipeline_execution.completion_params(context))["context"]
+
+    context = pipeline_execution.rework_and_resume(call, context, "K4")
+    context = ok(call,"command","slice.pipeline.phase.complete", pipeline_execution.completion_params(context))["context"]
+    check("declared K3-to-K2 and K5-to-K4 rework resume at current revisions",
+          k3_reworked and context["run"]["current_phase_id"] == "K5", {"run_revision":context["run"]["revision"]})
 
     terminal_result={
         "summary":"Caller reports the final Lightweight phase temporarily blocked.",
@@ -436,14 +463,19 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
         "request_id":str(uuid.uuid4()),"run_id":context["run"]["id"],
         "run_revision":context["run"]["revision"],"phase_id":context["run"]["current_phase_id"],
         "input":"Owned fixture reports that the final blocker is resolved."})["context"]
-    terminal_result["summary"]="Caller reports the managed Lightweight Slice complete."
-    terminal_result["remaining_work"]="None for this Slice."
+    completed_result={
+        "summary":"Structural fixture reports the managed local result complete; no commands executed.",
+        "evidence":[{"kind":"fixture_observation","reference":"fixture:current-resumed-K5",
+                     "observation":"A new completion carrier uses the exact current resumed revision; this is structural fixture evidence."}],
+        "scope_impact":"Fixture future planning receives the local result carrier.",
+        "remaining_work":"Actual command execution and independent semantic verification are not proven by this fixture.",
+    }
     completed_payload=ok(call,"command","slice.pipeline.phase.complete",
-        pipeline_execution.completion_params(context,transition="complete",terminal_result=terminal_result))
+        pipeline_execution.completion_params(context,transition="complete",terminal_result=completed_result))
     completed=completed_payload["result"]
     terminal=ok(call,"query","slice.context",{"slice_id":follow["id"]})
-    results=ok(call,"query","slice.candidates.context",{
-        "scope_id":final["scope"]["id"],"view":"results","limit":25})
+    results=planning_reads.read_query(call,"slice.candidates.context",{
+        "scope_id":final["scope"]["id"],"view":"results","limit":25}).value
     result_ids={item["id"] for item in results.get("items",[])}
     terminal_attempt,terminal_failed=call("command",{"route":"slice.result.record","params":{
         "request_id":str(uuid.uuid4()),"scope_id":final["scope"]["id"],"slice_id":follow["id"],
@@ -459,9 +491,9 @@ def run(call: Callable, source_path: str, check: Callable) -> dict[str, Any]:
           and terminal_failed and terminal_attempt.get("error",{}).get("code")=="forbidden",
           {"blocked_result_id":blocked["id"],
            "completed_result_id":completed["id"],"terminal_revision":terminal["revision"]})
-    return {"scope_id":created["scope"]["id"],"debug_slice_id":slice_["id"],
+    return {"scope_id":created_scope.value["id"],"debug_slice_id":slice_["id"],
         "result_id":result["id"],"followup_slice_id":follow["id"],"pipeline_ids":sorted(ids),
         "slice_run_pipeline_ids":sorted(slice_run_ids),
         "rule_ids":sorted(rule_ids),"result_provenance":result["provenance"],
         "pipeline_probe_run_ids":probe_runs,
-        "claim_boundary":"Proves native API persistence, exact pipeline delivery, durable managed transitions and structural receipt enforcement; caller-supplied fixture evidence does not prove independent semantic verification."}
+        "claim_boundary":"Fixture protocol assertions and structural receipt carriers only; no actual command execution, independent semantic QA, deployment, live verification or paid acceptance is established by fixture evidence."}

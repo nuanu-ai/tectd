@@ -15,6 +15,11 @@ pub(crate) async fn execute(
     let guidance = StaticCandidateGuidance;
     let guard = CandidateEncoding { capacity };
     match invocation {
+        ScopeCandidateInvocation::Window { request, window, params, candidate_set_revision } => match *request {
+            ScopeCandidateInvocation::Context { candidate_set_id, view, draft_revision, after, limit } => service.candidate_context(context, &CandidateContextQuery { candidate_set_id, view, draft_revision, after, limit }, &guidance).await.and_then(|page| scope_candidate_output::page_read(page, params, &window, candidate_set_revision, capacity)),
+            ScopeCandidateInvocation::Fragment { candidate_set_id, draft_revision, source_ref_id, cursor } => service.candidate_fragment(context, candidate_set_id, draft_revision, source_ref_id, cursor, FRAGMENT_BYTES).await.and_then(|fragment| scope_candidate_output::fragment_read(candidate_set_id, draft_revision, fragment, params, &window, capacity)),
+            _ => Err(tect_domain::Error::InternalInvariant),
+        },
         ScopeCandidateInvocation::Context {
             candidate_set_id,
             view,
@@ -34,7 +39,11 @@ pub(crate) async fn execute(
                 &guidance,
             )
             .await
-            .and_then(|page| scope_candidate_output::page(page, after.unwrap_or(0), capacity)),
+            .and_then(|page| {
+                let mut params = serde_json::json!({"candidate_set_id":candidate_set_id,"view":view,"after":after.unwrap_or(0),"limit":limit});
+                if let Some(revision) = draft_revision { params["draft_revision"] = serde_json::json!(revision); }
+                scope_candidate_output::page_read(page, params, &crate::planning_read::Window::default(), None, capacity)
+            }),
         ScopeCandidateInvocation::Fragment {
             candidate_set_id,
             draft_revision,
@@ -51,12 +60,11 @@ pub(crate) async fn execute(
             )
             .await
             .and_then(|fragment| {
-                scope_candidate_output::fragment(
-                    candidate_set_id,
-                    draft_revision,
-                    fragment,
-                    capacity,
-                )
+                {
+                    let mut params = serde_json::json!({"candidate_set_id":candidate_set_id,"view":"fragment","source_ref_id":source_ref_id,"cursor":cursor});
+                    if let Some(revision) = draft_revision { params["draft_revision"] = serde_json::json!(revision); }
+                    scope_candidate_output::fragment_read(candidate_set_id, draft_revision, fragment, params, &crate::planning_read::Window::default(), capacity)
+                }
             }),
         ScopeCandidateInvocation::Begin(request) => service
             .begin_candidate_set(context, &request, &guidance, &guard)

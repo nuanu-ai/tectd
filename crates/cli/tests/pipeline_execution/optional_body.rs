@@ -37,12 +37,9 @@ pub(super) async fn run() {
             "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]}),
     )
     .await;
-    let saved = save(
-        &mut client,
-        &opened_scope["created"]["planning"],
-        lightweight_draft(),
-    )
-    .await;
+    let opened_scope = ScopeOpenFixture::from_mutation(opened_scope, "created");
+    let planning_read = opened_scope.read_planning(&mut client).await;
+    let saved = save(&mut client, &planning_read.value, lightweight_draft()).await;
     let reviewed = review(&mut client, &saved).await;
     let work = &reviewed["draft"]["nodes"][0];
     let opened_slice = route(
@@ -64,10 +61,10 @@ pub(super) async fn run() {
             "qualification_reason":"Verify the bounded v0.7 optional-body persistence contract."}),
     )
     .await;
-    let initial = begun["created"].clone();
-    let run_id = id(&initial["run"]["id"]);
-    assert_eq!(initial["run"]["definition_version"], "0.7.0-native.k1k5");
-    assert_eq!(initial["run"]["current_phase_id"], "K1");
+    let initial = resolve_pipeline(&mut client, begun).await.unwrap();
+    let run_id = id(&initial.run()["id"]);
+    assert_eq!(initial.run()["definition_version"], "0.7.0-native.k1k5");
+    assert_eq!(initial.run()["current_phase_id"], "K1");
 
     let mut k1_request = completion_request(&initial, "completed", "continue", None, false);
     assert!(k1_request["output"].get("body").is_some());
@@ -88,10 +85,10 @@ pub(super) async fn run() {
         "slice.pipeline.phase.complete",
         k1_request,
     )
-    .await["context"]
-        .clone();
-    assert_eq!(after_k1["run"]["current_phase_id"], "K2");
-    let k1_attempt = after_k1["attempts"]
+    .await;
+    let after_k1 = resolve_pipeline(&mut client, after_k1).await.unwrap();
+    assert_eq!(after_k1.run()["current_phase_id"], "K2");
+    let k1_attempt = after_k1.details_data()["attempts"]
         .as_array()
         .unwrap()
         .iter()
@@ -100,12 +97,11 @@ pub(super) async fn run() {
     let k1_output_id = id(&k1_attempt["output_id"]);
     let k1_digest = k1_attempt["output_digest"].as_str().unwrap().to_owned();
 
-    let k2 = after_k1["definition"]["phases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|phase| phase["id"] == "K2")
+    let k2_read = after_k1
+        .read_phase_contract(&mut client, "K2")
+        .await
         .unwrap();
+    let k2 = &k2_read.value["phase"];
     let explicit_body = "explicit body survives the pinned output read";
     let mut k2_output = phase_output(k2, "optional-body-K2", "completed", "continue");
     k2_output["body"] = json!(explicit_body);
@@ -123,13 +119,13 @@ pub(super) async fn run() {
         "command",
         "slice.pipeline.phase.complete",
         json!({"request_id":k2_request_id,"run_id":run_id,
-            "run_revision":after_k1["run"]["revision"],"phase_id":"K2",
+            "run_revision":after_k1.run()["revision"],"phase_id":"K2",
             "outcome":"completed","transition":"continue","output":k2_output,
             "consumed_outputs":[],"consumed_inputs":[],"publish_blocked_result":false}),
     )
-    .await["context"]
-        .clone();
-    assert_eq!(after_k2["run"]["current_phase_id"], "K3");
+    .await;
+    let after_k2 = resolve_pipeline(&mut client, after_k2).await.unwrap();
+    assert_eq!(after_k2.run()["current_phase_id"], "K3");
 
     let rows: Vec<(Uuid, String, serde_json::Value, String)> = sqlx::query_as(
         "SELECT id,body,fields,body_digest FROM slice_pipeline_phase_outputs \
@@ -191,18 +187,17 @@ pub(super) async fn run() {
     .await;
     assert_eq!(explicit_output["body"], explicit_body);
 
-    let k3 = after_k2["definition"]["phases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|phase| phase["id"] == "K3")
+    let k3_read = after_k2
+        .read_phase_contract(&mut client, "K3")
+        .await
         .unwrap();
+    let k3 = &k3_read.value["phase"];
     let mut k3_rework_output = phase_output(k3, "rework-K3", "waiting_input", "continue");
     k3_rework_output["fields"]["review_mode"] = json!("self");
     let k3_rework_request_id = Uuid::new_v4();
     let k3_rework_request = json!({
         "request_id":k3_rework_request_id,"run_id":run_id,
-        "run_revision":after_k2["run"]["revision"],"phase_id":"K3",
+        "run_revision":after_k2.run()["revision"],"phase_id":"K3",
         "outcome":"waiting_input","transition":"continue","output":k3_rework_output,
         "consumed_outputs":[],"consumed_inputs":[],"revisit_phase_id":"K2",
         "publish_blocked_result":false
@@ -214,13 +209,15 @@ pub(super) async fn run() {
         k3_rework_request.clone(),
     )
     .await;
-    let after_rework = reworked["context"].clone();
-    assert_eq!(after_rework["run"]["status"], "active");
-    assert_eq!(after_rework["run"]["current_phase_id"], "K2");
-    assert_eq!(after_rework["run"]["current_phase_ordinal"], 2);
+    let after_rework = resolve_pipeline(&mut client, reworked.clone())
+        .await
+        .unwrap();
+    assert_eq!(after_rework.run()["status"], "active");
+    assert_eq!(after_rework.run()["current_phase_id"], "K2");
+    assert_eq!(after_rework.run()["current_phase_ordinal"], 2);
     assert_eq!(
-        after_rework["run"]["revision"].as_i64().unwrap(),
-        after_k2["run"]["revision"].as_i64().unwrap() + 1
+        after_rework.run()["revision"].as_i64().unwrap(),
+        after_k2.run()["revision"].as_i64().unwrap() + 1
     );
 
     let replayed_rework = route(
@@ -250,12 +247,11 @@ pub(super) async fn run() {
         )
     );
 
-    let k2 = after_rework["definition"]["phases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|phase| phase["id"] == "K2")
+    let k2_read = after_rework
+        .read_phase_contract(&mut client, "K2")
+        .await
         .unwrap();
+    let k2 = &k2_read.value["phase"];
     let mut k2_retry_output = phase_output(k2, "retry-K2", "completed", "continue");
     for (field, value) in [
         ("isolation", "confirmed"),
@@ -270,21 +266,20 @@ pub(super) async fn run() {
         "command",
         "slice.pipeline.phase.complete",
         json!({"request_id":Uuid::new_v4(),"run_id":run_id,
-            "run_revision":after_rework["run"]["revision"],"phase_id":"K2",
+            "run_revision":after_rework.run()["revision"],"phase_id":"K2",
             "outcome":"completed","transition":"continue","output":k2_retry_output,
             "consumed_outputs":[],"consumed_inputs":[],"publish_blocked_result":false}),
     )
-    .await["context"]
-        .clone();
-    assert_eq!(after_k2_retry["run"]["status"], "active");
-    assert_eq!(after_k2_retry["run"]["current_phase_id"], "K3");
+    .await;
+    let after_k2_retry = resolve_pipeline(&mut client, after_k2_retry).await.unwrap();
+    assert_eq!(after_k2_retry.run()["status"], "active");
+    assert_eq!(after_k2_retry.run()["current_phase_id"], "K3");
 
-    let k3 = after_k2_retry["definition"]["phases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|phase| phase["id"] == "K3")
+    let k3_read = after_k2_retry
+        .read_phase_contract(&mut client, "K3")
+        .await
         .unwrap();
+    let k3 = &k3_read.value["phase"];
     let mut k3_pass_output = phase_output(k3, "fresh-K3", "completed", "continue");
     k3_pass_output["fields"]["review_mode"] = json!("self");
     let after_k3_pass = route(
@@ -292,13 +287,13 @@ pub(super) async fn run() {
         "command",
         "slice.pipeline.phase.complete",
         json!({"request_id":Uuid::new_v4(),"run_id":run_id,
-            "run_revision":after_k2_retry["run"]["revision"],"phase_id":"K3",
+            "run_revision":after_k2_retry.run()["revision"],"phase_id":"K3",
             "outcome":"completed","transition":"continue","output":k3_pass_output,
             "consumed_outputs":[],"consumed_inputs":[],"publish_blocked_result":false}),
     )
-    .await["context"]
-        .clone();
-    assert_eq!(after_k3_pass["run"]["current_phase_id"], "K4");
+    .await;
+    let after_k3_pass = resolve_pipeline(&mut client, after_k3_pass).await.unwrap();
+    assert_eq!(after_k3_pass.run()["current_phase_id"], "K4");
     let attempt_counts: Vec<(String, i64)> = sqlx::query_as(
         "SELECT phase_id,pg_catalog.count(*) FROM slice_pipeline_phase_attempts \
          WHERE run_id=$1 AND phase_id IN ('K2','K3') GROUP BY phase_id ORDER BY phase_id",

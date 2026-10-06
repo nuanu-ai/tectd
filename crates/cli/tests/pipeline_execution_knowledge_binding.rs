@@ -15,11 +15,13 @@ mod support;
 
 use knowledge_lifecycle_support::{
     advance_create_to_baseline, advance_create_to_prepare, begin_create_request, commit_create,
-    complete_agent, complete_review, context, create_prepare_params, output_data,
+    complete_agent, complete_review, context, create_prepare_params, output_data, reads,
     run_manifest_checkpoint,
 };
 use knowledge_operation_support::{SingleOperation, commit_single};
 use lifecycle_support::{complete, lightweight_draft};
+use recovery_support::native_reads::ScopeOpenFixture;
+use recovery_support::pipeline_reads::resolve_pipeline;
 use recovery_support::{
     Daemon, Mcp, action_params, find_action, host_file, private_temp, tagged_url,
 };
@@ -96,12 +98,10 @@ async fn exact_slice_phase_binding_is_validated_and_does_not_flow_to_next_phase(
             "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]}),
     )
     .await;
-    let saved = save(
-        &mut client,
-        &opened_scope["created"]["planning"],
-        lightweight_draft(),
-    )
-    .await;
+    let planning = ScopeOpenFixture::from_mutation(opened_scope, "created")
+        .read_planning(&mut client)
+        .await;
+    let saved = save(&mut client, &planning.value, lightweight_draft()).await;
     let reviewed = review(&mut client, &saved).await;
     let opened_slice = route(
         &mut client,
@@ -119,15 +119,15 @@ async fn exact_slice_phase_binding_is_validated_and_does_not_flow_to_next_phase(
             "qualification_reason":"Exact Slice-phase DK binding fixture."}),
     )
     .await;
-    let pipeline_context = &begun["created"];
+    let pipeline_context = resolve_pipeline(&mut client, begun).await.unwrap();
     assert!(
-        pipeline_context["knowledge"]["selected"]
+        pipeline_context.details_data()["knowledge"]["selected"]
             .as_array()
             .unwrap()
             .is_empty()
     );
     let binding = json!({"kind":"slice_phase","scope_id":reviewed["scope"]["id"],
-        "slice_id":opened_slice["created"]["id"],"phase_id":pipeline_context["run"]["current_phase_id"]});
+        "slice_id":opened_slice["created"]["id"],"phase_id":pipeline_context.run()["current_phase_id"]});
 
     let document = bound_constraint(
         binding,
@@ -169,6 +169,9 @@ async fn exact_slice_phase_binding_is_validated_and_does_not_flow_to_next_phase(
         prepare_params,
     )
     .await;
+    current_change = reads::resolve_current(&mut client, current_change)
+        .await
+        .value;
     let change = context(&current_change);
     let digest = output_data(change, "kc-prepare-change")["digest"].clone();
     let receipts = change["plan"]["obligations"]
@@ -210,19 +213,31 @@ async fn exact_slice_phase_binding_is_validated_and_does_not_flow_to_next_phase(
         &mut client,
         "command",
         "knowledge.change_phase_complete",
-        action_params(&current_change["actions"][0]).clone(),
+        action_params(reads::phase_completion_action(&current_change)).clone(),
     )
     .await;
+    let publication = reads::resolve_current(&mut client, publication).await;
     let committed = route(
         &mut client,
         "command",
         "knowledge.change_commit",
-        action_params(&publication["actions"][0]).clone(),
+        action_params(reads::producer_action(
+            &publication.value,
+            "knowledge.change_commit",
+        ))
+        .clone(),
     )
     .await;
-    assert_eq!(committed["applied"]["workspace_generation"], 1);
+    let committed = reads::resolve_commit_receipt(&mut client, committed).await;
+    if let Some(applied) = committed.raw_response.get("applied") {
+        assert!(applied.is_object());
+    } else {
+        assert_eq!(committed.raw_response["outcome"], "applied");
+        assert_eq!(committed.raw_response["changed"], true);
+    }
+    assert_eq!(committed.receipt["workspace_generation"], 1);
     let unit_id = Uuid::parse_str(
-        committed["applied"]["applied_operations"][0]["unit_id"]
+        committed.receipt["applied_operations"][0]["unit_id"]
             .as_str()
             .unwrap(),
     )
@@ -235,7 +250,7 @@ async fn exact_slice_phase_binding_is_validated_and_does_not_flow_to_next_phase(
     .await
     .unwrap();
     assert_eq!(definition_kind, "slice.lightweight-tdd-development");
-    assert_eq!(definition_digest, pipeline_context["definition"]["digest"]);
+    assert_eq!(definition_digest, pipeline_context.definition()["digest"]);
     sqlx::query(
         "UPDATE knowledge_bindings SET definition_digest='changed-definition-pin' WHERE unit_id=$1",
     )
@@ -247,15 +262,17 @@ async fn exact_slice_phase_binding_is_validated_and_does_not_flow_to_next_phase(
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":pipeline_context["run"]["id"]}),
+        json!({"run_id":pipeline_context.run()["id"]}),
     )
     .await;
+    let changed_pin = resolve_pipeline(&mut client, changed_pin).await.unwrap();
     assert_eq!(
-        changed_pin["knowledge_resource_status"]["state"],
+        changed_pin.details_data()["knowledge_resource_status"]["state"],
         "needs_context"
     );
-    let refused_refresh = find_action(&changed_pin, "pipeline.knowledge_refresh").unwrap();
-    let run_id = Uuid::parse_str(pipeline_context["run"]["id"].as_str().unwrap()).unwrap();
+    let refused_refresh =
+        find_action(&changed_pin.raw_payload, "pipeline.knowledge_refresh").unwrap();
+    let run_id = Uuid::parse_str(pipeline_context.run()["id"].as_str().unwrap()).unwrap();
     let before_refusal = run_manifest_checkpoint(&pool, run_id).await;
     assert_eq!(
         route_error(
@@ -270,7 +287,7 @@ async fn exact_slice_phase_binding_is_validated_and_does_not_flow_to_next_phase(
     assert_eq!(run_manifest_checkpoint(&pool, run_id).await, before_refusal);
     sqlx::query("UPDATE knowledge_bindings SET definition_digest=$2 WHERE unit_id=$1")
         .bind(unit_id)
-        .bind(pipeline_context["definition"]["digest"].as_str().unwrap())
+        .bind(pipeline_context.definition()["digest"].as_str().unwrap())
         .execute(&pool)
         .await
         .unwrap();
@@ -279,11 +296,15 @@ async fn exact_slice_phase_binding_is_validated_and_does_not_flow_to_next_phase(
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":pipeline_context["run"]["id"]}),
+        json!({"run_id":pipeline_context.run()["id"]}),
     )
     .await;
-    assert_eq!(stale["knowledge_resource_status"]["state"], "stale");
-    let refresh = find_action(&stale, "pipeline.knowledge_refresh").unwrap();
+    let stale = resolve_pipeline(&mut client, stale).await.unwrap();
+    assert_eq!(
+        stale.details_data()["knowledge_resource_status"]["state"],
+        "stale"
+    );
+    let refresh = find_action(&stale.raw_payload, "pipeline.knowledge_refresh").unwrap();
     route(
         &mut client,
         "command",
@@ -295,25 +316,26 @@ async fn exact_slice_phase_binding_is_validated_and_does_not_flow_to_next_phase(
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":pipeline_context["run"]["id"]}),
+        json!({"run_id":pipeline_context.run()["id"]}),
     )
     .await;
+    let current = resolve_pipeline(&mut client, current).await.unwrap();
     assert_eq!(
-        current["knowledge_resources"]["selected"]
+        current.details_data()["knowledge_resources"]["selected"]
             .as_array()
             .unwrap()
             .len(),
         1
     );
     assert!(
-        current["knowledge_resources"]["selected"][0]
+        current.details_data()["knowledge_resources"]["selected"][0]
             .get("source")
             .is_none()
     );
     // Ordinary input must verify the selected publication before committing,
     // and an idempotent replay must still verify its current context.
-    let input_request = json!({"request_id":Uuid::new_v4(),"run_id":current["run"]["id"],
-        "run_revision":current["run"]["revision"],"phase_id":current["run"]["current_phase_id"],
+    let input_request = json!({"request_id":Uuid::new_v4(),"run_id":current.run()["id"],
+        "run_revision":current.run()["revision"],"phase_id":current.run()["current_phase_id"],
         "input":"Retain exact source provenance in this phase."});
     let input = route(
         &mut client,
@@ -322,11 +344,14 @@ async fn exact_slice_phase_binding_is_validated_and_does_not_flow_to_next_phase(
         input_request.clone(),
     )
     .await;
-    let current = input["context"].clone();
-    assert_eq!(current["knowledge_resource_status"]["state"], "current");
+    let current = resolve_pipeline(&mut client, input.clone()).await.unwrap();
     assert_eq!(
-        current["knowledge_resources"]["run_revision"],
-        current["run"]["revision"]
+        current.details_data()["knowledge_resource_status"]["state"],
+        "current"
+    );
+    assert_eq!(
+        current.details_data()["knowledge_resources"]["run_revision"],
+        current.run()["revision"]
     );
     let (event_id, event_payload): (Uuid, Value) = sqlx::query_as(
         "SELECT e.id,e.event_payload FROM knowledge_publication_events e \
@@ -352,8 +377,8 @@ async fn exact_slice_phase_binding_is_validated_and_does_not_flow_to_next_phase(
             .fetch_one(&pool)
             .await
             .unwrap();
-    let fresh_input = json!({"request_id":Uuid::new_v4(),"run_id":current["run"]["id"],
-        "run_revision":current["run"]["revision"],"phase_id":current["run"]["current_phase_id"],
+    let fresh_input = json!({"request_id":Uuid::new_v4(),"run_id":current.run()["id"],
+        "run_revision":current.run()["revision"],"phase_id":current.run()["current_phase_id"],
         "input":"Fresh input must refuse corrupted selected publication."});
     for request in [fresh_input, input_request.clone()] {
         assert_eq!(
@@ -397,24 +422,27 @@ async fn exact_slice_phase_binding_is_validated_and_does_not_flow_to_next_phase(
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":current["run"]["id"],"refresh":true}),
+        json!({"run_id":current.run()["id"],"refresh":true}),
     )
     .await;
-    assert_eq!(completion_context["run"]["id"], current["run"]["id"]);
+    let completion_context = resolve_pipeline(&mut client, completion_context)
+        .await
+        .unwrap();
+    assert_eq!(completion_context.run()["id"], current.run()["id"]);
     assert_eq!(
-        completion_context["run"]["revision"],
-        current["run"]["revision"]
+        completion_context.run()["revision"],
+        current.run()["revision"]
     );
     for phases in [
-        &completion_context["definition"]["phases"],
-        &completion_context["delivered_phases"],
+        &completion_context.definition()["phases"],
+        &completion_context.details_data()["delivered_phases"],
     ] {
         assert!(
             phases
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|phase| phase["id"] == completion_context["run"]["current_phase_id"])
+                .any(|phase| phase["id"] == completion_context.run()["current_phase_id"])
         );
     }
     let (completed, _) = complete(
@@ -426,15 +454,15 @@ async fn exact_slice_phase_binding_is_validated_and_does_not_flow_to_next_phase(
         false,
     )
     .await;
-    let next = &completed["context"];
-    assert_eq!(next["run"]["current_phase_ordinal"], 2);
+    let next = &completed;
+    assert_eq!(next.run()["current_phase_ordinal"], 2);
     assert!(
-        next["knowledge_resources"]["selected"]
+        next.details_data()["knowledge_resources"]["selected"]
             .as_array()
             .unwrap()
             .is_empty()
     );
-    let action = find_action(&completed, "slice.pipeline.phase.complete").unwrap();
+    let action = find_action(&completed.raw_payload, "slice.pipeline.phase.complete").unwrap();
     assert!(action_params(action).get("consumed_knowledge").is_none());
 
     client.finish().await;

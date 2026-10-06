@@ -391,10 +391,12 @@ pub struct PipelineRunContext {
     pub knowledge_resources: Option<PipelineKnowledgeResourceManifest>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge_resource_status: Option<PipelineKnowledgeResourceStatus>,
-    /// Backend-issued proof that the immutable run manifest was delivered for
-    /// this context epoch. Agents cannot author or replay this receipt.
+    /// Backend-issued availability reference for the stored definition snapshot
+    /// at this context epoch; it proves neither body delivery nor consumption.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_receipt: Option<PipelineDeliveryReceipt>,
+    /// True only when a new immutable snapshot-reference record was inserted.
+    /// It never requests body replay or establishes caller consumption.
     #[serde(skip)]
     pub delivery_fresh: bool,
 }

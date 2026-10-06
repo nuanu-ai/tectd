@@ -3,8 +3,7 @@
 mod recovery_support;
 
 use recovery_support::{
-    Daemon, Mcp, action_name, action_params, host_file, private_temp, public_call, ready_action,
-    tagged_url, tool_payload,
+    Daemon, Mcp, host_file, private_temp, public_call, ready_action, tagged_url, tool_payload,
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -114,16 +113,13 @@ async fn concurrent_setup_retries_are_scoped_and_stale_saves_are_atomic() {
         )
         .await;
     assert_eq!(existing["error"]["code"], "setup_exists");
-    assert_eq!(existing["actions"].as_array().unwrap().len(), 3);
     assert_eq!(
-        existing["actions"][0],
-        ready_action("inspect_setup", json!({"task_directory":directory}))
+        existing["actions"],
+        json!([ready_action(
+            "inspect_setup",
+            json!({"task_directory":directory})
+        )])
     );
-    assert_eq!(
-        existing["actions"][1],
-        ready_action("list_programs", json!({"limit":25}))
-    );
-    assert_eq!(action_name(&existing["actions"][2]), Some("program.begin"));
     assert!(existing.get("setup").is_none());
     assert_eq!(canonical(&pool, id).await, creation_state);
 
@@ -212,16 +208,13 @@ async fn concurrent_setup_retries_are_scoped_and_stale_saves_are_atomic() {
     assert_eq!(success["setup"]["revision"], 4);
     assert_eq!(success["setup"]["current_step"], "ready_to_apply");
     assert_eq!(refusal["error"]["code"], "stale_revision");
-    assert_eq!(action_name(&refusal["actions"][0]), Some("setup.get"));
     assert_eq!(
-        action_params(&refusal["actions"][0]),
-        &json!({"setup_id":id,"after_input":0,"limit":25})
+        refusal["actions"],
+        json!([ready_action(
+            "get_setup",
+            json!({"setup_id":id,"after_input":0,"limit":25})
+        )])
     );
-    assert_eq!(
-        refusal["actions"][1],
-        ready_action("list_programs", json!({"limit":25}))
-    );
-    assert_eq!(action_name(&refusal["actions"][2]), Some("program.begin"));
     let final_state = canonical(&pool, id).await;
     assert_ne!(final_state, before_race);
     assert_eq!(final_state.len(), 3);

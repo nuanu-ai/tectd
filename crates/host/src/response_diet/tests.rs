@@ -23,72 +23,33 @@ fn run_context(overview_body: &str) -> Value {
 }
 
 #[test]
-fn mutation_reply_keeps_one_phase_and_drops_repeated_static_bodies() {
-    let mut data = json!({"context":run_context("# Overview"),"result":null});
-    let context = pipeline_context_mut(&mut data).unwrap();
-    pipeline_context(context, false, None);
-    let context = &data["context"];
-    assert!(context.get("delivered_phases").is_none());
-    assert_eq!(context["definition"]["phases"], json!([phase()]));
-    assert!(context["definition"]["overview"].get("body").is_none());
-    assert_eq!(context["definition"]["overview"]["digest"], "od");
-    for field in PIPELINE_STATIC_FIELDS {
-        assert!(context["definition"].get(field).is_none(), "{field}");
+fn all_pipeline_replies_are_snapshot_references_with_truthful_availability() {
+    for overview in ["# Overview", "{\n \"v1_identity\": {}\n}"] {
+        let mut data = json!({"context":run_context(overview)});
+        compact_pipeline(pipeline_context_mut(&mut data).unwrap());
+        let compact = &data["context"];
+        assert_eq!(compact["delivery_scope"], "snapshot_reference");
+        assert_eq!(
+            compact["definition"],
+            json!({"kind":"slice.lightweight-tdd-development","version":"1","digest":"d"})
+        );
+        assert_eq!(compact["counts"]["outputs"], 1);
+        assert_eq!(compact["output_availability"]["complete"], true);
+        for field in [
+            "outputs",
+            "outputs_complete",
+            "bindings",
+            "delivered_phases",
+            "attempts",
+            "inputs",
+        ] {
+            assert!(compact.get(field).is_none());
+        }
+        assert_eq!(
+            compact["field_destinations"]["bindings_and_outputs"],
+            json!({"view":"details","section":"outputs"})
+        );
     }
-    assert_eq!(context["outputs"], json!([]));
-    assert_eq!(context["outputs_complete"], false);
-    assert_eq!(context["bindings"][0]["output_id"], "o0");
-}
-
-#[test]
-fn reread_keeps_native_overview_and_compact_output_index_but_not_a_legacy_manifest() {
-    let map = json!([{"ordinal":1,"id":"p1","title":"Intent"}]);
-    let mut native = json!({"created":run_context("# Research overview")});
-    pipeline_context(
-        pipeline_context_mut(&mut native).unwrap(),
-        true,
-        Some(map.clone()),
-    );
-    let created = &native["created"];
-    assert_eq!(
-        created["definition"]["overview"]["body"],
-        "# Research overview"
-    );
-    assert_eq!(created["definition"]["phase_map"], map);
-    assert_eq!(created["definition"]["completion_contract"], "complete");
-    assert!(created["outputs"][0].get("body").is_none());
-    assert_eq!(created["outputs"][0]["id"], "o0");
-    assert_eq!(created["outputs"][0]["fresh"], true);
-    assert_eq!(created["outputs"][0]["usable"], true);
-    assert!(created.get("delivered_phases").is_none());
-
-    let mut legacy = run_context("{\n  \"v1_identity\": {}\n}");
-    pipeline_context(&mut legacy, true, Some(map));
-    assert!(legacy["definition"]["overview"].get("body").is_none());
-    assert_eq!(legacy["definition"]["overview"]["id"], "o");
-}
-
-#[test]
-fn distinct_delivered_phases_are_not_treated_as_a_duplicate() {
-    let mut context = run_context("# Overview");
-    context["definition"]["phases"] = json!([]);
-    pipeline_context(&mut context, true, None);
-    assert_eq!(context["delivered_phases"], json!([phase()]));
-}
-
-#[test]
-fn legacy_whole_begin_keeps_delivered_phases() {
-    let mut context = run_context("# Overview");
-    pipeline_context_with_delivery(&mut context, true, None, true, false);
-    assert_eq!(context["delivered_phases"], json!([phase()]));
-}
-
-#[test]
-fn legacy_mutation_keeps_outputs_when_the_reply_fits() {
-    let mut context = run_context("# Overview");
-    pipeline_context_with_delivery(&mut context, false, None, true, true);
-    assert_eq!(context["outputs"][0]["body"], "previous output");
-    assert_eq!(context["outputs_complete"], true);
 }
 
 #[test]

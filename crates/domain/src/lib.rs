@@ -130,3 +130,8 @@ pub use scope_candidates::{
     ProtectedObjectRef, RecordCandidateInput, RefreshCandidateSet, ScopeCandidatePageItem,
     StoredCandidateContext, StoredHistoricalCandidateDraft,
 };
+
+mod pipeline_receipt_diff;
+pub use pipeline_receipt_diff::{
+    FullReceiptDiff, ReceiptDuplicate, pipeline_receipt_multiset_digest,
+};

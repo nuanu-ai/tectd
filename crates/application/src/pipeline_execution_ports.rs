@@ -15,10 +15,9 @@ pub trait PipelineDefinitionProvider: Send + Sync {
     fn definition(&self, kind: PipelineKind) -> Result<PipelineDefinitionSnapshot>;
 
     /// Resolve the immutable definition selected for a new run. Existing
-    /// providers remain v0.6-compatible by accepting an omitted selector and
-    /// by accepting an explicit selector only when it matches their default
-    /// snapshot. Providers with additional immutable snapshots can override
-    /// this method.
+    /// providers accept an omitted selector or an explicit selector matching
+    /// their default snapshot. Providers with additional immutable snapshots
+    /// and retirement rules override this method.
     fn definition_for(
         &self,
         kind: PipelineKind,
@@ -33,6 +32,7 @@ pub trait PipelineDefinitionProvider: Send + Sync {
 }
 
 pub trait PipelineExecutionOutputGuard: Send + Sync {
+    fn check_context(&self, value: &PipelineRunContext) -> Result<()>;
     fn check_begin(&self, value: &BeginPipelineRunOutcome) -> Result<()>;
     fn check_mutation(&self, value: &PipelineMutationOutcome) -> Result<()>;
     fn check_checkpoint_resolution(&self, value: &ResolvePipelineCheckpointOutcome) -> Result<()>;
@@ -91,9 +91,16 @@ pub trait PipelineExecutionStore: Send {
         principal_id: Uuid,
         run_id: Uuid,
     ) -> Result<Option<PipelineRunContext>>;
+    async fn pipeline_existing_delivery_receipt(
+        &mut self,
+        workspace_id: Uuid,
+        principal_id: Uuid,
+        run_id: Uuid,
+    ) -> Result<Option<tect_domain::PipelineDeliveryReceipt>>;
     async fn pipeline_phase_output(
         &mut self,
         workspace_id: Uuid,
+        principal_id: Uuid,
         run_id: Uuid,
         output_id: Uuid,
         digest: &str,
@@ -105,6 +112,11 @@ pub trait PipelineExecutionStore: Send {
         request: &BeginPipelineRun,
         definition: &PipelineDefinitionSnapshot,
     ) -> Result<BeginPipelineRunOutcome>;
+    async fn pipeline_migration_replay(
+        &mut self,
+        workspace_id: Uuid,
+        request: &PipelineRunMigrationCommand,
+    ) -> Result<Option<PipelineRunMigrationOutcome>>;
     async fn migrate_pipeline_run(
         &mut self,
         workspace_id: Uuid,

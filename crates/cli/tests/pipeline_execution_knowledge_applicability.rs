@@ -12,6 +12,8 @@ mod support;
 
 use knowledge_lifecycle_support::commit_create;
 use knowledge_operation_support::{SingleOperation, commit_single};
+use recovery_support::native_reads::ScopeOpenFixture;
+use recovery_support::pipeline_reads::{ResolvedPipeline, resolve_pipeline};
 use recovery_support::{
     Daemon, Mcp, action_params, find_action, host_file, private_temp, tagged_url,
 };
@@ -49,7 +51,9 @@ async fn open_target(client: &mut Mcp, repo: &std::path::Path) -> (Value, Value)
         "candidate_set_id":source["candidate_set"]["id"],"candidate_set_revision":source["candidate_set"]["revision"],
         "candidate_snapshot_id":source["snapshot"]["id"],"candidate_id":candidate["id"],
         "candidate_revision":candidate["revision"]})).await;
-    let saved = save(client, &scope["created"]["planning"], draft()).await;
+    let scope = ScopeOpenFixture::from_mutation(scope, "created");
+    let planning = scope.read_planning(client).await;
+    let saved = save(client, &planning.value, draft()).await;
     let reviewed = review(client, &saved).await;
     let slice = route(
         client,
@@ -61,8 +65,8 @@ async fn open_target(client: &mut Mcp, repo: &std::path::Path) -> (Value, Value)
     (reviewed["scope"].clone(), slice["created"].clone())
 }
 
-async fn begin(client: &mut Mcp, scope: &Value, slice: &Value) -> Value {
-    route(
+async fn begin(client: &mut Mcp, scope: &Value, slice: &Value) -> ResolvedPipeline {
+    let raw = route(
         client,
         "command",
         "slice.pipeline.begin",
@@ -70,24 +74,28 @@ async fn begin(client: &mut Mcp, scope: &Value, slice: &Value) -> Value {
         "scope_id":scope["id"],"slice_id":slice["id"],"slice_revision":slice["revision"],
         "delivery_mode":"phasewise","qualification_reason":"Exact applicability fixture."}),
     )
-    .await["created"]
-        .clone()
+    .await;
+    resolve_pipeline(client, raw).await.unwrap()
 }
 
-async fn refresh(client: &mut Mcp, context: &Value) -> Value {
-    let stale = route(
+async fn refresh(client: &mut Mcp, context: &ResolvedPipeline) -> ResolvedPipeline {
+    let stale_raw = route(
         client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":context["run"]["id"]}),
+        json!({"run_id":context.run()["id"]}),
     )
     .await;
-    assert_eq!(stale["knowledge_resource_status"]["state"], "stale");
-    let action = find_action(&stale, "pipeline.knowledge_refresh").unwrap();
+    let stale = resolve_pipeline(client, stale_raw).await.unwrap();
+    assert_eq!(
+        stale.details_data()["knowledge_resource_status"]["state"],
+        "stale"
+    );
+    let action = find_action(&stale.raw_payload, "pipeline.knowledge_refresh").unwrap();
     let params = action_params(action);
-    assert_eq!(params["run_id"], stale["run"]["id"]);
-    assert_eq!(params["run_revision"], stale["run"]["revision"]);
-    assert_eq!(params["phase_id"], stale["run"]["current_phase_id"]);
+    assert_eq!(params["run_id"], stale.run()["id"]);
+    assert_eq!(params["run_revision"], stale.run()["revision"]);
+    assert_eq!(params["phase_id"], stale.run()["current_phase_id"]);
     route(
         client,
         "command",
@@ -95,21 +103,22 @@ async fn refresh(client: &mut Mcp, context: &Value) -> Value {
         params.clone(),
     )
     .await;
-    route(
+    let fresh_raw = route(
         client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":context["run"]["id"]}),
+        json!({"run_id":context.run()["id"]}),
     )
-    .await
+    .await;
+    resolve_pipeline(client, fresh_raw).await.unwrap()
 }
 
 fn binding(target: Value, purpose: &str, resolution: Value) -> Value {
     json!({"target":target,"purpose":purpose,"version_resolution":resolution})
 }
 
-fn selected_for<'a>(context: &'a Value, unit: &Value) -> Vec<&'a Value> {
-    context["knowledge_resources"]["selected"]
+fn selected_for<'a>(context: &'a ResolvedPipeline, unit: &Value) -> Vec<&'a Value> {
+    context.details_data()["knowledge_resources"]["selected"]
         .as_array()
         .unwrap()
         .iter()
@@ -191,24 +200,25 @@ async fn generic_binding_applicability_freshness_and_supersession_are_exact() {
     let captured = begin(&mut client, &scope, &slice).await;
     let selected = selected_for(&captured, &applicable_unit);
     assert_eq!(selected.len(), 3);
-    let advertised = route(
+    let advertised_raw = route(
         &mut client,
         "query",
         "slice.pipeline.context",
-        json!({"run_id":captured["run"]["id"]}),
+        json!({"run_id":captured.run()["id"]}),
     )
     .await;
-    assert_eq!(advertised["run"]["id"], captured["run"]["id"]);
-    assert_eq!(advertised["run"]["revision"], captured["run"]["revision"]);
+    let advertised = resolve_pipeline(&mut client, advertised_raw).await.unwrap();
+    assert_eq!(advertised.run()["id"], captured.run()["id"]);
+    assert_eq!(advertised.run()["revision"], captured.run()["revision"]);
     assert_eq!(
-        advertised["knowledge_resources"]["id"],
-        captured["knowledge_resources"]["id"]
+        advertised.details_data()["knowledge_resources"]["id"],
+        captured.details_data()["knowledge_resources"]["id"]
     );
-    let completion = find_action(&advertised, "slice.pipeline.phase.complete").unwrap();
+    let completion = find_action(&advertised.raw_payload, "slice.pipeline.phase.complete").unwrap();
     assert_eq!(
         action_params(completion)["consumed_knowledge"],
-        json!({"manifest_id":captured["knowledge_resources"]["id"],
-            "digest":captured["knowledge_resources"]["digest"]})
+        json!({"manifest_id":captured.details_data()["knowledge_resources"]["id"],
+            "digest":captured.details_data()["knowledge_resources"]["digest"]})
     );
     let kinds = selected
         .iter()
@@ -216,7 +226,7 @@ async fn generic_binding_applicability_freshness_and_supersession_are_exact() {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(kinds, ["program", "scope", "slice"].into_iter().collect());
     assert!(
-        captured["knowledge_resources"]["freshness_warnings"]
+        captured.details_data()["knowledge_resources"]["freshness_warnings"]
             .as_array()
             .unwrap()
             .iter()
@@ -238,7 +248,7 @@ async fn generic_binding_applicability_freshness_and_supersession_are_exact() {
     let future_context = refresh(&mut client, &captured).await;
     assert!(selected_for(&future_context, &future_unit).is_empty());
     assert!(
-        future_context["knowledge_resources"]["freshness_warnings"]
+        future_context.details_data()["knowledge_resources"]["freshness_warnings"]
             .as_array()
             .unwrap()
             .iter()
@@ -394,9 +404,9 @@ async fn generic_binding_applicability_freshness_and_supersession_are_exact() {
         selected_for(&superseded_pin, &pinned_successor_unit).len(),
         1
     );
-    let run_id = Uuid::parse_str(superseded_pin["run"]["id"].as_str().unwrap()).unwrap();
+    let run_id = Uuid::parse_str(superseded_pin.run()["id"].as_str().unwrap()).unwrap();
     let current_manifest = Uuid::parse_str(
-        superseded_pin["knowledge_resources"]["id"]
+        superseded_pin.details_data()["knowledge_resources"]["id"]
             .as_str()
             .unwrap(),
     )

@@ -1,3 +1,4 @@
+use super::recovery_support::pipeline_reads::{ResolvedPipeline, resolve_pipeline};
 use super::recovery_support::{Mcp, action_params, find_action};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -41,9 +42,9 @@ pub(super) fn replace_ledger(output: &mut Value, count: usize) {
 }
 
 #[allow(dead_code)]
-pub(super) fn assert_non_coding_definition(context: &Value, expected_kind: &str) {
-    assert_eq!(context["definition"]["kind"], expected_kind);
-    for phase in context["definition"]["phases"].as_array().unwrap() {
+pub(super) fn assert_non_coding_definition(context: &ResolvedPipeline, expected_kind: &str) {
+    assert_eq!(context.definition()["kind"], expected_kind);
+    for phase in context.definition()["phases"].as_array().unwrap() {
         assert!(
             phase["output_constraints"]
                 .as_array()
@@ -86,7 +87,7 @@ pub(super) fn add_opaque_authority_labels(request: &mut Value) {
 #[allow(dead_code)]
 pub(super) async fn assert_forged_implementation_phase_rejected(
     client: &mut Mcp,
-    context: &Value,
+    context: &ResolvedPipeline,
     request: Value,
     expected_kind: &str,
 ) {
@@ -113,21 +114,38 @@ pub(super) async fn assert_forged_implementation_phase_rejected(
             json!({"route":"slice.pipeline.phase.complete","params":request}),
         )
         .await;
-    assert_eq!(refused["error"]["code"], "invalid_arguments");
-    let current = client
+    assert_eq!(refused["error"]["code"], "INPUT_SCHEMA_INVALID");
+    for (field, expected) in [
+        ("rule", "WP6-COMPLETE-REQUEST-06"),
+        ("path", "arguments.params.phase_id"),
+        ("expected", "phase id present in the pinned definition"),
+        ("actual", "no matching phase"),
+        ("next_action", "select_current_phase"),
+        ("required", "current_phase_id"),
+        (
+            "message",
+            "the submitted value does not satisfy the selected input schema",
+        ),
+    ] {
+        assert_eq!(refused["error"]["refusal"][field], expected);
+    }
+    let raw_current = client
         .call(
             "query",
-            json!({"route":"slice.pipeline.context","params":{"run_id":context["run"]["id"]}}),
+            json!({"route":"slice.pipeline.context","params":{"run_id":context.run()["id"]}}),
         )
         .await;
-    assert_eq!(current["run"]["revision"], context["run"]["revision"]);
+    let current = resolve_pipeline(client, raw_current)
+        .await
+        .expect("resolve actual post-refusal Current pipeline");
+    assert_eq!(current.run()["revision"], context.run()["revision"]);
     assert_eq!(
-        current["run"]["current_phase_id"],
-        context["run"]["current_phase_id"]
+        current.run()["current_phase_id"],
+        context.run()["current_phase_id"]
     );
     assert_eq!(
-        current["run"]["definition_digest"],
-        context["run"]["definition_digest"]
+        current.run()["definition_digest"],
+        context.run()["definition_digest"]
     );
     assert_non_coding_definition(&current, expected_kind);
 }
@@ -420,65 +438,13 @@ fn non_field_engineering_constraints_do_not_enter_field_dispatch() {
     assert!(fields(&phase, "pass").is_empty());
 }
 
-pub(super) async fn refresh_knowledge(client: &mut Mcp, context: &Value) -> Value {
-    let stale = client
-        .call(
-            "query",
-            json!({"route":"slice.pipeline.context","params":{"run_id":context["run"]["id"]}}),
-        )
-        .await;
-    assert_eq!(stale["run"]["id"], context["run"]["id"]);
-    assert_eq!(stale["run"]["revision"], context["run"]["revision"]);
-    assert_eq!(
-        stale["run"]["current_phase_id"],
-        context["run"]["current_phase_id"]
-    );
-    if stale["knowledge_resource_status"]["state"] == "inactive" {
-        assert!(stale["knowledge_resources"].is_null());
-        assert!(stale["knowledge"].is_null());
-        assert!(find_action(&stale, "pipeline.knowledge_refresh").is_none());
-        return stale;
-    }
-    if stale["knowledge_resource_status"]["state"] == "current" {
-        assert_eq!(
-            stale["knowledge_resources"]["run_revision"],
-            stale["run"]["revision"]
-        );
-        assert!(find_action(&stale, "pipeline.knowledge_refresh").is_none());
-        return stale;
-    }
-    let resource_state = stale["knowledge_resource_status"]["state"]
-        .as_str()
-        .unwrap();
-    assert!(
-        matches!(resource_state, "stale" | "needs_context"),
-        "{stale}"
-    );
-    if resource_state == "stale" {
-        assert_eq!(
-            stale["run"]["revision"].as_i64().unwrap(),
-            stale["knowledge_resources"]["run_revision"]
-                .as_i64()
-                .unwrap()
-                + 1
-        );
-    }
-    let action = find_action(&stale, "pipeline.knowledge_refresh")
-        .expect("stale pipeline knowledge must expose its exact refresh action");
-    client
-        .call(
-            "command",
-            json!({"route":"pipeline.knowledge_refresh","params":action_params(action)}),
-        )
-        .await;
-    let current = client
-        .call(
-            "query",
-            json!({"route":"slice.pipeline.context","params":{"run_id":context["run"]["id"]}}),
-        )
-        .await;
-    assert_eq!(current["knowledge_resource_status"]["state"], "current");
-    current
+#[path = "full_support/knowledge.rs"]
+mod knowledge;
+pub(super) async fn refresh_knowledge(
+    client: &mut Mcp,
+    context: &ResolvedPipeline,
+) -> ResolvedPipeline {
+    knowledge::refresh_knowledge(client, context).await
 }
 
 #[path = "full_support/native_contract.rs"]

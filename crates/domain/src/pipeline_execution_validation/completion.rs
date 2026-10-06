@@ -1,43 +1,200 @@
 use super::*;
 
+mod aggregate;
+mod tail;
+use aggregate::first_aggregate_refusal;
+use tail::validate_completion_tail;
+
 impl CompletePipelinePhase {
     pub fn validate(&self, definition: &PipelineDefinitionSnapshot) -> Result<()> {
         if definition.version.starts_with("0.7") {
             reject_agent_supplied_proof(self)?;
         }
-        if self.request_id.is_nil()
-            || self.run_id.is_nil()
-            || self.run_revision < 1
-            || !definition.version.starts_with("0.7") && self.output.body.trim().is_empty()
-            || self.output.producer_context_id.trim().is_empty()
-            || self.output.producer_context_id.len() > MAX_PIPELINE_CONTEXT_ID_BYTES
-            || self
-                .output
-                .reference
-                .as_ref()
-                .is_some_and(|v| v.trim().is_empty())
-            || self.consumed_outputs.iter().any(|value| {
-                value.phase_id.trim().is_empty()
-                    || value.output_revision < 1
-                    || value.digest.trim().is_empty()
-            })
-            || self.consumed_inputs.iter().any(|value| {
-                value.input_id.is_nil() || value.sequence < 1 || value.digest.trim().is_empty()
-            })
+        if self.request_id.is_nil() {
+            return Err(completion_refusal(
+                RefusalCode::InputSchemaInvalid,
+                "WP6-COMPLETE-REQUEST-01",
+                "arguments.params.request_id",
+                "non-nil request UUID",
+                "nil UUID",
+                "correct_phase_completion",
+                "valid_phase_completion",
+            ));
+        }
+        if self.run_id.is_nil() {
+            return Err(completion_refusal(
+                RefusalCode::InputSchemaInvalid,
+                "WP6-COMPLETE-REQUEST-02",
+                "arguments.params.run_id",
+                "non-nil run UUID",
+                "nil UUID",
+                "correct_phase_completion",
+                "valid_phase_completion",
+            ));
+        }
+        if self.run_revision < 1 {
+            return Err(completion_refusal(
+                RefusalCode::InputSchemaInvalid,
+                "WP6-COMPLETE-REQUEST-03",
+                "arguments.params.run_revision",
+                "positive revision",
+                self.run_revision.to_string(),
+                "correct_phase_completion",
+                "valid_phase_completion",
+            ));
+        }
+        if !definition.version.starts_with("0.7") && self.output.body.trim().is_empty() {
+            return Err(completion_refusal(
+                RefusalCode::InvalidOutput,
+                "WP6-COMPLETE-OUTPUT-01",
+                "arguments.params.output.body",
+                "non-empty legacy output body",
+                "empty",
+                "correct_phase_completion",
+                "valid_phase_completion",
+            ));
+        }
+        if self.output.producer_context_id.trim().is_empty() {
+            return Err(completion_refusal(
+                RefusalCode::InvalidOutput,
+                "WP6-COMPLETE-OUTPUT-02",
+                "arguments.params.output.producer_context_id",
+                "non-empty producer context label",
+                "empty",
+                "correct_phase_completion",
+                "valid_phase_completion",
+            ));
+        }
+        if self.output.producer_context_id.len() > MAX_PIPELINE_CONTEXT_ID_BYTES {
+            return Err(completion_refusal(
+                RefusalCode::InvalidOutput,
+                "WP6-COMPLETE-OUTPUT-03",
+                "arguments.params.output.producer_context_id",
+                "producer label within the context byte limit",
+                self.output.producer_context_id.len().to_string(),
+                "correct_phase_completion",
+                "valid_phase_completion",
+            ));
+        }
+        if self
+            .output
+            .reference
+            .as_ref()
+            .is_some_and(|v| v.trim().is_empty())
         {
-            return Err(Error::InvalidArguments);
+            return Err(completion_refusal(
+                RefusalCode::InvalidOutput,
+                "WP6-COMPLETE-OUTPUT-04",
+                "arguments.params.output.reference",
+                "non-empty reference when supplied",
+                "empty",
+                "correct_phase_completion",
+                "valid_phase_completion",
+            ));
+        }
+        for (index, value) in self.consumed_outputs.iter().enumerate() {
+            if value.phase_id.trim().is_empty() {
+                return Err(completion_refusal(
+                    RefusalCode::InputSchemaInvalid,
+                    "WP6-COMPLETE-REQUEST-04-1",
+                    format!("arguments.params.consumed_outputs[{index}].phase_id"),
+                    "non-empty phase id",
+                    "empty",
+                    "correct_phase_completion",
+                    "valid_phase_completion",
+                ));
+            }
+            if value.output_revision < 1 {
+                return Err(completion_refusal(
+                    RefusalCode::InputSchemaInvalid,
+                    "WP6-COMPLETE-REQUEST-04-2",
+                    format!("arguments.params.consumed_outputs[{index}].output_revision"),
+                    "positive output revision",
+                    value.output_revision.to_string(),
+                    "correct_phase_completion",
+                    "valid_phase_completion",
+                ));
+            }
+            if value.digest.trim().is_empty() {
+                return Err(completion_refusal(
+                    RefusalCode::InputSchemaInvalid,
+                    "WP6-COMPLETE-REQUEST-04-3",
+                    format!("arguments.params.consumed_outputs[{index}].digest"),
+                    "non-empty output digest",
+                    "empty",
+                    "correct_phase_completion",
+                    "valid_phase_completion",
+                ));
+            }
+        }
+        for (index, value) in self.consumed_inputs.iter().enumerate() {
+            if value.input_id.is_nil() {
+                return Err(completion_refusal(
+                    RefusalCode::InputSchemaInvalid,
+                    "WP6-COMPLETE-REQUEST-05-1",
+                    format!("arguments.params.consumed_inputs[{index}].input_id"),
+                    "non-nil input UUID",
+                    "nil UUID",
+                    "correct_phase_completion",
+                    "valid_phase_completion",
+                ));
+            }
+            if value.sequence < 1 {
+                return Err(completion_refusal(
+                    RefusalCode::InputSchemaInvalid,
+                    "WP6-COMPLETE-REQUEST-05-2",
+                    format!("arguments.params.consumed_inputs[{index}].sequence"),
+                    "positive input sequence",
+                    value.sequence.to_string(),
+                    "correct_phase_completion",
+                    "valid_phase_completion",
+                ));
+            }
+            if value.digest.trim().is_empty() {
+                return Err(completion_refusal(
+                    RefusalCode::InputSchemaInvalid,
+                    "WP6-COMPLETE-REQUEST-05-3",
+                    format!("arguments.params.consumed_inputs[{index}].digest"),
+                    "non-empty input digest",
+                    "empty",
+                    "correct_phase_completion",
+                    "valid_phase_completion",
+                ));
+            }
         }
         let phase = definition
             .phases
             .iter()
             .find(|phase| phase.id == self.phase_id)
-            .ok_or(Error::InvalidArguments)?;
+            .ok_or_else(|| {
+                completion_refusal(
+                    RefusalCode::InputSchemaInvalid,
+                    "WP6-COMPLETE-REQUEST-06",
+                    "arguments.params.phase_id",
+                    "phase id present in the pinned definition",
+                    "no matching phase",
+                    "select_current_phase",
+                    "current_phase_id",
+                )
+            })?;
         let creates_checkpoint = definition.kind == PipelineKind::DeepBrainstorming
             && phase.ordinal == 5
             && self.output.verdict.as_deref() == Some("waiting_research");
         if creates_checkpoint != self.research_checkpoint.is_some() {
-            return Err(Error::InvalidArguments);
+            return Err(completion_refusal(
+                RefusalCode::InputSchemaInvalid,
+                "WP6-COMPLETE-REQUEST-07",
+                "arguments.params.research_checkpoint",
+                "checkpoint presence matching waiting_research verdict",
+                format!(
+                    "expected_presence={creates_checkpoint}; supplied_presence={}",
+                    self.research_checkpoint.is_some()
+                ),
+                "correct_phase_completion",
+                "valid_phase_completion",
+            ));
         }
+
         if let Some(checkpoint) = &self.research_checkpoint {
             checkpoint.validate()?;
             if definition.kind != PipelineKind::DeepBrainstorming
@@ -46,7 +203,15 @@ impl CompletePipelinePhase {
                 || self.transition != PipelineTransition::Continue
                 || self.output.verdict.as_deref() != Some("waiting_research")
             {
-                return Err(Error::InvalidArguments);
+                return Err(completion_refusal(
+                    RefusalCode::InvalidOutput,
+                    "WP6-COMPLETE-OUTPUT-13",
+                    "arguments.params.research_checkpoint",
+                    "deep brainstorming phase 5 waiting-input continue waiting_research completion",
+                    "checkpoint completion predicates differ",
+                    "align_research_checkpoint_completion",
+                    "valid_research_checkpoint_completion",
+                ));
             }
         }
         if let Some(field) = phase.required_fields.iter().find(|key| {
@@ -66,58 +231,10 @@ impl CompletePipelinePhase {
                     .with_required(field.clone()),
             )));
         }
-        if (!phase.allowed_verdicts.is_empty()
-            && self
-                .output
-                .verdict
-                .as_ref()
-                .is_none_or(|v| !phase.allowed_verdicts.contains(v)))
-            || (!definition.version.starts_with("0.7")
-                || phase.verdict_routes.is_empty()
-                || self.outcome == PipelinePhaseOutcome::Completed)
-                && phase
-                    .required_dispositions
-                    .iter()
-                    .any(|required| !self.output.dispositions.contains(required))
-            || phase.disposition_required && self.output.dispositions.is_empty()
-            || !phase.allowed_dispositions.is_empty()
-                && self
-                    .output
-                    .dispositions
-                    .iter()
-                    .any(|value| !phase.allowed_dispositions.contains(value))
-            || !phase.allowed_dispositions.is_empty()
-                && phase.required_dispositions.is_empty()
-                && phase.verdict_routes.is_empty()
-                && phase.disposition_required
-                && self.output.dispositions.len() != 1
-            || self
-                .output
-                .dispositions
-                .iter()
-                .collect::<BTreeSet<_>>()
-                .len()
-                != self.output.dispositions.len()
-            || self.output.reviewer_context.as_ref().is_some_and(|v| {
-                v.reviewer_identity.trim().is_empty()
-                    || v.reviewer_identity.len() > MAX_PIPELINE_CONTEXT_ID_BYTES
-                    || v.reviewer_context_id.trim().is_empty()
-                    || v.reviewer_context_id.len() > MAX_PIPELINE_CONTEXT_ID_BYTES
-                    || v.reviewer_context_id != self.output.producer_context_id
-                    || v.producer_context_ids.is_empty()
-                    || v.producer_context_ids.len() > 100
-                    || v.producer_context_ids
-                        .iter()
-                        .any(|id| id.trim().is_empty() || id.len() > MAX_PIPELINE_CONTEXT_ID_BYTES)
-                    || v.producer_context_ids.contains(&v.reviewer_context_id)
-                    || v.producer_context_ids.iter().collect::<BTreeSet<_>>().len()
-                        != v.producer_context_ids.len()
-                    || !v.fresh_input
-            })
-            || phase.fresh_reviewer_input && self.output.reviewer_context.is_none()
-        {
+        let aggregate_refusal = first_aggregate_refusal(self, definition, phase);
+        if let Some(error) = aggregate_refusal {
             if definition.version.starts_with("0.7") && missing_test_target(phase, &self.output) {
-                return Err(Error::refused_at(
+                return Err(completion_refusal(
                     RefusalCode::NoTestTarget,
                     "WP6-TEST-TARGET-01",
                     "arguments.params.output.fields.selected_test_target",
@@ -127,7 +244,7 @@ impl CompletePipelinePhase {
                     "selected_test_target",
                 ));
             }
-            return Err(Error::InvalidArguments);
+            return Err(error);
         }
         for constraint in &phase.output_constraints {
             if !output_constraint_satisfied(&self.output, constraint) {
@@ -137,131 +254,6 @@ impl CompletePipelinePhase {
         validate_completion_constraints(self, definition, phase)?;
         validate_artifacts(phase, &self.output)?;
         validate_native_work_contract_output(self, definition, phase)?;
-        if let Some(verdict) = &self.output.verdict {
-            let route = phase
-                .verdict_routes
-                .iter()
-                .find(|route| {
-                    &route.verdict == verdict
-                        && route.outcome == self.outcome
-                        && route.transition == self.transition
-                        && match &self.revisit_phase_id {
-                            Some(id) => route.revisit_to.contains(id),
-                            None => route.revisit_to.is_empty(),
-                        }
-                })
-                .ok_or(Error::InvalidArguments)?;
-            let actual = self.output.dispositions.iter().collect::<BTreeSet<_>>();
-            let expected = route.dispositions.iter().collect::<BTreeSet<_>>();
-            if actual != expected {
-                return Err(Error::InvalidArguments);
-            }
-        }
-        validate_followup_proposal(
-            definition,
-            phase,
-            &self.output,
-            self.outcome,
-            self.transition,
-            &self.consumed_outputs,
-        )?;
-        let reads = self
-            .output
-            .skill_reads
-            .iter()
-            .map(|read| (&read.instruction_id, &read.version, &read.digest))
-            .collect::<BTreeSet<_>>();
-        let expected_reads = phase
-            .skills
-            .iter()
-            .map(|skill| (&skill.id, &skill.version, &skill.digest))
-            .collect::<BTreeSet<_>>();
-        if reads != expected_reads || reads.len() != self.output.skill_reads.len() {
-            let expected_values = expected_reads
-                .iter()
-                .map(|(id, version, digest)| (id.as_str(), version.as_str(), digest.as_str()))
-                .collect::<Vec<_>>();
-            let actual_values = reads
-                .iter()
-                .map(|(id, version, digest)| (id.as_str(), version.as_str(), digest.as_str()))
-                .collect::<Vec<_>>();
-            let (expected, actual) = phase_read_receipt_details(&expected_values, &actual_values);
-            return Err(phase_read_receipt_refusal(
-                "skill",
-                "WP6-SKILL-READ-01",
-                "arguments.params.output.skill_reads",
-                &expected,
-                &actual,
-                self.output.skill_reads.len(),
-                reads.len(),
-            ));
-        }
-        let resource_reads = self
-            .output
-            .resource_reads
-            .iter()
-            .map(|read| (&read.instruction_id, &read.version, &read.digest))
-            .collect::<BTreeSet<_>>();
-        let expected_resource_reads = phase
-            .resources
-            .iter()
-            .map(|resource| (&resource.id, &resource.version, &resource.digest))
-            .collect::<BTreeSet<_>>();
-        if resource_reads != expected_resource_reads
-            || resource_reads.len() != self.output.resource_reads.len()
-        {
-            let expected_values = expected_resource_reads
-                .iter()
-                .map(|(id, version, digest)| (id.as_str(), version.as_str(), digest.as_str()))
-                .collect::<Vec<_>>();
-            let actual_values = resource_reads
-                .iter()
-                .map(|(id, version, digest)| (id.as_str(), version.as_str(), digest.as_str()))
-                .collect::<Vec<_>>();
-            let (expected, actual) = phase_read_receipt_details(&expected_values, &actual_values);
-            return Err(phase_read_receipt_refusal(
-                "resource",
-                "WP6-RESOURCE-READ-01",
-                "arguments.params.output.resource_reads",
-                &expected,
-                &actual,
-                self.output.resource_reads.len(),
-                resource_reads.len(),
-            ));
-        }
-        match self.transition {
-            PipelineTransition::Continue => {
-                if self.terminal_result.is_some() || self.escalation_target.is_some() {
-                    return Err(Error::InvalidArguments);
-                }
-            }
-            PipelineTransition::Complete => {
-                if self.terminal_result.is_none() || self.escalation_target.is_some() {
-                    return Err(Error::InvalidArguments);
-                }
-            }
-            PipelineTransition::Block => {
-                if self.escalation_target.is_some()
-                    || self.publish_blocked_result != self.terminal_result.is_some()
-                {
-                    return Err(Error::InvalidArguments);
-                }
-            }
-            PipelineTransition::Escalate => {
-                if self.terminal_result.is_none() || self.escalation_target.is_none() {
-                    return Err(Error::InvalidArguments);
-                }
-            }
-        }
-        if self.publish_blocked_result
-            && (self.outcome != PipelinePhaseOutcome::Blocked
-                || self.transition != PipelineTransition::Block)
-        {
-            return Err(Error::InvalidArguments);
-        }
-        if let Some(result) = &self.terminal_result {
-            validate_terminal(result)?;
-        }
-        Ok(())
+        validate_completion_tail(self, definition, phase)
     }
 }

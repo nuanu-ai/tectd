@@ -24,6 +24,7 @@ use knowledge_lifecycle_support::{
 use knowledge_operation_support::{
     SingleOperation, commit_pair_erase, commit_single, ready_single_from_baseline_with_reviewed,
 };
+use recovery_support::native_reads::ProgramFixture;
 use recovery_support::{Daemon, Mcp, action_params, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -46,17 +47,20 @@ async fn ready_program(client: &mut Mcp, label: &str) -> Value {
             json!({"request_id":Uuid::new_v4(),"input":format!("Form {label}.")}),
         )
         .await;
+    let begun = ProgramFixture::from_mutation(begun);
+    let begun_page = begun.read_page(client).await;
     let saved = client
         .call(
             "save_program",
-            json!({"program_id":begun["program"]["id"],"revision":1,"input_cursor":1,
+            json!({"program_id":begun_page.program()["id"],"revision":1,"input_cursor":1,
                 "name":label,"intent":"Exercise exact pinned planning knowledge",
                 "basis":"A reviewed maintenance revision fixture",
                 "boundaries":"One exact Program binding","constraints":"No implicit version move",
                 "success":"Pinned and current revisions retain distinct status","complete":true}),
         )
         .await;
-    saved["program"].clone()
+    let saved = ProgramFixture::from_mutation(saved);
+    saved.read_page(client).await.program().clone()
 }
 
 async fn refresh_program(client: &mut Mcp, program: &Value, target: &str) -> Value {
@@ -69,7 +73,8 @@ async fn refresh_program(client: &mut Mcp, program: &Value, target: &str) -> Val
             "task_context":{"target_iris":[target]}}),
     )
     .await;
-    refreshed["program"].clone()
+    let refreshed = ProgramFixture::from_mutation(refreshed);
+    refreshed.read_page(client).await.program().clone()
 }
 
 fn fixture_task_context() -> Value {

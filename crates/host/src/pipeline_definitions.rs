@@ -7,10 +7,7 @@ pub(crate) struct StaticPipelineDefinitions;
 impl PipelineDefinitionProvider for StaticPipelineDefinitions {
     fn definition(&self, kind: PipelineKind) -> Result<PipelineDefinitionSnapshot> {
         match kind {
-            PipelineKind::LightweightTddDevelopment => load(
-                include_str!("../pipeline-definitions/lightweight-tdd.json"),
-                kind,
-            ),
+            PipelineKind::LightweightTddDevelopment => lightweight_v07(),
             PipelineKind::FullDesignToExecution => load(
                 include_str!("../pipeline-definitions/full-design-to-execution.json"),
                 kind,
@@ -55,6 +52,19 @@ impl PipelineDefinitionProvider for StaticPipelineDefinitions {
             match requested_version {
                 Some("0.7.0-native.k1k5") => return lightweight_v070(),
                 Some("0.7.1-native.k1k5") => return lightweight_v07(),
+                None => return lightweight_v07(),
+                Some(version)
+                    if matches!(
+                        version,
+                        "0.6.0-native.engineering.2" | "0.4.0-native.skills.1" | "0.1.0-native.1"
+                    ) =>
+                {
+                    return Err(tect_domain::lightweight_retirement_error(
+                        "arguments.params.definition_version",
+                        version,
+                        "begin_current_lightweight_k1k5",
+                    ));
+                }
                 _ => {}
             }
         }
@@ -86,10 +96,7 @@ impl PipelineDefinitionProvider for StaticPipelineDefinitions {
     }
 }
 
-/// Loads the immutable Lightweight TDD v0.7 contract without changing the
-/// v0.6 provider selected by existing runs.  Callers creating a new revision
-/// may opt into this definition explicitly; archived runs continue to use the
-/// definition snapshot persisted at run creation.
+/// Current compact immutable Lightweight K1-K5 definition.
 pub(crate) fn lightweight_v07() -> Result<PipelineDefinitionSnapshot> {
     load(
         include_str!("../pipeline-definitions/lightweight-tdd-0.7.1-native.k1k5.json"),
@@ -135,10 +142,7 @@ fn load(source: &str, expected: PipelineKind) -> Result<PipelineDefinitionSnapsh
         return Err(Error::InvalidConfiguration);
     }
     let expected_digest = definition.digest.clone();
-    let mut material = definition.clone();
-    material.digest.clear();
-    let bytes = serde_json::to_vec(&material).map_err(|_| Error::InvalidConfiguration)?;
-    if hex(&Sha256::digest(&bytes)) != expected_digest {
+    if tect_domain::pipeline_definition_digest(&definition, &DefinitionDigest)? != expected_digest {
         return Err(Error::InvalidConfiguration);
     }
     for body in
@@ -170,3 +174,11 @@ fn hex(bytes: &[u8]) -> String {
 mod engineering_review_tests;
 #[cfg(test)]
 mod tests;
+
+struct DefinitionDigest;
+impl tect_domain::PipelineDefinitionDigestPort for DefinitionDigest {
+    fn sha256(&self, canonical_json: &[u8]) -> [u8; 32] {
+        use sha2::Digest;
+        sha2::Sha256::digest(canonical_json).into()
+    }
+}

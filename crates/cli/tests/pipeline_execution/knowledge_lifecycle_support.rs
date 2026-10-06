@@ -1,3 +1,5 @@
+#[path = "knowledge_reads.rs"]
+pub mod reads;
 use crate::recovery_support::{Mcp, action_params};
 use crate::support::route;
 use serde_json::{Value, json};
@@ -7,15 +9,13 @@ use uuid::Uuid;
 pub struct CommittedKnowledge {
     pub receipt: Value,
     pub exact: Value,
+    pub raw_commit: Value,
+    pub receipt_read: Option<reads::ReadProvenance>,
+    pub unit_read: reads::ReadProvenance,
 }
 
 pub fn context(value: &Value) -> &Value {
-    value
-        .get("created")
-        .or_else(|| value.get("advanced"))
-        .or_else(|| value.get("current"))
-        .or_else(|| value.get("replay"))
-        .expect("lifecycle response must carry its current context")
+    reads::context(value)
 }
 
 pub async fn run_manifest_checkpoint(pool: &PgPool, run_id: Uuid) -> (i64, Option<Uuid>, i64) {
@@ -72,12 +72,14 @@ pub(crate) fn omit_nulls(value: &mut Value) {
 }
 
 pub(crate) async fn complete_agent(client: &mut Mcp, current: &Value, data: Value) -> Value {
-    let params = complete_agent_params(current, data);
-    route(client, "command", "knowledge.change_phase_complete", params).await
+    let current = reads::resolve_current(client, current.clone()).await.value;
+    let params = complete_agent_params(&current, data);
+    let raw = route(client, "command", "knowledge.change_phase_complete", params).await;
+    reads::resolve_current(client, raw).await.value
 }
 
 pub(crate) fn complete_agent_params(current: &Value, data: Value) -> Value {
-    let action = &current["actions"][0];
+    let action = reads::phase_completion_action(current);
     let mut params = action_params(action).clone();
     let output = &mut params["output"];
     output["method_reads"] = method_reads(action);
@@ -93,13 +95,7 @@ pub(crate) fn complete_agent_params(current: &Value, data: Value) -> Value {
 }
 
 pub async fn query_current(client: &mut Mcp, change_id: &Value) -> Value {
-    route(
-        client,
-        "query",
-        "knowledge.lifecycle",
-        json!({"change_id":change_id,"view":"current"}),
-    )
-    .await
+    reads::read_current(client, change_id).await.value
 }
 
 pub async fn commit_create(client: &mut Mcp, document: Value) -> CommittedKnowledge {
@@ -150,7 +146,8 @@ pub(crate) async fn advance_create_to_domain_checks_with_identity(
     advance_create_after_baseline(client, document, current).await
 }
 
-pub(crate) async fn advance_create_to_baseline(client: &mut Mcp, mut current: Value) -> Value {
+pub(crate) async fn advance_create_to_baseline(client: &mut Mcp, current: Value) -> Value {
+    let mut current = reads::resolve_current(client, current).await.value;
     let origin = &context(&current)["origin"];
     current = complete_agent(
         client,
@@ -172,7 +169,8 @@ pub(crate) async fn advance_create_after_baseline(
 ) -> (Value, Vec<Value>) {
     let current = advance_create_to_prepare(client, document, current).await;
     let params = create_prepare_params(&current, document);
-    let current = route(client, "command", "knowledge.change_phase_complete", params).await;
+    let raw = route(client, "command", "knowledge.change_phase_complete", params).await;
+    let current = reads::resolve_current(client, raw).await.value;
     let ctx = context(&current);
     let changeset_digest = output_data(ctx, "kc-prepare-change")["digest"].clone();
     let input_digests = ctx["inputs"]
@@ -203,6 +201,7 @@ pub(crate) async fn advance_create_to_prepare(
     document: &Value,
     mut current: Value,
 ) -> Value {
+    current = reads::resolve_current(client, current).await.value;
     let operation = context(&current)["origin"]["operations"][0].clone();
     current = complete_agent(
         client,
@@ -228,7 +227,7 @@ pub(crate) async fn advance_create_to_prepare(
 }
 
 pub(crate) fn create_prepare_params(current: &Value, document: &Value) -> Value {
-    let action = &current["actions"][0];
+    let action = reads::phase_completion_action(current);
     let mut params = action_params(action).clone();
     let ctx = context(current);
     let operation = &ctx["origin"]["operations"][0];
@@ -265,27 +264,37 @@ pub(crate) async fn commit_create_from_current(
         client,
         "command",
         "knowledge.change_phase_complete",
-        action_params(&current["actions"][0]).clone(),
+        action_params(reads::phase_completion_action(&current)).clone(),
     )
     .await;
+    let publication = reads::resolve_current(client, publication).await.value;
     let committed = route(
         client,
         "command",
         "knowledge.change_commit",
-        action_params(&publication["actions"][0]).clone(),
+        action_params(reads::producer_action(
+            &publication,
+            "knowledge.change_commit",
+        ))
+        .clone(),
     )
     .await;
-    let receipt = committed["applied"].clone();
-    let exact = route(
+    let resolved = reads::resolve_commit_receipt(client, committed).await;
+    let receipt = resolved.receipt;
+    let exact = reads::read_unit(
         client,
-        "query",
-        "knowledge.unit",
-        json!({"unit_id":receipt["applied_operations"][0]["unit_id"],
-            "revision":receipt["applied_operations"][0]["revision"]}),
+        &receipt["applied_operations"][0]["unit_id"],
+        &receipt["applied_operations"][0]["revision"],
     )
     .await;
-    assert_eq!(exact["document"]["document"], document);
-    CommittedKnowledge { receipt, exact }
+    assert_eq!(exact.value["document"]["document"], document);
+    CommittedKnowledge {
+        receipt,
+        exact: exact.value,
+        raw_commit: resolved.raw_response,
+        receipt_read: resolved.current_read,
+        unit_read: exact.provenance.unwrap(),
+    }
 }
 
 pub(crate) async fn advance_create_to_review(
@@ -322,7 +331,8 @@ pub(crate) async fn advance_create_to_review_with_identity(
 }
 
 pub(crate) async fn complete_review(client: &mut Mcp, current: &Value, outcome: &str) -> Value {
-    let ctx = context(current);
+    let current = reads::resolve_current(client, current.clone()).await.value;
+    let ctx = context(&current);
     let reviewed = vec![
         ctx["plan"]["digest"].clone(),
         output_data(ctx, "kc-prepare-change")["digest"].clone(),
@@ -338,7 +348,7 @@ pub(crate) async fn complete_review(client: &mut Mcp, current: &Value, outcome: 
         .collect::<Vec<_>>();
     complete_agent(
         client,
-        current,
+        &current,
         json!({"phase":"kc-review-reconcile","data":{"outcome":outcome,
             "reviewed_digests":reviewed,"covered_operation_ids":ctx["plan"]["operation_ids"],
             "covered_obligation_ids":obligations,"findings":[],
@@ -357,14 +367,36 @@ pub async fn settle_and_finish_receipt(client: &mut Mcp, receipt: &Value) -> Val
         client,
         "command",
         "knowledge.change_settle_effects",
-        action_params(&current["actions"][0]).clone(),
+        action_params(reads::producer_action(
+            &current,
+            "knowledge.change_settle_effects",
+        ))
+        .clone(),
     )
     .await;
-    assert_eq!(settled["settled"]["required_complete"], true);
+    let report = settled
+        .get("settled")
+        .or_else(|| settled.get("replay"))
+        .unwrap_or(&settled);
+    assert_eq!(report["required_complete"], true);
     let current = query_current(client, &receipt["change_id"]).await;
     let ctx = context(&current);
+    assert_eq!(ctx["effects_report"]["publisher_receipt_id"], receipt["id"]);
+    assert_eq!(
+        ctx["effects_report"]["required_complete"],
+        report["required_complete"]
+    );
+    assert_eq!(report["publisher_receipt_id"], receipt["id"]);
+    if let Some(count) = report.get("effect_count") {
+        assert_eq!(
+            count,
+            &json!(ctx["effects_report"]["effects"].as_array().unwrap().len())
+        );
+    } else {
+        assert_eq!(ctx["effects_report"], *report);
+    }
     let erased = receipt.get("operations").is_some();
-    let mut terminal = current["actions"][0].clone();
+    let mut terminal = reads::phase_completion_action(&current).clone();
     terminal["arguments"]["params"]["output"]["method_reads"] = method_reads(&terminal);
     terminal["arguments"]["params"]["output"]["body"] = if erased {
         json!("Backend-generated opaque terminal handoff for an erased knowledge change.")
@@ -381,11 +413,12 @@ pub async fn settle_and_finish_receipt(client: &mut Mcp, receipt: &Value) -> Val
     terminal["arguments"]["params"]["output"]["transition"] = json!("complete");
     terminal["arguments"]["params"]["output"]["findings"] = json!([]);
     terminal["arguments"]["params"]["output"]["dispositions"] = json!([]);
-    route(
+    let raw = route(
         client,
         "command",
         "knowledge.change_phase_complete",
         action_params(&terminal).clone(),
     )
-    .await
+    .await;
+    reads::resolve_current(client, raw).await.value
 }

@@ -7,10 +7,14 @@ mod recovery_support;
 #[allow(dead_code)]
 mod support;
 
+use knowledge_lifecycle_support::reads::{
+    phase_completion_action, producer_action, resolve_current,
+};
 use knowledge_lifecycle_support::{
     advance_create_to_review, advance_create_to_review_with_identity, begin_create_request,
     commit_create_from_current, complete_review, context, method_reads, omit_nulls, query_current,
 };
+use recovery_support::native_reads::ScopeOpenFixture;
 use recovery_support::{Daemon, Mcp, action_params, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -35,12 +39,9 @@ async fn open_promotion(client: &mut Mcp, repo: &std::path::Path, label: &str) -
         "candidate_set_id":source["candidate_set"]["id"],"candidate_set_revision":source["candidate_set"]["revision"],
         "candidate_snapshot_id":source["snapshot"]["id"],"candidate_id":candidate["id"],
         "candidate_revision":candidate["revision"]})).await;
-    let saved = save(
-        client,
-        &scope["created"]["planning"],
-        promotion_draft(label),
-    )
-    .await;
+    let scope = ScopeOpenFixture::from_mutation(scope, "created");
+    let planning = scope.read_planning(client).await;
+    let saved = save(client, &planning.value, promotion_draft(label)).await;
     let promotion = saved["draft"]["nodes"][0].clone();
     let reviewed = review(client, &saved).await;
     route(
@@ -62,7 +63,8 @@ async fn finish(
     publisher: Option<Value>,
     effects: Value,
 ) -> Value {
-    let action = &current["actions"][0];
+    let current = resolve_current(client, current.clone()).await;
+    let action = phase_completion_action(&current.value);
     let mut params = action_params(action).clone();
     params["output"]["method_reads"] = method_reads(action);
     params["output"]["body"] = json!("Backend-validated terminal Promotion outcome.");
@@ -76,7 +78,8 @@ async fn finish(
     params["output"]["findings"] = json!([]);
     params["output"]["dispositions"] = json!([]);
     omit_nulls(&mut params);
-    route(client, "command", "knowledge.change_phase_complete", params).await
+    let completed = route(client, "command", "knowledge.change_phase_complete", params).await;
+    resolve_current(client, completed).await.value
 }
 
 async fn assert_result(
@@ -189,7 +192,7 @@ async fn promotion_terminal_outcomes_resolve_to_one_managed_result() {
         &mut client,
         "command",
         "knowledge.change_settle_effects",
-        action_params(&current["actions"][0]).clone(),
+        action_params(producer_action(&current, "knowledge.change_settle_effects")).clone(),
     )
     .await;
     let current = query_current(&mut client, &committed.receipt["change_id"]).await;

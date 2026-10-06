@@ -14,6 +14,9 @@ mod recovery_support;
 mod support;
 
 use knowledge_compound_support::ready_create_then_supersede;
+use knowledge_lifecycle_support::reads::{
+    producer_action, read_unit, resolve_commit_receipt, resolve_current,
+};
 use knowledge_lifecycle_support::{commit_create, settle_and_finish, settle_and_finish_receipt};
 use knowledge_operation_support::{SingleOperation, commit_single, ready_pair_erase};
 use recovery_support::{Daemon, Mcp, action_params, host_file, private_temp, tagged_url};
@@ -87,6 +90,7 @@ async fn compound_commit_rolls_back_when_one_reviewed_target_changes() {
         ],
     )
     .await;
+    let ready = resolve_current(&mut client, ready).await;
     let mut revised = second_document.clone();
     revised["title"] = json!("Changed compound rollback target");
     revised["canonical_text"] =
@@ -115,25 +119,25 @@ async fn compound_commit_rolls_back_when_one_reviewed_target_changes() {
         },
     )
     .await;
-    settle_and_finish_receipt(&mut client, &changed["applied"]).await;
+    let changed = resolve_commit_receipt(&mut client, changed).await;
+    assert!(
+        changed.raw_response.get("applied").is_some()
+            || changed.raw_response["outcome"] == "applied"
+    );
+    settle_and_finish_receipt(&mut client, &changed.receipt).await;
     let refused = route_error(
         &mut client,
         "command",
         "knowledge.change_commit",
-        action_params(&ready["actions"][0]).clone(),
+        action_params(producer_action(&ready.value, "knowledge.change_commit")).clone(),
     )
     .await;
     assert_eq!(
         refused["error"]["code"], "stale_context",
         "a target change after review must refuse the whole compound commit"
     );
-    let first_exact = route(
-        &mut client,
-        "query",
-        "knowledge.unit",
-        json!({"unit_id":first_unit,"revision":1}),
-    )
-    .await;
+    let first_exact = read_unit(&mut client, &first_unit, &json!(1)).await;
+    let first_exact = &first_exact.value;
     assert_eq!(
         first_exact["document"]["lifecycle"], "active",
         "the first operation must roll back when the second target guard is stale"
@@ -149,13 +153,8 @@ async fn compound_commit_rolls_back_when_one_reviewed_target_changes() {
         !first_suppressed,
         "a refused compound commit must not leave a suppression ledger entry"
     );
-    let second_exact = route(
-        &mut client,
-        "query",
-        "knowledge.unit",
-        json!({"unit_id":second_unit,"revision":2}),
-    )
-    .await;
+    let second_exact = read_unit(&mut client, &second_unit, &json!(2)).await;
+    let second_exact = &second_exact.value;
     assert_eq!(second_exact["document"]["lifecycle"], "active");
 
     let mut successor_document = fixture["document"].clone();
@@ -177,7 +176,8 @@ async fn compound_commit_rolls_back_when_one_reviewed_target_changes() {
         fixture["document"]["bindings"].clone(),
     )
     .await;
-    let ready_context = knowledge_lifecycle_support::context(&ready_compound);
+    let ready_compound = resolve_current(&mut client, ready_compound).await;
+    let ready_context = knowledge_lifecycle_support::context(&ready_compound.value);
     let successor_operation = ready_context["origin"]["operations"]
         .as_array()
         .unwrap()
@@ -189,7 +189,11 @@ async fn compound_commit_rolls_back_when_one_reviewed_target_changes() {
     let compound_change_id = Uuid::parse_str(ready_context["change_id"].as_str().unwrap()).unwrap();
     let compound_run_id = Uuid::parse_str(ready_context["run"]["id"].as_str().unwrap()).unwrap();
     let ready_revision = ready_context["run"]["revision"].as_i64().unwrap();
-    let compound_commit = action_params(&ready_compound["actions"][0]).clone();
+    let compound_commit = action_params(producer_action(
+        &ready_compound.value,
+        "knowledge.change_commit",
+    ))
+    .clone();
     sqlx::query("DROP TRIGGER IF EXISTS tect_test_reject_supersession ON knowledge_supersessions")
         .execute(&pool)
         .await
@@ -246,7 +250,12 @@ async fn compound_commit_rolls_back_when_one_reviewed_target_changes() {
         compound_commit,
     )
     .await;
-    let compound_receipt = &compound["applied"];
+    let compound = resolve_commit_receipt(&mut client, compound).await;
+    assert!(
+        compound.raw_response.get("applied").is_some()
+            || compound.raw_response["outcome"] == "applied"
+    );
+    let compound_receipt = &compound.receipt;
     assert_eq!(
         compound_receipt["applied_operations"][0]["operation"],
         "create"
@@ -266,13 +275,8 @@ async fn compound_commit_rolls_back_when_one_reviewed_target_changes() {
     .await
     .unwrap();
     settle_and_finish_receipt(&mut client, compound_receipt).await;
-    let predecessor = route(
-        &mut client,
-        "query",
-        "knowledge.unit",
-        json!({"unit_id":first_unit,"revision":1}),
-    )
-    .await;
+    let predecessor = read_unit(&mut client, &first_unit, &json!(1)).await;
+    let predecessor = &predecessor.value;
     assert_eq!(predecessor["document"]["lifecycle"], "superseded");
     let erased = commit_single(
         &mut client,
@@ -293,14 +297,14 @@ async fn compound_commit_rolls_back_when_one_reviewed_target_changes() {
         },
     )
     .await;
-    settle_and_finish_receipt(&mut client, &erased["applied_erased"]).await;
-    let survivor = route(
-        &mut client,
-        "query",
-        "knowledge.unit",
-        json!({"unit_id":successor_unit,"revision":1}),
-    )
-    .await;
+    let erased = resolve_commit_receipt(&mut client, erased).await;
+    assert!(
+        erased.raw_response.get("applied_erased").is_some()
+            || erased.raw_response["outcome"] == "applied_erased"
+    );
+    settle_and_finish_receipt(&mut client, &erased.receipt).await;
+    let survivor = read_unit(&mut client, &successor_unit, &json!(1)).await;
+    let survivor = &survivor.value;
     assert_eq!(survivor["document"]["document"], successor_document);
     let compound_run: (bool, bool, Value) = sqlx::query_as(
         "SELECT publisher_receipt IS NULL,erased_publisher_receipt IS NOT NULL, \

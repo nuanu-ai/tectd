@@ -8,6 +8,8 @@ use pipeline_support::{
     add_opaque_authority_labels, assert_forged_implementation_phase_rejected,
     assert_non_coding_definition, completion, refresh_knowledge, successful_route,
 };
+use recovery_support::native_reads::ScopeOpenFixture;
+use recovery_support::pipeline_reads::{ResolvedPipeline, resolve_pipeline};
 use recovery_support::{Daemon, Mcp, host_file, private_temp, tagged_url};
 use serde_json::{Value, json};
 use sqlx::PgPool;
@@ -16,6 +18,16 @@ use support::{
 };
 use tect_postgres::admin;
 use uuid::Uuid;
+
+fn mutation_result_id(context: &ResolvedPipeline) -> &Value {
+    context
+        .raw_payload
+        .get("result_reference")
+        .and_then(Value::as_object)
+        .expect("actual mutation result reference object")
+        .get("result_id")
+        .expect("actual mutation result ID key")
+}
 
 fn capture_draft(local: &str) -> Value {
     json!({"coverage_summary":"Source-backed procedure candidate with no automatic durable effect","nodes":[{
@@ -30,7 +42,7 @@ fn capture_draft(local: &str) -> Value {
     }],"supersessions":[]})
 }
 
-async fn advance(client: &mut Mcp, context: Value) -> Value {
+async fn advance(client: &mut Mcp, context: ResolvedPipeline) -> ResolvedPipeline {
     let (verdict, outcome, transition) = successful_route(&context);
     let route = (
         verdict.to_owned(),
@@ -42,22 +54,27 @@ async fn advance(client: &mut Mcp, context: Value) -> Value {
 
 async fn complete(
     client: &mut Mcp,
-    context: Value,
+    context: ResolvedPipeline,
     verdict: &str,
     outcome: &str,
     transition: &str,
-) -> Value {
-    route(
+) -> ResolvedPipeline {
+    let raw = route(
         client,
         "command",
         "slice.pipeline.phase.complete",
         completion(&context, verdict, outcome, transition, None, None),
     )
-    .await["context"]
-        .clone()
+    .await;
+    resolve_pipeline(client, raw).await.unwrap()
 }
 
-async fn begin(client: &mut Mcp, repo: &std::path::Path, local: &str, mode: &str) -> Value {
+async fn begin(
+    client: &mut Mcp,
+    repo: &std::path::Path,
+    local: &str,
+    mode: &str,
+) -> ResolvedPipeline {
     let (source, candidate) = ready_source_candidate(client, repo).await;
     let scope = route(
         client,
@@ -70,7 +87,9 @@ async fn begin(client: &mut Mcp, repo: &std::path::Path, local: &str, mode: &str
             "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]}),
     )
     .await;
-    let saved = save(client, &scope["created"]["planning"], capture_draft(local)).await;
+    let scope = ScopeOpenFixture::from_mutation(scope, "created");
+    let planning = scope.read_planning(client).await.value;
+    let saved = save(client, &planning, capture_draft(local)).await;
     let reviewed = review(client, &saved).await;
     let opened = route(
         client,
@@ -80,16 +99,15 @@ async fn begin(client: &mut Mcp, repo: &std::path::Path, local: &str, mode: &str
     )
     .await;
     let slice = &opened["created"];
-    route(
+    let raw = route(
         client,
         "command",
         "slice.pipeline.begin",
         json!({"request_id":Uuid::new_v4(),"scope_id":reviewed["scope"]["id"],
             "slice_id":slice["id"],"slice_revision":slice["revision"],"delivery_mode":mode,
             "qualification_reason":"Capture is source-bound and proposal-only; discovery may deepen phasewise."}),
-    )
-    .await["created"]
-        .clone()
+    ).await;
+    resolve_pipeline(client, raw).await.unwrap()
 }
 
 fn terminal_result(reference: &str) -> Value {
@@ -112,8 +130,12 @@ fn handoff_result(gate: &str, verdict: &str) -> Value {
     })
 }
 
-async fn stop_with_result(client: &mut Mcp, context: Value, verdict: &str) -> Value {
-    let phase_id = context["run"]["current_phase_id"].as_str().unwrap();
+async fn stop_with_result(
+    client: &mut Mcp,
+    context: ResolvedPipeline,
+    verdict: &str,
+) -> ResolvedPipeline {
+    let phase_id = context.run()["current_phase_id"].as_str().unwrap();
     let mut request = completion(
         &context,
         verdict,
@@ -123,11 +145,12 @@ async fn stop_with_result(client: &mut Mcp, context: Value, verdict: &str) -> Va
         Some(handoff_result(phase_id, verdict)),
     );
     request["publish_blocked_result"] = json!(true);
-    route(client, "command", "slice.pipeline.phase.complete", request).await
+    let raw = route(client, "command", "slice.pipeline.phase.complete", request).await;
+    resolve_pipeline(client, raw).await.unwrap()
 }
 
-async fn finish(client: &mut Mcp, context: Value) -> Value {
-    route(
+async fn finish(client: &mut Mcp, context: ResolvedPipeline) -> ResolvedPipeline {
+    let raw = route(
         client,
         "command",
         "slice.pipeline.phase.complete",
@@ -140,7 +163,8 @@ async fn finish(client: &mut Mcp, context: Value) -> Value {
             Some(terminal_result("pipeline_execution_procedure_capture.rs")),
         ),
     )
-    .await
+    .await;
+    resolve_pipeline(client, raw).await.unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
@@ -173,18 +197,18 @@ async fn procedure_capture_completes_no_match_and_stops_at_reuse_gates() {
     let mut client = Mcp::start(&socket, &config, &native, &key).await;
 
     let mut discovery = begin(&mut client, &discovery_repo, "discovery", "whole").await;
-    assert!(!id(&discovery["run"]["id"]).is_nil());
-    assert_eq!(discovery["run"]["delivery_mode"], "whole");
+    assert!(!id(&discovery.run()["id"]).is_nil());
+    assert_eq!(discovery.run()["delivery_mode"], "whole");
     assert_eq!(
-        discovery["run"]["definition_digest"],
+        discovery.run()["definition_digest"],
         "1e439fa7521bcd607949ae7856672f2e718320b383c7af2bfb61cc9a39481a2f"
     );
     assert_eq!(
-        discovery["definition"]["phases"].as_array().unwrap().len(),
+        discovery.definition()["phases"].as_array().unwrap().len(),
         17
     );
     assert!(
-        discovery["definition"]["phases"]
+        discovery.definition()["phases"]
             .as_array()
             .unwrap()
             .iter()
@@ -207,31 +231,30 @@ async fn procedure_capture_completes_no_match_and_stops_at_reuse_gates() {
     )
     .await;
     add_opaque_authority_labels(&mut first);
-    discovery = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
         first,
     )
-    .await["context"]
-        .clone();
+    .await;
+    discovery = resolve_pipeline(&mut client, raw).await.unwrap();
     assert_non_coding_definition(&discovery, "slice.custom-procedure-capture");
-    discovery = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.delivery.escalate",
-        json!({"request_id":Uuid::new_v4(),"run_id":discovery["run"]["id"],
-            "run_revision":discovery["run"]["revision"],"phase_id":discovery["run"]["current_phase_id"],
+        json!({"request_id":Uuid::new_v4(),"run_id":discovery.run()["id"],
+            "run_revision":discovery.run()["revision"],"phase_id":discovery.run()["current_phase_id"],
             "reason":"The no-match discovery path requires phase-local source and scrub evidence."}),
-    )
-    .await["context"]
-        .clone();
+    ).await;
+    discovery = resolve_pipeline(&mut client, raw).await.unwrap();
     discovery = refresh_knowledge(&mut client, &discovery).await;
-    while discovery["run"]["current_phase_ordinal"].as_u64().unwrap() < 6 {
+    while discovery.run()["current_phase_ordinal"].as_u64().unwrap() < 6 {
         discovery = advance(&mut client, discovery).await;
     }
     discovery = complete(&mut client, discovery, "no_match", "completed", "continue").await;
-    while discovery["run"]["current_phase_ordinal"].as_u64().unwrap() < 10 {
+    while discovery.run()["current_phase_ordinal"].as_u64().unwrap() < 10 {
         discovery = advance(&mut client, discovery).await;
     }
     let mut leaking = completion(
@@ -253,10 +276,10 @@ async fn procedure_capture_completes_no_match_and_stops_at_reuse_gates() {
         .await["error"]["code"],
         "INVALID_OUTPUT"
     );
-    while discovery["run"]["current_phase_ordinal"].as_u64().unwrap() < 15 {
+    while discovery.run()["current_phase_ordinal"].as_u64().unwrap() < 15 {
         discovery = advance(&mut client, discovery).await;
     }
-    let waiting = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
@@ -270,17 +293,18 @@ async fn procedure_capture_completes_no_match_and_stops_at_reuse_gates() {
         ),
     )
     .await;
-    discovery = route(
+    let waiting = resolve_pipeline(&mut client, raw).await.unwrap();
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.input",
-        json!({"request_id":Uuid::new_v4(),"run_id":waiting["context"]["run"]["id"],
-            "run_revision":waiting["context"]["run"]["revision"],
-            "phase_id":waiting["context"]["run"]["current_phase_id"],
+        json!({"request_id":Uuid::new_v4(),"run_id":waiting.run()["id"],
+            "run_revision":waiting.run()["revision"],
+            "phase_id":waiting.run()["current_phase_id"],
             "input":"The durable owner accepts a proposal for review without promotion."}),
     )
-    .await["context"]
-        .clone();
+    .await;
+    discovery = resolve_pipeline(&mut client, raw).await.unwrap();
     discovery = refresh_knowledge(&mut client, &discovery).await;
     discovery = complete(
         &mut client,
@@ -299,8 +323,8 @@ async fn procedure_capture_completes_no_match_and_stops_at_reuse_gates() {
     )
     .await;
     let discovery_done = finish(&mut client, discovery).await;
-    assert_eq!(discovery_done["context"]["run"]["status"], "completed");
-    let discovery_outputs = discovery_done["context"]["outputs"].as_array().unwrap();
+    assert_eq!(discovery_done.run()["status"], "completed");
+    let discovery_outputs = discovery_done.details_data()["outputs"].as_array().unwrap();
     assert!(discovery_outputs.iter().all(|output| {
         output["fields"]["durable_write_performed"].as_str() != Some("true")
             && output["fields"]["skill_activation_performed_by_this_slice"].as_str() != Some("true")
@@ -309,23 +333,31 @@ async fn procedure_capture_completes_no_match_and_stops_at_reuse_gates() {
     }));
 
     let mut matched = begin(&mut client, &match_repo, "existing-match", "phasewise").await;
-    while matched["run"]["current_phase_ordinal"].as_u64().unwrap() < 6 {
+    while matched.run()["current_phase_ordinal"].as_u64().unwrap() < 6 {
         matched = advance(&mut client, matched).await;
     }
     let stopped = stop_with_result(&mut client, matched, "exact_match").await;
-    assert_eq!(stopped["context"]["run"]["status"], "blocked");
-    assert_eq!(stopped["context"]["run"]["current_phase_ordinal"], 6);
+    assert!(!mutation_result_id(&stopped).is_null());
     assert_eq!(
-        stopped["result"]["pipeline_result_origin"],
+        &stopped.details_data()["result"]["id"],
+        mutation_result_id(&stopped)
+    );
+    assert_eq!(stopped.run()["status"], "blocked");
+    assert_eq!(stopped.run()["current_phase_ordinal"], 6);
+    assert_eq!(
+        stopped.details_data()["result"]["pipeline_result_origin"],
         "managed_blocked"
     );
-    assert_eq!(stopped["result"]["provenance"], "externally_reported");
     assert_eq!(
-        stopped["result"]["pipeline_run_id"],
-        stopped["context"]["run"]["id"]
+        stopped.details_data()["result"]["provenance"],
+        "externally_reported"
+    );
+    assert_eq!(
+        stopped.details_data()["result"]["pipeline_run_id"],
+        stopped.run()["id"]
     );
     assert!(
-        stopped["context"]["outputs"]
+        stopped.details_data()["outputs"]
             .as_array()
             .unwrap()
             .iter()
@@ -334,37 +366,46 @@ async fn procedure_capture_completes_no_match_and_stops_at_reuse_gates() {
                     && output["fields"]["classification"] != "no_match"
             })
     );
-    let resumed = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.input",
-        json!({"request_id":Uuid::new_v4(),"run_id":stopped["context"]["run"]["id"],
-            "run_revision":stopped["context"]["run"]["revision"],
-            "phase_id":stopped["context"]["run"]["current_phase_id"],
+        json!({"request_id":Uuid::new_v4(),"run_id":stopped.run()["id"],
+            "run_revision":stopped.run()["revision"],
+            "phase_id":stopped.run()["current_phase_id"],
             "input":"External-owner handoff evidence is attached; no source gate is overridden."}),
     )
     .await;
-    assert_eq!(resumed["context"]["run"]["status"], "active");
-    assert_eq!(resumed["context"]["run"]["current_phase_ordinal"], 6);
-    assert_eq!(resumed["context"]["result"]["id"], stopped["result"]["id"]);
+    let resumed = resolve_pipeline(&mut client, raw).await.unwrap();
+    assert_eq!(resumed.run()["status"], "active");
+    assert_eq!(resumed.run()["current_phase_ordinal"], 6);
+    assert_eq!(
+        resumed.details_data()["result"]["id"],
+        stopped.details_data()["result"]["id"]
+    );
 
     let mut rejected = begin(&mut client, &match_repo, "negative-reuse", "phasewise").await;
-    while rejected["run"]["current_phase_ordinal"].as_u64().unwrap() < 11 {
+    while rejected.run()["current_phase_ordinal"].as_u64().unwrap() < 11 {
         rejected = advance(&mut client, rejected).await;
     }
     let rejected = stop_with_result(&mut client, rejected, "unsafe").await;
-    assert_eq!(rejected["context"]["run"]["current_phase_ordinal"], 11);
-    assert_eq!(rejected["context"]["run"]["status"], "blocked");
+    assert!(!mutation_result_id(&rejected).is_null());
     assert_eq!(
-        rejected["result"]["pipeline_result_origin"],
+        &rejected.details_data()["result"]["id"],
+        mutation_result_id(&rejected)
+    );
+    assert_eq!(rejected.run()["current_phase_ordinal"], 11);
+    assert_eq!(rejected.run()["status"], "blocked");
+    assert_eq!(
+        rejected.details_data()["result"]["pipeline_result_origin"],
         "managed_blocked"
     );
 
     let mut deferred = begin(&mut client, &match_repo, "validation-deferred", "phasewise").await;
-    while deferred["run"]["current_phase_ordinal"].as_u64().unwrap() < 12 {
+    while deferred.run()["current_phase_ordinal"].as_u64().unwrap() < 12 {
         deferred = advance(&mut client, deferred).await;
     }
-    let waiting = route(
+    let raw = route(
         &mut client,
         "command",
         "slice.pipeline.phase.complete",
@@ -378,11 +419,12 @@ async fn procedure_capture_completes_no_match_and_stops_at_reuse_gates() {
         ),
     )
     .await;
-    assert_eq!(waiting["context"]["run"]["status"], "waiting_input");
-    assert_eq!(waiting["context"]["run"]["current_phase_ordinal"], 12);
-    assert!(waiting["result"].is_null());
+    let waiting = resolve_pipeline(&mut client, raw).await.unwrap();
+    assert_eq!(waiting.run()["status"], "waiting_input");
+    assert_eq!(waiting.run()["current_phase_ordinal"], 12);
+    assert!(mutation_result_id(&waiting).is_null());
     assert!(
-        waiting["context"]["outputs"]
+        waiting.details_data()["outputs"]
             .as_array()
             .unwrap()
             .iter()

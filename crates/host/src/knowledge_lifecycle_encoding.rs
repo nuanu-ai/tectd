@@ -119,6 +119,7 @@ fn fragment_value_for_query(
     route: &str,
     capacity: usize,
 ) -> Result<Value> {
+    let capacity = capacity.min(crate::json_fragment::READ_BUDGET);
     let bytes = serde_json::to_vec(&value).map_err(|_| Error::TransportUnavailable)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| Error::InternalInvariant)?;
     let snapshot_digest = sha256(&bytes);
@@ -136,12 +137,18 @@ fn fragment_value_for_query(
     if offset > bytes.len() || !text.is_char_boundary(offset) {
         return Err(Error::InvalidArguments);
     }
-    let limit = usize::try_from(requested.map_or(262_144, |fragment| fragment.limit))
-        .map_err(|_| Error::InvalidArguments)?;
-    let mut upper = offset.saturating_add(limit).min(bytes.len());
-    while upper < bytes.len() && !text.is_char_boundary(upper) {
-        upper += 1;
+    let limit = usize::try_from(requested.map_or(4096, |fragment| fragment.limit))
+        .map_err(|_| Error::InvalidArguments)?
+        .min(4096);
+    let mut soft_upper = offset.saturating_add(limit).min(bytes.len());
+    while soft_upper < bytes.len() && !text.is_char_boundary(soft_upper) {
+        soft_upper += 1;
     }
+    let mut hard_upper = offset.saturating_add(4096).min(bytes.len());
+    while hard_upper > offset && !text.is_char_boundary(hard_upper) {
+        hard_upper -= 1;
+    }
+    let upper = soft_upper.min(hard_upper);
     let boundaries: Vec<usize> = text[offset..upper]
         .char_indices()
         .map(|(index, _)| offset + index)
@@ -257,6 +264,81 @@ mod tests {
         assert_eq!(restored, expected);
         let reconstructed: Value = serde_json::from_str(&restored).unwrap();
         assert_eq!(reconstructed["actions"], value["actions"]);
+    }
+
+    #[test]
+    fn accepted_large_limit_has_hard_utf8_windows_and_reassembles_with_exact_sha() {
+        let value = responses::with_actions(json!({"text":"🦀Ж".repeat(10_000)}), vec![], None);
+        let expected = serde_json::to_vec(&value).unwrap();
+        let expected_digest = sha256(&expected);
+        let mut query = KnowledgeLifecycleQuery {
+            change_id: Some(Uuid::new_v4()),
+            view: KnowledgeLifecycleView::History,
+            output_id: None,
+            digest: None,
+            fragment: Some(KnowledgeLifecycleFragmentQuery {
+                snapshot_digest: None,
+                offset: 0,
+                limit: 262_144,
+            }),
+        };
+        query.validate().unwrap();
+        let mut restored = Vec::new();
+        loop {
+            let page = fragment(value.clone(), &query, 8 * 1024 * 1024).unwrap();
+            assert!(
+                serde_json::to_vec(&responses::success(page.clone()))
+                    .unwrap()
+                    .len()
+                    <= 8192
+            );
+            let fragment = &page["fragment"];
+            let text = fragment["text"].as_str().unwrap();
+            assert!(!text.is_empty());
+            assert!(text.len() <= 4096);
+            assert_eq!(fragment["byte_length"], text.len());
+            assert_eq!(fragment["offset"], restored.len());
+            assert_eq!(fragment["snapshot_digest"], expected_digest);
+            restored.extend_from_slice(text.as_bytes());
+            if restored.len() == expected.len() {
+                assert_eq!(page["actions"], json!([]));
+                assert!(page.get("recommended_action").is_some_and(Value::is_null));
+                break;
+            }
+            let action = &page["actions"][0];
+            assert_eq!(action["arguments"]["params"]["fragment"]["limit"], 4096);
+            assert_eq!(
+                action["arguments"]["params"]["change_id"],
+                json!(query.change_id)
+            );
+            assert_eq!(action["arguments"]["params"]["view"], "history");
+            query = serde_json::from_value(action["arguments"]["params"].clone()).unwrap();
+        }
+        assert_eq!(restored, expected);
+        assert_eq!(sha256(&restored), expected_digest);
+    }
+
+    #[test]
+    fn fragment_cursor_rejects_non_boundary_and_out_of_range_offsets() {
+        let value = json!({"text":"🦀Ж"});
+        let serialized = serde_json::to_string(&value).unwrap();
+        for offset in [serialized.find('🦀').unwrap() + 1, serialized.len() + 1] {
+            let query = KnowledgeLifecycleQuery {
+                change_id: None,
+                view: KnowledgeLifecycleView::Current,
+                output_id: None,
+                digest: None,
+                fragment: Some(KnowledgeLifecycleFragmentQuery {
+                    snapshot_digest: Some(sha256(serialized.as_bytes())),
+                    offset: offset as u64,
+                    limit: 262_144,
+                }),
+            };
+            assert_eq!(
+                fragment(value.clone(), &query, 8 * 1024 * 1024),
+                Err(Error::InvalidArguments)
+            );
+        }
     }
 
     #[test]

@@ -1,3 +1,4 @@
+mod failure_budget;
 mod intros;
 
 pub(crate) use intros::error_intro;
@@ -5,7 +6,8 @@ use intros::{failure_intro, intro};
 use serde_json::{Value, json};
 use tect_domain::Error;
 
-const RESPONSE_RULES: &str = include_str!("../response-rules.txt");
+pub(crate) const RESPONSE_RULES: &str = include_str!("../response-rules.txt");
+pub(crate) const RESPONSE_FOOTER: &str = "Follow the rules from workspace.open or help {\"text\":\"response-rules\"}. Required checks, approvals and authority still apply. Dependencies alone grant no permission or automatic resumption. Claim monitoring or continuation only when real.";
 
 pub(crate) const INTROS: [&str; 8] = [
     "This native session has no open workspace. Open it to continue.",
@@ -40,7 +42,7 @@ fn content(intro: &'static str, data: Value, is_error: bool) -> Value {
     json!({
         "content":[{"type":"text","text":intro},
             {"type":"text","text":serde_json::to_string(&data).expect("JSON value")},
-            {"type":"text","text":RESPONSE_RULES}],
+            {"type":"text","text":RESPONSE_FOOTER}],
         "isError":is_error
     })
 }
@@ -51,60 +53,74 @@ pub(crate) fn encoded_len(data: &Value) -> tect_domain::Result<usize> {
         .map_err(|_| Error::TransportUnavailable)
 }
 
+#[derive(Debug)]
+pub(crate) enum FailureBuildError {
+    EnvelopeCannotFit,
+    Construction {
+        #[cfg(test)]
+        error: Error,
+    },
+}
+impl FailureBuildError {
+    pub(crate) fn construction(_error: Error) -> Self {
+        Self::Construction {
+            #[cfg(test)]
+            error: _error,
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn failure(error: Error, call: Option<(&str, &Value)>) -> Value {
     failure_with_state(error, call, None)
 }
-
+#[cfg(test)]
 pub(crate) fn failure_with_state(
     error: Error,
     call: Option<(&str, &Value)>,
     state: Option<&Value>,
 ) -> Value {
-    match try_failure_with_state(error, call, state) {
+    match failure_bounded(error, call, state, 8192) {
         Ok(value) => value,
-        Err(_) => internal_failure(),
+        Err(FailureBuildError::Construction { .. }) => internal_failure(),
+        Err(FailureBuildError::EnvelopeCannotFit) => crate::mcp::envelope_too_large(Value::Null),
     }
 }
-
+pub(crate) fn failure_bounded(
+    error: Error,
+    call: Option<(&str, &Value)>,
+    state: Option<&Value>,
+    capacity: usize,
+) -> std::result::Result<Value, FailureBuildError> {
+    let data = failure_data(error.clone(), call, state).map_err(FailureBuildError::construction)?;
+    failure_budget::fit(&error, call, data, capacity)
+}
+#[cfg(test)]
 fn try_failure_with_state(
     error: Error,
     call: Option<(&str, &Value)>,
     state: Option<&Value>,
 ) -> tect_domain::Result<Value> {
-    let mut actions = Vec::new();
-    let reload = if let Some((name, args)) = call {
-        if let Some(id) = args.get("setup_id").filter(|id| id.is_string()) {
-            Some(action(
-                "get_setup",
-                json!({"setup_id":id,"after_input":0,"limit":25}),
-            )?)
-        } else if let Some(id) = args.get("program_id").filter(|id| id.is_string()) {
-            Some(action("get_program", json!({"program_id":id}))?)
-        } else if let Some(id) = args.get("change_id").filter(|id| id.is_string()) {
-            if matches!(
-                name,
-                "knowledge_lifecycle"
-                    | "knowledge_change_begin"
-                    | "knowledge_change_phase_complete"
-                    | "knowledge_change_record_input"
-                    | "knowledge_change_commit"
-                    | "knowledge_change_settle_effects"
-            ) {
-                Some(action(
-                    "knowledge_lifecycle",
-                    json!({"change_id":id,"view":"current"}),
-                )?)
-            } else {
-                Some(action("knowledge_change", json!({"change_id":id}))?)
-            }
-        } else if let Some(id) = args.get("run_id").filter(|id| id.is_string()) {
-            Some(action("slice_pipeline_context", json!({"run_id":id}))?)
-        } else {
-            None
+    failure_bounded(error, call, state, 8192).map_err(|error| match error {
+        FailureBuildError::EnvelopeCannotFit => Error::RequestTooLarge,
+        FailureBuildError::Construction { error } => error,
+    })
+}
+fn failure_data(
+    error: Error,
+    call: Option<(&str, &Value)>,
+    state: Option<&Value>,
+) -> tect_domain::Result<Value> {
+    let denied = access_denial(&error);
+    if denied {
+        let mut data = json!({"code":error.code()});
+        if let Some(refusal) = error.refusal() {
+            data["refusal"] = json!({"code":refusal.code});
         }
-    } else {
-        None
-    };
+        return Ok(with_actions(json!({"error":data}), Vec::new(), None));
+    }
+    let mut actions = Vec::new();
+    let reload = reload_action(call)?;
     match error.pipeline_source() {
         Error::WorkspaceNotOpen => actions.push(action("open_workspace", json!({}))?),
         Error::StaleRevision
@@ -119,7 +135,7 @@ fn try_failure_with_state(
         | Error::InputConflict
         | Error::RequestTooLarge
         | Error::CapacityExceeded => {
-            actions.push(match reload {
+            actions.push(match reload.clone() {
                 Some(reload) => reload,
                 None => action("get_state", json!({}))?,
             });
@@ -127,25 +143,15 @@ fn try_failure_with_state(
         Error::StorageUnavailable | Error::TransportUnavailable | Error::OperationTimeout => {
             if let Some((name, arguments)) = call {
                 if matches!(error.pipeline_source(), Error::OperationTimeout)
-                    && let Some(id) = arguments
-                        .pointer("/params/change_id")
-                        .or_else(|| arguments.get("change_id"))
-                        .and_then(Value::as_str)
-                        .filter(|id| uuid::Uuid::parse_str(id).is_ok())
+                    && valid_identity(call, "change_id").is_some()
                 {
-                    actions.push(action(
-                        "knowledge_lifecycle",
-                        json!({"change_id":id,"view":"current"}),
-                    )?);
+                    actions.push(action("knowledge_lifecycle",json!({"change_id":valid_identity(call,"change_id").unwrap(),"view":"current"}))?);
                 } else if name == "save_program" || name == "save_setup" {
-                    actions.push(match reload {
-                        Some(reload) => reload,
-                        None => action("get_state", json!({}))?,
-                    });
-                } else if matches!(name, "query" | "command" | "execute") {
-                    actions.push(json!({"kind":"ready_call","tool":name,"arguments":arguments}));
+                    actions.push(reload.clone().unwrap_or(action("get_state", json!({}))?));
+                } else if let Some(replay) = exact_replay(name, arguments) {
+                    actions.push(replay);
                 } else {
-                    actions.push(action(name, arguments.clone())?);
+                    actions.push(reload.clone().unwrap_or(action("get_state", json!({}))?));
                 }
             }
         }
@@ -203,12 +209,43 @@ fn try_failure_with_state(
         | Error::SetupUnavailable => {}
         _ => actions.push(action("get_state", json!({}))?),
     }
-    let recommended = (!actions.is_empty()).then_some(0);
-    if state.is_some() {
-        actions.push(action("list_programs", json!({"limit":25}))?);
-        actions.push(crate::program_output::begin_action()?);
+    if crate::pipeline_output::receipt_diff::is_receipt_failure(&error) {
+        actions.clear();
+        if let Some(arguments) = owner_arguments(call)
+            && let Some(recovery) =
+                crate::pipeline_output::receipt_diff::failure_recovery(&error, arguments)?
+        {
+            actions.push(recovery);
+        }
     }
-    let recommended = recommended.or_else(|| (!actions.is_empty()).then_some(0));
+    if error.refusal().is_some_and(|refusal| {
+        refusal.rule.as_deref() == Some("PIPELINE-SNAPSHOT-REFERENCE-MISSING")
+    }) {
+        actions.clear();
+        if let Some(run_id) = valid_identity(call, "run_id") {
+            actions.push(action(
+                "slice_pipeline_context",
+                json!({"run_id":run_id,"view":"current"}),
+            )?);
+        }
+    }
+
+    if error.refusal().is_some_and(|refusal| {
+        refusal
+            .rule
+            .as_deref()
+            .is_some_and(|rule| rule.starts_with("WP6-INSTRUCTION-PHASE-"))
+    }) {
+        actions.clear();
+        if let Some(run_id) = valid_identity(call, "run_id") {
+            actions.push(action(
+                "slice_pipeline_context",
+                json!({"run_id":run_id,"view":"current"}),
+            )?);
+        }
+    }
+    strip_failure_contracts(&mut actions);
+    let recommended = (!actions.is_empty()).then_some(0);
     let mut error_data = json!({"code":error.code()});
     if let Some(refusal) = error.refusal() {
         error_data["refusal"] =
@@ -223,16 +260,152 @@ fn try_failure_with_state(
             serde_json::to_value(diagnostic).map_err(|_| Error::InternalInvariant)?;
     }
     if let Some((name, arguments)) = call
-        && matches!(name, "query" | "command" | "execute")
-        && let Some(route) = arguments.get("route").and_then(Value::as_str)
-        && let Some(contract) = crate::api::route_contract(name, route)
+        && let Some(help) = crate::api::schema_help_action(name, arguments)?
     {
-        error_data["tool"] = json!(name);
-        error_data["route"] = json!(route);
-        error_data["route_contract"] = contract;
+        error_data["tool"] = help["arguments"]["tool"].clone();
+        error_data["route"] = help["arguments"]["route"].clone();
+        error_data["schema_help"] = help;
     }
-    let data = with_actions(json!({"error":error_data}), actions, recommended);
-    Ok(content(failure_intro(&error, call), data, true))
+    Ok(with_actions(
+        json!({"error":error_data}),
+        actions,
+        recommended,
+    ))
+}
+
+fn strip_failure_contracts(actions: &mut [Value]) {
+    for action in actions {
+        if let Some(action) = action.as_object_mut() {
+            action.remove("route_contract");
+            action.remove("next_action_contract");
+        }
+    }
+}
+fn access_denial(error: &Error) -> bool {
+    matches!(
+        error.pipeline_source(),
+        Error::Unauthorized
+            | Error::InvalidNativeSession
+            | Error::InvalidWorkspaceKey
+            | Error::SessionRevoked
+            | Error::SessionWorkspaceMismatch
+            | Error::Forbidden
+            | Error::InvalidConfiguration
+            | Error::TaskDirectoryMismatch
+            | Error::SetupUnavailable
+    )
+}
+fn owner_arguments<'a>(call: Option<(&str, &'a Value)>) -> Option<&'a Value> {
+    let (name, args) = call?;
+    if matches!(name, "query" | "command" | "execute") {
+        crate::api::schema_help_action(name, args).ok().flatten()?;
+        args.get("params").filter(|params| params.is_object())
+    } else {
+        if !matches!(name, "get_state" | "help")
+            && crate::api::schema_help_action(name, args)
+                .ok()
+                .flatten()
+                .is_none()
+        {
+            return None;
+        }
+        args.as_object()?;
+        Some(args)
+    }
+}
+fn valid_identity(call: Option<(&str, &Value)>, key: &str) -> Option<uuid::Uuid> {
+    if !matches!(key, "setup_id" | "program_id" | "change_id" | "run_id") {
+        return None;
+    }
+    owner_arguments(call)?
+        .get(key)?
+        .as_str()?
+        .parse::<uuid::Uuid>()
+        .ok()
+        .filter(|id| !id.is_nil())
+}
+fn reload_action(call: Option<(&str, &Value)>) -> tect_domain::Result<Option<Value>> {
+    for key in ["setup_id", "program_id", "change_id", "run_id"] {
+        if let Some(id) = valid_identity(call, key) {
+            return Ok(Some(match key {
+                "setup_id" => action(
+                    "get_setup",
+                    json!({"setup_id":id,"after_input":0,"limit":25}),
+                )?,
+                "program_id" => action("get_program", json!({"program_id":id}))?,
+                "change_id" => {
+                    let internal = call
+                        .and_then(|(name, args)| crate::api::recognized_internal_name(name, args));
+                    if matches!(
+                        internal,
+                        Some(
+                            "knowledge_lifecycle"
+                                | "knowledge_change_begin"
+                                | "knowledge_change_phase_complete"
+                                | "knowledge_change_record_input"
+                                | "knowledge_change_commit"
+                                | "knowledge_change_settle_effects"
+                        )
+                    ) {
+                        action(
+                            "knowledge_lifecycle",
+                            json!({"change_id":id,"view":"current"}),
+                        )?
+                    } else {
+                        action("knowledge_change", json!({"change_id":id}))?
+                    }
+                }
+                _ => action("slice_pipeline_context", json!({"run_id":id}))?,
+            }));
+        }
+    }
+    Ok(None)
+}
+fn exact_replay(name: &str, args: &Value) -> Option<Value> {
+    if matches!(name, "query" | "command" | "execute" | "help" | "get_state") {
+        crate::api::decode_public_call(name, args.clone()).ok()?;
+        Some(json!({"kind":"ready_call","tool":name,"arguments":args}))
+    } else {
+        action(name, args.clone()).ok()
+    }
+}
+fn bounded_recovery(
+    error: &Error,
+    call: Option<(&str, &Value)>,
+) -> tect_domain::Result<Vec<Value>> {
+    if access_denial(error) {
+        return Ok(Vec::new());
+    }
+    if error.refusal().is_some_and(|r| {
+        matches!(
+            r.rule.as_deref(),
+            Some(
+                "WP6-SKILL-READ-01"
+                    | "WP6-RESOURCE-READ-01"
+                    | "PIPELINE-SNAPSHOT-REFERENCE-MISSING"
+            )
+        )
+    }) {
+        return failure_data(error.clone(), call, None)?
+            .get("actions")
+            .and_then(Value::as_array)
+            .cloned()
+            .ok_or(Error::InternalInvariant);
+    }
+    if let Some(reload) = reload_action(call)? {
+        return Ok(vec![reload]);
+    }
+    if let Some((name, args)) = call
+        && let Some(help) = crate::api::schema_help_action(name, args)?
+    {
+        return Ok(vec![help]);
+    }
+    Ok(vec![action("get_state", json!({}))?])
+}
+
+pub(crate) fn internal_failure_bounded(capacity: usize) -> Option<Value> {
+    let value = internal_failure();
+    (serde_json::to_vec(&value).ok()?.len() <= capacity.min(8192)).then_some(value)
 }
 
 fn internal_failure() -> Value {
@@ -245,241 +418,13 @@ fn internal_failure() -> Value {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn only_intro_has_a_budget_and_json_is_not_mirrored() {
-        for intro in INTROS {
-            assert!(intro.len() <= 2000);
-        }
-        for error in [
-            Error::StaleRevision,
-            Error::InputPending,
-            Error::ProgramIncomplete,
-            Error::InputConflict,
-            Error::WorkspaceNotOpen,
-            Error::RequestTooLarge,
-            Error::StorageUnavailable,
-            Error::TransportUnavailable,
-            Error::OperationTimeout,
-            Error::InvalidArguments,
-            Error::Unauthorized,
-        ] {
-            assert!(error_intro(&error).len() <= 2000);
-        }
-        let large = "narrative".repeat(10_000);
-        let response = success(json!({"large":large}));
-        assert!(response.get("structuredContent").is_none());
-        assert_eq!(response["content"].as_array().unwrap().len(), 3);
-        let parsed: Value =
-            serde_json::from_str(response["content"][1]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(parsed["large"], large);
-        assert_eq!(response["content"][2]["type"], "text");
-        assert_eq!(response["content"][2]["text"], RESPONSE_RULES);
-        assert_eq!(
-            encoded_len(&json!({"large":large})).unwrap(),
-            serde_json::to_vec(&response).unwrap().len()
-        );
-        let mut without_rules = response.clone();
-        without_rules["content"].as_array_mut().unwrap().pop();
-        assert!(
-            encoded_len(&json!({"large":large})).unwrap()
-                > serde_json::to_vec(&without_rules).unwrap().len()
-        );
-    }
-
-    #[test]
-    fn normal_and_fallback_failures_keep_json_and_rules_in_place() {
-        for response in [failure(Error::Unauthorized, None), internal_failure()] {
-            assert_eq!(response["isError"], true);
-            assert_eq!(response["content"].as_array().unwrap().len(), 3);
-            let payload: Value =
-                serde_json::from_str(response["content"][1]["text"].as_str().unwrap()).unwrap();
-            assert!(payload["error"]["code"].is_string());
-            assert_eq!(response["content"][2]["type"], "text");
-            assert_eq!(response["content"][2]["text"], RESPONSE_RULES);
-        }
-    }
-
-    #[test]
-    fn operation_deadline_reads_existing_change_before_same_id_retry() {
-        let change_id = uuid::Uuid::new_v4();
-        let request_id = uuid::Uuid::new_v4();
-        let arguments = json!({"route":"knowledge.change_phase_complete","params":{
-            "change_id":change_id,"request_id":request_id,"phase_id":"kc-impact-plan"
-        }});
-        let response = failure(Error::OperationTimeout, Some(("command", &arguments)));
-        let body: Value =
-            serde_json::from_str(response["content"][1]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(body["error"]["code"], "operation_timeout");
-        assert_eq!(
-            body["actions"][0]["arguments"]["route"],
-            "knowledge.lifecycle"
-        );
-        assert_eq!(
-            body["actions"][0]["arguments"]["params"]["change_id"],
-            json!(change_id)
-        );
-        assert!(
-            response["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("same request ID")
-        );
-
-        let begin = json!({"route":"knowledge.change_begin","params":{"request_id":request_id}});
-        let response = failure(Error::OperationTimeout, Some(("command", &begin)));
-        let body: Value =
-            serde_json::from_str(response["content"][1]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(body["actions"][0]["arguments"], begin);
-        assert_eq!(body["recommended_action"], 0);
-
-        let read = failure(Error::OperationTimeout, Some(("get_state", &json!({}))));
-        assert!(
-            read["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("Retry the read")
-        );
-        assert!(
-            !read["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .contains("request ID")
-        );
-    }
-
-    #[test]
-    fn promotion_refusal_returns_the_same_slice_owner_continuation() {
-        let id = uuid::Uuid::new_v4();
-        let arguments = json!({"request_id":id,"scope_id":id,"slice_id":id,
-            "slice_revision":3,"qualification_reason":"Publish this bounded evidence.",
-            "delivery_mode":"whole"});
-        let value = try_failure_with_state(
-            Error::KnowledgeLifecycleRequired,
-            Some(("slice_pipeline_begin", &arguments)),
-            None,
-        )
-        .unwrap();
-        let value: Value =
-            serde_json::from_str(value["content"][1]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(
-            value["actions"][0]["arguments"]["route"],
-            "knowledge.lifecycle"
-        );
-        assert_eq!(
-            value["actions"][1]["arguments"]["route"],
-            "knowledge.change_begin"
-        );
-        assert_eq!(
-            value["actions"][1]["arguments"]["params"]["owner"]["kind"],
-            "promotion_slice"
-        );
-        assert_eq!(
-            value["actions"][1]["arguments"]["params"]["owner"]["slice_revision"],
-            3
-        );
-    }
-
-    #[test]
-    fn typed_refusal_is_additive_to_legacy_error_code() {
-        let value = failure(Error::StaleRevision, None);
-        let body: Value =
-            serde_json::from_str(value["content"][1]["text"].as_str().unwrap()).unwrap();
-        assert_eq!(body["error"]["code"], "stale_revision");
-        assert_eq!(body["error"]["refusal"]["code"], "STALE_REVISION");
-        assert_eq!(body["error"]["refusal"]["next_action"], "refresh");
-        assert_eq!(body["error"]["refusal"]["required"], "revision");
-    }
-
-    fn failure_body(error: Error, name: &str, arguments: &Value) -> Value {
-        let value = failure(error, Some((name, arguments)));
-        serde_json::from_str(value["content"][1]["text"].as_str().unwrap()).unwrap()
-    }
-
-    #[test]
-    fn invalid_known_routes_recommend_executable_route_specific_schema_help() {
-        for (tool, route) in [
-            ("command", "scope.candidates.begin"),
-            ("query", "program.get"),
-            ("execute", "setup.apply"),
-        ] {
-            let arguments = json!({"route":route,"params":{"invalid":true}});
-            let body = failure_body(Error::InvalidArguments, tool, &arguments);
-            assert_eq!(body["error"]["code"], "invalid_arguments");
-            assert_eq!(body["error"]["refusal"]["code"], "INPUT_SCHEMA_INVALID");
-            assert_eq!(
-                body["error"]["refusal"]["next_action"],
-                "correct_input_and_retry"
-            );
-            assert_eq!(body["error"]["refusal"]["required"], "schema_valid_input");
-            assert_eq!(body["error"]["tool"], tool);
-            assert_eq!(body["error"]["route"], route);
-            assert!(body["error"]["route_contract"]["params_schema"].is_object());
-            assert_eq!(body["recommended_action"], 0);
-            let action = &body["actions"][0];
-            assert_eq!(action["kind"], "ready_call");
-            assert_eq!(action["tool"], "help");
-            assert_eq!(
-                action["arguments"],
-                json!({"mode":"describe","tool":tool,"route":route})
-            );
-            assert_eq!(action["route_contract"]["route"], route);
-
-            let request = crate::api::parse_help(action["arguments"].clone()).unwrap();
-            let described = crate::api::help(request).unwrap();
-            assert_eq!(described["kind"], "route");
-            assert_eq!(described["tool"], tool);
-            assert_eq!(described["route"], route);
-            assert!(described["params_schema"].is_object());
-
-            // One refusal carries the executable schema and example directly.
-            assert!(action["route_contract"]["example"].is_object());
-        }
-    }
-
-    #[test]
-    fn schema_refusal_reports_pointer_and_full_nested_candidate_contract() {
-        let arguments = json!({"route":"scope.candidates.save","params":{"kind":"draft"}});
-        let body = failure_body(
-            Error::invalid_arguments_from("missing field `candidate_set_id`"),
-            "command",
-            &arguments,
-        );
-        assert_eq!(body["error"]["refusal"]["code"], "INPUT_SCHEMA_INVALID");
-        assert_eq!(
-            body["error"]["details"]["violation_code"],
-            "required_field_missing"
-        );
-        assert_eq!(
-            body["error"]["details"]["pointer"],
-            "/params/candidate_set_id"
-        );
-        let schema = &body["error"]["route_contract"]["params_schema"];
-        assert!(schema["oneOf"][0]["properties"]["draft"]["properties"]["candidates"]["items"]
-            ["properties"]["coverage_goals"]
-            .is_object());
-        assert_eq!(
-            body["error"]["route_contract"]["example"]["arguments"]["route"],
-            "scope.candidates.save"
-        );
-    }
-
-    #[test]
-    fn invalid_unknown_or_unrouted_calls_keep_state_fallback() {
-        for (name, arguments) in [
-            ("command", json!({"route":"unknown","params":{}})),
-            ("unknown", json!({})),
-        ] {
-            let body = failure_body(Error::InvalidArguments, name, &arguments);
-            assert_eq!(body["recommended_action"], 0);
-            assert_eq!(
-                body["actions"][0],
-                json!({"kind":"ready_call","tool":"get_state","arguments":{}})
-            );
-        }
-    }
-}
+mod tests;
 
 #[cfg(test)]
 mod engineering_path_tests;
+
+#[cfg(test)]
+mod failure_budget_tests;
+
+#[cfg(test)]
+mod p8a_guidance_tests;
