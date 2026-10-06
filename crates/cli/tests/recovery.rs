@@ -138,7 +138,18 @@ async fn real_daemon_crash_rolls_back_and_lost_reply_recovers_committed_identity
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("invalid_configuration"));
     daemon.remove_owned_stale_socket();
-    let mut daemon = Daemon::start(&tagged_runtime, socket.clone()).await;
+    let old = std::fs::read(socket.with_extension("stderr")).unwrap();
+    let stderr = socket.with_extension("recovery.stderr");
+    let mut daemon = Daemon::start_configured_with_stderr_result(
+        std::path::Path::new(env!("CARGO_BIN_EXE_tectd")),
+        &tagged_runtime,
+        socket.clone(),
+        None,
+        stderr,
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read(socket.with_extension("stderr")).unwrap(), old);
     let mut client = Mcp::start(&socket, &config, &native, "persistent-fixture").await;
     assert_eq!(
         without_actions(client.call("get_state", json!({})).await),

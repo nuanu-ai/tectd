@@ -302,7 +302,18 @@ async fn candidate_delta_normalized_graph_is_atomic_cyclic_safe_and_compact() {
     client.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();
-    daemon = Daemon::start(&runtime, socket.clone()).await;
+    let old = std::fs::read(socket.with_extension("stderr")).unwrap();
+    let stderr = socket.with_extension("recovery.stderr");
+    daemon = Daemon::start_configured_with_stderr_result(
+        std::path::Path::new(env!("CARGO_BIN_EXE_tectd")),
+        &runtime,
+        socket.clone(),
+        None,
+        stderr,
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read(socket.with_extension("stderr")).unwrap(), old);
     let mut resumed = Mcp::start(&socket, &config, &native, &workspace_key).await;
     let restored_response = resumed
         .exchange(
