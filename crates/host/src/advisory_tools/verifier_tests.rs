@@ -70,7 +70,7 @@ fn verifier_route_is_one_command_inside_five_tools() {
     let routes = command["inputSchema"]["properties"]["route"]["enum"]
         .as_array()
         .unwrap();
-    assert_eq!(routes.len(), 50);
+    assert_eq!(routes.len(), 64);
     assert_eq!(
         routes
             .iter()
@@ -83,7 +83,7 @@ fn verifier_route_is_one_command_inside_five_tools() {
             .as_array()
             .unwrap()
             .len(),
-        28
+        39
     );
     let input = json!({"route":"candidate.advisory.verify","params":arguments()});
     let call = crate::api::decode_public_call("command", input.clone()).unwrap();
