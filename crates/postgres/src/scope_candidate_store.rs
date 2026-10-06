@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use tect_application::{CandidateDeltaStore, ScopeCandidateStore};
 use tect_domain::{
     BeginCandidateSet, BeginCandidateSetOutcome, CandidateHistoryEntry, CandidateInputSummary,
-    CandidateReceiptRequest, CandidateSetSummary, CandidateSnapshotMaterial, CandidateTextFragment,
+    CandidateReceiptRequest, CandidateSetList, CandidateSnapshotMaterial, CandidateTextFragment,
     RecordCandidateInput, RefreshCandidateSet, Result, ReviewCandidateSet, SaveCandidateDraft,
     StoredCandidateContext, StoredHistoricalCandidateDraft,
 };
@@ -105,10 +105,11 @@ impl ScopeCandidateStore for PgUnitOfWork {
     async fn candidate_heads(
         &mut self,
         workspace_id: Uuid,
+        after: Option<tect_domain::WorkspaceCollectionCursor>,
         limit: u32,
-    ) -> Result<Vec<CandidateSetSummary>> {
+    ) -> Result<CandidateSetList> {
         let tenant_id = self.tenant_id()?;
-        scope_candidates::heads(self.transaction()?, tenant_id, workspace_id, limit).await
+        scope_candidates::heads(self.transaction()?, tenant_id, workspace_id, after, limit).await
     }
 
     async fn candidate_inputs(

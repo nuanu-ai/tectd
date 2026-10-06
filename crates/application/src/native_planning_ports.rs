@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use tect_domain::{
-    NativePlanningReceiptRequest, NativePlanningSummary, NativeScope, NativeSlice, OpenScope,
+    NativePlanningList, NativePlanningReceiptRequest, NativeScope, NativeSlice, OpenScope,
     OpenScopeOutcome, OpenSlice, OpenSliceOutcome, RecordSliceCandidateInput, RecordSliceResult,
     RecordSliceResultOutcome, RefreshSliceCandidateSet, Result, ReviewSliceCandidateSet,
     SaveSliceCandidateDraft, ScopeOpenBasis, SliceCandidateContext, SlicePlanningSnapshotMaterial,
@@ -33,8 +33,9 @@ pub trait NativePlanningStore: Send {
     async fn native_planning_summaries(
         &mut self,
         workspace_id: Uuid,
+        after: Option<tect_domain::WorkspaceCollectionCursor>,
         limit: u32,
-    ) -> Result<Vec<NativePlanningSummary>>;
+    ) -> Result<NativePlanningList>;
     async fn scope_open_replay(
         &mut self,
         workspace_id: Uuid,

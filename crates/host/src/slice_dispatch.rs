@@ -21,8 +21,17 @@ pub(crate) async fn state(
     service: &WorkspaceService,
 ) -> Result<WorkspaceState> {
     let mut state = service.get_state(context).await?;
+    enrich_native(context, service, &mut state.native_planning).await?;
+    Ok(state)
+}
+
+pub(crate) async fn enrich_native(
+    context: &RequestContext,
+    service: &WorkspaceService,
+    summaries: &mut [tect_domain::NativePlanningSummary],
+) -> Result<()> {
     let guidance = StaticSliceGuidance;
-    for summary in &mut state.native_planning {
+    for summary in summaries {
         let current = service
             .slice_candidate_context(
                 context,
@@ -40,7 +49,7 @@ pub(crate) async fn state(
             summary.eligible_work.clear();
         }
     }
-    Ok(state)
+    Ok(())
 }
 
 pub(crate) async fn execute(

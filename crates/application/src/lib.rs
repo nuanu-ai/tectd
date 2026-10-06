@@ -55,4 +55,7 @@ pub use knowledge_search_ports::{
 
 mod setup_access;
 mod setup_apply;
+mod setup_readonly;
 mod setups;
+
+mod workspace_collections;

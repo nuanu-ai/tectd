@@ -46,6 +46,10 @@ pub struct WorkspaceState {
     pub setup_context: Option<SetupContext>,
     pub candidate_sets: Vec<CandidateSetSummary>,
     pub native_planning: Vec<NativePlanningSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_sets_next_after: Option<crate::WorkspaceCollectionCursor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_planning_next_after: Option<crate::WorkspaceCollectionCursor>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +110,8 @@ impl WorkspaceState {
             setup_context: None,
             candidate_sets: Vec::new(),
             native_planning: Vec::new(),
+            candidate_sets_next_after: None,
+            native_planning_next_after: None,
         }
     }
 
@@ -121,6 +127,8 @@ impl WorkspaceState {
             setup_context: None,
             candidate_sets: Vec::new(),
             native_planning: Vec::new(),
+            candidate_sets_next_after: None,
+            native_planning_next_after: None,
         }
     }
 }

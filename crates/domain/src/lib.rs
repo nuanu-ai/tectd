@@ -135,3 +135,8 @@ mod pipeline_receipt_diff;
 pub use pipeline_receipt_diff::{
     FullReceiptDiff, ReceiptDuplicate, pipeline_receipt_multiset_digest,
 };
+
+mod workspace_collection;
+pub use workspace_collection::{
+    CandidateSetList, NativePlanningList, WorkspaceCollection, WorkspaceCollectionCursor,
+};

@@ -16,6 +16,7 @@ pub(crate) enum Invocation {
     Help(crate::api::HelpRequest),
     OpenWorkspace,
     GetState,
+    WorkspaceState(crate::workspace_state::Query),
     RegisterSource { path: String },
     SelectWorktrees { worktree_ids: Vec<Uuid> },
     ListSources { after: Option<Uuid>, limit: u32 },
@@ -45,6 +46,9 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
     match name {
         "open_workspace" if empty_object(&arguments) => Ok(Invocation::OpenWorkspace),
         "get_state" if empty_object(&arguments) => Ok(Invocation::GetState),
+        "workspace_state" => {
+            crate::workspace_state::parse(arguments).map(Invocation::WorkspaceState)
+        }
         "register_source" => {
             let arguments = serde_json::from_value::<RegisterSourceArguments>(arguments)
                 .map_err(Error::invalid_arguments_from)?;

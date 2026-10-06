@@ -214,10 +214,16 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
         let context = &request.context;
         let capacity = request.output_capacity;
         match invocation {
-            Invocation::OpenWorkspace => service
-                .open_workspace(&request.context)
-                .await
-                .and_then(|state| crate::workspace_output::opened(state, request.output_capacity)),
+            Invocation::OpenWorkspace => {
+                service
+                    .open_workspace_prepared(&request.context, |state| {
+                        crate::workspace_output::opened(state, request.output_capacity)
+                    })
+                    .await
+            }
+            Invocation::WorkspaceState(query) => {
+                crate::workspace_state::execute(context, service, query, capacity).await
+            }
             Invocation::GetState => crate::slice_dispatch::state(&request.context, service)
                 .await
                 .and_then(|state| program_output::workspace(state, request.output_capacity)),

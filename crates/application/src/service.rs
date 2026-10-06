@@ -139,12 +139,16 @@ impl WorkspaceService {
                 state.session.as_ref().expect("opened").id,
             )
             .await?;
-        state.candidate_sets = tx
-            .candidate_heads(state.workspace.as_ref().expect("opened").id, 25)
+        let candidates = tx
+            .candidate_heads(state.workspace.as_ref().expect("opened").id, None, 25)
             .await?;
-        state.native_planning = tx
-            .native_planning_summaries(state.workspace.as_ref().expect("opened").id, 25)
+        state.candidate_sets = candidates.candidate_sets;
+        state.candidate_sets_next_after = candidates.next_after;
+        let native = tx
+            .native_planning_summaries(state.workspace.as_ref().expect("opened").id, None, 25)
             .await?;
+        state.native_planning = native.native_planning;
+        state.native_planning_next_after = native.next_after;
         state.next_action = Some(
             if let Some(native) = state.native_planning.first() {
                 match native.candidate_set_status {
@@ -215,6 +219,19 @@ impl WorkspaceService {
     }
 
     pub async fn open_workspace(&self, context: &RequestContext) -> Result<WorkspaceState> {
+        self.open_workspace_prepared(context, Ok).await
+    }
+
+    /// Prepare the delivered result before committing workspace/session creation.
+    /// A preparation failure drops the owned transaction and rolls back its writes.
+    pub async fn open_workspace_prepared<T, F>(
+        &self,
+        context: &RequestContext,
+        prepare: F,
+    ) -> Result<T>
+    where
+        F: FnOnce(WorkspaceState) -> Result<T>,
+    {
         let (mut tx, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
         tx.lock_native_session(identity.host_id, &context.native_session_id)
             .await?;
@@ -224,8 +241,9 @@ impl WorkspaceService {
         {
             let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
             let state = Self::state(&mut *tx, workspace, session).await?;
+            let prepared = prepare(state)?;
             tx.commit().await?;
-            return Ok(state);
+            return Ok(prepared);
         }
         let workspace = tx.ensure_workspace(&context.workspace_key).await?;
         tx.ensure_membership(workspace.value.id, identity.principal_id)
@@ -254,7 +272,8 @@ impl WorkspaceService {
             .await?;
         }
         let state = Self::state(&mut *tx, workspace.value, session.value).await?;
+        let prepared = prepare(state)?;
         tx.commit().await?;
-        Ok(state)
+        Ok(prepared)
     }
 }

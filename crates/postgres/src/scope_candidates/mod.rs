@@ -20,9 +20,10 @@ use crate::storage_error;
 use sqlx::{Postgres, Transaction};
 use tect_domain::{
     CandidateBoundary, CandidateContext, CandidateInputSummary, CandidateMethodSnapshot,
-    CandidateRuleSnapshot, CandidateSet, CandidateSetStatus, CandidateSetSummary,
+    CandidateRuleSnapshot, CandidateSet, CandidateSetList, CandidateSetStatus, CandidateSetSummary,
     CandidateSnapshot, CandidateSourceKind, CandidateSourceRef, CandidateTextFragment, Error,
     Program, ResolvedCandidateDraft, Result, ScopeCandidateReview, StoredCandidateContext,
+    WorkspaceCollection, WorkspaceCollectionCursor,
 };
 use uuid::Uuid;
 
@@ -316,20 +317,43 @@ pub(crate) async fn heads(
     transaction: &mut Transaction<'_, Postgres>,
     tenant_id: Uuid,
     workspace_id: Uuid,
+    after: Option<WorkspaceCollectionCursor>,
     limit: u32,
-) -> Result<Vec<CandidateSetSummary>> {
+) -> Result<CandidateSetList> {
+    if !(1..=25).contains(&limit) {
+        return Err(Error::InvalidArguments);
+    }
+    if let Some(cursor) = after {
+        cursor.validate(workspace_id, WorkspaceCollection::CandidateSets)?;
+        let anchor: Option<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM scope_candidate_sets WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
+        )
+        .bind(tenant_id)
+        .bind(workspace_id)
+        .bind(cursor.anchor_id)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(storage_error)?;
+        if anchor.is_none() {
+            return Err(Error::InvalidArguments);
+        }
+    }
     let rows = sqlx::query_as::<_, CandidateHeadRow>(
         "SELECT id,program_id,revision,status,boundary,current_snapshot_id,input_cursor,latest_input \
          FROM scope_candidate_sets WHERE tenant_id=$1 AND workspace_id=$2 \
-         ORDER BY created_at DESC,id LIMIT $3",
+         AND ($3::uuid IS NULL OR created_at < (SELECT created_at FROM scope_candidate_sets WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3) \
+         OR (created_at = (SELECT created_at FROM scope_candidate_sets WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3) AND id > $3)) \
+         ORDER BY created_at DESC,id LIMIT $4",
     )
     .bind(tenant_id)
     .bind(workspace_id)
-    .bind(i64::from(limit))
+    .bind(after.map(|cursor| cursor.anchor_id))
+    .bind(i64::from(limit) + 1)
     .fetch_all(&mut **transaction)
     .await
     .map_err(storage_error)?;
-    rows.into_iter()
+    let mut candidate_sets = rows
+        .into_iter()
         .map(|row| {
             Ok(CandidateSetSummary {
                 id: row.id,
@@ -342,7 +366,18 @@ pub(crate) async fn heads(
                 latest_input: row.latest_input,
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    let more = candidate_sets.len() > limit as usize;
+    candidate_sets.truncate(limit as usize);
+    let next_after = more.then(|| WorkspaceCollectionCursor {
+        workspace_id,
+        collection: WorkspaceCollection::CandidateSets,
+        anchor_id: candidate_sets.last().expect("nonempty bounded page").id,
+    });
+    Ok(CandidateSetList {
+        candidate_sets,
+        next_after,
+    })
 }
 
 fn parse_status(value: &str) -> Result<CandidateSetStatus> {
