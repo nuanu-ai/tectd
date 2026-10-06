@@ -278,7 +278,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            60
+            64
         );
     }
 
