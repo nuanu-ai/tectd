@@ -304,7 +304,20 @@ async fn native_scope_slice_result_replans_and_recovers() {
     client.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();
-    let _daemon = Daemon::start(&runtime, socket.clone()).await;
+    let first_stderr = std::fs::read(socket.with_extension("stderr")).unwrap();
+    let _daemon = Daemon::start_configured_with_stderr_result(
+        std::path::Path::new(env!("CARGO_BIN_EXE_tectd")),
+        &runtime,
+        socket.clone(),
+        None,
+        root.join("native-slices-recovery.stderr"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::read(socket.with_extension("stderr")).unwrap(),
+        first_stderr
+    );
     let mut restored = Mcp::start(&socket, &config, &Uuid::new_v4().to_string(), &key).await;
     restored.call("open_workspace", json!({})).await;
     let scope = read_ready_json(

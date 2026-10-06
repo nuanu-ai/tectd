@@ -39,6 +39,16 @@ impl Daemon {
         socket: PathBuf,
         contexts: Option<&Path>,
     ) -> Result<Self, String> {
+        let log_path = socket.with_extension("stderr");
+        Self::start_configured_with_stderr_result(binary, url, socket, contexts, log_path).await
+    }
+    pub async fn start_configured_with_stderr_result(
+        binary: &Path,
+        url: &str,
+        socket: PathBuf,
+        contexts: Option<&Path>,
+        log_path: PathBuf,
+    ) -> Result<Self, String> {
         // Scope: fresh exclusive private_temp roots; no concurrent same-UID
         // writer. Metadata checks do not authenticate hostile same-UID actors.
         let parent = socket.parent().ok_or("daemon socket parent")?;
@@ -55,7 +65,9 @@ impl Daemon {
         }
         let parent_identity = (metadata.dev(), metadata.ino());
         require_absent(&socket)?;
-        let log_path = socket.with_extension("stderr");
+        if log_path.parent() != Some(parent) {
+            return Err("daemon stderr must share the private socket parent".into());
+        }
         if log_path == socket {
             return Err("daemon log/socket path collision".into());
         }
