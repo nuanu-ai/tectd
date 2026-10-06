@@ -404,7 +404,12 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
     client.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();
-    let mut daemon = Daemon::start(&runtime, socket.clone()).await;
+    let old = std::fs::read(socket.with_extension("stderr")).unwrap();
+    let f = Daemon::start_configured_with_stderr_result;
+    let bin = std::path::Path::new(env!("CARGO_BIN_EXE_tectd"));
+    let log = socket.with_extension("recovery.stderr");
+    let mut daemon = f(bin, &runtime, socket.clone(), None, log).await.unwrap();
+    assert_eq!(std::fs::read(socket.with_extension("stderr")).unwrap(), old);
     let mut resumed = Mcp::start(&socket, &config, &native, &workspace).await;
     let state = resumed.call("get_state", json!({})).await;
     assert_eq!(state["candidate_sets"][0]["id"], set.to_string());

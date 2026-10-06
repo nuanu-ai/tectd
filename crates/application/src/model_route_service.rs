@@ -1,0 +1,485 @@
+//! Public recommendation-only workflow. No recommended model is executed.
+use tect_domain::{AdvisoryRequestPreference, Error, RequestContext, Result};
+use uuid::Uuid;
+
+use crate::{
+    CapturedModelRouteDisposition, DecideModelRouteRecommendation,
+    DispositionModelRouteRecommendation, ModelRouteDecisionInput, ModelRouteDispositionAction,
+    ModelRouteInvocation, ModelRoutePreparation, ModelRouteRunNoCall, ModelRouteSendStart,
+    PrepareModelRouteRecommendation, PreparedModelRouteRecommendation, TransactionMode,
+    WorkspaceService, attempt_model_route_observed_after_commit,
+    finalize_model_route_provider_response, prepare_model_route_send,
+};
+
+pub use tect_domain::ModelRouteView;
+
+impl WorkspaceService {
+    pub async fn prepare_model_route(
+        &self,
+        context: &RequestContext,
+        request: &PrepareModelRouteRecommendation,
+    ) -> Result<PreparedModelRouteRecommendation> {
+        let (mut writer, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
+        writer
+            .lock_native_session(identity.host_id, &context.native_session_id)
+            .await?;
+        let session = writer
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        let workspace = Self::validate_binding(&mut *writer, context, &identity, &session).await?;
+        let mut effective = request.clone();
+        effective.workspace_id = workspace.id;
+        effective.origin_session_id = Some(session.id);
+        effective.session_preference = writer
+            .session_advisory_preference(workspace.id, session.id)
+            .await?
+            .preference;
+        let (host_capabilities, catalogue_provider) = self.model_route_advisory_inputs();
+        let prepared = effective
+            .prepare(
+                writer
+                    .model_route_preparation_store()
+                    .ok_or(Error::Forbidden)?,
+                host_capabilities,
+                catalogue_provider,
+            )
+            .await?;
+        crate::model_route_authority::validate_current_route_authority(
+            self,
+            &mut *writer,
+            workspace.id,
+            identity.principal_id,
+            &prepared,
+        )
+        .await?;
+        writer.commit().await?;
+        Ok(prepared)
+    }
+
+    pub async fn get_model_route(
+        &self,
+        context: &RequestContext,
+        preparation_request_key: &str,
+    ) -> Result<ModelRouteView> {
+        if preparation_request_key.is_empty() || preparation_request_key.len() > 256 {
+            return Err(Error::InvalidArguments);
+        }
+        let (mut tx, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
+        tx.lock_native_session(identity.host_id, &context.native_session_id)
+            .await?;
+        let session = tx
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
+        let prepared = tx
+            .model_route_recommendation_store()
+            .ok_or(Error::Forbidden)?
+            .by_request(workspace.id, preparation_request_key)
+            .await?
+            .ok_or(Error::NotFound)?;
+        // An authorized GET is an immutable historical audit read. Current
+        // authority is checked before any run, decision or disposition.
+        let attempt = tx
+            .model_route_attempt_store()
+            .ok_or(Error::Forbidden)?
+            .by_preparation(
+                workspace.id,
+                preparation_request_key,
+                ModelRouteInvocation {
+                    session_id: session.id,
+                },
+            )
+            .await?;
+        let decision = tx
+            .model_route_decision_store()
+            .ok_or(Error::Forbidden)?
+            .decision_by_preparation(workspace.id, preparation_request_key)
+            .await?;
+        let disposition = match &decision {
+            Some(value) => {
+                tx.model_route_decision_store()
+                    .ok_or(Error::Forbidden)?
+                    .disposition_by_decision(workspace.id, value.id)
+                    .await?
+            }
+            None => None,
+        };
+        tx.commit().await?;
+        Ok(ModelRouteView {
+            preparation: prepared,
+            attempt,
+            decision,
+            disposition,
+        })
+    }
+
+    pub async fn run_model_route(
+        &self,
+        context: &RequestContext,
+        preparation_request_key: &str,
+    ) -> Result<ModelRouteView> {
+        if preparation_request_key.is_empty() || preparation_request_key.len() > 256 {
+            return Err(Error::InvalidArguments);
+        }
+        let (mut start, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
+        start
+            .lock_native_session(identity.host_id, &context.native_session_id)
+            .await?;
+        let session = start
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        let workspace = Self::validate_binding(&mut *start, context, &identity, &session).await?;
+        let prepared = start
+            .model_route_recommendation_store()
+            .ok_or(Error::Forbidden)?
+            .by_request(workspace.id, preparation_request_key)
+            .await?
+            .ok_or(Error::NotFound)?;
+        if prepared.origin_session_id != Some(session.id) {
+            return Err(Error::Forbidden);
+        }
+        prepared.work.require_current_authority()?;
+        start
+            .model_route_recommendation_store()
+            .ok_or(Error::Forbidden)?
+            .validate_current(&prepared)
+            .await?;
+        let invocation = ModelRouteInvocation {
+            session_id: session.id,
+        };
+        let existing = start
+            .model_route_attempt_store()
+            .ok_or(Error::Forbidden)?
+            .by_preparation(workspace.id, preparation_request_key, invocation)
+            .await?;
+        let started = if existing.is_some() {
+            ModelRouteSendStart::Replay
+        } else if prepared.preparation == ModelRoutePreparation::Prepared
+            && start
+                .session_advisory_preference(workspace.id, session.id)
+                .await?
+                .preference
+                == AdvisoryRequestPreference::Skip
+        {
+            let reason = ModelRouteRunNoCall::Preparation(ModelRoutePreparation::SessionSkip);
+            start
+                .model_route_attempt_store()
+                .ok_or(Error::Forbidden)?
+                .record_no_call(&prepared, invocation, reason)
+                .await?;
+            ModelRouteSendStart::NoCall(reason)
+        } else {
+            // Fresh external evidence and live registries precede budget/send authorization.
+            crate::model_route_authority::validate_current_route_authority(
+                self,
+                &mut *start,
+                workspace.id,
+                identity.principal_id,
+                &prepared,
+            )
+            .await?;
+            prepare_model_route_send(
+                start.model_route_attempt_store().ok_or(Error::Forbidden)?,
+                &*self.model_route_ranking_provider,
+                &prepared,
+                invocation,
+            )
+            .await?
+        };
+        match started {
+            ModelRouteSendStart::NoCall(_) => {
+                start.commit().await?;
+                self.finish_model_route_decision(
+                    context,
+                    preparation_request_key,
+                    ModelRouteDecisionInput::NoCall,
+                )
+                .await?;
+            }
+            ModelRouteSendStart::Replay => {
+                start.commit().await?;
+                let view = self
+                    .get_model_route(context, preparation_request_key)
+                    .await?;
+                if view.decision.is_none() {
+                    match view.attempt.as_ref().map(|a| a.state) {
+                        Some(crate::ModelRouteAttemptState::NoCall) => {
+                            self.finish_model_route_decision(
+                                context,
+                                preparation_request_key,
+                                ModelRouteDecisionInput::NoCall,
+                            )
+                            .await?
+                        }
+                        Some(crate::ModelRouteAttemptState::Parsed) => {
+                            self.finish_from_sealed(context, preparation_request_key)
+                                .await?
+                        }
+                        Some(crate::ModelRouteAttemptState::RawSealed) => {
+                            self.continue_model_route_sealed(context, preparation_request_key)
+                                .await?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            ModelRouteSendStart::Started { attempted, permit } => {
+                let observation = match attempt_model_route_observed_after_commit(
+                    start.commit(),
+                    &*self.model_route_ranking_provider,
+                    *attempted.clone(),
+                    permit.clone(),
+                )
+                .await?
+                {
+                    Ok(observation) => observation,
+                    Err(_) => {
+                        self.record_committed_model_route_failure(identity.tenant_id, &permit)
+                            .await?;
+                        return self.get_model_route(context, preparation_request_key).await;
+                    }
+                };
+                // The provider may return after the invoking session is
+                // revoked. Preserve its raw response under the committed,
+                // exact one-use permit before attempting any new user auth.
+                self.seal_committed_model_route_observation(
+                    identity.tenant_id,
+                    &permit,
+                    &observation,
+                )
+                .await?;
+                self.continue_model_route_sealed(context, preparation_request_key)
+                    .await?;
+            }
+        }
+        self.get_model_route(context, preparation_request_key).await
+    }
+
+    async fn continue_model_route_sealed(&self, context: &RequestContext, key: &str) -> Result<()> {
+        let (mut tx, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
+        tx.lock_native_session(identity.host_id, &context.native_session_id)
+            .await?;
+        let session = tx
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
+        let prepared = tx
+            .model_route_recommendation_store()
+            .ok_or(Error::Forbidden)?
+            .by_request(workspace.id, key)
+            .await?
+            .ok_or(Error::NotFound)?;
+        let store = tx.model_route_attempt_store().ok_or(Error::Forbidden)?;
+        let (attempted, permit) = store
+            .recover_raw_sealed(
+                workspace.id,
+                key,
+                ModelRouteInvocation {
+                    session_id: session.id,
+                },
+            )
+            .await?
+            .ok_or(Error::StaleContext)?;
+        if attempted.adapter_identity.is_some()
+            && self
+                .model_route_ranking_provider
+                .required_profile()
+                .is_none()
+        {
+            return Err(Error::TransportUnavailable);
+        }
+        if let Some(profile) = self.model_route_ranking_provider.required_profile()
+            && !store.provider_profile_matches(&prepared, profile).await?
+        {
+            return Err(Error::TransportUnavailable);
+        }
+        let mut observation = store
+            .sealed_observation(&permit)
+            .await?
+            .ok_or(Error::StaleContext)?;
+        let invalid_usage = crate::model_route_provider::observe_model_route_sealed_usage(
+            &*self.model_route_ranking_provider,
+            &attempted,
+            &mut observation,
+        );
+        let exhausted = store.consume_budget(&permit, &observation).await?;
+        if exhausted {
+            tx.commit().await?;
+            if observation
+                .http_status
+                .is_some_and(|s| !(200..300).contains(&s))
+            {
+                return Err(Error::InvalidArguments);
+            }
+            return Ok(());
+        }
+        if invalid_usage {
+            tx.commit().await?;
+            return Err(Error::InvalidArguments);
+        }
+        let now = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|_| Error::BudgetPolicyInvalid)?
+                .as_millis(),
+        )
+        .map_err(|_| Error::BudgetPolicyInvalid)?;
+        let policy = store.authorized_budget_policy(workspace.id, now).await;
+        let valid = policy
+            .as_ref()
+            .ok()
+            .and_then(|p| p.as_ref())
+            .is_some_and(|p| {
+                p.is_effective_at(now)
+                    && p.id() == permit.policy_id
+                    && p.version() == permit.policy_version
+                    && p.digest() == permit.policy_digest
+            });
+        if !valid {
+            tx.commit().await?;
+            return Err(Error::BudgetPolicyInvalid);
+        }
+        let outcome = finalize_model_route_provider_response(
+            store,
+            &*self.model_route_ranking_provider,
+            &prepared,
+            &attempted,
+            &permit,
+        )
+        .await;
+        tx.commit().await?;
+        outcome?;
+        self.finish_from_sealed(context, key).await
+    }
+
+    async fn finish_from_sealed(&self, context: &RequestContext, key: &str) -> Result<()> {
+        let (mut tx, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
+        tx.lock_native_session(identity.host_id, &context.native_session_id)
+            .await?;
+        let session = tx
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
+        let saved = tx
+            .model_route_decision_store()
+            .ok_or(Error::Forbidden)?
+            .sealed_provider_ranking(workspace.id, key)
+            .await?
+            .ok_or(Error::StaleContext)?;
+        let prepared = tx
+            .model_route_recommendation_store()
+            .ok_or(Error::Forbidden)?
+            .by_request(workspace.id, key)
+            .await?
+            .ok_or(Error::NotFound)?;
+        let input = match saved.validate_material(&prepared)? {
+            Some(ranking) => ModelRouteDecisionInput::Ranking(ranking),
+            None => ModelRouteDecisionInput::Abstain,
+        };
+        tx.commit().await?;
+        self.finish_model_route_decision(context, key, input).await
+    }
+
+    async fn finish_model_route_decision(
+        &self,
+        context: &RequestContext,
+        key: &str,
+        input: ModelRouteDecisionInput,
+    ) -> Result<()> {
+        let (mut writer, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
+        writer
+            .lock_native_session(identity.host_id, &context.native_session_id)
+            .await?;
+        let session = writer
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        let workspace = Self::validate_binding(&mut *writer, context, &identity, &session).await?;
+        if writer
+            .model_route_decision_store()
+            .ok_or(Error::Forbidden)?
+            .decision_by_preparation(workspace.id, key)
+            .await?
+            .is_some()
+        {
+            writer.commit().await?;
+            return Ok(());
+        }
+        let prepared = writer
+            .model_route_recommendation_store()
+            .ok_or(Error::Forbidden)?
+            .by_request(workspace.id, key)
+            .await?
+            .ok_or(Error::NotFound)?;
+        crate::model_route_authority::validate_current_route_authority(
+            self,
+            &mut *writer,
+            workspace.id,
+            identity.principal_id,
+            &prepared,
+        )
+        .await?;
+        DecideModelRouteRecommendation {
+            id: Uuid::new_v4(),
+            workspace_id: workspace.id,
+            preparation_request_key: key.into(),
+            input,
+        }
+        .decide(
+            writer
+                .model_route_decision_capture_store()
+                .ok_or(Error::Forbidden)?,
+        )
+        .await?;
+        writer.commit().await
+    }
+
+    pub async fn disposition_model_route(
+        &self,
+        context: &RequestContext,
+        decision_id: Uuid,
+        disposition_id: Uuid,
+        action: ModelRouteDispositionAction,
+        rationale: String,
+    ) -> Result<CapturedModelRouteDisposition> {
+        let (mut tx, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
+        tx.lock_native_session(identity.host_id, &context.native_session_id)
+            .await?;
+        let session = tx
+            .session(identity.host_id, &context.native_session_id)
+            .await?
+            .ok_or(Error::WorkspaceNotOpen)?;
+        let workspace = Self::validate_binding(&mut *tx, context, &identity, &session).await?;
+        let decision = tx
+            .model_route_decision_store()
+            .ok_or(Error::Forbidden)?
+            .decision_by_id(workspace.id, decision_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        crate::model_route_authority::validate_current_route_authority(
+            self,
+            &mut *tx,
+            workspace.id,
+            identity.principal_id,
+            &decision.prepared,
+        )
+        .await?;
+        let saved = DispositionModelRouteRecommendation {
+            id: disposition_id,
+            decision_id,
+            workspace_id: workspace.id,
+            actor_id: identity.principal_id,
+            action,
+            rationale,
+        }
+        .record(tx.model_route_decision_store().ok_or(Error::Forbidden)?)
+        .await?;
+        tx.commit().await?;
+        Ok(saved)
+    }
+}

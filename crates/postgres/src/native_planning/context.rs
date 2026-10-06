@@ -1,174 +1,6 @@
 use super::*;
 
-pub(crate) async fn summaries(
-    tx: &mut Transaction<'_, Postgres>,
-    tenant: Uuid,
-    workspace: Uuid,
-    after: Option<WorkspaceCollectionCursor>,
-    limit: u32,
-) -> Result<NativePlanningList> {
-    if !(1..=25).contains(&limit) {
-        return Err(Error::InvalidArguments);
-    }
-    if let Some(cursor) = after {
-        cursor.validate(workspace, WorkspaceCollection::NativePlanning)?;
-        let anchor: Option<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM native_scopes WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
-        )
-        .bind(tenant)
-        .bind(workspace)
-        .bind(cursor.anchor_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(storage_error)?;
-        if anchor.is_none() {
-            return Err(Error::InvalidArguments);
-        }
-    }
-    let mut scope_ids: Vec<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM native_scopes WHERE tenant_id=$1 AND workspace_id=$2 \
-         AND ($3::uuid IS NULL OR created_at < (SELECT created_at FROM native_scopes WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3) \
-         OR (created_at = (SELECT created_at FROM native_scopes WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3) AND id > $3)) \
-         ORDER BY created_at DESC,id LIMIT $4",
-    )
-    .bind(tenant)
-    .bind(workspace)
-    .bind(after.map(|cursor| cursor.anchor_id))
-    .bind(i64::from(limit) + 1)
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(storage_error)?;
-    let more = scope_ids.len() > limit as usize;
-    scope_ids.truncate(limit as usize);
-    let next_after = more.then(|| WorkspaceCollectionCursor {
-        workspace_id: workspace,
-        collection: WorkspaceCollection::NativePlanning,
-        anchor_id: *scope_ids.last().expect("nonempty bounded page"),
-    });
-    let mut summaries = Vec::with_capacity(scope_ids.len());
-    for scope_id in scope_ids {
-        let context = load_context(tx, tenant, workspace, scope_id)
-            .await?
-            .ok_or(Error::InternalInvariant)?;
-        let completed = context
-            .slices
-            .iter()
-            .filter(|slice| slice.state == SliceState::Completed)
-            .map(|slice| slice.candidate_id)
-            .collect::<BTreeSet<_>>();
-        let opened = context
-            .slices
-            .iter()
-            .map(|slice| slice.candidate_id)
-            .collect::<BTreeSet<_>>();
-        let fresh = context.snapshot.planning_latest_input == context.candidate_set.latest_input;
-        let eligible_work =
-            if fresh && context.candidate_set.status == SliceCandidateSetStatus::Ready {
-                context
-                    .draft
-                    .as_ref()
-                    .map(|draft| {
-                        draft
-                            .nodes
-                            .iter()
-                            .filter_map(|node| match node {
-                                SliceCandidateNode::Work {
-                                    id,
-                                    revision,
-                                    dependencies,
-                                    ..
-                                } if !opened.contains(id)
-                                    && dependencies.iter().all(|dep| completed.contains(dep)) =>
-                                {
-                                    Some(NativeWorkCandidateSummary {
-                                        candidate_id: *id,
-                                        candidate_revision: *revision,
-                                    })
-                                }
-                                _ => None,
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            } else {
-                Vec::new()
-            };
-        let slices_needing_result = context
-            .slices
-            .iter()
-            .filter(|slice| {
-                slice.state == SliceState::Open
-                    && slice.pipeline != PipelineKind::PromoteToDurableKnowledge
-                    && slice.pipeline_run_id.is_none()
-                    && slice.knowledge_run_id.is_none()
-            })
-            .map(|slice| NativeSliceSummary {
-                slice_id: slice.id,
-                slice_revision: slice.revision,
-                state: slice.state,
-            })
-            .collect();
-        let pipeline_runs = context
-            .slices
-            .iter()
-            .filter_map(|slice| {
-                slice
-                    .pipeline_run_id
-                    .map(|run_id| NativePipelineRunSummary {
-                        run_id,
-                        slice_id: slice.id,
-                        status: slice.pipeline_status.clone(),
-                    })
-            })
-            .collect();
-        let change_rows: Vec<(Uuid, Uuid, Uuid, String, Option<String>)> = sqlx::query_as(
-            "SELECT s.knowledge_change_id,s.knowledge_run_id,s.id,r.status,r.current_phase_id \
-             FROM native_slices s JOIN knowledge_change_runs r \
-             ON r.tenant_id=s.tenant_id AND r.workspace_id=s.workspace_id \
-             AND r.change_id=s.knowledge_change_id AND r.id=s.knowledge_run_id \
-             WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.scope_id=$3 \
-             ORDER BY s.created_at,s.id",
-        )
-        .bind(tenant)
-        .bind(workspace)
-        .bind(scope_id)
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(storage_error)?;
-        let knowledge_changes = change_rows
-            .into_iter()
-            .map(|row| {
-                Ok(NativeKnowledgeChangeSummary {
-                    change_id: row.0,
-                    run_id: row.1,
-                    slice_id: row.2,
-                    status: decode(serde_json::Value::String(row.3))?,
-                    current_phase_id: row
-                        .4
-                        .map(|value| decode(serde_json::Value::String(value)))
-                        .transpose()?,
-                })
-            })
-            .collect::<Result<Vec<_>>>()?;
-        summaries.push(NativePlanningSummary {
-            scope_id,
-            scope_revision: context.scope.revision,
-            candidate_set_id: context.candidate_set.id,
-            candidate_set_revision: context.candidate_set.revision,
-            candidate_set_status: context.candidate_set.status,
-            snapshot_id: context.snapshot.id,
-            stale: !fresh,
-            eligible_work,
-            slices_needing_result,
-            pipeline_runs,
-            knowledge_changes,
-        });
-    }
-    Ok(NativePlanningList {
-        native_planning: summaries,
-        next_after,
-    })
-}
+include!("context/summaries.rs");
 
 #[allow(clippy::type_complexity)]
 pub(crate) async fn load_scope(
@@ -323,40 +155,76 @@ async fn load_slices(
 ) -> Result<Vec<NativeSlice>> {
     let rows:Vec<(Uuid,i64,Uuid,i64,Uuid,String,String,String,String,Option<Uuid>,Option<String>,Option<Uuid>,Option<Uuid>,Option<String>,Option<Uuid>,Option<String>)>=sqlx::query_as("SELECT s.id,s.revision,s.candidate_id,s.candidate_revision,s.opening_snapshot_id,s.title,s.outcome,s.pipeline,s.state,r.id,r.status,s.knowledge_change_id,s.knowledge_run_id,kr.status,s.source_checkpoint_id,s.source_checkpoint_digest FROM native_slices s LEFT JOIN LATERAL (SELECT id,status FROM slice_pipeline_runs WHERE tenant_id=s.tenant_id AND workspace_id=s.workspace_id AND scope_id=s.scope_id AND slice_id=s.id AND status<>'superseded' ORDER BY created_at DESC,id DESC LIMIT 1) r ON true LEFT JOIN knowledge_change_runs kr ON kr.tenant_id=s.tenant_id AND kr.workspace_id=s.workspace_id AND kr.id=s.knowledge_run_id AND kr.change_id=s.knowledge_change_id WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.scope_id=$3 ORDER BY s.created_at,s.id")
         .bind(tenant).bind(workspace).bind(scope).fetch_all(&mut **tx).await.map_err(storage_error)?;
-    rows.into_iter()
-        .map(|r| {
-            Ok(NativeSlice {
-                id: r.0,
-                scope_id: scope,
-                revision: r.1,
-                candidate_id: r.2,
-                candidate_revision: r.3,
-                opening_snapshot_id: r.4,
-                title: r.5,
-                outcome: r.6,
-                pipeline: pipeline(&r.7)?,
-                state: slice_state(&r.8)?,
-                pipeline_status: r.10.unwrap_or_else(|| "not_started".into()),
-                pipeline_run_id: r.9,
-                knowledge_change_id: r.11,
-                knowledge_run_id: r.12,
-                knowledge_status: r
-                    .13
-                    .map(|value| decode(serde_json::Value::String(value)))
-                    .transpose()?,
-                source_checkpoint: r
-                    .14
-                    .map(|checkpoint_id| {
-                        Ok(PipelineCheckpointRef {
-                            checkpoint_id,
-                            digest: r.15.clone().ok_or(Error::InternalInvariant)?,
-                        })
+    let mut slices = Vec::with_capacity(rows.len());
+    for r in rows {
+        let plan = load_slice_plan_identity(tx, tenant, workspace, r.0).await?;
+        slices.push(NativeSlice {
+            id: r.0,
+            scope_id: scope,
+            revision: r.1,
+            candidate_id: r.2,
+            candidate_revision: r.3,
+            opening_snapshot_id: r.4,
+            title: r.5,
+            outcome: r.6,
+            pipeline: pipeline(&r.7)?,
+            selected_option_id: plan.0,
+            verification_plan_id: plan.1,
+            verification_plan_schema: plan.2,
+            verification_plan_digest: plan.3,
+            verification_plan_source_definition_version: plan.4,
+            verification_plan_source_definition_digest: plan.5,
+            state: slice_state(&r.8)?,
+            pipeline_status: r.10.unwrap_or_else(|| "not_started".into()),
+            pipeline_run_id: r.9,
+            knowledge_change_id: r.11,
+            knowledge_run_id: r.12,
+            knowledge_status: r
+                .13
+                .map(|value| decode(serde_json::Value::String(value)))
+                .transpose()?,
+            source_checkpoint: r
+                .14
+                .map(|checkpoint_id| {
+                    Ok(PipelineCheckpointRef {
+                        checkpoint_id,
+                        digest: r.15.clone().ok_or(Error::InternalInvariant)?,
                     })
-                    .transpose()?,
-                execution_claimed: false,
-            })
-        })
-        .collect()
+                })
+                .transpose()?,
+            execution_claimed: false,
+        });
+    }
+    Ok(slices)
+}
+
+type NativeSlicePlanIdentity = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+async fn load_slice_plan_identity(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant: Uuid,
+    workspace: Uuid,
+    slice_id: Uuid,
+) -> Result<NativeSlicePlanIdentity> {
+    sqlx::query_as(
+        "SELECT selected_option_id,verification_plan_id,verification_plan_schema, \
+                verification_plan_digest,verification_plan_source_definition_version, \
+                verification_plan_source_definition_digest \
+         FROM native_slices WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
+    )
+    .bind(tenant)
+    .bind(workspace)
+    .bind(slice_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(storage_error)
 }
 
 #[allow(clippy::type_complexity)]
@@ -370,7 +238,13 @@ pub(crate) async fn load_slice(
         .bind(tenant).bind(workspace).bind(id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     let source:Option<(Uuid,String)>=sqlx::query_as("SELECT source_checkpoint_id,source_checkpoint_digest FROM native_slices WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND source_checkpoint_id IS NOT NULL")
         .bind(tenant).bind(workspace).bind(id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
+    let plan = if row.is_some() {
+        Some(load_slice_plan_identity(tx, tenant, workspace, id).await?)
+    } else {
+        None
+    };
     row.map(|r| {
+        let plan = plan.ok_or(Error::InternalInvariant)?;
         Ok(NativeSlice {
             id: r.0,
             scope_id: r.1,
@@ -381,6 +255,12 @@ pub(crate) async fn load_slice(
             title: r.6,
             outcome: r.7,
             pipeline: pipeline(&r.8)?,
+            selected_option_id: plan.0,
+            verification_plan_id: plan.1,
+            verification_plan_schema: plan.2,
+            verification_plan_digest: plan.3,
+            verification_plan_source_definition_version: plan.4,
+            verification_plan_source_definition_digest: plan.5,
             state: slice_state(&r.9)?,
             pipeline_status: r.11.unwrap_or_else(|| "not_started".into()),
             pipeline_run_id: r.10,

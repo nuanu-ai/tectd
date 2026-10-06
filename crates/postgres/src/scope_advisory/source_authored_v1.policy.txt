@@ -1,0 +1,7 @@
+source-authored-v1 constructor policy, version 1
+Input is an authenticated tenant/workspace and exact frozen current candidate snapshot with a validated F1 authored set.
+Every alternative is resolved without persistence against the same candidate snapshot and the latest saved draft.
+New request-local entity labels receive deterministic UUIDv8 IDs from a SHA-256 domain-separated seed binding tenant, workspace, candidate set, snapshot, source digest, constructor digest, and alternative key; saved entity IDs retain their authoritative identity.
+Each alternative declares the exact set of persisted nonblank source-reference UUIDs as structural coverage. Each UUID maps to one atomic source obligation; conditions and exceptions are empty because no such clauses are separately stored.
+The constructor emits no generated candidate content, preserves each resolved alternative, and chooses the explicitly keyed baseline. Structural coverage is not semantic proof.
+Reobserved source identity, candidate revision, snapshot, cursors, Program positions, and persisted source fragments must match; stale, erased, inaccessible, or invalid material fails closed.

@@ -140,6 +140,7 @@ fn reject_optional_nulls(value: &Value) -> Result<()> {
         "why_further_vertical_split_not_viable",
         "consumed_knowledge",
         "task_context",
+        "disposition_id",
     ];
     match value {
         Value::Object(object) => {
@@ -195,6 +196,22 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn optional_slice_disposition_is_omittable_but_not_nullable() {
+        let id = "00000000-0000-4000-8000-000000000001";
+        let mut value = json!({"request_id":id,"scope_id":id,"scope_revision":1,
+            "candidate_set_id":id,"candidate_set_revision":1,"candidate_snapshot_id":id,
+            "candidate_id":id,"candidate_revision":1});
+        assert!(parse("slice_open", value.clone()).is_ok());
+        value["disposition_id"] = json!(id);
+        assert!(parse("slice_open", value.clone()).is_ok());
+        value["disposition_id"] = Value::Null;
+        assert!(matches!(
+            parse("slice_open", value),
+            Err(Error::InvalidArguments)
+        ));
     }
 
     #[test]

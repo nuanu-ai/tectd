@@ -281,7 +281,12 @@ async fn lightweight_pipeline_progresses_replays_recovers_and_records_managed_re
     client.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();
-    let _restarted_daemon = Daemon::start(&runtime, socket.clone()).await;
+    let old = std::fs::read(socket.with_extension("stderr")).unwrap();
+    let f = Daemon::start_configured_with_stderr_result;
+    let b = std::path::Path::new(env!("CARGO_BIN_EXE_tectd"));
+    let stderr = socket.with_extension("recovery.stderr");
+    let _restarted_daemon = f(b, &runtime, socket.clone(), None, stderr).await.unwrap();
+    assert_eq!(std::fs::read(socket.with_extension("stderr")).unwrap(), old);
     let mut client = Mcp::start(&socket, &config, &native, &key).await;
     client.call("open_workspace", json!({})).await;
     let cold = route(

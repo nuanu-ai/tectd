@@ -152,11 +152,16 @@ pub enum SliceCandidateRef {
     Existing { candidate_id: Uuid, revision: i64 },
 }
 
+mod model_route_caller_facts;
+pub use model_route_caller_facts::ModelRouteCallerFacts;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum SliceCandidateDraftNode {
     Work {
         identity: SliceDraftIdentity,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_route_facts: Option<Box<ModelRouteCallerFacts>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         change_rationale: Option<String>,
         title: String,
@@ -220,6 +225,8 @@ pub enum SliceCandidateNode {
     Work {
         id: Uuid,
         revision: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model_route_facts: Option<Box<ModelRouteCallerFacts>>,
         title: String,
         outcome: String,
         includes: Vec<String>,
@@ -371,6 +378,10 @@ pub struct SaveSliceCandidateDraft {
     pub draft: SliceCandidateDraft,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_knowledge: Option<crate::PlanningManifestGuard>,
+    /// Explicit provenance for a caller-authored save after a Matrix selection.
+    /// A Matrix disposition alone never creates this draft or its receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matrix_selection: Option<crate::MatrixPlanningSelection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -427,6 +438,18 @@ pub struct NativeSlice {
     pub title: String,
     pub outcome: String,
     pub pipeline: PipelineKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_option_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_plan_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_plan_schema: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_plan_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_plan_source_definition_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verification_plan_source_definition_digest: Option<String>,
     pub state: SliceState,
     pub pipeline_status: String,
     #[serde(default)]
@@ -441,6 +464,8 @@ pub struct NativeSlice {
     pub source_checkpoint: Option<crate::PipelineCheckpointRef>,
     pub execution_claimed: bool,
 }
+
+mod verification_plan_binding;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -460,6 +485,8 @@ pub struct OpenSlice {
     pub candidate_snapshot_id: Uuid,
     pub candidate_id: Uuid,
     pub candidate_revision: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition_id: Option<Uuid>,
 }
 
 mod result;

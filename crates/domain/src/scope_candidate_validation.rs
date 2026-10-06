@@ -1,10 +1,23 @@
 use crate::{
-    CandidateBoundary, CoverageResolutionKind, EmptyCandidateDispositionKind, Error, EvidenceKind,
-    ProtectedChangeDisposition, Result, ScopeCandidateDraft,
+    CandidateBoundary, CandidateGrounding, CoverageResolutionKind, EmptyCandidateDispositionKind,
+    Error, EvidenceKind, ProtectedChangeDisposition, ResolvedCandidateDraft, Result,
+    ScopeCandidateDraft,
 };
 use std::collections::BTreeSet;
 
 impl ScopeCandidateDraft {
+    /// P1 representation is not authority to persist exploratory candidates.
+    pub fn require_source_grounded(&self) -> Result<()> {
+        if self
+            .candidates
+            .iter()
+            .any(|value| !value.grounding.is_source_grounded())
+        {
+            return Err(Error::InvalidArguments);
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.goals.len() > 100
             || self.candidates.len() > 100
@@ -118,7 +131,7 @@ impl ScopeCandidateDraft {
             ] {
                 required(text, field)?;
             }
-            require_candidate_coverage(!candidate.coverage_goals.is_empty())?;
+            require_candidate_grounding(candidate.grounding, !candidate.coverage_goals.is_empty())?;
             if candidate
                 .change_rationale
                 .as_ref()
@@ -194,6 +207,15 @@ impl ScopeCandidateDraft {
             _ => {}
         }
         Ok(())
+    }
+}
+
+mod resolved;
+
+fn require_candidate_grounding(grounding: CandidateGrounding, has_coverage: bool) -> Result<()> {
+    match grounding {
+        CandidateGrounding::SourceGrounded => require_candidate_coverage(has_coverage),
+        CandidateGrounding::ExploratoryUnrequested { .. } => Ok(()),
     }
 }
 

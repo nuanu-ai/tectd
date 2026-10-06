@@ -1,0 +1,18 @@
+[
+  {
+    "emittedAtMs": 1791269481528,
+    "method": "deprecationNotice",
+    "params": {
+      "details": "Enable it with `--enable hooks` or `[features].hooks` in config.toml. See https://developers.openai.com/codex/config-basic#feature-flags for details.",
+      "summary": "`[features].codex_hooks` is deprecated. Use `[features].hooks` instead."
+    }
+  },
+  {
+    "emittedAtMs": 1791269481528,
+    "method": "warning",
+    "params": {
+      "message": "Under-development features enabled: skip_host_skill_discovery. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /private/tmp/jev-s05-readiness04-20261006-pl3oyu8v/config.toml.",
+      "threadId": "01a10ffb-2c24-7af1-b34b-2ebf9c009867"
+    }
+  }
+]

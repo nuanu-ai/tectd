@@ -1,9 +1,19 @@
 //! Native host configuration and bounded local transports.
 
+mod anti_bloat_tools;
+mod jev_anti_bloat_choice;
+mod jev_anti_bloat_provider;
+pub use jev_anti_bloat_provider::{JevAntiBloatConfig, JevAntiBloatProvider};
+
+mod advisory_dispatch;
+mod advisory_tools;
 mod api;
 mod context;
 mod frame;
 mod git;
+mod jev_json;
+pub mod jev_pipeline_recommendation;
+mod jev_scope_advice;
 mod json_fragment;
 mod knowledge_dispatch;
 mod knowledge_embedding;
@@ -20,13 +30,24 @@ mod knowledge_search_dispatch;
 mod knowledge_search_output;
 mod knowledge_search_tools;
 mod knowledge_tools;
+mod matrix_advisory_tools;
+mod matrix_disposition_tools;
+mod matrix_requirements_context_tools;
+mod matrix_task_dispatch;
+mod matrix_task_tools;
+mod matrix_verification_tools;
 mod mcp;
+mod model_route_tools;
 pub mod native_identity;
 mod pipeline_definitions;
 mod pipeline_dispatch;
+mod pipeline_open_effect_tools;
 mod pipeline_output;
+mod pipeline_phase_effect_tools;
+mod pipeline_recommendation_tools;
 mod pipeline_tools;
 mod planning_read;
+mod private_matrix_evidence;
 mod program_output;
 mod program_tools;
 mod response_diet;
@@ -51,13 +72,27 @@ mod workspace_state;
 
 pub use context::{HostContext, host_context_from_env, read_host_auth_file};
 pub use git::GitSourceInspector;
+pub use jev_scope_advice::{JevScopeAdviceConfig, JevScopeAdviceProvider};
 pub use knowledge_embedding::{LocalEmbeddingConfig, LocalKnowledgeEmbeddingWorker};
 pub use mcp::run_stdio;
+pub use pipeline_definitions::StaticPipelineRecommendationDefinitions;
+pub use private_matrix_evidence::PrivateMatrixEvidenceValidator;
 #[doc(hidden)]
 pub use scope_guidance::CandidateEncoding;
+pub use scope_guidance::StaticCandidateGuidance;
 pub use setup_files::LocalSetupFiles;
 #[doc(hidden)]
 pub use slice_dispatch::NativePlanningEncoding;
 pub use transport::{call, call_tool, serve};
 
 pub type Result<T> = tect_domain::Result<T>;
+
+mod jev_model_route_provider;
+mod model_route_catalogue;
+mod model_route_host_capabilities;
+mod system_one_transport;
+pub use jev_model_route_provider::{JevModelRouteConfig, JevModelRouteProvider};
+pub use model_route_catalogue::StaticModelRouteCatalogue;
+pub use model_route_host_capabilities::StaticModelRouteHostCapabilities;
+
+pub mod jev_matrix_advice;

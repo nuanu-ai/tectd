@@ -60,7 +60,8 @@ async fn migrated_slice_binding_uses_current_head_and_rejects_stale_preparation(
     let repo = root.join("source");
     repository(&repo);
     let socket = root.join("current-binding.sock");
-    let _daemon = Daemon::start(&tagged_url(&runtime_url, "current-binding"), socket.clone()).await;
+    let mut daemon =
+        Daemon::start(&tagged_url(&runtime_url, "current-binding"), socket.clone()).await;
     let enrollment = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
         .await
         .unwrap();
@@ -195,4 +196,5 @@ async fn migrated_slice_binding_uses_current_head_and_rejects_stale_preparation(
             .any(|unit| unit["unit_id"] == historical_unit),
         "exact historical run consumes its committed binding"
     );
+    recovery_support::finish_and_stop(client, &mut daemon).await;
 }

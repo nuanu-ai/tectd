@@ -1,10 +1,25 @@
 use super::*;
 
+mod anti_bloat;
+mod matrix_advice;
+mod matrix_core;
+mod matrix_disposition;
+mod matrix_planning;
+mod model_route;
+mod session_preference;
+
+#[cfg(test)]
+#[path = "migration/bootstrap_support.rs"]
+mod bootstrap_support;
+#[cfg(test)]
+#[path = "migration/bootstrap_tests.rs"]
+mod bootstrap_tests;
+
 pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
     let quoted_role = quote_identifier(runtime_role)?;
     MIGRATOR.run(pool).await.map_err(storage_error)?;
 
-    validate_runtime_role(pool, runtime_role).await?;
+    validate_runtime_role_pregrant(pool, runtime_role).await?;
 
     let mut transaction = pool.begin().await.map_err(storage_error)?;
     sqlx::query(
@@ -20,6 +35,25 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
         format!(
             "GRANT SELECT, INSERT ON TABLE workspaces, memberships, \
              agent_sessions, workspace_events TO {quoted_role}"
+        ),
+        format!(
+            "REVOKE ALL PRIVILEGES ON TABLE advisory_workspace_config, \
+             advisory_workspace_config_history, advisory_opportunity, advisory_dispatch \
+             FROM {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT, UPDATE(revision,mode,provider_profile_ref,model_configuration,updated_by_principal_id,updated_by_session_id,updated_at) \
+             ON TABLE advisory_workspace_config TO {quoted_role}"
+        ),
+        format!(
+            "GRANT SELECT, INSERT ON TABLE advisory_workspace_config_history, \
+             advisory_opportunity, advisory_dispatch TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(state,primary_reason,updated_at) ON TABLE advisory_opportunity TO {quoted_role}"
+        ),
+        format!(
+            "GRANT UPDATE(response_payload,pipeline_response_sha256,input_tokens,output_tokens,latency_ms,state,send_certainty,outcome,raw_response_ref,send_started_at,sealed_at) ON TABLE advisory_dispatch TO {quoted_role}"
         ),
         format!(
             "GRANT SELECT, INSERT ON TABLE source_repositories, source_worktrees \
@@ -276,11 +310,40 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
             .await
             .map_err(storage_error)?;
     }
+    super::scope_advisory::grant_scope_advisory_runtime(&mut transaction, &quoted_role).await?;
+    super::scope_advisory::validate_advisory_schema(&mut transaction, runtime_role).await?;
+    super::pipeline_advice::grant_pipeline_advice_runtime(&mut transaction, &quoted_role).await?;
+    super::pipeline_advice::validate_pipeline_advice_schema(&mut transaction, runtime_role).await?;
+    super::pipeline_advice::validate_pipeline_disposition_schema(&mut transaction, runtime_role)
+        .await?;
+    super::pipeline_advice::validate_pipeline_open_effect_schema(&mut transaction, runtime_role)
+        .await?;
+    super::pipeline_advice::validate_pipeline_phase_effect_schema(&mut transaction, runtime_role)
+        .await?;
     crate::knowledge_search_admin::grant_search_runtime(&mut transaction, runtime_role).await?;
+    matrix_core::grant_runtime(&mut transaction, &quoted_role, runtime_role).await?;
+    matrix_advice::grant_runtime(&mut transaction, &quoted_role, runtime_role).await?;
+    matrix_disposition::grant_runtime(&mut transaction, &quoted_role, runtime_role).await?;
+    matrix_planning::grant_runtime(&mut transaction, &quoted_role, runtime_role).await?;
+    session_preference::grant_runtime(&mut transaction, &quoted_role, runtime_role).await?;
+    model_route::grant_runtime(&mut transaction, &quoted_role, runtime_role).await?;
+    anti_bloat::grant_runtime(&mut transaction, &quoted_role).await?;
     transaction.commit().await.map_err(storage_error)
 }
 
 pub async fn validate_runtime_role(pool: &PgPool, runtime_role: &str) -> Result<()> {
+    validate_runtime_role_stage(pool, runtime_role, true).await
+}
+
+async fn validate_runtime_role_pregrant(pool: &PgPool, runtime_role: &str) -> Result<()> {
+    validate_runtime_role_stage(pool, runtime_role, false).await
+}
+
+async fn validate_runtime_role_stage(
+    pool: &PgPool,
+    runtime_role: &str,
+    require_grants: bool,
+) -> Result<()> {
     let role: Option<(bool, bool, bool)> = sqlx::query_as(
         r#"
         SELECT r.rolsuper,
@@ -300,6 +363,16 @@ pub async fn validate_runtime_role(pool: &PgPool, runtime_role: &str) -> Result<
                          'tenants', 'principals', 'hosts', 'workspaces', 'memberships',
                          'agent_sessions', 'source_repositories', 'source_worktrees',
                          'session_worktrees', 'workspace_events', 'programs', 'program_inputs',
+                         'advisory_workspace_config', 'advisory_workspace_config_history',
+                         'advisory_opportunity', 'advisory_dispatch',
+                         'pipeline_advice_contexts', 'pipeline_advice_interpretations',
+                         'pipeline_advice_dispositions', 'pipeline_open_effect_attestations',
+                         'pipeline_phase_effect_attestations',
+                         'advisory_scope_source_snapshot', 'advisory_scope_manifest',
+                         'advisory_scope_advice', 'advisory_scope_disposition',
+                         'advisory_scope_preservation_receipt',
+                         'advisory_scope_caller_link', 'advisory_scope_verifier_receipt',
+                         'advisory_scope_selected_save_observation',
                          'setup_session_directories', 'workspace_setups', 'workspace_setup_inputs',
                          'scope_candidate_sets', 'scope_candidate_inputs',
                          'scope_candidate_contents', 'scope_candidate_snapshots',
@@ -351,6 +424,16 @@ pub async fn validate_runtime_role(pool: &PgPool, runtime_role: &str) -> Result<
     let (superuser, bypass_rls, owns_database_object) = role.ok_or(Error::InvalidConfiguration)?;
     if superuser || bypass_rls || owns_database_object {
         return Err(Error::InvalidConfiguration);
+    }
+    session_preference::validate_runtime_role(pool, runtime_role, require_grants).await?;
+    model_route::validate_runtime_role(pool, runtime_role, require_grants).await?;
+    matrix_core::validate_runtime_role(pool, runtime_role).await?;
+    matrix_advice::validate_runtime_role(pool, runtime_role).await?;
+    matrix_disposition::validate_runtime_role(pool, runtime_role).await?;
+    if require_grants {
+        matrix_planning::validate_runtime_role(pool, runtime_role).await?;
+    } else {
+        matrix_planning::validate_runtime_role_pregrant(pool, runtime_role).await?;
     }
     Ok(())
 }

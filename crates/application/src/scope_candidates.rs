@@ -75,6 +75,47 @@ impl WorkspaceService {
         guidance: &dyn CandidateGuidance,
         guard: &dyn CandidateOutputGuard,
     ) -> Result<BeginCandidateSetOutcome> {
+        // The registered advisory decision is committed before candidate work.
+        // A later validation/guard/store failure must not erase its audit fact.
+        let (mut opportunity_tx, workspace, session) = self
+            .candidate_transaction(context, TransactionMode::ReadWrite)
+            .await?;
+        if request.program_id.is_nil() {
+            return Err(Error::InvalidArguments);
+        }
+        let program = opportunity_tx
+            .program(workspace.id, request.program_id, false)
+            .await?
+            .ok_or(Error::NotFound)?;
+        let deterministic_result = request
+            .task_context
+            .validate()
+            .and_then(|_| validate_program_input(request.request_id, &request.input))
+            .and({
+                if request.program_revision < 1 {
+                    Err(Error::InvalidArguments)
+                } else if program.revision != request.program_revision {
+                    Err(Error::StaleRevision)
+                } else {
+                    Ok(())
+                }
+            });
+        let principal = opportunity_tx.session_principal(session.id).await?;
+        let config = opportunity_tx
+            .materialize_advisory_config(workspace.id, principal, session.id)
+            .await?;
+        let opportunity = crate::advisory::scope_decomposition_opportunity(
+            session.id,
+            principal,
+            request,
+            &config,
+            tect_domain::AdvisoryRequestPreference::UseWorkspace,
+            deterministic_result.is_ok(),
+        );
+        crate::advisory::commit_scope_opportunity(opportunity_tx, workspace.id, &opportunity)
+            .await?;
+        deterministic_result?;
+
         let (mut tx, workspace, session) = self
             .candidate_transaction(context, TransactionMode::ReadWrite)
             .await?;

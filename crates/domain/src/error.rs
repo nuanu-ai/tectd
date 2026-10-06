@@ -24,6 +24,8 @@ pub enum Error {
     NotFound,
     StorageUnavailable,
     InvalidConfiguration,
+    BudgetPolicyInvalid,
+    BudgetExhaustedBeforeDispatch,
     TransportUnavailable,
     /// The daemon reached its bounded operation deadline; the result may be uncertain.
     OperationTimeout,
@@ -237,6 +239,8 @@ impl Error {
             Self::NotFound => "not_found",
             Self::StorageUnavailable => "storage_unavailable",
             Self::InvalidConfiguration => "invalid_configuration",
+            Self::BudgetPolicyInvalid => "budget_policy_invalid",
+            Self::BudgetExhaustedBeforeDispatch => "budget_exhausted_before_dispatch",
             Self::TransportUnavailable => "transport_unavailable",
             Self::OperationTimeout => "operation_timeout",
             Self::RequestTooLarge => "request_too_large",

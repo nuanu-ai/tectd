@@ -1,14 +1,13 @@
-use crate::tools::object_schema;
-use serde_json::json;
-use std::sync::OnceLock;
-use tect_domain::{MAX_SOURCE_PATH_BYTES, MAX_WORKTREES};
-
 pub(crate) use super::catalog_support::RouteSpec;
 use super::catalog_support::{nullable_text, page_limit, text, uuid};
 use super::{
     candidate_schema, knowledge_lifecycle_schema, knowledge_maintenance_schema, knowledge_schema,
     knowledge_search_schema, slice_schema,
 };
+use crate::tools::object_schema;
+use serde_json::json;
+use std::sync::OnceLock;
+use tect_domain::{MAX_SOURCE_PATH_BYTES, MAX_WORKTREES};
 
 macro_rules! route {
     ($tool:expr, $name:expr, $internal:expr, $summary:expr, $conditions:expr,
@@ -37,6 +36,7 @@ pub(crate) fn routes() -> &'static [RouteSpec] {
 fn build_routes() -> Vec<RouteSpec> {
     let example_id = "00000000-0000-4000-8000-000000000001";
     let mut routes = base_routes::routes(example_id);
+    routes.extend(super::model_route_schema::routes(example_id));
     routes.extend([
         route!(
             "query",
@@ -211,8 +211,8 @@ fn build_routes() -> Vec<RouteSpec> {
             "slice.open",
             "slice_open",
             "Open one Slice from one ready work candidate.",
-            "Requires exact current Scope, candidate-set, snapshot, work-candidate identity and revisions with satisfied dependencies. Decision nodes cannot open.",
-            "Creates one Slice with one bounded outcome and one selected pipeline label. It injects no design rules and starts no execution.",
+            "Requires exact current Scope, candidate-set, snapshot, work-candidate identity and revisions with satisfied dependencies. Optional disposition_id must identify a current saved planning decision by this Owner and session for this exact Work, Matrix, source, and manifest binding. Rejected advice cannot select a pipeline. Decision nodes cannot open.",
+            "Creates one Slice with one bounded outcome and the accepted or deterministic eligible pipeline kind when a disposition is supplied. Without disposition_id it uses the saved Work pipeline. It injects no design rules and starts no execution.",
             "The same request and payload replays the same Slice.",
             slice_schema::open_slice(),
             slice_schema::open_slice_example(),
@@ -337,10 +337,152 @@ fn build_routes() -> Vec<RouteSpec> {
     routes.extend(knowledge_lifecycle_schema::routes(example_id));
     routes.extend(knowledge_maintenance_schema::routes(example_id));
     routes.push(knowledge_search_schema::route());
+    routes.extend(super::anti_bloat_schema::routes(example_id));
+    routes.extend(super::advisory_schema::routes(example_id));
+    routes.extend([
+        route!(
+            "query",
+            "pipeline.open_effect.get",
+            "get_pipeline_open_effect",
+            "Read the persisted effect of one explicit Slice open for an independent verifier.",
+            "Requires a verifier session, the saved Slice ID and its open request ID.",
+            "Returns saved Slice, caller receipt, Work node, source and Matrix binding with an effect digest; no state change.",
+            "Safe to repeat; use the digest for a separate attestation.",
+            object_schema(
+                json!({"slice_id":uuid(),"open_request_id":uuid()}),
+                json!(["slice_id", "open_request_id"])
+            ),
+            json!({"slice_id":example_id,"open_request_id":"00000000-0000-4000-8000-000000000002"}),
+        ),
+        route!(
+            "command",
+            "pipeline.open_effect.verify",
+            "verify_pipeline_open_effect",
+            "Append an independent match or rejection of one persisted Slice open.",
+            "Requires a verifier session distinct from caller and Matrix owner, exact open request and effect digest.",
+            "Appends an immutable observation; it does not complete a phase or call a provider.",
+            "Retry with the same request_id and identical fields.",
+            object_schema(
+                json!({"request_id":uuid(),"slice_id":uuid(),"open_request_id":uuid(),"expected_effect_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"verdict":{"type":"string","enum":["matches","rejects"]},"summary":{"type":"string","minLength":1,"maxLength":4096}}),
+                json!([
+                    "request_id",
+                    "slice_id",
+                    "open_request_id",
+                    "expected_effect_digest",
+                    "verdict",
+                    "summary"
+                ])
+            ),
+            json!({"request_id":"00000000-0000-4000-8000-000000000003","slice_id":example_id,"open_request_id":"00000000-0000-4000-8000-000000000002","expected_effect_digest":"0".repeat(64),"verdict":"matches","summary":"Persisted open matches the selected pipeline"}),
+        ),
+        route!(
+            "query",
+            "pipeline.phase_effect.get",
+            "get_pipeline_phase_effect",
+            "Read one saved completed phase attempt, output, selected verification plan obligation and backend evidence refs.",
+            "Requires an independent verifier session, exact run ID and attempt ID.",
+            "Returns a bound material digest; no phase, run or terminal state change.",
+            "Safe to repeat; inspect the output before attesting.",
+            object_schema(
+                json!({"run_id":uuid(),"attempt_id":uuid()}),
+                json!(["run_id", "attempt_id"])
+            ),
+            json!({"run_id":example_id,"attempt_id":"00000000-0000-4000-8000-000000000002"}),
+        ),
+        route!(
+            "command",
+            "pipeline.phase_effect.verify",
+            "verify_pipeline_phase_effect",
+            "Append a verifier-authored pass, fail or unknown observation for one saved completed phase attempt.",
+            "Pass/fail require observation content and the exact saved output digest; without independent observation use unknown.",
+            "Appends immutable evidence only; it does not advance a phase or run.",
+            "Retry with the same request_id and identical fields.",
+            object_schema(
+                json!({"request_id":uuid(),"run_id":uuid(),"attempt_id":uuid(),"expected_effect_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"verdict":{"type":"string","enum":["pass","fail","unknown"]},"observation":{"type":["string","null"],"minLength":32,"maxLength":16384},"observed_output_digest":{"type":["string","null"],"pattern":"^[0-9a-f]{64}$"},"summary":{"type":"string","minLength":1,"maxLength":4096}}),
+                json!([
+                    "request_id",
+                    "run_id",
+                    "attempt_id",
+                    "expected_effect_digest",
+                    "verdict",
+                    "summary"
+                ])
+            ),
+            json!({"request_id":"00000000-0000-4000-8000-000000000003","run_id":example_id,"attempt_id":"00000000-0000-4000-8000-000000000002","expected_effect_digest":"0".repeat(64),"verdict":"unknown","summary":"Independent observation unavailable"}),
+        ),
+        route!(
+            "command",
+            "pipeline.recommendation.prepare",
+            "pipeline_recommendation_prepare",
+            "Prepare a durable pipeline and verification recommendation opportunity for one current saved Work node.",
+            "Requires an authenticated Owner with an active native session, exact current candidate-set and Work revisions, a saved Matrix disposition and independent match attestation. The stored session preference and optional request preference narrow workspace permission; skip records a no-call.",
+            "Records the opportunity, source context, and immutable eligible-choice manifest. Returns only the opportunity ID, state, reason, stable eligible IDs, and manifest digest. No provider call, pipeline execution, phase transition, or verification occurs.",
+            "Repeat only the same request key and identical actor, session, revisions, and preferences. Changed material conflicts.",
+            object_schema(
+                json!({
+                    "candidate_set_id":uuid(),
+                    "expected_candidate_set_revision":{"type":"integer","minimum":2},
+                    "work_node_id":uuid(),
+                    "expected_work_node_revision":{"type":"integer","minimum":1},
+                    "request_key":{"type":"string","minLength":1,"maxLength":256,"x-maxUtf8Bytes":256,"description":"One to 256 UTF-8 bytes, no NUL or leading or trailing Unicode whitespace."},
+                    "request_preference":{"type":"string","enum":["use_workspace","skip"],"default":"use_workspace"}
+                }),
+                json!([
+                    "candidate_set_id",
+                    "expected_candidate_set_revision",
+                    "work_node_id",
+                    "expected_work_node_revision",
+                    "request_key"
+                ]),
+            ),
+            json!({"candidate_set_id":example_id,"expected_candidate_set_revision":2,"work_node_id":example_id,"expected_work_node_revision":1,"request_key":"work-1"}),
+        ),
+        route!(
+            "command",
+            "pipeline.recommendation.run",
+            "pipeline_recommendation_run",
+            "Attempt one guarded pipeline recommendation for an exact prepared opportunity.",
+            "Requires the authenticated Owner and original native session, a current prepared opportunity, unchanged advisory configuration and current saved Work, Matrix, and manifest bindings. A no-call opportunity returns its reason without a send.",
+            "Commits one dispatch start before a provider attempt, durably seals returned response bytes and digest, and returns only a validated ranking or abstention. It does not open a Slice, transition a phase, or establish verification.",
+            "Never retry a provider attempt after uncertain send. Inspect workspace.advisory.audit after uncertainty; replay cannot create another dispatch.",
+            object_schema(json!({"opportunity_id":uuid()}), json!(["opportunity_id"])),
+            json!({"opportunity_id":example_id}),
+        ),
+        route!(
+            "command",
+            "pipeline.recommendation.disposition",
+            "pipeline_recommendation_disposition",
+            "Record the Owner's explicit decision on one saved pipeline recommendation.",
+            "Requires the original authenticated Owner session, exact opportunity, current Work revision and immutable manifest digest. Ranked advice can be accepted, rejected, or superseded by the deterministic choice; no-call and abstention allow only the deterministic choice.",
+            "Stores one immutable planning disposition. It does not open a Slice, execute a pipeline, transition a phase, or establish verification.",
+            "An identical request replays its receipt; changed material conflicts. A stale Work, Matrix, source, catalogue, configuration, or manifest binding fails.",
+            object_schema(
+                json!({"request_id":uuid(),"opportunity_id":uuid(),
+                    "expected_work_revision":{"type":"integer","minimum":1},
+                    "manifest_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+                    "action":{"type":"string","enum":["accept_recommendation","reject_recommendation","use_deterministic_choice"]},
+                    "rationale":{"type":"string","minLength":1,"maxLength":4096}}),
+                json!([
+                    "request_id",
+                    "opportunity_id",
+                    "expected_work_revision",
+                    "manifest_digest",
+                    "action",
+                    "rationale"
+                ]),
+            ),
+            json!({"request_id":example_id,"opportunity_id":example_id,"expected_work_revision":1,
+                "manifest_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "action":"use_deterministic_choice","rationale":"Use the saved Work choice"}),
+        ),
+    ]);
     routes.extend([
         route!("command", "slice.pipeline.evidence_artifact.register", "slice_pipeline_evidence_artifact_register", "Register immutable evidence metadata and receive a backend-issued artifact identity.", "Requires an authenticated open native session; the supplied digest, size and provenance describe the exact future bytes.", "Creates an uploading artifact revision; no evidence is ready until finalize succeeds.", "The same request replays the same artifact; changed payload conflicts.", object_schema(json!({"request_id":uuid(),"digest":{"type":"string","pattern":"^[0-9a-fA-F]{64}$"},"size":{"type":"integer","minimum":0},"format":text(),"provenance":text(),"target":text()}), json!(["request_id","digest","size","format","provenance","target"])), json!({"request_id":example_id,"digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","size":12,"format":"text/plain","provenance":"operator-observed","target":"slice"})),
         route!("command", "slice.pipeline.evidence_artifact.finalize", "slice_pipeline_evidence_artifact_finalize", "Finalize one registered evidence artifact by hashing and sizing the submitted bytes.", "Requires an uploading artifact revision.", "Marks the immutable revision ready only when digest and byte size match; mismatches are durably rejected.", "The same request replays the same final state.", object_schema(json!({"request_id":uuid(),"artifact_id":uuid(),"revision":{"type":"integer","minimum":1},"body":{"type":"string"}}), json!(["request_id","artifact_id","revision","body"])), json!({"request_id":example_id,"artifact_id":example_id,"revision":1,"body":"exact evidence bytes"})),
         route!("query", "slice.pipeline.evidence_artifact.read", "slice_pipeline_evidence_artifact_read", "Read one bounded artifact fragment with explicit completeness and continuation cursor.", "Requires an accessible artifact revision and a positive limit no larger than 65536.", "Reads a bounded fragment and always returns complete plus next_offset when more bytes remain.", "Safe to repeat with the same offset and limit.", object_schema(json!({"artifact_id":uuid(),"revision":{"type":"integer","minimum":1},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":65536}}), json!(["artifact_id","revision"])), json!({"artifact_id":example_id,"revision":1,"offset":0,"limit":65536})),
     ]);
+    routes.extend(super::matrix_requirements_schema::routes(example_id));
+    routes.extend(super::matrix_core_schema::routes(example_id));
+    routes.extend(super::matrix_disposition_schema::routes(example_id));
     routes
 }

@@ -14,15 +14,43 @@ impl PgStore {
             pool.close().await;
             return Err(error);
         }
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            budget_owner_keys: Arc::new(BudgetOwnerKeys::default()),
+        })
     }
 
     /// Test convenience for pools whose runtime-role contract is established by the fixture.
     pub fn from_pool(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            pool,
+            budget_owner_keys: Arc::new(BudgetOwnerKeys::default()),
+        }
+    }
+
+    pub fn with_budget_owner_keys(mut self, keys: BudgetOwnerKeys) -> Self {
+        self.budget_owner_keys = Arc::new(keys);
+        self
     }
 
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+}
+
+impl PgUnitOfWork {
+    pub(crate) fn principal_role(&self) -> Result<PrincipalRole> {
+        self.identity
+            .as_ref()
+            .map(|identity| identity.role)
+            .ok_or(Error::Forbidden)
+    }
+
+    pub(crate) fn authorizes_advisory_budget_policy(
+        &self,
+        workspace_id: uuid::Uuid,
+        policy: &tect_domain::AdvisoryBudgetPolicy,
+    ) -> bool {
+        self.budget_owner_keys.authorizes(workspace_id, policy)
     }
 }

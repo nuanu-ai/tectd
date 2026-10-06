@@ -151,7 +151,7 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
         &runtime_url,
         &format!("tect-pipeline-run-migration-{}", Uuid::new_v4()),
     );
-    let _daemon = Daemon::start(&runtime, socket.clone()).await;
+    let mut daemon = Daemon::start(&runtime, socket.clone()).await;
     let enrollment = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
         .await
         .unwrap();
@@ -482,6 +482,7 @@ async fn pipeline_run_migration_is_atomic_idempotent_and_preserves_predecessor()
         &migrated["successor_run_id"],
     )
     .await;
+    recovery_support::finish_and_stop(client, &mut daemon).await;
 }
 
 #[path = "pipeline_execution_run_migration/full_engineering.rs"]

@@ -1,5 +1,5 @@
+use super::super::super::{Mcp, tool_payload};
 use super::{ProgramReadProvenance, ResolvedProgramPage, keys, metadata, ready};
-use crate::recovery_support::{Mcp, tool_payload};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;

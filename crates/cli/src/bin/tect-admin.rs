@@ -11,94 +11,11 @@ use uuid::Uuid;
 #[path = "../knowledge_recovery_cli.rs"]
 mod knowledge_recovery_cli;
 mod tect_admin_backup;
+#[path = "tect_admin/verifier_publication.rs"]
+mod verifier_publication;
+use verifier_publication::publish_verifier_auth_file;
 
-#[derive(Parser)]
-#[command(name = "tect-admin")]
-struct Arguments {
-    #[command(subcommand)]
-    command: Command,
-}
-
-#[derive(Subcommand)]
-enum Command {
-    Backup {
-        #[arg(long)]
-        out: PathBuf,
-        #[arg(long)]
-        runtime_role: String,
-    },
-    Restore {
-        /// Restore and verify into a sealed database; managed recovery is required before use.
-        #[arg(long)]
-        staged: bool,
-        #[arg(long = "from")]
-        from: PathBuf,
-        #[arg(long)]
-        database: String,
-        #[arg(long)]
-        runtime_role: String,
-    },
-    Migrate {
-        #[arg(long)]
-        runtime_role: String,
-        #[arg(long)]
-        enable_durable_knowledge: bool,
-        #[arg(long)]
-        enable_knowledge_vector_search: bool,
-    },
-    Enroll {
-        #[arg(long)]
-        tenant: Option<Uuid>,
-        #[arg(long = "source-root")]
-        source_roots: Vec<PathBuf>,
-        #[arg(long = "setup-root")]
-        setup_roots: Vec<PathBuf>,
-        #[arg(long)]
-        out: PathBuf,
-    },
-    EnsureTenant {
-        #[arg(long)]
-        tenant: Uuid,
-    },
-    RegisterHost {
-        #[arg(long)]
-        tenant: Uuid,
-        #[arg(long)]
-        auth_file: PathBuf,
-        #[arg(long = "source-root")]
-        source_roots: Vec<PathBuf>,
-        #[arg(long = "setup-root")]
-        setup_roots: Vec<PathBuf>,
-    },
-    GrantSetupRoot {
-        #[arg(long)]
-        host_id: String,
-        #[arg(long)]
-        setup_root: PathBuf,
-    },
-    RevokeHost {
-        #[arg(long)]
-        host_id: Uuid,
-    },
-    RevokeSession {
-        #[arg(long)]
-        session_id: Uuid,
-    },
-    KnowledgeSuppressionExport {
-        #[arg(long)]
-        out: PathBuf,
-    },
-    KnowledgeSuppressionApply {
-        #[arg(long)]
-        manifest: PathBuf,
-        #[arg(long)]
-        expected_lineage: Uuid,
-        #[arg(long)]
-        expected_sequence: i64,
-        #[arg(long)]
-        expected_digest: String,
-    },
-}
+include!("tect_admin/arguments.rs");
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -179,6 +96,66 @@ async fn run_database_command(admin_url: &str, command: Command) -> Result<()> {
                 enrollment.auth.host_id,
                 enrollment.tenant_id,
                 enrollment.principal_id,
+                out.display()
+            );
+        }
+        Command::EnrollVerifier {
+            tenant,
+            workspace,
+            out,
+        } => {
+            preflight_output(&out)?;
+            let pending =
+                tect_postgres::admin::prepare_verifier_enrollment(&pool, tenant, workspace).await?;
+            let mut published = publish_verifier_auth_file(&out, pending.auth())?;
+            // Once COMMIT starts, an interrupted acknowledgement cannot prove rollback.
+            published.retain();
+            let enrollment = match pending.try_commit().await {
+                Ok(enrollment) => enrollment,
+                Err(failure) => {
+                    let state = match tect_postgres::admin::connect_admin(admin_url).await {
+                        Ok(fresh_pool) => tect_postgres::admin::verifier_enrollment_state(
+                            &fresh_pool,
+                            &failure.enrollment,
+                            workspace,
+                        )
+                        .await
+                        .ok(),
+                        Err(_) => None,
+                    };
+                    let decision = tect_postgres::admin::resolve_verifier_commit(
+                        failure.database_rejected,
+                        state,
+                    );
+                    if published.resolve_commit(decision)? {
+                        eprintln!(
+                            "verifier enrollment recovered after unacknowledged commit; database identity verified for host {}",
+                            failure.enrollment.auth.host_id,
+                        );
+                        failure.enrollment
+                    } else {
+                        if decision
+                            == tect_postgres::admin::VerifierCommitDecision::PreserveCredential
+                        {
+                            eprintln!(
+                                "verifier enrollment outcome uncertain: tenant {} workspace {} principal {} host {}; private credential preserved at {}; verify database state before reuse or cleanup",
+                                failure.enrollment.tenant_id,
+                                workspace,
+                                failure.enrollment.principal_id,
+                                failure.enrollment.auth.host_id,
+                                out.display(),
+                            );
+                        }
+                        return Err(Error::StorageUnavailable);
+                    }
+                }
+            };
+            println!(
+                "enrolled verifier host {} tenant {} principal {} workspace {}; auth written to {}",
+                enrollment.auth.host_id,
+                enrollment.tenant_id,
+                enrollment.principal_id,
+                workspace,
                 out.display()
             );
         }

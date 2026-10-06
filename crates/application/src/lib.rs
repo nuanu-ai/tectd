@@ -1,15 +1,195 @@
 //! Application policy and ports. Adapters depend on this crate, never the reverse.
+mod advisory;
+pub use advisory::{Sha256ScopeDigest, VerifySelectedSave};
+mod advisory_budget_policy_ports;
+mod advisory_ports;
+mod context_matrix_verification_ports;
+mod matrix_advice_ports;
+mod matrix_advice_runtime;
+mod matrix_advisory_capture;
+mod matrix_advisory_dispatch;
+mod matrix_disposition;
+mod matrix_disposition_ports;
+mod matrix_planning_effect;
+mod matrix_planning_effect_ports;
+mod matrix_planning_selection_ports;
+mod matrix_requirements_context;
+mod matrix_requirements_context_ports;
+mod matrix_task_ports;
+mod matrix_tasks;
+mod matrix_verification;
+mod matrix_verification_ports;
+mod model_route_authority;
+mod model_route_decision;
+mod model_route_execution;
+mod model_route_provider;
+mod model_route_provider_ports;
+mod model_route_recommendation;
+mod model_route_recommendation_ports;
+mod model_route_service;
+mod pipeline_open_effect;
+mod pipeline_phase_effect;
+mod pipeline_recommendation;
+mod pipeline_recommendation_dispatch;
+mod pipeline_recommendation_dispatch_ports;
+mod pipeline_recommendation_disposition;
+mod pipeline_recommendation_ports;
+mod pipeline_recommendation_runtime;
 mod planning_knowledge_ports;
 mod ports;
 mod programs;
+mod provider_receipt_ports;
 pub mod request_diagnostics;
+mod scope_advisory_orchestration;
+mod scope_advisory_ports;
+mod scope_advisory_provider;
+mod scope_advisory_provider_receipt;
+mod scope_advisory_runtime;
 mod service;
+mod technical_decision_evidence_ports;
+#[allow(dead_code)]
+mod technical_decision_trust;
 
+pub use advisory_budget_policy_ports::AdvisoryBudgetPolicyStore;
+#[doc(hidden)]
+pub use advisory_ports::AdvisoryLifecycleCapability;
+pub use advisory_ports::AdvisoryStore;
+pub use advisory_ports::{
+    DisabledMatrixAdviceProvider, MatrixAdviceProvider, MatrixProviderBinding,
+    MatrixProviderObservation, MatrixProviderRequest, MatrixProviderResponse, MatrixProviderUsage,
+    MatrixVerificationAuthority, StoredMatrixDispatch, context_matrix_verified_disposition_digest,
+    context_matrix_verified_evaluation_digest,
+};
+pub use matrix_advice_ports::{
+    GuardedMatrixAdviceOutcome, GuardedMatrixAdviceRecord, MatrixAdviceStore,
+    StoredGuardedMatrixAdviceRecord,
+};
+#[doc(hidden)]
+pub use matrix_advice_ports::{
+    canonical_matrix_advice_digest, canonical_matrix_trial_advice_digest,
+};
+pub use matrix_advice_runtime::{
+    DenyMatrixBudget, MAX_PREPARED_MATRIX_BODY_BYTES, MatrixBudgetAuthorization,
+    MatrixBudgetPolicy, MatrixBudgetRequest, MatrixDispatchContinuation, MatrixProviderIdentity,
+    MatrixRankingPolicy, MatrixStartedDispatchPermit, PreparedMatrixAdviceAttempt,
+    SignedMatrixBudgetPreflight,
+};
+pub use provider_receipt_ports::{
+    AdvisoryDispatchContinuation, AdvisoryProviderReceiptObservation, AdvisoryProviderReceiptUsage,
+    AdvisoryProviderTransportContext, StoredAdvisoryProviderReceipt,
+};
+
+pub(crate) use advisory_ports::{AdvisoryProvider, DisabledAdvisoryProvider};
+pub use context_matrix_verification_ports::ContextMatrixVerificationStore;
+pub use matrix_disposition_ports::{
+    MatrixDispositionRecord, MatrixDispositionStore, MatrixDispositionVerification,
+    RecordMatrixDisposition,
+};
+pub use matrix_planning_effect::{MatrixPlanningEffectRead, VerifyMatrixPlanningEffect};
+pub use matrix_planning_effect_ports::{
+    MatrixPlanningEffectAttestation, MatrixPlanningEffectSnapshot, MatrixPlanningEffectStore,
+    MatrixPlanningEffectVerdict,
+};
+pub use matrix_planning_selection_ports::{
+    MatrixPlanningMappedNode, MatrixPlanningSelectionLink, MatrixPlanningSelectionStore,
+};
+pub use matrix_requirements_context::freeze_effective_matrix_requirements_context;
+pub use matrix_requirements_context_ports::*;
+pub use matrix_task_ports::{BoundMatrixTaskRecord, MatrixTaskStore};
+pub use matrix_tasks::{
+    CompareTechnicalDeliveryMechanisms, CurrentMatrixAdvice, EngineeringAdvisoryRead,
+    GetVerifiedMatrixCards, MATRIX_INPUT_SCHEMA, MatrixTaskRequirementsBinding, MatrixTaskRevision,
+    MatrixTaskSource, RecordMatrixTask, RequestEngineeringAdvisory, TechnicalDeliveryMechanismRead,
+    VERIFIED_MATRIX_CARDS_SCHEMA, VerifiedMatrixCardSummary, VerifiedMatrixCards,
+    canonical_matrix_input_digest, canonical_matrix_source_request_digest,
+};
+pub use matrix_verification::{MatrixEvidenceReference, VerifiedMatrixTask, VerifyMatrixTask};
+pub use matrix_verification_ports::{
+    DisabledMatrixEvidenceValidator, MatrixEvidenceValidator, MatrixVerificationStore,
+    RevalidatedMatrixVerification,
+};
+pub use model_route_decision::{
+    DecideModelRouteRecommendation, DispositionModelRouteRecommendation,
+};
+pub use model_route_execution::{CurrentModelRouteHostSelection, PrepareModelRouteHostSelection};
+pub use model_route_provider::{
+    ModelRouteSendStart, attempt_model_route_after_commit,
+    attempt_model_route_observed_after_commit, finalize_model_route_provider_response,
+    finalize_model_route_sealed_response, prepare_model_route_send, seal_model_route_raw_response,
+};
+pub use model_route_provider_ports::{
+    DisabledModelRouteRankingProvider, ModelRouteAttemptSnapshot, ModelRouteAttemptState,
+    ModelRouteAttemptStore, ModelRouteInvocation, ModelRoutePreparedAttempt,
+    ModelRouteProviderObservation, ModelRouteRankingProvider, ModelRouteRunNoCall,
+    ModelRouteSealedRankingEvidence, ModelRouteSendPermit, ModelRouteUsage,
+};
+pub use model_route_recommendation::PrepareModelRouteRecommendation;
+pub use model_route_recommendation_ports::{
+    CapturedModelRouteDecision, CapturedModelRouteDisposition, ModelRouteAbstainReason,
+    ModelRouteCatalogueProvider, ModelRouteDecisionCaptureStore, ModelRouteDecisionInput,
+    ModelRouteDecisionOutcome, ModelRouteDecisionStore, ModelRouteDispositionAction,
+    ModelRouteHostCapabilitiesProvider, ModelRoutePreparation, ModelRoutePreparationStore,
+    ModelRouteRecommendationBasis, ModelRouteRecommendationStore, ModelRouteSelectionRead,
+    PreparedModelRouteRecommendation, UnavailableModelRouteCatalogue,
+    UnavailableModelRouteHostCapabilities,
+};
+pub use model_route_service::ModelRouteView;
+pub use pipeline_open_effect::{
+    PipelineOpenEffectAttestation, PipelineOpenEffectMaterial, PipelineOpenEffectStore,
+    PipelineOpenEffectVerdict, VerifyPipelineOpenEffect,
+};
+pub use pipeline_phase_effect::{
+    PipelinePhaseEffectAttestation, PipelinePhaseEffectMaterial, PipelinePhaseEffectStore,
+    PipelinePhaseEffectVerdict, VerifyPipelinePhaseEffect,
+};
+pub use pipeline_recommendation::{
+    PreparePipelineRecommendation, pipeline_recommendation_source_digest,
+};
+pub use pipeline_recommendation_dispatch::{PipelineRecommendationRun, RunPipelineRecommendation};
+#[doc(hidden)]
+pub use pipeline_recommendation_dispatch_ports::PipelineDispatchCapability;
+pub use pipeline_recommendation_dispatch_ports::{
+    PipelineRecommendationDispatchStore, StoredPipelineRecommendationDispatch,
+};
+pub use pipeline_recommendation_ports::{
+    FixedPipelineCompatibilityPolicy, PIPELINE_ADVICE_INTERPRETATION_VERSION,
+    PipelineAdviceInterpretation, PipelineCompatibilityPolicyProvider, PipelineDispositionBasis,
+    PipelineRecommendationBasis, PipelineRecommendationContext,
+    PipelineRecommendationDefinitionProvider, PipelineRecommendationStore,
+    PreparedPipelineRecommendation, UnavailablePipelineCompatibilityPolicy,
+    UnavailablePipelineRecommendationDefinitions,
+};
+pub use pipeline_recommendation_runtime::{
+    DisabledPipelineRecommendationProvider, MAX_PREPARED_PIPELINE_BODY_BYTES,
+    MAX_SEALED_PIPELINE_RESPONSE_BYTES, PipelineProviderIdentity, PipelineProviderObservation,
+    PipelineRecommendationProvider, PipelineStartedDispatchPermit,
+    PreparedPipelineRecommendationAttempt, SealedPipelineRecommendationResponse,
+};
 pub use planning_knowledge_ports::PlanningKnowledgeStore;
 pub use ports::{
     ProgramGuidance, ProgramOutputGuard, SourceInspector, Store, TransactionMode, UnitOfWork,
 };
+pub use scope_advisory_orchestration::{
+    RunScopeAdvisory, ScopeAdvisoryOutcome, StartedScopeDispatchPermit,
+};
+pub use scope_advisory_ports::{
+    GuardedScopeAdviceRecord, ScopeAdvisoryStore, ScopeCallerLinkInput, ScopeDispositionRecord,
+    ScopeManifestRecord, ScopePreparedAdvisoryDisposition, ScopePreservationReceiptInput,
+    ScopeVerifierReceiptInput, StoredScopeManifestRecord,
+};
+pub(crate) use scope_advisory_runtime::*;
+#[doc(hidden)]
+pub use scope_advisory_runtime::{
+    AuthoredScopeAlternative, AuthoredScopeSet, DenyScopeBudget, PreparedScopeAdviceAttempt,
+    ScopeAdviceProviderContext, ScopeAdviceProviderError, ScopeAdviceProviderFailureReason,
+    ScopeAdviceProviderObservation, ScopeAdviceProviderRequest, ScopeAuthoredManifestRequest,
+    ScopeAuthorityObservation, ScopeAuthorityObserver, ScopeAuthorityOutcome,
+    ScopeAuthorityRequest, ScopeAuthorizedInvalidObservation, ScopeBudgetPolicy,
+    ScopeBudgetPolicyEvaluation, ScopeBudgetRequest, ScopeManifestSupplier,
+    SignedScopeBudgetPreflight,
+};
 pub use service::WorkspaceService;
+pub use technical_decision_evidence_ports::*;
 
 mod sources;
 
@@ -53,9 +233,116 @@ pub use knowledge_search_ports::{
     KnowledgeSearchStore,
 };
 
+#[cfg(test)]
+mod advisory_architecture_tests {
+    fn assert_no_forbidden_imports(name: &str, source: &str, forbidden_imports: &[&str]) {
+        for forbidden in forbidden_imports {
+            assert!(!source.contains(forbidden), "{name} imports {forbidden}");
+        }
+    }
+
+    #[test]
+    fn domain_and_application_remain_inward_only() {
+        let domain_manifest = include_str!("../../domain/Cargo.toml");
+        let application_manifest = include_str!("../Cargo.toml");
+        let application_advisory = include_str!("advisory.rs");
+        let application_ports = include_str!("advisory_ports.rs");
+        let application_scope_ports = include_str!("scope_advisory_ports.rs");
+        let application_scope_runtime = include_str!("scope_advisory_runtime.rs");
+        let application_scope_orchestration = include_str!("scope_advisory_orchestration.rs");
+        let application_scope_capture = include_str!("scope_advisory_orchestration/capture.rs");
+        let application_scope_decisions = include_str!("scope_advisory_orchestration/decisions.rs");
+        let application_scope_helpers = include_str!("scope_advisory_orchestration/helpers.rs");
+        let architecture_check = include_str!("../../../scripts/check-architecture.py");
+        for (name, source) in [
+            ("domain manifest", domain_manifest),
+            ("application manifest", application_manifest),
+        ] {
+            assert_no_forbidden_imports(
+                name,
+                source,
+                &["sqlx", "reqwest", "hyper", "tect-postgres", "tect-host"],
+            );
+        }
+        for (name, source) in [
+            ("application advisory", application_advisory),
+            ("application advisory ports", application_ports),
+            ("application scope advisory ports", application_scope_ports),
+            (
+                "application scope advisory runtime",
+                application_scope_runtime,
+            ),
+            (
+                "application scope advisory orchestration",
+                application_scope_orchestration,
+            ),
+            (
+                "application scope advisory capture",
+                application_scope_capture,
+            ),
+            (
+                "application scope advisory decisions",
+                application_scope_decisions,
+            ),
+            (
+                "application scope advisory helpers",
+                application_scope_helpers,
+            ),
+        ] {
+            assert_no_forbidden_imports(
+                name,
+                source,
+                &[
+                    "sqlx::",
+                    concat!("std", "::env"),
+                    "reqwest::",
+                    "hyper::",
+                    "tect_postgres",
+                    "tect_host",
+                    "JevDto",
+                ],
+            );
+        }
+        assert!(architecture_check.contains("domain_advisory_sources"));
+        assert!(architecture_check.contains("rglob(\"*.rs\")"));
+        assert!(architecture_check.contains("if not is_test_fixture(source)"));
+    }
+
+    #[test]
+    fn host_and_postgres_are_outward_adapters() {
+        let postgres_manifest = include_str!("../../postgres/Cargo.toml");
+        let host_manifest = include_str!("../../host/Cargo.toml");
+        for manifest in [postgres_manifest, host_manifest] {
+            assert!(manifest.contains("tect-domain.workspace = true"));
+            assert!(manifest.contains("tect-application.workspace = true"));
+        }
+        assert!(postgres_manifest.contains("sqlx.workspace = true"));
+        assert!(!host_manifest.contains("tect-postgres.workspace = true"));
+    }
+}
+
 mod setup_access;
 mod setup_apply;
 mod setup_readonly;
 mod setups;
 
 mod workspace_collections;
+pub use scope_advisory_provider::ScopeAdviceProvider;
+pub use scope_advisory_provider_receipt::ScopeAdviceRawObservation;
+
+mod anti_bloat;
+mod anti_bloat_ports;
+mod anti_bloat_verification;
+pub use anti_bloat::AntiBloatApplication;
+pub use anti_bloat_ports::AntiBloatSealedResponse;
+pub use anti_bloat_ports::AntiBloatStartedDispatchPermit;
+pub use anti_bloat_ports::{
+    AntiBloatAttemptState, AntiBloatAuthoredDelta, AntiBloatInvocationSnapshot, AntiBloatNoCall,
+    AntiBloatPreparedRequest, AntiBloatProviderObservation, AntiBloatRankingMaterial,
+    AntiBloatRankingProvider, AntiBloatSendPermit, AntiBloatStore,
+    DisabledAntiBloatRankingProvider, StoredAntiBloatReview, anti_bloat_material_sha256,
+};
+pub use anti_bloat_ports::{AntiBloatRankingOutcome, AntiBloatUsage};
+pub use anti_bloat_ports::{AntiBloatVerificationMaterial, AntiBloatVerificationStore};
+pub use anti_bloat_verification::AntiBloatVerificationEvidence;
+pub use anti_bloat_verification::VerifyAntiBloatApply;

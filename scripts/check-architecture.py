@@ -7,15 +7,17 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = {
-    "tect-domain": {"serde", "serde_json", "uuid", "oxrdf"},
-    "tect-application": {"tect-domain", "async-trait", "uuid", "sha2", "serde_json"},
+    "tect-domain": {"serde", "serde_json", "uuid", "oxrdf", "sha2"},
+    "tect-application": {"tect-domain", "async-trait", "uuid", "sha2", "serde", "serde_json"},
     "tect-postgres": {
         "tect-domain", "tect-application", "async-trait", "sqlx", "uuid",
-        "sha2", "getrandom", "serde", "serde_json", "oxrdf",
+        "sha2", "getrandom", "serde", "serde_json", "oxrdf", "ring",
     },
     "tect-host": {
         "tect-domain", "tect-application", "serde", "serde_json", "tokio",
-        "uuid", "async-trait", "rustix", "sha2",
+        "uuid", "async-trait", "rustix", "sha2", "reqwest",
+        # Host-owned MatrixEvidenceValidator verifies operator-pinned Ed25519 files.
+        "ring",
     },
     "tect-cli": {
         "tect-domain", "tect-application", "tect-postgres", "tect-host",
@@ -25,6 +27,33 @@ ALLOWED = {
 }
 errors = []
 observed = set()
+
+
+def is_test_fixture(source: Path) -> bool:
+    relative = source.relative_to(ROOT)
+    return (
+        source.name == "tests.rs"
+        or source.stem.endswith("_tests")
+        or "tests" in relative.parts
+    )
+
+
+domain_advisory_sources = [ROOT / "crates/domain/src/advisory.rs"]
+domain_advisory_sources.extend(
+    source
+    for source in (ROOT / "crates/domain/src/advisory").rglob("*.rs")
+    if not is_test_fixture(source)
+)
+for source in sorted(domain_advisory_sources):
+    text = source.read_text()
+    for forbidden in (
+        "sqlx::", "std::env", "reqwest::", "hyper::", "tect_postgres", "tect_host",
+    ):
+        if forbidden in text:
+            errors.append(
+                f"{source.relative_to(ROOT)}: forbidden advisory dependency {forbidden}"
+            )
+
 for manifest in sorted((ROOT / "crates").glob("*/Cargo.toml")):
     data = tomllib.loads(manifest.read_text())
     name = data["package"]["name"]

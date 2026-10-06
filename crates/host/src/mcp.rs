@@ -253,12 +253,15 @@ impl McpSession {
         let public_decode_error = routed.as_ref().err().cloned();
         let (name, arguments) = match routed {
             Ok(call) => (call.name, call.arguments),
-            Err(_) => (crate::api::INVALID_PUBLIC_CALL, Value::Object(Map::new())),
+            Err(_) => (
+                malformed_public_route(&params.name, &params.arguments),
+                Value::Object(Map::new()),
+            ),
         };
         match call_tool_bounded(&self.socket, &context, name, arguments.clone(), capacity).await {
             Ok(result) => success_response(id, successful_tool_result(result)),
             Err(error) => {
-                let error = public_decode_error.unwrap_or(error);
+                let error = preserve_daemon_refusal(public_decode_error, error);
                 let (failure_name, failure_arguments) = if public_decode_failed {
                     (params.name.as_str(), &params.arguments)
                 } else {
@@ -279,6 +282,28 @@ impl McpSession {
                 )
             }
         }
+    }
+}
+
+fn malformed_public_route(tool: &str, arguments: &Value) -> &'static str {
+    match (tool, arguments.get("route").and_then(Value::as_str)) {
+        ("command", Some("candidate.advisory.verify")) => "candidate_advisory_verify",
+        ("query", Some("candidate.advisory.get")) => "candidate_advisory_get",
+        ("query", Some("candidate.advisory.audit")) => "candidate_advisory_audit",
+        ("command", Some("engineering.matrix.verify")) => "verify_matrix_task",
+        ("query", Some("engineering.matrix.disposition.get")) => "get_matrix_disposition",
+        ("query", Some("pipeline.open_effect.get")) => "get_pipeline_open_effect",
+        ("command", Some("pipeline.open_effect.verify")) => "verify_pipeline_open_effect",
+        ("query", Some("pipeline.phase_effect.get")) => "get_pipeline_phase_effect",
+        ("command", Some("pipeline.phase_effect.verify")) => "verify_pipeline_phase_effect",
+        _ => crate::api::INVALID_PUBLIC_CALL,
+    }
+}
+
+fn preserve_daemon_refusal(decoded: Option<Error>, daemon: Error) -> Error {
+    match (decoded, daemon) {
+        (Some(decoded), Error::InvalidArguments) => decoded,
+        (_, daemon) => daemon,
     }
 }
 
@@ -397,6 +422,9 @@ async fn write_json_line<W: AsyncWrite + Unpin>(writer: &mut W, value: &Value) -
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod verifier_tests;
 
 #[cfg(test)]
 mod p7_failure_tests;

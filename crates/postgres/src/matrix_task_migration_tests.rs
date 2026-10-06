@@ -1,0 +1,125 @@
+const MIGRATION: &str = include_str!("../migrations/0050_matrix_task_revisions.sql");
+const RUNTIME_GRANTS: &str = include_str!("admin/migration/matrix_core.rs");
+const ROLE_VALIDATION: &str = include_str!("admin/migration/matrix_core.rs");
+
+#[test]
+fn task_head_and_accepted_revisions_have_tenant_bound_lineage() {
+    for required in [
+        "CREATE TABLE matrix_tasks (",
+        "CREATE TABLE matrix_task_revisions (",
+        "PRIMARY KEY (tenant_id, workspace_id, id)",
+        "PRIMARY KEY (tenant_id, workspace_id, task_id, revision)",
+        "REFERENCES workspaces (tenant_id, id)",
+        "REFERENCES matrix_tasks (tenant_id, workspace_id, id)",
+        "REFERENCES matrix_task_revisions (tenant_id, workspace_id, task_id, revision)",
+        "REFERENCES principals (tenant_id, id)",
+        "REFERENCES agent_sessions (tenant_id, workspace_id, id)",
+        "DEFERRABLE INITIALLY DEFERRED",
+    ] {
+        assert!(MIGRATION.contains(required), "missing {required}");
+    }
+    assert_eq!(MIGRATION.matches("CREATE TABLE matrix_").count(), 2);
+}
+
+#[test]
+fn accepted_input_is_versioned_idempotent_and_keeps_fact_state() {
+    for required in [
+        "current_revision bigint NOT NULL",
+        "previous_revision bigint",
+        "request_id uuid NOT NULL",
+        "UNIQUE (tenant_id, workspace_id, request_id)",
+        "(revision = 1 AND previous_revision IS NULL)",
+        "(revision > 1 AND previous_revision = revision - 1)",
+        "input_schema = 'tect.engineering-matrix-input/1'",
+        "canonical_input jsonb NOT NULL",
+        "pg_catalog.jsonb_typeof(canonical_input) = 'object'",
+        "input_digest ~ '^[0-9a-f]{64}$'",
+        "recorded_by_principal_id uuid NOT NULL",
+        "recorded_by_session_id uuid NOT NULL",
+        "recorded_at timestamptz NOT NULL",
+    ] {
+        assert!(MIGRATION.contains(required), "missing {required}");
+    }
+    for field in [
+        "'mode'",
+        "'envelope'",
+        "'criticality'",
+        "'intent'",
+        "'urgency'",
+        "'promised_behavior'",
+        "'promised_proof'",
+        "'affected_guarantees'",
+        "'actual_exposure'",
+        "'demand_commitment'",
+        "'latency_commitment'",
+        "'urgent_repair'",
+    ] {
+        assert!(MIGRATION.contains(field), "missing {field}");
+    }
+    for forbidden in ["verified_at", "verification_status", "advisory_dispatch"] {
+        assert!(!MIGRATION.contains(forbidden), "unexpected {forbidden}");
+    }
+}
+
+#[test]
+fn task_head_transition_is_database_guarded_without_skips_or_regressions() {
+    for required in [
+        "CREATE FUNCTION matrix_tasks_enforce_revision_step() RETURNS trigger",
+        "IF TG_OP = 'INSERT' THEN",
+        "IF NEW.current_revision <> 1 THEN",
+        "ELSIF NEW.current_revision <> OLD.current_revision + 1 THEN",
+        "CREATE TRIGGER matrix_tasks_revision_step",
+        "BEFORE INSERT OR UPDATE OF current_revision ON matrix_tasks",
+        "REVOKE ALL PRIVILEGES ON FUNCTION matrix_tasks_enforce_revision_step() FROM PUBLIC",
+    ] {
+        assert!(MIGRATION.contains(required), "missing {required}");
+    }
+}
+
+#[test]
+fn accepted_revision_requires_locked_active_owner_provenance() {
+    for required in [
+        "CREATE FUNCTION matrix_task_revisions_require_active_owner() RETURNS trigger",
+        "LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public",
+        "NEW.tenant_id IS DISTINCT FROM",
+        "pg_catalog.current_setting('tect.tenant_id', true)",
+        "FROM public.agent_sessions AS s",
+        "JOIN public.hosts AS h",
+        "JOIN public.principals AS p",
+        "JOIN public.memberships AS m",
+        "m.tenant_id = s.tenant_id AND m.workspace_id = s.workspace_id",
+        "m.principal_id = p.id",
+        "s.tenant_id = NEW.tenant_id",
+        "s.workspace_id = NEW.workspace_id",
+        "s.id = NEW.recorded_by_session_id",
+        "h.principal_id = NEW.recorded_by_principal_id",
+        "AND NOT s.revoked AND NOT h.revoked AND p.role = 'owner'",
+        "FOR SHARE OF s, h, p, m",
+        "BEFORE INSERT ON matrix_task_revisions",
+        "REVOKE ALL PRIVILEGES ON FUNCTION matrix_task_revisions_require_active_owner() FROM PUBLIC",
+    ] {
+        assert!(MIGRATION.contains(required), "missing {required}");
+    }
+}
+
+#[test]
+fn tenant_rls_and_runtime_grants_allow_only_append_and_head_cas() {
+    for required in [
+        "ENABLE ROW LEVEL SECURITY",
+        "FORCE ROW LEVEL SECURITY",
+        "tect.tenant_id",
+        "REVOKE ALL PRIVILEGES ON TABLE matrix_tasks, matrix_task_revisions FROM PUBLIC",
+    ] {
+        assert!(MIGRATION.contains(required), "missing {required}");
+    }
+    for required in [
+        "REVOKE ALL PRIVILEGES ON TABLE matrix_tasks, matrix_task_revisions FROM {quoted_role}",
+        "GRANT SELECT, INSERT ON TABLE matrix_tasks, matrix_task_revisions TO {quoted_role}",
+        "GRANT UPDATE(current_revision) ON TABLE matrix_tasks TO {quoted_role}",
+    ] {
+        assert!(RUNTIME_GRANTS.contains(required), "missing {required}");
+    }
+    assert!(ROLE_VALIDATION.contains("'matrix_tasks', 'matrix_task_revisions'"));
+    assert!(!RUNTIME_GRANTS.contains("GRANT UPDATE ON TABLE matrix_task_revisions"));
+    assert!(!RUNTIME_GRANTS.contains("GRANT DELETE ON TABLE matrix_task_revisions"));
+}

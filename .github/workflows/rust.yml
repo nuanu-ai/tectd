@@ -27,6 +27,10 @@ jobs:
       - run: python3 scripts/check-architecture.py
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Bootstrap isolated CI application schema and runtime grants
+        env:
+          TECT_ADMIN_DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:${{ job.services.postgres.ports[5432] }}/tect_test"
+        run: cargo run --locked -p tect-cli --bin tect-admin -- migrate --runtime-role "$TECT_TEST_RUNTIME_ROLE"
       - run: cargo test --workspace
         env:
           TECT_TEST_ADMIN_URL: "postgres://postgres:postgres@127.0.0.1:${{ job.services.postgres.ports[5432] }}/tect_test"

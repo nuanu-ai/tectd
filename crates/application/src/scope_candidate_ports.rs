@@ -36,6 +36,16 @@ pub trait ScopeCandidateStore: Send {
         workspace_id: Uuid,
         request: &CandidateReceiptRequest,
     ) -> Result<Option<StoredCandidateContext>>;
+    async fn selected_candidate_receipt(
+        &mut self,
+        workspace_id: Uuid,
+        actor_id: Uuid,
+        session_id: Uuid,
+        request: &SaveCandidateDraft,
+    ) -> Result<Option<StoredCandidateContext>> {
+        let _ = (workspace_id, actor_id, session_id, request);
+        Err(tect_domain::Error::Forbidden)
+    }
     async fn ensure_candidate_set(
         &mut self,
         workspace_id: Uuid,
@@ -49,6 +59,18 @@ pub trait ScopeCandidateStore: Send {
         workspace_id: Uuid,
         candidate_set_id: Uuid,
     ) -> Result<Option<StoredCandidateContext>>;
+    /// Tenant/workspace-scoped target lookup without loading source material.
+    async fn candidate_revision(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+    ) -> Result<Option<i64>>;
+    /// Lock the target row through the write transaction until opportunity capture commits.
+    async fn lock_candidate_revision(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+    ) -> Result<Option<i64>>;
     async fn candidate_heads(
         &mut self,
         workspace_id: Uuid,
@@ -89,6 +111,16 @@ pub trait ScopeCandidateStore: Send {
         workspace_id: Uuid,
         request: &SaveCandidateDraft,
     ) -> Result<StoredCandidateContext>;
+    async fn save_selected_candidate_draft(
+        &mut self,
+        workspace_id: Uuid,
+        actor_id: Uuid,
+        session_id: Uuid,
+        request: &SaveCandidateDraft,
+    ) -> Result<StoredCandidateContext> {
+        let _ = (workspace_id, actor_id, session_id, request);
+        Err(tect_domain::Error::Forbidden)
+    }
     async fn save_candidate_review(
         &mut self,
         workspace_id: Uuid,

@@ -1,12 +1,17 @@
 use crate::storage_error;
 use sqlx::{Postgres, Transaction};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use tect_domain::{
     BlockerEntity, CandidateBoundary, CandidateDraft, CandidateEntity, CandidateRef,
     CoverageGoalEntity, CoverageResolutionEntity, CoverageResolutionKind, DraftIdentity, Error,
     EvidenceEntity, EvidenceKind, ResolvedCandidateDraft, Result, ScopeCandidateDraft,
 };
 use uuid::Uuid;
+
+mod authored;
+mod candidate;
+pub(crate) use authored::resolve_authored;
+use candidate::candidate;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
@@ -39,12 +44,12 @@ pub(super) struct Source {
     pub(super) body: String,
 }
 
-pub(super) struct ResolveContext {
-    pub(super) tenant_id: Uuid,
-    pub(super) workspace_id: Uuid,
-    pub(super) candidate_set_id: Uuid,
-    pub(super) snapshot_id: Uuid,
-    pub(super) latest_input: i64,
+pub(crate) struct ResolveContext {
+    pub(crate) tenant_id: Uuid,
+    pub(crate) workspace_id: Uuid,
+    pub(crate) candidate_set_id: Uuid,
+    pub(crate) snapshot_id: Uuid,
+    pub(crate) latest_input: i64,
 }
 
 #[derive(sqlx::FromRow)]
@@ -63,6 +68,22 @@ pub(super) async fn resolve(
     draft: &ScopeCandidateDraft,
     previous: Option<&ResolvedCandidateDraft>,
 ) -> Result<ResolvedCandidateDraft> {
+    draft.require_source_grounded()?;
+    resolve_with_allocator(transaction, context, draft, previous, None, &|_, _| {
+        Uuid::new_v4()
+    })
+    .await
+}
+
+async fn resolve_with_allocator(
+    transaction: &mut Transaction<'_, Postgres>,
+    context: &ResolveContext,
+    draft: &ScopeCandidateDraft,
+    previous: Option<&ResolvedCandidateDraft>,
+    allowed_source_ids: Option<&BTreeSet<Uuid>>,
+    local_id: &impl Fn(Kind, &str) -> Uuid,
+) -> Result<ResolvedCandidateDraft> {
+    draft.validate()?;
     let rows = sqlx::query_as::<_, SourceRow>(
         "SELECT r.id,r.snapshot_id,r.kind,r.input_sequence,r.program_field,c.body \
          FROM scope_candidate_source_refs r \
@@ -78,6 +99,7 @@ pub(super) async fn resolve(
     .map_err(storage_error)?;
     let sources: BTreeMap<_, _> = rows
         .into_iter()
+        .filter(|row| allowed_source_ids.is_none_or(|allowed| allowed.contains(&row.id)))
         .map(|row| {
             (
                 row.id,
@@ -96,21 +118,25 @@ pub(super) async fn resolve(
         &mut handles,
         Kind::Goal,
         draft.goals.iter().map(|v| &v.identity),
+        local_id,
     )?;
     allocate(
         &mut handles,
         Kind::Evidence,
         draft.evidence.iter().map(|v| &v.identity),
+        local_id,
     )?;
     allocate(
         &mut handles,
         Kind::Candidate,
         draft.candidates.iter().map(|v| &v.identity),
+        local_id,
     )?;
     allocate(
         &mut handles,
         Kind::Blocker,
         draft.blockers.iter().map(|v| &v.identity),
+        local_id,
     )?;
     let labels: super::links::Labels = handles
         .iter()
@@ -352,11 +378,12 @@ fn allocate<'a>(
     handles: &mut BTreeMap<String, (Kind, Uuid)>,
     kind: Kind,
     identities: impl Iterator<Item = &'a DraftIdentity>,
+    local_id: &impl Fn(Kind, &str) -> Uuid,
 ) -> Result<()> {
     for identity in identities {
         if let Some(local) = &identity.local
             && handles
-                .insert(local.clone(), (kind, Uuid::new_v4()))
+                .insert(local.clone(), (kind, local_id(kind, local)))
                 .is_some()
         {
             return Err(reason(format!(
@@ -451,41 +478,4 @@ pub(super) fn resolve_ref(
                 kind.noun()
             ))
         })
-}
-
-fn candidate(
-    value: &CandidateDraft,
-    id: Uuid,
-    revision: i64,
-    handles: &BTreeMap<String, (Kind, Uuid)>,
-    candidates: &[(Uuid, i64)],
-    goals: &[(Uuid, i64)],
-    evidence: &[(Uuid, i64)],
-) -> Result<CandidateEntity> {
-    Ok(CandidateEntity {
-        id,
-        revision,
-        title: value.title.clone(),
-        outcome: value.outcome.clone(),
-        trigger: value.trigger.clone(),
-        delivered_behavior: value.delivered_behavior.clone(),
-        proof: value.proof.clone(),
-        includes: value.includes.clone(),
-        excludes: value.excludes.clone(),
-        dependencies: value
-            .dependencies
-            .iter()
-            .map(|v| resolve_ref(v, handles, Kind::Candidate, candidates))
-            .collect::<Result<_>>()?,
-        coverage_goal_ids: value
-            .coverage_goals
-            .iter()
-            .map(|v| resolve_ref(v, handles, Kind::Goal, goals))
-            .collect::<Result<_>>()?,
-        evidence_ids: value
-            .evidence
-            .iter()
-            .map(|v| resolve_ref(v, handles, Kind::Evidence, evidence))
-            .collect::<Result<_>>()?,
-    })
 }

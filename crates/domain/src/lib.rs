@@ -1,6 +1,16 @@
 //! Pure identities, values and invariants. No environment, transport or persistence.
+mod advisory;
+mod context_matrix_verification;
 mod durable_knowledge;
 mod durable_knowledge_validation;
+mod engineering_choice_set;
+mod engineering_matrix_composer;
+mod engineering_matrix_disposition;
+mod engineering_matrix_input;
+mod engineering_matrix_native_ranking;
+mod engineering_matrix_technical_decision;
+mod engineering_matrix_trial_evidence;
+mod engineering_matrix_verification;
 mod engineering_review;
 mod error;
 mod identity;
@@ -19,6 +29,14 @@ mod knowledge_phase_validation;
 mod knowledge_profile_registry;
 mod knowledge_search;
 mod knowledge_time;
+mod matrix_declared_requirements;
+mod matrix_planning_effect;
+mod matrix_planning_selection;
+mod model_route_execution;
+mod model_route_material;
+mod model_route_ranking_wire;
+mod model_routing;
+mod ordinary_work_body_commitment_v2;
 mod planning_knowledge;
 mod program;
 mod program_page;
@@ -30,13 +48,24 @@ pub use program::{
 };
 pub use program_page::{ProgramCursor, ProgramInput, ProgramList, ProgramPage, ProgramSummary};
 
+pub use advisory::*;
+pub use context_matrix_verification::*;
 pub use durable_knowledge::*;
+pub use engineering_choice_set::*;
+pub use engineering_matrix_composer::*;
+pub use engineering_matrix_disposition::*;
+pub use engineering_matrix_input::*;
+pub use engineering_matrix_native_ranking::*;
+pub use engineering_matrix_technical_decision::*;
+pub use engineering_matrix_trial_evidence::*;
+pub use engineering_matrix_verification::*;
 pub use error::{
     Error, MAX_PIPELINE_ARTIFACT_DIAGNOSTIC_VIOLATIONS, PipelineArtifactDiagnostic,
     PipelineArtifactViolation, Result,
 };
 pub use identity::{
-    HostAuth, HostIdentity, RequestContext, validate_native_id, validate_workspace_key,
+    HostAuth, HostIdentity, PrincipalRole, RequestContext, validate_native_id,
+    validate_workspace_key,
 };
 pub use knowledge_consumer::*;
 pub use knowledge_document::*;
@@ -46,6 +75,14 @@ pub use knowledge_lifecycle_execution::*;
 pub use knowledge_maintenance::*;
 pub use knowledge_profile_registry::*;
 pub use knowledge_search::*;
+pub use matrix_declared_requirements::*;
+pub use matrix_planning_effect::*;
+pub use matrix_planning_selection::*;
+pub use model_route_execution::*;
+pub use model_route_material::*;
+pub use model_route_ranking_wire::*;
+pub use model_routing::*;
+pub use ordinary_work_body_commitment_v2::*;
 pub use planning_knowledge::*;
 pub use state::{
     Created, EventKind, NativeKnowledgeChangeSummary, NativePipelineRunSummary,
@@ -80,6 +117,7 @@ mod native_planning_validation;
 mod pipeline_artifacts;
 mod pipeline_checkpoint;
 mod pipeline_constraints;
+mod pipeline_effect_material;
 mod pipeline_evidence;
 mod pipeline_execution;
 mod pipeline_execution_validation;
@@ -102,6 +140,7 @@ pub use native_planning::*;
 pub use native_planning_receipt::NativePlanningReceiptRequest;
 pub use native_planning_validation::validate_slice_graph;
 pub use pipeline_checkpoint::*;
+pub use pipeline_effect_material::*;
 pub use pipeline_evidence::*;
 pub use pipeline_execution::*;
 pub use pipeline_followups::*;
@@ -112,13 +151,14 @@ pub use refusal::{Refusal, RefusalCode};
 pub use scope_candidate_draft::{
     BlockerDraft, BlockerEntity, CandidateAdded, CandidateChanged, CandidateDecision,
     CandidateDecisionKind, CandidateDelta, CandidateDraft, CandidateEntity, CandidateFinding,
-    CandidateFindingSeverity, CandidateRef, CandidateReviewDraft, CandidateSuperseded,
-    CandidateSupersessionDraft, CandidateUnchanged, CoverageGoalDraft, CoverageGoalEntity,
-    CoverageResolutionDraft, CoverageResolutionEntity, CoverageResolutionKind, DraftIdentity,
-    EmptyCandidateDisposition, EmptyCandidateDispositionKind, EvidenceDraft, EvidenceEntity,
-    EvidenceKind, ProtectedChangeDisposition, ProtectedChangeDraft, ProtectedChangeEntity,
-    ProtectedChangeReview, ResolvedCandidateDraft, ReviewCandidateSet, ReviewVerdict,
-    SaveCandidateDraft, ScopeCandidateDraft, ScopeCandidateReview,
+    CandidateFindingSeverity, CandidateGrounding, CandidateRef, CandidateReviewDraft,
+    CandidateSuperseded, CandidateSupersessionDraft, CandidateUnchanged, CoverageGoalDraft,
+    CoverageGoalEntity, CoverageResolutionDraft, CoverageResolutionEntity, CoverageResolutionKind,
+    DraftIdentity, EmptyCandidateDisposition, EmptyCandidateDispositionKind, EvidenceDraft,
+    EvidenceEntity, EvidenceKind, ExploratoryProvenance, ProtectedChangeDisposition,
+    ProtectedChangeDraft, ProtectedChangeEntity, ProtectedChangeReview, ResolvedCandidateDraft,
+    ReviewCandidateSet, ReviewVerdict, SaveCandidateDraft, ScopeCandidateDraft,
+    ScopeCandidateReview, SelectedScopeAdvisory,
 };
 pub use scope_candidates::{
     BeginCandidateSet, BeginCandidateSetOutcome, CandidateBoundary, CandidateContext,
@@ -140,3 +180,6 @@ mod workspace_collection;
 pub use workspace_collection::{
     CandidateSetList, NativePlanningList, WorkspaceCollection, WorkspaceCollectionCursor,
 };
+
+mod anti_bloat_verification_material;
+pub use anti_bloat_verification_material::{AntiBloatVerificationMaterial, VerifyAntiBloatApply};

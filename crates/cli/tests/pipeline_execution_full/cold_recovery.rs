@@ -38,7 +38,18 @@ pub(super) async fn run(state: ColdRecovery<'_>) {
     client.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();
-    daemon = Daemon::start(runtime, socket.clone()).await;
+    let old = std::fs::read(socket.with_extension("stderr")).unwrap();
+    let stderr = socket.with_extension("first-recovery.stderr");
+    daemon = Daemon::start_configured_with_stderr_result(
+        std::path::Path::new(env!("CARGO_BIN_EXE_tectd")),
+        runtime,
+        socket.clone(),
+        None,
+        stderr,
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read(socket.with_extension("stderr")).unwrap(), old);
     let mut client = Mcp::start(&socket, config, native, key).await;
     client.call("open_workspace", json!({})).await;
     let raw_context = route(
@@ -333,7 +344,18 @@ pub(super) async fn run(state: ColdRecovery<'_>) {
     client.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();
-    let _restarted_daemon = Daemon::start(runtime, socket.clone()).await;
+    let old = std::fs::read(socket.with_extension("stderr")).unwrap();
+    let stderr = socket.with_extension("second-recovery.stderr");
+    let _restarted_daemon = Daemon::start_configured_with_stderr_result(
+        std::path::Path::new(env!("CARGO_BIN_EXE_tectd")),
+        runtime,
+        socket.clone(),
+        None,
+        stderr,
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read(socket.with_extension("stderr")).unwrap(), old);
     let mut client = Mcp::start(&socket, config, native, key).await;
     client.call("open_workspace", json!({})).await;
     let raw_context = route(

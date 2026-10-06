@@ -1,0 +1,283 @@
+use super::*;
+
+impl WorkspaceService {
+    async fn anti_bloat_transaction(
+        &self,
+        context: &RequestContext,
+        mode: TransactionMode,
+    ) -> Result<(Box<dyn UnitOfWork>, Uuid, Uuid, Uuid)> {
+        let (mut tx, identity) = self.authorized(context, mode).await?;
+        if mode == TransactionMode::ReadWrite {
+            tx.lock_native_session(identity.host_id, &context.native_session_id)
+                .await?;
+        }
+        let (workspace, session) = Self::bound_session(&mut *tx, context, &identity).await?;
+        Ok((tx, workspace.id, identity.principal_id, session.id))
+    }
+
+    pub async fn prepare_anti_bloat(
+        &self,
+        context: &RequestContext,
+        candidate_set_id: Uuid,
+        expected_revision: i64,
+        preference: AdvisoryRequestPreference,
+    ) -> Result<StoredAntiBloatReview> {
+        let (mut tx, workspace, actor, session) = self
+            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+            .await?;
+        let session_preference = tx
+            .session_advisory_preference(workspace, session)
+            .await?
+            .preference;
+        let review = prepare_anti_bloat_review_with_invocation(
+            tx.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
+            workspace,
+            actor,
+            candidate_set_id,
+            expected_revision,
+            preference,
+            Some(AntiBloatInvocationSnapshot {
+                session_id: session,
+                session_preference,
+                request_preference: preference,
+            }),
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(review)
+    }
+
+    pub async fn get_anti_bloat(
+        &self,
+        context: &RequestContext,
+        review_id: Uuid,
+    ) -> Result<StoredAntiBloatReview> {
+        if review_id.is_nil() {
+            return Err(Error::InvalidArguments);
+        }
+        let (mut tx, workspace, _, _) = self
+            .anti_bloat_transaction(context, TransactionMode::ReadOnly)
+            .await?;
+        let review = tx
+            .anti_bloat_store()
+            .ok_or(Error::StorageUnavailable)?
+            .review(review_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        if review.workspace_id != workspace {
+            return Err(Error::Forbidden);
+        }
+        tx.commit().await?;
+        Ok(review)
+    }
+
+    pub async fn apply_anti_bloat(
+        &self,
+        context: &RequestContext,
+        authored: &AntiBloatAuthoredDelta,
+    ) -> Result<AntiBloatApplyReceipt> {
+        let (mut tx, workspace, _, _) = self
+            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+            .await?;
+        let store = tx.anti_bloat_store().ok_or(Error::StorageUnavailable)?;
+        let saved = store
+            .review(authored.review_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        if saved.workspace_id != workspace {
+            return Err(Error::Forbidden);
+        }
+        let receipt = apply_anti_bloat_delta(store, authored).await?;
+        tx.commit().await?;
+        Ok(receipt)
+    }
+
+    /// The one-use send fence is committed before the provider sees a permit.
+    /// Raw response bytes are committed before their interpretation.
+    pub async fn run_anti_bloat_once(
+        &self,
+        context: &RequestContext,
+        review_id: Uuid,
+    ) -> Result<AntiBloatAttemptState> {
+        if review_id.is_nil() {
+            return Err(Error::InvalidArguments);
+        }
+        let (mut fence, workspace, actor, session) = self
+            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+            .await?;
+        let saved = fence
+            .anti_bloat_store()
+            .ok_or(Error::StorageUnavailable)?
+            .review(review_id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        if saved.workspace_id != workspace {
+            return Err(Error::Forbidden);
+        }
+        if saved.actor_id != actor
+            || saved.invocation.as_ref().map(|v| v.session_id) != Some(session)
+        {
+            return Err(Error::InputConflict);
+        }
+        if saved.state == AntiBloatAttemptState::Prepared
+            && fence
+                .session_advisory_preference(workspace, session)
+                .await?
+                .preference
+                == AdvisoryRequestPreference::Skip
+        {
+            fence
+                .anti_bloat_store()
+                .ok_or(Error::StorageUnavailable)?
+                .record_preflight_no_call(review_id, AntiBloatNoCall::SessionSkip)
+                .await?;
+            fence.commit().await?;
+            return Ok(AntiBloatAttemptState::NoCall(AntiBloatNoCall::SessionSkip));
+        }
+        if saved.state == AntiBloatAttemptState::Sending {
+            fence.commit().await?;
+            return self.finish_anti_bloat_response(context, review_id).await;
+        }
+        let prepared = prepare_anti_bloat_send(
+            fence.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
+            self.anti_bloat_provider.as_ref(),
+            review_id,
+        )
+        .await?;
+        let Some(permit) = prepared.permit else {
+            fence.commit().await?;
+            return Ok(prepared.state);
+        };
+
+        let observation = match rank_after_committed_fence(
+            fence.commit(),
+            self.anti_bloat_provider.as_ref(),
+            &permit,
+        )
+        .await?
+        {
+            Ok(observation) => observation,
+            Err(_) => {
+                let (mut uncertain, _, _, _) = self
+                    .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+                    .await?;
+                uncertain
+                    .anti_bloat_store()
+                    .ok_or(Error::StorageUnavailable)?
+                    .mark_send_unknown(review_id)
+                    .await?;
+                uncertain.commit().await?;
+                return Ok(AntiBloatAttemptState::SendUnknown);
+            }
+        };
+        let (mut seal, _, _, _) = self
+            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+            .await?;
+        seal_anti_bloat_response(
+            seal.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
+            &permit,
+            &observation,
+        )
+        .await?;
+        seal.commit().await?;
+
+        self.finish_anti_bloat_response(context, review_id).await
+    }
+
+    async fn finish_anti_bloat_response(
+        &self,
+        context: &RequestContext,
+        review_id: Uuid,
+    ) -> Result<AntiBloatAttemptState> {
+        let (mut usage_read, workspace, _, _) = self
+            .anti_bloat_transaction(context, TransactionMode::ReadOnly)
+            .await?;
+        let store = usage_read
+            .anti_bloat_store()
+            .ok_or(Error::StorageUnavailable)?;
+        let review = store.review(review_id).await?.ok_or(Error::NotFound)?;
+        if review.workspace_id != workspace {
+            return Err(Error::Forbidden);
+        }
+        if review.state != AntiBloatAttemptState::Sending {
+            let state = review.state;
+            usage_read.commit().await?;
+            return Ok(state);
+        }
+        let Some(response) = super::recovery::load_saved_response(
+            store,
+            self.anti_bloat_provider.as_ref(),
+            review_id,
+        )
+        .await?
+        else {
+            usage_read.commit().await?;
+            return Ok(AntiBloatAttemptState::Sending);
+        };
+        let permit = response.permit;
+        let original = response.observation;
+        let (observation, usage_invalid) = observe_sealed_usage(
+            usage_read
+                .anti_bloat_store()
+                .ok_or(Error::StorageUnavailable)?,
+            self.anti_bloat_provider.as_ref(),
+            &permit,
+            &original,
+        )
+        .await?;
+        usage_read.commit().await?;
+
+        let (mut consume, _, _, _) = self
+            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+            .await?;
+        let exhausted = consume
+            .anti_bloat_store()
+            .ok_or(Error::StorageUnavailable)?
+            .consume_budget(&permit, &observation)
+            .await?;
+        consume.commit().await?;
+        if usage_invalid
+            || observation
+                .http_status
+                .is_some_and(|n| !(200..=299).contains(&n))
+        {
+            let (mut invalid, _, _, _) = self
+                .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+                .await?;
+            invalid
+                .anti_bloat_store()
+                .ok_or(Error::StorageUnavailable)?
+                .seal_terminal(&permit, AntiBloatAttemptState::InvalidResponse)
+                .await?;
+            invalid.commit().await?;
+            return Ok(AntiBloatAttemptState::InvalidResponse);
+        }
+        if exhausted {
+            let (mut uncertain, _, _, _) = self
+                .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+                .await?;
+            uncertain
+                .anti_bloat_store()
+                .ok_or(Error::StorageUnavailable)?
+                .mark_send_unknown(review_id)
+                .await?;
+            uncertain.commit().await?;
+            return Ok(AntiBloatAttemptState::SendUnknown);
+        }
+
+        let (mut finish, _, _, _) = self
+            .anti_bloat_transaction(context, TransactionMode::ReadWrite)
+            .await?;
+        let outcome = finalize_anti_bloat_response(
+            finish.anti_bloat_store().ok_or(Error::StorageUnavailable)?,
+            self.anti_bloat_provider.as_ref(),
+            &permit,
+            &observation.raw,
+        )
+        .await;
+        // Invalid provider output transitions to send_unknown even when the
+        // command reports a conflict; commit that terminal audit state.
+        finish.commit().await?;
+        outcome
+    }
+}

@@ -17,12 +17,14 @@ async fn full_engineering_migrations_restart_without_rewriting_history() {
     };
     eprintln!("migration_fixture_root={}", root.display());
     let socket = root.join("full-migration.sock");
-    let _daemon = Daemon::start(&tagged_url(&runtime_url, "full-migration"), socket.clone()).await;
+    let mut daemon =
+        Daemon::start(&tagged_url(&runtime_url, "full-migration"), socket.clone()).await;
     let enrollment = admin::enroll_host(&pool, None, vec![root.to_string_lossy().into_owned()])
         .await
         .unwrap();
     let config = root.join("host.json");
     host_file(&config, &enrollment.auth);
+    let mut mcp_cleanup = Ok(());
     for version in ["0.6.0-native.engineering.2", "0.6.0-native.engineering.3"] {
         let repo = root.join(format!("source-{}", version.chars().last().unwrap()));
         repository(&repo);
@@ -237,5 +239,10 @@ async fn full_engineering_migrations_restart_without_rewriting_history() {
             "full migration {version}: retained_output={} successor={} P1 rev1 replay/conflict/stale/manual_bypass passed",
             output["id"], migrated["successor_run_id"]
         );
+        mcp_cleanup = client.finish_result().await;
+        if mcp_cleanup.is_err() {
+            break;
+        }
     }
+    recovery_support::stop_after_mcp(mcp_cleanup, &mut daemon).await;
 }

@@ -58,8 +58,8 @@ terminal when completed. This proves five-tool persistence, freshness, history a
 mechanics. It does not claim that TectD executed either selected pipeline or
 independently verified caller-supplied evidence.
 
-The deterministic discovery checks keep the five public tools and verify the exact `20` query,
-`41` command, and `1` execute routes, including `slice.pipeline.checkpoint.resolve`.
+The deterministic discovery checks keep the five public tools and verify the exact `39` query,
+`64` command, and `1` execute routes, including `slice.pipeline.checkpoint.resolve`.
 Knowledge discovery covers the exact eighteen DK-1 through
 DK-4 routes: six DK-1 routes, seven DK-2 lifecycle routes, DK-3 search, the DK-4 Program knowledge
 refresh, and three DK-4 maintenance routes. Strict maintenance help

@@ -90,10 +90,39 @@ pub struct EvidenceDraft {
     pub authority_input_sequence: Option<i64>,
 }
 
+/// Source-grounded work must cover a goal. Exploratory work is explicitly
+/// unrequested and can only be resolved by the versioned authored constructor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CandidateGrounding {
+    #[default]
+    SourceGrounded,
+    ExploratoryUnrequested {
+        provenance: ExploratoryProvenance,
+    },
+}
+
+impl CandidateGrounding {
+    pub fn is_source_grounded(&self) -> bool {
+        matches!(self, Self::SourceGrounded)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExploratoryProvenance {
+    SourceAuthoredV2,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CandidateDraft {
     pub identity: DraftIdentity,
+    #[serde(
+        default,
+        skip_serializing_if = "CandidateGrounding::is_source_grounded"
+    )]
+    pub grounding: CandidateGrounding,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change_rationale: Option<String>,
     pub title: String,
@@ -200,6 +229,17 @@ pub struct SaveCandidateDraft {
     pub draft: ScopeCandidateDraft,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_knowledge: Option<crate::PlanningManifestGuard>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_advisory: Option<SelectedScopeAdvisory>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectedScopeAdvisory {
+    pub opportunity_id: Uuid,
+    pub disposition_id: Uuid,
+    pub selected_id: crate::ScopeAlternativeId,
+    pub alternative_key: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -290,6 +330,7 @@ pub struct ReviewCandidateSet {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CoverageGoalEntity {
     pub id: Uuid,
     pub revision: i64,
@@ -300,12 +341,14 @@ pub struct CoverageGoalEntity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CoverageResolutionEntity {
     pub kind: CoverageResolutionKind,
     pub id: Uuid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EvidenceEntity {
     pub id: Uuid,
     pub revision: i64,
@@ -316,9 +359,15 @@ pub struct EvidenceEntity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateEntity {
     pub id: Uuid,
     pub revision: i64,
+    #[serde(
+        default,
+        skip_serializing_if = "CandidateGrounding::is_source_grounded"
+    )]
+    pub grounding: CandidateGrounding,
     pub title: String,
     pub outcome: String,
     pub trigger: String,
@@ -332,6 +381,7 @@ pub struct CandidateEntity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BlockerEntity {
     pub id: Uuid,
     pub revision: i64,
@@ -340,6 +390,7 @@ pub struct BlockerEntity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResolvedCandidateDraft {
     pub boundary: CandidateBoundary,
     pub goals: Vec<CoverageGoalEntity>,
@@ -354,6 +405,7 @@ pub struct ResolvedCandidateDraft {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateDelta {
     pub added: Vec<CandidateAdded>,
     pub changed: Vec<CandidateChanged>,
@@ -362,12 +414,14 @@ pub struct CandidateDelta {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateAdded {
     pub candidate_id: Uuid,
     pub revision: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateChanged {
     pub candidate_id: Uuid,
     pub from_revision: i64,
@@ -376,12 +430,14 @@ pub struct CandidateChanged {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateUnchanged {
     pub candidate_id: Uuid,
     pub revision: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CandidateSuperseded {
     pub prior: CandidateEntity,
     pub reason: String,

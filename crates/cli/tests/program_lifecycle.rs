@@ -305,7 +305,18 @@ async fn rich_program_draft_question_correction_and_restart_preserve_one_record(
     second.finish().await;
     daemon.crash().await;
     daemon.remove_owned_stale_socket();
-    daemon = Daemon::start(&runtime, socket.clone()).await;
+    let old = std::fs::read(socket.with_extension("stderr")).unwrap();
+    let stderr = socket.with_extension("recovery.stderr");
+    daemon = Daemon::start_configured_with_stderr_result(
+        std::path::Path::new(env!("CARGO_BIN_EXE_tectd")),
+        &runtime,
+        socket.clone(),
+        None,
+        stderr,
+    )
+    .await
+    .unwrap();
+    assert_eq!(std::fs::read(socket.with_extension("stderr")).unwrap(), old);
     let later_native = Uuid::new_v4().to_string();
     let mut later = Mcp::start(&socket, &config, &later_native, &workspace).await;
     later.call("open_workspace", json!({})).await;
