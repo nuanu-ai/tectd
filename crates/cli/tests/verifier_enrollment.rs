@@ -215,8 +215,20 @@ async fn verifier_enrollment_is_distinct_pregranted_and_cannot_open_owner_routes
         .call_error("command", json!({"route":"program.save","params":{}}))
         .await;
     assert_eq!(owner_validation["error"]["code"], "invalid_arguments");
-    assert!(owner_validation["error"]["route_contract"].is_object());
-    assert!(!owner_validation["actions"].as_array().unwrap().is_empty());
+    assert!(owner_validation["error"].get("route_contract").is_none());
+    let recovery = &owner_validation["actions"][0];
+    assert_eq!(recovery["kind"], "ready_call");
+    assert_eq!(recovery["tool"], "help");
+    assert_eq!(
+        recovery["arguments"],
+        json!({"mode":"describe","tool":"command","route":"program.save"})
+    );
+    let described = owner_mcp.call("help", recovery["arguments"].clone()).await;
+    assert_eq!(described["kind"], "route");
+    assert_eq!(described["tool"], "command");
+    assert_eq!(described["route"], "program.save");
+    assert!(described["params_schema"].is_object());
+    assert!(described["example"].is_object());
     let owner_verify = owner_mcp
         .call_error(
             "command",
