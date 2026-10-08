@@ -170,7 +170,7 @@ async fn native_scope_slice_result_replans_and_recovers() {
     assert_eq!(recovered.value["scope"]["id"], reviewed["scope"]["id"]);
     let retained = recovery_support::candidate_reads::read_query_json(
         &mut client,
-        json!({"route":"slice.candidates.context","params":{
+        &json!({"route":"slice.candidates.context","params":{
             "scope_id":reviewed["scope"]["id"],"view":"details","limit":25}}),
     )
     .await;
