@@ -262,7 +262,15 @@ async fn native_scope_slice_result_replans_and_recovers() {
         rewrite.clone(),
     )
     .await;
-    assert_eq!(protected["error"]["code"], "forbidden");
+    assert_eq!(protected["error"]["code"], "STATE_CONFLICT");
+    let refusal = &protected["error"]["refusal"];
+    assert_eq!(refusal["code"], "STATE_CONFLICT");
+    assert_eq!(refusal["rule"], "SLICE-DRAFT-OPENED-IMMUTABLE");
+    assert_eq!(refusal["path"], "/params/draft/nodes");
+    assert_eq!(refusal["resource_id"], debug["id"]);
+    assert_eq!(refusal["revision"], debug["revision"]);
+    assert_eq!(refusal["next_action"], "slice.candidates.context");
+    assert_eq!(refusal["required"], "preserved_opened_nodes");
 
     rewrite["request_id"] = json!(Uuid::new_v4());
     rewrite["draft"] = json!({
