@@ -1,4 +1,6 @@
 //! Live PostgreSQL/MCP acceptance for the normalized WP5 candidate graph.
+#[path = "scope_candidate_delta/native_draft.rs"]
+mod native_draft;
 mod recovery_support;
 
 use recovery_support::candidate_reads::CandidateFixture;

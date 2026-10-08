@@ -84,6 +84,12 @@ pub(super) fn intro(data: &Value) -> &'static str {
 pub(crate) fn error_intro(error: &Error) -> &'static str {
     if error
         .refusal()
+        .is_some_and(|refusal| refusal.code == tect_domain::RefusalCode::StateConflict)
+    {
+        return "The requested transition conflicts with saved state. Follow the exact owner context action and preserve completed work when adding a successor.";
+    }
+    if error
+        .refusal()
         .is_some_and(|refusal| refusal.code == tect_domain::RefusalCode::InvalidOutput)
     {
         return "The submitted output does not satisfy the required contract. Correct the reported issue and retry.";

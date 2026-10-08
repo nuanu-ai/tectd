@@ -48,7 +48,15 @@ pub(crate) async fn save_draft(
         request.input_cursor,
     )?;
     if locked.1 == "ready" || locked.1 == "blocked" {
-        return Err(Error::Forbidden);
+        return Err(Error::refused_at(
+            RefusalCode::StateConflict,
+            "SLICE-DRAFT-EDITABLE",
+            "/candidate_set/status",
+            "input recorded and refreshed before a new draft",
+            &locked.1,
+            "slice.candidates.input",
+            "new_original_input",
+        ));
     }
     let previous = load_context(tx, tenant, workspace, request.scope_id)
         .await?
@@ -264,8 +272,25 @@ async fn resolve_draft(
             if &candidate == old {
                 candidate
             } else {
-                if opened.contains(&id) || change.as_deref().unwrap_or("").trim().is_empty() {
-                    return Err(Error::Forbidden);
+                if opened.contains(&id) {
+                    return Err(opened_node_conflict(
+                        "SLICE-DRAFT-OPENED-IMMUTABLE",
+                        "/params/draft/nodes",
+                        id,
+                        old.revision(),
+                        "opened node retained unchanged; add a successor node for new work",
+                    ));
+                }
+                if change.as_deref().unwrap_or("").trim().is_empty() {
+                    return Err(Error::refused_at(
+                        RefusalCode::InputSchemaInvalid,
+                        "SLICE-DRAFT-CHANGE-RATIONALE",
+                        "/params/draft/nodes/change_rationale",
+                        "nonempty change rationale",
+                        id.to_string(),
+                        "slice.candidates.context",
+                        "change_rationale",
+                    ));
                 }
                 with_revision(
                     candidate,
@@ -284,13 +309,28 @@ async fn resolve_draft(
             && let SliceCandidateNode::Work { pipeline, .. } = &candidate
             && !selectable.contains(pipeline)
         {
-            return Err(Error::Forbidden);
+            return Err(Error::refused_at(
+                RefusalCode::MethodVersionUnavailable,
+                "SLICE-DRAFT-PIPELINE-SELECTABLE",
+                "/params/draft/nodes/pipeline",
+                "pipeline in the current Scope catalogue",
+                id.to_string(),
+                "slice.candidates.context",
+                "selectable_pipeline",
+            ));
         }
         nodes.push(candidate);
     }
     for id in &opened {
         if !nodes.iter().any(|n| n.id() == *id) {
-            return Err(Error::Forbidden);
+            let old = previous_nodes.get(id).ok_or(Error::InternalInvariant)?;
+            return Err(opened_node_conflict(
+                "SLICE-DRAFT-OPENED-PRESERVED",
+                "/params/draft/nodes",
+                *id,
+                old.revision(),
+                "all opened nodes retained unchanged alongside new nodes",
+            ));
         }
     }
     let mut supersessions = Vec::new();
@@ -301,11 +341,36 @@ async fn resolve_draft(
         if old.revision() != item.revision {
             return Err(Error::StaleRevision);
         }
-        if opened.contains(&item.candidate_id)
-            || nodes.iter().any(|n| n.id() == item.candidate_id)
-            || item.reason.trim().is_empty()
-        {
-            return Err(Error::Forbidden);
+        if opened.contains(&item.candidate_id) {
+            return Err(opened_node_conflict(
+                "SLICE-DRAFT-OPENED-SUPERSESSION",
+                "/params/draft/supersessions",
+                item.candidate_id,
+                old.revision(),
+                "opened nodes retained unchanged rather than superseded",
+            ));
+        }
+        if nodes.iter().any(|n| n.id() == item.candidate_id) {
+            return Err(Error::refused_at(
+                RefusalCode::StateConflict,
+                "SLICE-DRAFT-RETAINED-SUPERSESSION",
+                "/params/draft/supersessions",
+                "superseded node omitted from current nodes",
+                item.candidate_id.to_string(),
+                "slice.candidates.context",
+                "valid_supersession",
+            ));
+        }
+        if item.reason.trim().is_empty() {
+            return Err(Error::refused_at(
+                RefusalCode::InputSchemaInvalid,
+                "SLICE-DRAFT-SUPERSESSION-REASON",
+                "/params/draft/supersessions/reason",
+                "nonempty supersession reason",
+                "empty reason",
+                "slice.candidates.context",
+                "supersession_reason",
+            ));
         }
         if item
             .source_result_ids
@@ -360,7 +425,15 @@ async fn resolve_draft(
         .await?;
         if *id == producer_candidate || reaches_candidate(&nodes, dependencies, producer_candidate)
         {
-            return Err(Error::Forbidden);
+            return Err(Error::refused_at(
+                RefusalCode::StateConflict,
+                "SLICE-DRAFT-CHECKPOINT-LINEAGE",
+                "/params/draft/nodes/source_checkpoint",
+                "successor independent of its producer dependency path",
+                id.to_string(),
+                "slice.candidates.context",
+                "acyclic_checkpoint_lineage",
+            ));
         }
     }
     Ok(ResolvedSliceCandidateDraft {
@@ -368,6 +441,20 @@ async fn resolve_draft(
         nodes,
         supersessions,
     })
+}
+
+fn opened_node_conflict(
+    rule: &'static str,
+    path: &'static str,
+    id: Uuid,
+    revision: i64,
+    expected: &'static str,
+) -> Error {
+    Error::Refused(Box::new(Refusal::new(RefusalCode::StateConflict)
+        .with_message("opened Slice candidates are retained history; preserve this node unchanged and add distinct successor work")
+        .with_rule(rule).with_path(path).with_expected(expected).with_actual(id.to_string())
+        .with_resource_id(id).with_revision(revision)
+        .with_next_action("slice.candidates.context").with_required("preserved_opened_nodes")))
 }
 
 fn reaches_candidate(nodes: &[SliceCandidateNode], roots: &[Uuid], target: Uuid) -> bool {

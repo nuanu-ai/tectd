@@ -1,3 +1,6 @@
+mod delta_receipt;
+pub(crate) use delta_receipt::delta;
+
 use crate::responses::{encoded_len, with_actions};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};

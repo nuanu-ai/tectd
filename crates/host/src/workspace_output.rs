@@ -106,15 +106,18 @@ fn actions(
 pub(crate) fn candidate_actions(
     candidates: &[tect_domain::CandidateSetSummary],
 ) -> Result<Vec<Value>> {
-    candidates
-        .iter()
-        .map(|candidate| {
-            crate::api::ready_action(
-                "candidate_context",
-                json!({"candidate_set_id":candidate.id,"view":"overview","limit":25}),
-            )
-        })
-        .collect()
+    let mut calls = Vec::new();
+    for candidate in candidates {
+        calls.push(crate::api::ready_action(
+            "candidate_context",
+            json!({"candidate_set_id":candidate.id,"view":"overview","limit":25}),
+        )?);
+        calls.push(crate::api::needs_action("needs_input", "record_candidate_input",
+            json!({"candidate_set_id":candidate.id,"revision":candidate.revision,
+                "request_id":native_request_id(candidate.id,candidate.revision,"new-input")}),
+            "input", json!({"fields":[{"path":"arguments.params.input","format":"Complete original authorized new work or correction to this Program's Scope plan. Recording input requires refreshed candidates and review before opening distinct new work."}]}))?);
+    }
+    Ok(calls)
 }
 
 fn seed_request_id(seed: Uuid, label: &str) -> Uuid {
@@ -123,7 +126,11 @@ fn seed_request_id(seed: Uuid, label: &str) -> Uuid {
 
 pub(crate) fn native_actions(summary: &NativePlanningSummary) -> Result<Vec<Value>> {
     let mut calls = Vec::new();
-    for run in &summary.pipeline_runs {
+    for run in summary
+        .pipeline_runs
+        .iter()
+        .filter(|run| run.status != "completed")
+    {
         calls.push(crate::api::ready_action(
             "slice_pipeline_context",
             json!({"run_id":run.run_id}),
@@ -172,10 +179,25 @@ pub(crate) fn native_actions(summary: &NativePlanningSummary) -> Result<Vec<Valu
             }
         }
     }
+    calls.push(crate::api::needs_action("needs_input", "record_slice_candidate_input",
+        json!({"scope_id":summary.scope_id,"candidate_set_id":summary.candidate_set_id,
+            "revision":summary.candidate_set_revision,
+            "request_id":native_request_id(summary.candidate_set_id,summary.candidate_set_revision,"new-input")}),
+        "input", json!({"fields":[{"path":"arguments.params.input","format":"Complete original authorized new work within this Scope. After recording, refresh, retain opened nodes unchanged, add successor nodes, review and open eligible new work. Completed pipelines remain historical evidence."}]}))?);
     calls.push(crate::api::ready_action(
         "slice_candidate_context",
         json!({"scope_id":summary.scope_id,"view":"overview","limit":25}),
     )?);
+    for run in summary
+        .pipeline_runs
+        .iter()
+        .filter(|run| run.status == "completed")
+    {
+        calls.push(crate::api::ready_action(
+            "slice_pipeline_context",
+            json!({"run_id":run.run_id}),
+        )?);
+    }
     Ok(calls)
 }
 
@@ -396,98 +418,7 @@ fn next(programs: &[ProgramSummary], more: bool, original: &Option<String>) -> O
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tect_domain::{
-        NativePipelineRunSummary, NativeSliceSummary, NativeWorkCandidateSummary, SliceState,
-    };
-
-    pub(super) fn summary() -> NativePlanningSummary {
-        NativePlanningSummary {
-            scope_id: Uuid::new_v4(),
-            scope_revision: 1,
-            candidate_set_id: Uuid::new_v4(),
-            candidate_set_revision: 3,
-            candidate_set_status: SliceCandidateSetStatus::Ready,
-            snapshot_id: Uuid::new_v4(),
-            stale: false,
-            eligible_work: vec![NativeWorkCandidateSummary {
-                candidate_id: Uuid::new_v4(),
-                candidate_revision: 1,
-            }],
-            slices_needing_result: Vec::new(),
-            pipeline_runs: Vec::new(),
-            knowledge_changes: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn native_state_routes_stale_ready_and_open_slice_without_claiming_execution() {
-        let ready = native_actions(&summary()).unwrap();
-        assert_eq!(ready[0]["arguments"]["route"], "slice.open");
-        assert!(ready.iter().all(|action| {
-            !matches!(
-                action["arguments"]["route"].as_str(),
-                Some("slice.start" | "slice.execute")
-            )
-        }));
-
-        let mut stale = summary();
-        stale.stale = true;
-        let stale_actions = native_actions(&stale).unwrap();
-        assert_eq!(
-            stale_actions[0]["arguments"]["route"],
-            "slice.candidates.refresh"
-        );
-
-        let mut awaiting = summary();
-        awaiting.eligible_work.clear();
-        awaiting.slices_needing_result.push(NativeSliceSummary {
-            slice_id: Uuid::new_v4(),
-            slice_revision: 1,
-            state: SliceState::Open,
-        });
-        let result_actions = native_actions(&awaiting).unwrap();
-        assert_eq!(
-            result_actions[0]["arguments"]["route"],
-            "slice.result.record"
-        );
-
-        awaiting.slices_needing_result[0].state = SliceState::Blocked;
-        let blocked_actions = native_actions(&awaiting).unwrap();
-        assert!(
-            blocked_actions
-                .iter()
-                .all(|action| action["arguments"]["route"] != "slice.result.record")
-        );
-        assert_eq!(
-            blocked_actions[0]["arguments"]["route"],
-            "slice.candidates.context"
-        );
-
-        let mut managed = summary();
-        managed.eligible_work.clear();
-        managed.pipeline_runs.push(NativePipelineRunSummary {
-            run_id: Uuid::new_v4(),
-            slice_id: Uuid::new_v4(),
-            status: "blocked".into(),
-        });
-        assert_eq!(
-            native_actions(&managed).unwrap()[0]["arguments"]["route"],
-            "slice.pipeline.context"
-        );
-        managed.stale = true;
-        let stale_managed = native_actions(&managed).unwrap();
-        assert_eq!(
-            stale_managed[0]["arguments"]["route"],
-            "slice.pipeline.context"
-        );
-        assert_eq!(
-            stale_managed[1]["arguments"]["route"],
-            "slice.candidates.refresh"
-        );
-    }
-}
+mod tests;
 
 #[cfg(test)]
 mod delivery_tests;

@@ -1,12 +1,14 @@
 use super::{boundary_name, load, status_name};
 use crate::storage_error;
 use sqlx::{Postgres, Transaction};
-use std::collections::BTreeSet;
-use tect_domain::{
-    CandidateDecisionKind, CandidateFindingSeverity, CandidateSetStatus, Error, Result,
-    ReviewCandidateSet, ReviewVerdict, StoredCandidateContext,
-};
+use tect_domain::{CandidateSetStatus, Error, Result, StoredCandidateContext};
 use uuid::Uuid;
+
+mod review_validation;
+pub(super) use review_validation::validate_review;
+
+#[cfg(test)]
+mod review_diagnostic_tests;
 
 pub(super) struct LockedSet {
     pub(super) revision: i64,
@@ -58,103 +60,6 @@ pub(super) fn validate_write(
         return Err(Error::InputPending);
     }
     Ok(())
-}
-
-pub(super) fn validate_review(
-    request: &ReviewCandidateSet,
-    draft: &tect_domain::ResolvedCandidateDraft,
-) -> Result<()> {
-    if request.review.summary.trim().is_empty() || request.review.summary.contains('\0') {
-        return Err(Error::InvalidArguments);
-    }
-    let candidate_ids: BTreeSet<_> = draft.candidates.iter().map(|v| v.id).collect();
-    let decisions: BTreeSet<_> = request
-        .review
-        .candidate_decisions
-        .iter()
-        .map(|v| v.candidate_id)
-        .collect();
-    if decisions != candidate_ids
-        || request
-            .review
-            .candidate_decisions
-            .iter()
-            .any(|v| v.rationale.trim().is_empty())
-    {
-        return Err(Error::InvalidArguments);
-    }
-    let protected: BTreeSet<_> = draft
-        .protected_changes
-        .iter()
-        .map(|value| (value.accepted_evidence_id, value.prior_candidate_id))
-        .collect();
-    let reviewed: BTreeSet<_> = request
-        .review
-        .protected_change_reviews
-        .iter()
-        .map(|value| (value.accepted_evidence_id, value.prior_candidate_id))
-        .collect();
-    if protected != reviewed
-        || request
-            .review
-            .protected_change_reviews
-            .iter()
-            .any(|value| value.rationale.trim().is_empty())
-    {
-        return Err(Error::InvalidArguments);
-    }
-    let goal_ids: BTreeSet<_> = draft.goals.iter().map(|v| v.id).collect();
-    for finding in &request.review.findings {
-        if finding.summary.trim().is_empty()
-            || finding.disposition.trim().is_empty()
-            || finding
-                .candidate_ids
-                .iter()
-                .any(|id| !candidate_ids.contains(id))
-            || finding
-                .coverage_goal_ids
-                .iter()
-                .any(|id| !goal_ids.contains(id))
-        {
-            return Err(Error::InvalidArguments);
-        }
-    }
-    let material = request
-        .review
-        .findings
-        .iter()
-        .any(|v| v.severity == CandidateFindingSeverity::Material);
-    let empty_ready = draft.candidates.is_empty()
-        && draft.empty_disposition.as_ref().is_some_and(|value| {
-            value.kind == tect_domain::EmptyCandidateDispositionKind::AllCovered
-        });
-    let empty_blocked = draft.candidates.is_empty()
-        && draft.empty_disposition.as_ref().is_some_and(|value| {
-            matches!(
-                value.kind,
-                tect_domain::EmptyCandidateDispositionKind::NeedsInput
-                    | tect_domain::EmptyCandidateDispositionKind::OutOfBoundary
-            )
-        });
-    match request.review.verdict {
-        ReviewVerdict::Ready
-            if !draft.blockers.is_empty()
-                || material
-                || draft.pending_question.is_some()
-                || draft.candidates.is_empty() && !empty_ready
-                || request
-                    .review
-                    .candidate_decisions
-                    .iter()
-                    .any(|v| v.decision != CandidateDecisionKind::Accept) =>
-        {
-            Err(Error::InvalidArguments)
-        }
-        ReviewVerdict::Blocked if draft.blockers.is_empty() && !material && !empty_blocked => {
-            Err(Error::InvalidArguments)
-        }
-        _ => Ok(()),
-    }
 }
 
 #[allow(clippy::too_many_arguments)]

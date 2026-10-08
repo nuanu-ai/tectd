@@ -36,7 +36,20 @@ pub(crate) async fn open_slice(
         return Err(Error::StaleRevision);
     }
     let (title, outcome, pipeline_kind, deps, source_checkpoint) = match node {
-        SliceCandidateNode::Decision { .. } => return Err(Error::Forbidden),
+        SliceCandidateNode::Decision { .. } => {
+            return Err(Error::Refused(Box::new(
+                Refusal::new(RefusalCode::StateConflict)
+                    .with_message("a decision candidate cannot open as a Slice; resolve the decision in the candidate draft and choose a work candidate")
+                    .with_rule("SLICE-OPEN-WORK-CANDIDATE-REQUIRED")
+                    .with_path("/params/candidate_id")
+                    .with_expected("work")
+                    .with_actual("decision")
+                    .with_resource_id(node.id())
+                    .with_revision(node.revision())
+                    .with_next_action("slice.candidates.context")
+                    .with_required("work_candidate"),
+            )));
+        }
         SliceCandidateNode::Work {
             title,
             outcome,
