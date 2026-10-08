@@ -3,14 +3,6 @@ on: [push, pull_request]
 jobs:
   verify:
     runs-on: [self-hosted, Linux, X64]
-    services:
-      postgres:
-        image: postgres:18.6
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: tect_test
-        ports: ["5432"]
-        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 12
     env:
       TECT_TEST_RUNTIME_ROLE: tect_ci
       TECT_TEST_NATIVE_CONTRACT_FIXTURE: "1"
@@ -19,15 +11,15 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.93.0
         with:
           components: rustfmt, clippy
-      - name: Provision isolated CI runtime role
-        env:
-          PGPASSWORD: postgres
-          PGPORT: ${{ job.services.postgres.ports[5432] }}
-        run: psql -h 127.0.0.1 -p "$PGPORT" -U postgres -d tect_test -v ON_ERROR_STOP=1 -c "CREATE ROLE tect_ci LOGIN NOSUPERUSER NOBYPASSRLS NOINHERIT PASSWORD 'ci-fixture-only'"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24.20.0"
+      - name: Provision isolated canonical PostgreSQL fixture
+        run: python3 scripts/ci-postgres-fixture.py start "$RUNNER_TEMP/tectd-pg-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}.json"
       - run: python3 scripts/check-architecture.py
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
-        env:
-          TECT_TEST_ADMIN_URL: "postgres://postgres:postgres@127.0.0.1:${{ job.services.postgres.ports[5432] }}/tect_test"
-          TECT_TEST_RUNTIME_URL: "postgres://tect_ci:ci-fixture-only@127.0.0.1:${{ job.services.postgres.ports[5432] }}/tect_test"
+      - name: Remove this job's PostgreSQL fixture
+        if: always()
+        run: python3 scripts/ci-postgres-fixture.py cleanup "$RUNNER_TEMP/tectd-pg-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}.json"

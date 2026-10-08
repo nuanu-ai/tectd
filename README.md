@@ -551,6 +551,12 @@ saved question/new-session reply and exact publication. Ordinary recovery tests
 force a DB failure after publication and lose an MCP response; both verify the
 same durable intent without rewriting a conflicting file.
 
+The full workspace suite requires Node 24.20.0 and an isolated PostgreSQL 18.6
+server built from `containers/postgres/Dockerfile`, with pinned pgRDF 0.6.34
+installed and preloaded. CI provisions that fixture and a restricted `NOINHERIT`
+runtime role per job. Migration tests activate durable knowledge even when the
+optional deeper DK test flags are unset.
+
 The DK-1 integration path is opt-in and must use a dedicated PostgreSQL 18.6 database
 whose server has the pinned pgRDF 0.6.34 binary available. Set the three isolated
 database variables above plus `TECT_TEST_DURABLE_KNOWLEDGE=1`; when enabled, missing
