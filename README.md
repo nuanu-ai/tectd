@@ -385,7 +385,8 @@ reviewed, even when the reviewed branch remains unchanged.
 
 Duplicate Scope opening and opened-node draft conflicts include a rule, path,
 expected and actual values, plus a recovery action. Reopening a candidate that
-already has a Scope, or changing, omitting or superseding an opened Slice candidate,
+already has a Scope, opening a decision as a Slice, or changing, omitting or
+superseding an opened Slice candidate,
 returns `error.code: "STATE_CONFLICT"` and
 `error.refusal.code: "STATE_CONFLICT"`. Scope opening before its required ready
 review returns `"REVIEW_REQUIRED"` in both fields. These paths

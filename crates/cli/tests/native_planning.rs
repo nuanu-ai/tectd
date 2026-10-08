@@ -156,7 +156,32 @@ async fn native_scope_slice_result_replans_and_recovers() {
         open_slice(&reviewed, &decision, Uuid::new_v4()),
     )
     .await;
-    assert_eq!(decision_error["error"]["code"], "forbidden");
+    assert_eq!(decision_error["error"]["code"], "STATE_CONFLICT");
+    let refusal = &decision_error["error"]["refusal"];
+    assert_eq!(refusal["code"], "STATE_CONFLICT");
+    assert_eq!(refusal["rule"], "SLICE-OPEN-WORK-CANDIDATE-REQUIRED");
+    assert_eq!(refusal["path"], "/params/candidate_id");
+    assert_eq!(refusal["expected"], "work");
+    assert_eq!(refusal["actual"], "decision");
+    assert_eq!(refusal["resource_id"], decision["id"]);
+    assert_eq!(refusal["revision"], decision["revision"]);
+    assert_eq!(refusal["next_action"], "slice.candidates.context");
+    let recovered = read_ready_json(&mut client, &decision_error["actions"][0]).await;
+    assert_eq!(recovered.value["scope"]["id"], reviewed["scope"]["id"]);
+    let retained = recovery_support::candidate_reads::read_query_json(
+        &mut client,
+        json!({"route":"slice.candidates.context","params":{
+            "scope_id":reviewed["scope"]["id"],"view":"details","limit":25}}),
+    )
+    .await;
+    assert_eq!(retained.value["draft"], reviewed["draft"]);
+    let decision_slices: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM native_slices WHERE candidate_id=$1")
+            .bind(id(&decision["id"]))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(decision_slices, 0);
     let open_request = open_slice(&reviewed, &debug, Uuid::new_v4());
     let slice_opened = route(&mut client, "command", "slice.open", open_request.clone()).await;
     let slice = &slice_opened["created"];

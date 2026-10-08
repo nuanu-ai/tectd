@@ -245,10 +245,11 @@ fn failure_data(
         }
     }
     if let Some(refusal) = error.refusal()
-        && refusal
-            .rule
-            .as_deref()
-            .is_some_and(|rule| rule.starts_with("SCOPE-OPEN-") || rule.starts_with("SLICE-DRAFT-"))
+        && refusal.rule.as_deref().is_some_and(|rule| {
+            rule.starts_with("SCOPE-OPEN-")
+                || rule.starts_with("SLICE-DRAFT-")
+                || rule == "SLICE-OPEN-WORK-CANDIDATE-REQUIRED"
+        })
     {
         actions.clear();
         if refusal.rule.as_deref() == Some("SCOPE-OPEN-ONCE") {
