@@ -83,7 +83,44 @@ async fn native_planning_rejects_cross_boundary_and_unready_graph_operations() {
         scope_request(&source, &candidate),
     )
     .await;
-    assert_eq!(unready["error"]["code"], "forbidden");
+    assert_eq!(unready["error"]["refusal"]["code"], "REVIEW_REQUIRED");
+    assert_eq!(unready["error"]["refusal"]["rule"], "SCOPE-OPEN-READY");
+    assert_eq!(
+        unready["actions"][0]["arguments"]["route"],
+        "scope.candidates.context"
+    );
+    let invalid_review = route_error(&mut client, "command", "scope.candidates.save", json!({
+        "kind":"review","candidate_set_id":source["candidate_set"]["id"],
+        "revision":source["candidate_set"]["revision"],"snapshot_id":source["snapshot"]["id"],
+        "input_cursor":source["candidate_set"]["input_cursor"],"request_id":Uuid::new_v4(),
+        "review":{"verdict":"ready","summary":"Ready but missing current candidate decision","findings":[],"candidate_decisions":[],"protected_change_reviews":[]}
+    })).await;
+    assert_eq!(invalid_review["error"]["code"], "invalid_arguments");
+    assert_eq!(
+        invalid_review["error"]["details"]["pointer"],
+        "/params/review/candidate_decisions"
+    );
+    assert!(
+        invalid_review["error"]["details"]["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty())
+    );
+    assert_eq!(
+        invalid_review["error"]["schema_help"]["arguments"]["route"],
+        "scope.candidates.save"
+    );
+    let schema = client
+        .call(
+            "help",
+            invalid_review["error"]["schema_help"]["arguments"].clone(),
+        )
+        .await;
+    assert_eq!(
+        schema
+            .get("route")
+            .or_else(|| schema.pointer("/source/selectors/route")),
+        Some(&json!("scope.candidates.save"))
+    );
     sqlx::query("UPDATE scope_candidate_sets SET status='ready' WHERE id=$1")
         .bind(id(&source["candidate_set"]["id"]))
         .execute(&pool)
@@ -100,6 +137,37 @@ async fn native_planning_rejects_cross_boundary_and_unready_graph_operations() {
     let opened = ScopeOpenFixture::from_mutation(opened, "created");
     let planning_read = opened.read_planning(&mut client).await;
     let planning = &planning_read.value;
+
+    // A new request for the same candidate is a recoverable state conflict,
+    // not an authority denial and never a second Scope.
+    let duplicate = route_error(
+        &mut client,
+        "command",
+        "scope.open",
+        scope_request(&source, &candidate),
+    )
+    .await;
+    assert_eq!(duplicate["error"]["refusal"]["code"], "STATE_CONFLICT");
+    assert_eq!(duplicate["error"]["refusal"]["rule"], "SCOPE-OPEN-ONCE");
+    assert_eq!(
+        duplicate["error"]["refusal"]["resource_id"],
+        planning["scope"]["id"]
+    );
+    assert_eq!(
+        duplicate["error"]["refusal"]["revision"],
+        planning["scope"]["revision"]
+    );
+    let recovered =
+        recovery_support::candidate_reads::read_ready_json(&mut client, &duplicate["actions"][0])
+            .await;
+    assert_eq!(recovered.value["scope"]["id"], planning["scope"]["id"]);
+    let count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM native_scopes WHERE source_candidate_id=$1")
+            .bind(id(&candidate["id"]))
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 1);
 
     let cycle = json!({"coverage_summary":"Cycle must fail","nodes":[
         work("a",vec![json!({"local":"b"})]),work("b",vec![json!({"local":"a"})])
@@ -188,6 +256,52 @@ async fn native_planning_rejects_cross_boundary_and_unready_graph_operations() {
     let refreshed_receipt = SlicePlanningFixture::from_mutation(refreshed);
     let refreshed = refreshed_receipt.read_details(&mut client).await.value;
 
+    let mut changed_opened = existing_work(&a, vec![]);
+    changed_opened["outcome"] = json!("Rewrite the historical opened node");
+    changed_opened["change_rationale"] = json!("New authorized work still needs a successor");
+    let changed = route_error(&mut client, "command", "slice.candidates.save", json!({
+        "kind":"draft","scope_id":refreshed["scope"]["id"],"candidate_set_id":refreshed["candidate_set"]["id"],
+        "revision":refreshed["candidate_set"]["revision"],"snapshot_id":refreshed["snapshot"]["id"],
+        "input_cursor":refreshed["candidate_set"]["input_cursor"],"request_id":Uuid::new_v4(),
+        "draft":{"coverage_summary":"must retain history","nodes":[changed_opened],"supersessions":[]}
+    })).await;
+    assert_eq!(changed["error"]["refusal"]["code"], "STATE_CONFLICT");
+    assert_eq!(
+        changed["error"]["refusal"]["rule"],
+        "SLICE-DRAFT-OPENED-IMMUTABLE"
+    );
+    // Reproduce the AEH omitted-opened-node failure and prove no draft/history loss.
+    let omitted = route_error(&mut client, "command", "slice.candidates.save", json!({
+        "kind":"draft","scope_id":refreshed["scope"]["id"],"candidate_set_id":refreshed["candidate_set"]["id"],
+        "revision":refreshed["candidate_set"]["revision"],"snapshot_id":refreshed["snapshot"]["id"],
+        "input_cursor":refreshed["candidate_set"]["input_cursor"],"request_id":Uuid::new_v4(),
+        "draft":{"coverage_summary":"new shared primitives","nodes":[work("shared_primitives", vec![])],"supersessions":[]}
+    })).await;
+    assert_eq!(omitted["error"]["refusal"]["code"], "STATE_CONFLICT");
+    assert_eq!(
+        omitted["error"]["refusal"]["rule"],
+        "SLICE-DRAFT-OPENED-PRESERVED"
+    );
+    assert_eq!(omitted["error"]["refusal"]["actual"], a["id"]);
+    assert_eq!(omitted["error"]["refusal"]["resource_id"], a["id"]);
+    assert_eq!(omitted["error"]["refusal"]["revision"], a["revision"]);
+    assert_eq!(
+        omitted["actions"][0]["arguments"]["params"]["scope_id"],
+        refreshed["scope"]["id"]
+    );
+    let retained =
+        recovery_support::candidate_reads::read_ready_json(&mut client, &omitted["actions"][0])
+            .await;
+    assert_eq!(
+        retained.value["candidate_set"]["revision"],
+        refreshed["candidate_set"]["revision"]
+    );
+    let retained = recovery_support::candidate_reads::read_query_json(&mut client, &json!({
+        "route":"slice.candidates.context","params":{"scope_id":refreshed["scope"]["id"],"view":"details","limit":25}
+    })).await;
+    assert_eq!(retained.value["draft"], refreshed["draft"]);
+    assert_eq!(retained.value["draft"]["nodes"][0], a);
+
     let missing_full = json!({"coverage_summary":"Missing Full rationale","nodes":[
         existing_work(&a,vec![]),existing_work(&b,vec![json!({"candidate_id":a["id"],"revision":a["revision"]})]),{"kind":"work","identity":{"local":"full"},
         "title":"Full successor","outcome":"Intertwined correction is verified",
@@ -260,6 +374,23 @@ async fn native_planning_rejects_cross_boundary_and_unready_graph_operations() {
                     .unwrap()
                     .is_empty())
     );
+
+    let successor_ready = review(&mut client, &revised).await;
+    let successor = successor_ready["draft"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["pipeline"] == "slice.full-design-to-execution")
+        .unwrap();
+    let successor_opened = route(
+        &mut client,
+        "command",
+        "slice.open",
+        open_slice(&successor_ready, successor, Uuid::new_v4()),
+    )
+    .await;
+    assert_eq!(successor_opened["created"]["candidate_id"], successor["id"]);
+    assert_eq!(successor_ready["draft"]["nodes"][0], a);
 
     let other_workspace = format!("native-guards-other-{}", Uuid::new_v4());
     let mut other = Mcp::start(

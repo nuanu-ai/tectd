@@ -289,6 +289,12 @@ replacement edge, source references are candidate-set-scoped foreign keys, and a
 finite live goal must finish every batch with a live candidate coverage edge or a
 live blocker. Incomplete coverage is refused as `COVERAGE_INCOMPLETE`.
 
+Delta IDs belong to the additive mutation workflow. To review or open added work,
+explicitly save a complete native candidate draft, preserving existing candidate
+IDs and revisions and using local labels for additions. That save returns the
+native candidate IDs used by review and Scope opening. Refresh captures a new
+context snapshot; it does not import delta candidates or create review decisions.
+
 Finite planning maps captured Program success to reviewed candidates, evidence or
 blockers. Ongoing planning is limited to the originating request and its captured
 amendments. Accepted-work evidence and candidate associations remain protected;
@@ -376,6 +382,23 @@ its pinned structural contract, but neither performs the work nor semantically
 proves it. Intermediate phases do not stale future planning or emit Slice Results.
 A terminal managed Result makes future planning stale so it must be refreshed and
 reviewed, even when the reviewed branch remains unchanged.
+
+Duplicate Scope opening and opened-node draft conflicts include a rule, path,
+expected and actual values, plus a recovery action. Reopening a candidate that
+already has a Scope, or changing, omitting or superseding an opened Slice candidate,
+returns `error.code: "STATE_CONFLICT"` and
+`error.refusal.code: "STATE_CONFLICT"`. Scope opening before its required ready
+review returns `"REVIEW_REQUIRED"` in both fields. These paths
+previously returned `"forbidden"` with `"AUTHORITY_REQUIRED"`. Genuine access denials
+keep that existing authority response and expose no owner state or recovery actions.
+The optional `error.refusal.resource_id` identifies the existing Scope or retained
+candidate; `revision` identifies its current revision. Callers should follow the
+returned owner context action and preserve opened candidates when adding successors.
+
+After a completed cycle, `workspace.open` offers `slice.candidates.input` for new
+original authorized work within an existing Scope, and `scope.candidates.record_input`
+for its Program's Scope plan. Both require caller input. Refresh and review the plan
+before opening distinct new work; completed pipelines remain in history.
 
 These statements describe the current source implementation. Final workspace gates,
 native client acceptance and publication or installation of a new package are

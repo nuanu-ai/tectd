@@ -71,12 +71,28 @@ async fn source_basis(
         return Err(Error::StaleContext);
     }
     if status != "ready" {
-        return Err(Error::Forbidden);
+        return Err(Error::refused_at(
+            RefusalCode::ReviewRequired,
+            "SCOPE-OPEN-READY",
+            "/candidate_set/status",
+            "ready",
+            status,
+            "scope.candidates.context",
+            "ready_candidate_review",
+        ));
     }
     let draft: ResolvedCandidateDraft = decode(draft_value)?;
     let review: ScopeCandidateReview = decode(review_value)?;
     if review.verdict != ReviewVerdict::Ready {
-        return Err(Error::Forbidden);
+        return Err(Error::refused_at(
+            RefusalCode::ReviewRequired,
+            "SCOPE-OPEN-REVIEW",
+            "/review/verdict",
+            "ready",
+            format!("{:?}", review.verdict),
+            "scope.candidates.context",
+            "ready_candidate_review",
+        ));
     }
     let candidate = draft
         .candidates
@@ -91,7 +107,15 @@ async fn source_basis(
         .iter()
         .any(|d| d.candidate_id == candidate.id && d.decision == CandidateDecisionKind::Accept)
     {
-        return Err(Error::Forbidden);
+        return Err(Error::refused_at(
+            RefusalCode::ReviewRequired,
+            "SCOPE-OPEN-ACCEPTED",
+            "/review/candidate_decisions",
+            "accepted candidate",
+            candidate.id.to_string(),
+            "scope.candidates.context",
+            "accepted_candidate_review",
+        ));
     }
     let basis = ScopeOpenBasis {
         boundary: draft.boundary,
@@ -126,8 +150,16 @@ pub(crate) async fn open_scope(
         return Ok(value);
     }
     let (basis, _) = source_basis(tx, tenant, workspace, request, true).await?;
-    if sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM native_scopes WHERE tenant_id=$1 AND workspace_id=$2 AND source_candidate_id=$3)")
-        .bind(tenant).bind(workspace).bind(request.candidate_id).fetch_one(&mut **tx).await.map_err(storage_error)? {return Err(Error::Forbidden)}
+    if let Some((scope_id, revision)) = sqlx::query_as::<_, (Uuid, i64)>(
+        "SELECT id,revision FROM native_scopes WHERE tenant_id=$1 AND workspace_id=$2 AND source_candidate_id=$3",
+    ).bind(tenant).bind(workspace).bind(request.candidate_id).fetch_optional(&mut **tx).await.map_err(storage_error)? {
+        return Err(Error::Refused(Box::new(Refusal::new(RefusalCode::StateConflict)
+            .with_message("this candidate already has an opened Scope; continue that Scope or add a distinct candidate for new work")
+            .with_rule("SCOPE-OPEN-ONCE").with_path("/params/candidate_id")
+            .with_expected("candidate without an opened Scope").with_actual(request.candidate_id.to_string())
+            .with_resource_id(scope_id).with_revision(revision)
+            .with_next_action("slice.candidates.context").with_required("existing_scope_continuation"))));
+    }
     let scope_id = Uuid::new_v4();
     let set_id = Uuid::new_v4();
     let payload = json(request)?;

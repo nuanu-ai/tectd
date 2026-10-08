@@ -244,6 +244,45 @@ fn failure_data(
             )?);
         }
     }
+    if let Some(refusal) = error.refusal()
+        && refusal
+            .rule
+            .as_deref()
+            .is_some_and(|rule| rule.starts_with("SCOPE-OPEN-") || rule.starts_with("SLICE-DRAFT-"))
+    {
+        actions.clear();
+        if refusal.rule.as_deref() == Some("SCOPE-OPEN-ONCE") {
+            if let Some(scope_id) = refusal.resource_id {
+                actions.push(action(
+                    "slice_candidate_context",
+                    json!({"scope_id":scope_id,"view":"overview","limit":25}),
+                )?);
+                actions.push(action("scope_context", json!({"scope_id":scope_id}))?);
+            }
+        } else if let Some(args) = owner_arguments(call) {
+            if let Some(scope_id) = args
+                .get("scope_id")
+                .and_then(Value::as_str)
+                .and_then(|value| value.parse::<uuid::Uuid>().ok())
+                .filter(|id| !id.is_nil())
+            {
+                actions.push(action(
+                    "slice_candidate_context",
+                    json!({"scope_id":scope_id,"view":"overview","limit":25}),
+                )?);
+            } else if let Some(set_id) = args
+                .get("candidate_set_id")
+                .and_then(Value::as_str)
+                .and_then(|value| value.parse::<uuid::Uuid>().ok())
+                .filter(|id| !id.is_nil())
+            {
+                actions.push(action(
+                    "candidate_context",
+                    json!({"candidate_set_id":set_id,"view":"overview","limit":25}),
+                )?);
+            }
+        }
+    }
     strip_failure_contracts(&mut actions);
     let recommended = (!actions.is_empty()).then_some(0);
     let mut error_data = json!({"code":error.code()});

@@ -269,3 +269,34 @@ fn invalid_unknown_or_unrouted_calls_keep_state_fallback() {
         );
     }
 }
+
+#[test]
+fn state_conflict_retains_diagnostics_and_scoped_recovery_but_access_denial_does_not() {
+    let scope = uuid::Uuid::new_v4();
+    let args = json!({"route":"slice.candidates.save","params":{"scope_id":scope}});
+    let error = Error::refused_at(
+        tect_domain::RefusalCode::StateConflict,
+        "SLICE-DRAFT-OPENED-PRESERVED",
+        "/params/draft/nodes",
+        "retain opened nodes",
+        "omitted",
+        "slice.candidates.context",
+        "preserved_opened_nodes",
+    );
+    let result = super::failure(error, Some(("command", &args)));
+    let body: Value = serde_json::from_str(result["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(body["error"]["refusal"]["path"], "/params/draft/nodes");
+    assert_eq!(
+        body["actions"][0]["arguments"]["params"]["scope_id"],
+        scope.to_string()
+    );
+    let denied = super::failure(Error::Forbidden, Some(("command", &args)));
+    let denied: Value =
+        serde_json::from_str(denied["content"][1]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        denied["error"]["refusal"],
+        json!({"code":"AUTHORITY_REQUIRED"})
+    );
+    assert_eq!(denied["actions"], json!([]));
+    assert!(denied["error"].get("route").is_none());
+}

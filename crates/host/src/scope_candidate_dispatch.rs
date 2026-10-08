@@ -89,17 +89,13 @@ pub(crate) async fn execute(
         ScopeCandidateInvocation::DeltaApply(request) => service
             .apply_candidate_delta(context, &request)
             .await
-            .map(|receipt| {
-                serde_json::to_value(receipt).map_err(tect_domain::Error::invalid_arguments_from)
-            })?,
+            .and_then(|receipt| scope_candidate_output::delta(receipt, capacity)),
         ScopeCandidateInvocation::DeltaStatus {
             candidate_set_id,
             idempotency_key,
         } => service
             .candidate_delta_status(context, candidate_set_id, &idempotency_key)
             .await
-            .map(|receipt| {
-                serde_json::to_value(receipt).map_err(tect_domain::Error::invalid_arguments_from)
-            })?,
+            .and_then(|receipt| scope_candidate_output::delta(receipt, capacity)),
     }
 }

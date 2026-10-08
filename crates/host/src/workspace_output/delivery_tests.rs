@@ -210,7 +210,7 @@ fn six_programs_heads_and_native_summaries_reconstruct_without_projection_loss()
             .sum::<usize>(),
         6
     );
-    assert_eq!(original["actions"].as_array().unwrap().len(), 32);
+    assert_eq!(original["actions"].as_array().unwrap().len(), 44);
     let root = encode(state, None, 8192, true, params).unwrap();
     assert_eq!(root["state_delivery"]["kind"], "deferred");
     let bytes = reconstruct(

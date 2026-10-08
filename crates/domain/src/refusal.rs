@@ -19,6 +19,8 @@ pub enum RefusalCode {
     NoTestTarget,
     ReviewRequired,
     AuthorityRequired,
+    /// The requested transition conflicts with retained native state.
+    StateConflict,
     MethodVersionUnavailable,
     DeliveryRefreshRequired,
     CoverageIncomplete,
@@ -47,6 +49,7 @@ impl RefusalCode {
             Self::NoTestTarget => "NO_TEST_TARGET",
             Self::ReviewRequired => "REVIEW_REQUIRED",
             Self::AuthorityRequired => "AUTHORITY_REQUIRED",
+            Self::StateConflict => "STATE_CONFLICT",
             Self::MethodVersionUnavailable => "METHOD_VERSION_UNAVAILABLE",
             Self::DeliveryRefreshRequired => "DELIVERY_REFRESH_REQUIRED",
             Self::CoverageIncomplete => "COVERAGE_INCOMPLETE",
@@ -84,6 +87,7 @@ impl RefusalCode {
             Self::AuthorityRequired => {
                 "the current principal or environment lacks required authority"
             }
+            Self::StateConflict => "the requested transition conflicts with retained native state",
             Self::MethodVersionUnavailable => {
                 "the requested pipeline method version is unavailable"
             }
@@ -118,6 +122,8 @@ pub struct Refusal {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_id: Option<uuid::Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rule: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -135,6 +141,7 @@ impl Refusal {
             next_action: None,
             required: None,
             revision: None,
+            resource_id: None,
             rule: None,
             path: None,
             expected: None,
@@ -159,6 +166,11 @@ impl Refusal {
 
     pub const fn with_revision(mut self, revision: i64) -> Self {
         self.revision = Some(revision);
+        self
+    }
+
+    pub fn with_resource_id(mut self, resource_id: uuid::Uuid) -> Self {
+        self.resource_id = Some(resource_id);
         self
     }
 

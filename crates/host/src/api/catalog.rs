@@ -99,7 +99,7 @@ fn build_routes() -> Vec<RouteSpec> {
             "scope_candidate_delta",
             "Apply one CAS-protected additive candidate mutation batch.",
             "Requires an authenticated open native session and an accessible candidate set.",
-            "Validates and records the complete operation batch atomically with idempotency replay and stale-revision refusal.",
+            "Records the complete batch atomically. To review or open added work, save a complete native draft with local labels for additions and preserve existing candidate IDs and revisions. Read the assigned native IDs from that save; delta IDs cannot be used for review or Scope opening. Refresh captures context and does not import delta candidates.",
             "Repeat with the exact idempotency key and payload for replay; changed payload conflicts.",
             candidate_schema::delta_apply(),
             json!({"candidate_set_id":example_id,"expected_revision":3,"idempotency_key":"delta-1","operations":[{"operation":"coverage.link","candidate_id":example_id,"goal_id":example_id}]}),
