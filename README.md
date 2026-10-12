@@ -541,7 +541,7 @@ fire the point and is not among the user's words. The wording lives in
 
 `unavailable` reasons are `provider_unconfigured`, `daily_limit_reached`, `timeout`,
 `transport_error`, `http_status`, `invalid_response`, `request_too_large`,
-`advice_too_large` and `mode_not_set`. Jev is not asked when the largest advice the
+`advice_too_large`, `mode_not_set` and `program_unavailable`. Jev is not asked when the largest advice the
 point could give would not fit the command reply (`advice_too_large`), when the
 request would exceed the request limit, or when even the smallest acceptable answer
 would exceed the answer limit (`request_too_large`); none of these spends the daily
@@ -557,9 +557,14 @@ holds a row with `called` false, and the reply carries:
 {"status":"unavailable","reason":"mode_not_set","message":"Jev advice is not available: the Program has no mode; set it with program.save"}
 ```
 
+`intake` sends the Program's statement. When the Program's text is erased or cannot
+be read, the input is recorded all the same, Jev is not asked, and the reply carries
+`program_unavailable` with the message `Jev advice is not available: the Program's
+text is erased or cannot be read`.
+
 A point is decided in a fixed order: Jev disabled, a replay, the point's own
-precondition (the mode), no provider, the reply fit, the daily limit, and only then
-the call.
+precondition (the mode, and for `intake` a readable Program), no provider, the reply
+fit, the daily limit, and only then the call.
 
 `workspace.advisory.audit` requires `bodies`: `true` returns `request_body` and
 `response_body` on every row, `null` where none was recorded; `false` leaves both

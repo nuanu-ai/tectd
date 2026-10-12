@@ -172,6 +172,59 @@ async fn an_input_of_a_program_without_a_mode_is_recorded_without_a_call(level: 
     other.finish().await;
 }
 
+/// A Program whose text was erased has no statement to send. On the Slice level the
+/// command does not read the Program itself: the input is recorded all the same and
+/// the reply says why there is no advice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn slice_input_of_an_erased_program_is_recorded_and_not_sent_to_jev() {
+    let level = Level::Slices;
+    let stand = Stand::start("2000").await;
+    stand.jev.answer(Jev::Answers(|_| ("ABSTAIN", 0.9)));
+    let (mut client, repo) = stand.workspace().await;
+    let erased = Planned::bare(&mut client, &repo, level).await;
+    let program = Uuid::parse_str(erased.target.program_id.as_str().unwrap()).unwrap();
+    let marked =
+        sqlx::query("UPDATE programs SET payload_erased=true WHERE tenant_id=$1 AND id=$2")
+            .bind(stand.tenant)
+            .bind(program)
+            .execute(&stand.pool)
+            .await
+            .unwrap();
+    assert_eq!(marked.rows_affected(), 1);
+    configure(&mut client, true, 0).await;
+    let request_id = Uuid::new_v4();
+    let params = erased.input(FIRST, request_id);
+    let (recorded, envelope) = command(&mut client, route(level), params.clone()).await;
+    assert_eq!(
+        recorded["advice"],
+        json!({"status":"unavailable","reason":"program_unavailable",
+            "message":"Jev advice is not available: the Program's text is erased or \
+                cannot be read"})
+    );
+    assert!(envelope <= BUDGET, "{envelope}");
+    assert_eq!(erased.recorded(&stand).await.last().unwrap(), FIRST);
+    assert_eq!(
+        journalled(&stand, &recorded["advice"]).await,
+        (
+            json!(false),
+            json!("not_sent"),
+            json!("program_unavailable")
+        )
+    );
+    let row = stand.newest_row().await;
+    assert_eq!(row["request"], Value::Null);
+    assert_eq!(row["request_id"], json!(request_id));
+    assert_eq!(row["program_id"], erased.target.program_id);
+    assert_eq!(row["scope_id"], erased.scope_id());
+
+    // A replay returns the same reply: no call, no second row, no second input.
+    let (replayed, _) = command(&mut client, route(level), params).await;
+    assert_eq!(replayed, recorded);
+    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!(stand.jev.calls(), 0);
+    client.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn scope_input_is_recorded_when_jev_times_out_or_answers_badly() {
     a_failing_jev_leaves_the_input_recorded(Level::Scopes).await;

@@ -100,6 +100,9 @@ pub enum AdviceUnavailableReason {
     AdviceTooLarge,
     /// The Program has no product level to judge against; Jev is not asked.
     ModeNotSet,
+    /// The Program's text is erased or not readable, so there is no statement to
+    /// send; Jev is not asked.
+    ProgramUnavailable,
 }
 
 impl AdviceUnavailableReason {
@@ -114,6 +117,7 @@ impl AdviceUnavailableReason {
             Self::RequestTooLarge => "request_too_large",
             Self::AdviceTooLarge => "advice_too_large",
             Self::ModeNotSet => "mode_not_set",
+            Self::ProgramUnavailable => "program_unavailable",
         }
     }
 }

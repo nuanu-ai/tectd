@@ -3,9 +3,12 @@
 //! product level and the user's words recorded before the new input, lays the latest
 //! saved draft out for Jev and asks once.
 use crate::advice::{earlier, words};
-use crate::advice_ports::NO_MODE;
-use crate::{AdviceAsk, AdviceOutputGuard, AdviceRequest, TransactionMode, WorkspaceService};
+use crate::advice_ports::{NO_MODE, NO_PROGRAM};
+use crate::{
+    AdviceAsk, AdviceOutputGuard, AdviceRequest, TransactionMode, UnitOfWork, WorkspaceService,
+};
 use tect_domain::*;
+use uuid::Uuid;
 
 const SCOPE_CANDIDATES_RECORD_INPUT: &str = "scope.candidates.record_input";
 const SLICE_CANDIDATES_INPUT: &str = "slice.candidates.input";
@@ -14,6 +17,26 @@ const WITHOUT_MODE: AdviceAsk<'static> = AdviceAsk::Unmet {
     reason: AdviceUnavailableReason::ModeNotSet,
     detail: NO_MODE,
 };
+/// Nor does one that fired for a Program whose statement cannot be read.
+const WITHOUT_PROGRAM: AdviceAsk<'static> = AdviceAsk::Unmet {
+    reason: AdviceUnavailableReason::ProgramUnavailable,
+    detail: NO_PROGRAM,
+};
+
+/// The Program a recorded input belongs to, or `None` when its text is erased or not
+/// readable. That is not a failure of the command, which has recorded its input: the
+/// point then says it has no advice.
+async fn readable_program(
+    tx: &mut dyn UnitOfWork,
+    workspace_id: Uuid,
+    program_id: Uuid,
+) -> Result<Option<Program>> {
+    match tx.program(workspace_id, program_id, false).await {
+        Ok(program) => program.map(Some).ok_or(Error::InternalInvariant),
+        Err(Error::KnowledgePayloadErased | Error::KnowledgeUnavailable) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
 
 impl WorkspaceService {
     /// Advice on the input that `scope.candidates.record_input` has recorded, given as
@@ -42,10 +65,18 @@ impl WorkspaceService {
             tx.commit().await?;
             return Ok(early);
         }
-        let program = tx
-            .program(workspace.id, set.program_id, false)
-            .await?
-            .ok_or(Error::InternalInvariant)?;
+        let Some(program) = readable_program(&mut *tx, workspace.id, set.program_id).await? else {
+            tx.commit().await?;
+            return self
+                .advise_intake(
+                    context,
+                    SCOPE_CANDIDATES_RECORD_INPUT,
+                    &work,
+                    WITHOUT_PROGRAM,
+                    reply,
+                )
+                .await;
+        };
         let Some(mode) = program.mode else {
             tx.commit().await?;
             return self
@@ -116,10 +147,19 @@ impl WorkspaceService {
             scope_id: Some(scope.id),
             ..AdviceWorkRefs::default()
         };
-        let program = tx
-            .program(workspace.id, basis.program_id, false)
-            .await?
-            .ok_or(Error::InternalInvariant)?;
+        let Some(program) = readable_program(&mut *tx, workspace.id, basis.program_id).await?
+        else {
+            tx.commit().await?;
+            return self
+                .advise_intake(
+                    context,
+                    SLICE_CANDIDATES_INPUT,
+                    &work,
+                    WITHOUT_PROGRAM,
+                    reply,
+                )
+                .await;
+        };
         let Some(mode) = program.mode else {
             tx.commit().await?;
             return self
