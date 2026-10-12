@@ -1,15 +1,19 @@
-//! How much `sizing` advice the Scope candidate draft-save reply can carry, measured
-//! with the real reply and the real encoder.
+//! How much advice the replies of the Scope candidate commands can carry: `sizing` on
+//! a draft save, `intake` on a recorded input. Measured with the real reply and the
+//! real encoder.
 use super::*;
-use crate::advice_reply::tests::{most_candidates, scope_sizing};
+use crate::advice_reply::tests::{largest_bytes, most_candidates, scope_intake, scope_sizing};
 
-#[test]
-fn draft_save_reply_has_measured_room_for_sizing_advice() {
+/// The reply of a command that left the set waiting for review, with these stale
+/// reasons. The method identity is as long as the real one, since the reply carries it.
+fn reply(stale_reasons: &[&str]) -> Value {
     let mut context = super::planning_read_tests::fixture().context;
     let id = context.candidate_set.id;
-    // A stored draft always leaves the set waiting for review. The method identity is
-    // as long as the real one, since the reply carries it.
     context.candidate_set.status = CandidateSetStatus::ReviewRequired;
+    context.stale_reasons = stale_reasons
+        .iter()
+        .map(|reason| (*reason).into())
+        .collect();
     context.snapshot.method.id = crate::scope_guidance::METHOD_ID.into();
     context.snapshot.method.digest = "0".repeat(64);
     let stored = StoredCandidateContext {
@@ -18,7 +22,13 @@ fn draft_save_reply_has_measured_room_for_sizing_advice() {
         draft: None,
         reviews: vec![],
     };
-    let reply = stored_mutation(stored, 8192).unwrap();
+    stored_mutation(stored, 8192).unwrap()
+}
+
+#[test]
+fn draft_save_reply_has_measured_room_for_sizing_advice() {
+    // A stored draft always leaves the set waiting for review.
+    let reply = reply(&[]);
     let base = encoded_len(&reply).unwrap();
     let (bare, each) = most_candidates(&reply, scope_sizing, 0);
     let (usual, _) = most_candidates(&reply, scope_sizing, 5);
@@ -29,4 +39,18 @@ fn draft_save_reply_has_measured_room_for_sizing_advice() {
     );
     assert_eq!((base, each), (2954, 118));
     assert_eq!((bare, usual, heavy), (41, 38, 12));
+}
+
+#[test]
+fn record_input_reply_has_measured_room_for_intake_advice() {
+    // A recorded input leaves the snapshot stale until a refresh.
+    let reply = reply(&["planning_inputs"]);
+    let base = encoded_len(&reply).unwrap();
+    let bare = largest_bytes(&reply, &scope_intake(None));
+    let named = largest_bytes(&reply, &scope_intake(Some(120)));
+    println!(
+        "scope.candidates.record_input base_envelope_bytes={base}; largest intake advice bytes \
+         without a saved draft={bare}, with one={named}"
+    );
+    assert_eq!((base, bare, named), (3016, 553, 596));
 }

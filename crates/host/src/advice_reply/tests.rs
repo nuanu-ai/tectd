@@ -2,8 +2,10 @@ use super::*;
 use crate::json_fragment::READ_BUDGET;
 use serde_json::json;
 use tect_domain::{
-    AdviceShaping, AdviceUnavailableReason, ProgramMode, SizingAdvice, SizingDraft, SizingScope,
+    AdviceShaping, AdviceUnavailableReason, IntakeAdvice, IntakePlanning, Program, ProgramMode,
+    SizingAdvice, SizingDraft, SizingScope,
 };
+use uuid::Uuid;
 
 /// The `sizing` point for a Scope candidate draft of this shape.
 pub(crate) fn scope_sizing(candidates: usize, items: usize) -> SizingAdvice {
@@ -43,6 +45,67 @@ pub(crate) fn slice_sizing(candidates: usize, items: usize) -> SizingAdvice {
         .unwrap()
         .unwrap()
         .advice(&[], ProgramMode::Prod)
+}
+
+fn asked_with(planning: IntakePlanning) -> IntakeAdvice {
+    let id = Uuid::new_v4();
+    planning.advice(&Program::draft(id, id, 0), ProgramMode::Prod, &[], "i")
+}
+
+/// The `intake` point for an input of a Scope candidate set whose saved draft has
+/// this many candidates; `None` is a set without a saved draft.
+pub(crate) fn scope_intake(candidates: Option<usize>) -> IntakeAdvice {
+    let draft = candidates.map(|count| {
+        let candidates = (0..count)
+            .map(|_| {
+                json!({"id":Uuid::new_v4(),"revision":1,"title":"t","outcome":"o","trigger":"t",
+                    "delivered_behavior":"b","proof":"p","includes":[],"excludes":[],
+                    "dependencies":[],"coverage_goal_ids":[],"evidence_ids":[]})
+            })
+            .collect::<Vec<_>>();
+        serde_json::from_value(json!({"boundary":"ongoing","goals":[],"evidence":[],
+            "candidates":candidates,"blockers":[],"protected_changes":[]}))
+        .unwrap()
+    });
+    asked_with(IntakePlanning::scope_candidates(draft.as_ref()).unwrap())
+}
+
+/// The `intake` point for an input of a Slice candidate set whose saved draft has
+/// this many work nodes; `None` is a set without a saved draft.
+pub(crate) fn slice_intake(candidates: Option<usize>) -> IntakeAdvice {
+    let draft = candidates.map(|count| {
+        let nodes = (0..count)
+            .map(|_| {
+                json!({"kind":"work","id":Uuid::new_v4(),"revision":1,"title":"t","outcome":"o",
+                    "includes":[],"excludes":[],"dependencies":[],"proof":["p"],
+                    "pipeline":"slice.lightweight-tdd-development","pipeline_reason":"r",
+                    "why_lightweight_insufficient":null,
+                    "why_further_vertical_split_not_viable":null,"source_result_ids":[]})
+            })
+            .collect::<Vec<_>>();
+        serde_json::from_value(json!({"coverage_summary":"s","nodes":nodes,"supersessions":[]}))
+            .unwrap()
+    });
+    let scope = SizingScope {
+        title: "t".into(),
+        outcome: "o".into(),
+        includes: Vec::new(),
+        excludes: Vec::new(),
+    };
+    asked_with(IntakePlanning::slice_candidates(draft.as_ref(), scope).unwrap())
+}
+
+/// What the largest field of a point adds to a reply that has room for it: measured
+/// with the reply's own encoder, not computed.
+pub(crate) fn largest_bytes(reply: &Value, point: &dyn AdviceShaping) -> usize {
+    let largest = point.largest();
+    let room = ReplyRoom {
+        reply,
+        capacity: READ_BUDGET,
+    };
+    assert_eq!(room.check_reply(&largest), Ok(()));
+    let with = finish(reply.clone(), Some(largest), READ_BUDGET).unwrap();
+    responses::encoded_len(&with).unwrap() - responses::encoded_len(reply).unwrap()
 }
 
 /// How many candidates with `items` included items each a save reply can carry advice

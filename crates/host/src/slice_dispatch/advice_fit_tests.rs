@@ -1,7 +1,8 @@
-//! How much `sizing` advice the Slice candidate draft-save reply can carry, measured
-//! with the real reply and the real encoder.
+//! How much advice the replies of the Slice candidate commands can carry: `sizing` on
+//! a draft save, `intake` on a recorded input. Measured with the real reply and the
+//! real encoder.
 use super::*;
-use crate::advice_reply::tests::{most_candidates, slice_sizing};
+use crate::advice_reply::tests::{largest_bytes, most_candidates, slice_intake, slice_sizing};
 
 /// A Slice planning context as it stands right after a draft was stored.
 fn saved() -> SliceCandidateContext {
@@ -38,4 +39,18 @@ fn draft_save_reply_has_measured_room_for_sizing_advice() {
     );
     assert_eq!((base, each), (1373, 124));
     assert_eq!((bare, usual, heavy), (52, 48, 15));
+}
+
+#[test]
+fn record_input_reply_has_measured_room_for_intake_advice() {
+    // The reply of a recorded input is built as the reply of a stored draft is.
+    let reply = candidate_mutation(saved()).unwrap();
+    let base = responses::encoded_len(&reply).unwrap();
+    let bare = largest_bytes(&reply, &slice_intake(None));
+    let named = largest_bytes(&reply, &slice_intake(Some(120)));
+    println!(
+        "slice.candidates.input base_envelope_bytes={base}; largest intake advice bytes \
+         without a saved draft={bare}, with one={named}"
+    );
+    assert_eq!((base, bare, named), (1373, 551, 594));
 }
