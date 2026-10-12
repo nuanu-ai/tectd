@@ -1,6 +1,8 @@
 //! The Jev adviser behind the application's advice port.
-use crate::jev_codec::{decode_answer, encode_request};
-use crate::jev_transport::{JevTransport, MAX_TIMEOUT_MS, bearer, validate_endpoint};
+use crate::jev_codec::{decode_answer, encode_request, smallest_answer_bytes};
+use crate::jev_transport::{
+    JevTransport, MAX_RESPONSE_BYTES, MAX_TIMEOUT_MS, bearer, validate_endpoint,
+};
 use async_trait::async_trait;
 use reqwest::Url;
 use std::fmt;
@@ -97,6 +99,23 @@ impl AdviceProvider for JevAdviceProvider {
         &self,
         questions: &AdviceQuestionSet,
     ) -> std::result::Result<AdviceReply, AdviceFailure> {
+        // A request whose smallest acceptable answer is over the answer ceiling
+        // cannot succeed, so it is not sent.
+        let smallest = smallest_answer_bytes(questions);
+        if smallest > MAX_RESPONSE_BYTES {
+            return Err(AdviceFailure {
+                reason: AdviceUnavailableReason::RequestTooLarge,
+                send_certainty: AdviceSendCertainty::NotSent,
+                detail: format!(
+                    "the smallest acceptable answer of {smallest} bytes would exceed \
+                     the answer limit of {MAX_RESPONSE_BYTES} bytes"
+                ),
+                exchange: AdviceExchange {
+                    model: Some(self.model.clone()),
+                    ..AdviceExchange::default()
+                },
+            });
+        }
         let request = encode_request(&self.model, questions);
         let answer = match self.transport.post_once(&request).await {
             Ok(answer) => answer,

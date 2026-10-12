@@ -20,6 +20,37 @@ pub(crate) fn encode_request(model: &str, questions: &AdviceQuestionSet) -> Vec<
         .expect("JSON value")
 }
 
+/// Bytes of the smallest body `decode_answer` could accept for these questions: each
+/// answered with its shortest criterion at probability 1 and the others at 0, and
+/// nothing optional. No acceptable answer is shorter.
+pub(crate) fn smallest_answer_bytes(questions: &AdviceQuestionSet) -> usize {
+    let written = |text: &String| serde_json::to_string(text).map_or(usize::MAX, |json| json.len());
+    let answers: Map<String, Value> = questions
+        .questions
+        .iter()
+        .map(|(name, question)| {
+            let choice = question.criteria.keys().min_by_key(|name| written(name));
+            let probabilities: Map<String, Value> = question
+                .criteria
+                .keys()
+                .map(|criterion| {
+                    (
+                        criterion.clone(),
+                        json!(u8::from(Some(criterion) == choice)),
+                    )
+                })
+                .collect();
+            (
+                name.clone(),
+                json!({"type":"choice","choice":choice,"probabilities":probabilities}),
+            )
+        })
+        .collect();
+    serde_json::to_vec(&json!({"answers":answers}))
+        .expect("JSON value")
+        .len()
+}
+
 /// What an answer body yields. Model and usage are read whenever the body is a JSON
 /// object; a missing or malformed counter stays unknown.
 pub(crate) struct DecodedAnswer {
@@ -140,6 +171,31 @@ mod tests {
                 "questions":{"size":{"type":"choice","instructions":"Choose the size class.",
                     "criteria":{"small":"One sitting.","large":"Several days.",
                         "ABSTAIN":"Not enough to tell."}}}})
+        );
+    }
+
+    #[test]
+    fn the_smallest_acceptable_answer_is_measured_and_is_acceptable() {
+        let smallest = br#"{"answers":{"size":{"type":"choice","choice":"large","probabilities":{"ABSTAIN":0,"large":1,"small":0}}}}"#;
+        assert_eq!(smallest_answer_bytes(&questions()), smallest.len());
+        let decoded = decode_answer(smallest, &questions());
+        assert_eq!(decoded.answers.unwrap()["size"].choice, "large");
+        // Every part of it is required: nothing shorter is taken.
+        for shorter in [
+            br#"{"answers":{"size":{"type":"choice","choice":"large","probabilities":{"large":1,"small":0}}}}"#.as_slice(),
+            br#"{"answers":{"size":{"choice":"large","probabilities":{"ABSTAIN":0,"large":1,"small":0}}}}"#,
+            br#"{"answers":{"size":{"type":"choice","probabilities":{"ABSTAIN":0,"large":1,"small":0}}}}"#,
+            br#"{"answers":{}}"#,
+        ] {
+            assert!(decode_answer(shorter, &questions()).answers.is_err());
+        }
+        // Each further question adds its own name, choice and criteria.
+        let mut two = questions();
+        let second = two.questions["size"].clone();
+        two.questions.insert("c1.advice".into(), second);
+        assert_eq!(
+            smallest_answer_bytes(&two),
+            smallest.len() + r#""c1.advice":{"type":"choice","choice":"large","probabilities":{"ABSTAIN":0,"large":1,"small":0}},"#.len()
         );
     }
 

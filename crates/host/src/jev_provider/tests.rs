@@ -202,3 +202,47 @@ async fn every_failure_is_typed_with_its_send_certainty_and_what_is_known() {
     assert_eq!(failure.send_certainty, AdviceSendCertainty::NotSent);
     assert!(failure.exchange.request_body.is_none() && failure.exchange.latency_ms.is_none());
 }
+
+#[tokio::test]
+async fn a_request_whose_smallest_answer_exceeds_the_answer_limit_is_not_sent() {
+    use crate::jev_codec::smallest_answer_bytes;
+    let ceiling = crate::jev_transport::MAX_RESPONSE_BYTES;
+    // Many small questions: the request stays well under its own limit, while even
+    // the shortest acceptable answer to all of them is over the answer limit.
+    let asked = |count: usize| {
+        let mut set = questions();
+        let question = set.questions["size"].clone();
+        for index in 0..count {
+            set.questions
+                .insert(format!("q{index:04}"), question.clone());
+        }
+        set
+    };
+    let each = smallest_answer_bytes(&asked(2)) - smallest_answer_bytes(&asked(1));
+    let most = (ceiling - smallest_answer_bytes(&asked(0))) / each;
+    let (fitting, over) = (asked(most), asked(most + 1));
+    assert!(smallest_answer_bytes(&fitting) <= ceiling);
+    assert!(smallest_answer_bytes(&over) > ceiling);
+    let request = crate::jev_codec::encode_request("jev-latest", &over);
+    assert!(request.len() <= crate::jev_transport::MAX_REQUEST_BYTES);
+
+    // Nothing listens on this port: a request that left would be a transport error.
+    let unreachable = provider("http://127.0.0.1:1/v1/systemone", "2000");
+    let failure = unreachable.ask(&over).await.unwrap_err();
+    assert_eq!(failure.reason, AdviceUnavailableReason::RequestTooLarge);
+    assert_eq!(failure.send_certainty, AdviceSendCertainty::NotSent);
+    assert_eq!(
+        failure.detail,
+        format!(
+            "the smallest acceptable answer of {} bytes would exceed the answer limit of \
+             {ceiling} bytes",
+            smallest_answer_bytes(&over)
+        )
+    );
+    assert_eq!(failure.exchange.model.as_deref(), Some("jev-latest"));
+    assert!(failure.exchange.request_body.is_none() && failure.exchange.latency_ms.is_none());
+
+    // One question fewer could be answered within the limit, so it is sent.
+    let failure = unreachable.ask(&fitting).await.unwrap_err();
+    assert_eq!(failure.reason, AdviceUnavailableReason::TransportError);
+}
