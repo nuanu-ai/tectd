@@ -8,9 +8,14 @@ use uuid::Uuid;
 mod exchange;
 mod questions;
 mod shaping;
+mod sizing;
+mod sizing_catalog;
+mod sizing_state;
 pub use exchange::{AdviceCompletion, AdviceExchange, AdviceFailure, AdviceReply};
 pub use questions::{ADVICE_ABSTAIN, AdviceAnswer, AdviceQuestion, AdviceQuestionSet};
 pub use shaping::AdviceShaping;
+pub use sizing::{SIZING_NOTE, SIZING_POINT, SizingAdvice, SizingLevel};
+pub use sizing_state::{SizingDraft, SizingScope, SizingWord, SizingWordSource, SizingWordsBasis};
 
 pub const MAX_ADVICE_POINT_BYTES: usize = 64;
 pub const MAX_ADVICE_ROUTE_BYTES: usize = 128;
