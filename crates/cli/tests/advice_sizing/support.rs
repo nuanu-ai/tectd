@@ -165,6 +165,11 @@ pub struct Stand {
 impl Stand {
     /// `timeout_ms` is how long the daemon waits for Jev.
     pub async fn start(timeout_ms: &str) -> Self {
+        Self::start_at(None, KEY, timeout_ms).await
+    }
+
+    /// The daemon asks `endpoint` with `key`; without an endpoint, the loopback Jev.
+    pub async fn start_at(endpoint: Option<&str>, key: &str, timeout_ms: &str) -> Self {
         let admin_url = std::env::var("TECT_TEST_ADMIN_URL").expect("TECT_TEST_ADMIN_URL required");
         let runtime =
             std::env::var("TECT_TEST_RUNTIME_URL").expect("TECT_TEST_RUNTIME_URL required");
@@ -196,10 +201,10 @@ impl Stand {
             command.env_remove(name);
         }
         command
-            .env("TECT_JEV_ENDPOINT", &jev.endpoint)
+            .env("TECT_JEV_ENDPOINT", endpoint.unwrap_or(&jev.endpoint))
             .env("TECT_JEV_MODEL", "jev-latest")
             .env("TECT_JEV_TIMEOUT_MS", timeout_ms)
-            .env("TYPESAFE_API_KEY", KEY);
+            .env("TYPESAFE_API_KEY", key);
         let mut daemon = command.spawn().unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {

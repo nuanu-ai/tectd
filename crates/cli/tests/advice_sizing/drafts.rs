@@ -161,11 +161,16 @@ impl Target {
 
     /// The save call for a draft of this shape under a request id.
     pub fn save(&self, shape: &Shape, request_id: Uuid) -> Value {
+        self.save_draft(self.draft(shape), request_id)
+    }
+
+    /// The save call for a given draft under a request id.
+    pub fn save_draft(&self, draft: Value, request_id: Uuid) -> Value {
         let set = self.set();
         let mut params = json!({"kind":"draft","candidate_set_id":set["id"],
             "revision":set["revision"],"snapshot_id":self.context["snapshot"]["id"],
             "input_cursor":set["latest_input"],"request_id":request_id,
-            "draft":self.draft(shape)});
+            "draft":draft});
         if self.level == Level::Slices {
             params["scope_id"] = self.context["scope"]["id"].clone();
         }
@@ -234,6 +239,59 @@ impl Target {
             );
         }
         json!({"coverage_summary":"The whole Scope","nodes":nodes,"supersessions":[]})
+    }
+
+    /// A draft a person could have written for the fixture's request, whose second
+    /// candidate carries work nobody asked for: a new engine, a cache, a platform.
+    pub fn overgrown(&self) -> Value {
+        if self.level == Level::Scopes {
+            let goal = |n: u8, text: &str| {
+                json!({"identity":{"local":format!("goal-{n}")},"text":text,
+                    "source_ref_id":self.source_ref,
+                    "resolution":{"kind":"candidate","reference":{"local":format!("scope-{n}")}}})
+            };
+            let mut diagnose = goal(1, "Find why the preview is rendered incorrectly");
+            diagnose["exact_quote"] = json!(QUOTE);
+            let candidate = |n: u8, title: &str, outcome: &str, includes: Value, after: Value| {
+                json!({"identity":{"local":format!("scope-{n}")},"title":title,"outcome":outcome,
+                    "trigger":"Preview differs","delivered_behavior":"Cause is available",
+                    "proof":"Direct evidence","includes":includes,"excludes":["deployment"],
+                    "dependencies":after,"coverage_goals":[{"local":format!("goal-{n}")}],
+                    "evidence":[]})
+            };
+            return json!({"boundary":"ongoing",
+                "goals":[diagnose, goal(2, "Select the smallest correction of the preview")],
+                "evidence":[],"blockers":[],"protected_changes":[],
+                "candidates":[
+                    candidate(1, "Diagnose the incorrect preview",
+                        "The cause of the incorrect preview is demonstrated on a reproduction",
+                        json!(["reproduce the incorrect preview on a fixed input",
+                            "trace the rendering path to the first wrong value"]),
+                        json!([])),
+                    candidate(2, "Correct the preview and rebuild the rendering platform",
+                        "The preview is correct and the renderer runs on a new platform",
+                        json!(["apply the smallest correction that removes the cause",
+                            "replace the preview renderer with a new rendering engine",
+                            "add a Redis cache and a Kubernetes deployment for previews"]),
+                        json!([{"local":"scope-1"}]))]});
+        }
+        let work = |n: u8, title: &str, outcome: &str, includes: Value, after: Value| {
+            json!({"kind":"work","identity":{"local":format!("work-{n}")},"title":title,
+                "outcome":outcome,"includes":includes,"excludes":["deployment"],
+                "dependencies":after,"proof":["Causal observation"],
+                "pipeline":"slice.debug-root-cause","pipeline_reason":"Cause is unknown",
+                "source_result_ids":[]})
+        };
+        json!({"coverage_summary":"The whole Scope","supersessions":[],"nodes":[
+            work(1, "Reproduce the preview difference",
+                "The preview difference is reproduced on a fixed input",
+                json!(["build a failing reproduction from the reported input"]), json!([])),
+            work(2, "Diagnose the cause and migrate the test suite",
+                "The cause is demonstrated and all tests run on a new framework",
+                json!(["trace the rendering path to the first wrong value",
+                    "migrate the whole test suite to a new test framework",
+                    "add performance dashboards for the rendering service"]),
+                json!([{"local":"work-1"}]))]})
     }
 
     /// The draft as the store holds it after a save: its candidates or nodes.

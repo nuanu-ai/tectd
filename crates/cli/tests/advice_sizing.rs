@@ -5,6 +5,8 @@
 mod disabled;
 #[path = "advice_sizing/drafts.rs"]
 mod drafts;
+#[path = "advice_sizing/live.rs"]
+mod live;
 #[path = "native_planning/support.rs"]
 #[allow(dead_code)]
 mod planning;

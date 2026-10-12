@@ -130,7 +130,7 @@ fn unusable_keys_and_zero_timeout_are_refused_and_the_key_is_not_printed() {
     assert!(authorization.is_sensitive());
     assert!(!format!("{authorization:?}").contains(KEY));
     assert_eq!(MAX_REQUEST_BYTES, 262_144);
-    assert_eq!(MAX_RESPONSE_BYTES, 65_536);
+    assert_eq!(MAX_RESPONSE_BYTES, 131_072);
 }
 
 #[tokio::test]
