@@ -229,12 +229,16 @@ fn large_program_field_and_single_input_use_pinned_lossless_fragments() {
 }
 
 #[test]
-fn guidance_revision_two_keeps_v1_archive_and_explains_actual_success_wire_field() {
+fn guidance_revision_three_keeps_earlier_archives_and_explains_actual_success_wire_field() {
     let old = include_str!("../../../../skills/tectd-program/revisions/1.md");
     assert!(old.contains("# TectD Program"));
     assert!(!old.contains("## Effective save contract"));
+    let second = include_str!("../../../../skills/tectd-program/revisions/2.md");
+    assert!(second.contains("## Effective save contract"));
+    assert!(second.contains("The six PRD fields"));
+    assert!(!second.contains("`mode`"));
     let method = StaticProgramGuidance.planning_method();
-    assert_eq!(method.version, "2");
+    assert_eq!(method.version, "3");
     assert_eq!(
         method.digest,
         format!("{:x}", sha2::Sha256::digest(PROGRAM_SKILL.as_bytes()))
@@ -251,7 +255,7 @@ fn guidance_revision_two_keeps_v1_archive_and_explains_actual_success_wire_field
             .as_array()
             .unwrap()
             .len(),
-        6
+        7
     );
     let success = action["input"]["fields"]
         .as_array()
@@ -265,4 +269,86 @@ fn guidance_revision_two_keeps_v1_archive_and_explains_actual_success_wire_field
             .unwrap()
             .contains("Observable outcomes")
     );
+}
+
+#[test]
+fn guidance_states_the_four_levels_in_the_catalog_wording_and_the_save_action_asks_for_mode() {
+    use tect_domain::ProgramMode;
+    let body = StaticProgramGuidance.planning_method().body;
+    assert!(body.contains("The seven PRD fields"));
+    for mode in ProgramMode::ALL {
+        let line = format!("- `{}`: {}\n", mode.as_str(), mode.description());
+        assert!(body.contains(&line), "{line}");
+    }
+    for rule in [
+        "Take `mode` from the user's words.",
+        "ask the user",
+        "If nobody can be asked in this session",
+        "your assumption",
+    ] {
+        assert!(body.contains(rule), "{rule}");
+    }
+
+    let contract =
+        |program: &Program| save_action(program, 0).unwrap()["input"]["effective_contract"].clone();
+    let mut program = draft();
+    let unstated = contract(&program);
+    assert_eq!(
+        unstated["required_fields_for_complete_or_open"],
+        json!([
+            "name",
+            "intent",
+            "basis",
+            "boundaries",
+            "constraints",
+            "success",
+            "mode"
+        ])
+    );
+    assert_eq!(unstated["missing_fields"][6], "mode");
+    program.mode = Some(ProgramMode::Mvp);
+    let stated = contract(&program);
+    assert_eq!(stated["missing_fields"].as_array().unwrap().len(), 6);
+    assert!(
+        !stated["missing_fields"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("mode"))
+    );
+    let action = save_action(&program, 0).unwrap();
+    let field = action["input"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|field| field["path"] == "arguments.params.mode")
+        .unwrap();
+    for name in ProgramMode::ALL.map(ProgramMode::as_str) {
+        assert!(field["format"].as_str().unwrap().contains(name), "{name}");
+    }
+    assert!(
+        field["format"]
+            .as_str()
+            .unwrap()
+            .contains("There is no default")
+    );
+    // The compact save reply names the mode among what it leaves to the full read.
+    let reply = mutation(&program, "save").unwrap();
+    assert!(reply["program"].get("mode").is_none());
+    assert!(
+        reply["omitted_fields"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("program.mode"))
+    );
+    // The full read carries a stated mode and has no key for an absent one.
+    let page = |program: Program| {
+        page_value(&ProgramPage {
+            program,
+            inputs: Vec::new(),
+            next_after_input: None,
+        })
+        .unwrap()
+    };
+    assert_eq!(page(program)["program"]["mode"], "mvp");
+    assert!(page(draft())["program"].get("mode").is_none());
 }

@@ -235,7 +235,7 @@ async fn rich_program_draft_question_correction_and_restart_preserve_one_record(
                 "boundaries":"One Program; no Scope or repository mutation.",
                 "constraints":"Retain exact input and durable recovery.",
                 "success":"The Program resumes and remains editable.",
-                "pending_question":null,"complete":true
+                "mode":"prod","pending_question":null,"complete":true
             }),
         )
         .await;

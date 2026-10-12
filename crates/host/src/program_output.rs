@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 pub(crate) const PROGRAM_SKILL: &str = include_str!("../../../skills/tectd-program/SKILL.md");
 pub(crate) const PROGRAM_METHOD_ID: &str = "tectd-program";
-pub(crate) const PROGRAM_METHOD_REVISION: &str = "2";
+pub(crate) const PROGRAM_METHOD_REVISION: &str = "3";
 
 pub(crate) struct StaticProgramGuidance;
 
@@ -67,16 +67,17 @@ fn save_action(program: &Program, cursor: i64) -> Result<Value> {
         "save_program",
         params,
         "input",
-        json!({"effective_contract":{"status":program.status,"required_fields_for_complete_or_open":["name","intent","basis","boundaries","constraints","success"],"missing_fields":([("name",program.name.as_ref()),("intent",program.intent.as_ref()),("basis",program.basis.as_ref()),("boundaries",program.boundaries.as_ref()),("constraints",program.constraints.as_ref()),("success",program.success.as_ref())].iter().filter(|(_,value)|value.is_none_or(|value|value.trim().is_empty())).map(|(field,_)|*field).collect::<Vec<_>>()),"input_cursor":cursor,"latest_input":program.latest_input},"fields":[
+        json!({"effective_contract":{"status":program.status,"required_fields_for_complete_or_open":["name","intent","basis","boundaries","constraints","success","mode"],"missing_fields":([("name",program.name.as_ref()),("intent",program.intent.as_ref()),("basis",program.basis.as_ref()),("boundaries",program.boundaries.as_ref()),("constraints",program.constraints.as_ref()),("success",program.success.as_ref())].iter().filter(|(_,value)|value.is_none_or(|value|value.trim().is_empty())).map(|(field,_)|*field).chain(program.mode.is_none().then_some("mode")).collect::<Vec<_>>()),"input_cursor":cursor,"latest_input":program.latest_input},"fields":[
             {"path":"arguments.params.name","format":"Optional string-or-null patch; omission preserves and null clears."},
             {"path":"arguments.params.intent","format":"Optional string-or-null patch; omission preserves and null clears."},
             {"path":"arguments.params.basis","format":"Optional string-or-null patch; omission preserves and null clears."},
             {"path":"arguments.params.boundaries","format":"Optional string-or-null patch; omission preserves and null clears."},
             {"path":"arguments.params.constraints","format":"Optional string-or-null patch; omission preserves and null clears."},
             {"path":"arguments.params.success","format":"Observable outcomes demonstrating Program intent, e.g. 'A user completes the stated workflow and recorded acceptance checks pass.' Omitted preserves; null clears; string replaces. Frozen planning sources classify this field as program_success; no argument named program_success exists."},
+            {"path":"arguments.params.mode","format":"Product level of the Program: demo, mvp, prod or serious_prod, as the Program method describes them. Omitted preserves; a value replaces; null is invalid. There is no default."},
             {"path":"arguments.params.working_notes","format":"Optional string-or-null continuation patch."},
             {"path":"arguments.params.pending_question","format":"Optional string-or-null question patch."},
-            {"path":"arguments.params.complete","format":"Optional boolean, default false. Partial Draft save is allowed. True, or editing an existing Open Program, requires nonblank name, intent, basis, boundaries, constraints, success and current consumed-input cursor; true also requires no pending question."}
+            {"path":"arguments.params.complete","format":"Optional boolean, default false. Partial Draft save is allowed. True, or editing an existing Open Program, requires nonblank name, intent, basis, boundaries, constraints, success, a mode and current consumed-input cursor; true also requires no pending question."}
         ]}),
     )
 }
@@ -152,7 +153,7 @@ pub(crate) fn mutation(program: &Program, operation: &str) -> Result<Value> {
     };
     let actions = vec![read.clone(), next];
     Ok(with_actions(
-        json!({"operation":operation,"program":{"id":program.id,"workspace_id":program.workspace_id,"revision":program.revision,"status":program.status,"current_step":program.current_step,"input_cursor":program.input_cursor,"latest_input":program.latest_input},"field_destinations":{"full_program_and_original_inputs":read},"omitted_fields":["program.name","program.intent","program.basis","program.boundaries","program.constraints","program.success","program.working_notes","program.pending_question","program.planning_knowledge","inputs"],"saved":operation == "save"}),
+        json!({"operation":operation,"program":{"id":program.id,"workspace_id":program.workspace_id,"revision":program.revision,"status":program.status,"current_step":program.current_step,"input_cursor":program.input_cursor,"latest_input":program.latest_input},"field_destinations":{"full_program_and_original_inputs":read},"omitted_fields":["program.name","program.intent","program.basis","program.boundaries","program.constraints","program.success","program.mode","program.working_notes","program.pending_question","program.planning_knowledge","inputs"],"saved":operation == "save"}),
         actions,
         Some(0),
     ))

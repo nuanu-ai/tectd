@@ -117,7 +117,7 @@ pub(crate) fn error_intro(error: &Error) -> &'static str {
             "The input cursor is not current. Read the remaining original input before completing."
         }
         Error::ProgramIncomplete => {
-            "Keep every required PRD field meaningful and resolve the pending question before completion."
+            "Keep every required PRD field meaningful, state mode as demo, mvp, prod or serious_prod, and resolve the pending question before completion."
         }
         Error::SetupIncomplete => {
             "The setup needs coherent content, every input incorporated and no pending question before execute route setup.apply can proceed."

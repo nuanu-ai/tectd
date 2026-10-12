@@ -83,7 +83,7 @@ pub(super) async fn ready_program(client: &mut Mcp, source: &Path) -> Value {
         "name":"Notification preview","intent":"Correct preview behavior from demonstrated evidence",
         "basis":"The preview differs from saved settings","boundaries":"Preview diagnosis and bounded correction",
         "constraints":"No deployment or adjacent notification work","success":"The cause and correction are verified",
-        "complete":true
+        "mode":"prod","complete":true
     });
     if let Some(guard) = planning_guard(begun_page.program()) {
         program_save["consumed_knowledge"] = guard;

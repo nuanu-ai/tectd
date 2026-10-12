@@ -49,7 +49,7 @@ fn complete_patch(id: Uuid, revision: i64, suffix: &str) -> Value {
         "boundaries":"This Program only",
         "constraints":"Compare and save",
         "success":format!("Exactly one save wins: {suffix}"),
-        "pending_question":null,"complete":true
+        "mode":"prod","pending_question":null,"complete":true
     })
 }
 

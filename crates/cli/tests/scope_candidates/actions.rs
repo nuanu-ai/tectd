@@ -62,7 +62,7 @@ pub(super) async fn create_program(client: &mut Mcp, input: &str, name: &str) ->
                 "boundaries":"Email only; exclude SMS, push, and analytics",
                 "constraints":"Read only; preserve accepted work and \\slashes",
                 "success":"Users can inspect email preferences and tests pass",
-                "complete":true
+                "mode":"prod","complete":true
             }),
         )
         .await;

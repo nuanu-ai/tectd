@@ -114,7 +114,7 @@ pub(super) async fn accepted_large(client: &mut Mcp, pool: &PgPool, original_pro
     assert_ne!(program_id, original_program);
     client.call("save_program", json!({"program_id":program_id,"revision":1,"input_cursor":1,
         "name":"Large accepted draft","intent":"Read all retained candidate bytes","basis":"Independent fixture",
-        "boundaries":"Owned database only","constraints":"No truncation","success":"Exact complete draft read","complete":true})).await;
+        "boundaries":"Owned database only","constraints":"No truncation","success":"Exact complete draft read","mode":"prod","complete":true})).await;
     let begun = client
         .call(
             "begin_candidate_set",

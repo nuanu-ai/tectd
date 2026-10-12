@@ -26,8 +26,8 @@ mod program_page;
 mod state;
 
 pub use program::{
-    NewProgramInput, Program, ProgramStatus, ProgramStep, RefreshProgramKnowledge, SaveProgram,
-    TextPatch, validate_program_input,
+    NewProgramInput, Program, ProgramMode, ProgramStatus, ProgramStep, RefreshProgramKnowledge,
+    SaveProgram, TextPatch, validate_program_input,
 };
 pub use program_page::{ProgramCursor, ProgramInput, ProgramList, ProgramPage, ProgramSummary};
 

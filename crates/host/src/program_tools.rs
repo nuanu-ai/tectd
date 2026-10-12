@@ -236,6 +236,44 @@ mod tests {
     }
 
     #[test]
+    fn mode_patch_is_omitted_or_one_of_four_values_and_never_null() {
+        use tect_domain::ProgramMode;
+        let base = json!({"program_id":Uuid::new_v4(),"revision":1,"input_cursor":0});
+        let ProgramInvocation::Save(omitted) = parse("save_program", base.clone()).unwrap() else {
+            panic!()
+        };
+        assert_eq!(omitted.mode, None);
+        let mut stated = base.clone();
+        stated["mode"] = json!("serious_prod");
+        let ProgramInvocation::Save(stated) = parse("save_program", stated).unwrap() else {
+            panic!()
+        };
+        assert_eq!(stated.mode, Some(ProgramMode::SeriousProd));
+        for invalid in [Value::Null, json!(""), json!("production"), json!(1)] {
+            let mut refused = base.clone();
+            refused["mode"] = invalid;
+            assert!(parse("save_program", refused).is_err());
+        }
+        // The described contract: the four values, optional in a patch, no default.
+        let described = crate::api::help(
+            crate::api::parse_help(
+                json!({"mode":"describe","tool":"command","route":"program.save"}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let schema = &described["params_schema"];
+        assert_eq!(
+            schema["properties"]["mode"],
+            json!({"type":"string","enum":["demo","mvp","prod","serious_prod"]})
+        );
+        assert_eq!(
+            schema["required"],
+            json!(["program_id", "revision", "input_cursor"])
+        );
+    }
+
+    #[test]
     fn business_schema_refuses_forged_authority_and_skill_paths() {
         let mut base = json!({"program_id":Uuid::new_v4(),"revision":1,"input_cursor":0});
         for field in ["status", "current_step", "workspace_id", "description"] {

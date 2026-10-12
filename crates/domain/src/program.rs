@@ -2,6 +2,10 @@ use crate::{Error, ProgramSummary, Result};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use uuid::Uuid;
 
+mod mode;
+mod mode_catalog;
+pub use mode::ProgramMode;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProgramStatus {
@@ -29,6 +33,9 @@ pub struct Program {
     pub boundaries: Option<String>,
     pub constraints: Option<String>,
     pub success: Option<String>,
+    /// The seventh required PRD field. A Program that has none serializes without the key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ProgramMode>,
     pub working_notes: Option<String>,
     pub pending_question: Option<String>,
     pub current_step: ProgramStep,
@@ -54,6 +61,7 @@ impl Program {
             boundaries: None,
             constraints: None,
             success: None,
+            mode: None,
             working_notes: None,
             pending_question: None,
             current_step: ProgramStep::Compose,
@@ -85,6 +93,7 @@ impl Program {
         change.boundaries.apply(&mut next.boundaries);
         change.constraints.apply(&mut next.constraints);
         change.success.apply(&mut next.success);
+        next.mode = change.mode.or(next.mode);
         change.working_notes.apply(&mut next.working_notes);
         change.pending_question.apply(&mut next.pending_question);
         if next
@@ -110,9 +119,10 @@ impl Program {
             return Err(Error::InvalidArguments);
         }
         if (change.complete || self.status == ProgramStatus::Open)
-            && fields
-                .iter()
-                .any(|field| field.as_ref().is_none_or(|text| text.trim().is_empty()))
+            && (next.mode.is_none()
+                || fields
+                    .iter()
+                    .any(|field| field.as_ref().is_none_or(|text| text.trim().is_empty())))
             || change.complete && next.pending_question.is_some()
         {
             return Err(Error::ProgramIncomplete);
@@ -235,6 +245,13 @@ pub struct SaveProgram {
     pub constraints: TextPatch,
     #[serde(default, skip_serializing_if = "TextPatch::is_unchanged")]
     pub success: TextPatch,
+    /// Omission preserves and a value replaces. The mode cannot be cleared: null is invalid.
+    #[serde(
+        default,
+        deserialize_with = "stated_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub mode: Option<ProgramMode>,
     #[serde(default, skip_serializing_if = "TextPatch::is_unchanged")]
     pub working_notes: TextPatch,
     #[serde(default, skip_serializing_if = "TextPatch::is_unchanged")]
@@ -243,6 +260,12 @@ pub struct SaveProgram {
     pub complete: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub consumed_knowledge: Option<crate::PlanningManifestGuard>,
+}
+
+fn stated_mode<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<ProgramMode>, D::Error> {
+    ProgramMode::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -203,6 +203,7 @@ def prepare_open_program(
                 "revision": program["revision"],
                 "input_cursor": program["latest_input"],
                 **CANDIDATE_PROGRAM_FIELDS,
+                "mode": "prod",
                 "pending_question": None,
                 "complete": True,
             },

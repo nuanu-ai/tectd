@@ -72,7 +72,7 @@ async fn dk4_planning_briefs_are_delivered_at_their_reviewed_abstraction() {
         "name":"R1 service operation","intent":"Operate within the owner-approved regional boundary",
         "basis":"The published owner decision defines the region.","boundaries":"R1 only",
         "constraints":"Other regions remain refused.","success":"R1 works and another region is refused.",
-        "complete":true,"consumed_knowledge":planning_guard(program_manifest)
+        "mode":"prod","complete":true,"consumed_knowledge":planning_guard(program_manifest)
     })).await;
     let candidates = client
         .call(
@@ -243,7 +243,7 @@ async fn dk4_reference_warns_required_blocks_and_overlap_preserves_purposes() {
         .call(
             "save_program",
             json!({"program_id":draft["program"]["id"],"revision":draft_revision,
-                "input_cursor":1,"complete":true}),
+                "input_cursor":1,"mode":"prod","complete":true}),
         )
         .await;
     assert_eq!(saved["program"]["status"], "open");

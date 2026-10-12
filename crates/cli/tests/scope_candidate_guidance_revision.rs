@@ -101,7 +101,8 @@ async fn method_and_registry_change_require_refresh_and_retain_old_bodies() {
                 "program_id":program,"revision":1,"input_cursor":1,"name":"Guidance revision",
                 "intent":"Retain exact planning instructions","basis":"Trusted test fixture",
                 "boundaries":"Candidate snapshot only","constraints":"No public overrides",
-                "success":"Old and new bodies remain independently readable","complete":true
+                "success":"Old and new bodies remain independently readable","mode":"prod",
+                "complete":true
             }),
         )
         .await;

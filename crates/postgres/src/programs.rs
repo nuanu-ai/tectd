@@ -1,13 +1,13 @@
 use crate::storage_error;
 use sqlx::{Postgres, Transaction};
 use tect_domain::{
-    Error, NewProgramInput, Program, ProgramCursor, ProgramInput, ProgramStatus, ProgramStep,
-    ProgramSummary, Result, validate_program_input,
+    Error, NewProgramInput, Program, ProgramCursor, ProgramInput, ProgramMode, ProgramStatus,
+    ProgramStep, ProgramSummary, Result, validate_program_input,
 };
 use uuid::Uuid;
 
 const PROGRAM_COLUMNS: &str = "id, workspace_id, status, revision, name, intent, basis, \
-    boundaries, constraints, success, working_notes, pending_question, current_step, \
+    boundaries, constraints, success, mode, working_notes, pending_question, current_step, \
     input_cursor, latest_input, max_input_bytes, payload_erased";
 
 #[derive(sqlx::FromRow)]
@@ -22,6 +22,7 @@ struct ProgramRow {
     boundaries: Option<String>,
     constraints: Option<String>,
     success: Option<String>,
+    mode: Option<String>,
     working_notes: Option<String>,
     pending_question: Option<String>,
     current_step: String,
@@ -182,7 +183,7 @@ pub(crate) async fn update_program(
         "UPDATE programs SET status=$4, revision=$5, name=$6, intent=$7, basis=$8, \
              boundaries=$9, constraints=$10, success=$11, working_notes=$12, \
              pending_question=$13, current_step=$14, input_cursor=$15, \
-             latest_input=$16, max_input_bytes=$17 \
+             latest_input=$16, max_input_bytes=$17, mode=$18 \
          WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
     )
     .bind(tenant_id)
@@ -202,6 +203,7 @@ pub(crate) async fn update_program(
     .bind(program.input_cursor)
     .bind(program.latest_input)
     .bind(program.max_input_bytes)
+    .bind(program.mode.map(ProgramMode::as_str))
     .execute(&mut **transaction)
     .await
     .map_err(storage_error)?;
@@ -306,8 +308,8 @@ async fn insert_program(
         "INSERT INTO programs \
              (id, tenant_id, workspace_id, status, revision, name, intent, basis, \
               boundaries, constraints, success, working_notes, pending_question, \
-              current_step, input_cursor, latest_input, max_input_bytes) \
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
+              current_step, input_cursor, latest_input, max_input_bytes, mode) \
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
     )
     .bind(program.id)
     .bind(tenant_id)
@@ -326,6 +328,7 @@ async fn insert_program(
     .bind(program.input_cursor)
     .bind(program.latest_input)
     .bind(program.max_input_bytes)
+    .bind(program.mode.map(ProgramMode::as_str))
     .execute(&mut **transaction)
     .await
     .map_err(storage_error)?;
@@ -348,6 +351,7 @@ impl ProgramRow {
             boundaries: self.boundaries,
             constraints: self.constraints,
             success: self.success,
+            mode: self.mode.as_deref().map(parse_mode).transpose()?,
             working_notes: self.working_notes,
             pending_question: self.pending_question,
             current_step: parse_step(&self.current_step)?,
@@ -400,6 +404,13 @@ fn parse_status(value: &str) -> Result<ProgramStatus> {
         "open" => Ok(ProgramStatus::Open),
         _ => Err(Error::StorageUnavailable),
     }
+}
+
+pub(crate) fn parse_mode(value: &str) -> Result<ProgramMode> {
+    ProgramMode::ALL
+        .into_iter()
+        .find(|mode| mode.as_str() == value)
+        .ok_or(Error::StorageUnavailable)
 }
 
 fn parse_step(value: &str) -> Result<ProgramStep> {

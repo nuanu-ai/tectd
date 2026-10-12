@@ -85,7 +85,7 @@ async fn escaped_growth_remains_readable_and_large_history_pages_only_whole_inpu
                     "program_id":small_id,"revision":1,"input_cursor":1,
                     "name":escaped,"intent":"intent","basis":"basis",
                     "boundaries":"boundaries","constraints":"constraints",
-                    "success":"success","complete":true
+                    "success":"success","mode":"prod","complete":true
                 }),
             ),
         )

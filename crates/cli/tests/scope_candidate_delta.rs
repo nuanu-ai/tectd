@@ -89,7 +89,7 @@ async fn candidate_delta_normalized_graph_is_atomic_cyclic_safe_and_compact() {
         "program_id":program,"revision":1,"input_cursor":1,"name":"WP5 fixture",
         "intent":"Prove normalized delta semantics","basis":"Live PostgreSQL acceptance",
         "boundaries":"Candidate planning only","constraints":"Atomic graph writes",
-        "success":"M:N coverage, blockers, evidence and supersession remain durable","complete":true
+        "success":"M:N coverage, blockers, evidence and supersession remain durable","mode":"prod","complete":true
     })).await;
     let begun = client
         .call(

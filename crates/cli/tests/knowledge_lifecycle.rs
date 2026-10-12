@@ -56,7 +56,8 @@ async fn ready_program(client: &mut Mcp, label: &str) -> Value {
                 "name":label,"intent":"Exercise exact pinned planning knowledge",
                 "basis":"A reviewed maintenance revision fixture",
                 "boundaries":"One exact Program binding","constraints":"No implicit version move",
-                "success":"Pinned and current revisions retain distinct status","complete":true}),
+                "success":"Pinned and current revisions retain distinct status","mode":"prod",
+                "complete":true}),
         )
         .await;
     let saved = ProgramFixture::from_mutation(saved);

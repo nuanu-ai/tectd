@@ -127,11 +127,11 @@ pub(super) fn routes(example_id: &str) -> Vec<RouteSpec> {
             "program.save",
             "save_program",
             "Save a revision-checked Program patch and optionally open the same Program.",
-            "Requires current revision and input_cursor. Omission preserves nullable text fields; null clears them. complete true requires six coherent fields, no question, and full input coverage.",
+            "Requires current revision and input_cursor. Omission preserves nullable text fields; null clears them. mode is the product level, one of demo, mvp, prod, serious_prod: omission preserves it, null is invalid and it has no default. complete true, or any save of an Open Program, requires six coherent text fields and a mode; complete true also requires no question and full input coverage.",
             "Atomically updates the Program revision; it does not create Scope or execute work.",
             "On stale or uncertain result, reload program.get and reconcile before retrying.",
             object_schema(
-                json!({"program_id":uuid(),"revision":{"type":"integer","minimum":1},"input_cursor":{"type":"integer","minimum":0},"name":nullable_text(),"intent":nullable_text(),"basis":nullable_text(),"boundaries":nullable_text(),"constraints":nullable_text(),"success":nullable_text(),"working_notes":nullable_text(),"pending_question":nullable_text(),"complete":{"type":"boolean","default":false},"consumed_knowledge":super::super::planning_manifest_guard()}),
+                json!({"program_id":uuid(),"revision":{"type":"integer","minimum":1},"input_cursor":{"type":"integer","minimum":0},"name":nullable_text(),"intent":nullable_text(),"basis":nullable_text(),"boundaries":nullable_text(),"constraints":nullable_text(),"success":nullable_text(),"mode":{"type":"string","enum":tect_domain::ProgramMode::ALL.map(tect_domain::ProgramMode::as_str)},"working_notes":nullable_text(),"pending_question":nullable_text(),"complete":{"type":"boolean","default":false},"consumed_knowledge":super::super::planning_manifest_guard()}),
                 json!(["program_id", "revision", "input_cursor"]),
             ),
             json!({"program_id":example_id,"revision":1,"input_cursor":1,"name":"Example Program","complete":false}),

@@ -135,7 +135,7 @@ async fn program_writes_wait_for_publisher_before_native_or_program_locks() {
         json!({"program_id":program_id,"revision":1,"input_cursor":1,
             "name":"Ordered save","intent":"Keep native knowledge consistent",
             "basis":"Reviewed fixture","boundaries":"One test workspace",
-            "constraints":"Publisher order","success":"Save commits","complete":true,
+            "constraints":"Publisher order","success":"Save commits","mode":"prod","complete":true,
             "consumed_knowledge":guard}),
     )
     .await;

@@ -55,7 +55,7 @@ async fn amendment_delta_history_and_restart_preserve_one_candidate_head() {
         "intent":"Give users bounded notification controls","basis":"Captured request",
         "boundaries":"Email and account surfaces only","constraints":"Preserve accepted work",
         "success":"Users can inspect preferences, change email cadence, and audit delivery",
-        "complete":true
+        "mode":"prod","complete":true
     })).await;
     let original_request = "Plan inspect, cadence, and audit outcomes.";
     let created = client

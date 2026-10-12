@@ -71,7 +71,7 @@ async fn complete(client: &mut Mcp, program_id: Uuid) -> Value {
                 "name":"Ready Program","intent":"Exercise ready ordering",
                 "basis":"Original input","boundaries":"Program routing only",
                 "constraints":"Keep creation last","success":"Deterministic pages",
-                "pending_question":null,"complete":true
+                "mode":"prod","pending_question":null,"complete":true
             }),
         )
         .await

@@ -16,6 +16,10 @@ pub(super) fn logical(value: &Value, request: &Request, bytes: &Bytes) -> ReadRe
     if value["program"].get("planning_knowledge").is_some() {
         program_fields.insert("planning_knowledge");
     }
+    // A Program without a mode has no key for it; a null is not that.
+    if value["program"]["mode"].is_string() {
+        program_fields.insert("mode");
+    }
     check(
         keys(&value["program"])? == program_fields,
         "full Program field set",

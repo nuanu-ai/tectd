@@ -37,8 +37,18 @@ Structure the narrative into exactly these PRD concerns:
 - `boundaries`: what is in scope and what is out of scope at Program altitude.
 - `constraints`: explicit limits, commitments, dependencies, or non-negotiable conditions.
 - `success`: observable outcomes that would demonstrate the Program achieved its intent.
+- `mode`: the product level the Program is built to, exactly one of `demo`, `mvp`, `prod`, `serious_prod`.
 
 If no explicit constraints are known, state that honestly in `constraints`; do not invent limits to fill a field.
+
+The four product levels:
+
+- `demo`: The simplest way to actually show the requested behaviour. Internals may be rough and temporary. The real scenario is not replaced by a fake. Real money, secrets and data keep their guarantees even in a demo.
+- `mvp`: A real beta for first users. The product scope is cut down, not the quality of what is in it.
+- `prod`: A product in operation that fits on one machine or on one machine per service.
+- `serious_prod`: A distributed system: queues, asynchronous processing, many services, Kubernetes, heavy load and many users. Best practices throughout.
+
+Take `mode` from the user's words. If they do not state the level, ask the user; it is not a gap to fill with a working assumption. If nobody can be asked in this session, derive the level from the task and record in the PRD that it is your assumption.
 
 There is no separate description field. Keep the PRD coherent as a whole rather than treating these concerns as isolated form answers. Fill reasonable gaps with working assumptions when doing so preserves the user's intent and does not make a material product choice for them.
 
@@ -75,6 +85,6 @@ Persist through MCP only. Do not create a client-side `PRD.md`, use the former W
 
 Before the first `program.save`, read its exact schema with `help` describe and use the supplied save action. `arguments.params.success` contains observable outcomes that demonstrate the Program achieved its intent, for example “A user can complete the stated workflow and its recorded acceptance checks pass.” There is no `program_success` argument. A later frozen planning snapshot classifies this field's issued source reference as `program_success`; finite goals use that exact success source reference and quote. Ongoing planning goals use an issued `planning_input` source reference.
 
-The six PRD fields are `name`, `intent`, `basis`, `boundaries`, `constraints`, and `success`. Each save patch may omit a field to preserve it, set null to clear it, or supply a string to replace it. A partial Draft may save with `complete:false` while fields remain absent. `complete:true`, or editing an already Open Program, requires all six fields nonblank and every original input incorporated through the current consumed-input cursor. `complete:true` also requires no pending question. Supply the values that are still missing in the effective draft before requesting completion; do not invent them.
+The seven PRD fields are `name`, `intent`, `basis`, `boundaries`, `constraints`, `success`, and `mode`. Each save patch may omit a text field to preserve it, set null to clear it, or supply a string to replace it. `mode` takes one of its four values: omit it to preserve it; null is invalid and there is no default. A partial Draft may save with `complete:false` while fields remain absent. `complete:true`, or editing an already Open Program, requires the six text fields nonblank, a `mode`, and every original input incorporated through the current consumed-input cursor. `complete:true` also requires no pending question. Supply the values that are still missing in the effective draft before requesting completion; do not invent them.
 
 `program.begin` creates a durable Draft and records the original narrative. It does not claim that a PRD has been composed or opened. Only a successful save confirms that the submitted patches were saved; only the actual backend Open status confirms that the Program is open.

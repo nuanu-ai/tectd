@@ -217,22 +217,43 @@ a new Program last. It does not infer filesystem, knowledge-base or AGENTS state
 | `help` · describe method | `method: "tectd-program"` | The Program method embedded in this build |
 
 The PRD has six nullable, free-text fields: `name`, `intent`, `basis`, `boundaries`,
-`constraints`, `success`. There is no duplicate description. `working_notes` and
-`pending_question` preserve continuation, while `current_step` is backend-derived:
-`compose`, `waiting_input` or `ready`. Status remains `draft` or `open`; opening
-neither creates a Scope nor starts code execution.
+`constraints`, `success`, and a seventh field `mode`, the product level. There is no
+duplicate description. `working_notes` and `pending_question` preserve continuation,
+while `current_step` is backend-derived: `compose`, `waiting_input` or `ready`. Status
+remains `draft` or `open`; opening neither creates a Scope nor starts code execution.
+
+`mode` is one of four values and has no default:
+
+| `mode` | Product level |
+| --- | --- |
+| `demo` | The simplest way to actually show the requested behaviour. Internals may be rough and temporary. The real scenario is not replaced by a fake. Real money, secrets and data keep their guarantees even in a demo. |
+| `mvp` | A real beta for first users. The product scope is cut down, not the quality of what is in it. |
+| `prod` | A product in operation that fits on one machine or on one machine per service. |
+| `serious_prod` | A distributed system: queues, asynchronous processing, many services, Kubernetes, heavy load and many users. Best practices throughout. |
+
+The wording lives in one file, `crates/domain/src/program/mode_catalog.rs`, and the
+Program method states the same four texts. The agent takes the level from the user's
+words, asks when they do not state it, and when nobody can be asked derives it from
+the task and records that as an assumption in the PRD. `program.get` shows the mode;
+a Program without one has no `mode` key. Migration 0043 adds the nullable column with
+a check on the four values; Programs that existed before it keep no mode until a save
+states one.
 
 Accept a narrative as normal input. The supplied skill guides the agent to form a
 coherent PRD, label assumptions, and ask only about a material unresolved choice.
 Before yielding for an answer it saves the partial draft and exact question. Once
-the six concerns are coherent, all input is incorporated and no critical question
-remains, it opens the same record without a mandatory final approval.
+the six concerns are coherent, the mode is stated, all input is incorporated and no
+critical question remains, it opens the same record without a mandatory final approval.
 
-Patch omission preserves a field; explicit null clears it. An open Program retains
-its six nonblank PRD fields while unresolved alternatives stay in notes. A stale
-revision refuses the whole save and returns an exact reload action. Original input
-is immutable and preserves exact text. Retrying the same request ID with identical
-input returns the existing result; different text with that ID returns `input_conflict`.
+Patch omission preserves a field; explicit null clears it. `mode` is the exception:
+omission preserves it, a value replaces it, and null is invalid because it cannot be
+cleared. `complete: true`, and any save of an already open Program, without a mode is
+refused with `program_incomplete`, the same refusal as for a missing text field. An
+open Program retains its six nonblank PRD fields and its mode while unresolved
+alternatives stay in notes. A stale revision refuses the whole save and returns an
+exact reload action. Original input is immutable and preserves exact text. Retrying
+the same request ID with identical input returns the existing result; different text
+with that ID returns `input_conflict`.
 
 Input pages default to entries after the saved consumed-input cursor. Read all
 required pages before advancing that cursor. Read transactions use a consistent
