@@ -464,12 +464,17 @@ Read-only context reports stale or unresolved knowledge and returns an exact
 
 Jev is an outside adviser a workspace may switch on. Advice arrives in the reply of a
 command the agent already calls, as an `advice` field; it forbids nothing and applies
-nothing. One advice point exists, `sizing`: after `scope.candidates.save` or
-`slice.candidates.save` has stored a draft, Jev is asked once how large each candidate
-is, whether to keep, split or cut it, and which of its included items go beyond what
-the user asked for. Every request carries the Program's product level as
-`state.mode`, `{"level":"prod","description":"..."}`: size, the advice to simplify and
-what counts as extra are judged against the user's words and that level.
+nothing. Two advice points exist:
+
+| Point | Fires after | Jev is asked once |
+| --- | --- | --- |
+| `sizing` | `scope.candidates.save` or `slice.candidates.save` has stored a draft | How large each candidate is, whether to keep, split or cut it, and which of its included items go beyond what the user asked for |
+| `intake` | `scope.candidates.record_input` or `slice.candidates.input` has recorded new user input | How much new work the input asks for, where that work lands in what is planned, and how it sits with the user's earlier words |
+
+Every request carries the Program's product level as `state.mode`,
+`{"level":"prod","description":"..."}`: size, the advice to simplify, what counts as
+extra and whether an input asks for too much are judged against the user's words and
+that level.
 
 | Tool + route | Params | Result |
 | --- | --- | --- |
@@ -500,17 +505,53 @@ level only work nodes are asked about. `note` says the same in one sentence and 
 only inside an advised field. The wording Jev is asked with lives in one file,
 `crates/domain/src/advice/sizing_catalog.rs`.
 
+A recorded input gets one short `advice` field from `intake`, or the same `abstained`
+and `unavailable` shapes:
+
+```json
+{"status":"advised","note":"...","level":"program_to_scopes",
+ "work":"bounded","work_p":0.7,"placement":"extends","placement_p":0.6,
+ "nearest":2,"nearest_p":0.8,"fit":"in_line","fit_p":0.9}
+```
+
+| Value | Jev's choices |
+| --- | --- |
+| `work` | `none` (the input asks for no new work), `small`, `bounded`, `large`, `oversized`: the four sizes of `sizing` |
+| `placement` | `covered` (a candidate already delivers it), `extends` (it adds to a candidate), `new_candidate` (it needs a candidate of its own at this level), `outside_program` (it lies beyond the Program's boundaries), and for a Slice candidate set also `separate_scope` |
+| `nearest` | The 1-based position of the closest candidate in the latest saved draft, counted over all its nodes, or `none` |
+| `fit` | `in_line`, `beyond_mode` (it asks for more than the product level needs), `contradicts` (it argues with earlier words or constraints), `unclear` (a question to the user is needed) |
+
+Each `*_p` is Jev's probability for its choice, to two decimals; a question Jev
+abstained on keeps `ABSTAIN`, and Jev abstaining on every question gives
+`{"status":"abstained"}`. The field carries no text of the input or the draft. For this
+advice Jev reads `state.level`, `state.mode`, `state.program` (the six PRD text fields
+of the Program's row), `state.scope` (the opened Scope, Slice level only),
+`state.user_words` (the words recorded before the new input, by source and in recorded
+order), `state.new_input`, and `state.candidates` (the latest saved draft of the
+candidate set, laid out as `sizing` lays a draft out).
+
+A candidate set without a saved draft has no `state.candidates`. Then, and also when
+its saved draft holds no candidate that can be named (no candidates, or decision
+nodes only), the `nearest` question is not asked, the reply has neither `nearest` nor
+`nearest_p`, and `placement` is offered without `covered` and `extends`. A decision
+node of a Slice candidate draft is shown to Jev and is never a `nearest` choice. An
+input entry that a Slice result produced is written by another command: it does not
+fire the point and is not among the user's words. The wording lives in
+`crates/domain/src/advice/intake_catalog.rs`.
+
 `unavailable` reasons are `provider_unconfigured`, `daily_limit_reached`, `timeout`,
 `transport_error`, `http_status`, `invalid_response`, `request_too_large`,
-`advice_too_large` and `mode_not_set`. Jev is not asked when the largest advice a draft
-could get would not fit the save reply (`advice_too_large`), when the request would
-exceed the request limit, or when even the smallest acceptable answer would exceed the
-answer limit (`request_too_large`); none of these spends the daily limit. A replay of a
-save under the same `request_id` returns the recorded field and asks nobody.
+`advice_too_large` and `mode_not_set`. Jev is not asked when the largest advice the
+point could give would not fit the command reply (`advice_too_large`), when the
+request would exceed the request limit, or when even the smallest acceptable answer
+would exceed the answer limit (`request_too_large`); none of these spends the daily
+limit. A Jev failure never fails the command: the draft is stored or the input is
+recorded all the same. A replay of a command under the same `request_id` returns the
+recorded field and asks nobody.
 
 A Program opened before the product level existed has no mode, and without one Jev is
-not asked. The draft is stored, the journal holds a row with `called` false, and the
-reply carries:
+not asked by either point. The draft is stored or the input recorded, the journal
+holds a row with `called` false, and the reply carries:
 
 ```json
 {"status":"unavailable","reason":"mode_not_set","message":"Jev advice is not available: the Program has no mode; set it with program.save"}
