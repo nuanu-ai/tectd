@@ -5,7 +5,9 @@ use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+mod draft_view;
 mod exchange;
+mod point;
 mod questions;
 mod shaping;
 mod sizing;

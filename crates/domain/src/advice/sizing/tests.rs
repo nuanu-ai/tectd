@@ -3,8 +3,8 @@ mod shaping;
 
 use super::*;
 use crate::{
-    AdviceCompletion, AdviceExchange, AdviceReply, Error, ProgramMode, ScopeCandidateDraft,
-    SizingScope, SizingWordSource, SliceCandidateDraft,
+    AdviceCompletion, AdviceExchange, AdviceReply, AdviceUnavailableReason, Error, ProgramMode,
+    ScopeCandidateDraft, SizingScope, SizingWordSource, SliceCandidateDraft,
 };
 use uuid::Uuid;
 

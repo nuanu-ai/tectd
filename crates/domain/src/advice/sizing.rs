@@ -1,10 +1,11 @@
 //! The `sizing` advice point: how large each candidate of a draft is, whether to keep,
 //! split or cut it, and which of its included items go beyond what was asked.
+use super::draft_view::{Asked, candidate_key, item_key};
+use super::point::{self, WIDEST_PROBABILITY, unanswered};
 use super::sizing_catalog as catalog;
-use super::sizing_state::{Asked, SizingDraft, SizingWord, candidate_key, item_key};
+use super::sizing_state::{SizingDraft, SizingWord};
 use super::{
     ADVICE_ABSTAIN, AdviceAnswer, AdviceField, AdviceQuestion, AdviceQuestionSet, AdviceShaping,
-    AdviceUnavailableReason,
 };
 use crate::ProgramMode;
 use serde::Serialize;
@@ -13,9 +14,6 @@ use std::collections::BTreeMap;
 
 pub const SIZING_POINT: &str = "sizing";
 pub use catalog::NOTE as SIZING_NOTE;
-
-/// The widest probability the reply can print: two decimals.
-const WIDEST_PROBABILITY: f64 = 0.99;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -105,14 +103,7 @@ impl AdviceShaping for SizingAdvice {
     /// One entry per asked candidate, in draft order: positions and tokens only, since
     /// the agent holds its own draft. A candidate Jev abstained on keeps `ABSTAIN`.
     fn shape(&self, answers: &BTreeMap<String, AdviceAnswer>) -> AdviceField {
-        let chosen = |name: String| {
-            let answer = answers.get(&name)?;
-            let probability = answer.probabilities.get(&answer.choice)?;
-            Some((
-                answer.choice.as_str(),
-                (probability * 100.0).round() / 100.0,
-            ))
-        };
+        let chosen = |name: String| point::chosen(answers, &name);
         let mut candidates = Vec::new();
         for candidate in &self.asked {
             let key = candidate_key(candidate.position);
@@ -179,15 +170,11 @@ fn question(
     criteria: &[(&str, &str)],
     abstain: &str,
 ) -> AdviceQuestion {
-    AdviceQuestion {
-        instructions: instructions.replace("{key}", key).replace("{item}", item),
-        criteria: criteria
-            .iter()
-            .copied()
-            .chain([(ADVICE_ABSTAIN, abstain)])
-            .map(|(name, description)| (name.to_owned(), description.to_owned()))
-            .collect(),
-    }
+    point::question(
+        instructions.replace("{key}", key).replace("{item}", item),
+        criteria,
+        abstain,
+    )
 }
 
 /// The longest token Jev may choose for a question with these criteria.
@@ -202,14 +189,6 @@ fn longest(criteria: &[(&'static str, &'static str)]) -> &'static str {
 
 fn counted(count: usize, noun: &str) -> String {
     format!("{count} {noun}{}", if count == 1 { "" } else { "s" })
-}
-
-/// Unreachable after the answers were accepted; never a panic and never a guess.
-fn unanswered(name: &str) -> AdviceField {
-    AdviceField::unavailable(
-        AdviceUnavailableReason::InvalidResponse,
-        &format!("question `{name}` has no usable answer"),
-    )
 }
 
 #[cfg(test)]
