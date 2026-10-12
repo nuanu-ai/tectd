@@ -1,6 +1,7 @@
 //! Application policy and ports. Adapters depend on this crate, never the reverse.
 mod advice;
 mod advice_ports;
+mod advice_sizing;
 pub use advice::AdviceRequest;
 pub use advice_ports::{AdviceOutputGuard, AdviceProvider, AdviceStore, DisabledAdviceProvider};
 mod planning_knowledge_ports;

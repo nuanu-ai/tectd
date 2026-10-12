@@ -443,8 +443,10 @@ Read-only context reports stale or unresolved knowledge and returns an exact
 
 Jev is an outside adviser a workspace may switch on. Advice arrives in the reply of a
 command the agent already calls, as an `advice` field; it forbids nothing and applies
-nothing. This build carries the base only: the setting, the journal, the client and the
-generic call path. No command asks Jev yet.
+nothing. One advice point exists, `sizing`: after `scope.candidates.save` or
+`slice.candidates.save` has stored a draft, Jev is asked once how large each candidate
+is, whether to keep, split or cut it, and which of its included items go beyond what
+the user asked for.
 
 | Tool + route | Params | Result |
 | --- | --- | --- |
@@ -453,8 +455,35 @@ generic call path. No command asks Jev yet.
 | `query` · `workspace.advisory.audit` | `{ "limit": 5, "point": "sizing", "bodies": false }` | Journal page, newest first, with counters of calls, skips and reasons |
 
 A workspace without a setting is disabled: no Jev call, no journal row, no `advice`
-field. Enabling requires `daily_call_limit`; it has no default. Migration 0042 adds
-`advice_config` and `advice_journal` with forced RLS.
+field, and every existing command answers as it does without this feature. Enabling
+requires `daily_call_limit`; it has no default. Migration 0042 adds `advice_config` and
+`advice_journal` with forced RLS.
+
+The `advice` field of a draft save is one of:
+
+```json
+{"status":"advised","note":"...","level":"scope_to_slices","candidates":[
+  {"candidate":1,"size":"large","size_p":0.62,"advice":"split","advice_p":0.8,"extra_items":[2,5]}]}
+{"status":"abstained"}
+{"status":"unavailable","reason":"timeout","message":"Jev advice is not available: ..."}
+```
+
+`candidate` and `extra_items` are 1-based positions in the saved draft; `size_p` and
+`advice_p` are Jev's probability for its choice, to two decimals; a candidate Jev
+abstained on keeps `ABSTAIN`. `size` is `small`, `bounded`, `large` or `oversized`;
+`advice` is `keep`, `split`, `simplify` or `clarify`, and for Slice candidates also
+`separate_scope`. `level` is `program_to_scopes` or `scope_to_slices`; at the Slice
+level only work nodes are asked about. `note` says the same in one sentence and travels
+only inside an advised field. The wording Jev is asked with lives in one file,
+`crates/domain/src/advice/sizing_catalog.rs`.
+
+`unavailable` reasons are `provider_unconfigured`, `daily_limit_reached`, `timeout`,
+`transport_error`, `http_status`, `invalid_response`, `request_too_large` and
+`advice_too_large`. Jev is not asked when the largest advice a draft could get would
+not fit the save reply (`advice_too_large`), when the request would exceed the request
+limit, or when even the smallest acceptable answer would exceed the answer limit
+(`request_too_large`); none of these spends the daily limit. A replay of a save under
+the same `request_id` returns the recorded field and asks nobody.
 
 `workspace.advisory.audit` requires `bodies`: `true` returns `request_body` and
 `response_body` on every row, `null` where none was recorded; `false` leaves both

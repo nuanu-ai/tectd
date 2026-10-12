@@ -101,6 +101,33 @@ impl AdviceStore for Journal {
     async fn advice_counters(&mut self, _: Uuid, _: &AdviceAuditQuery) -> Result<AdviceCounters> {
         unreachable!()
     }
+    async fn program_input_texts(&mut self, _: Uuid, _: Uuid, _: i64) -> Result<Vec<String>> {
+        unreachable!()
+    }
+    async fn scope_candidate_input_texts(
+        &mut self,
+        _: Uuid,
+        _: Uuid,
+        _: i64,
+    ) -> Result<Vec<String>> {
+        unreachable!()
+    }
+    async fn slice_candidate_input_texts(
+        &mut self,
+        _: Uuid,
+        _: Uuid,
+        _: i64,
+    ) -> Result<Vec<String>> {
+        unreachable!()
+    }
+    async fn scope_candidate_words_basis(
+        &mut self,
+        _: Uuid,
+        _: Uuid,
+        _: Uuid,
+    ) -> Result<Option<SizingWordsBasis>> {
+        unreachable!()
+    }
 }
 
 /// A point whose largest field is a note of a chosen length.

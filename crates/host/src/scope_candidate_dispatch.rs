@@ -70,10 +70,21 @@ pub(crate) async fn execute(
             .begin_candidate_set(context, &request, &guidance, &guard)
             .await
             .and_then(|outcome| scope_candidate_output::begin(outcome, capacity)),
-        ScopeCandidateInvocation::SaveDraft(request) => service
-            .save_candidate_draft(context, &request, &guidance, &guard)
-            .await
-            .and_then(|stored| scope_candidate_output::stored_mutation(stored, capacity)),
+        ScopeCandidateInvocation::SaveDraft(request) => {
+            let stored = service
+                .save_candidate_draft(context, &request, &guidance, &guard)
+                .await?;
+            let reply = scope_candidate_output::stored_mutation(stored.clone(), capacity)?;
+            // The draft is stored; Jev's advice on it, if any, rides on the same reply.
+            let room = crate::advice_reply::ReplyRoom {
+                reply: &reply,
+                capacity,
+            };
+            let advice = service
+                .advise_scope_candidate_sizing(context, &request, &stored, &room)
+                .await?;
+            crate::advice_reply::finish(reply, advice, capacity)
+        }
         ScopeCandidateInvocation::Review(request) => service
             .review_candidate_set(context, &request, &guidance, &guard)
             .await

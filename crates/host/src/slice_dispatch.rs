@@ -117,11 +117,21 @@ pub(crate) async fn execute(
                 .await?;
             compact_open_scope(&value)
         }
-        SliceInvocation::SaveDraft(request) => candidate_mutation(
-            service
+        SliceInvocation::SaveDraft(request) => {
+            let saved = service
                 .save_slice_candidate_draft(context, &request, &guidance, &guard)
-                .await?,
-        ),
+                .await?;
+            let reply = candidate_mutation(saved.clone())?;
+            // The draft is stored; Jev's advice on it, if any, rides on the same reply.
+            let room = crate::advice_reply::ReplyRoom {
+                reply: &reply,
+                capacity,
+            };
+            let advice = service
+                .advise_slice_candidate_sizing(context, &request, &saved, &room)
+                .await?;
+            crate::advice_reply::finish(reply, advice, capacity)
+        }
         SliceInvocation::Review(request) => candidate_mutation(
             service
                 .review_slice_candidate_set(context, &request, &guidance, &guard)
@@ -437,6 +447,9 @@ fn output<T: Serialize>(value: T, actions: Vec<Value>) -> Result<Value> {
     let recommended = (!actions.is_empty()).then_some(0);
     Ok(responses::with_actions(value, actions, recommended))
 }
+
+#[cfg(test)]
+mod advice_fit_tests;
 
 #[cfg(test)]
 mod tests;

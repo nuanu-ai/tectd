@@ -2,6 +2,7 @@
 
 mod advice_dispatch;
 mod advice_output;
+mod advice_reply;
 mod advice_tools;
 mod api;
 mod child_env;

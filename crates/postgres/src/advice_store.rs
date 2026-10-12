@@ -1,3 +1,4 @@
+use crate::advice_words::Inputs;
 use crate::{storage_error, store::PgUnitOfWork};
 use async_trait::async_trait;
 use serde::de::DeserializeOwned;
@@ -381,5 +382,47 @@ impl AdviceStore for PgUnitOfWork {
             );
         }
         Ok(counters)
+    }
+
+    async fn program_input_texts(
+        &mut self,
+        workspace_id: Uuid,
+        program_id: Uuid,
+        through: i64,
+    ) -> Result<Vec<String>> {
+        self.read_input_texts(workspace_id, Inputs::Program, program_id, through)
+            .await
+    }
+
+    async fn scope_candidate_input_texts(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+        through: i64,
+    ) -> Result<Vec<String>> {
+        let inputs = Inputs::ScopeCandidateSet;
+        self.read_input_texts(workspace_id, inputs, candidate_set_id, through)
+            .await
+    }
+
+    async fn slice_candidate_input_texts(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+        through: i64,
+    ) -> Result<Vec<String>> {
+        let inputs = Inputs::SliceCandidateSet;
+        self.read_input_texts(workspace_id, inputs, candidate_set_id, through)
+            .await
+    }
+
+    async fn scope_candidate_words_basis(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+        snapshot_id: Uuid,
+    ) -> Result<Option<SizingWordsBasis>> {
+        self.read_words_basis(workspace_id, candidate_set_id, snapshot_id)
+            .await
     }
 }

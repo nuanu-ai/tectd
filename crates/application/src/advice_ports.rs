@@ -97,4 +97,39 @@ pub trait AdviceStore: Send {
         workspace_id: Uuid,
         query: &AdviceAuditQuery,
     ) -> Result<AdviceCounters>;
+
+    /// Whole Program input texts in recorded order, up to and including `through`.
+    async fn program_input_texts(
+        &mut self,
+        workspace_id: Uuid,
+        program_id: Uuid,
+        through: i64,
+    ) -> Result<Vec<String>>;
+
+    /// Whole input texts of a Scope candidate set in recorded order, up to and
+    /// including `through`.
+    async fn scope_candidate_input_texts(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+        through: i64,
+    ) -> Result<Vec<String>>;
+
+    /// Whole texts recorded as input of a Slice candidate set, in recorded order, up
+    /// to and including `through`. Rows a Slice result produced are not the user's
+    /// words and are left out.
+    async fn slice_candidate_input_texts(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+        through: i64,
+    ) -> Result<Vec<String>>;
+
+    /// The Program of a Scope candidate set and how far one of its snapshots had read.
+    async fn scope_candidate_words_basis(
+        &mut self,
+        workspace_id: Uuid,
+        candidate_set_id: Uuid,
+        snapshot_id: Uuid,
+    ) -> Result<Option<SizingWordsBasis>>;
 }

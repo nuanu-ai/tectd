@@ -482,6 +482,9 @@ fn compact(
 }
 
 #[cfg(test)]
+mod advice_fit_tests;
+
+#[cfg(test)]
 mod planning_read_tests;
 
 #[cfg(test)]
