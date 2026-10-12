@@ -239,6 +239,46 @@ a Program without one has no `mode` key. Migration 0043 adds the nullable column
 a check on the four values; Programs that existed before it keep no mode until a save
 states one.
 
+The level holds for the whole Program. One Scope or one Slice may be built to another
+level, and an agent cannot decide that: an override is kept only with the user's
+explicit written permission. It has no command of its own and no default. A candidate
+of a `scope.candidates.save` draft or a work node of a `slice.candidates.save` draft
+may carry `mode_override`; a decision node takes none, and a draft without the field
+is saved, stored and answered exactly as before.
+
+| In a draft | `mode_override` | The id names |
+| --- | --- | --- |
+| Scope candidate | `{"mode":"demo","source_ref_id":"<uuid>","exact_quote":"..."}` | A `planning_input` source reference of the snapshot the draft is saved against, that is, an input of this Scope candidate set |
+| Slice work node | `{"mode":"demo","input_id":"<uuid>","exact_quote":"..."}` | An input of this Scope's Slice candidate set that the current snapshot holds and that no Slice result produced |
+
+The save keeps the override when the level is one of the four, the quote is not blank
+and the text of that input contains it as written. Anything else is refused with
+`MODE_OVERRIDE_NOT_PERMITTED` and nothing is stored: a field of the PRD, an input of
+the other level's candidate set, a reference of another snapshot, an input a Slice
+result wrote, an altered quote. A Program input cannot be cited at all, since
+snapshots issue no reference for it. The refusal's intro gives the steps in order: ask
+the user; record the answer with `scope.candidates.record_input` or
+`slice.candidates.input`; refresh with `scope.candidates.refresh` or
+`slice.candidates.refresh`, because a recorded input can be cited only from the next
+snapshot and every save is refused as stale until then; read the answer's
+`source_ref_id` or `id` in view `inputs`; save again quoting it. A Scope-level
+reference is new in every snapshot: the same level and quote cited through the new
+reference of the same input is no change of the candidate.
+
+A Scope opened from an overridden candidate and a Slice opened from an overridden work
+node carry `mode_override` as two parts, the level and the id that permitted it:
+`{"mode","source_ref_id"}` on the Scope and `{"mode","input_id"}` on the Slice. The
+quote is not copied; it stays in the candidate and in the input. Migration 0044 adds
+the two nullable columns to `native_scopes` and to `native_slices`, set together or
+not at all; existing rows stay NULL. A candidate, a Scope or a Slice without an
+override has no `mode_override` key wherever it is shown. The level a piece is built
+to is its own override, else the override of its Scope, else the Program's mode; one
+function says so, `effective_mode` in `crates/domain/src/mode_override.rs`.
+
+The Scope candidates and Slice candidates methods are not edited for the override.
+The Program method names it, and the schemas and `help` texts of the two save routes
+and the refusal describe it.
+
 Accept a narrative as normal input. The supplied skill guides the agent to form a
 coherent PRD, label assumptions, and ask only about a material unresolved choice.
 Before yielding for an answer it saves the partial draft and exact question. Once
@@ -471,10 +511,15 @@ nothing. Two advice points exist:
 | `sizing` | `scope.candidates.save` or `slice.candidates.save` has stored a draft | How large each candidate is, whether to keep, split or cut it, and which of its included items go beyond what the user asked for |
 | `intake` | `scope.candidates.record_input` or `slice.candidates.input` has recorded new user input | How much new work the input asks for, where that work lands in what is planned, and how it sits with the user's earlier words |
 
-Every request carries the Program's product level as `state.mode`,
+Every request carries a product level as `state.mode`,
 `{"level":"prod","description":"..."}`: size, the advice to simplify, what counts as
 extra and whether an input asks for too much are judged against the user's words and
-that level.
+that level. On the way from a Program to Scopes it is the Program's mode. Inside an
+opened Scope it is the Scope's effective level: its mode override, else the Program's
+mode. A candidate that carries a mode override of its own has
+`mode_override: {"level":"demo","description":"..."}` in its object in
+`state.candidates`, and `sizing` judges that candidate against its own level. The id
+and the user's quote of an override are not sent.
 
 | Tool + route | Params | Result |
 | --- | --- | --- |
