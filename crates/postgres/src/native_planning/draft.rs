@@ -180,7 +180,7 @@ async fn resolve_draft(
         }
     };
     let mut nodes = Vec::new();
-    for node in &draft.nodes {
+    for (index, node) in draft.nodes.iter().enumerate() {
         let (identity, change) = match node {
             SliceCandidateDraftNode::Work {
                 identity,
@@ -238,6 +238,7 @@ async fn resolve_draft(
                         .clone(),
                     source_result_ids: source_result_ids.clone(),
                     source_checkpoint: source_checkpoint.clone(),
+                    mode_override: permit(tx, tenant, workspace, scope, index, node).await?,
                 }
             }
             SliceCandidateDraftNode::Decision {

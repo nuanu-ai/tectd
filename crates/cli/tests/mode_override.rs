@@ -13,6 +13,8 @@ mod recovery_support;
 mod replies;
 #[path = "mode_override/scope.rs"]
 mod scope;
+#[path = "mode_override/slice.rs"]
+mod slice;
 #[path = "advice_sizing/support.rs"]
 #[allow(dead_code)]
 mod support;

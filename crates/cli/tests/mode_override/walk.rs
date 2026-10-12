@@ -1,8 +1,12 @@
 //! What the override tests do through the bridge beyond the shared fixtures: follow
-//! an advertised call, read a refusal, and walk a Scope candidate set from one head
-//! to the next.
+//! an advertised call, read a refusal, and walk a Scope candidate set or the Slice
+//! candidate set of an opened Scope from one head to the next.
 use crate::drafts::{Level, target};
-use crate::recovery_support::candidate_reads::{CandidateFixture, read_ready_json};
+use crate::planning::route;
+use crate::recovery_support::candidate_reads::{
+    CandidateFixture, read_query_json, read_ready_json,
+};
+use crate::recovery_support::native_reads::{ScopeOpenFixture, SlicePlanningFixture};
 use crate::recovery_support::{Mcp, tool_payload};
 use serde_json::{Value, json};
 use std::path::Path;
@@ -182,6 +186,22 @@ impl ScopeSet {
         self.write("draft", draft)
     }
 
+    /// The review that accepts every one of `candidates`.
+    pub fn accept(&self, candidates: &[Value]) -> Value {
+        let decisions = candidates
+            .iter()
+            .map(|candidate| {
+                json!({"candidate_id":candidate["id"],"decision":"accept",
+                    "rationale":"Coherent Scope"})
+            })
+            .collect::<Vec<_>>();
+        self.write(
+            "review",
+            json!({"verdict":"ready","summary":"Bounded and ready","findings":[],
+                "candidate_decisions":decisions}),
+        )
+    }
+
     fn write(&self, kind: &str, body: Value) -> Value {
         let set = &self.context["candidate_set"];
         let mut params = json!({"kind":kind,"candidate_set_id":set["id"],
@@ -194,6 +214,15 @@ impl ScopeSet {
                 "workspace_generation":manifest["workspace_generation"]});
         }
         params
+    }
+
+    /// The call that opens a Scope from one accepted candidate of this head.
+    pub fn open(&self, candidate: &Value) -> Value {
+        let set = &self.context["candidate_set"];
+        json!({"request_id":Uuid::new_v4(),"candidate_set_id":set["id"],
+            "candidate_set_revision":set["revision"],
+            "candidate_snapshot_id":self.context["snapshot"]["id"],
+            "candidate_id":candidate["id"],"candidate_revision":candidate["revision"]})
     }
 }
 
@@ -258,4 +287,133 @@ pub fn scope_resave(details: &Value, goal_ref: &Value) -> Value {
         .collect::<Vec<_>>();
     json!({"boundary":"ongoing","goals":goals,"evidence":[],"candidates":candidates,
         "blockers":[],"protected_changes":[]})
+}
+
+/// The head of an opened Scope's Slice candidate set as its `details` read shows it.
+pub struct SliceSet {
+    pub context: Value,
+}
+
+impl SliceSet {
+    /// The Slice planning of the Scope opened from one accepted candidate of `source`.
+    pub async fn opened(client: &mut Mcp, source: &ScopeSet, candidate: &Value) -> Self {
+        let opened = route(client, "command", "scope.open", source.open(candidate)).await;
+        let planning = ScopeOpenFixture::from_mutation(opened, "created")
+            .read_planning(client)
+            .await;
+        Self {
+            context: planning.value,
+        }
+    }
+
+    /// The head a successful command left, read through the reply's own action.
+    pub async fn after(client: &mut Mcp, reply: Value) -> Self {
+        let details = SlicePlanningFixture::from_mutation(reply)
+            .read_details(client)
+            .await;
+        Self {
+            context: details.value,
+        }
+    }
+
+    pub fn scope_id(&self) -> &Value {
+        &self.context["scope"]["id"]
+    }
+
+    fn pins(&self) -> Value {
+        let set = &self.context["candidate_set"];
+        json!({"scope_id":self.scope_id(),"candidate_set_id":set["id"],
+            "revision":set["revision"],"request_id":Uuid::new_v4()})
+    }
+
+    /// The items of one listing view of the planning context.
+    pub async fn items(&self, client: &mut Mcp, view: &str) -> Vec<Value> {
+        let page = read_query_json(
+            client,
+            &json!({"route":"slice.candidates.context",
+                "params":{"scope_id":self.scope_id(),"view":view,"limit":100}}),
+        )
+        .await
+        .value;
+        assert!(page["next_after"].is_null(), "{page}");
+        page["items"].as_array().unwrap().clone()
+    }
+
+    /// Record one more input of the user. The set is stale until it is refreshed.
+    pub async fn record(&self, client: &mut Mcp, input: &str) -> Value {
+        let mut params = self.pins();
+        params["input"] = json!(input);
+        route(client, "command", "slice.candidates.input", params).await
+    }
+
+    /// Refresh the set at this head.
+    pub async fn refresh(&self, client: &mut Mcp) -> Self {
+        let refreshed = route(client, "command", "slice.candidates.refresh", self.pins()).await;
+        Self::after(client, refreshed).await
+    }
+
+    pub async fn record_and_refresh(&self, client: &mut Mcp, input: &str) -> Self {
+        let recorded = self.record(client, input).await;
+        Self::after(client, recorded).await.refresh(client).await
+    }
+
+    /// The save call for a draft at this head.
+    pub fn save(&self, draft: Value) -> Value {
+        let set = &self.context["candidate_set"];
+        let mut params = self.pins();
+        params["kind"] = json!("draft");
+        params["snapshot_id"] = self.context["snapshot"]["id"].clone();
+        params["input_cursor"] = set["latest_input"].clone();
+        params["draft"] = draft;
+        let manifest = &self.context["planning_knowledge"]["manifest"];
+        if manifest["id"].is_string() {
+            params["consumed_knowledge"] = json!({"manifest_id":manifest["id"],
+                "digest":manifest["digest"],
+                "workspace_generation":manifest["workspace_generation"]});
+        }
+        params
+    }
+}
+
+/// A new work node under a local label.
+pub fn work_node(number: usize) -> Value {
+    json!({"kind":"work","identity":{"local":format!("work-{number}")},
+        "title":format!("Work {number}"),"outcome":"The cause is demonstrated",
+        "includes":["item 1"],"excludes":["deployment"],"dependencies":[],
+        "proof":["Causal observation"],"pipeline":"slice.debug-root-cause",
+        "pipeline_reason":"Cause is unknown","source_result_ids":[]})
+}
+
+/// A first Slice candidate draft of `nodes`.
+pub fn slice_draft(nodes: Vec<Value>) -> Value {
+    json!({"coverage_summary":"The whole Scope","nodes":nodes,"supersessions":[]})
+}
+
+/// A stored work node stated again for a later save, unchanged.
+pub fn retained(node: &Value) -> Value {
+    json!({"kind":"work","identity":{"candidate_id":node["id"],"revision":node["revision"]},
+        "title":node["title"],"outcome":node["outcome"],"includes":node["includes"],
+        "excludes":node["excludes"],"dependencies":[],"proof":node["proof"],
+        "pipeline":node["pipeline"],"pipeline_reason":node["pipeline_reason"],
+        "source_result_ids":[]})
+}
+
+/// A Scope candidate set whose draft of `candidates` is saved and reviewed ready with
+/// every candidate accepted: its head, the candidates as stored, and the source
+/// references of its inputs.
+pub async fn reviewed(
+    client: &mut Mcp,
+    head: ScopeSet,
+    candidates: Vec<Value>,
+) -> (ScopeSet, Vec<Value>, Vec<Value>) {
+    let refs = head.input_refs(client).await;
+    let draft = scope_draft(&refs[0], candidates);
+    let saved = client.call("save_candidate_set", head.save(draft)).await;
+    let head = ScopeSet::after(client, saved).await;
+    let (_, stored) = head.candidates(client).await;
+    let review = client
+        .call("save_candidate_set", head.accept(&stored))
+        .await;
+    assert_eq!(review["candidate_set"]["status"], "ready", "{review}");
+    (ScopeSet::after(client, review).await, stored, refs)
 }

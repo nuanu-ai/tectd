@@ -283,3 +283,74 @@ fn a_scope_candidate_draft_reads_and_writes_with_and_without_an_override() {
         entity
     );
 }
+
+#[test]
+fn a_slice_work_node_reads_and_writes_with_and_without_an_override() {
+    use crate::{SliceCandidateDraftNode, SliceCandidateNode};
+    let plain = json!({"kind":"work","identity":{"local":"work"},"title":"Export",
+        "outcome":"Rows leave as a file","includes":["csv"],"excludes":[],"dependencies":[],
+        "proof":["The file opens"],"pipeline":"slice.lightweight-tdd-development",
+        "pipeline_reason":"Bounded","source_result_ids":[]});
+    let node: SliceCandidateDraftNode = serde_json::from_value(plain.clone()).unwrap();
+    assert!(matches!(
+        &node,
+        SliceCandidateDraftNode::Work {
+            mode_override: None,
+            ..
+        }
+    ));
+    // Without an override the node serializes as it did before the field existed.
+    assert_eq!(json!(node), plain);
+
+    let stated = json!({"mode":"mvp","input_id":Uuid::from_u128(9),"exact_quote":"I allow"});
+    let mut with = plain.clone();
+    with["mode_override"] = stated.clone();
+    let node: SliceCandidateDraftNode = serde_json::from_value(with.clone()).unwrap();
+    let SliceCandidateDraftNode::Work { mode_override, .. } = &node else {
+        panic!("a work node");
+    };
+    assert_eq!(
+        mode_override.as_deref(),
+        Some(&slice_draft("mvp", "I allow"))
+    );
+    assert_eq!(json!(node), with);
+
+    // Null, a part of the other level and an unknown part are not an override.
+    for broken in [
+        serde_json::Value::Null,
+        json!({"mode":"mvp","source_ref_id":Uuid::from_u128(9),"exact_quote":"I allow"}),
+        json!({"mode":"mvp","input_id":Uuid::from_u128(9),"exact_quote":"q","by":"me"}),
+    ] {
+        with["mode_override"] = broken;
+        assert!(serde_json::from_value::<SliceCandidateDraftNode>(with.clone()).is_err());
+    }
+    // A decision node takes none.
+    let mut decision = json!({"kind":"decision","identity":{"local":"choice"},
+        "title":"Choose","question":"Which?","resolution_criteria":["One is chosen"]});
+    assert!(serde_json::from_value::<SliceCandidateDraftNode>(decision.clone()).is_ok());
+    decision["mode_override"] = stated.clone();
+    assert!(serde_json::from_value::<SliceCandidateDraftNode>(decision).is_err());
+
+    // A stored work node of before reads as one without an override and writes no key.
+    let stored = json!({"kind":"work","id":Uuid::from_u128(1),"revision":1,"title":"Export",
+        "outcome":"o","includes":[],"excludes":[],"dependencies":[],"proof":["p"],
+        "pipeline":"slice.lightweight-tdd-development","pipeline_reason":"r",
+        "why_lightweight_insufficient":null,"why_further_vertical_split_not_viable":null,
+        "source_result_ids":[]});
+    let mut node: SliceCandidateNode = serde_json::from_value(stored.clone()).unwrap();
+    assert_eq!(json!(node), stored);
+    let SliceCandidateNode::Work { mode_override, .. } = &mut node else {
+        panic!("a work node");
+    };
+    assert_eq!(*mode_override, None);
+    *mode_override = Some(Box::new(
+        slice_draft("mvp", "I allow")
+            .permitted(0, PermissionRecord::UserInput("Yes, I allow it."))
+            .unwrap(),
+    ));
+    assert_eq!(json!(node)["mode_override"], stated);
+    assert_eq!(
+        serde_json::from_value::<SliceCandidateNode>(json!(node)).unwrap(),
+        node
+    );
+}

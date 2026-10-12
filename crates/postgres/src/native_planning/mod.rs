@@ -140,12 +140,14 @@ pub(crate) async fn planning_receipt(
 mod context;
 mod continuation;
 mod draft;
+mod mode_override;
 mod scope;
 mod slice;
 
 pub(crate) use context::{load_context, load_scope, load_slice, summaries};
 pub(crate) use continuation::{record_input, refresh, save_review};
 pub(crate) use draft::save_draft;
+use mode_override::permit;
 use scope::insert_snapshot;
 pub(crate) use scope::{open_scope, scope_open_basis, scope_open_replay};
 pub(crate) use slice::{open_slice, record_result};

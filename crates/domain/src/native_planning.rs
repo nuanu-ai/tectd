@@ -178,6 +178,14 @@ pub enum SliceCandidateDraftNode {
         source_result_ids: Vec<Uuid>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_checkpoint: Option<crate::PipelineCheckpointRef>,
+        /// Another product level than the Scope's, with the user's quoted
+        /// permission. Omitted means no override; a decision node takes none.
+        #[serde(
+            default,
+            deserialize_with = "crate::mode_override::stated",
+            skip_serializing_if = "Option::is_none"
+        )]
+        mode_override: Option<Box<crate::SliceModeOverrideDraft>>,
     },
     Decision {
         identity: SliceDraftIdentity,
@@ -233,6 +241,9 @@ pub enum SliceCandidateNode {
         source_result_ids: Vec<Uuid>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source_checkpoint: Option<crate::PipelineCheckpointRef>,
+        /// A work candidate without an override has no such key.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode_override: Option<Box<crate::SliceCandidateModeOverride>>,
     },
     Decision {
         id: Uuid,
