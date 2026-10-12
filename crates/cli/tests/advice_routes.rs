@@ -2,22 +2,23 @@
 //! startup rules for the Jev environment, what its children inherit, and the real
 //! HTTP adapter writing the journal. Jev itself is a loopback fake; nothing leaves
 //! the machine.
+#[path = "advice_routes/daemon.rs"]
+#[allow(dead_code)]
+mod daemon;
 #[allow(dead_code)]
 mod recovery_support;
 #[path = "advice_journal/support.rs"]
 #[allow(dead_code)]
 mod support;
 
+use daemon::{KEY, UNUSED_ENDPOINT, daemon, database, full_jev, route, serving};
 use recovery_support::{Mcp, host_file, private_temp, tagged_url, tool_payload};
 use serde_json::{Value, json};
-use sqlx::PgPool;
 use std::{
     fs,
     io::{Read, Write},
     net::TcpListener,
-    os::unix::fs::{FileTypeExt, OpenOptionsExt, PermissionsExt},
-    path::Path,
-    process::Stdio,
+    os::unix::fs::PermissionsExt,
     sync::Arc,
     thread,
     time::Duration,
@@ -25,92 +26,7 @@ use std::{
 use tect_application::{AdviceAsk, AdviceRequest, WorkspaceService};
 use tect_domain::*;
 use tect_postgres::{PgStore, admin};
-use tokio::process::{Child, Command};
 use uuid::Uuid;
-
-const KEY: &str = "route-test-key-0123456789";
-const UNUSED_ENDPOINT: &str = "http://127.0.0.1:9/v1/systemone";
-
-struct Urls {
-    pool: PgPool,
-    runtime: String,
-}
-
-async fn database() -> Urls {
-    let admin_url = std::env::var("TECT_TEST_ADMIN_URL").expect("TECT_TEST_ADMIN_URL required");
-    let runtime = std::env::var("TECT_TEST_RUNTIME_URL").expect("TECT_TEST_RUNTIME_URL required");
-    let role = std::env::var("TECT_TEST_RUNTIME_ROLE").expect("TECT_TEST_RUNTIME_ROLE required");
-    let pool = PgPool::connect(&admin_url).await.unwrap();
-    admin::migrate(&pool, &role).await.unwrap();
-    Urls { pool, runtime }
-}
-
-/// The daemon with exactly the given Jev environment, whatever the test runner has.
-fn daemon(url: &str, socket: &Path, jev: &[(&str, &str)], path: Option<&str>) -> Child {
-    let log = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(socket.with_extension("stderr"))
-        .unwrap();
-    let mut command = Command::new(env!("CARGO_BIN_EXE_tectd"));
-    command
-        .env("TECT_DATABASE_URL", url)
-        .env("TECT_SOCKET", socket)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::from(log))
-        .kill_on_drop(true);
-    for name in tect_host::JEV_ENVIRONMENT {
-        command.env_remove(name);
-    }
-    for (name, value) in jev {
-        command.env(name, value);
-    }
-    if let Some(path) = path {
-        command.env("PATH", path);
-    }
-    command.spawn().unwrap()
-}
-
-async fn serving(child: &mut Child, socket: &Path) {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            assert!(
-                child.try_wait().unwrap().is_none(),
-                "owned daemon exited during startup"
-            );
-            if fs::symlink_metadata(socket)
-                .is_ok_and(|m| m.file_type().is_socket() && m.permissions().mode() & 0o777 == 0o600)
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
-}
-
-async fn route(client: &mut Mcp, tool: &str, route: &str, params: Value) -> (Value, String) {
-    let response = client
-        .exchange(
-            "tools/call",
-            json!({"name":tool,"arguments":{"route":route,"params":params}}),
-        )
-        .await;
-    let raw = response.to_string();
-    (response, raw)
-}
-
-fn full_jev(endpoint: &str) -> [(&str, &str); 4] {
-    [
-        ("TECT_JEV_ENDPOINT", endpoint),
-        ("TECT_JEV_MODEL", "jev-latest"),
-        ("TECT_JEV_TIMEOUT_MS", "2000"),
-        ("TYPESAFE_API_KEY", KEY),
-    ]
-}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn daemon_start_follows_the_three_jev_variables_and_nothing_else() {

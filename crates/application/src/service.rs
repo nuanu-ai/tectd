@@ -1,7 +1,8 @@
 use crate::{SetupFiles, SourceInspector, Store, TransactionMode, UnitOfWork};
 use std::sync::Arc;
 use tect_domain::{
-    Error, EventKind, HostIdentity, RequestContext, Result, Session, Workspace, WorkspaceState,
+    ConfigureAdvice, Error, EventKind, HostIdentity, RequestContext, Result, Session, Workspace,
+    WorkspaceState,
 };
 
 pub struct WorkspaceService {
@@ -11,6 +12,9 @@ pub struct WorkspaceService {
     pub(crate) knowledge_embedding_provider: Arc<dyn crate::KnowledgeEmbeddingProvider>,
     pub(crate) query_embedding_cache: std::sync::Mutex<KnowledgeQueryCache>,
     pub(crate) advice_provider: Arc<dyn crate::AdviceProvider>,
+    /// Daily call limit a workspace this service creates is enabled with; none
+    /// leaves a new workspace without a setting.
+    new_workspace_advice_limit: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +79,7 @@ impl WorkspaceService {
             knowledge_embedding_provider: Arc::new(crate::DisabledKnowledgeEmbeddingProvider),
             query_embedding_cache: std::sync::Mutex::new(KnowledgeQueryCache::new()),
             advice_provider: Arc::new(crate::DisabledAdviceProvider),
+            new_workspace_advice_limit: None,
         }
     }
 
@@ -88,6 +93,13 @@ impl WorkspaceService {
 
     pub fn with_advice_provider(mut self, provider: Arc<dyn crate::AdviceProvider>) -> Self {
         self.advice_provider = provider;
+        self
+    }
+
+    /// Enable Jev, with this daily call limit, in every workspace this service creates
+    /// from now on. Workspaces that already exist keep their setting.
+    pub fn with_advice_in_new_workspaces(mut self, daily_call_limit: i64) -> Self {
+        self.new_workspace_advice_limit = Some(daily_call_limit);
         self
     }
 
@@ -277,6 +289,17 @@ impl WorkspaceService {
                 session.value.id,
             )
             .await?;
+        }
+        if let (true, Some(limit)) = (workspace.created, self.new_workspace_advice_limit) {
+            // The first setting of the new workspace, written by the session that created it.
+            let enable = ConfigureAdvice {
+                enabled: true,
+                daily_call_limit: Some(limit),
+                expected_revision: 0,
+            };
+            enable.validate()?;
+            tx.configure_advice(workspace.value.id, session.value.id, &enable)
+                .await?;
         }
         let state = Self::state(&mut *tx, workspace.value, session.value).await?;
         let prepared = prepare(state)?;

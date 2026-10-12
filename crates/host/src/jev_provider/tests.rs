@@ -93,6 +93,36 @@ fn any_jev_variable_requires_all_three_and_the_key_with_no_defaults() {
 }
 
 #[test]
+fn new_workspace_limit_is_unset_or_a_whole_number_above_zero_with_a_provider() {
+    assert_eq!(new_workspace_daily_limit(None, false), Ok(None));
+    assert_eq!(new_workspace_daily_limit(None, true), Ok(None));
+    assert_eq!(new_workspace_daily_limit(Some("500"), true), Ok(Some(500)));
+    assert_eq!(new_workspace_daily_limit(Some("1"), true), Ok(Some(1)));
+    // Enabling without a provider would switch on advice that can never come.
+    assert_eq!(
+        new_workspace_daily_limit(Some("500"), false),
+        Err(Error::InvalidConfiguration)
+    );
+    for limit in [
+        "",
+        "0",
+        "-1",
+        "+5",
+        "1.5",
+        " 5",
+        "5 ",
+        "many",
+        "9223372036854775808",
+    ] {
+        assert_eq!(
+            new_workspace_daily_limit(Some(limit), true),
+            Err(Error::InvalidConfiguration),
+            "{limit:?}"
+        );
+    }
+}
+
+#[test]
 fn debug_output_never_shows_the_key() {
     let config =
         JevConfig::from_values(Some(ENDPOINT), Some("jev-latest"), Some("2000"), Some(KEY))

@@ -2,12 +2,14 @@
 use std::os::unix::ffi::OsStrExt;
 use tokio::process::Command;
 
-/// The variables the daemon reads for the Jev client.
-pub const JEV_ENVIRONMENT: [&str; 4] = [
+/// The variables the daemon reads for Jev: the client's three and its key, and the
+/// daily limit for workspaces the daemon creates.
+pub const JEV_ENVIRONMENT: [&str; 5] = [
     "TECT_JEV_ENDPOINT",
     "TECT_JEV_MODEL",
     "TECT_JEV_TIMEOUT_MS",
     "TYPESAFE_API_KEY",
+    "TECT_JEV_NEW_WORKSPACE_DAILY_LIMIT",
 ];
 
 /// Withhold the Jev key and every `TECT_JEV_*` variable from a child process.
@@ -44,6 +46,7 @@ mod tests {
             .env("TECT_JEV_ENDPOINT", "http://127.0.0.1:1/v1/systemone")
             .env("TECT_JEV_MODEL", "jev-latest")
             .env("TECT_JEV_TIMEOUT_MS", "100")
+            .env("TECT_JEV_NEW_WORKSPACE_DAILY_LIMIT", "7")
             .env("TECT_CHILD_PROBE", "kept")
             .stdin(Stdio::null());
         withhold_jev_environment(&mut command);

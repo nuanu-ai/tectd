@@ -64,6 +64,28 @@ impl JevConfig {
     }
 }
 
+/// Decide from the daemon's `TECT_JEV_NEW_WORKSPACE_DAILY_LIMIT`. Unset: a workspace
+/// the daemon creates has no setting, so Jev is off in it. Set: such a workspace is
+/// enabled with this daily call limit, which needs a configured provider; the value
+/// is a whole number above zero and nothing stands in for a bad one.
+pub fn new_workspace_daily_limit(
+    value: Option<&str>,
+    provider_configured: bool,
+) -> Result<Option<i64>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if !provider_configured {
+        return Err(Error::InvalidConfiguration);
+    }
+    (!value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| value.parse::<i64>().ok())
+        .flatten()
+        .filter(|limit| *limit > 0)
+        .map(Some)
+        .ok_or(Error::InvalidConfiguration)
+}
+
 impl fmt::Debug for JevConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("JevConfig")

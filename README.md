@@ -532,10 +532,20 @@ The daemon reads one client configuration for all advice points:
 | `TECT_JEV_MODEL` | Model name |
 | `TECT_JEV_TIMEOUT_MS` | Answer deadline, 1 through 30000 |
 | `TYPESAFE_API_KEY` | Key, sent only as the bearer header |
+| `TECT_JEV_NEW_WORKSPACE_DAILY_LIMIT` | Optional. Daily call limit a workspace this daemon creates is enabled with |
 
-With none of the three `TECT_JEV_*` set the daemon has no provider and ignores the key.
-With any of them set all three and the key are required, or the daemon does not start.
-The key is never stored, returned, logged or passed to a child process.
+With none of the three client settings (endpoint, model, timeout) the daemon has no
+provider and ignores the key. With any of them set all three and the key are required,
+or the daemon does not start. The key is never stored, returned, logged or passed to a
+child process.
+
+`TECT_JEV_NEW_WORKSPACE_DAILY_LIMIT` serves a stand where nobody is there to call
+`workspace.advisory.configure`. With it, a workspace the daemon creates gets its first
+setting in the same transaction: enabled, this limit, revision 1, written by the session
+that created the workspace. Workspaces that already exist are not touched, and the
+setting stays an ordinary one that any session can change. Without it a new workspace
+has no setting and Jev is off. The value is a whole number above zero and needs a
+configured provider; otherwise the daemon does not start.
 
 ## Monthly epochs
 

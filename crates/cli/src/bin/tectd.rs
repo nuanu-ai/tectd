@@ -27,6 +27,10 @@ async fn run() -> tect_domain::Result<()> {
             .as_deref(),
     )?;
     let jev = jev_config()?;
+    let new_workspace_limit = tect_host::new_workspace_daily_limit(
+        optional_env("TECT_JEV_NEW_WORKSPACE_DAILY_LIMIT")?.as_deref(),
+        jev.is_some(),
+    )?;
     validate_socket_parent(&socket)?;
     reject_existing_path(&socket)?;
 
@@ -48,6 +52,9 @@ async fn run() -> tect_domain::Result<()> {
     if let Some(config) = jev {
         service =
             service.with_advice_provider(Arc::new(tect_host::JevAdviceProvider::new(config)?));
+    }
+    if let Some(limit) = new_workspace_limit {
+        service = service.with_advice_in_new_workspaces(limit);
     }
     let service = Arc::new(service);
     let maintenance_enabled = knowledge_search_worker::maintenance_enabled()?;
@@ -124,8 +131,9 @@ fn optional_env(name: &str) -> tect_domain::Result<Option<String>> {
     }
 }
 
-/// The Jev client is configured by the three `TECT_JEV_*` variables alone. With none
-/// of them the daemon has no provider and `TYPESAFE_API_KEY` is not read at all.
+/// The Jev client is configured by its three `TECT_JEV_*` variables alone: endpoint,
+/// model and timeout. With none of them the daemon has no provider and
+/// `TYPESAFE_API_KEY` is not read at all.
 fn jev_config() -> tect_domain::Result<Option<tect_host::JevConfig>> {
     let endpoint = optional_env("TECT_JEV_ENDPOINT")?;
     let model = optional_env("TECT_JEV_MODEL")?;
