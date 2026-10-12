@@ -10,6 +10,7 @@ pub struct WorkspaceService {
     pub(crate) setup_files: Arc<dyn SetupFiles>,
     pub(crate) knowledge_embedding_provider: Arc<dyn crate::KnowledgeEmbeddingProvider>,
     pub(crate) query_embedding_cache: std::sync::Mutex<KnowledgeQueryCache>,
+    pub(crate) advice_provider: Arc<dyn crate::AdviceProvider>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +74,7 @@ impl WorkspaceService {
             setup_files,
             knowledge_embedding_provider: Arc::new(crate::DisabledKnowledgeEmbeddingProvider),
             query_embedding_cache: std::sync::Mutex::new(KnowledgeQueryCache::new()),
+            advice_provider: Arc::new(crate::DisabledAdviceProvider),
         }
     }
 
@@ -81,6 +83,11 @@ impl WorkspaceService {
         provider: Arc<dyn crate::KnowledgeEmbeddingProvider>,
     ) -> Self {
         self.knowledge_embedding_provider = provider;
+        self
+    }
+
+    pub fn with_advice_provider(mut self, provider: Arc<dyn crate::AdviceProvider>) -> Self {
+        self.advice_provider = provider;
         self
     }
 
