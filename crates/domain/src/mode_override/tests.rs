@@ -227,3 +227,59 @@ fn an_override_is_three_named_parts_and_nothing_else() {
         json!({"mode":null,"source_ref_id":id,"exact_quote":"q"})
     ));
 }
+
+fn scope_candidate_json() -> serde_json::Value {
+    json!({"identity":{"local":"scope"},"title":"Export","outcome":"Rows leave as a file",
+        "trigger":"A user asks for the file","delivered_behavior":"A file is written",
+        "proof":"The file opens","includes":["csv"],"excludes":[],"dependencies":[],
+        "coverage_goals":[{"local":"goal"}],"evidence":[]})
+}
+
+#[test]
+fn a_scope_candidate_draft_reads_and_writes_with_and_without_an_override() {
+    use crate::{CandidateDraft, CandidateEntity};
+    let plain = scope_candidate_json();
+    let draft: CandidateDraft = serde_json::from_value(plain.clone()).unwrap();
+    assert_eq!(draft.mode_override, None);
+    // Without an override the draft serializes as it did before the field existed.
+    assert_eq!(json!(draft), plain);
+
+    let stated = json!({"mode":"demo","source_ref_id":Uuid::from_u128(7),"exact_quote":"I allow"});
+    let mut with = plain.clone();
+    with["mode_override"] = stated.clone();
+    let draft: CandidateDraft = serde_json::from_value(with.clone()).unwrap();
+    assert_eq!(draft.mode_override, Some(scope_draft("demo", "I allow")));
+    assert_eq!(json!(draft), with);
+    // A level outside the scale is read as written; the save's check refuses it.
+    with["mode_override"]["mode"] = json!("enterprise");
+    let draft: CandidateDraft = serde_json::from_value(with.clone()).unwrap();
+    assert_eq!(draft.mode_override.unwrap().mode, "enterprise");
+
+    // Null, a missing part and an unknown part are not an override.
+    for broken in [
+        serde_json::Value::Null,
+        json!({"mode":"demo","exact_quote":"I allow"}),
+        json!({"mode":"demo","source_ref_id":Uuid::from_u128(7),"exact_quote":"q","by":"me"}),
+    ] {
+        with["mode_override"] = broken;
+        assert!(serde_json::from_value::<CandidateDraft>(with.clone()).is_err());
+    }
+
+    // A stored candidate of before reads as one without an override and writes no key.
+    let stored = json!({"id":Uuid::from_u128(1),"revision":1,"title":"Export",
+        "outcome":"o","trigger":"t","delivered_behavior":"b","proof":"p","includes":[],
+        "excludes":[],"dependencies":[],"coverage_goal_ids":[],"evidence_ids":[]});
+    let mut entity: CandidateEntity = serde_json::from_value(stored.clone()).unwrap();
+    assert_eq!(entity.mode_override, None);
+    assert_eq!(json!(entity), stored);
+    entity.mode_override = Some(
+        scope_draft("demo", "I allow")
+            .permitted(0, PermissionRecord::UserInput("Yes, I allow it."))
+            .unwrap(),
+    );
+    assert_eq!(json!(entity)["mode_override"], stated);
+    assert_eq!(
+        serde_json::from_value::<CandidateEntity>(json!(entity)).unwrap(),
+        entity
+    );
+}

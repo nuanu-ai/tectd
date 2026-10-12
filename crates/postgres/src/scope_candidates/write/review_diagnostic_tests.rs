@@ -19,6 +19,7 @@ fn candidate(id: Uuid) -> CandidateEntity {
         dependencies: Vec::new(),
         coverage_goal_ids: Vec::new(),
         evidence_ids: Vec::new(),
+        mode_override: None,
     }
 }
 

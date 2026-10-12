@@ -1,4 +1,4 @@
-use crate::{CandidateBoundary, Error, Result};
+use crate::{CandidateBoundary, Error, Result, ScopeCandidateModeOverride, ScopeModeOverrideDraft};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -110,6 +110,14 @@ pub struct CandidateDraft {
     pub coverage_goals: Vec<CandidateRef>,
     #[serde(default)]
     pub evidence: Vec<CandidateRef>,
+    /// Another product level than the Program's, with the user's quoted permission.
+    /// Omitted means no override; there is no default.
+    #[serde(
+        default,
+        deserialize_with = "crate::mode_override::stated",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub mode_override: Option<ScopeModeOverrideDraft>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -329,6 +337,9 @@ pub struct CandidateEntity {
     pub dependencies: Vec<Uuid>,
     pub coverage_goal_ids: Vec<Uuid>,
     pub evidence_ids: Vec<Uuid>,
+    /// A candidate without an override has no such key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_override: Option<ScopeCandidateModeOverride>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

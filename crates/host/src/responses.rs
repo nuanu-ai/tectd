@@ -247,6 +247,7 @@ fn failure_data(
     if let Some(refusal) = error.refusal()
         && refusal.rule.as_deref().is_some_and(|rule| {
             rule.starts_with("SCOPE-OPEN-")
+                || rule.starts_with("SCOPE-DRAFT-MODE-OVERRIDE-")
                 || rule.starts_with("SLICE-DRAFT-")
                 || rule == "SLICE-OPEN-WORK-CANDIDATE-REQUIRED"
         })

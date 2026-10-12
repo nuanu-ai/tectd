@@ -11,6 +11,10 @@ mod planning;
 mod recovery_support;
 #[path = "mode_override/replies.rs"]
 mod replies;
+#[path = "mode_override/scope.rs"]
+mod scope;
 #[path = "advice_sizing/support.rs"]
 #[allow(dead_code)]
 mod support;
+#[path = "mode_override/walk.rs"]
+mod walk;

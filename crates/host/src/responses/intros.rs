@@ -81,7 +81,21 @@ pub(super) fn intro(data: &Value) -> &'static str {
     INTROS[7]
 }
 
+/// A refused mode override: the real steps, in order, for the level that refused.
+const SCOPE_MODE_OVERRIDE: &str = "This mode override is not recorded: a product level other than the Program's needs the user's explicit written permission, and an agent cannot grant it. Ask the user. Record their whole answer with command route scope.candidates.record_input, refresh with command route scope.candidates.refresh, read the answer's source_ref_id in query route scope.candidates.context view inputs, then save again with that source_ref_id and the permission quoted verbatim in exact_quote. Nothing was stored.";
+const SLICE_MODE_OVERRIDE: &str = "This mode override is not recorded: a product level other than the Scope's needs the user's explicit written permission, and an agent cannot grant it. Ask the user. Record their whole answer with command route slice.candidates.input, refresh with command route slice.candidates.refresh, read the answer's id in query route slice.candidates.context view inputs, then save again with that id as input_id and the permission quoted verbatim in exact_quote. Nothing was stored.";
+
 pub(crate) fn error_intro(error: &Error) -> &'static str {
+    if let Some(level) = error
+        .refusal()
+        .as_ref()
+        .and_then(tect_domain::ModeOverrideLevel::of)
+    {
+        return match level {
+            tect_domain::ModeOverrideLevel::Scope => SCOPE_MODE_OVERRIDE,
+            tect_domain::ModeOverrideLevel::Slice => SLICE_MODE_OVERRIDE,
+        };
+    }
     if error
         .refusal()
         .is_some_and(|refusal| refusal.code == tect_domain::RefusalCode::StateConflict)
@@ -292,6 +306,83 @@ mod tests {
             None,
         );
         assert_eq!(response["content"][0]["text"], output_intro);
+    }
+
+    #[test]
+    fn a_refused_mode_override_names_the_steps_of_its_level_and_reads_the_candidate_set() {
+        use tect_domain::{PermissionRecord, ScopeModeOverrideDraft, SliceModeOverrideDraft};
+        let id = uuid::Uuid::from_u128(5);
+        let scope = ScopeModeOverrideDraft {
+            mode: "demo".into(),
+            source_ref_id: id,
+            exact_quote: "I allow demo".into(),
+        }
+        .permitted(0, PermissionRecord::Unknown)
+        .unwrap_err();
+        let slice = SliceModeOverrideDraft {
+            mode: "demo".into(),
+            input_id: id,
+            exact_quote: " ".into(),
+        }
+        .permitted(2, PermissionRecord::UserInput("I allow demo"))
+        .unwrap_err();
+        let cases = [
+            (
+                scope,
+                ("save_candidate_set", json!({"candidate_set_id":id})),
+                [
+                    "Ask the user",
+                    "command route scope.candidates.record_input",
+                    "command route scope.candidates.refresh",
+                    "source_ref_id in query route scope.candidates.context view inputs",
+                    "save again with that source_ref_id",
+                ],
+                (
+                    "scope.candidates.context",
+                    "/params/draft/candidates/0/mode_override/source_ref_id",
+                ),
+            ),
+            (
+                slice,
+                (
+                    "save_slice_candidate_set",
+                    json!({"scope_id":id,"candidate_set_id":id}),
+                ),
+                [
+                    "Ask the user",
+                    "command route slice.candidates.input",
+                    "command route slice.candidates.refresh",
+                    "id in query route slice.candidates.context view inputs",
+                    "save again with that id as input_id",
+                ],
+                (
+                    "slice.candidates.context",
+                    "/params/draft/nodes/2/mode_override/exact_quote",
+                ),
+            ),
+        ];
+        for (error, (name, arguments), steps, (read, path)) in cases {
+            let response = failure(error, Some((name, &arguments)));
+            assert_eq!(response["isError"], true);
+            let intro = response["content"][0]["text"].as_str().unwrap();
+            let mut from = 0;
+            for step in steps {
+                from += intro[from..]
+                    .find(step)
+                    .unwrap_or_else(|| panic!("{step}: {intro}"));
+            }
+            assert!(intro.ends_with("Nothing was stored."), "{intro}");
+            let body: Value =
+                serde_json::from_str(response["content"][1]["text"].as_str().unwrap()).unwrap();
+            assert_eq!(body["error"]["code"], "MODE_OVERRIDE_NOT_PERMITTED");
+            assert_eq!(body["error"]["refusal"]["path"], path);
+            assert_eq!(body["actions"].as_array().unwrap().len(), 1);
+            assert_eq!(body["actions"][0]["arguments"]["route"], read);
+            assert_eq!(
+                body["actions"][0]["arguments"]["params"]["view"],
+                "overview"
+            );
+        }
     }
 
     #[test]

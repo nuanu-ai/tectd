@@ -3,7 +3,7 @@
 //! input the user gave to that candidate set and a verbatim quote of the permission
 //! from that input, and the save keeps the override only when the quote stands there.
 use crate::{Error, ProgramMode, Refusal, RefusalCode, Result};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
 /// The longest stated level a refusal repeats back.
@@ -87,6 +87,13 @@ impl SliceCandidateModeOverride {
             input_id: self.input_id,
         }
     }
+}
+
+/// An override is stated whole or left out: an explicit null is not "no override".
+pub(crate) fn stated<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 /// What the store found behind the id an override cites.

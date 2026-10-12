@@ -306,7 +306,8 @@ pub(super) async fn resolve(
             )
         })
         .collect::<Result<Vec<_>>>()?;
-    super::continuation::stabilize_candidates(&mut candidates, previous)?;
+    super::mode_override::permit(&mut candidates, draft, &sources, context.snapshot_id)?;
+    super::continuation::stabilize_candidates(&mut candidates, previous, &sources)?;
     super::links::validate_candidate_links(&goals, &candidates, &labels)?;
     let protected_changes = super::protected::resolve_protected_changes(
         previous,
@@ -487,5 +488,6 @@ fn candidate(
             .iter()
             .map(|v| resolve_ref(v, handles, Kind::Evidence, evidence))
             .collect::<Result<_>>()?,
+        mode_override: None,
     })
 }

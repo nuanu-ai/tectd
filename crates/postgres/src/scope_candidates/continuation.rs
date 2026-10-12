@@ -7,7 +7,7 @@ use tect_domain::{
 };
 use uuid::Uuid;
 
-fn same_source(left: Uuid, right: Uuid, sources: &BTreeMap<Uuid, Source>) -> bool {
+pub(super) fn same_source(left: Uuid, right: Uuid, sources: &BTreeMap<Uuid, Source>) -> bool {
     match (sources.get(&left), sources.get(&right)) {
         (Some(left), Some(right)) => {
             left.kind == right.kind
@@ -80,6 +80,7 @@ pub(super) fn stabilize_blockers(
 pub(super) fn stabilize_candidates(
     current: &mut [CandidateEntity],
     previous: Option<&ResolvedCandidateDraft>,
+    sources: &BTreeMap<Uuid, Source>,
 ) -> Result<()> {
     for value in current {
         let Some(old) =
@@ -87,8 +88,13 @@ pub(super) fn stabilize_candidates(
         else {
             continue;
         };
-        value.revision = old.revision;
-        let unchanged = value == old;
+        // A refresh issues new references: the same permission cited through the
+        // new one is no change of the candidate.
+        let mut compared = value.clone();
+        compared.revision = old.revision;
+        compared.mode_override.clone_from(&old.mode_override);
+        let unchanged =
+            compared == *old && super::mode_override::same_permission(value, old, sources);
         value.revision = next_entity_revision(old.revision, unchanged)?;
     }
     Ok(())

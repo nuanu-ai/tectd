@@ -3,6 +3,7 @@ mod continuation;
 mod fragment;
 mod history;
 mod links;
+mod mode_override;
 mod protected;
 mod resolve;
 mod save;
