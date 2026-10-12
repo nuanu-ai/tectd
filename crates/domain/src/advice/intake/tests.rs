@@ -398,3 +398,38 @@ fn a_stored_draft_with_a_dependency_outside_it_is_an_internal_error() {
         Err(Error::InternalInvariant)
     );
 }
+
+#[test]
+fn candidates_of_the_saved_draft_carry_their_own_level() {
+    let mut saved = scope_draft(2);
+    saved.candidates[1].mode_override = Some(crate::ScopeCandidateModeOverride {
+        mode: ProgramMode::Demo,
+        source_ref_id: Uuid::new_v4(),
+        exact_quote: "I allow demo".into(),
+    });
+    let state = scope_advice(Some(&saved)).questions().state.clone();
+    assert!(state["candidates"][0].get("mode_override").is_none());
+    assert_eq!(
+        state["candidates"][1]["mode_override"],
+        json!({"level":"demo","description":ProgramMode::Demo.description()})
+    );
+    assert!(!state.to_string().contains("I allow demo"));
+
+    let mut saved = slice_draft();
+    let crate::SliceCandidateNode::Work { mode_override, .. } = &mut saved.nodes[2] else {
+        panic!("a work node");
+    };
+    *mode_override = Some(Box::new(crate::SliceCandidateModeOverride {
+        mode: ProgramMode::SeriousProd,
+        input_id: Uuid::new_v4(),
+        exact_quote: "I allow it".into(),
+    }));
+    let state = slice_advice(Some(&saved)).questions().state.clone();
+    for (index, candidate) in state["candidates"].as_array().unwrap().iter().enumerate() {
+        assert_eq!(candidate.get("mode_override").is_some(), index == 2);
+    }
+    assert_eq!(
+        state["candidates"][2]["mode_override"]["level"],
+        "serious_prod"
+    );
+}

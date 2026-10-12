@@ -113,11 +113,13 @@ impl WorkspaceService {
         let words = words::slice_level(&mut *tx, workspace.id, behind, planning).await?;
         tx.commit().await?;
 
+        // Inside an opened Scope the level is the Scope's: its override, else the
+        // Program's mode.
         self.ask_sizing(
             context,
             SLICE_CANDIDATES_SAVE,
             &work,
-            draft.advice(&words, mode),
+            draft.advice(&words, scope.effective_mode(mode)),
             reply,
         )
         .await

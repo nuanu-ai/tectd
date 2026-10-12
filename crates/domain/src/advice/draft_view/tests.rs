@@ -116,3 +116,50 @@ fn a_dependency_outside_the_draft_gives_no_view() {
     let view = DraftView::saved_slice_draft(&empty).unwrap();
     assert!(view.candidates.is_empty() && view.asked.is_empty());
 }
+
+#[test]
+fn an_override_reads_the_same_from_a_carried_draft_and_from_the_stored_one() {
+    let (source, input) = (Uuid::new_v4(), Uuid::new_v4());
+    let carried: ScopeCandidateDraft = decoded(json!({"boundary":"finite","goals":[],
+    "candidates":[{"identity":{"local":"send"},"title":"Send","outcome":"o","trigger":"t",
+        "delivered_behavior":"b","proof":"p","coverage_goals":[],
+        "mode_override":{"mode":"demo","source_ref_id":source,"exact_quote":"I allow demo"}}]}));
+    let stored: ResolvedCandidateDraft = decoded(json!({"boundary":"finite","goals":[],
+    "evidence":[],"blockers":[],"protected_changes":[],
+    "candidates":[{"id":Uuid::new_v4(),"revision":1,"title":"Send","outcome":"o","trigger":"t",
+        "delivered_behavior":"b","proof":"p","includes":[],"excludes":[],"dependencies":[],
+        "coverage_goal_ids":[],"evidence_ids":[],
+        "mode_override":{"mode":"demo","source_ref_id":source,"exact_quote":"I allow demo"}}]}));
+    let view = DraftView::saved_scope_draft(&stored).unwrap();
+    assert_eq!(Some(&view), DraftView::scope_draft(&carried).as_ref());
+    // Jev reads the level with its meaning; the id and the user's quote stay behind.
+    assert_eq!(
+        view.candidates[0],
+        json!({"key":"c1","title":"Send","outcome":"o","includes":[],"excludes":[],
+            "dependencies":[],"mode_override":{"level":"demo",
+                "description":crate::ProgramMode::Demo.description()}})
+    );
+
+    let carried: SliceCandidateDraft = decoded(json!({"coverage_summary":"s","nodes":[
+        {"kind":"work","identity":{"local":"form"},"title":"Form","outcome":"o","proof":["p"],
+         "pipeline":"slice.lightweight-tdd-development","pipeline_reason":"r",
+         "mode_override":{"mode":"mvp","input_id":input,"exact_quote":"I allow mvp"}}]}));
+    let stored: ResolvedSliceCandidateDraft = decoded(json!({"coverage_summary":"s",
+    "supersessions":[],"nodes":[{"kind":"work","id":Uuid::new_v4(),"revision":1,"title":"Form",
+        "outcome":"o","includes":[],"excludes":[],"dependencies":[],"proof":["p"],
+        "pipeline":"slice.lightweight-tdd-development","pipeline_reason":"r",
+        "why_lightweight_insufficient":null,"why_further_vertical_split_not_viable":null,
+        "source_result_ids":[],
+        "mode_override":{"mode":"mvp","input_id":input,"exact_quote":"I allow mvp"}}]}));
+    let view = DraftView::saved_slice_draft(&stored).unwrap();
+    assert_eq!(Some(&view), DraftView::slice_draft(&carried).as_ref());
+    assert_eq!(view.candidates[0]["mode_override"]["level"], "mvp");
+    assert_eq!(view.candidates[0]["kind"], "work");
+
+    // A carried draft whose override states no known level gives no view.
+    let unknown: ScopeCandidateDraft = decoded(json!({"boundary":"finite","goals":[],
+    "candidates":[{"identity":{"local":"send"},"title":"Send","outcome":"o","trigger":"t",
+        "delivered_behavior":"b","proof":"p","coverage_goals":[],
+        "mode_override":{"mode":"enterprise","source_ref_id":source,"exact_quote":"q"}}]}));
+    assert_eq!(DraftView::scope_draft(&unknown), None);
+}

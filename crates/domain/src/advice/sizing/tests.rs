@@ -288,15 +288,94 @@ fn every_request_carries_the_product_level_and_the_wording_judges_against_it() {
         &asked["c1.size"].instructions,
         &asked["c1.advice"].criteria["simplify"],
         &asked["c1.i1"].instructions,
+        &asked["c1.i1"].criteria["enabler"],
         &asked["c1.i1"].criteria["extra"],
     ] {
-        assert!(text.contains("the product level in state.mode"), "{text}");
+        assert!(text.contains("the candidate's product level"), "{text}");
+    }
+    // Each question says which level that is: the candidate's own override first.
+    for text in [
+        &asked["c1.size"].instructions,
+        &asked["c1.advice"].instructions,
+        &asked["c1.i1"].instructions,
+    ] {
+        assert!(
+            text.contains("its own mode_override when it carries one, else state.mode"),
+            "{text}"
+        );
     }
     assert!(asked["c1.size"].instructions.contains("state.user_words"));
     assert!(asked["c1.i1"].instructions.contains("state.user_words"));
     assert_eq!(
         asked["c1.i1"].criteria["extra"],
-        "Neither requested nor needed for the requested work at the product level in state.mode."
+        "Neither requested nor needed for the requested work at the candidate's product level."
+    );
+}
+
+#[test]
+fn an_overridden_candidate_carries_its_own_level_in_its_object() {
+    let existing = Uuid::new_v4();
+    let mut draft = serde_json::to_value(scope_draft(existing)).unwrap();
+    draft["candidates"][0]["mode_override"] =
+        json!({"mode":"demo","source_ref_id":Uuid::new_v4(),"exact_quote":"I allow demo"});
+    let overridden: ScopeCandidateDraft = serde_json::from_value(draft.clone()).unwrap();
+    let advice = SizingDraft::scope_candidates(&overridden)
+        .unwrap()
+        .unwrap()
+        .advice(&words(), ProgramMode::Prod);
+    let state = &advice.questions().state;
+    // The request's level stays the one the draft is planned under.
+    assert_eq!(state["mode"]["level"], "prod");
+    assert_eq!(
+        state["candidates"][0]["mode_override"],
+        json!({"level":"demo","description":ProgramMode::Demo.description()})
+    );
+    assert!(state["candidates"][1].get("mode_override").is_none());
+    // The user's quote and the id are the store's business, not Jev's.
+    assert!(!state.to_string().contains("I allow demo"));
+    assert!(!state.to_string().contains("source_ref_id"));
+    // An override changes one candidate object and no question.
+    let plain = SizingDraft::scope_candidates(&scope_draft(existing))
+        .unwrap()
+        .unwrap()
+        .advice(&words(), ProgramMode::Prod);
+    assert_eq!(advice.questions().questions, plain.questions().questions);
+    assert_eq!(
+        state["candidates"][1],
+        plain.questions().state["candidates"][1]
+    );
+
+    // A work node of a Slice draft carries its own the same way; a decision node has none.
+    let mut draft = serde_json::to_value(slice_draft(existing)).unwrap();
+    let work = draft["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|node| node["kind"] == "work")
+        .unwrap();
+    draft["nodes"][work]["mode_override"] =
+        json!({"mode":"serious_prod","input_id":Uuid::new_v4(),"exact_quote":"I allow it"});
+    let overridden: SliceCandidateDraft = serde_json::from_value(draft.clone()).unwrap();
+    let advice = SizingDraft::slice_candidates(&overridden, scope_statement())
+        .unwrap()
+        .unwrap()
+        .advice(&words(), ProgramMode::Mvp);
+    let state = &advice.questions().state;
+    assert_eq!(state["mode"]["level"], "mvp");
+    assert_eq!(
+        state["candidates"][work]["mode_override"],
+        json!({"level":"serious_prod","description":ProgramMode::SeriousProd.description()})
+    );
+    for (index, candidate) in state["candidates"].as_array().unwrap().iter().enumerate() {
+        assert_eq!(candidate.get("mode_override").is_some(), index == work);
+    }
+
+    // A level outside the scale never reaches Jev: the save refused that draft.
+    draft["nodes"][work]["mode_override"]["mode"] = json!("enterprise");
+    let unknown: SliceCandidateDraft = serde_json::from_value(draft).unwrap();
+    assert_eq!(
+        SizingDraft::slice_candidates(&unknown, scope_statement()).unwrap_err(),
+        Error::InvalidArguments
     );
 }
 

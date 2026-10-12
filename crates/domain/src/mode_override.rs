@@ -19,6 +19,14 @@ pub fn effective_mode(
     own.or(scope).unwrap_or(program)
 }
 
+impl crate::NativeScope {
+    /// The level a piece of this Scope is built to unless it carries an override of
+    /// its own: the Scope's override, else the Program's mode.
+    pub fn effective_mode(&self, program: ProgramMode) -> ProgramMode {
+        effective_mode(None, self.mode_override.map(|kept| kept.mode), program)
+    }
+}
+
 /// The override as a Scope candidate of a draft states it. The level is text until
 /// the save has checked it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

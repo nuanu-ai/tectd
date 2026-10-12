@@ -172,8 +172,11 @@ impl WorkspaceService {
         let words = words::slice_level(&mut *tx, workspace.id, behind, earlier_words).await?;
         tx.commit().await?;
 
+        // Inside an opened Scope the level is the Scope's: its override, else the
+        // Program's mode.
+        let level = scope.effective_mode(mode);
         let advice = IntakePlanning::slice_candidates(recorded.draft.as_ref(), scope.into())?
-            .advice(&program, mode, &words, &request.input);
+            .advice(&program, level, &words, &request.input);
         let ask = AdviceAsk::Questions {
             questions: advice.questions(),
             shaping: &advice,

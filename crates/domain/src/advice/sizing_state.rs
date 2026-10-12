@@ -1,5 +1,6 @@
-//! What the `sizing` point lets Jev read: the Program's product level, the user's
-//! recorded words and one draft, its candidates under short keys that the questions name.
+//! What the `sizing` point lets Jev read: the product level the draft is planned
+//! under, the user's recorded words and one draft, its candidates under short keys
+//! that the questions name. A candidate with a level of its own carries it.
 use super::SizingLevel;
 use super::draft_view::{Asked, DraftView};
 use super::point;

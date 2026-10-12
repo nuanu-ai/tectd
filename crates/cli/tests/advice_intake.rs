@@ -1,6 +1,9 @@
 //! The `intake` advice point on `scope.candidates.record_input` and
 //! `slice.candidates.input`, through a real daemon and MCP bridge against PostgreSQL.
 //! Jev is a loopback fake; nothing leaves the machine.
+#[path = "mode_override/advised.rs"]
+#[allow(dead_code)]
+mod advised;
 #[path = "advice_intake/disabled.rs"]
 mod disabled;
 #[path = "advice_sizing/drafts.rs"]
@@ -12,6 +15,8 @@ mod inputs;
 mod live;
 #[path = "advice_intake/no_candidates.rs"]
 mod no_candidates;
+#[path = "advice_intake/overrides.rs"]
+mod overrides;
 #[path = "native_planning/support.rs"]
 #[allow(dead_code)]
 mod planning;
@@ -24,6 +29,9 @@ mod result_inputs;
 mod support;
 #[path = "advice_intake/unavailable.rs"]
 mod unavailable;
+#[path = "mode_override/walk.rs"]
+#[allow(dead_code)]
+mod walk;
 
 use drafts::{Level, Shape};
 use inputs::{FIRST, Planned, SECOND, asked, audit, criteria, route, word};

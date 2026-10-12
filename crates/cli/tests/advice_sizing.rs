@@ -1,12 +1,17 @@
 //! The `sizing` advice point on `scope.candidates.save` and `slice.candidates.save`,
 //! through a real daemon and MCP bridge against PostgreSQL. Jev is a loopback fake;
 //! nothing leaves the machine.
+#[path = "mode_override/advised.rs"]
+#[allow(dead_code)]
+mod advised;
 #[path = "advice_sizing/disabled.rs"]
 mod disabled;
 #[path = "advice_sizing/drafts.rs"]
 mod drafts;
 #[path = "advice_sizing/live.rs"]
 mod live;
+#[path = "advice_sizing/overrides.rs"]
+mod overrides;
 #[path = "native_planning/support.rs"]
 #[allow(dead_code)]
 mod planning;
@@ -16,6 +21,9 @@ mod recovery_support;
 mod support;
 #[path = "advice_sizing/unavailable.rs"]
 mod unavailable;
+#[path = "mode_override/walk.rs"]
+#[allow(dead_code)]
+mod walk;
 
 use drafts::{Level, Shape, target};
 use serde_json::{Value, json};

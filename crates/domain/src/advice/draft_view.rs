@@ -1,9 +1,10 @@
 //! One draft's candidates as Jev reads them, each under a short key that the questions
 //! name. Every advice point lays a draft out through this one projection, whether the
 //! draft is the one a save carries or the one the store holds.
+use super::point;
 use crate::{
-    ResolvedCandidateDraft, ResolvedSliceCandidateDraft, ScopeCandidateDraft, SliceCandidateDraft,
-    SliceCandidateDraftNode, SliceCandidateNode, SliceCandidateRef,
+    ProgramMode, ResolvedCandidateDraft, ResolvedSliceCandidateDraft, ScopeCandidateDraft,
+    SliceCandidateDraft, SliceCandidateDraftNode, SliceCandidateNode, SliceCandidateRef,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -36,13 +37,14 @@ struct Node<'a> {
 
 enum Body<'a> {
     /// Work Jev is asked about. `marked` says so in the object, where a draft also
-    /// holds decisions.
+    /// holds decisions. `own_level` is the product level of its own override.
     Work {
         title: &'a str,
         outcome: &'a str,
         includes: &'a [String],
         excludes: &'a [String],
         marked: bool,
+        own_level: Option<ProgramMode>,
     },
     /// Shown so that dependencies read whole; Jev is never asked about it.
     Decision { title: &'a str, question: &'a str },
@@ -58,24 +60,28 @@ pub(super) struct DraftView {
 
 impl DraftView {
     /// A Scope candidate draft as a save carries it. `None` when a dependency names
-    /// no candidate of the same draft.
+    /// no candidate of the same draft or an override states no known level.
     pub fn scope_draft(draft: &ScopeCandidateDraft) -> Option<Self> {
-        let nodes = draft.candidates.iter().map(|candidate| Node {
-            name: (candidate.identity.local.as_ref(), candidate.identity.id),
-            dependencies: candidate
-                .dependencies
-                .iter()
-                .map(|reference| (reference.local.as_ref(), reference.id))
-                .collect(),
-            body: Body::Work {
-                title: &candidate.title,
-                outcome: &candidate.outcome,
-                includes: &candidate.includes,
-                excludes: &candidate.excludes,
-                marked: false,
-            },
+        let nodes = draft.candidates.iter().map(|candidate| {
+            let stated = candidate.mode_override.as_ref();
+            Some(Node {
+                name: (candidate.identity.local.as_ref(), candidate.identity.id),
+                dependencies: candidate
+                    .dependencies
+                    .iter()
+                    .map(|reference| (reference.local.as_ref(), reference.id))
+                    .collect(),
+                body: Body::Work {
+                    title: &candidate.title,
+                    outcome: &candidate.outcome,
+                    includes: &candidate.includes,
+                    excludes: &candidate.excludes,
+                    marked: false,
+                    own_level: stated_level(stated.map(|stated| stated.mode.as_str()))?,
+                },
+            })
         });
-        Self::of(nodes.collect())
+        Self::of(nodes.collect::<Option<_>>()?)
     }
 
     /// A Scope candidate draft as the store holds it.
@@ -89,6 +95,7 @@ impl DraftView {
                 includes: &candidate.includes,
                 excludes: &candidate.excludes,
                 marked: false,
+                own_level: candidate.mode_override.as_ref().map(|kept| kept.mode),
             },
         });
         Self::of(nodes.collect())
@@ -104,8 +111,9 @@ impl DraftView {
                 includes,
                 excludes,
                 dependencies,
+                mode_override,
                 ..
-            } => Node {
+            } => Some(Node {
                 name: (identity.local.as_ref(), identity.candidate_id),
                 dependencies: named(dependencies),
                 body: Body::Work {
@@ -114,21 +122,22 @@ impl DraftView {
                     includes,
                     excludes,
                     marked: true,
+                    own_level: stated_level(mode_override.as_ref().map(|s| s.mode.as_str()))?,
                 },
-            },
+            }),
             SliceCandidateDraftNode::Decision {
                 identity,
                 title,
                 question,
                 dependencies,
                 ..
-            } => Node {
+            } => Some(Node {
                 name: (identity.local.as_ref(), identity.candidate_id),
                 dependencies: named(dependencies),
                 body: Body::Decision { title, question },
-            },
+            }),
         });
-        Self::of(nodes.collect())
+        Self::of(nodes.collect::<Option<_>>()?)
     }
 
     /// A Slice candidate draft as the store holds it.
@@ -142,6 +151,7 @@ impl DraftView {
                     outcome,
                     includes,
                     excludes,
+                    mode_override,
                     ..
                 } => Body::Work {
                     title,
@@ -149,6 +159,7 @@ impl DraftView {
                     includes,
                     excludes,
                     marked: true,
+                    own_level: mode_override.as_ref().map(|kept| kept.mode),
                 },
                 SliceCandidateNode::Decision {
                     title, question, ..
@@ -181,6 +192,7 @@ impl DraftView {
                     includes,
                     excludes,
                     marked,
+                    own_level,
                 } => {
                     view.asked.push(Asked {
                         position,
@@ -199,6 +211,9 @@ impl DraftView {
                     if marked {
                         candidate["kind"] = json!("work");
                     }
+                    if let Some(level) = own_level {
+                        candidate["mode_override"] = point::mode(level);
+                    }
                     candidate
                 }
                 Body::Decision { title, question } => {
@@ -208,6 +223,15 @@ impl DraftView {
             });
         }
         Some(view)
+    }
+}
+
+/// The level a draft's override states, when it states one. The save has held that
+/// it is one of the four; `None` for any other text.
+fn stated_level(mode: Option<&str>) -> Option<Option<ProgramMode>> {
+    match mode {
+        None => Some(None),
+        Some(name) => ProgramMode::named(name).map(Some),
     }
 }
 

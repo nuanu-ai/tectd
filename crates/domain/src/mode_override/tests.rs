@@ -354,3 +354,36 @@ fn a_slice_work_node_reads_and_writes_with_and_without_an_override() {
         node
     );
 }
+
+#[test]
+fn work_inside_a_scope_is_built_to_the_scopes_level_unless_it_has_its_own() {
+    let mut scope: crate::NativeScope = serde_json::from_value(json!({
+        "id":Uuid::from_u128(1),"workspace_id":Uuid::from_u128(2),"revision":1,
+        "source_candidate_set_id":Uuid::from_u128(3),"source_candidate_set_revision":3,
+        "source_snapshot_id":Uuid::from_u128(4),"source_candidate_id":Uuid::from_u128(5),
+        "source_candidate_revision":1,"boundary":"ongoing","title":"Export","outcome":"A file",
+        "includes":[],"excludes":[],"slice_candidate_set_id":Uuid::from_u128(6),
+        "slice_input_cursor":0,"slice_latest_input":0}))
+    .unwrap();
+    // A Scope stored before the override reads as one without it and writes no key.
+    assert_eq!(scope.mode_override, None);
+    assert!(json!(scope).get("mode_override").is_none());
+    assert_eq!(scope.effective_mode(ProgramMode::Prod), ProgramMode::Prod);
+
+    scope.mode_override = Some(ScopeModeOverride {
+        mode: ProgramMode::Demo,
+        source_ref_id: Uuid::from_u128(7),
+    });
+    assert_eq!(scope.effective_mode(ProgramMode::Prod), ProgramMode::Demo);
+    assert_eq!(
+        json!(scope)["mode_override"],
+        json!({"mode":"demo","source_ref_id":Uuid::from_u128(7)})
+    );
+    // A Slice of that Scope with a level of its own is built to its own.
+    let own = Some(ProgramMode::Mvp);
+    let inherited = scope.mode_override.map(|kept| kept.mode);
+    assert_eq!(
+        effective_mode(own, inherited, ProgramMode::Prod),
+        ProgramMode::Mvp
+    );
+}

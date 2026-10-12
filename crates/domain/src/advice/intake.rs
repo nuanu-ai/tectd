@@ -62,8 +62,10 @@ impl IntakePlanning {
         })
     }
 
-    /// Add the Program's statement and product level, the user's earlier words in
-    /// recorded order and the input just recorded, and form the questions.
+    /// Add the Program's statement, the product level the input lands on (the
+    /// Program's mode, and inside an opened Scope the Scope's effective level), the
+    /// user's earlier words in recorded order and the input just recorded, and form
+    /// the questions.
     pub fn advice(
         self,
         program: &Program,

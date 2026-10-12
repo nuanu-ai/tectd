@@ -31,8 +31,9 @@ pub struct SizingAdvice {
 }
 
 impl SizingDraft {
-    /// Add the user's recorded words, in recorded order, and the Program's product
-    /// level, and form the questions.
+    /// Add the user's recorded words, in recorded order, and the product level the
+    /// draft is planned under, and form the questions. That level is the Program's
+    /// mode, and inside an opened Scope the Scope's effective level.
     pub fn advice(self, user_words: &[SizingWord], mode: ProgramMode) -> SizingAdvice {
         let mut questions = BTreeMap::new();
         for candidate in &self.asked {
