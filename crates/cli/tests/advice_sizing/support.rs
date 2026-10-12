@@ -170,6 +170,17 @@ impl Stand {
 
     /// The daemon asks `endpoint` with `key`; without an endpoint, the loopback Jev.
     pub async fn start_at(endpoint: Option<&str>, key: &str, timeout_ms: &str) -> Self {
+        Self::launch(Some((endpoint, key, timeout_ms))).await
+    }
+
+    /// A daemon started with no Jev setting at all: it has no provider.
+    // This module is compiled once per advice binary; only the intake suite uses this.
+    #[allow(dead_code)]
+    pub async fn start_without_provider() -> Self {
+        Self::launch(None).await
+    }
+
+    async fn launch(provider: Option<(Option<&str>, &str, &str)>) -> Self {
         let admin_url = std::env::var("TECT_TEST_ADMIN_URL").expect("TECT_TEST_ADMIN_URL required");
         let runtime =
             std::env::var("TECT_TEST_RUNTIME_URL").expect("TECT_TEST_RUNTIME_URL required");
@@ -200,11 +211,13 @@ impl Stand {
         for name in tect_host::JEV_ENVIRONMENT {
             command.env_remove(name);
         }
-        command
-            .env("TECT_JEV_ENDPOINT", endpoint.unwrap_or(&jev.endpoint))
-            .env("TECT_JEV_MODEL", "jev-latest")
-            .env("TECT_JEV_TIMEOUT_MS", timeout_ms)
-            .env("TYPESAFE_API_KEY", key);
+        if let Some((endpoint, key, timeout_ms)) = provider {
+            command
+                .env("TECT_JEV_ENDPOINT", endpoint.unwrap_or(&jev.endpoint))
+                .env("TECT_JEV_MODEL", "jev-latest")
+                .env("TECT_JEV_TIMEOUT_MS", timeout_ms)
+                .env("TYPESAFE_API_KEY", key);
+        }
         let mut daemon = command.spawn().unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
