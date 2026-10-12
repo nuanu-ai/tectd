@@ -1,0 +1,16 @@
+//! The product-level override of one Scope candidate or one Slice work node, through
+//! a real daemon and MCP bridge against PostgreSQL. The daemon has no Jev provider:
+//! the override does not depend on Jev.
+#[path = "advice_sizing/drafts.rs"]
+#[allow(dead_code)]
+mod drafts;
+#[path = "native_planning/support.rs"]
+#[allow(dead_code)]
+mod planning;
+#[allow(dead_code)]
+mod recovery_support;
+#[path = "mode_override/replies.rs"]
+mod replies;
+#[path = "advice_sizing/support.rs"]
+#[allow(dead_code)]
+mod support;
