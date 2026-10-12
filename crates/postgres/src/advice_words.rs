@@ -1,7 +1,7 @@
-//! Read-only views of the user's recorded words for an advice point: whole input
-//! texts in recorded order. Nothing here writes.
+//! Read-only views for an advice point: the user's recorded words as whole input
+//! texts in recorded order, and the Program's product level. Nothing here writes.
 use crate::{storage_error, store::PgUnitOfWork};
-use tect_domain::{Result, SizingWordsBasis};
+use tect_domain::{Error, ProgramMode, Result, SizingWordsBasis};
 use uuid::Uuid;
 
 /// The three input tables share one shape: an owner column, a sequence and the text.
@@ -37,6 +37,27 @@ impl Inputs {
 }
 
 impl PgUnitOfWork {
+    /// The level in the Program's row now; `None` while the column is empty.
+    pub(crate) async fn read_program_mode(
+        &mut self,
+        workspace_id: Uuid,
+        program_id: Uuid,
+    ) -> Result<Option<ProgramMode>> {
+        let tenant_id = self.tenant_id()?;
+        let mode: Option<String> = sqlx::query_scalar(
+            "SELECT mode FROM programs WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3",
+        )
+        .bind(tenant_id)
+        .bind(workspace_id)
+        .bind(program_id)
+        .fetch_optional(&mut **self.transaction()?)
+        .await
+        .map_err(storage_error)?
+        // The draft this point fired for belongs to a Program that exists.
+        .ok_or(Error::InternalInvariant)?;
+        mode.as_deref().map(crate::programs::parse_mode).transpose()
+    }
+
     /// Whole input texts of one owner in recorded order, up to and including `through`.
     pub(crate) async fn read_input_texts(
         &mut self,

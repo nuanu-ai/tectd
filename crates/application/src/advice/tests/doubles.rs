@@ -101,6 +101,9 @@ impl AdviceStore for Journal {
     async fn advice_counters(&mut self, _: Uuid, _: &AdviceAuditQuery) -> Result<AdviceCounters> {
         unreachable!()
     }
+    async fn program_mode(&mut self, _: Uuid, _: Uuid) -> Result<Option<ProgramMode>> {
+        unreachable!()
+    }
     async fn program_input_texts(&mut self, _: Uuid, _: Uuid, _: i64) -> Result<Vec<String>> {
         unreachable!()
     }

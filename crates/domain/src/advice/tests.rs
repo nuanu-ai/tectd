@@ -124,6 +124,7 @@ fn closed_lists_use_the_documented_names() {
         InvalidResponse,
         RequestTooLarge,
         AdviceTooLarge,
+        ModeNotSet,
     ];
     assert_eq!(
         reasons.map(AdviceUnavailableReason::as_str),
@@ -135,7 +136,8 @@ fn closed_lists_use_the_documented_names() {
             "http_status",
             "invalid_response",
             "request_too_large",
-            "advice_too_large"
+            "advice_too_large",
+            "mode_not_set"
         ]
     );
     for reason in reasons {

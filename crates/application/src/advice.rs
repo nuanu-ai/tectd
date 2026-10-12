@@ -10,11 +10,25 @@ pub struct AdviceRequest<'a> {
     /// Route name of the agent's command.
     pub route: &'a str,
     pub work: &'a AdviceWorkRefs,
-    pub questions: &'a AdviceQuestionSet,
-    /// How the point turns accepted answers into its field, and its largest field.
-    pub shaping: &'a dyn AdviceShaping,
+    pub ask: AdviceAsk<'a>,
     /// The command reply the field will be attached to.
     pub reply: &'a dyn AdviceOutputGuard,
+}
+
+/// What a point brings to the decision: its questions, or why it has none.
+#[derive(Clone, Copy)]
+pub enum AdviceAsk<'a> {
+    Questions {
+        questions: &'a AdviceQuestionSet,
+        /// How the point turns accepted answers into its field, and its largest field.
+        shaping: &'a dyn AdviceShaping,
+    },
+    /// A precondition of the point itself does not hold, so Jev is not asked.
+    Unmet {
+        reason: AdviceUnavailableReason,
+        /// What is missing, as it reads after `Jev advice is not available: `.
+        detail: &'a str,
+    },
 }
 
 enum Opening {
@@ -132,7 +146,8 @@ impl WorkspaceService {
     /// the value is the `advice` field of the command reply. A journal row is written
     /// before the single provider call and completed after it; the call itself runs
     /// outside any database transaction and is never retried. A provider failure is not
-    /// an error here: it is `unavailable` with a reason.
+    /// an error here: it is `unavailable` with a reason. So is a precondition of the
+    /// point that does not hold: it is journalled and Jev is not asked.
     pub async fn advise(
         &self,
         context: &RequestContext,
@@ -141,7 +156,9 @@ impl WorkspaceService {
         validate_advice_point(request.point)?;
         validate_advice_route(request.route)?;
         request.work.validate()?;
-        request.questions.validate()?;
+        if let AdviceAsk::Questions { questions, .. } = request.ask {
+            questions.validate()?;
+        }
 
         let (mut tx, identity) = self.authorized(context, TransactionMode::ReadWrite).await?;
         let (workspace, session) = Self::bound_session(&mut *tx, context, &identity).await?;
@@ -154,16 +171,20 @@ impl WorkspaceService {
         )
         .await?;
         tx.commit().await?;
-        let entry_id = match opening {
-            Opening::Disabled => return Ok(None),
-            Opening::Settled(advice) => return Ok(Some(advice)),
-            Opening::Reserved(entry_id) => entry_id,
+        let (entry_id, questions, shaping) = match (opening, request.ask) {
+            (Opening::Disabled, _) => return Ok(None),
+            (Opening::Settled(advice), _) => return Ok(Some(advice)),
+            (Opening::Reserved(entry_id), AdviceAsk::Questions { questions, shaping }) => {
+                (entry_id, questions, shaping)
+            }
+            // `open` reserves a call for questions only.
+            (Opening::Reserved(_), AdviceAsk::Unmet { .. }) => {
+                return Err(Error::InternalInvariant);
+            }
         };
 
-        let completion = AdviceCompletion::from_provider(
-            self.advice_provider.ask(request.questions).await,
-            request.shaping,
-        );
+        let completion =
+            AdviceCompletion::from_provider(self.advice_provider.ask(questions).await, shaping);
 
         let (mut tx, _) = self.authorized(context, TransactionMode::ReadWrite).await?;
         tx.complete_advice_entry(workspace.id, entry_id, &completion)
@@ -201,7 +222,8 @@ pub(crate) async fn earlier(
 }
 
 /// Decide, under the locked setting row, whether this point calls Jev, and journal it.
-/// The order is fixed: disabled, replay, no provider, reply fit, daily limit, call.
+/// The order is fixed: disabled, replay, the point's own precondition, no provider,
+/// reply fit, daily limit, call.
 async fn open(
     store: &mut dyn AdviceStore,
     workspace_id: Uuid,
@@ -217,20 +239,24 @@ async fn open(
     };
     // An enabled setting always carries a limit; the schema and the store both hold that.
     let limit = config.daily_call_limit.ok_or(Error::InternalInvariant)?;
-    let skipped = if !provider_configured {
-        Some(AdviceField::unavailable(
+    let skipped = match request.ask {
+        AdviceAsk::Unmet { reason, detail } => Some(AdviceField::unavailable(reason, detail)),
+        AdviceAsk::Questions { .. } if !provider_configured => Some(AdviceField::unavailable(
             AdviceUnavailableReason::ProviderUnconfigured,
             crate::advice_ports::NO_PROVIDER,
-        ))
-    } else if let Some(too_large) = too_large_for_reply(request)? {
-        Some(too_large)
-    } else if store.advice_calls_today(workspace_id).await? >= limit {
-        Some(AdviceField::unavailable(
-            AdviceUnavailableReason::DailyLimitReached,
-            &format!("the workspace daily call limit of {limit} is reached"),
-        ))
-    } else {
-        None
+        )),
+        AdviceAsk::Questions { shaping, .. } => {
+            if let Some(too_large) = too_large_for_reply(shaping, request.reply)? {
+                Some(too_large)
+            } else if store.advice_calls_today(workspace_id).await? >= limit {
+                Some(AdviceField::unavailable(
+                    AdviceUnavailableReason::DailyLimitReached,
+                    &format!("the workspace daily call limit of {limit} is reached"),
+                ))
+            } else {
+                None
+            }
+        }
     };
     let entry = NewAdviceEntry {
         point: request.point.to_owned(),
@@ -249,14 +275,17 @@ async fn open(
 
 /// Jev is not asked for a field the command reply could not carry: the reply is
 /// measured with the point's largest field before any call.
-fn too_large_for_reply(request: &AdviceRequest<'_>) -> Result<Option<AdviceField>> {
-    match request.reply.check_reply(&request.shaping.largest()) {
+fn too_large_for_reply(
+    shaping: &dyn AdviceShaping,
+    reply: &dyn AdviceOutputGuard,
+) -> Result<Option<AdviceField>> {
+    match reply.check_reply(&shaping.largest()) {
         Ok(()) => Ok(None),
         Err(Error::RequestTooLarge) => Ok(Some(AdviceField::unavailable(
             AdviceUnavailableReason::AdviceTooLarge,
             &format!(
                 "advice for {} would not fit the command reply",
-                request.shaping.subject()
+                shaping.subject()
             ),
         ))),
         Err(error) => Err(error),

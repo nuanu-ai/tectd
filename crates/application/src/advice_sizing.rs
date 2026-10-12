@@ -1,12 +1,14 @@
 //! The `sizing` advice point on the two draft saves. Each use case runs after its
-//! save has committed: it reads the user's recorded words up to what the save
-//! consumed, lays the saved draft out for Jev and asks once.
+//! save has committed: it reads the Program's product level and the user's recorded
+//! words up to what the save consumed, lays the saved draft out for Jev and asks once.
 use crate::advice::{Earlier, earlier};
-use crate::{AdviceOutputGuard, AdviceRequest, TransactionMode, WorkspaceService};
+use crate::{AdviceAsk, AdviceOutputGuard, AdviceRequest, TransactionMode, WorkspaceService};
 use tect_domain::*;
 
 const SCOPE_CANDIDATES_SAVE: &str = "scope.candidates.save";
 const SLICE_CANDIDATES_SAVE: &str = "slice.candidates.save";
+/// Every request carries the Program's product level; without one Jev is not asked.
+const NO_MODE: &str = "the Program has no mode; set it with program.save";
 
 impl WorkspaceService {
     /// Advice on the Scope candidate draft that `scope.candidates.save` has stored.
@@ -38,6 +40,12 @@ impl WorkspaceService {
             tx.commit().await?;
             return Ok(early);
         }
+        let Some(mode) = tx.program_mode(workspace.id, set.program_id).await? else {
+            tx.commit().await?;
+            return self
+                .sizing_without_mode(context, SCOPE_CANDIDATES_SAVE, &work, reply)
+                .await;
+        };
         // The Program's words as the save's snapshot had read them, then the words
         // recorded for this candidate set up to the cursor the save consumed.
         let program = tx
@@ -58,7 +66,7 @@ impl WorkspaceService {
             context,
             SCOPE_CANDIDATES_SAVE,
             &work,
-            draft.advice(&words),
+            draft.advice(&words, mode),
             reply,
         )
         .await
@@ -103,6 +111,19 @@ impl WorkspaceService {
             )
             .await?
             .ok_or(Error::InternalInvariant)?;
+        let work = AdviceWorkRefs {
+            request_id,
+            program_id: Some(basis.program_id),
+            candidate_set_id: Some(saved.candidate_set.id),
+            scope_id: Some(scope.id),
+            ..AdviceWorkRefs::default()
+        };
+        let Some(mode) = tx.program_mode(workspace.id, basis.program_id).await? else {
+            tx.commit().await?;
+            return self
+                .sizing_without_mode(context, SLICE_CANDIDATES_SAVE, &work, reply)
+                .await;
+        };
         let program = tx
             .program_input_texts(workspace.id, basis.program_id, basis.program_latest_input)
             .await?;
@@ -127,18 +148,11 @@ impl WorkspaceService {
             SizingWordSource::SliceCandidateInput,
             slice_planning,
         ));
-        let work = AdviceWorkRefs {
-            request_id,
-            program_id: Some(basis.program_id),
-            candidate_set_id: Some(saved.candidate_set.id),
-            scope_id: Some(scope.id),
-            ..AdviceWorkRefs::default()
-        };
         self.ask_sizing(
             context,
             SLICE_CANDIDATES_SAVE,
             &work,
-            draft.advice(&words),
+            draft.advice(&words, mode),
             reply,
         )
         .await
@@ -156,8 +170,32 @@ impl WorkspaceService {
             point: SIZING_POINT,
             route,
             work,
-            questions: advice.questions(),
-            shaping: &advice,
+            ask: AdviceAsk::Questions {
+                questions: advice.questions(),
+                shaping: &advice,
+            },
+            reply,
+        };
+        self.advise(context, &request).await
+    }
+
+    /// The point fired for a Program that has no mode: the journal and the reply
+    /// say so, and nothing is gathered for Jev.
+    async fn sizing_without_mode(
+        &self,
+        context: &RequestContext,
+        route: &str,
+        work: &AdviceWorkRefs,
+        reply: &dyn AdviceOutputGuard,
+    ) -> Result<Option<AdviceField>> {
+        let request = AdviceRequest {
+            point: SIZING_POINT,
+            route,
+            work,
+            ask: AdviceAsk::Unmet {
+                reason: AdviceUnavailableReason::ModeNotSet,
+                detail: NO_MODE,
+            },
             reply,
         };
         self.advise(context, &request).await

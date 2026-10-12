@@ -93,6 +93,8 @@ pub enum AdviceUnavailableReason {
     RequestTooLarge,
     /// The point's largest possible field would not fit the command reply.
     AdviceTooLarge,
+    /// The Program has no product level to judge against; Jev is not asked.
+    ModeNotSet,
 }
 
 impl AdviceUnavailableReason {
@@ -106,6 +108,7 @@ impl AdviceUnavailableReason {
             Self::InvalidResponse => "invalid_response",
             Self::RequestTooLarge => "request_too_large",
             Self::AdviceTooLarge => "advice_too_large",
+            Self::ModeNotSet => "mode_not_set",
         }
     }
 }

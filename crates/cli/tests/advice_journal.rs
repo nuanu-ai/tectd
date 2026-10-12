@@ -9,7 +9,7 @@ mod support;
 
 use serde_json::json;
 use support::{fixture, questions, reply};
-use tect_application::AdviceRequest;
+use tect_application::{AdviceAsk, AdviceRequest};
 use tect_domain::*;
 use uuid::Uuid;
 
@@ -223,8 +223,10 @@ async fn disabled_jev_returns_no_field_and_writes_nothing() {
         point: "Sizing Point",
         route: support::ROUTE,
         work: &work,
-        questions: &questions,
-        shaping: &support::Verbatim,
+        ask: AdviceAsk::Questions {
+            questions: &questions,
+            shaping: &support::Verbatim,
+        },
         reply: &support::Room(usize::MAX),
     };
     assert_eq!(

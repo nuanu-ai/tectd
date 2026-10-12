@@ -161,7 +161,7 @@ fn the_subject_counts_candidates_and_included_items() {
     one.candidates[0].includes.truncate(1);
     let one = SizingDraft::scope_candidates(&one).unwrap().unwrap();
     assert_eq!(
-        one.advice(&[]).subject(),
+        one.advice(&[], ProgramMode::Prod).subject(),
         "this draft (1 candidate, 1 included item)"
     );
 }

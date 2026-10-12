@@ -20,7 +20,7 @@ mod unavailable;
 use drafts::{Level, Shape, target};
 use serde_json::{Value, json};
 use support::{BUDGET, Jev, KEY, Stand, audit, command, configure};
-use tect_domain::SIZING_NOTE;
+use tect_domain::{ProgramMode, SIZING_NOTE};
 use uuid::Uuid;
 
 /// The first candidate is large, to be split, and its second item is extra; Jev
@@ -69,11 +69,16 @@ async fn advised_then_replayed_then_abstained(level: Level) {
     assert_eq!(saved["candidate_set"]["status"], "review_required");
     assert_eq!(target.stored(&mut client, &saved).await.len(), second);
 
-    // What Jev was sent: the user's words by source and in order, and the draft.
+    // What Jev was sent: the Program's product level with its meaning, the user's
+    // words by source and in order, and the draft.
     let requests = stand.jev.requests();
     assert_eq!(requests.len(), 1);
     let state = &requests[0]["state"];
     assert_eq!(state["level"], level.name());
+    assert_eq!(
+        state["mode"],
+        json!({"level":"prod","description":ProgramMode::Prod.description()})
+    );
     let word = |source: &str, text: &str| json!({"source":source,"text":text});
     let mut asked = vec!["c1.advice", "c1.i1", "c1.i2", "c1.size"];
     if level == Level::Scopes {
@@ -177,14 +182,20 @@ async fn advised_then_replayed_then_abstained(level: Level) {
     assert_eq!(stand.count("advice_journal").await, 1);
 
     // Jev abstains on every question of a draft in another workspace: no content.
+    // Its Program is a demo, and that is the level this request carries.
     stand.jev.answer(Jev::Answers(abstaining));
     let (mut other, repo) = stand.workspace().await;
     let target = drafts::target(&mut other, &repo, level).await;
+    stand.set_mode(&target.program_id, Some("demo")).await;
     configure(&mut other, true, 0).await;
     let params = target.save(&Shape::of(1, 1), Uuid::new_v4());
     let (saved, _) = command(&mut other, level.save_route(), params).await;
     assert_eq!(saved["advice"], json!({"status":"abstained"}));
     assert_eq!(stand.jev.calls(), 2);
+    assert_eq!(
+        stand.jev.requests()[1]["state"]["mode"],
+        json!({"level":"demo","description":ProgramMode::Demo.description()})
+    );
     let row = stand.newest_row().await;
     assert_eq!(row["advice"], saved["advice"]);
     assert_eq!(

@@ -467,7 +467,9 @@ command the agent already calls, as an `advice` field; it forbids nothing and ap
 nothing. One advice point exists, `sizing`: after `scope.candidates.save` or
 `slice.candidates.save` has stored a draft, Jev is asked once how large each candidate
 is, whether to keep, split or cut it, and which of its included items go beyond what
-the user asked for.
+the user asked for. Every request carries the Program's product level as
+`state.mode`, `{"level":"prod","description":"..."}`: size, the advice to simplify and
+what counts as extra are judged against the user's words and that level.
 
 | Tool + route | Params | Result |
 | --- | --- | --- |
@@ -499,12 +501,24 @@ only inside an advised field. The wording Jev is asked with lives in one file,
 `crates/domain/src/advice/sizing_catalog.rs`.
 
 `unavailable` reasons are `provider_unconfigured`, `daily_limit_reached`, `timeout`,
-`transport_error`, `http_status`, `invalid_response`, `request_too_large` and
-`advice_too_large`. Jev is not asked when the largest advice a draft could get would
-not fit the save reply (`advice_too_large`), when the request would exceed the request
-limit, or when even the smallest acceptable answer would exceed the answer limit
-(`request_too_large`); none of these spends the daily limit. A replay of a save under
-the same `request_id` returns the recorded field and asks nobody.
+`transport_error`, `http_status`, `invalid_response`, `request_too_large`,
+`advice_too_large` and `mode_not_set`. Jev is not asked when the largest advice a draft
+could get would not fit the save reply (`advice_too_large`), when the request would
+exceed the request limit, or when even the smallest acceptable answer would exceed the
+answer limit (`request_too_large`); none of these spends the daily limit. A replay of a
+save under the same `request_id` returns the recorded field and asks nobody.
+
+A Program opened before the product level existed has no mode, and without one Jev is
+not asked. The draft is stored, the journal holds a row with `called` false, and the
+reply carries:
+
+```json
+{"status":"unavailable","reason":"mode_not_set","message":"Jev advice is not available: the Program has no mode; set it with program.save"}
+```
+
+A point is decided in a fixed order: Jev disabled, a replay, the point's own
+precondition (the mode), no provider, the reply fit, the daily limit, and only then
+the call.
 
 `workspace.advisory.audit` requires `bodies`: `true` returns `request_body` and
 `response_body` on every row, `null` where none was recorded; `false` leaves both

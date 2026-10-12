@@ -98,6 +98,13 @@ pub trait AdviceStore: Send {
         query: &AdviceAuditQuery,
     ) -> Result<AdviceCounters>;
 
+    /// The product level the Program holds now; `None` while it has none.
+    async fn program_mode(
+        &mut self,
+        workspace_id: Uuid,
+        program_id: Uuid,
+    ) -> Result<Option<ProgramMode>>;
+
     /// Whole Program input texts in recorded order, up to and including `through`.
     async fn program_input_texts(
         &mut self,

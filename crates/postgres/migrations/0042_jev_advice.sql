@@ -73,7 +73,8 @@ CREATE TABLE advice_journal (
     CONSTRAINT advice_journal_reason_check CHECK (
         reason IS NULL OR reason IN (
             'provider_unconfigured', 'daily_limit_reached', 'timeout', 'transport_error',
-            'http_status', 'invalid_response', 'request_too_large', 'advice_too_large'
+            'http_status', 'invalid_response', 'request_too_large', 'advice_too_large',
+            'mode_not_set'
         )
     ),
     CONSTRAINT advice_journal_send_certainty_check CHECK (

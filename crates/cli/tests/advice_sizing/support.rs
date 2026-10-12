@@ -257,6 +257,20 @@ impl Stand {
         (client, repo)
     }
 
+    /// Set the product level of a Program as the operator, or clear it: a Program
+    /// opened before the field existed has none.
+    pub async fn set_mode(&self, program_id: &Value, mode: Option<&str>) {
+        let id = Uuid::parse_str(program_id.as_str().unwrap()).unwrap();
+        let updated = sqlx::query("UPDATE programs SET mode=$1 WHERE tenant_id=$2 AND id=$3")
+            .bind(mode)
+            .bind(self.tenant)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .unwrap();
+        assert_eq!(updated.rows_affected(), 1);
+    }
+
     pub async fn count(&self, table: &str) -> i64 {
         sqlx::query_scalar(&format!("SELECT count(*) FROM {table} WHERE tenant_id=$1"))
             .bind(self.tenant)

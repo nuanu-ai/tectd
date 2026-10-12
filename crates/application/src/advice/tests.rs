@@ -35,12 +35,24 @@ async fn opened_for(
     point: &Point,
 ) -> Opening {
     let questions = questions();
+    let ask = AdviceAsk::Questions {
+        questions: &questions,
+        shaping: point,
+    };
+    opened_with(journal, configured, work, ask).await
+}
+
+async fn opened_with(
+    journal: &mut Journal,
+    configured: bool,
+    work: &AdviceWorkRefs,
+    ask: AdviceAsk<'_>,
+) -> Opening {
     let request = AdviceRequest {
         point: "sizing",
         route: "scope.candidates.save",
         work,
-        questions: &questions,
-        shaping: point,
+        ask,
         reply: &Room(1_000),
     };
     open(
@@ -53,6 +65,12 @@ async fn opened_for(
     .await
     .unwrap()
 }
+
+/// A point whose Program has no mode: it has nothing to ask.
+const NO_MODE: AdviceAsk<'static> = AdviceAsk::Unmet {
+    reason: AdviceUnavailableReason::ModeNotSet,
+    detail: "the Program has no mode; set it with program.save",
+};
 
 fn reason(opening: &Opening) -> Option<AdviceUnavailableReason> {
     match opening {
@@ -174,6 +192,73 @@ async fn a_field_the_reply_cannot_carry_is_journalled_without_a_call() {
     let mut disabled = Journal::default();
     assert!(matches!(
         opened_for(&mut disabled, true, &other, &HUGE).await,
+        Opening::Disabled
+    ));
+    assert!(disabled.rows.is_empty());
+}
+
+#[tokio::test]
+async fn a_point_whose_precondition_does_not_hold_is_journalled_without_a_call() {
+    let work = AdviceWorkRefs {
+        request_id: Some(Uuid::new_v4()),
+        program_id: Some(Uuid::new_v4()),
+        ..AdviceWorkRefs::default()
+    };
+    // No provider and a spent limit come later in the order: the precondition decides.
+    let mut journal = Journal {
+        config: enabled(2),
+        calls_today: 2,
+        ..Journal::default()
+    };
+    let unmet = opened_with(&mut journal, false, &work, NO_MODE).await;
+    let Opening::Settled(field) = unmet else {
+        panic!("expected an unavailable reply field")
+    };
+    assert_eq!(
+        serde_json::json!(field),
+        json!({"status":"unavailable","reason":"mode_not_set",
+            "message":"Jev advice is not available: the Program has no mode; \
+                set it with program.save"})
+    );
+    assert!(journal.locked);
+    assert_eq!(journal.rows.len(), 1);
+    let (_, row) = &journal.rows[0];
+    assert_eq!(row.work, work);
+    assert_eq!(row.not_called, Some(field.clone()));
+
+    // The replay is answered from that row, whatever the point brings this time.
+    journal.calls_today = 0;
+    for ask in [
+        NO_MODE,
+        AdviceAsk::Questions {
+            questions: &questions(),
+            shaping: &SMALL,
+        },
+    ] {
+        let replay = opened_with(&mut journal, true, &work, ask).await;
+        assert_eq!(reason(&replay), Some(AdviceUnavailableReason::ModeNotSet));
+    }
+    assert_eq!(journal.rows.len(), 1);
+
+    // An earlier decision under the same request id is likewise returned as stored.
+    let asked = AdviceWorkRefs {
+        request_id: Some(Uuid::new_v4()),
+        ..AdviceWorkRefs::default()
+    };
+    assert!(matches!(
+        opened(&mut journal, true, &asked).await,
+        Opening::Reserved(_)
+    ));
+    assert_eq!(
+        reason(&opened_with(&mut journal, true, &asked, NO_MODE).await),
+        Some(AdviceUnavailableReason::TransportError)
+    );
+    assert_eq!(journal.rows.len(), 2);
+
+    // A disabled Jev is decided before the precondition and writes nothing.
+    let mut disabled = Journal::default();
+    assert!(matches!(
+        opened_with(&mut disabled, true, &work, NO_MODE).await,
         Opening::Disabled
     ));
     assert!(disabled.rows.is_empty());

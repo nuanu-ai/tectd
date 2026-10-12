@@ -6,6 +6,7 @@ use super::{
     ADVICE_ABSTAIN, AdviceAnswer, AdviceField, AdviceQuestion, AdviceQuestionSet, AdviceShaping,
     AdviceUnavailableReason,
 };
+use crate::ProgramMode;
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
@@ -32,8 +33,9 @@ pub struct SizingAdvice {
 }
 
 impl SizingDraft {
-    /// Add the user's recorded words, in recorded order, and form the questions.
-    pub fn advice(self, user_words: &[SizingWord]) -> SizingAdvice {
+    /// Add the user's recorded words, in recorded order, and the Program's product
+    /// level, and form the questions.
+    pub fn advice(self, user_words: &[SizingWord], mode: ProgramMode) -> SizingAdvice {
         let mut questions = BTreeMap::new();
         for candidate in &self.asked {
             let key = candidate_key(candidate.position);
@@ -75,7 +77,7 @@ impl SizingDraft {
         SizingAdvice {
             level: self.level,
             questions: AdviceQuestionSet {
-                state: self.state(user_words),
+                state: self.state(user_words, mode),
                 questions,
             },
             asked: self.asked,

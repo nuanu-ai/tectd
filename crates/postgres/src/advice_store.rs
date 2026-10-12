@@ -384,6 +384,14 @@ impl AdviceStore for PgUnitOfWork {
         Ok(counters)
     }
 
+    async fn program_mode(
+        &mut self,
+        workspace_id: Uuid,
+        program_id: Uuid,
+    ) -> Result<Option<ProgramMode>> {
+        self.read_program_mode(workspace_id, program_id).await
+    }
+
     async fn program_input_texts(
         &mut self,
         workspace_id: Uuid,

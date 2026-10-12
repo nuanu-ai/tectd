@@ -22,7 +22,7 @@ use std::{
     thread,
     time::Duration,
 };
-use tect_application::{AdviceRequest, WorkspaceService};
+use tect_application::{AdviceAsk, AdviceRequest, WorkspaceService};
 use tect_domain::*;
 use tect_postgres::{PgStore, admin};
 use tokio::process::{Child, Command};
@@ -334,8 +334,10 @@ async fn routes_configure_and_read_the_journal_and_no_child_inherits_the_key() {
         point: "sizing",
         route: support::ROUTE,
         work: &work,
-        questions: &questions,
-        shaping: &support::Verbatim,
+        ask: AdviceAsk::Questions {
+            questions: &questions,
+            shaping: &support::Verbatim,
+        },
         reply: &support::Room(usize::MAX),
     };
     let field = service.advise(&context, &request).await.unwrap().unwrap();

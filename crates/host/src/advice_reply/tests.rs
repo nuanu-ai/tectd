@@ -1,7 +1,9 @@
 use super::*;
 use crate::json_fragment::READ_BUDGET;
 use serde_json::json;
-use tect_domain::{AdviceShaping, AdviceUnavailableReason, SizingAdvice, SizingDraft, SizingScope};
+use tect_domain::{
+    AdviceShaping, AdviceUnavailableReason, ProgramMode, SizingAdvice, SizingDraft, SizingScope,
+};
 
 /// The `sizing` point for a Scope candidate draft of this shape.
 pub(crate) fn scope_sizing(candidates: usize, items: usize) -> SizingAdvice {
@@ -18,7 +20,7 @@ pub(crate) fn scope_sizing(candidates: usize, items: usize) -> SizingAdvice {
     SizingDraft::scope_candidates(&draft)
         .unwrap()
         .unwrap()
-        .advice(&[])
+        .advice(&[], ProgramMode::Prod)
 }
 
 /// The `sizing` point for a Slice candidate draft of this shape.
@@ -40,7 +42,7 @@ pub(crate) fn slice_sizing(candidates: usize, items: usize) -> SizingAdvice {
     SizingDraft::slice_candidates(&draft, scope)
         .unwrap()
         .unwrap()
-        .advice(&[])
+        .advice(&[], ProgramMode::Prod)
 }
 
 /// How many candidates with `items` included items each a save reply can carry advice

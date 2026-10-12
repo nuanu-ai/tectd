@@ -1,8 +1,8 @@
-//! What the `sizing` point lets Jev read: the user's recorded words and one draft, its
-//! candidates under short keys that the questions name.
+//! What the `sizing` point lets Jev read: the Program's product level, the user's
+//! recorded words and one draft, its candidates under short keys that the questions name.
 use super::SizingLevel;
 use crate::{
-    Error, Result, ScopeCandidateDraft, SliceCandidateDraft, SliceCandidateDraftNode,
+    Error, ProgramMode, Result, ScopeCandidateDraft, SliceCandidateDraft, SliceCandidateDraftNode,
     SliceCandidateRef,
 };
 use serde::Serialize;
@@ -59,7 +59,8 @@ pub(super) fn item_key(position: usize, item: usize) -> String {
     format!("c{position}.i{item}")
 }
 
-/// One draft laid out for Jev; the user's words are added last, after they are read.
+/// One draft laid out for Jev; the user's words and the product level are added last,
+/// after they are read.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SizingDraft {
     pub(super) level: SizingLevel,
@@ -184,10 +185,12 @@ impl SizingDraft {
         }))
     }
 
-    /// The one JSON object Jev reads, with the user's words in recorded order.
-    pub(super) fn state(&self, user_words: &[SizingWord]) -> Value {
-        let mut state = json!({"level":self.level,"user_words":user_words,"goals":self.goals,
-            "candidates":self.candidates});
+    /// The one JSON object Jev reads, with the user's words in recorded order and the
+    /// product level with its meaning.
+    pub(super) fn state(&self, user_words: &[SizingWord], mode: ProgramMode) -> Value {
+        let mut state = json!({"level":self.level,
+            "mode":{"level":mode,"description":mode.description()},
+            "user_words":user_words,"goals":self.goals,"candidates":self.candidates});
         if let Some(scope) = &self.scope {
             state["scope"] = json!(scope);
         }

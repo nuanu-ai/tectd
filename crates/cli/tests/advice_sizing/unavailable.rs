@@ -1,7 +1,7 @@
 //! An enabled Jev that gives no advice: the draft is stored all the same and the
 //! reply says why there is none.
 use crate::drafts::{Level, Shape, target};
-use crate::support::{BUDGET, Jev, Stand, command, configure};
+use crate::support::{BUDGET, Jev, Stand, audit, command, configure};
 use serde_json::{Value, json};
 use std::time::Duration;
 use uuid::Uuid;
@@ -135,6 +135,83 @@ async fn a_draft_jev_cannot_be_asked_about_is_stored_without_a_call(level: Level
     assert_eq!(called, 0);
     client.finish().await;
     other.finish().await;
+}
+
+/// A Program opened before the product level existed has none, and every request
+/// carries the level: Jev is not asked until `program.save` states one.
+async fn a_draft_of_a_program_without_a_mode_is_stored_without_a_call(level: Level) {
+    let stand = Stand::start("2000").await;
+    stand.jev.answer(Jev::Answers(|_| ("ABSTAIN", 0.9)));
+    let (mut client, repo) = stand.workspace().await;
+    let target_legacy = target(&mut client, &repo, level).await;
+    stand.set_mode(&target_legacy.program_id, None).await;
+    configure(&mut client, true, 0).await;
+    let request_id = Uuid::new_v4();
+    let params = target_legacy.save(&Shape::of(2, 2), request_id);
+    let (saved, envelope) = command(&mut client, level.save_route(), params.clone()).await;
+    assert_eq!(
+        saved["advice"],
+        json!({"status":"unavailable","reason":"mode_not_set",
+            "message":"Jev advice is not available: the Program has no mode; \
+                set it with program.save"})
+    );
+    assert!(envelope <= BUDGET, "{envelope}");
+    assert_eq!(saved["candidate_set"]["status"], "review_required");
+    assert_eq!(target_legacy.stored(&mut client, &saved).await.len(), 2);
+
+    // One journal row for the point that fired, with the work it was for and no call.
+    assert_eq!(
+        journalled(&stand, &saved["advice"]).await,
+        (json!(false), json!("not_sent"), json!("mode_not_set"))
+    );
+    let row = stand.newest_row().await;
+    assert_eq!(row["request"], Value::Null);
+    assert_eq!(row["route"], level.save_route());
+    assert_eq!(row["request_id"], json!(request_id));
+    assert_eq!(row["program_id"], target_legacy.program_id);
+    assert_eq!(row["candidate_set_id"], target_legacy.set()["id"]);
+    let scope_id = match level {
+        Level::Scopes => Value::Null,
+        Level::Slices => target_legacy.context["scope"]["id"].clone(),
+    };
+    assert_eq!(row["scope_id"], scope_id);
+    let counters = audit(&mut client).await["counters"].clone();
+    assert_eq!(
+        (&counters["called"], &counters["not_called"]),
+        (&json!(0), &json!(1))
+    );
+    assert_eq!(counters["reasons"], json!({"mode_not_set":1}));
+
+    // A replay returns the same reply, also once the Program has a mode: no call, no row.
+    let (replayed, _) = command(&mut client, level.save_route(), params.clone()).await;
+    assert_eq!(replayed, saved);
+    stand.set_mode(&target_legacy.program_id, Some("mvp")).await;
+    let (replayed, _) = command(&mut client, level.save_route(), params).await;
+    assert_eq!(replayed, saved);
+    assert_eq!(stand.count("advice_journal").await, 1);
+
+    // Disabled is decided first: without a mode and without Jev the save answers as
+    // `main` does, with no field and no row.
+    let (mut other, repo) = stand.workspace().await;
+    let target_off = target(&mut other, &repo, level).await;
+    stand.set_mode(&target_off.program_id, None).await;
+    let params = target_off.save(&Shape::of(2, 2), Uuid::new_v4());
+    let (plain, _) = command(&mut other, level.save_route(), params).await;
+    assert!(plain.get("advice").is_none(), "{plain}");
+    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!(stand.jev.calls(), 0);
+    client.finish().await;
+    other.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn scope_draft_of_a_program_without_a_mode_is_not_sent_to_jev() {
+    a_draft_of_a_program_without_a_mode_is_stored_without_a_call(Level::Scopes).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn slice_draft_of_a_program_without_a_mode_is_not_sent_to_jev() {
+    a_draft_of_a_program_without_a_mode_is_stored_without_a_call(Level::Slices).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]

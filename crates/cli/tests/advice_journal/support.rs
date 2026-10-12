@@ -9,7 +9,9 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
-use tect_application::{AdviceOutputGuard, AdviceProvider, AdviceRequest, WorkspaceService};
+use tect_application::{
+    AdviceAsk, AdviceOutputGuard, AdviceProvider, AdviceRequest, WorkspaceService,
+};
 use tect_domain::*;
 use tect_postgres::{PgStore, admin};
 use uuid::Uuid;
@@ -217,8 +219,10 @@ impl Fixture {
             point,
             route: ROUTE,
             work,
-            questions: &questions,
-            shaping: &Verbatim,
+            ask: AdviceAsk::Questions {
+                questions: &questions,
+                shaping: &Verbatim,
+            },
             reply: &Room(room),
         };
         self.service.advise(&self.context, &request).await.unwrap()

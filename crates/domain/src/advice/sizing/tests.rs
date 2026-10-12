@@ -3,8 +3,8 @@ mod shaping;
 
 use super::*;
 use crate::{
-    AdviceCompletion, AdviceExchange, AdviceReply, Error, ScopeCandidateDraft, SizingScope,
-    SizingWordSource, SliceCandidateDraft,
+    AdviceCompletion, AdviceExchange, AdviceReply, Error, ProgramMode, ScopeCandidateDraft,
+    SizingScope, SizingWordSource, SliceCandidateDraft,
 };
 use uuid::Uuid;
 
@@ -76,14 +76,14 @@ fn scope_advice() -> SizingAdvice {
     SizingDraft::scope_candidates(&scope_draft(Uuid::new_v4()))
         .unwrap()
         .unwrap()
-        .advice(&words())
+        .advice(&words(), ProgramMode::Prod)
 }
 
 fn slice_advice() -> SizingAdvice {
     SizingDraft::slice_candidates(&slice_draft(Uuid::new_v4()), scope_statement())
         .unwrap()
         .unwrap()
-        .advice(&words())
+        .advice(&words(), ProgramMode::Prod)
 }
 
 fn criteria(advice: &SizingAdvice, name: &str) -> Vec<String> {
@@ -153,6 +153,8 @@ fn scope_draft_becomes_one_state_object_and_three_kinds_of_questions() {
         set.state,
         json!({
             "level":"program_to_scopes",
+            "mode":{"level":"prod","description":
+                "A product in operation that fits on one machine or on one machine per service."},
             "user_words":[
                 {"source":"program_input","text":"Add invitations by email."},
                 {"source":"scope_candidate_input","text":"Keep it small."}
@@ -215,6 +217,7 @@ fn slice_draft_asks_about_work_nodes_and_alone_offers_a_separate_scope() {
             "includes":["email"],"excludes":["billing"]})
     );
     assert_eq!(set.state["goals"], json!([]));
+    assert_eq!(set.state["mode"]["level"], "prod");
     assert_eq!(set.state["user_words"].as_array().unwrap().len(), 2);
     assert_eq!(
         set.state["candidates"],
@@ -264,12 +267,46 @@ fn slice_draft_asks_about_work_nodes_and_alone_offers_a_separate_scope() {
 }
 
 #[test]
+fn every_request_carries_the_product_level_and_the_wording_judges_against_it() {
+    let draft = || {
+        SizingDraft::scope_candidates(&scope_draft(Uuid::new_v4()))
+            .unwrap()
+            .unwrap()
+    };
+    let prod = draft().advice(&words(), ProgramMode::Prod);
+    for mode in ProgramMode::ALL {
+        let advice = draft().advice(&words(), mode);
+        assert_eq!(
+            advice.questions().state["mode"],
+            json!({"level":mode.as_str(),"description":mode.description()})
+        );
+        // The level changes what Jev reads and nothing of what it is asked.
+        assert_eq!(advice.questions().questions, prod.questions().questions);
+    }
+    let asked = &prod.questions().questions;
+    for text in [
+        &asked["c1.size"].instructions,
+        &asked["c1.advice"].criteria["simplify"],
+        &asked["c1.i1"].instructions,
+        &asked["c1.i1"].criteria["extra"],
+    ] {
+        assert!(text.contains("the product level in state.mode"), "{text}");
+    }
+    assert!(asked["c1.size"].instructions.contains("state.user_words"));
+    assert!(asked["c1.i1"].instructions.contains("state.user_words"));
+    assert_eq!(
+        asked["c1.i1"].criteria["extra"],
+        "Neither requested nor needed for the requested work at the product level in state.mode."
+    );
+}
+
+#[test]
 fn keys_follow_draft_positions_and_nothing_else() {
     let existing = Uuid::new_v4();
     let first = SizingDraft::scope_candidates(&scope_draft(existing))
         .unwrap()
         .unwrap()
-        .advice(&words());
+        .advice(&words(), ProgramMode::Prod);
     let mut reworded = scope_draft(existing);
     reworded.candidates[0].title = "Another title".into();
     reworded.candidates[0].identity.local = Some("renamed".into());
@@ -277,7 +314,7 @@ fn keys_follow_draft_positions_and_nothing_else() {
     let second = SizingDraft::scope_candidates(&reworded)
         .unwrap()
         .unwrap()
-        .advice(&[]);
+        .advice(&[], ProgramMode::Prod);
     assert_eq!(
         first.questions().questions.keys().collect::<Vec<_>>(),
         second.questions().questions.keys().collect::<Vec<_>>()
@@ -294,7 +331,7 @@ fn scope_advice_of(existing: Uuid) -> SizingAdvice {
     SizingDraft::scope_candidates(&scope_draft(existing))
         .unwrap()
         .unwrap()
-        .advice(&words())
+        .advice(&words(), ProgramMode::Prod)
 }
 
 #[test]
