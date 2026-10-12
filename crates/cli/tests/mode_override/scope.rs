@@ -2,8 +2,8 @@
 //! quotes an input the user gave to the candidate set, refused in every other case.
 use crate::support::Stand;
 use crate::walk::{
-    PERMISSION, QUOTE, ScopeSet, assert_unpermitted, refused, scope_candidate, scope_draft,
-    scope_resave,
+    PERMISSION, QUOTE, ScopeSet, SliceSet, assert_unpermitted, carried, refused, reviewed,
+    scope_candidate, scope_context, scope_draft, scope_resave,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -331,6 +331,45 @@ async fn the_same_permission_cited_after_a_refresh_is_no_change_of_the_candidate
         .await;
     assert_eq!(candidates[0]["revision"], 3);
     assert!(candidates[0].get("mode_override").is_none());
+    client.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn an_overridden_candidate_opens_into_a_scope_that_carries_the_level_without_the_quote() {
+    let stand = Stand::start_without_provider().await;
+    let (mut client, repo) = stand.workspace().await;
+    let head = ScopeSet::begun(&mut client, &repo)
+        .await
+        .record_and_refresh(&mut client, PERMISSION)
+        .await;
+    let refs = head.input_refs(&mut client).await;
+    let candidates = vec![overridden(1, "demo", &refs[1], QUOTE), scope_candidate(2)];
+    let (ready, stored, _) = reviewed(&mut client, head, candidates).await;
+    assert_eq!(stored[0]["mode_override"]["exact_quote"], QUOTE);
+
+    // The Scope opened from the overridden candidate carries the level and the
+    // reference that permitted it, wherever the Scope is shown.
+    let planning = SliceSet::opened(&mut client, &ready, &stored[0]).await;
+    let kept = json!({"mode":"demo","source_ref_id":refs[1]});
+    let scope = scope_context(&mut client, planning.scope_id()).await;
+    assert_eq!(scope["mode_override"], kept);
+    assert_eq!(planning.context["scope"]["mode_override"], kept);
+    assert_eq!(
+        carried(&stand.pool, "native_scopes", planning.scope_id()).await,
+        (json!("demo"), refs[1].clone())
+    );
+    // The user's words are not copied into the Scope.
+    assert!(!scope.to_string().contains(QUOTE), "{scope}");
+
+    // The Scope opened from the other candidate reads as a Scope always did.
+    let plain = SliceSet::opened(&mut client, &ready, &stored[1]).await;
+    let scope = scope_context(&mut client, plain.scope_id()).await;
+    assert!(scope.get("mode_override").is_none(), "{scope}");
+    assert!(plain.context["scope"].get("mode_override").is_none());
+    assert_eq!(
+        carried(&stand.pool, "native_scopes", plain.scope_id()).await,
+        (Value::Null, Value::Null)
+    );
     client.finish().await;
 }
 

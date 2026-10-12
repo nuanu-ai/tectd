@@ -188,6 +188,7 @@ pub(crate) async fn load_scope(
     let row:Option<(Uuid,i64,Uuid,i64,Uuid,Uuid,i64,String,String,String,serde_json::Value,serde_json::Value,Option<Uuid>,Option<i64>,Option<i64>,bool)>=sqlx::query_as(
         "SELECT n.id,n.revision,n.source_candidate_set_id,n.source_candidate_set_revision,n.source_snapshot_id,n.source_candidate_id,n.source_candidate_revision,n.boundary,n.title,n.outcome,n.includes,n.excludes,n.slice_candidate_set_id,s.input_cursor,s.latest_input,n.payload_erased FROM native_scopes n LEFT JOIN slice_candidate_sets s ON s.tenant_id=n.tenant_id AND s.workspace_id=n.workspace_id AND s.id=n.slice_candidate_set_id WHERE n.tenant_id=$1 AND n.workspace_id=$2 AND n.id=$3")
         .bind(tenant).bind(workspace).bind(scope_id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
+    let mode_override = scope_override(tx, tenant, workspace, scope_id).await?;
     row.map(|r| {
         if r.15 {
             return Err(Error::KnowledgePayloadErased);
@@ -209,6 +210,7 @@ pub(crate) async fn load_scope(
             slice_candidate_set_id: r.12.ok_or(Error::InternalInvariant)?,
             slice_input_cursor: r.13.unwrap_or(0),
             slice_latest_input: r.14.unwrap_or(0),
+            mode_override,
         })
     })
     .transpose()
@@ -323,6 +325,7 @@ async fn load_slices(
 ) -> Result<Vec<NativeSlice>> {
     let rows:Vec<(Uuid,i64,Uuid,i64,Uuid,String,String,String,String,Option<Uuid>,Option<String>,Option<Uuid>,Option<Uuid>,Option<String>,Option<Uuid>,Option<String>)>=sqlx::query_as("SELECT s.id,s.revision,s.candidate_id,s.candidate_revision,s.opening_snapshot_id,s.title,s.outcome,s.pipeline,s.state,r.id,r.status,s.knowledge_change_id,s.knowledge_run_id,kr.status,s.source_checkpoint_id,s.source_checkpoint_digest FROM native_slices s LEFT JOIN LATERAL (SELECT id,status FROM slice_pipeline_runs WHERE tenant_id=s.tenant_id AND workspace_id=s.workspace_id AND scope_id=s.scope_id AND slice_id=s.id AND status<>'superseded' ORDER BY created_at DESC,id DESC LIMIT 1) r ON true LEFT JOIN knowledge_change_runs kr ON kr.tenant_id=s.tenant_id AND kr.workspace_id=s.workspace_id AND kr.id=s.knowledge_run_id AND kr.change_id=s.knowledge_change_id WHERE s.tenant_id=$1 AND s.workspace_id=$2 AND s.scope_id=$3 ORDER BY s.created_at,s.id")
         .bind(tenant).bind(workspace).bind(scope).fetch_all(&mut **tx).await.map_err(storage_error)?;
+    let overrides = slice_overrides(tx, tenant, workspace, scope).await?;
     rows.into_iter()
         .map(|r| {
             Ok(NativeSlice {
@@ -354,6 +357,7 @@ async fn load_slices(
                     })
                     .transpose()?,
                 execution_claimed: false,
+                mode_override: overrides.get(&r.0).copied(),
             })
         })
         .collect()
@@ -370,6 +374,7 @@ pub(crate) async fn load_slice(
         .bind(tenant).bind(workspace).bind(id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
     let source:Option<(Uuid,String)>=sqlx::query_as("SELECT source_checkpoint_id,source_checkpoint_digest FROM native_slices WHERE tenant_id=$1 AND workspace_id=$2 AND id=$3 AND source_checkpoint_id IS NOT NULL")
         .bind(tenant).bind(workspace).bind(id).fetch_optional(&mut **tx).await.map_err(storage_error)?;
+    let mode_override = slice_override(tx, tenant, workspace, id).await?;
     row.map(|r| {
         Ok(NativeSlice {
             id: r.0,
@@ -397,6 +402,7 @@ pub(crate) async fn load_slice(
                 }
             }),
             execution_claimed: false,
+            mode_override,
         })
     })
     .transpose()

@@ -26,6 +26,7 @@ fn fixture() -> SliceCandidateContext {
         slice_candidate_set_id: set_id,
         slice_input_cursor: 0,
         slice_latest_input: 0,
+        mode_override: None,
     };
     SliceCandidateContext {
         scope,

@@ -375,6 +375,29 @@ impl SliceSet {
     }
 }
 
+/// An opened Scope as `scope.context` shows it.
+pub async fn scope_context(client: &mut Mcp, scope_id: &Value) -> Value {
+    let query = json!({"route":"scope.context","params":{"scope_id":scope_id}});
+    read_query_json(client, &query).await.value
+}
+
+/// The two override columns of one opened Scope or Slice, as the operator sees them.
+pub async fn carried(pool: &sqlx::PgPool, table: &str, id: &Value) -> (Value, Value) {
+    let column = match table {
+        "native_scopes" => "mode_override_source_ref_id",
+        _ => "mode_override_input_id",
+    };
+    let id = Uuid::parse_str(id.as_str().unwrap()).unwrap();
+    let row: (Option<String>, Option<Uuid>) = sqlx::query_as(&format!(
+        "SELECT mode_override, {column} FROM {table} WHERE id=$1"
+    ))
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    (json!(row.0), json!(row.1))
+}
+
 /// A new work node under a local label.
 pub fn work_node(number: usize) -> Value {
     json!({"kind":"work","identity":{"local":format!("work-{number}")},

@@ -147,7 +147,7 @@ mod slice;
 pub(crate) use context::{load_context, load_scope, load_slice, summaries};
 pub(crate) use continuation::{record_input, refresh, save_review};
 pub(crate) use draft::save_draft;
-use mode_override::permit;
+use mode_override::{permit, scope_override, slice_override, slice_overrides};
 use scope::insert_snapshot;
 pub(crate) use scope::{open_scope, scope_open_basis, scope_open_replay};
 pub(crate) use slice::{open_slice, record_result};

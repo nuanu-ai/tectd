@@ -4,6 +4,8 @@
 #[path = "advice_sizing/drafts.rs"]
 #[allow(dead_code)]
 mod drafts;
+#[path = "mode_override/migration.rs"]
+mod migration;
 #[path = "native_planning/support.rs"]
 #[allow(dead_code)]
 mod planning;

@@ -35,7 +35,7 @@ pub(crate) async fn open_slice(
     if node.revision() != request.candidate_revision {
         return Err(Error::StaleRevision);
     }
-    let (title, outcome, pipeline_kind, deps, source_checkpoint) = match node {
+    let (title, outcome, pipeline_kind, deps, source_checkpoint, carried) = match node {
         SliceCandidateNode::Decision { .. } => {
             return Err(Error::Refused(Box::new(
                 Refusal::new(RefusalCode::StateConflict)
@@ -56,6 +56,7 @@ pub(crate) async fn open_slice(
             pipeline,
             dependencies,
             source_checkpoint,
+            mode_override,
             ..
         } => (
             title.clone(),
@@ -63,6 +64,8 @@ pub(crate) async fn open_slice(
             *pipeline,
             dependencies.clone(),
             source_checkpoint.clone(),
+            // The Slice carries the level its candidate was permitted, without the quote.
+            mode_override.as_ref().map(|kept| kept.carried()),
         ),
     };
     if let Some(source) = &source_checkpoint {
@@ -89,7 +92,7 @@ pub(crate) async fn open_slice(
         }
     }
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO native_slices(id,tenant_id,workspace_id,scope_id,candidate_id,candidate_revision,opening_snapshot_id,title,outcome,pipeline,origin_request_id,origin_payload,source_checkpoint_id,source_checkpoint_digest) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)").bind(id).bind(tenant).bind(workspace).bind(request.scope_id).bind(request.candidate_id).bind(request.candidate_revision).bind(request.candidate_snapshot_id).bind(title).bind(outcome).bind(pipeline_kind.as_str()).bind(request.request_id).bind(&payload).bind(source_checkpoint.as_ref().map(|value|value.checkpoint_id)).bind(source_checkpoint.as_ref().map(|value|value.digest.as_str())).execute(&mut **tx).await.map_err(storage_error)?;
+    sqlx::query("INSERT INTO native_slices(id,tenant_id,workspace_id,scope_id,candidate_id,candidate_revision,opening_snapshot_id,title,outcome,pipeline,origin_request_id,origin_payload,source_checkpoint_id,source_checkpoint_digest,mode_override,mode_override_input_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)").bind(id).bind(tenant).bind(workspace).bind(request.scope_id).bind(request.candidate_id).bind(request.candidate_revision).bind(request.candidate_snapshot_id).bind(title).bind(outcome).bind(pipeline_kind.as_str()).bind(request.request_id).bind(&payload).bind(source_checkpoint.as_ref().map(|value|value.checkpoint_id)).bind(source_checkpoint.as_ref().map(|value|value.digest.as_str())).bind(carried.map(|kept|kept.mode.as_str())).bind(carried.map(|kept|kept.input_id)).execute(&mut **tx).await.map_err(storage_error)?;
     let slice = load_slice(tx, tenant, workspace, id)
         .await?
         .ok_or(Error::InternalInvariant)?;

@@ -21,6 +21,10 @@ pub struct NativeScope {
     pub slice_candidate_set_id: Uuid,
     pub slice_input_cursor: i64,
     pub slice_latest_input: i64,
+    /// The level the candidate was permitted, carried from it when the Scope was
+    /// opened. A Scope without an override has no such key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_override: Option<crate::ScopeModeOverride>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -451,6 +455,10 @@ pub struct NativeSlice {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_checkpoint: Option<crate::PipelineCheckpointRef>,
     pub execution_claimed: bool,
+    /// The level the work candidate was permitted, carried from it when the Slice
+    /// was opened. A Slice without an override has no such key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode_override: Option<crate::SliceModeOverride>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

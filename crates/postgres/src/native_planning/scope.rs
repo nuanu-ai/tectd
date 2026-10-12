@@ -149,7 +149,7 @@ pub(crate) async fn open_scope(
     if let Some(value) = scope_open_replay(tx, tenant, workspace, request).await? {
         return Ok(value);
     }
-    let (basis, _) = source_basis(tx, tenant, workspace, request, true).await?;
+    let (basis, candidate) = source_basis(tx, tenant, workspace, request, true).await?;
     if let Some((scope_id, revision)) = sqlx::query_as::<_, (Uuid, i64)>(
         "SELECT id,revision FROM native_scopes WHERE tenant_id=$1 AND workspace_id=$2 AND source_candidate_id=$3",
     ).bind(tenant).bind(workspace).bind(request.candidate_id).fetch_optional(&mut **tx).await.map_err(storage_error)? {
@@ -163,9 +163,12 @@ pub(crate) async fn open_scope(
     let scope_id = Uuid::new_v4();
     let set_id = Uuid::new_v4();
     let payload = json(request)?;
-    sqlx::query("INSERT INTO native_scopes(id,tenant_id,workspace_id,source_candidate_set_id,source_candidate_set_revision,source_snapshot_id,source_candidate_id,source_candidate_revision,boundary,title,outcome,includes,excludes,origin_request_id,origin_payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)")
+    // The Scope carries the level its candidate was permitted, without the quote.
+    let carried = candidate.mode_override.as_ref().map(|kept| kept.carried());
+    sqlx::query("INSERT INTO native_scopes(id,tenant_id,workspace_id,source_candidate_set_id,source_candidate_set_revision,source_snapshot_id,source_candidate_id,source_candidate_revision,boundary,title,outcome,includes,excludes,origin_request_id,origin_payload,mode_override,mode_override_source_ref_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)")
         .bind(scope_id).bind(tenant).bind(workspace).bind(request.candidate_set_id).bind(request.candidate_set_revision).bind(request.candidate_snapshot_id).bind(request.candidate_id).bind(request.candidate_revision)
         .bind(json(&basis.boundary)?.as_str().unwrap()).bind(&basis.title).bind(&basis.outcome).bind(json(&basis.includes)?).bind(json(&basis.excludes)?).bind(request.request_id).bind(&payload)
+        .bind(carried.map(|kept| kept.mode.as_str())).bind(carried.map(|kept| kept.source_ref_id))
         .execute(&mut **tx).await.map_err(storage_error)?;
     sqlx::query(
         "INSERT INTO slice_candidate_sets(id,tenant_id,workspace_id,scope_id) VALUES($1,$2,$3,$4)",

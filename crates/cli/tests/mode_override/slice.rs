@@ -5,8 +5,8 @@ use crate::recovery_support::Mcp;
 use crate::recovery_support::candidate_reads::read_query_json;
 use crate::support::Stand;
 use crate::walk::{
-    PERMISSION, QUOTE, ScopeSet, SliceSet, assert_unpermitted, refused, retained, reviewed,
-    scope_candidate, slice_draft, work_node,
+    PERMISSION, QUOTE, ScopeSet, SliceSet, assert_unpermitted, carried, refused, retained,
+    reviewed, scope_candidate, scope_context, slice_draft, work_node,
 };
 use serde_json::{Value, json};
 use std::path::Path;
@@ -287,5 +287,87 @@ async fn asking_recording_refreshing_and_quoting_succeeds_after_a_refusal() {
     .await;
     let head = SliceSet::after(&mut client, saved).await;
     assert_eq!(head.context["draft"]["nodes"][0]["revision"], 1);
+    client.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn an_overridden_work_node_opens_into_a_slice_that_carries_its_own_level() {
+    let stand = Stand::start_without_provider().await;
+    let (mut client, repo) = stand.workspace().await;
+    // The Scope itself was permitted demo; inside it one Slice is permitted mvp.
+    let begun = ScopeSet::begun(&mut client, &repo)
+        .await
+        .record_and_refresh(&mut client, PERMISSION)
+        .await;
+    let refs = begun.input_refs(&mut client).await;
+    let mut scope = scope_candidate(1);
+    scope["mode_override"] = json!({"mode":"demo","source_ref_id":refs[1],"exact_quote":QUOTE});
+    let (ready, stored, _) = reviewed(&mut client, begun, vec![scope]).await;
+    let planning = SliceSet::opened(&mut client, &ready, &stored[0]).await;
+    let words = "The importer has paying users: for it I allow mvp.";
+    let head = planning.record_and_refresh(&mut client, words).await;
+    let input_id = head.items(&mut client, "inputs").await[0]["id"].clone();
+    let draft = slice_draft(vec![
+        overridden(1, "mvp", &input_id, "for it I allow mvp"),
+        work_node(2),
+    ]);
+    let saved = route(&mut client, "command", SAVE, head.save(draft)).await;
+    let saved = SliceSet::after(&mut client, saved).await;
+    let ready = review(&mut client, &saved.context).await;
+    assert_eq!(ready["candidate_set"]["status"], "ready");
+
+    // The Slice opened from the overridden node carries the level and the input that
+    // permitted it: in the reply of the opening, in its own read and in the planning.
+    let kept = json!({"mode":"mvp","input_id":input_id});
+    let open = |node: &Value| open_slice(&ready, node, Uuid::new_v4());
+    let nodes = ready["draft"]["nodes"].as_array().unwrap();
+    let opened = route(&mut client, "command", "slice.open", open(&nodes[0])).await;
+    let slice_id = opened["created"]["id"].clone();
+    assert_eq!(opened["created"]["mode_override"], kept);
+    let read = route(
+        &mut client,
+        "query",
+        "slice.context",
+        json!({"slice_id":slice_id}),
+    )
+    .await;
+    assert_eq!(read["mode_override"], kept);
+    assert!(!read.to_string().contains("for it I allow mvp"), "{read}");
+    assert_eq!(
+        carried(&stand.pool, "native_slices", &slice_id).await,
+        (json!("mvp"), input_id.clone())
+    );
+
+    // The other Slice of the same Scope has none of its own.
+    let opened = route(&mut client, "command", "slice.open", open(&nodes[1])).await;
+    let plain_id = opened["created"]["id"].clone();
+    assert!(opened["created"].get("mode_override").is_none(), "{opened}");
+    assert_eq!(
+        carried(&stand.pool, "native_slices", &plain_id).await,
+        (Value::Null, Value::Null)
+    );
+    let details = read_query_json(
+        &mut client,
+        &json!({"route":"slice.candidates.context","params":{
+            "scope_id":ready["scope"]["id"],"view":"details","limit":25}}),
+    )
+    .await
+    .value;
+    let slices = details["slices"].as_array().unwrap();
+    assert_eq!(slices.len(), 2);
+    for slice in slices {
+        if slice["id"] == slice_id {
+            assert_eq!(slice["mode_override"], kept);
+        } else {
+            assert!(slice.get("mode_override").is_none(), "{slice}");
+        }
+    }
+    // Each piece keeps its own: the Scope still carries demo.
+    let scope = scope_context(&mut client, &ready["scope"]["id"]).await;
+    assert_eq!(
+        scope["mode_override"],
+        json!({"mode":"demo","source_ref_id":refs[1]})
+    );
+    assert_eq!(details["scope"]["mode_override"], scope["mode_override"]);
     client.finish().await;
 }

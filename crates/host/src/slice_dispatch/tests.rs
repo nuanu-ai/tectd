@@ -20,6 +20,7 @@ fn slice(pipeline: PipelineKind, source_checkpoint: Option<PipelineCheckpointRef
         knowledge_status: None,
         source_checkpoint,
         execution_claimed: false,
+        mode_override: None,
     }
 }
 
