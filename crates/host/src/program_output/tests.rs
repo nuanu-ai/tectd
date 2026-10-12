@@ -229,7 +229,7 @@ fn large_program_field_and_single_input_use_pinned_lossless_fragments() {
 }
 
 #[test]
-fn guidance_revision_three_keeps_earlier_archives_and_explains_actual_success_wire_field() {
+fn guidance_revision_four_keeps_earlier_archives_and_explains_actual_success_wire_field() {
     let old = include_str!("../../../../skills/tectd-program/revisions/1.md");
     assert!(old.contains("# TectD Program"));
     assert!(!old.contains("## Effective save contract"));
@@ -237,8 +237,15 @@ fn guidance_revision_three_keeps_earlier_archives_and_explains_actual_success_wi
     assert!(second.contains("## Effective save contract"));
     assert!(second.contains("The six PRD fields"));
     assert!(!second.contains("`mode`"));
+    let third = include_str!("../../../../skills/tectd-program/revisions/3.md");
+    assert!(third.contains("The seven PRD fields"));
+    assert!(third.contains("Take `mode` from the user's words."));
+    assert!(!third.contains("mode_override"));
     let method = StaticProgramGuidance.planning_method();
-    assert_eq!(method.version, "3");
+    assert_eq!(method.version, "4");
+    // Revision 4 is revision 3 with one passage added: the override of one piece.
+    let added = "\nThe level holds for the whole Program. One Scope or one Slice may be built to another level only with the user's explicit written permission; you never decide such an override yourself. The save schemas of `scope.candidates.save` and `slice.candidates.save` describe the `mode_override` field that records it.\n";
+    assert_eq!(method.body.replacen(added, "", 1), third);
     assert_eq!(
         method.digest,
         format!("{:x}", sha2::Sha256::digest(PROGRAM_SKILL.as_bytes()))
@@ -285,6 +292,10 @@ fn guidance_states_the_four_levels_in_the_catalog_wording_and_the_save_action_as
         "ask the user",
         "If nobody can be asked in this session",
         "your assumption",
+        "The level holds for the whole Program.",
+        "only with the user's explicit written permission",
+        "you never decide such an override yourself",
+        "`scope.candidates.save` and `slice.candidates.save` describe the `mode_override` field",
     ] {
         assert!(body.contains(rule), "{rule}");
     }

@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 pub(crate) const PROGRAM_SKILL: &str = include_str!("../../../skills/tectd-program/SKILL.md");
 pub(crate) const PROGRAM_METHOD_ID: &str = "tectd-program";
-pub(crate) const PROGRAM_METHOD_REVISION: &str = "3";
+pub(crate) const PROGRAM_METHOD_REVISION: &str = "4";
 
 pub(crate) struct StaticProgramGuidance;
 

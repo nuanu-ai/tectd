@@ -170,7 +170,8 @@ pub(super) fn save() -> Value {
             "dependencies":{"type":"array","items":reference,"maxItems":100},
             "coverage_goals":{"type":"array","items":reference,"minItems":1,"maxItems":100},
             "evidence":{"type":"array","items":reference,"maxItems":100},
-            "change_rationale":text()
+            "change_rationale":text(),
+            "mode_override":mode_override()
         }),
         json!([
             "identity",
@@ -322,6 +323,22 @@ pub(super) fn refresh() -> Value {
             "program_revision"
         ]),
     )
+}
+
+/// The product level of one candidate where the user permitted another than the Program's.
+fn mode_override() -> Value {
+    let mut schema = object_schema(
+        json!({
+            "mode":{"type":"string","enum":tect_domain::ProgramMode::ALL.map(tect_domain::ProgramMode::as_str)},
+            "source_ref_id":uuid(),
+            "exact_quote":text()
+        }),
+        json!(["mode", "source_ref_id", "exact_quote"]),
+    );
+    schema["description"] = json!(
+        "Another product level than the Program's for this one candidate. It is never the agent's own decision: state it only with the user's explicit written permission. source_ref_id is the planning_input source reference, in the snapshot this draft is saved against, of the input in which the user gave the permission; exact_quote is that permission copied verbatim from the input. Omit the field when there is no override: there is no default and null is invalid."
+    );
+    schema
 }
 
 fn uuid() -> Value {

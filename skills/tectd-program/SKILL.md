@@ -50,6 +50,8 @@ The four product levels:
 
 Take `mode` from the user's words. If they do not state the level, ask the user; it is not a gap to fill with a working assumption. If nobody can be asked in this session, derive the level from the task and record in the PRD that it is your assumption.
 
+The level holds for the whole Program. One Scope or one Slice may be built to another level only with the user's explicit written permission; you never decide such an override yourself. The save schemas of `scope.candidates.save` and `slice.candidates.save` describe the `mode_override` field that records it.
+
 There is no separate description field. Keep the PRD coherent as a whole rather than treating these concerns as isolated form answers. Fill reasonable gaps with working assumptions when doing so preserves the user's intent and does not make a material product choice for them.
 
 Distinguish three kinds of content in the draft: what the user stated, what is supported by verified evidence, and what the agent proposes or assumes. Never convert a proposal into a user decision, invent facts or sources, or manufacture metrics. Preserve the user's explicit constraints and intent even when improving structure or wording.

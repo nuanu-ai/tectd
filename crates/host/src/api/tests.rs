@@ -416,3 +416,77 @@ fn route_contract_enrichment_validates_help_as_a_meta_call() {
     assert_eq!(routed["schema_help"]["arguments"]["tool"], "query");
     assert_eq!(routed["schema_help"]["arguments"]["route"], "program.get");
 }
+
+#[test]
+fn the_two_draft_saves_describe_the_mode_override_and_that_an_agent_never_decides_it() {
+    let describe = |route: &str| {
+        help(parse_help(json!({"mode":"describe","tool":"command","route":route})).unwrap())
+            .unwrap()
+    };
+    let levels = json!(["demo", "mvp", "prod", "serious_prod"]);
+
+    let scope = describe("scope.candidates.save");
+    let candidate = &scope["params_schema"]["oneOf"][0]["properties"]["draft"]["properties"]["candidates"]
+        ["items"];
+    let stated = &candidate["properties"]["mode_override"];
+    assert_eq!(
+        stated["required"],
+        json!(["mode", "source_ref_id", "exact_quote"])
+    );
+    // Stated whole or left out: it is not among what a candidate must carry.
+    assert!(
+        !candidate["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("mode_override"))
+    );
+
+    let slice = describe("slice.candidates.save");
+    let nodes = &slice["params_schema"]["oneOf"][0]["properties"]["draft"]["properties"]["nodes"]["items"]
+        ["oneOf"];
+    let work = &nodes[0]["properties"]["mode_override"];
+    assert_eq!(nodes[0]["properties"]["kind"]["const"], "work");
+    assert_eq!(work["required"], json!(["mode", "input_id", "exact_quote"]));
+    // Each level names its own kind of id, and a decision node takes no override.
+    assert!(work["properties"].get("source_ref_id").is_none());
+    assert!(stated["properties"].get("input_id").is_none());
+    assert_eq!(nodes[1]["properties"]["kind"]["const"], "decision");
+    assert!(nodes[1]["properties"].get("mode_override").is_none());
+
+    for (described, field) in [(&scope, stated), (&slice, work)] {
+        assert_eq!(field["additionalProperties"], false);
+        assert_eq!(field["properties"]["mode"]["enum"], levels);
+        assert_eq!(field["properties"]["exact_quote"]["minLength"], 1);
+        let about = field["description"].as_str().unwrap();
+        for said in [
+            "never the agent's own decision",
+            "only with the user's explicit written permission",
+            "copied verbatim from the input",
+            "there is no default and null is invalid",
+        ] {
+            assert!(about.contains(said), "{said}: {about}");
+        }
+        let conditions = described["conditions"].as_str().unwrap();
+        assert!(conditions.contains("mode_override"), "{conditions}");
+        assert!(conditions.ends_with("The agent never decides an override itself."));
+        let effects = described["effects"].as_str().unwrap();
+        assert!(
+            effects.contains("refused with MODE_OVERRIDE_NOT_PERMITTED and nothing is stored"),
+            "{effects}"
+        );
+    }
+    // The Program method points here; the two planning methods are not edited for it.
+    for method in ["tectd-scope-candidates", "tectd-slice-candidates"] {
+        let body = help(parse_help(json!({"mode":"describe","method":method})).unwrap()).unwrap();
+        assert!(!body["body"].as_str().unwrap().contains("mode_override"));
+    }
+    let program =
+        help(parse_help(json!({"mode":"describe","method":"tectd-program"})).unwrap()).unwrap();
+    assert_eq!(program["method_revision"], "4");
+    assert!(
+        program["body"]
+            .as_str()
+            .unwrap()
+            .contains("describe the `mode_override` field")
+    );
+}

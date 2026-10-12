@@ -70,7 +70,7 @@ pub(super) fn save() -> Value {
                 "proof":{"type":"array","items":text(),"minItems":1,"maxItems":100},
                 "pipeline":{"type":"string","enum":pipelines()},"pipeline_reason":text(),
                 "why_lightweight_insufficient":text(),"why_further_vertical_split_not_viable":text()
-                ,"source_checkpoint":checkpoint_ref()
+                ,"source_checkpoint":checkpoint_ref(),"mode_override":mode_override()
             }),
         ),
         json!([
@@ -237,6 +237,20 @@ fn pipelines() -> Value {
         "slice.custom-procedure-capture",
         "slice.promote-to-durable-knowledge"
     ])
+}
+/// The product level of one work node where the user permitted another than the Scope's.
+fn mode_override() -> Value {
+    let mut schema = object_schema(
+        json!({
+            "mode":{"type":"string","enum":tect_domain::ProgramMode::ALL.map(tect_domain::ProgramMode::as_str)},
+            "input_id":uuid(),"exact_quote":text()
+        }),
+        json!(["mode", "input_id", "exact_quote"]),
+    );
+    schema["description"] = json!(
+        "Another product level than the Scope's for this one work node. It is never the agent's own decision: state it only with the user's explicit written permission. input_id is the id, as view inputs of slice.candidates.context shows it, of the input in which the user gave the permission, recorded with slice.candidates.input and refreshed; exact_quote is that permission copied verbatim from the input. Omit the field when there is no override: there is no default and null is invalid. A decision node takes none."
+    );
+    schema
 }
 fn checkpoint_ref() -> Value {
     object_schema(
