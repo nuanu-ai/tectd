@@ -15,7 +15,7 @@ ALLOWED = {
     },
     "tect-host": {
         "tect-domain", "tect-application", "serde", "serde_json", "tokio",
-        "uuid", "async-trait", "rustix", "sha2",
+        "uuid", "async-trait", "rustix", "sha2", "reqwest",
     },
     "tect-cli": {
         "tect-domain", "tect-application", "tect-postgres", "tect-host",

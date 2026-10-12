@@ -4,6 +4,10 @@ mod api;
 mod context;
 mod frame;
 mod git;
+mod jev_codec;
+mod jev_json;
+mod jev_provider;
+mod jev_transport;
 mod json_fragment;
 mod knowledge_dispatch;
 mod knowledge_embedding;
@@ -51,6 +55,7 @@ mod workspace_state;
 
 pub use context::{HostContext, host_context_from_env, read_host_auth_file};
 pub use git::GitSourceInspector;
+pub use jev_provider::{JevAdviceProvider, JevConfig};
 pub use knowledge_embedding::{LocalEmbeddingConfig, LocalKnowledgeEmbeddingWorker};
 pub use mcp::run_stdio;
 #[doc(hidden)]
