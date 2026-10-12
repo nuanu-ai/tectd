@@ -244,6 +244,8 @@ pub struct AdviceAuditQuery {
     pub after: Option<Uuid>,
     /// Rows per page; 0 returns the counters alone.
     pub limit: u32,
+    /// Whether rows carry the request and answer bodies.
+    pub bodies: bool,
 }
 
 impl AdviceAuditQuery {

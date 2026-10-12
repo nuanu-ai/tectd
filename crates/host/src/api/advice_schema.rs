@@ -23,9 +23,10 @@ fn audit() -> Value {
             "since":time.clone(),
             "until":time,
             "after":{"type":"string","format":"uuid"},
-            "limit":{"type":"integer","minimum":0,"maximum":MAX_ADVICE_PAGE}
+            "limit":{"type":"integer","minimum":0,"maximum":MAX_ADVICE_PAGE},
+            "bodies":{"type":"boolean"}
         }),
-        json!(["limit"]),
+        json!(["limit", "bodies"]),
     ))
 }
 
@@ -58,11 +59,11 @@ pub(super) fn routes() -> Vec<RouteSpec> {
             route: "workspace.advisory.audit",
             internal: "advice_audit",
             summary: "Read this workspace's Jev advice journal, newest first, with counters of calls, skips and their reasons.",
-            conditions: "Requires an authenticated open native session. point, outcome, since and until select rows; since is inclusive, until is exclusive, both RFC 3339. limit 0 returns the counters alone. Explicit null is invalid.",
-            effects: "Reads complete journal rows, request and answer bodies included. Counters cover the point and time filters and ignore outcome and paging. A page over the read budget is delivered as lossless JSON byte windows.",
+            conditions: "Requires an authenticated open native session. point, outcome, since and until select rows; since is inclusive, until is exclusive, both RFC 3339. limit 0 returns the counters alone. bodies is required and has no default. Explicit null is invalid.",
+            effects: "Reads journal rows. bodies true includes request_body and response_body, null where none was recorded; bodies false leaves both fields out of every row, and request_bytes and response_bytes still give their sizes. Counters cover the point and time filters and ignore outcome and paging. A page over the read budget is delivered as lossless JSON byte windows.",
             retry: "Safe to repeat. Follow next_after unchanged; give until so that later rows do not move the page between windows.",
             schema: audit(),
-            example: json!({"limit":5,"point":"sizing"}),
+            example: json!({"limit":5,"point":"sizing","bodies":false}),
         },
     ]
 }
@@ -115,6 +116,12 @@ mod tests {
                 .is_none()
         );
         assert_eq!(routes[2].schema["properties"]["limit"]["maximum"], 100);
+        assert_eq!(routes[2].schema["required"], json!(["limit", "bodies"]));
+        assert!(
+            routes[2].schema["properties"]["bodies"]
+                .get("default")
+                .is_none()
+        );
         assert_eq!(
             routes[2].schema["properties"]["limit_bytes"]["maximum"],
             4096
@@ -131,7 +138,12 @@ mod tests {
                 "workspace.advisory.configure",
                 json!({"enabled":true,"expected_revision":0}),
             ),
-            ("query", "workspace.advisory.audit", json!({"limit":101})),
+            (
+                "query",
+                "workspace.advisory.audit",
+                json!({"limit":101,"bodies":true}),
+            ),
+            ("query", "workspace.advisory.audit", json!({"limit":5})),
         ] {
             assert!(
                 crate::api::decode_public_call(tool, json!({"route":route,"params":params}))

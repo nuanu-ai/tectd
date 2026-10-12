@@ -94,24 +94,34 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         let Ok(AdviceInvocation::Audit { query, window }) = parse(
             "advice_audit",
-            json!({"limit":2,"point":"sizing","outcome":"advised","after":id,
+            json!({"limit":2,"bodies":true,"point":"sizing","outcome":"advised","after":id,
                 "since":"2026-10-12T00:00:00Z","offset_bytes":4096,"limit_bytes":512,
                 "representation_digest":"a".repeat(64)}),
         ) else {
             panic!("expected a journal query")
         };
-        assert_eq!((query.limit, query.after), (2, Some(id)));
+        assert_eq!(
+            (query.limit, query.after, query.bodies),
+            (2, Some(id), true)
+        );
         assert_eq!(window.offset_bytes, Some(4096));
-        assert!(parse("advice_audit", json!({"limit":0})).is_ok());
+        assert!(matches!(
+            parse("advice_audit", json!({"limit":0,"bodies":false})),
+            Ok(AdviceInvocation::Audit { query, .. }) if !query.bodies
+        ));
         for arguments in [
             json!({}),
-            json!({"limit":101}),
-            json!({"limit":1,"outcome":"pending"}),
-            json!({"limit":1,"point":"Sizing"}),
-            json!({"limit":1,"until":"tomorrow"}),
-            json!({"limit":1,"after":null}),
-            json!({"limit":1,"limit_bytes":0}),
-            json!({"limit":1,"sql":"select 1"}),
+            json!({"limit":1}),
+            json!({"bodies":true}),
+            json!({"limit":1,"bodies":null}),
+            json!({"limit":1,"bodies":"false"}),
+            json!({"limit":101,"bodies":true}),
+            json!({"limit":1,"bodies":true,"outcome":"pending"}),
+            json!({"limit":1,"bodies":true,"point":"Sizing"}),
+            json!({"limit":1,"bodies":true,"until":"tomorrow"}),
+            json!({"limit":1,"bodies":true,"after":null}),
+            json!({"limit":1,"bodies":true,"limit_bytes":0}),
+            json!({"limit":1,"bodies":true,"sql":"select 1"}),
         ] {
             assert!(invalid("advice_audit", arguments));
         }

@@ -450,11 +450,15 @@ generic call path. No command asks Jev yet.
 | --- | --- | --- |
 | `query` · `workspace.advisory.config` | `{}` | Setting, its revision, today's calls by UTC day, and whether the daemon has a provider |
 | `command` · `workspace.advisory.configure` | `{ "enabled": true, "daily_call_limit": 50, "expected_revision": 0 }` | Enable or disable and set the daily limit; a stale revision is refused |
-| `query` · `workspace.advisory.audit` | `{ "limit": 5, "point": "sizing" }` | Journal page, newest first, with counters of calls, skips and reasons |
+| `query` · `workspace.advisory.audit` | `{ "limit": 5, "point": "sizing", "bodies": false }` | Journal page, newest first, with counters of calls, skips and reasons |
 
 A workspace without a setting is disabled: no Jev call, no journal row, no `advice`
 field. Enabling requires `daily_call_limit`; it has no default. Migration 0042 adds
 `advice_config` and `advice_journal` with forced RLS.
+
+`workspace.advisory.audit` requires `bodies`: `true` returns `request_body` and
+`response_body` on every row, `null` where none was recorded; `false` leaves both
+fields out, and `request_bytes` and `response_bytes` still give their sizes.
 
 The daemon reads one client configuration for all advice points:
 

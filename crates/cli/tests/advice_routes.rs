@@ -377,7 +377,7 @@ async fn routes_configure_and_read_the_journal_and_no_child_inherits_the_key() {
         &mut client,
         "query",
         "workspace.advisory.audit",
-        json!({"limit":1}),
+        json!({"limit":1,"bodies":true}),
     )
     .await;
     transcript.push_str(&raw);

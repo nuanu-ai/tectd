@@ -13,7 +13,10 @@ const ENTRY_COLUMNS: &str = "id, \
          AS created_at, \
      workspace_id, session_id, point, route, request_id, program_id, candidate_set_id, \
      scope_id, slice_id, phase, called, outcome, reason, send_certainty, model, request_bytes, \
-     response_bytes, input_tokens, output_tokens, latency_ms, request_body, response_body, advice";
+     response_bytes, input_tokens, output_tokens, latency_ms, advice";
+const BODIES: &str = "request_body, response_body";
+/// A page read without bodies does not load them.
+const NO_BODIES: &str = "NULL::bytea AS request_body, NULL::bytea AS response_body";
 /// The point and time filters shared by the journal page and its counters.
 const WINDOW: &str = "tenant_id=$1 AND workspace_id=$2 \
      AND ($3::text IS NULL OR point=$3) \
@@ -288,7 +291,7 @@ impl AdviceStore for PgUnitOfWork {
     ) -> Result<Option<AdviceJournalEntry>> {
         let tenant_id = self.tenant_id()?;
         let row: Option<EntryRow> = sqlx::query_as(&format!(
-            "SELECT {ENTRY_COLUMNS} FROM advice_journal \
+            "SELECT {ENTRY_COLUMNS}, {NO_BODIES} FROM advice_journal \
              WHERE tenant_id=$1 AND workspace_id=$2 AND route=$3 AND request_id=$4 \
                AND ($5::text IS NULL OR point=$5) \
              ORDER BY created_at DESC, id DESC LIMIT 1"
@@ -327,8 +330,9 @@ impl AdviceStore for PgUnitOfWork {
                 return Err(Error::InvalidArguments);
             }
         }
+        let bodies = if query.bodies { BODIES } else { NO_BODIES };
         let rows: Vec<EntryRow> = sqlx::query_as(&format!(
-            "SELECT {ENTRY_COLUMNS} FROM advice_journal WHERE {WINDOW} \
+            "SELECT {ENTRY_COLUMNS}, {bodies} FROM advice_journal WHERE {WINDOW} \
                AND ($6::text IS NULL OR outcome=$6) \
                AND ($7::uuid IS NULL OR (created_at, id) < ( \
                    SELECT pivot.created_at, pivot.id FROM advice_journal pivot \

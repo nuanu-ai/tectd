@@ -283,23 +283,33 @@ fn journal_inputs_and_filters_are_bounded() {
         assert_eq!(invalid.validate(), Err(Error::InvalidArguments));
     }
     let query = |value| serde_json::from_value::<AdviceAuditQuery>(value).unwrap();
-    assert!(query(json!({"limit":0})).validate().is_ok());
+    assert!(query(json!({"limit":0,"bodies":false})).validate().is_ok());
     assert!(
-        query(json!({"limit":100,"point":"sizing","outcome":"unavailable",
-            "since":"2026-10-12T00:00:00Z","until":"2026-10-13T00:00:00+02:00"}))
+        query(
+            json!({"limit":100,"bodies":true,"point":"sizing","outcome":"unavailable",
+            "since":"2026-10-12T00:00:00Z","until":"2026-10-13T00:00:00+02:00"})
+        )
         .validate()
         .is_ok()
     );
     for invalid in [
-        json!({"limit":101}),
-        json!({"limit":1,"point":"Bad Point"}),
-        json!({"limit":1,"since":"yesterday"}),
-        json!({"limit":1,"since":"2026-10-13T00:00:00Z","until":"2026-10-12T00:00:00Z"}),
-        json!({"limit":1,"after":Uuid::nil()}),
+        json!({"limit":101,"bodies":true}),
+        json!({"limit":1,"bodies":true,"point":"Bad Point"}),
+        json!({"limit":1,"bodies":true,"since":"yesterday"}),
+        json!({"limit":1,"bodies":true,
+            "since":"2026-10-13T00:00:00Z","until":"2026-10-12T00:00:00Z"}),
+        json!({"limit":1,"bodies":true,"after":Uuid::nil()}),
     ] {
         assert_eq!(query(invalid).validate(), Err(Error::InvalidArguments));
     }
-    assert!(serde_json::from_value::<AdviceAuditQuery>(json!({"limit":1,"sql":"x"})).is_err());
+    // The bodies switch is stated by the caller: it has no default.
+    for undecodable in [
+        json!({"limit":1}),
+        json!({"limit":1,"bodies":"no"}),
+        json!({"limit":1,"bodies":true,"sql":"x"}),
+    ] {
+        assert!(serde_json::from_value::<AdviceAuditQuery>(undecodable).is_err());
+    }
 }
 
 #[test]

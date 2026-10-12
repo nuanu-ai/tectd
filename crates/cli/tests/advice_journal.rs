@@ -168,7 +168,7 @@ async fn concurrent_first_settings_have_one_winner_and_tenants_are_isolated() {
     );
     let page = stranger
         .service
-        .advice_audit(&context, &support::audit(json!({"limit":10})))
+        .advice_audit(&context, &support::audit(json!({"limit":10,"bodies":true})))
         .await
         .unwrap();
     assert!(page.entries.is_empty());

@@ -21,7 +21,9 @@ pub(crate) fn status(status: &AdviceConfigStatus) -> Value {
     )
 }
 
-/// The journal page whole, or as byte windows once it exceeds the read budget.
+/// The journal page whole, or as byte windows once it exceeds the read budget. A page
+/// asked for without bodies has no body fields at all: an absent field is never
+/// mistaken for a row that recorded no body.
 pub(crate) fn audit(
     page: &AdviceAuditPage,
     query: &AdviceAuditQuery,
@@ -29,6 +31,15 @@ pub(crate) fn audit(
     capacity: usize,
 ) -> Result<Value> {
     let params = serde_json::to_value(query).map_err(|_| Error::TransportUnavailable)?;
+    let mut page_value = serde_json::to_value(page).map_err(|_| Error::TransportUnavailable)?;
+    if !query.bodies {
+        for entry in page_value["entries"].as_array_mut().into_iter().flatten() {
+            if let Some(entry) = entry.as_object_mut() {
+                entry.remove("request_body");
+                entry.remove("response_body");
+            }
+        }
+    }
     let next_page = match page.next_after {
         Some(after) => {
             let mut next = params.clone();
@@ -38,7 +49,7 @@ pub(crate) fn audit(
         None => Vec::new(),
     };
     crate::json_fragment::encode(
-        page,
+        &page_value,
         next_page,
         capacity,
         window.borrowed(),
@@ -83,7 +94,39 @@ mod tests {
     }
 
     fn query(limit: u32) -> AdviceAuditQuery {
-        serde_json::from_value(json!({"limit":limit,"point":"sizing"})).unwrap()
+        serde_json::from_value(json!({"limit":limit,"point":"sizing","bodies":true})).unwrap()
+    }
+
+    #[test]
+    fn page_without_bodies_omits_both_body_fields_and_keeps_their_sizes() {
+        let page = AdviceAuditPage {
+            counters: AdviceCounters::default(),
+            entries: vec![entry("{\"model\":\"jev-latest\"}")],
+            next_after: None,
+        };
+        let mut without = query(1);
+        without.bodies = false;
+        let lean = audit(&page, &without, &Window::default(), 8192).unwrap();
+        let row = lean["entries"][0].as_object().unwrap();
+        assert!(!row.contains_key("request_body") && !row.contains_key("response_body"));
+        assert_eq!(row["request_bytes"], 22);
+        assert_eq!(row["response_bytes"], 2);
+        assert_eq!(row["advice"], json!({"status":"abstained"}));
+
+        // With bodies the fields are always there, null when no body was recorded.
+        let mut unsent = page.clone();
+        unsent.entries[0].request_body = None;
+        let full = audit(&unsent, &query(1), &Window::default(), 8192).unwrap();
+        let row = full["entries"][0].as_object().unwrap();
+        assert_eq!(row["request_body"], Value::Null);
+        assert_eq!(row["response_body"], "{}");
+        assert_eq!(row.len(), lean["entries"][0].as_object().unwrap().len() + 2);
+
+        // The next page keeps the caller's choice.
+        let mut more = page.clone();
+        more.next_after = Some(more.entries[0].id);
+        let lean = audit(&more, &without, &Window::default(), 8192).unwrap();
+        assert_eq!(lean["actions"][0]["arguments"]["params"]["bodies"], false);
     }
 
     #[test]
@@ -137,7 +180,7 @@ mod tests {
         assert_eq!(next["route"], "workspace.advisory.audit");
         assert_eq!(
             next["params"],
-            json!({"limit":1,"point":"sizing","after":page.entries[0].id})
+            json!({"limit":1,"point":"sizing","bodies":true,"after":page.entries[0].id})
         );
     }
 

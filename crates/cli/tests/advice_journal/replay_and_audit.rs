@@ -111,7 +111,7 @@ async fn journal_pages_filter_by_point_outcome_and_time_and_count_calls_and_skip
         async move { service.advice_audit(&context, &support::audit(query)).await }
     };
 
-    let counters = audit(json!({"limit":0})).await.unwrap();
+    let counters = audit(json!({"limit":0,"bodies":true})).await.unwrap();
     assert!(counters.entries.is_empty() && counters.next_after.is_none());
     assert_eq!(
         json!(counters.counters),
@@ -120,7 +120,7 @@ async fn journal_pages_filter_by_point_outcome_and_time_and_count_calls_and_skip
     );
 
     // Newest first, two rows at a time, with a cursor that ends.
-    let first = audit(json!({"limit":2})).await.unwrap();
+    let first = audit(json!({"limit":2,"bodies":true})).await.unwrap();
     assert_eq!(first.counters, counters.counters);
     assert_eq!(
         first
@@ -134,10 +134,10 @@ async fn journal_pages_filter_by_point_outcome_and_time_and_count_calls_and_skip
         ]
     );
     assert_eq!(first.next_after, Some(first.entries[1].id));
-    let second = audit(json!({"limit":2,"after":first.next_after}))
+    let second = audit(json!({"limit":2,"bodies":true,"after":first.next_after}))
         .await
         .unwrap();
-    let third = audit(json!({"limit":2,"after":second.next_after}))
+    let third = audit(json!({"limit":2,"bodies":true,"after":second.next_after}))
         .await
         .unwrap();
     assert_eq!((second.entries.len(), third.entries.len()), (2, 1));
@@ -159,12 +159,26 @@ async fn journal_pages_filter_by_point_outcome_and_time_and_count_calls_and_skip
         Some("{\"model\":\"jev-latest\"}")
     );
     assert_eq!(oldest.session_id, f.session);
+    // Without bodies the same rows come back with no body loaded; their sizes remain.
+    let lean = audit(json!({"limit":10,"bodies":false})).await.unwrap();
+    assert_eq!(lean.entries.len(), 5);
+    assert!(
+        lean.entries
+            .iter()
+            .all(|entry| entry.request_body.is_none() && entry.response_body.is_none())
+    );
+    assert_eq!(lean.entries[4].id, oldest.id);
+    assert_eq!(lean.entries[4].request_bytes, Some(22));
+    assert_eq!(lean.entries[4].advice, oldest.advice);
+    assert_eq!(lean.counters, counters.counters);
     assert_eq!(
-        audit(json!({"limit":2,"after":Uuid::new_v4()})).await,
+        audit(json!({"limit":2,"bodies":true,"after":Uuid::new_v4()})).await,
         Err(Error::InvalidArguments)
     );
 
-    let pipeline = audit(json!({"limit":10,"point":"pipeline"})).await.unwrap();
+    let pipeline = audit(json!({"limit":10,"bodies":true,"point":"pipeline"}))
+        .await
+        .unwrap();
     assert_eq!(pipeline.entries.len(), 1);
     assert_eq!(pipeline.entries[0].outcome, Some(AdviceOutcome::Abstained));
     assert_eq!(
@@ -174,15 +188,19 @@ async fn journal_pages_filter_by_point_outcome_and_time_and_count_calls_and_skip
     assert_eq!(pipeline.counters.not_called, 0);
 
     // The outcome filter narrows the rows; the counters still describe the window.
-    let unavailable = audit(json!({"limit":10,"outcome":"unavailable"}))
+    let unavailable = audit(json!({"limit":10,"bodies":true,"outcome":"unavailable"}))
         .await
         .unwrap();
     assert_eq!(unavailable.entries.len(), 2);
     assert_eq!(unavailable.counters, counters.counters);
 
     let pivot = all[2].created_at.clone();
-    let since = audit(json!({"limit":10,"since":pivot})).await.unwrap();
-    let until = audit(json!({"limit":10,"until":pivot})).await.unwrap();
+    let since = audit(json!({"limit":10,"bodies":true,"since":pivot}))
+        .await
+        .unwrap();
+    let until = audit(json!({"limit":10,"bodies":true,"until":pivot}))
+        .await
+        .unwrap();
     assert_eq!((since.entries.len(), until.entries.len()), (3, 2));
     assert_eq!((since.counters.called, until.counters.called), (2, 2));
     assert_eq!(since.counters.not_called, 1);
@@ -193,7 +211,10 @@ async fn journal_pages_filter_by_point_outcome_and_time_and_count_calls_and_skip
     f.service.open_workspace(&elsewhere).await.unwrap();
     let empty = f
         .service
-        .advice_audit(&elsewhere, &support::audit(json!({"limit":10})))
+        .advice_audit(
+            &elsewhere,
+            &support::audit(json!({"limit":10,"bodies":true})),
+        )
         .await
         .unwrap();
     assert!(empty.entries.is_empty());
@@ -202,7 +223,7 @@ async fn journal_pages_filter_by_point_outcome_and_time_and_count_calls_and_skip
         f.service
             .advice_audit(
                 &elsewhere,
-                &support::audit(json!({"limit":2,"after":all[0].id}))
+                &support::audit(json!({"limit":2,"bodies":true,"after":all[0].id}))
             )
             .await,
         Err(Error::InvalidArguments)
