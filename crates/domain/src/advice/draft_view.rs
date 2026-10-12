@@ -1,6 +1,10 @@
 //! One draft's candidates as Jev reads them, each under a short key that the questions
-//! name. Every advice point lays a draft out through this one projection.
-use crate::{ScopeCandidateDraft, SliceCandidateDraft, SliceCandidateDraftNode, SliceCandidateRef};
+//! name. Every advice point lays a draft out through this one projection, whether the
+//! draft is the one a save carries or the one the store holds.
+use crate::{
+    ResolvedCandidateDraft, ResolvedSliceCandidateDraft, ScopeCandidateDraft, SliceCandidateDraft,
+    SliceCandidateDraftNode, SliceCandidateNode, SliceCandidateRef,
+};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -74,6 +78,22 @@ impl DraftView {
         Self::of(nodes.collect())
     }
 
+    /// A Scope candidate draft as the store holds it.
+    pub fn saved_scope_draft(draft: &ResolvedCandidateDraft) -> Option<Self> {
+        let nodes = draft.candidates.iter().map(|candidate| Node {
+            name: (None, Some(candidate.id)),
+            dependencies: backend(&candidate.dependencies),
+            body: Body::Work {
+                title: &candidate.title,
+                outcome: &candidate.outcome,
+                includes: &candidate.includes,
+                excludes: &candidate.excludes,
+                marked: false,
+            },
+        });
+        Self::of(nodes.collect())
+    }
+
     /// A Slice candidate draft as a save carries it: work nodes and decision nodes.
     pub fn slice_draft(draft: &SliceCandidateDraft) -> Option<Self> {
         let nodes = draft.nodes.iter().map(|node| match node {
@@ -106,6 +126,33 @@ impl DraftView {
                 name: (identity.local.as_ref(), identity.candidate_id),
                 dependencies: named(dependencies),
                 body: Body::Decision { title, question },
+            },
+        });
+        Self::of(nodes.collect())
+    }
+
+    /// A Slice candidate draft as the store holds it.
+    pub fn saved_slice_draft(draft: &ResolvedSliceCandidateDraft) -> Option<Self> {
+        let nodes = draft.nodes.iter().map(|node| Node {
+            name: (None, Some(node.id())),
+            dependencies: backend(node.dependencies()),
+            body: match node {
+                SliceCandidateNode::Work {
+                    title,
+                    outcome,
+                    includes,
+                    excludes,
+                    ..
+                } => Body::Work {
+                    title,
+                    outcome,
+                    includes,
+                    excludes,
+                    marked: true,
+                },
+                SliceCandidateNode::Decision {
+                    title, question, ..
+                } => Body::Decision { title, question },
             },
         });
         Self::of(nodes.collect())
@@ -175,6 +222,11 @@ fn named(references: &[SliceCandidateRef]) -> Vec<Name<'_>> {
         .collect()
 }
 
+/// Dependencies of a stored node: backend ids of nodes of the same draft.
+fn backend(dependencies: &[Uuid]) -> Vec<Name<'_>> {
+    dependencies.iter().map(|id| (None, Some(*id))).collect()
+}
+
 /// Candidate keys by the two ways a draft names a candidate.
 #[derive(Default)]
 struct Keys {
@@ -200,3 +252,6 @@ impl Keys {
             .cloned()
     }
 }
+
+#[cfg(test)]
+mod tests;

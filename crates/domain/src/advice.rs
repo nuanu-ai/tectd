@@ -7,6 +7,8 @@ use uuid::Uuid;
 
 mod draft_view;
 mod exchange;
+mod intake;
+mod intake_catalog;
 mod point;
 mod questions;
 mod shaping;
@@ -14,6 +16,7 @@ mod sizing;
 mod sizing_catalog;
 mod sizing_state;
 pub use exchange::{AdviceCompletion, AdviceExchange, AdviceFailure, AdviceReply};
+pub use intake::{INTAKE_NOTE, INTAKE_POINT, IntakeAdvice, IntakePlanning};
 pub use questions::{ADVICE_ABSTAIN, AdviceAnswer, AdviceQuestion, AdviceQuestionSet};
 pub use shaping::AdviceShaping;
 pub use sizing::{SIZING_NOTE, SIZING_POINT, SizingAdvice, SizingLevel};
