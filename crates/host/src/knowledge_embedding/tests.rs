@@ -243,3 +243,22 @@ async fn pinned_offline_assets_produce_a_normalized_embedding_when_enabled() {
     .unwrap();
     assert!(valid_embedding(&response));
 }
+
+#[tokio::test]
+async fn worker_child_inherits_nothing_from_the_daemon_environment() {
+    let (_temp, config) =
+        fake_worker("import os, sys\nsys.stdout.write(','.join(sorted(os.environ)))\n");
+    let output = worker_command(&config).output().await.unwrap();
+    assert!(output.status.success());
+    let names = String::from_utf8(output.stdout).unwrap();
+    let names: Vec<&str> = names.split(',').collect();
+    assert!(names.contains(&"HF_HUB_OFFLINE"));
+    // The test process itself has these; an inherited environment would show them.
+    assert!(std::env::var_os("PATH").is_some());
+    assert!(!names.contains(&"PATH") && !names.contains(&"HOME"));
+    assert!(
+        !names
+            .iter()
+            .any(|name| *name == "TYPESAFE_API_KEY" || name.starts_with("TECT_JEV_"))
+    );
+}

@@ -4,6 +4,7 @@ use tect_domain::{Error, Result};
 use uuid::Uuid;
 
 pub(crate) enum Invocation {
+    Advice(crate::advice_tools::AdviceInvocation),
     Program(crate::program_tools::ProgramInvocation),
     Setup(crate::setup_tools::SetupInvocation),
     ScopeCandidate(crate::scope_candidate_tools::ScopeCandidateInvocation),
@@ -75,6 +76,9 @@ pub(crate) fn parse_invocation(name: &str, arguments: Value) -> Result<Invocatio
             })
         }
         "help" => crate::api::parse_help(arguments).map(Invocation::Help),
+        "advice_config" | "advice_configure" | "advice_audit" => {
+            crate::advice_tools::parse(name, arguments).map(Invocation::Advice)
+        }
         "knowledge_search" => {
             crate::knowledge_search_tools::parse(name, arguments).map(Invocation::KnowledgeSearch)
         }
@@ -186,7 +190,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            41
+            42
         );
     }
 

@@ -245,33 +245,40 @@ struct WorkerProcess {
     stdout: BufReader<tokio::process::ChildStdout>,
 }
 
+/// The worker starts from an empty environment: nothing of the daemon's, and so no
+/// key or setting of the Jev client, reaches it.
+fn worker_command(config: &LocalEmbeddingConfig) -> Command {
+    let mut command = Command::new(&config.python_executable);
+    command.args(["-I", "-X", "utf8"]);
+    if let Some(worker_script) = &config.worker_script {
+        command.arg(worker_script);
+    } else {
+        command.arg("-c").arg(WORKER_SCRIPT);
+    }
+    command
+        .arg("--model-dir")
+        .arg(&config.model_dir)
+        .env_clear()
+        .env("PYTHONUNBUFFERED", "1")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("PYTHONUTF8", "1")
+        .env("PYTHONNOUSERSITE", "1")
+        .env("HF_HUB_OFFLINE", "1")
+        .env("TRANSFORMERS_OFFLINE", "1")
+        .env("TOKENIZERS_PARALLELISM", "false")
+        .env("OMP_NUM_THREADS", "4")
+        .env("MKL_NUM_THREADS", "4")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    command.current_dir("/");
+    command
+}
+
 impl WorkerProcess {
     async fn start(config: &LocalEmbeddingConfig) -> Result<Self> {
-        let mut command = Command::new(&config.python_executable);
-        command.args(["-I", "-X", "utf8"]);
-        if let Some(worker_script) = &config.worker_script {
-            command.arg(worker_script);
-        } else {
-            command.arg("-c").arg(WORKER_SCRIPT);
-        }
-        command
-            .arg("--model-dir")
-            .arg(&config.model_dir)
-            .env_clear()
-            .env("PYTHONUNBUFFERED", "1")
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .env("PYTHONUTF8", "1")
-            .env("PYTHONNOUSERSITE", "1")
-            .env("HF_HUB_OFFLINE", "1")
-            .env("TRANSFORMERS_OFFLINE", "1")
-            .env("TOKENIZERS_PARALLELISM", "false")
-            .env("OMP_NUM_THREADS", "4")
-            .env("MKL_NUM_THREADS", "4")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        command.current_dir("/");
+        let mut command = worker_command(config);
         let mut child = command.spawn().map_err(|_| Error::InvalidConfiguration)?;
         let stdin = child.stdin.take().ok_or(Error::InvalidConfiguration)?;
         let stdout = child.stdout.take().ok_or(Error::InvalidConfiguration)?;

@@ -12,26 +12,26 @@ fn names(definitions: &Value) -> BTreeSet<&str> {
 }
 
 #[test]
-fn public_surface_is_exactly_five_tools_and_sixty_two_registry_routes() {
+fn public_surface_is_exactly_five_tools_and_sixty_five_registry_routes() {
     let definitions = definitions();
     assert_eq!(
         names(&definitions),
         BTreeSet::from(["command", "execute", "get_state", "help", "query"])
     );
-    assert_eq!(routes().len(), 62);
+    assert_eq!(routes().len(), 65);
     assert_eq!(
         routes()
             .iter()
             .filter(|route| route.tool == "query")
             .count(),
-        20
+        22
     );
     assert_eq!(
         routes()
             .iter()
             .filter(|route| route.tool == "command")
             .count(),
-        41
+        42
     );
     assert_eq!(
         routes()
@@ -51,6 +51,9 @@ fn public_surface_is_exactly_five_tools_and_sixty_two_registry_routes() {
         ("query", "slice.pipeline.evidence_artifact.read"),
         ("query", "slice.pipeline.instruction"),
         ("command", "slice.pipeline.run.migrate"),
+        ("query", "workspace.advisory.config"),
+        ("command", "workspace.advisory.configure"),
+        ("query", "workspace.advisory.audit"),
     ] {
         assert!(
             routes()
@@ -311,7 +314,7 @@ fn internal_legacy_phase_actions_can_retain_backend_receipts() {
 #[test]
 fn help_search_is_bounded_stable_filtered_and_bilingual() {
     let all = help(parse_help(json!({"mode":"search"})).unwrap()).unwrap();
-    assert_eq!(all["total_matches"], 72);
+    assert_eq!(all["total_matches"], 75);
     assert_eq!(all["returned"], 25);
     assert_eq!(all["truncated"], true);
     assert_eq!(all["hits"][0]["tool"], "get_state");

@@ -1,5 +1,6 @@
 mod help_requests;
 pub(crate) use help_requests::{help, help_arguments, parse_help};
+mod advice_schema;
 mod candidate_schema;
 mod catalog;
 mod catalog_aliases;
@@ -245,8 +246,8 @@ pub(crate) fn attach_route_contract(action: &mut Value) -> Result<()> {
 fn tool_summary(tool: &str) -> &'static str {
     match tool {
         "get_state" => "Read bounded DB-only state for the current native session.",
-        "query" => "Run one of nineteen named read-only routes.",
-        "command" => "Run one of forty-one named logical state-transition routes.",
+        "query" => "Run one of twenty-two named read-only routes.",
+        "command" => "Run one of forty-two named logical state-transition routes.",
         "execute" => "Run the single explicit external-effect route setup.apply.",
         "help" => "Search or describe this API and its four embedded methods.",
         _ => "",

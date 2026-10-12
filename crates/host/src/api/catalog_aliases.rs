@@ -111,6 +111,14 @@ impl RouteSpec {
                 "settle knowledge change effects",
                 "завершить эффекты knowledge change",
             ],
+            "workspace.advisory.config" => &["read jev advice setting", "настройка джева"],
+            "workspace.advisory.configure" => &[
+                "enable jev advice",
+                "disable jev advice",
+                "включить джева",
+                "выключить джева",
+            ],
+            "workspace.advisory.audit" => &["read jev advice journal", "журнал джева"],
             _ => &[],
         }
     }

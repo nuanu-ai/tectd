@@ -18,7 +18,6 @@ fn assert_rejected(response: &Value) {
     let payload = tool_payload(response);
     assert_eq!(payload["error"]["code"], "invalid_arguments", "{payload}");
 }
-
 fn action_tools(payload: &Value) -> Vec<&str> {
     payload["actions"]
         .as_array()
@@ -32,7 +31,6 @@ fn action_tools(payload: &Value) -> Vec<&str> {
         })
         .collect()
 }
-
 fn summary_ids_and_actions(payload: &Value, ready_id: Uuid) -> Vec<Uuid> {
     let programs = payload["programs"].as_array().unwrap();
     let tools = action_tools(payload);
@@ -140,7 +138,9 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "knowledge.unit",
             "knowledge.maintenance",
             "knowledge.search",
-            "slice.pipeline.evidence_artifact.read"
+            "slice.pipeline.evidence_artifact.read",
+            "workspace.advisory.config",
+            "workspace.advisory.audit"
         ])
     );
     let command = tools.iter().find(|tool| tool["name"] == "command").unwrap();
@@ -187,7 +187,8 @@ async fn schemas_and_state_route_uninitialized_empty_one_and_many_programs() {
             "knowledge.maintenance_observe",
             "knowledge.maintenance_begin",
             "slice.pipeline.evidence_artifact.register",
-            "slice.pipeline.evidence_artifact.finalize"
+            "slice.pipeline.evidence_artifact.finalize",
+            "workspace.advisory.configure"
         ])
     );
     let help = tools.iter().find(|tool| tool["name"] == "help").unwrap();

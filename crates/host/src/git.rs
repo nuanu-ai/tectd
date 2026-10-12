@@ -100,7 +100,7 @@ fn bounded_utf8_path(path: &Path) -> Result<String> {
     Ok(value.to_owned())
 }
 
-async fn git_rev_parse(directory: &Path, query: &str) -> Result<String> {
+fn git_command(directory: &Path, query: &str) -> Command {
     let mut command = Command::new("git");
     command
         .arg("--no-optional-locks")
@@ -115,6 +115,12 @@ async fn git_rev_parse(directory: &Path, query: &str) -> Result<String> {
         .kill_on_drop(true)
         .env("LC_ALL", "C");
     clear_git_environment(&mut command);
+    crate::child_env::withhold_jev_environment(&mut command);
+    command
+}
+
+async fn git_rev_parse(directory: &Path, query: &str) -> Result<String> {
+    let mut command = git_command(directory, query);
 
     let mut child = command.spawn().map_err(|_| Error::InvalidSource)?;
     let stdout = child.stdout.take().ok_or(Error::InvalidSource)?;
@@ -193,6 +199,20 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
+    }
+
+    #[test]
+    fn git_child_is_denied_the_jev_environment() {
+        let command = git_command(Path::new("/"), "--show-toplevel");
+        for name in crate::child_env::JEV_ENVIRONMENT {
+            assert!(
+                command
+                    .as_std()
+                    .get_envs()
+                    .any(|(key, value)| key == OsStr::new(name) && value.is_none()),
+                "{name}"
+            );
+        }
     }
 
     #[tokio::test]

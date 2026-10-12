@@ -26,6 +26,7 @@ async fn run() -> tect_domain::Result<()> {
             .ok()
             .as_deref(),
     )?;
+    let jev = jev_config()?;
     validate_socket_parent(&socket)?;
     reject_existing_path(&socket)?;
 
@@ -44,6 +45,10 @@ async fn run() -> tect_domain::Result<()> {
         }
         Ok(None) | Err(_) => false,
     };
+    if let Some(config) = jev {
+        service =
+            service.with_advice_provider(Arc::new(tect_host::JevAdviceProvider::new(config)?));
+    }
     let service = Arc::new(service);
     let maintenance_enabled = knowledge_search_worker::maintenance_enabled()?;
     let knowledge_worker = if embedding_enabled || maintenance_enabled {
@@ -109,6 +114,33 @@ fn required_env(name: &str) -> tect_domain::Result<String> {
         Ok(value) if !value.is_empty() => Ok(value),
         _ => Err(Error::InvalidConfiguration),
     }
+}
+
+fn optional_env(name: &str) -> tect_domain::Result<Option<String>> {
+    match std::env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(Error::InvalidConfiguration),
+    }
+}
+
+/// The Jev client is configured by the three `TECT_JEV_*` variables alone. With none
+/// of them the daemon has no provider and `TYPESAFE_API_KEY` is not read at all.
+fn jev_config() -> tect_domain::Result<Option<tect_host::JevConfig>> {
+    let endpoint = optional_env("TECT_JEV_ENDPOINT")?;
+    let model = optional_env("TECT_JEV_MODEL")?;
+    let timeout_ms = optional_env("TECT_JEV_TIMEOUT_MS")?;
+    let api_key = if endpoint.is_none() && model.is_none() && timeout_ms.is_none() {
+        None
+    } else {
+        optional_env("TYPESAFE_API_KEY")?
+    };
+    tect_host::JevConfig::from_values(
+        endpoint.as_deref(),
+        model.as_deref(),
+        timeout_ms.as_deref(),
+        api_key.as_deref(),
+    )
 }
 
 fn required_absolute_socket() -> tect_domain::Result<PathBuf> {

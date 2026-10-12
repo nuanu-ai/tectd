@@ -166,7 +166,7 @@ not per-session secrets.
 
 ## Public MCP API
 
-The public surface has exactly five tools and 62 routes: 20 queries, 41 commands,
+The public surface has exactly five tools and 65 routes: 22 queries, 42 commands,
 and one execute route. `query`, `command`, and `execute` use
 `{"route":"...","params":{...}}`; `help` searches or describes the exact
 route schema. Unknown routes and route parameters fail before effects.
@@ -438,6 +438,36 @@ Mandatory selected knowledge is included in phase context without source text, a
 phase completion carries its exact `consumed_knowledge` manifest ID and digest.
 Read-only context reports stale or unresolved knowledge and returns an exact
 `pipeline.knowledge_refresh` call; it never refreshes implicitly.
+
+## Jev advice
+
+Jev is an outside adviser a workspace may switch on. Advice arrives in the reply of a
+command the agent already calls, as an `advice` field; it forbids nothing and applies
+nothing. This build carries the base only: the setting, the journal, the client and the
+generic call path. No command asks Jev yet.
+
+| Tool + route | Params | Result |
+| --- | --- | --- |
+| `query` · `workspace.advisory.config` | `{}` | Setting, its revision, today's calls by UTC day, and whether the daemon has a provider |
+| `command` · `workspace.advisory.configure` | `{ "enabled": true, "daily_call_limit": 50, "expected_revision": 0 }` | Enable or disable and set the daily limit; a stale revision is refused |
+| `query` · `workspace.advisory.audit` | `{ "limit": 5, "point": "sizing" }` | Journal page, newest first, with counters of calls, skips and reasons |
+
+A workspace without a setting is disabled: no Jev call, no journal row, no `advice`
+field. Enabling requires `daily_call_limit`; it has no default. Migration 0042 adds
+`advice_config` and `advice_journal` with forced RLS.
+
+The daemon reads one client configuration for all advice points:
+
+| Daemon setting | Meaning |
+| --- | --- |
+| `TECT_JEV_ENDPOINT` | `https://api.typesafe.ai/v1/systemone`; tests may use `http://127.0.0.1:<port>/v1/systemone` |
+| `TECT_JEV_MODEL` | Model name |
+| `TECT_JEV_TIMEOUT_MS` | Answer deadline, 1 through 30000 |
+| `TYPESAFE_API_KEY` | Key, sent only as the bearer header |
+
+With none of the three `TECT_JEV_*` set the daemon has no provider and ignores the key.
+With any of them set all three and the key are required, or the daemon does not start.
+The key is never stored, returned, logged or passed to a child process.
 
 ## Monthly epochs
 

@@ -6,8 +6,8 @@ use tect_domain::{MAX_SOURCE_PATH_BYTES, MAX_WORKTREES};
 pub(crate) use super::catalog_support::RouteSpec;
 use super::catalog_support::{nullable_text, page_limit, text, uuid};
 use super::{
-    candidate_schema, knowledge_lifecycle_schema, knowledge_maintenance_schema, knowledge_schema,
-    knowledge_search_schema, slice_schema,
+    advice_schema, candidate_schema, knowledge_lifecycle_schema, knowledge_maintenance_schema,
+    knowledge_schema, knowledge_search_schema, slice_schema,
 };
 
 macro_rules! route {
@@ -342,5 +342,6 @@ fn build_routes() -> Vec<RouteSpec> {
         route!("command", "slice.pipeline.evidence_artifact.finalize", "slice_pipeline_evidence_artifact_finalize", "Finalize one registered evidence artifact by hashing and sizing the submitted bytes.", "Requires an uploading artifact revision.", "Marks the immutable revision ready only when digest and byte size match; mismatches are durably rejected.", "The same request replays the same final state.", object_schema(json!({"request_id":uuid(),"artifact_id":uuid(),"revision":{"type":"integer","minimum":1},"body":{"type":"string"}}), json!(["request_id","artifact_id","revision","body"])), json!({"request_id":example_id,"artifact_id":example_id,"revision":1,"body":"exact evidence bytes"})),
         route!("query", "slice.pipeline.evidence_artifact.read", "slice_pipeline_evidence_artifact_read", "Read one bounded artifact fragment with explicit completeness and continuation cursor.", "Requires an accessible artifact revision and a positive limit no larger than 65536.", "Reads a bounded fragment and always returns complete plus next_offset when more bytes remain.", "Safe to repeat with the same offset and limit.", object_schema(json!({"artifact_id":uuid(),"revision":{"type":"integer","minimum":1},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":65536}}), json!(["artifact_id","revision"])), json!({"artifact_id":example_id,"revision":1,"offset":0,"limit":65536})),
     ]);
+    routes.extend(advice_schema::routes());
     routes
 }

@@ -288,6 +288,9 @@ async fn execute(request: WireRequest, service: &WorkspaceService) -> WireRespon
                 )
                 .await
             }
+            Invocation::Advice(invocation) => {
+                crate::advice_dispatch::execute(context, invocation, service, capacity).await
+            }
             Invocation::Help(help_request) => {
                 service.authenticate_host(&request.context).await?;
                 crate::planning_read::help(help_request, capacity)

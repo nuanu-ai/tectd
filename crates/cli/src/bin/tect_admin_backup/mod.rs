@@ -277,14 +277,11 @@ async fn require_tool_major(program: &str, major: u32) -> Result<()> {
     Ok(())
 }
 
-async fn run_child<const N: usize>(
+fn child_command<const N: usize>(
     program: &str,
     arguments: [&OsStr; N],
     auth: Option<&ChildAuth>,
-) -> Result<Vec<u8>> {
-    if !matches!(program, "pg_dump" | "pg_restore") {
-        return Err(Error::InternalInvariant);
-    }
+) -> Command {
     let mut command = Command::new(program);
     command
         .args(arguments)
@@ -295,7 +292,21 @@ async fn run_child<const N: usize>(
     if let Some(password) = auth.and_then(|value| value.password.as_ref()) {
         command.env("PGPASSWORD", password);
     }
-    let child = command.spawn().map_err(|_| Error::InvalidConfiguration)?;
+    tect_host::withhold_jev_environment(&mut command);
+    command
+}
+
+async fn run_child<const N: usize>(
+    program: &str,
+    arguments: [&OsStr; N],
+    auth: Option<&ChildAuth>,
+) -> Result<Vec<u8>> {
+    if !matches!(program, "pg_dump" | "pg_restore") {
+        return Err(Error::InternalInvariant);
+    }
+    let child = child_command(program, arguments, auth)
+        .spawn()
+        .map_err(|_| Error::InvalidConfiguration)?;
     let output = tokio::time::timeout(CHILD_TIMEOUT, child.wait_with_output())
         .await
         .map_err(|_| Error::StorageUnavailable)?
@@ -350,6 +361,20 @@ fn validate_passfile(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn database_children_are_denied_the_jev_environment() {
+        let command = child_command("pg_dump", [OsStr::new("--version")], None);
+        for name in tect_host::JEV_ENVIRONMENT {
+            assert!(
+                command
+                    .as_std()
+                    .get_envs()
+                    .any(|(key, value)| key == OsStr::new(name) && value.is_none()),
+                "{name}"
+            );
+        }
+    }
 
     #[test]
     fn reserved_uri_password_is_decoded_and_removed_from_child_url() {

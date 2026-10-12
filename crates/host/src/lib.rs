@@ -1,6 +1,10 @@
 //! Native host configuration and bounded local transports.
 
+mod advice_dispatch;
+mod advice_output;
+mod advice_tools;
 mod api;
+mod child_env;
 mod context;
 mod frame;
 mod git;
@@ -53,6 +57,7 @@ mod transport;
 mod workspace_output;
 mod workspace_state;
 
+pub use child_env::{JEV_ENVIRONMENT, withhold_jev_environment};
 pub use context::{HostContext, host_context_from_env, read_host_auth_file};
 pub use git::GitSourceInspector;
 pub use jev_provider::{JevAdviceProvider, JevConfig};
