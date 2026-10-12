@@ -1,5 +1,8 @@
 //! What one provider call produced and how it completes its journal row.
-use super::{AdviceAnswer, AdviceField, AdviceSendCertainty, AdviceUnavailableReason, questions};
+use super::{
+    AdviceAnswer, AdviceField, AdviceSendCertainty, AdviceShaping, AdviceUnavailableReason,
+    questions,
+};
 use std::collections::BTreeMap;
 
 /// Facts of one call. Whatever is not known stays `None` and is never replaced by zero.
@@ -41,22 +44,18 @@ pub struct AdviceCompletion {
 
 impl AdviceCompletion {
     /// A provider failure is never an error of the command: it becomes `unavailable`.
-    pub fn from_provider(result: std::result::Result<AdviceReply, AdviceFailure>) -> Self {
+    /// Accepted answers become the point's own content, unless Jev abstained on all.
+    pub fn from_provider(
+        result: std::result::Result<AdviceReply, AdviceFailure>,
+        shaping: &dyn AdviceShaping,
+    ) -> Self {
         match result {
             Ok(reply) => Self {
                 send_certainty: AdviceSendCertainty::Sent,
                 advice: if questions::abstained(&reply.answers) {
                     AdviceField::Abstained
                 } else {
-                    match serde_json::to_value(&reply.answers) {
-                        Ok(answers) => AdviceField::Advised {
-                            content: [("answers".to_owned(), answers)].into_iter().collect(),
-                        },
-                        Err(_) => AdviceField::unavailable(
-                            AdviceUnavailableReason::InvalidResponse,
-                            "the answers could not be represented",
-                        ),
-                    }
+                    shaping.shape(&reply.answers)
                 },
                 exchange: reply.exchange,
             },

@@ -1,6 +1,25 @@
 use super::*;
 use serde_json::json;
 
+/// A point whose content is the accepted answers as they came.
+struct Verbatim;
+
+impl AdviceShaping for Verbatim {
+    fn shape(&self, answers: &BTreeMap<String, AdviceAnswer>) -> AdviceField {
+        AdviceField::Advised {
+            content: [("answers".to_owned(), json!(answers))]
+                .into_iter()
+                .collect(),
+        }
+    }
+    fn largest(&self) -> AdviceField {
+        AdviceField::Abstained
+    }
+    fn subject(&self) -> String {
+        "this test".into()
+    }
+}
+
 fn questions() -> AdviceQuestionSet {
     serde_json::from_value(json!({
         "state": {"task": "Add invitations"},
@@ -104,6 +123,7 @@ fn closed_lists_use_the_documented_names() {
         HttpStatus,
         InvalidResponse,
         RequestTooLarge,
+        AdviceTooLarge,
     ];
     assert_eq!(
         reasons.map(AdviceUnavailableReason::as_str),
@@ -114,7 +134,8 @@ fn closed_lists_use_the_documented_names() {
             "transport_error",
             "http_status",
             "invalid_response",
-            "request_too_large"
+            "request_too_large",
+            "advice_too_large"
         ]
     );
     for reason in reasons {
@@ -217,10 +238,13 @@ fn provider_results_become_the_row_completion() {
         input_tokens: Some(120),
         ..AdviceExchange::default()
     };
-    let advised = AdviceCompletion::from_provider(Ok(AdviceReply {
-        answers: answer("small", 0.7, 0.2, 0.1),
-        exchange: exchange.clone(),
-    }));
+    let advised = AdviceCompletion::from_provider(
+        Ok(AdviceReply {
+            answers: answer("small", 0.7, 0.2, 0.1),
+            exchange: exchange.clone(),
+        }),
+        &Verbatim,
+    );
     assert_eq!(advised.send_certainty, AdviceSendCertainty::Sent);
     assert_eq!(advised.exchange, exchange);
     assert_eq!(
@@ -228,17 +252,24 @@ fn provider_results_become_the_row_completion() {
         json!({"status":"advised","answers":{"size":{"choice":"small",
             "probabilities":{"ABSTAIN":0.1,"large":0.2,"small":0.7},"confidence":0.5}}})
     );
-    let abstained = AdviceCompletion::from_provider(Ok(AdviceReply {
-        answers: answer(ADVICE_ABSTAIN, 0.1, 0.2, 0.7),
-        exchange: AdviceExchange::default(),
-    }));
+    // Answers that all abstain never reach the point's shaping step.
+    let abstained = AdviceCompletion::from_provider(
+        Ok(AdviceReply {
+            answers: answer(ADVICE_ABSTAIN, 0.1, 0.2, 0.7),
+            exchange: AdviceExchange::default(),
+        }),
+        &Verbatim,
+    );
     assert_eq!(abstained.advice, AdviceField::Abstained);
-    let failed = AdviceCompletion::from_provider(Err(AdviceFailure {
-        reason: AdviceUnavailableReason::Timeout,
-        send_certainty: AdviceSendCertainty::SentUnknown,
-        detail: "Jev did not answer within 2000 ms".into(),
-        exchange: AdviceExchange::default(),
-    }));
+    let failed = AdviceCompletion::from_provider(
+        Err(AdviceFailure {
+            reason: AdviceUnavailableReason::Timeout,
+            send_certainty: AdviceSendCertainty::SentUnknown,
+            detail: "Jev did not answer within 2000 ms".into(),
+            exchange: AdviceExchange::default(),
+        }),
+        &Verbatim,
+    );
     assert_eq!(failed.send_certainty, AdviceSendCertainty::SentUnknown);
     assert_eq!(
         failed.advice,

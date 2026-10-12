@@ -9,7 +9,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
-use tect_application::{AdviceProvider, AdviceRequest, WorkspaceService};
+use tect_application::{AdviceOutputGuard, AdviceProvider, AdviceRequest, WorkspaceService};
 use tect_domain::*;
 use tect_postgres::{PgStore, admin};
 use uuid::Uuid;
@@ -83,6 +83,42 @@ impl AdviceProvider for ScriptedProvider {
                 .pop_front()
                 .expect("a scripted provider result for every call")
         })
+    }
+}
+
+/// A point whose content is the accepted answers as they came.
+pub struct Verbatim;
+
+impl AdviceShaping for Verbatim {
+    fn shape(&self, answers: &BTreeMap<String, AdviceAnswer>) -> AdviceField {
+        AdviceField::Advised {
+            content: [("answers".to_owned(), json!(answers))]
+                .into_iter()
+                .collect(),
+        }
+    }
+    fn largest(&self) -> AdviceField {
+        AdviceField::Advised {
+            content: [("answers".to_owned(), json!("the largest answers"))]
+                .into_iter()
+                .collect(),
+        }
+    }
+    fn subject(&self) -> String {
+        "this test point".into()
+    }
+}
+
+/// A command reply that has room for a field of at most this many JSON bytes.
+pub struct Room(pub usize);
+
+impl AdviceOutputGuard for Room {
+    fn check_reply(&self, advice: &AdviceField) -> Result<()> {
+        if json!(advice).to_string().len() <= self.0 {
+            Ok(())
+        } else {
+            Err(Error::RequestTooLarge)
+        }
     }
 }
 
@@ -166,12 +202,24 @@ impl Fixture {
     }
 
     pub async fn advise(&self, point: &str, work: &AdviceWorkRefs) -> Option<AdviceField> {
+        self.advise_with_room(point, work, usize::MAX).await
+    }
+
+    /// The same call for a command reply with room for `room` bytes of field.
+    pub async fn advise_with_room(
+        &self,
+        point: &str,
+        work: &AdviceWorkRefs,
+        room: usize,
+    ) -> Option<AdviceField> {
         let questions = questions();
         let request = AdviceRequest {
             point,
             route: ROUTE,
             work,
             questions: &questions,
+            shaping: &Verbatim,
+            reply: &Room(room),
         };
         self.service.advise(&self.context, &request).await.unwrap()
     }

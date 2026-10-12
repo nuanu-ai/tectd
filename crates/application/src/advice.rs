@@ -1,22 +1,35 @@
 //! Jev advice inside commands: the workspace setting, the journal, one call per point.
-use crate::{AdviceStore, TransactionMode, WorkspaceService};
+use crate::{AdviceOutputGuard, AdviceStore, TransactionMode, WorkspaceService};
 use tect_domain::*;
 use uuid::Uuid;
 
 /// One advice point firing inside a command that has already saved its own work.
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 pub struct AdviceRequest<'a> {
     pub point: &'a str,
     /// Route name of the agent's command.
     pub route: &'a str,
     pub work: &'a AdviceWorkRefs,
     pub questions: &'a AdviceQuestionSet,
+    /// How the point turns accepted answers into its field, and its largest field.
+    pub shaping: &'a dyn AdviceShaping,
+    /// The command reply the field will be attached to.
+    pub reply: &'a dyn AdviceOutputGuard,
 }
 
 enum Opening {
     Disabled,
     Settled(AdviceField),
     Reserved(Uuid),
+}
+
+/// What is already decided about a point before it has prepared anything.
+pub(crate) enum Earlier {
+    /// Jev is off for the workspace: no field and no journal row.
+    Disabled,
+    /// The command was answered before under this request id.
+    Stored(AdviceField),
+    Undecided(AdviceConfig),
 }
 
 impl WorkspaceService {
@@ -147,8 +160,10 @@ impl WorkspaceService {
             Opening::Reserved(entry_id) => entry_id,
         };
 
-        let completion =
-            AdviceCompletion::from_provider(self.advice_provider.ask(request.questions).await);
+        let completion = AdviceCompletion::from_provider(
+            self.advice_provider.ask(request.questions).await,
+            request.shaping,
+        );
 
         let (mut tx, _) = self.authorized(context, TransactionMode::ReadWrite).await?;
         tx.complete_advice_entry(workspace.id, entry_id, &completion)
@@ -158,7 +173,35 @@ impl WorkspaceService {
     }
 }
 
+/// The part of the decision that needs nothing from the point: a disabled Jev, and a
+/// request id that already has a journal row. `lock` holds the setting row so that
+/// what follows in the same transaction is one decision.
+pub(crate) async fn earlier(
+    store: &mut dyn AdviceStore,
+    workspace_id: Uuid,
+    lock: bool,
+    (point, route): (&str, &str),
+    request_id: Option<Uuid>,
+) -> Result<Earlier> {
+    let Some(config) = store
+        .advice_config(workspace_id, lock)
+        .await?
+        .filter(|config| config.enabled)
+    else {
+        return Ok(Earlier::Disabled);
+    };
+    if let Some(request_id) = request_id
+        && let Some(entry) = store
+            .advice_entry_for_request(workspace_id, route, Some(point), request_id)
+            .await?
+    {
+        return Ok(Earlier::Stored(entry.advice.unwrap_or_else(unanswered)));
+    }
+    Ok(Earlier::Undecided(config))
+}
+
 /// Decide, under the locked setting row, whether this point calls Jev, and journal it.
+/// The order is fixed: disabled, replay, no provider, reply fit, daily limit, call.
 async fn open(
     store: &mut dyn AdviceStore,
     workspace_id: Uuid,
@@ -166,20 +209,12 @@ async fn open(
     provider_configured: bool,
     request: &AdviceRequest<'_>,
 ) -> Result<Opening> {
-    let Some(config) = store
-        .advice_config(workspace_id, true)
-        .await?
-        .filter(|config| config.enabled)
-    else {
-        return Ok(Opening::Disabled);
+    let names = (request.point, request.route);
+    let config = match earlier(store, workspace_id, true, names, request.work.request_id).await? {
+        Earlier::Disabled => return Ok(Opening::Disabled),
+        Earlier::Stored(advice) => return Ok(Opening::Settled(advice)),
+        Earlier::Undecided(config) => config,
     };
-    if let Some(request_id) = request.work.request_id
-        && let Some(entry) = store
-            .advice_entry_for_request(workspace_id, request.route, Some(request.point), request_id)
-            .await?
-    {
-        return Ok(Opening::Settled(entry.advice.unwrap_or_else(unanswered)));
-    }
     // An enabled setting always carries a limit; the schema and the store both hold that.
     let limit = config.daily_call_limit.ok_or(Error::InternalInvariant)?;
     let skipped = if !provider_configured {
@@ -187,6 +222,8 @@ async fn open(
             AdviceUnavailableReason::ProviderUnconfigured,
             crate::advice_ports::NO_PROVIDER,
         ))
+    } else if let Some(too_large) = too_large_for_reply(request)? {
+        Some(too_large)
     } else if store.advice_calls_today(workspace_id).await? >= limit {
         Some(AdviceField::unavailable(
             AdviceUnavailableReason::DailyLimitReached,
@@ -208,6 +245,22 @@ async fn open(
         Some(advice) => Opening::Settled(advice),
         None => Opening::Reserved(entry_id),
     })
+}
+
+/// Jev is not asked for a field the command reply could not carry: the reply is
+/// measured with the point's largest field before any call.
+fn too_large_for_reply(request: &AdviceRequest<'_>) -> Result<Option<AdviceField>> {
+    match request.reply.check_reply(&request.shaping.largest()) {
+        Ok(()) => Ok(None),
+        Err(Error::RequestTooLarge) => Ok(Some(AdviceField::unavailable(
+            AdviceUnavailableReason::AdviceTooLarge,
+            &format!(
+                "advice for {} would not fit the command reply",
+                request.shaping.subject()
+            ),
+        ))),
+        Err(error) => Err(error),
+    }
 }
 
 /// A replay of a command whose earlier call was sent and never completed.

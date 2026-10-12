@@ -7,8 +7,10 @@ use uuid::Uuid;
 
 mod exchange;
 mod questions;
+mod shaping;
 pub use exchange::{AdviceCompletion, AdviceExchange, AdviceFailure, AdviceReply};
 pub use questions::{ADVICE_ABSTAIN, AdviceAnswer, AdviceQuestion, AdviceQuestionSet};
+pub use shaping::AdviceShaping;
 
 pub const MAX_ADVICE_POINT_BYTES: usize = 64;
 pub const MAX_ADVICE_ROUTE_BYTES: usize = 128;
@@ -84,6 +86,8 @@ pub enum AdviceUnavailableReason {
     HttpStatus,
     InvalidResponse,
     RequestTooLarge,
+    /// The point's largest possible field would not fit the command reply.
+    AdviceTooLarge,
 }
 
 impl AdviceUnavailableReason {
@@ -96,6 +100,7 @@ impl AdviceUnavailableReason {
             Self::HttpStatus => "http_status",
             Self::InvalidResponse => "invalid_response",
             Self::RequestTooLarge => "request_too_large",
+            Self::AdviceTooLarge => "advice_too_large",
         }
     }
 }

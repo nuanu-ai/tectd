@@ -249,6 +249,87 @@ async fn only_requests_that_left_today_count_against_the_limit() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_field_the_reply_cannot_carry_is_journalled_and_jev_is_not_asked() {
+    let f = fixture(true).await;
+    f.configure(true, Some(1), 0).await;
+    let work = AdviceWorkRefs {
+        request_id: Some(Uuid::new_v4()),
+        ..AdviceWorkRefs::default()
+    };
+    // The test point's largest field is about 50 bytes; this reply has room for 20.
+    let refused = f.advise_with_room("sizing", &work, 20).await.unwrap();
+    assert_eq!(
+        refused,
+        AdviceField::Unavailable {
+            reason: AdviceUnavailableReason::AdviceTooLarge,
+            message: "Jev advice is not available: advice for this test point would not fit \
+                      the command reply"
+                .into(),
+        }
+    );
+    assert_eq!(f.provider.calls(), 0);
+    let row = f.newest_row().await;
+    assert!(!row.get::<bool, _>("called"));
+    assert_eq!(row.get::<String, _>("send_certainty"), "not_sent");
+    assert_eq!(
+        row.get::<Option<String>, _>("outcome").as_deref(),
+        Some("unavailable")
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("reason").as_deref(),
+        Some("advice_too_large")
+    );
+    assert_eq!(row.get::<Option<Uuid>, _>("request_id"), work.request_id);
+    assert_eq!(row.get::<Option<String>, _>("model"), None);
+    assert_eq!(row.get::<Option<Vec<u8>>, _>("request_body"), None);
+    assert_eq!(
+        row.get::<Option<serde_json::Value>, _>("advice"),
+        Some(json!(refused))
+    );
+
+    // The replay is answered from the journal, whatever room the reply has now.
+    assert_eq!(
+        f.advise_with_room("sizing", &work, usize::MAX).await,
+        Some(refused)
+    );
+    assert_eq!(f.count("advice_journal").await, 1);
+
+    // It spends none of the daily limit and is judged before the limit is.
+    f.provider.push_reply(reply("small", 0.7, 0.2, 0.1));
+    let other = AdviceWorkRefs::default();
+    assert_eq!(
+        f.advise("sizing", &other).await,
+        Some(advised("small", 0.7, 0.2, 0.1))
+    );
+    let reasons = [
+        f.advise_with_room("sizing", &other, 20).await,
+        f.advise("sizing", &other).await,
+    ]
+    .map(|field| field.unwrap().reason());
+    assert_eq!(
+        reasons,
+        [
+            Some(AdviceUnavailableReason::AdviceTooLarge),
+            Some(AdviceUnavailableReason::DailyLimitReached)
+        ]
+    );
+    assert_eq!(f.provider.calls(), 1);
+    let page = f
+        .service
+        .advice_audit(
+            &f.context,
+            &support::audit(json!({"limit":0,"bodies":false})),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        json!(page.counters),
+        json!({"called":1,"not_called":3,"advised":1,"abstained":0,"unavailable":3,
+            "pending":0,"reasons":{"daily_limit_reached":1,"advice_too_large":2}})
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn daemon_without_a_provider_journals_the_skip_and_asks_nobody() {
     let f = fixture(false).await;
     let status = f.configure(true, Some(5), 0).await;

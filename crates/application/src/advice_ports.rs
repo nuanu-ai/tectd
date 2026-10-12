@@ -16,6 +16,13 @@ pub trait AdviceProvider: Send + Sync {
 
 pub(crate) const NO_PROVIDER: &str = "the daemon has no Jev provider configured";
 
+/// The host's measure of the command reply that an `advice` field will be attached to.
+pub trait AdviceOutputGuard: Send + Sync {
+    /// `RequestTooLarge` when the reply with this field attached would exceed the
+    /// budget the reply already obeys.
+    fn check_reply(&self, advice: &AdviceField) -> Result<()>;
+}
+
 #[derive(Debug, Default)]
 pub struct DisabledAdviceProvider;
 

@@ -335,6 +335,8 @@ async fn routes_configure_and_read_the_journal_and_no_child_inherits_the_key() {
         route: support::ROUTE,
         work: &work,
         questions: &questions,
+        shaping: &support::Verbatim,
+        reply: &support::Room(usize::MAX),
     };
     let field = service.advise(&context, &request).await.unwrap().unwrap();
     assert_eq!(field, support::advised("small", 0.7, 0.2, 0.1));

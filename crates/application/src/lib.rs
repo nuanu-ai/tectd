@@ -2,7 +2,7 @@
 mod advice;
 mod advice_ports;
 pub use advice::AdviceRequest;
-pub use advice_ports::{AdviceProvider, AdviceStore, DisabledAdviceProvider};
+pub use advice_ports::{AdviceOutputGuard, AdviceProvider, AdviceStore, DisabledAdviceProvider};
 mod planning_knowledge_ports;
 mod ports;
 mod programs;

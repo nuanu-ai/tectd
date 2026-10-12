@@ -224,6 +224,8 @@ async fn disabled_jev_returns_no_field_and_writes_nothing() {
         route: support::ROUTE,
         work: &work,
         questions: &questions,
+        shaping: &support::Verbatim,
+        reply: &support::Room(usize::MAX),
     };
     assert_eq!(
         f.service.advise(&f.context, &request).await,

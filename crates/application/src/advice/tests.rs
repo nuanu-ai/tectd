@@ -1,107 +1,10 @@
 //! The journalling decision against an in-memory journal. The whole `advise` path,
 //! with its two transactions, is covered against PostgreSQL in the CLI test suite.
+mod doubles;
+
 use super::*;
-use async_trait::async_trait;
+use doubles::{HUGE, Journal, Point, Room, SMALL};
 use serde_json::json;
-
-#[derive(Default)]
-struct Journal {
-    config: Option<AdviceConfig>,
-    calls_today: i64,
-    rows: Vec<(Uuid, NewAdviceEntry)>,
-    locked: bool,
-}
-
-#[async_trait]
-impl AdviceStore for Journal {
-    async fn advice_config(&mut self, _: Uuid, for_update: bool) -> Result<Option<AdviceConfig>> {
-        self.locked = for_update;
-        Ok(self.config.clone())
-    }
-    async fn configure_advice(
-        &mut self,
-        _: Uuid,
-        _: Uuid,
-        _: &ConfigureAdvice,
-    ) -> Result<AdviceConfig> {
-        unreachable!()
-    }
-    async fn advice_calls_today(&mut self, _: Uuid) -> Result<i64> {
-        Ok(self.calls_today)
-    }
-    async fn insert_advice_entry(
-        &mut self,
-        _: Uuid,
-        _: Uuid,
-        entry: &NewAdviceEntry,
-    ) -> Result<Uuid> {
-        let id = Uuid::new_v4();
-        self.rows.push((id, entry.clone()));
-        Ok(id)
-    }
-    async fn complete_advice_entry(
-        &mut self,
-        _: Uuid,
-        _: Uuid,
-        _: &AdviceCompletion,
-    ) -> Result<()> {
-        unreachable!()
-    }
-    async fn advice_entry_for_request(
-        &mut self,
-        workspace_id: Uuid,
-        route: &str,
-        point: Option<&str>,
-        request_id: Uuid,
-    ) -> Result<Option<AdviceJournalEntry>> {
-        Ok(self
-            .rows
-            .iter()
-            .rev()
-            .find(|(_, row)| {
-                row.route == route
-                    && point.is_none_or(|point| row.point == point)
-                    && row.work.request_id == Some(request_id)
-            })
-            .map(|(id, row)| AdviceJournalEntry {
-                id: *id,
-                created_at: "2026-10-12T00:00:00.000000Z".into(),
-                workspace_id,
-                session_id: Uuid::new_v4(),
-                point: row.point.clone(),
-                route: row.route.clone(),
-                work: row.work.clone(),
-                called: row.not_called.is_none(),
-                outcome: row.not_called.as_ref().map(AdviceField::outcome),
-                reason: row.not_called.as_ref().and_then(AdviceField::reason),
-                send_certainty: if row.not_called.is_none() {
-                    AdviceSendCertainty::SentUnknown
-                } else {
-                    AdviceSendCertainty::NotSent
-                },
-                model: None,
-                request_bytes: None,
-                response_bytes: None,
-                input_tokens: None,
-                output_tokens: None,
-                latency_ms: None,
-                request_body: None,
-                response_body: None,
-                advice: row.not_called.clone(),
-            }))
-    }
-    async fn advice_entries(
-        &mut self,
-        _: Uuid,
-        _: &AdviceAuditQuery,
-        _: u32,
-    ) -> Result<Vec<AdviceJournalEntry>> {
-        unreachable!()
-    }
-    async fn advice_counters(&mut self, _: Uuid, _: &AdviceAuditQuery) -> Result<AdviceCounters> {
-        unreachable!()
-    }
-}
 
 fn enabled(limit: i64) -> Option<AdviceConfig> {
     Some(AdviceConfig {
@@ -122,12 +25,23 @@ fn questions() -> AdviceQuestionSet {
 }
 
 async fn opened(journal: &mut Journal, configured: bool, work: &AdviceWorkRefs) -> Opening {
+    opened_for(journal, configured, work, &SMALL).await
+}
+
+async fn opened_for(
+    journal: &mut Journal,
+    configured: bool,
+    work: &AdviceWorkRefs,
+    point: &Point,
+) -> Opening {
     let questions = questions();
     let request = AdviceRequest {
         point: "sizing",
         route: "scope.candidates.save",
         work,
         questions: &questions,
+        shaping: point,
+        reply: &Room(1_000),
     };
     open(
         journal,
@@ -197,6 +111,118 @@ async fn unconfigured_provider_and_reached_limit_are_journalled_without_a_call()
     );
     assert_eq!(journal.rows.len(), 2);
     assert!(journal.rows.iter().all(|(_, row)| row.not_called.is_some()));
+}
+
+#[tokio::test]
+async fn a_field_the_reply_cannot_carry_is_journalled_without_a_call() {
+    let work = AdviceWorkRefs {
+        request_id: Some(Uuid::new_v4()),
+        ..AdviceWorkRefs::default()
+    };
+    let mut journal = Journal {
+        config: enabled(2),
+        ..Journal::default()
+    };
+    let refused = opened_for(&mut journal, true, &work, &HUGE).await;
+    assert_eq!(
+        reason(&refused),
+        Some(AdviceUnavailableReason::AdviceTooLarge)
+    );
+    let Opening::Settled(AdviceField::Unavailable { message, .. }) = refused else {
+        panic!("expected an unavailable reply field")
+    };
+    assert_eq!(
+        message,
+        "Jev advice is not available: advice for this draft (40 candidates, 3 included items) \
+         would not fit the command reply"
+    );
+    assert_eq!(journal.rows.len(), 1);
+    assert_eq!(
+        journal.rows[0]
+            .1
+            .not_called
+            .as_ref()
+            .map(AdviceField::reason),
+        Some(Some(AdviceUnavailableReason::AdviceTooLarge))
+    );
+    // The replay is answered from the journal before the reply is measured again.
+    let replay = opened_for(&mut journal, true, &work, &SMALL).await;
+    assert_eq!(
+        reason(&replay),
+        Some(AdviceUnavailableReason::AdviceTooLarge)
+    );
+    assert_eq!(journal.rows.len(), 1);
+
+    // Fixed order: no provider comes before the fit, the fit before the daily limit.
+    let other = AdviceWorkRefs::default();
+    journal.calls_today = 2;
+    assert_eq!(
+        reason(&opened_for(&mut journal, false, &other, &HUGE).await),
+        Some(AdviceUnavailableReason::ProviderUnconfigured)
+    );
+    assert_eq!(
+        reason(&opened_for(&mut journal, true, &other, &HUGE).await),
+        Some(AdviceUnavailableReason::AdviceTooLarge)
+    );
+    assert_eq!(
+        reason(&opened_for(&mut journal, true, &other, &SMALL).await),
+        Some(AdviceUnavailableReason::DailyLimitReached)
+    );
+    assert!(journal.rows.iter().all(|(_, row)| row.not_called.is_some()));
+
+    // A disabled Jev is decided before any of it and writes nothing.
+    let mut disabled = Journal::default();
+    assert!(matches!(
+        opened_for(&mut disabled, true, &other, &HUGE).await,
+        Opening::Disabled
+    ));
+    assert!(disabled.rows.is_empty());
+}
+
+#[tokio::test]
+async fn the_early_decision_reads_the_setting_and_the_journal_and_writes_nothing() {
+    let request_id = Uuid::new_v4();
+    let names = ("sizing", "scope.candidates.save");
+    let mut journal = Journal::default();
+    assert!(matches!(
+        earlier(&mut journal, Uuid::new_v4(), false, names, Some(request_id)).await,
+        Ok(Earlier::Disabled)
+    ));
+    assert!(!journal.locked);
+    journal.config = enabled(3);
+    assert!(matches!(
+        earlier(&mut journal, Uuid::new_v4(), false, names, Some(request_id)).await,
+        Ok(Earlier::Undecided(config)) if config.daily_call_limit == Some(3)
+    ));
+    let work = AdviceWorkRefs {
+        request_id: Some(request_id),
+        ..AdviceWorkRefs::default()
+    };
+    assert!(matches!(
+        opened(&mut journal, true, &work).await,
+        Opening::Reserved(_)
+    ));
+    // The same request id is answered from its row; another point or route is not.
+    let stored = earlier(&mut journal, Uuid::new_v4(), false, names, Some(request_id)).await;
+    assert!(matches!(
+        stored,
+        Ok(Earlier::Stored(field))
+            if field.reason() == Some(AdviceUnavailableReason::TransportError)
+    ));
+    for other in [
+        ("pipeline", "scope.candidates.save"),
+        ("sizing", "slice.candidates.save"),
+    ] {
+        assert!(matches!(
+            earlier(&mut journal, Uuid::new_v4(), false, other, Some(request_id)).await,
+            Ok(Earlier::Undecided(_))
+        ));
+    }
+    assert!(matches!(
+        earlier(&mut journal, Uuid::new_v4(), false, names, None).await,
+        Ok(Earlier::Undecided(_))
+    ));
+    assert_eq!(journal.rows.len(), 1);
 }
 
 #[tokio::test]
