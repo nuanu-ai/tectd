@@ -32,6 +32,9 @@ pub enum RefusalCode {
     /// A legacy run cannot be reinterpreted as a newer definition.  Callers
     /// must provide an explicit successor and obligation/evidence mapping.
     LegacyMigrationRequired,
+    /// A draft states a product level for one Scope or one Slice without a verbatim
+    /// quote of the user's permission from an input they gave to that candidate set.
+    ModeOverrideNotPermitted,
 }
 
 impl RefusalCode {
@@ -57,6 +60,7 @@ impl RefusalCode {
             Self::EffectStatusUnknown => "EFFECT_STATUS_UNKNOWN",
             Self::BackendDerivedProofRequired => "BACKEND_DERIVED_PROOF_REQUIRED",
             Self::LegacyMigrationRequired => "LEGACY_MIGRATION_REQUIRED",
+            Self::ModeOverrideNotPermitted => "MODE_OVERRIDE_NOT_PERMITTED",
         }
     }
 
@@ -102,6 +106,9 @@ impl RefusalCode {
             }
             Self::LegacyMigrationRequired => {
                 "the legacy run requires an explicit successor migration"
+            }
+            Self::ModeOverrideNotPermitted => {
+                "a mode override is recorded only with the user's explicit written permission"
             }
         }
     }

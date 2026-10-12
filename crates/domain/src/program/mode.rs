@@ -25,6 +25,11 @@ impl ProgramMode {
         }
     }
 
+    /// The level with this name; `None` for any other text.
+    pub fn named(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.as_str() == name)
+    }
+
     /// What the level means, in the catalog's wording.
     pub const fn description(self) -> &'static str {
         match self {

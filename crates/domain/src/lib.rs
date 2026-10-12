@@ -74,6 +74,7 @@ pub use setup_page::{
 };
 
 mod candidate_delta;
+mod mode_override;
 mod native_planning;
 mod native_slice_work_contract;
 pub use native_slice_work_contract::*;
@@ -99,6 +100,11 @@ pub use candidate_delta::{
     MAX_DELTA_OPERATIONS, MAX_IDEMPOTENCY_KEY_BYTES,
     stale_reasons as candidate_delta_stale_reasons,
     validate_replay as validate_candidate_delta_replay,
+};
+pub use mode_override::{
+    ModeOverrideLevel, PermissionRecord, ScopeCandidateModeOverride, ScopeModeOverride,
+    ScopeModeOverrideDraft, SliceCandidateModeOverride, SliceModeOverride, SliceModeOverrideDraft,
+    effective_mode,
 };
 pub use native_planning::*;
 pub use native_planning_receipt::NativePlanningReceiptRequest;
