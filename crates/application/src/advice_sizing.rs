@@ -1,14 +1,13 @@
 //! The `sizing` advice point on the two draft saves. Each use case runs after its
 //! save has committed: it reads the Program's product level and the user's recorded
 //! words up to what the save consumed, lays the saved draft out for Jev and asks once.
-use crate::advice::{Earlier, earlier};
+use crate::advice::{earlier, words};
+use crate::advice_ports::NO_MODE;
 use crate::{AdviceAsk, AdviceOutputGuard, AdviceRequest, TransactionMode, WorkspaceService};
 use tect_domain::*;
 
 const SCOPE_CANDIDATES_SAVE: &str = "scope.candidates.save";
 const SLICE_CANDIDATES_SAVE: &str = "slice.candidates.save";
-/// Every request carries the Program's product level; without one Jev is not asked.
-const NO_MODE: &str = "the Program has no mode; set it with program.save";
 
 impl WorkspaceService {
     /// Advice on the Scope candidate draft that `scope.candidates.save` has stored.
@@ -36,7 +35,7 @@ impl WorkspaceService {
         let (workspace, _) = Self::bound_session(&mut *tx, context, &identity).await?;
         let names = (SIZING_POINT, SCOPE_CANDIDATES_SAVE);
         let decided = earlier(&mut *tx, workspace.id, false, names, work.request_id).await?;
-        if let Some(early) = early_answer(decided) {
+        if let Some(early) = decided.answer() {
             tx.commit().await?;
             return Ok(early);
         }
@@ -48,20 +47,11 @@ impl WorkspaceService {
         };
         // The Program's words as the save's snapshot had read them, then the words
         // recorded for this candidate set up to the cursor the save consumed.
-        let program = tx
-            .program_input_texts(
-                workspace.id,
-                set.program_id,
-                stored.context.snapshot.program_latest_input,
-            )
-            .await?;
-        let planning = tx
-            .scope_candidate_input_texts(workspace.id, set.id, request.input_cursor)
-            .await?;
+        let program = (set.program_id, stored.context.snapshot.program_latest_input);
+        let planning = (set.id, request.input_cursor);
+        let words = words::scope_level(&mut *tx, workspace.id, program, planning).await?;
         tx.commit().await?;
 
-        let mut words = labelled(SizingWordSource::ProgramInput, program);
-        words.extend(labelled(SizingWordSource::ScopeCandidateInput, planning));
         self.ask_sizing(
             context,
             SCOPE_CANDIDATES_SAVE,
@@ -82,13 +72,7 @@ impl WorkspaceService {
         reply: &dyn AdviceOutputGuard,
     ) -> Result<Option<AdviceField>> {
         let scope = &saved.scope;
-        let statement = SizingScope {
-            title: scope.title.clone(),
-            outcome: scope.outcome.clone(),
-            includes: scope.includes.clone(),
-            excludes: scope.excludes.clone(),
-        };
-        let Some(draft) = SizingDraft::slice_candidates(&request.draft, statement)? else {
+        let Some(draft) = SizingDraft::slice_candidates(&request.draft, scope.into())? else {
             return Ok(None);
         };
 
@@ -97,7 +81,7 @@ impl WorkspaceService {
         let names = (SIZING_POINT, SLICE_CANDIDATES_SAVE);
         let request_id = Some(request.request_id);
         let decided = earlier(&mut *tx, workspace.id, false, names, request_id).await?;
-        if let Some(early) = early_answer(decided) {
+        if let Some(early) = decided.answer() {
             tx.commit().await?;
             return Ok(early);
         }
@@ -124,30 +108,11 @@ impl WorkspaceService {
                 .sizing_without_mode(context, SLICE_CANDIDATES_SAVE, &work, reply)
                 .await;
         };
-        let program = tx
-            .program_input_texts(workspace.id, basis.program_id, basis.program_latest_input)
-            .await?;
-        let scope_planning = tx
-            .scope_candidate_input_texts(
-                workspace.id,
-                scope.source_candidate_set_id,
-                basis.planning_latest_input,
-            )
-            .await?;
-        let slice_planning = tx
-            .slice_candidate_input_texts(workspace.id, saved.candidate_set.id, request.input_cursor)
-            .await?;
+        let behind = (scope.source_candidate_set_id, &basis);
+        let planning = (saved.candidate_set.id, request.input_cursor);
+        let words = words::slice_level(&mut *tx, workspace.id, behind, planning).await?;
         tx.commit().await?;
 
-        let mut words = labelled(SizingWordSource::ProgramInput, program);
-        words.extend(labelled(
-            SizingWordSource::ScopeCandidateInput,
-            scope_planning,
-        ));
-        words.extend(labelled(
-            SizingWordSource::SliceCandidateInput,
-            slice_planning,
-        ));
         self.ask_sizing(
             context,
             SLICE_CANDIDATES_SAVE,
@@ -200,21 +165,4 @@ impl WorkspaceService {
         };
         self.advise(context, &request).await
     }
-}
-
-/// The command's answer when the point is decided before anything is gathered: no
-/// field for a disabled Jev, the stored field for a replay. `None` means go on.
-fn early_answer(decided: Earlier) -> Option<Option<AdviceField>> {
-    match decided {
-        Earlier::Disabled => Some(None),
-        Earlier::Stored(advice) => Some(Some(advice)),
-        Earlier::Undecided(_) => None,
-    }
-}
-
-fn labelled(source: SizingWordSource, texts: Vec<String>) -> Vec<SizingWord> {
-    texts
-        .into_iter()
-        .map(|text| SizingWord { source, text })
-        .collect()
 }

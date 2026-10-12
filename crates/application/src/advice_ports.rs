@@ -15,6 +15,8 @@ pub trait AdviceProvider: Send + Sync {
 }
 
 pub(crate) const NO_PROVIDER: &str = "the daemon has no Jev provider configured";
+/// Every request carries the Program's product level; without one Jev is not asked.
+pub(crate) const NO_MODE: &str = "the Program has no mode; set it with program.save";
 
 /// The host's measure of the command reply that an `advice` field will be attached to.
 pub trait AdviceOutputGuard: Send + Sync {

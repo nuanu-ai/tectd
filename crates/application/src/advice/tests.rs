@@ -1,6 +1,7 @@
 //! The journalling decision against an in-memory journal. The whole `advise` path,
 //! with its two transactions, is covered against PostgreSQL in the CLI test suite.
 mod doubles;
+mod words;
 
 use super::*;
 use doubles::{HUGE, Journal, Point, Room, SMALL};

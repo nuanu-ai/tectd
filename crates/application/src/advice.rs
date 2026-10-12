@@ -3,6 +3,8 @@ use crate::{AdviceOutputGuard, AdviceStore, TransactionMode, WorkspaceService};
 use tect_domain::*;
 use uuid::Uuid;
 
+pub(crate) mod words;
+
 /// One advice point firing inside a command that has already saved its own work.
 #[derive(Clone, Copy)]
 pub struct AdviceRequest<'a> {
@@ -44,6 +46,18 @@ pub(crate) enum Earlier {
     /// The command was answered before under this request id.
     Stored(AdviceField),
     Undecided(AdviceConfig),
+}
+
+impl Earlier {
+    /// The command's answer when the point is decided before anything is gathered: no
+    /// field for a disabled Jev, the stored field for a replay. `None` means go on.
+    pub(crate) fn answer(self) -> Option<Option<AdviceField>> {
+        match self {
+            Self::Disabled => Some(None),
+            Self::Stored(advice) => Some(Some(advice)),
+            Self::Undecided(_) => None,
+        }
+    }
 }
 
 impl WorkspaceService {

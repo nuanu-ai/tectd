@@ -1,5 +1,6 @@
-//! Stand-ins for the unit tests: an in-memory journal, a point with a chosen
-//! largest field, and a command reply with a chosen room.
+//! Stand-ins for the unit tests: an in-memory journal that also serves numbered
+//! input texts, a point with a chosen largest field, and a command reply with a
+//! chosen room.
 use super::super::*;
 use crate::AdviceOutputGuard;
 use async_trait::async_trait;
@@ -10,6 +11,18 @@ pub(super) struct Journal {
     pub calls_today: i64,
     pub rows: Vec<(Uuid, NewAdviceEntry)>,
     pub locked: bool,
+    /// Every read of input texts: which inputs, whose, and through which entry.
+    pub reads: Vec<(&'static str, Uuid, i64)>,
+}
+
+impl Journal {
+    /// The texts of entries 1 through `through`, each naming its inputs and number.
+    fn texts(&mut self, inputs: &'static str, owner: Uuid, through: i64) -> Vec<String> {
+        self.reads.push((inputs, owner, through));
+        (1..=through)
+            .map(|entry| format!("{inputs} {entry}"))
+            .collect()
+    }
 }
 
 #[async_trait]
@@ -104,24 +117,29 @@ impl AdviceStore for Journal {
     async fn program_mode(&mut self, _: Uuid, _: Uuid) -> Result<Option<ProgramMode>> {
         unreachable!()
     }
-    async fn program_input_texts(&mut self, _: Uuid, _: Uuid, _: i64) -> Result<Vec<String>> {
-        unreachable!()
+    async fn program_input_texts(
+        &mut self,
+        _: Uuid,
+        program_id: Uuid,
+        through: i64,
+    ) -> Result<Vec<String>> {
+        Ok(self.texts("program", program_id, through))
     }
     async fn scope_candidate_input_texts(
         &mut self,
         _: Uuid,
-        _: Uuid,
-        _: i64,
+        candidate_set_id: Uuid,
+        through: i64,
     ) -> Result<Vec<String>> {
-        unreachable!()
+        Ok(self.texts("scope set", candidate_set_id, through))
     }
     async fn slice_candidate_input_texts(
         &mut self,
         _: Uuid,
-        _: Uuid,
-        _: i64,
+        candidate_set_id: Uuid,
+        through: i64,
     ) -> Result<Vec<String>> {
-        unreachable!()
+        Ok(self.texts("slice set", candidate_set_id, through))
     }
     async fn scope_candidate_words_basis(
         &mut self,
