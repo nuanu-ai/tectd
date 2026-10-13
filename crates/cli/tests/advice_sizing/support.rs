@@ -29,7 +29,23 @@ pub enum Jev {
     Late(Duration),
     /// A success status with a body that is not an answer.
     Garbage,
+    /// Answers by the rule, except that a request asking any question whose name
+    /// ends with the suffix gets the body that is not an answer: one point of a
+    /// command fails while another is answered.
+    // This module is compiled once per advice binary; only the pipeline suite uses this.
+    #[allow(dead_code)]
+    AnswersBut(fn(&str) -> (&'static str, f64), &'static str),
+    /// Each question gets the choice and probability the rule names, and one other
+    /// criterion gets a probability of its own when the rule names one; the rest is
+    /// shared by the remaining criteria. It tells a probability reported for one
+    /// named criterion from the share every unchosen criterion would have.
+    #[allow(dead_code)]
+    Weighted(fn(&str) -> Weights),
 }
+
+/// What Jev chooses for a question with its probability, and another criterion with
+/// the probability it is given.
+pub type Weights = ((&'static str, f64), Option<(&'static str, f64)>);
 
 pub struct FakeJev {
     pub endpoint: String,
@@ -116,6 +132,15 @@ fn serve(mut stream: TcpStream, mode: &Mutex<Jev>, seen: &Mutex<Vec<Value>>) {
             answers(&request, |_| ("ABSTAIN", 0.9))
         }
         Jev::Answers(rule) => answers(&request, rule),
+        Jev::Weighted(rule) => weighted(&request, rule),
+        Jev::AnswersBut(rule, failing) => {
+            let questions = request["questions"].as_object().unwrap();
+            if questions.keys().any(|name| name.ends_with(failing)) {
+                "{\"answers\":\"none\"}".to_owned()
+            } else {
+                answers(&request, rule)
+            }
+        }
     };
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -145,6 +170,49 @@ fn answers(request: &Value, rule: impl Fn(&str) -> (&'static str, f64)) -> Strin
                     probability
                 } else {
                     rest
+                };
+                (criterion.clone(), json!(share))
+            })
+            .collect();
+        given.insert(
+            name.clone(),
+            json!({"type":"choice","choice":choice,"probabilities":probabilities,
+                "confidence":0.4}),
+        );
+    }
+    json!({"model":"jev-2026-10","answers":given,
+        "usage":{"input_tokens":640,"output_tokens":90}})
+    .to_string()
+}
+
+/// An answer the acceptance rules take, as `answers` gives it, with one more named
+/// criterion at a probability of its own.
+fn weighted(request: &Value, rule: impl Fn(&str) -> Weights) -> String {
+    let mut given = Map::new();
+    for (name, question) in request["questions"].as_object().unwrap() {
+        let criteria = question["criteria"].as_object().unwrap();
+        let ((choice, probability), other) = rule(name);
+        assert!(
+            criteria.contains_key(choice),
+            "{name} does not offer {choice}"
+        );
+        let named = other.filter(|(criterion, _)| *criterion != choice);
+        if let Some((criterion, _)) = named {
+            assert!(
+                criteria.contains_key(criterion),
+                "{name} does not offer {criterion}"
+            );
+        }
+        let taken = probability + named.map_or(0.0, |(_, share)| share);
+        let unnamed = criteria.len() - 1 - usize::from(named.is_some());
+        let rest = (1.0 - taken) / unnamed as f64;
+        let probabilities: Map<String, Value> = criteria
+            .keys()
+            .map(|criterion| {
+                let share = match named {
+                    _ if criterion == choice => probability,
+                    Some((other, share)) if criterion == other => share,
+                    _ => rest,
                 };
                 (criterion.clone(), json!(share))
             })
