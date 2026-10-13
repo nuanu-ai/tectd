@@ -70,6 +70,18 @@ impl FakeJev {
     pub fn calls(&self) -> usize {
         self.requests.lock().unwrap().len()
     }
+
+    /// The requests of one advice point, in arrival order, told by the questions
+    /// only that point asks: `.size` for `sizing`, `.pipeline` for `pipeline`.
+    // This module is compiled once per advice binary; not every suite reads by point.
+    #[allow(dead_code)]
+    pub fn asked(&self, suffix: &str) -> Vec<Value> {
+        let of_point = |request: &Value| {
+            let questions = request["questions"].as_object().unwrap();
+            questions.keys().any(|name| name.ends_with(suffix))
+        };
+        self.requests().into_iter().filter(of_point).collect()
+    }
 }
 
 fn serve(mut stream: TcpStream, mode: &Mutex<Jev>, seen: &Mutex<Vec<Value>>) {
@@ -302,6 +314,38 @@ impl Stand {
              ORDER BY created_at DESC, id DESC LIMIT 1",
         )
         .bind(self.tenant)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+    }
+
+    /// The newest journal row of one advice point, read the same way. A Slice draft
+    /// save writes a row per point, so "newest" alone does not name one.
+    #[allow(dead_code)]
+    pub async fn newest_row_of(&self, point: &str) -> Value {
+        sqlx::query_scalar(
+            "SELECT pg_catalog.to_jsonb(j) - 'request_body' - 'response_body' \
+                 || pg_catalog.jsonb_build_object('request', \
+                     pg_catalog.convert_from(request_body, 'UTF8')::jsonb) \
+             FROM advice_journal j WHERE tenant_id=$1 AND point=$2 \
+             ORDER BY created_at DESC, id DESC LIMIT 1",
+        )
+        .bind(self.tenant)
+        .bind(point)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+    }
+
+    /// Journal rows of one advice point: all of them, and those whose request went out.
+    #[allow(dead_code)]
+    pub async fn rows_of(&self, point: &str) -> (i64, i64) {
+        sqlx::query_as(
+            "SELECT count(*), count(*) FILTER (WHERE called) FROM advice_journal \
+             WHERE tenant_id=$1 AND point=$2",
+        )
+        .bind(self.tenant)
+        .bind(point)
         .fetch_one(&self.pool)
         .await
         .unwrap()

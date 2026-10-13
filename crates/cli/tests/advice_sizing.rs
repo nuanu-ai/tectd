@@ -40,6 +40,8 @@ fn mixed(name: &str) -> (&'static str, f64) {
         "c1.i2" => ("extra", 0.7),
         other if other.ends_with(".size") => ("bounded", 0.55),
         other if other.ends_with(".advice") => ("ABSTAIN", 0.5),
+        // The `pipeline` point asks on the same Slice save; this suite is about `sizing`.
+        other if other.ends_with(".pipeline") => ("ABSTAIN", 0.9),
         _ => ("requested", 0.9),
     }
 }
@@ -79,7 +81,7 @@ async fn advised_then_replayed_then_abstained(level: Level) {
 
     // What Jev was sent: the Program's product level with its meaning, the user's
     // words by source and in order, and the draft.
-    let requests = stand.jev.requests();
+    let requests = stand.jev.asked(".size");
     assert_eq!(requests.len(), 1);
     let state = &requests[0]["state"];
     assert_eq!(state["level"], level.name());
@@ -151,7 +153,7 @@ async fn advised_then_replayed_then_abstained(level: Level) {
     );
 
     // The journal row holds exactly the field the agent received, and the work it was for.
-    let row = stand.newest_row().await;
+    let row = stand.newest_row_of("sizing").await;
     assert_eq!(row["advice"], advice);
     assert_eq!(row["advice"].to_string(), advice.to_string());
     assert_eq!(row["request"], requests[0]);
@@ -181,13 +183,19 @@ async fn advised_then_replayed_then_abstained(level: Level) {
     assert!(!entry.contains_key("request_body") && !entry.contains_key("response_body"));
     assert!(entry["request_bytes"].as_u64().unwrap() > 0);
 
-    // A replay under the same request id returns the same reply: no call, no row.
+    // A replay under the same request id returns the same reply: no call, no row,
+    // for any point of the command.
+    let before = (stand.jev.calls(), stand.count("advice_journal").await);
     for _ in 0..2 {
         let (replayed, _) = command(&mut client, level.save_route(), params.clone()).await;
         assert_eq!(replayed, saved);
     }
-    assert_eq!(stand.jev.calls(), 1);
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!(
+        (stand.jev.calls(), stand.count("advice_journal").await),
+        before
+    );
+    assert_eq!(stand.jev.asked(".size").len(), 1);
+    assert_eq!(stand.rows_of("sizing").await, (1, 1));
 
     // Jev abstains on every question of a draft in another workspace: no content.
     // Its Program is a demo, and that is the level this request carries.
@@ -199,12 +207,12 @@ async fn advised_then_replayed_then_abstained(level: Level) {
     let params = target.save(&Shape::of(1, 1), Uuid::new_v4());
     let (saved, _) = command(&mut other, level.save_route(), params).await;
     assert_eq!(saved["advice"], json!({"status":"abstained"}));
-    assert_eq!(stand.jev.calls(), 2);
+    assert_eq!(stand.jev.asked(".size").len(), 2);
     assert_eq!(
-        stand.jev.requests()[1]["state"]["mode"],
+        stand.jev.asked(".size")[1]["state"]["mode"],
         json!({"level":"demo","description":ProgramMode::Demo.description()})
     );
-    let row = stand.newest_row().await;
+    let row = stand.newest_row_of("sizing").await;
     assert_eq!(row["advice"], saved["advice"]);
     assert_eq!(
         (&row["called"], &row["outcome"]),

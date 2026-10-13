@@ -50,5 +50,16 @@ async fn sizing_reads_a_candidates_own_level_and_the_scopes_level_inside_a_scope
         );
         assert!(!text.contains("exact_quote"), "{text}");
     }
-    assert_eq!(stand.count("advice_journal").await, 5);
+    // The second point of the Slice save read the same state and asked about both
+    // new work nodes, the overridden one too.
+    assert_eq!(sent.slice_pipeline["state"], sent.slice_save["state"]);
+    assert_eq!(
+        sent.slice_pipeline["questions"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        ["c1.pipeline", "c2.pipeline"]
+    );
+    assert_eq!(stand.count("advice_journal").await, 6);
 }

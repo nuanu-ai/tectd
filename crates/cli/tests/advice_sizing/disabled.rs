@@ -1,5 +1,6 @@
 //! Disabled means `main`: with no setting, or with a setting that says disabled, a
-//! draft save answers without an `advice` field, writes no advice row and calls nobody.
+//! draft save answers without an `advice` field, and a Slice draft save also without
+//! a `pipeline_advice` field, writes no advice row and calls nobody.
 use crate::drafts::{Level, Shape, target};
 use crate::support::{Jev, Stand, command, configure};
 use uuid::Uuid;
@@ -8,6 +9,8 @@ fn keeping(name: &str) -> (&'static str, f64) {
     match name.rsplit('.').next() {
         Some("size") => ("bounded", 0.7),
         Some("advice") => ("keep", 0.7),
+        // The second point of a Slice draft save; what it answers is its own suite's.
+        Some("pipeline") => ("ABSTAIN", 0.7),
         _ => ("requested", 0.7),
     }
 }
@@ -23,6 +26,7 @@ async fn a_disabled_jev_answers_as_main_does(level: Level) {
     // No setting row: the state of every workspace on `main`.
     let (plain, plain_bytes) = command(&mut client, route, params.clone()).await;
     assert!(plain.get("advice").is_none(), "{plain}");
+    assert!(plain.get("pipeline_advice").is_none(), "{plain}");
     assert_eq!(stand.count("advice_config").await, 0);
     assert_eq!(stand.count("advice_journal").await, 0);
 
@@ -34,23 +38,37 @@ async fn a_disabled_jev_answers_as_main_does(level: Level) {
     assert_eq!(stand.count("advice_journal").await, 0);
     assert_eq!(stand.jev.calls(), 0);
 
-    // Enabled: the same reply with one more field, and one journal row.
+    // Enabled: the same reply with one more field per advice point of the command,
+    // and one journal row and one call for `sizing`.
     configure(&mut client, true, 1).await;
     let (enabled, _) = command(&mut client, route, params.clone()).await;
     assert_eq!(enabled["advice"]["status"], "advised");
+    let mut added = vec!["advice"];
+    if level == Level::Slices {
+        added.push("pipeline_advice");
+    }
     let mut without = enabled.clone();
-    without.as_object_mut().unwrap().remove("advice");
+    for field in &added {
+        assert!(
+            without.as_object_mut().unwrap().remove(*field).is_some(),
+            "{field}"
+        );
+    }
     assert_eq!(without, plain);
-    assert_eq!(stand.jev.calls(), 1);
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!(stand.jev.asked(".size").len(), 1);
+    assert_eq!(stand.rows_of("sizing").await, (1, 1));
+    let written = (stand.jev.calls(), stand.count("advice_journal").await);
+    assert_eq!(written, (added.len(), added.len() as i64));
 
-    // Disabled again: the stored field is not shown and nothing more is written.
+    // Disabled again: no stored field is shown and nothing more is written.
     configure(&mut client, false, 2).await;
     let (again, again_bytes) = command(&mut client, route, params).await;
     assert_eq!(again, plain);
     assert_eq!(again_bytes, plain_bytes);
-    assert_eq!(stand.jev.calls(), 1);
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!(
+        (stand.jev.calls(), stand.count("advice_journal").await),
+        written
+    );
 
     // A first save, not a replay, in a workspace whose setting says disabled.
     let (mut other, repo) = stand.workspace().await;
@@ -63,8 +81,10 @@ async fn a_disabled_jev_answers_as_main_does(level: Level) {
         fresh.as_object().unwrap().keys().collect::<Vec<_>>(),
         plain.as_object().unwrap().keys().collect::<Vec<_>>()
     );
-    assert_eq!(stand.jev.calls(), 1);
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!(
+        (stand.jev.calls(), stand.count("advice_journal").await),
+        written
+    );
     client.finish().await;
     other.finish().await;
 }

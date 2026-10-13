@@ -6,9 +6,9 @@ use serde_json::{Value, json};
 use std::time::Duration;
 use uuid::Uuid;
 
-/// What the journal says about the newest point: called, send certainty, reason.
+/// What the journal says about the newest `sizing` row: called, send certainty, reason.
 async fn journalled(stand: &Stand, advice: &Value) -> (Value, Value, Value) {
-    let row = stand.newest_row().await;
+    let row = stand.newest_row_of("sizing").await;
     assert_eq!(row["point"], "sizing");
     assert_eq!(row["outcome"], "unavailable");
     assert_eq!(&row["advice"], advice);
@@ -46,11 +46,16 @@ async fn a_failing_jev_leaves_the_draft_stored(level: Level) {
         journalled(&stand, &saved["advice"]).await,
         (json!(true), json!("sent_unknown"), json!("timeout"))
     );
-    // The replay returns the recorded outcome and does not ask again.
+    // The replay returns the recorded outcome and does not ask again, for any point.
+    let before = (stand.jev.calls(), stand.count("advice_journal").await);
     let (replayed, _) = command(&mut client, level.save_route(), params).await;
     assert_eq!(replayed, saved);
-    assert_eq!(stand.jev.calls(), 1);
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!(
+        (stand.jev.calls(), stand.count("advice_journal").await),
+        before
+    );
+    assert_eq!(stand.jev.asked(".size").len(), 1);
+    assert_eq!(stand.rows_of("sizing").await, (1, 1));
 
     // Jev answers in time with something that is not an answer.
     let (mut other, repo) = stand.workspace().await;
@@ -69,7 +74,7 @@ async fn a_failing_jev_leaves_the_draft_stored(level: Level) {
         journalled(&stand, &saved["advice"]).await,
         (json!(true), json!("sent"), json!("invalid_response"))
     );
-    assert_eq!(stand.jev.calls(), 2);
+    assert_eq!(stand.jev.asked(".size").len(), 2);
     client.finish().await;
     other.finish().await;
 }
@@ -96,10 +101,15 @@ async fn a_draft_jev_cannot_be_asked_about_is_stored_without_a_call(level: Level
         journalled(&stand, &saved["advice"]).await,
         (json!(false), json!("not_sent"), json!("advice_too_large"))
     );
-    assert_eq!(stand.newest_row().await["request"], Value::Null);
+    assert_eq!(stand.newest_row_of("sizing").await["request"], Value::Null);
+    let before = (stand.jev.calls(), stand.count("advice_journal").await);
     let (replayed, _) = command(&mut client, level.save_route(), params).await;
     assert_eq!(replayed, saved);
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!(
+        (stand.jev.calls(), stand.count("advice_journal").await),
+        before
+    );
+    assert_eq!(stand.rows_of("sizing").await, (1, 0));
 
     // The draft fits the reply, and its text is over the request ceiling of Jev.
     let (mut other, repo) = stand.workspace().await;
@@ -124,15 +134,10 @@ async fn a_draft_jev_cannot_be_asked_about_is_stored_without_a_call(level: Level
         (json!(false), json!("not_sent"), json!("request_too_large"))
     );
 
-    // Neither draft reached Jev, and neither spent the daily limit.
-    assert_eq!(stand.jev.calls(), 0);
-    let called: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM advice_journal WHERE tenant_id=$1 AND called")
-            .bind(stand.tenant)
-            .fetch_one(&stand.pool)
-            .await
-            .unwrap();
-    assert_eq!(called, 0);
+    // Neither draft reached Jev for `sizing`, and neither spent the daily limit on it.
+    // What the `pipeline` point does with these two drafts is its own suite's matter.
+    assert!(stand.jev.asked(".size").is_empty());
+    assert_eq!(stand.rows_of("sizing").await, (2, 0));
     client.finish().await;
     other.finish().await;
 }
@@ -164,7 +169,7 @@ async fn a_draft_of_a_program_without_a_mode_is_stored_without_a_call(level: Lev
         journalled(&stand, &saved["advice"]).await,
         (json!(false), json!("not_sent"), json!("mode_not_set"))
     );
-    let row = stand.newest_row().await;
+    let row = stand.newest_row_of("sizing").await;
     assert_eq!(row["request"], Value::Null);
     assert_eq!(row["route"], level.save_route());
     assert_eq!(row["request_id"], json!(request_id));
@@ -188,7 +193,8 @@ async fn a_draft_of_a_program_without_a_mode_is_stored_without_a_call(level: Lev
     stand.set_mode(&target_legacy.program_id, Some("mvp")).await;
     let (replayed, _) = command(&mut client, level.save_route(), params).await;
     assert_eq!(replayed, saved);
-    assert_eq!(stand.count("advice_journal").await, 1);
+    let rows = stand.count("advice_journal").await;
+    assert_eq!(stand.rows_of("sizing").await, (1, 0));
 
     // Disabled is decided first: without a mode and without Jev the save answers as
     // `main` does, with no field and no row.
@@ -198,7 +204,8 @@ async fn a_draft_of_a_program_without_a_mode_is_stored_without_a_call(level: Lev
     let params = target_off.save(&Shape::of(2, 2), Uuid::new_v4());
     let (plain, _) = command(&mut other, level.save_route(), params).await;
     assert!(plain.get("advice").is_none(), "{plain}");
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert!(plain.get("pipeline_advice").is_none(), "{plain}");
+    assert_eq!(stand.count("advice_journal").await, rows);
     assert_eq!(stand.jev.calls(), 0);
     client.finish().await;
     other.finish().await;

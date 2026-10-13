@@ -40,5 +40,6 @@ async fn intake_reads_the_scopes_level_inside_a_scope_and_each_candidates_own() 
         level(ProgramMode::Mvp)
     );
     assert!(state["candidates"][1].get("mode_override").is_none());
-    assert_eq!(stand.count("advice_journal").await, 5);
+    // Three inputs, two draft saves, and the `pipeline` point of the Slice save.
+    assert_eq!(stand.count("advice_journal").await, 6);
 }

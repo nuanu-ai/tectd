@@ -8,13 +8,15 @@ use crate::walk::{
 };
 use serde_json::{Value, json};
 
-/// The five requests of the walk: `scope_save` and `slice_save` are `sizing`, the
-/// three inputs are `intake`. Each advice binary reads the requests of its own point.
+/// The six requests of the walk: `scope_save` and `slice_save` are `sizing`,
+/// `slice_pipeline` is the `pipeline` point of the same Slice save, the three inputs
+/// are `intake`. Each advice binary reads the requests of its own point.
 pub struct Sent {
     pub scope_save: Value,
     pub scope_input: Value,
     pub slice_first_input: Value,
     pub slice_save: Value,
+    pub slice_pipeline: Value,
     pub slice_input: Value,
 }
 
@@ -26,6 +28,7 @@ fn settled(name: &str) -> (&'static str, f64) {
         "fit" => ("in_line", 0.7),
         size if size.ends_with(".size") => ("bounded", 0.7),
         advice if advice.ends_with(".advice") => ("keep", 0.7),
+        pipeline if pipeline.ends_with(".pipeline") => ("slice.debug-root-cause", 0.7),
         _ => ("requested", 0.7),
     }
 }
@@ -83,12 +86,13 @@ pub async fn walk(stand: &Stand) -> Sent {
         .await;
     client.finish().await;
 
-    let sent: [Value; 5] = stand.jev.requests().try_into().expect("five requests");
+    let sent: [Value; 6] = stand.jev.requests().try_into().expect("six requests");
     let [
         scope_save,
         scope_input,
         slice_first_input,
         slice_save,
+        slice_pipeline,
         slice_input,
     ] = sent;
     Sent {
@@ -96,6 +100,7 @@ pub async fn walk(stand: &Stand) -> Sent {
         scope_input,
         slice_first_input,
         slice_save,
+        slice_pipeline,
         slice_input,
     }
 }
