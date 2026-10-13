@@ -1,7 +1,7 @@
 //! Drafts at the limits of the reply and of the request: what each point does with
 //! them is decided for that point alone.
 use crate::pipeline::{DEBUG, SAVE, draft, planning, points, rows, save, stored, work};
-use crate::support::{Jev, Stand, configure};
+use crate::support::{Jev, Stand, command, configure};
 use serde_json::{Value, json};
 use tect_domain::PIPELINE_NOTE;
 
@@ -176,16 +176,13 @@ fn longest(name: &str) -> (&'static str, f64) {
     }
 }
 
-/// KNOWN DEFECT, pinned as it behaves today and awaiting a decision; this test does
-/// not say the behaviour is wanted. `sizing` may fill the reply to within less than
-/// the shortest field the second point can give (its `advice_too_large`, 225 bytes).
-/// The save is stored, Jev is called for `sizing`, both rows are journalled, and the
-/// command answers with a transport-capacity error instead of the reply; a replay
-/// answers with the same error. Reached here with thirty-seven new work nodes of
-/// five included items and every answer of Jev at its longest; one node fewer or
-/// more and the reply leaves as it should.
+/// `sizing` is measured on a reply that keeps room for the short field of the second
+/// point, so a draft at the very limit of `sizing` still gets an answer from both.
+/// Without that reserve thirty-seven new work nodes of five included items, with every
+/// answer of Jev at its longest, left 148 bytes where the second point needs 226, and
+/// the stored save answered with an error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
-async fn known_defect_a_full_sizing_field_leaves_no_room_for_any_pipeline_field() {
+async fn a_draft_at_the_limit_of_sizing_still_gets_a_field_from_both_points() {
     let stand = Stand::start("2000").await;
     stand.jev.answer(Jev::Answers(longest));
     let full = |count: usize| {
@@ -200,48 +197,54 @@ async fn known_defect_a_full_sizing_field_leaves_no_room_for_any_pipeline_field(
         )
     };
 
-    // One node below: `sizing` is advised and the second point's short field fits.
+    // Thirty-six: `sizing` is advised at its largest, and the second point says in
+    // its short field that its own advice has no room left.
     let (mut client, repo) = stand.workspace().await;
     let (head, _) = planning(&mut client, &repo).await;
     configure(&mut client, true, 0).await;
-    let (saved, _, _) = save(&mut client, &head, full(36)).await;
+    let (saved, next, request_id) = save(&mut client, &head, full(36)).await;
     assert_eq!(saved["advice"]["candidates"].as_array().unwrap().len(), 36);
     assert_eq!(saved["pipeline_advice"], too_large(36), "{saved}");
+    assert_eq!(stored(&next).len(), 36);
+    let written = rows(&stand, request_id).await;
+    assert_eq!(points(&written), ["sizing", "pipeline"]);
+    assert_eq!(written[0]["advice"], saved["advice"]);
+    assert_eq!(written[1]["advice"], saved["pipeline_advice"]);
 
-    // At thirty-seven the command answers with an error although the draft is stored.
+    // Thirty-seven: the largest `sizing` field would leave the second point no room
+    // for even that, so `sizing` is the one that is not asked, and `pipeline` is.
     let (mut other, repo) = stand.workspace().await;
     let (head, _) = planning(&mut other, &repo).await;
     configure(&mut other, true, 0).await;
+    let calls = stand.jev.calls();
     let params = head.save(full(37));
     let request_id = uuid::Uuid::parse_str(params["request_id"].as_str().unwrap()).unwrap();
-    for _ in 0..2 {
-        let call = json!({"name":"command","arguments":{"route":SAVE,"params":params.clone()}});
-        let response = other.exchange("tools/call", call).await;
-        assert_eq!(response["result"]["isError"], true, "{response}");
-        let text = response["result"]["content"][1]["text"].as_str().unwrap();
-        let error: Value = serde_json::from_str(text).unwrap();
-        assert_eq!(error["error"]["code"], "request_too_large", "{error}");
-        assert!(error.get("advice").is_none() && error.get("pipeline_advice").is_none());
-    }
-    let drafts: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM slice_candidate_drafts WHERE tenant_id=$1 AND candidate_set_id=$2",
-    )
-    .bind(stand.tenant)
-    .bind(uuid::Uuid::parse_str(head.context["candidate_set"]["id"].as_str().unwrap()).unwrap())
-    .fetch_one(&stand.pool)
-    .await
-    .unwrap();
-    assert_eq!(drafts, 1, "the draft is stored");
-    // The journal holds two fields the agent never received, and one paid call.
+    let (saved, _) = command(&mut other, SAVE, params.clone()).await;
+    assert_eq!(saved["candidate_set"]["status"], "review_required");
+    assert_eq!(saved["advice"]["reason"], "advice_too_large", "{saved}");
+    assert_eq!(saved["pipeline_advice"]["status"], "advised", "{saved}");
+    assert_eq!(
+        saved["pipeline_advice"]["candidates"]
+            .as_array()
+            .unwrap()
+            .len(),
+        37
+    );
     let written = rows(&stand, request_id).await;
     assert_eq!(points(&written), ["sizing", "pipeline"]);
     assert_eq!(
-        (&written[0]["called"], &written[0]["outcome"]),
-        (&json!(true), &json!("advised"))
+        (&written[0]["called"], &written[1]["called"]),
+        (&json!(false), &json!(true))
     );
-    assert_eq!(written[1]["advice"], too_large(37));
-    assert_eq!(written[1]["called"], false);
-    assert_eq!(stand.jev.calls(), 2);
+    assert_eq!(written[0]["advice"], saved["advice"]);
+    assert_eq!(written[1]["advice"], saved["pipeline_advice"]);
+    assert_eq!(stand.jev.calls(), calls + 1);
+
+    // A replay returns the same reply, asks nobody and writes no row.
+    let (replayed, _) = command(&mut other, SAVE, params).await;
+    assert_eq!(replayed, saved);
+    assert_eq!(stand.jev.calls(), calls + 1);
+    assert_eq!(rows(&stand, request_id).await.len(), 2);
     client.finish().await;
     other.finish().await;
 }

@@ -123,25 +123,8 @@ pub(crate) async fn execute(
                 .await?;
             let reply = candidate_mutation(saved.clone())?;
             // The draft is stored; Jev's advice on it, if any, rides on the same reply.
-            let room = crate::advice_reply::ReplyRoom {
-                reply: &reply,
-                capacity,
-            };
-            let advice = service
-                .advise_slice_candidate_sizing(context, &request, &saved, &room)
-                .await?;
-            let reply = crate::advice_reply::finish(reply, advice, capacity)?;
-            // A second point on the same save: Jev's choice of pipeline for the work
-            // nodes the save wrote. Its room is what the reply has left with the
-            // `advice` field it now holds.
-            let room = crate::advice_reply::PipelineReplyRoom {
-                reply: &reply,
-                capacity,
-            };
-            let pipeline = service
-                .advise_slice_candidate_pipeline(context, &request, &saved, &room)
-                .await?;
-            crate::advice_reply::finish_pipeline(reply, pipeline, capacity)
+            crate::slice_draft_advice::advised(service, context, &request, &saved, reply, capacity)
+                .await
         }
         SliceInvocation::Review(request) => candidate_mutation(
             service

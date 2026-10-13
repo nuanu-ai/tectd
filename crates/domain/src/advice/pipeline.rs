@@ -87,6 +87,13 @@ impl PipelineDraft {
         }))
     }
 
+    /// What the point answers when the reply has no room for its advice. A Slice
+    /// draft save keeps room for this field before `sizing`, the first point of the
+    /// command, is measured, so the second point can always say why it gave nothing.
+    pub fn without_room(&self) -> AdviceField {
+        AdviceField::too_large(&subject(self.asked.len()))
+    }
+
     /// Add the user's recorded words, in recorded order, and the opened Scope's
     /// effective product level, and form the questions: one per asked node, whose
     /// criteria are the pipelines of the catalogue.
@@ -215,11 +222,13 @@ impl AdviceShaping for PipelineAdvice {
     }
 
     fn subject(&self) -> String {
-        format!(
-            "the pipelines of this draft (work nodes asked about: {})",
-            self.asked.len()
-        )
+        subject(self.asked.len())
     }
+}
+
+/// What the advice is about, as it reads in a message.
+fn subject(asked: usize) -> String {
+    format!("the pipelines of this draft (work nodes asked about: {asked})")
 }
 
 #[cfg(test)]

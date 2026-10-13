@@ -4,12 +4,14 @@
 use super::*;
 use crate::advice_reply::tests::{
     largest_bytes, most_candidates, most_pipeline_nodes, served_catalogue, slice_intake,
-    slice_pipeline, slice_sizing,
+    slice_pipeline, slice_pipeline_draft, slice_sizing,
 };
-use crate::advice_reply::{PipelineReplyRoom, finish, finish_pipeline};
+use crate::advice_reply::{
+    PipelineReplyRoom, ReplyRoom, finish, finish_pipeline, with_pipeline_reserve,
+};
 use crate::json_fragment::READ_BUDGET;
 use tect_application::AdviceOutputGuard;
-use tect_domain::{AdviceField, AdviceShaping, AdviceUnavailableReason, Error};
+use tect_domain::{AdviceField, AdviceShaping, Error};
 
 /// A Slice planning context as it stands right after a draft was stored.
 fn saved() -> SliceCandidateContext {
@@ -121,30 +123,54 @@ fn largest_pipeline_bytes(reply: &Value, nodes: usize) -> usize {
 }
 
 #[test]
-fn the_largest_sizing_field_can_leave_less_room_than_any_pipeline_field_needs() {
+fn sizing_measured_beside_the_reserve_leaves_the_second_point_its_short_field() {
     let reply = candidate_mutation(saved()).unwrap();
-    // The most candidates with five included items each that `sizing` advises on,
-    // every answer of Jev at its longest: what is left of the read budget.
-    let (most, _) = most_candidates(&reply, slice_sizing, 5);
-    let sized = with_full_sizing(&reply, most, 5).unwrap();
-    let left = READ_BUDGET - responses::encoded_len(&sized).unwrap();
-    // The shortest field the point then has: it says its advice would not fit.
-    let unfit = AdviceField::unavailable(
-        AdviceUnavailableReason::AdviceTooLarge,
-        &format!(
-            "advice for {} would not fit the command reply",
-            slice_pipeline(1, &served_catalogue()).subject()
-        ),
-    );
-    let need = largest_bytes_of(&reply, &unfit);
-    println!(
-        "slice.candidates.save with the largest sizing field for {most} candidates of 5 \
-         included items: bytes_left={left}; the advice_too_large pipeline field needs={need}"
-    );
-    assert_eq!((most, left, need), (37, 148, 225));
-    // With less left than that, the reply cannot carry the field of the second point.
+    let catalogue = served_catalogue();
+    for items in [0, 5, 100] {
+        // Without the reserve the largest `sizing` field can fill the reply to within
+        // less than the short field the second point needs to say it has no room.
+        let (unreserved, _) = most_candidates(&reply, slice_sizing, items);
+        // With it: the most candidates of a first draft that `sizing` advises on when
+        // it is measured on the reply that holds the reserve for the same draft.
+        let mut most = 0;
+        loop {
+            let unfit = slice_pipeline_draft(most + 1, &catalogue).without_room();
+            let room = ReplyRoom {
+                reply: &with_pipeline_reserve(&reply, &unfit),
+                capacity: READ_BUDGET,
+            };
+            if room
+                .check_reply(&slice_sizing(most + 1, items).largest())
+                .is_err()
+            {
+                break;
+            }
+            most += 1;
+        }
+        assert!(most == unreserved || most + 1 == unreserved, "{items}");
+        // Whatever `sizing` then gives, the reply carries the second point's field.
+        let unfit = slice_pipeline_draft(most, &catalogue).without_room();
+        let need = largest_bytes_of(&reply, &unfit);
+        let sized = with_full_sizing(&reply, most, items).unwrap();
+        let left = READ_BUDGET - responses::encoded_len(&sized).unwrap();
+        println!(
+            "slice.candidates.save, first draft of candidates with {items} included items: \
+             sizing advises on {unreserved} without the reserve and on {most} with it; \
+             bytes_left={left}; the advice_too_large pipeline field needs={need}"
+        );
+        assert!(left >= need, "{items}: {left} < {need}");
+        finish_pipeline(sized, Some(unfit), READ_BUDGET).unwrap();
+    }
+    // The case that failed before the reserve: thirty-seven candidates of five items
+    // left 148 bytes where 226 are needed. `sizing` now gives way at thirty-seven.
+    let unfit = slice_pipeline_draft(37, &catalogue).without_room();
+    assert_eq!(largest_bytes_of(&reply, &unfit), 226);
+    let room = ReplyRoom {
+        reply: &with_pipeline_reserve(&reply, &unfit),
+        capacity: READ_BUDGET,
+    };
     assert_eq!(
-        finish_pipeline(sized, Some(unfit), READ_BUDGET),
+        room.check_reply(&slice_sizing(37, 5).largest()),
         Err(Error::RequestTooLarge)
     );
 }

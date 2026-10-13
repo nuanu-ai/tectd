@@ -1,7 +1,7 @@
 //! The `pipeline` advice point on the Slice draft save: a second point on that
 //! command, asked after `sizing` with a request, a journal row and a reply field of
-//! its own. It runs after the save has committed: it finds the work nodes the save
-//! created or changed, reads what `sizing` reads at this level and asks Jev once.
+//! its own. It runs after the save has committed, for the work nodes the save
+//! created or changed: it reads what `sizing` reads at this level and asks Jev once.
 use crate::advice::{earlier, words};
 use crate::advice_ports::NO_MODE;
 use crate::{AdviceAsk, AdviceOutputGuard, AdviceRequest, TransactionMode, WorkspaceService};
@@ -11,25 +11,17 @@ const SLICE_CANDIDATES_SAVE: &str = "slice.candidates.save";
 
 impl WorkspaceService {
     /// Jev's choice of pipeline for the work nodes that `slice.candidates.save` has
-    /// created or changed in the draft it stored. `None` when Jev is disabled or the
-    /// save created and changed no work node; nothing is read beyond the setting in
-    /// the first case and nothing at all in the second.
+    /// created or changed in the draft it stored, laid out in `draft`. `None` when
+    /// Jev is disabled; nothing is read beyond the setting then.
     pub async fn advise_slice_candidate_pipeline(
         &self,
         context: &RequestContext,
         request: &SaveSliceCandidateDraft,
         saved: &SliceCandidateContext,
+        draft: PipelineDraft,
         reply: &dyn AdviceOutputGuard,
     ) -> Result<Option<AdviceField>> {
         let scope = &saved.scope;
-        // A save answers with the draft it stored.
-        let stored = saved.draft.as_ref().ok_or(Error::InternalInvariant)?;
-        let catalogue = &saved.snapshot.catalogue;
-        let Some(draft) =
-            PipelineDraft::slice_candidates(&request.draft, stored, catalogue, scope.into())?
-        else {
-            return Ok(None);
-        };
 
         let (mut tx, identity) = self.authorized(context, TransactionMode::ReadOnly).await?;
         let (workspace, _) = Self::bound_session(&mut *tx, context, &identity).await?;

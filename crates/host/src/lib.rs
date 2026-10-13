@@ -50,6 +50,7 @@ mod setup_output;
 mod setup_recovery;
 mod setup_tools;
 mod slice_dispatch;
+mod slice_draft_advice;
 mod slice_guidance;
 mod slice_pipeline_catalog;
 mod slice_tools;

@@ -60,6 +60,14 @@ pub(crate) fn slice_pipeline(
     nodes: usize,
     catalogue: &PipelineCatalogueSnapshot,
 ) -> PipelineAdvice {
+    slice_pipeline_draft(nodes, catalogue).advice(&[], ProgramMode::Prod)
+}
+
+/// The same draft laid out for the point, before the words and the level are read.
+pub(crate) fn slice_pipeline_draft(
+    nodes: usize,
+    catalogue: &PipelineCatalogueSnapshot,
+) -> PipelineDraft {
     let nodes = (0..nodes)
         .map(|index| {
             json!({"kind":"work","identity":{"local":format!("c{index}")},"title":"t",
@@ -81,7 +89,6 @@ pub(crate) fn slice_pipeline(
     PipelineDraft::slice_candidates(&draft, &stored, catalogue, scope)
         .unwrap()
         .unwrap()
-        .advice(&[], ProgramMode::Prod)
 }
 
 fn asked_with(planning: IntakePlanning) -> IntakeAdvice {

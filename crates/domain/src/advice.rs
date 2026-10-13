@@ -167,6 +167,15 @@ impl AdviceField {
         }
     }
 
+    /// The field of a point that is not asked because its largest advice on
+    /// `subject` would not fit the command reply.
+    pub fn too_large(subject: &str) -> Self {
+        Self::unavailable(
+            AdviceUnavailableReason::AdviceTooLarge,
+            &format!("advice for {subject} would not fit the command reply"),
+        )
+    }
+
     pub const fn outcome(&self) -> AdviceOutcome {
         match self {
             Self::Advised { .. } => AdviceOutcome::Advised,

@@ -295,13 +295,7 @@ fn too_large_for_reply(
 ) -> Result<Option<AdviceField>> {
     match reply.check_reply(&shaping.largest()) {
         Ok(()) => Ok(None),
-        Err(Error::RequestTooLarge) => Ok(Some(AdviceField::unavailable(
-            AdviceUnavailableReason::AdviceTooLarge,
-            &format!(
-                "advice for {} would not fit the command reply",
-                shaping.subject()
-            ),
-        ))),
+        Err(Error::RequestTooLarge) => Ok(Some(AdviceField::too_large(&shaping.subject()))),
         Err(error) => Err(error),
     }
 }

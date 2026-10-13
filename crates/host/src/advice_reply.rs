@@ -58,6 +58,19 @@ pub(crate) fn finish_pipeline(
     }
 }
 
+/// A copy of a Slice draft save reply that holds the field the `pipeline` point gives
+/// when it has no room. The first point of the save is measured on it. Nothing is
+/// checked here: a disabled Jev must not meet a new failure.
+pub(crate) fn with_pipeline_reserve(reply: &Value, without_room: &AdviceField) -> Value {
+    let mut measured = reply.clone();
+    if let (Some(fields), Ok(field)) =
+        (measured.as_object_mut(), serde_json::to_value(without_room))
+    {
+        fields.insert(PIPELINE_ADVICE.to_owned(), field);
+    }
+    measured
+}
+
 /// The reply with the field attached under its key, held to the read budget every
 /// save reply obeys.
 fn attach(mut reply: Value, key: &str, advice: &AdviceField, capacity: usize) -> Result<Value> {
