@@ -2,6 +2,7 @@
 mod advice;
 mod advice_binding;
 mod advice_intake;
+mod advice_model;
 mod advice_pipeline;
 mod advice_ports;
 mod advice_sizing;
