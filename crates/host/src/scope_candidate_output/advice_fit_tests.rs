@@ -2,7 +2,9 @@
 //! a draft save, `intake` and beside it `model` on a recorded input. Measured with the
 //! real reply and the real encoder.
 use super::*;
-use crate::advice_reply::model_tests::{InputRoom, input_room, reserve_holds};
+use crate::advice_reply::model_tests::{
+    InputRoom, input_room, reserve_holds, two_short_fields_need_room_for_both,
+};
 use crate::advice_reply::tests::{largest_bytes, most_candidates, scope_intake, scope_sizing};
 
 /// The reply of a command that left the set waiting for review, with these stale
@@ -87,4 +89,15 @@ fn intake_measured_beside_the_reserve_leaves_the_second_point_its_short_field() 
          measured beside, in bytes, without a saved draft={bare:?}, with one={named:?}"
     );
     assert_eq!((bare, named), ((888, 194), (931, 194)));
+}
+
+#[test]
+fn a_reply_with_room_for_one_short_field_and_not_for_two_answers_with_an_error() {
+    let reply = reply(&["planning_inputs"]);
+    let short = two_short_fields_need_room_for_both(&reply, &scope_intake(Some(120)));
+    println!(
+        "scope.candidates.record_input: the advice_too_large fields of intake and of model, \
+         in bytes={short:?}; a reply with less than their sum left answers with an error"
+    );
+    assert_eq!(short, (171, 194));
 }

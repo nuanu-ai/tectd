@@ -108,6 +108,60 @@ pub(crate) fn reserve_holds(reply: &Value, intake: &IntakeAdvice) -> (usize, usi
     (first, second)
 }
 
+/// The corner the reserve does not reach: a reply with room for the short field of
+/// one point and not of two. Neither point is asked, each gives its short field, and
+/// the second does not fit: the stored input answers with an error, where with
+/// `intake` alone the same reply carried its field. Returns the bytes of the two
+/// short fields.
+pub(crate) fn two_short_fields_need_room_for_both(
+    reply: &Value,
+    intake: &IntakeAdvice,
+) -> (usize, usize) {
+    let base = responses::encoded_len(reply).unwrap();
+    let unasked = AdviceField::too_large(&intake.subject());
+    let short = ModelAdvice::without_room();
+    let first = {
+        let with = finish(reply.clone(), Some(unasked.clone()), READ_BUDGET).unwrap();
+        responses::encoded_len(&with).unwrap() - base
+    };
+    let second = model_bytes(reply, &short);
+    for capacity in base + first..base + first + second {
+        // `intake` is not asked: its largest field does not fit, with the reserve or
+        // without it. Its short field does.
+        let measured = with_model_reserve(reply, &short);
+        for seen in [reply, &measured] {
+            let room = ReplyRoom {
+                reply: seen,
+                capacity,
+            };
+            assert_eq!(
+                room.check_reply(&intake.largest()),
+                Err(Error::RequestTooLarge)
+            );
+        }
+        let one = finish(reply.clone(), Some(unasked.clone()), capacity).unwrap();
+        // Nor is the second point, and its short field has no room left.
+        let room = ModelReplyRoom {
+            reply: &one,
+            capacity,
+        };
+        assert_eq!(
+            room.check_reply(&model().largest()),
+            Err(Error::RequestTooLarge)
+        );
+        assert_eq!(
+            finish_model(one, Some(short.clone()), capacity),
+            Err(Error::RequestTooLarge),
+            "{capacity}"
+        );
+    }
+    // From the first capacity that holds both short fields on, the reply leaves.
+    let capacity = base + first + second;
+    let one = finish(reply.clone(), Some(unasked), capacity).unwrap();
+    finish_model(one, Some(short), capacity).unwrap();
+    (first, second)
+}
+
 fn reply() -> Value {
     responses::with_actions(
         json!({"operation":"saved","counts":{"candidates":2}}),
