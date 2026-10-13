@@ -1,6 +1,7 @@
 //! The `intake` advice point on `scope.candidates.record_input` and
 //! `slice.candidates.input`, through a real daemon and MCP bridge against PostgreSQL.
-//! Jev is a loopback fake; nothing leaves the machine.
+//! Jev is a loopback fake; nothing leaves the machine. The `model` point asks on the
+//! same commands after `intake`: this suite reads the requests and the rows of `intake`.
 #[path = "mode_override/advised.rs"]
 #[allow(dead_code)]
 mod advised;
@@ -47,6 +48,8 @@ fn extending(name: &str, nearest: &'static str) -> (&'static str, f64) {
         "placement" => ("extends", 1.0),
         "nearest" => (nearest, 0.805),
         "fit" => ("in_line", 0.9),
+        // The `model` point asks about the same input; this suite is about `intake`.
+        "practical" | "specialist" => ("ABSTAIN", 0.9),
         other => panic!("unexpected question {other}"),
     }
 }
@@ -125,7 +128,7 @@ async fn advised_then_replayed_then_abstained(level: Level) {
     // What Jev was sent, whole: the product level with its meaning, the Program's
     // statement, the Scope on the Slice level, the earlier words by source and in
     // order, the new input on its own, and the saved draft.
-    let requests = stand.jev.requests();
+    let requests = stand.jev.asked("fit");
     assert_eq!(requests.len(), 1);
     let words = planned.first_words();
     assert_eq!(
@@ -166,7 +169,7 @@ async fn advised_then_replayed_then_abstained(level: Level) {
     assert_eq!(criteria(&requests[0], "nearest"), named);
 
     // The journal row holds exactly the field the agent received, and the work it was for.
-    let row = stand.newest_row().await;
+    let row = stand.newest_row_of("intake").await;
     assert_eq!(row["advice"], advice);
     assert_eq!(row["advice"].to_string(), advice.to_string());
     assert_eq!(row["request"], requests[0]);
@@ -193,13 +196,14 @@ async fn advised_then_replayed_then_abstained(level: Level) {
     assert!(entry["request_bytes"].as_u64().unwrap() > 0);
 
     // A replay under the same request id returns the same reply: no call, no row,
-    // and the input is not recorded twice.
+    // and the input is not recorded twice. One call and one row are of `model`.
     for _ in 0..2 {
         let (replayed, _) = command(&mut client, route(level), params.clone()).await;
         assert_eq!(replayed, recorded);
     }
-    assert_eq!(stand.jev.calls(), 1);
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!((stand.jev.calls(), stand.jev.asked("fit").len()), (2, 1));
+    assert_eq!(stand.count("advice_journal").await, 2);
+    assert_eq!(stand.rows_of("intake").await, (1, 1));
     let first_word = planned.first_words().pop().unwrap()["text"].clone();
     assert_eq!(
         planned.recorded(&stand).await,
@@ -215,10 +219,10 @@ async fn advised_then_replayed_then_abstained(level: Level) {
     let mut words = planned.first_words();
     words.push(word(planned.own_source(), FIRST));
     assert_eq!(
-        stand.jev.requests()[1]["state"],
+        stand.jev.asked("fit")[1]["state"],
         planned.state(ProgramMode::Prod, &words, SECOND, Some(candidates(level)))
     );
-    assert_eq!(stand.count("advice_journal").await, 2);
+    assert_eq!(stand.rows_of("intake").await, (2, 2));
     assert_eq!(planned.recorded(&stand).await.len(), 3);
 
     // Jev abstains on every question about an input in another workspace: no content.
@@ -233,12 +237,12 @@ async fn advised_then_replayed_then_abstained(level: Level) {
     let params = planned.input(FIRST, Uuid::new_v4());
     let (recorded, _) = command(&mut other, route(level), params).await;
     assert_eq!(recorded["advice"], json!({"status":"abstained"}));
-    assert_eq!(stand.jev.calls(), 3);
+    assert_eq!(stand.jev.asked("fit").len(), 3);
     assert_eq!(
-        stand.jev.requests()[2]["state"]["mode"],
+        stand.jev.asked("fit")[2]["state"]["mode"],
         json!({"level":"demo","description":ProgramMode::Demo.description()})
     );
-    let row = stand.newest_row().await;
+    let row = stand.newest_row_of("intake").await;
     assert_eq!(row["advice"], recorded["advice"]);
     assert_eq!(
         (&row["called"], &row["outcome"], &row["point"]),

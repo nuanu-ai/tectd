@@ -9,6 +9,7 @@ mod child_env;
 mod context;
 mod frame;
 mod git;
+mod input_advice;
 mod jev_codec;
 mod jev_json;
 mod jev_provider;

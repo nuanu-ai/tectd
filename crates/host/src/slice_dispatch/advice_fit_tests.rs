@@ -1,7 +1,8 @@
 //! How much advice the replies of the Slice candidate commands can carry: `sizing` and
-//! beside it `pipeline` on a draft save, `intake` on a recorded input. Measured with
-//! the real reply and the real encoder.
+//! beside it `pipeline` on a draft save, `intake` and beside it `model` on a recorded
+//! input. Measured with the real reply and the real encoder.
 use super::*;
+use crate::advice_reply::model_tests::{InputRoom, input_room, reserve_holds};
 use crate::advice_reply::tests::{
     largest_bytes, most_candidates, most_pipeline_nodes, served_catalogue, slice_intake,
     slice_pipeline, slice_pipeline_draft, slice_sizing,
@@ -62,6 +63,39 @@ fn record_input_reply_has_measured_room_for_intake_advice() {
          without a saved draft={bare}, with one={named}"
     );
     assert_eq!((base, bare, named), (1373, 886, 929));
+}
+
+#[test]
+fn record_input_reply_has_measured_room_for_model_advice_beside_intake() {
+    let reply = candidate_mutation(saved()).unwrap();
+    let room = input_room(&reply, &slice_intake(Some(120)));
+    println!(
+        "slice.candidates.input base_envelope_bytes={}; largest model advice bytes={}; its \
+         advice_too_large field bytes={}; bytes_left beside the largest intake field and the \
+         largest model field={}",
+        room.base, room.largest, room.short, room.left
+    );
+    assert_eq!(
+        room,
+        InputRoom {
+            base: 1373,
+            largest: 819,
+            short: 194,
+            left: 5071
+        }
+    );
+}
+
+#[test]
+fn intake_measured_beside_the_reserve_leaves_the_second_point_its_short_field() {
+    let reply = candidate_mutation(saved()).unwrap();
+    let bare = reserve_holds(&reply, &slice_intake(None));
+    let named = reserve_holds(&reply, &slice_intake(Some(120)));
+    println!(
+        "slice.candidates.input: the largest intake field and the reserve it is measured \
+         beside, in bytes, without a saved draft={bare:?}, with one={named:?}"
+    );
+    assert_eq!((bare, named), ((886, 194), (929, 194)));
 }
 
 /// The reply with the largest `sizing` field a draft of this shape can get.

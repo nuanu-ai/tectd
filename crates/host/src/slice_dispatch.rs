@@ -137,14 +137,10 @@ pub(crate) async fn execute(
                 .await?;
             let reply = candidate_mutation(recorded.clone())?;
             // The input is recorded; Jev's advice on it, if any, rides on the same reply.
-            let room = crate::advice_reply::ReplyRoom {
-                reply: &reply,
-                capacity,
-            };
-            let advice = service
-                .advise_slice_candidate_intake(context, &request, &recorded, &room)
-                .await?;
-            crate::advice_reply::finish(reply, advice, capacity)
+            crate::input_advice::slice_candidates(
+                service, context, &request, &recorded, reply, capacity,
+            )
+            .await
         }
         SliceInvocation::Refresh(request) => candidate_context(
             service

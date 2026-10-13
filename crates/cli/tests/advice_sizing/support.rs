@@ -88,7 +88,8 @@ impl FakeJev {
     }
 
     /// The requests of one advice point, in arrival order, told by the questions
-    /// only that point asks: `.size` for `sizing`, `.pipeline` for `pipeline`.
+    /// only that point asks: `.size` for `sizing`, `.pipeline` for `pipeline`, `fit`
+    /// for `intake`, `practical` for `model`.
     // This module is compiled once per advice binary; not every suite reads by point.
     #[allow(dead_code)]
     pub fn asked(&self, suffix: &str) -> Vec<Value> {

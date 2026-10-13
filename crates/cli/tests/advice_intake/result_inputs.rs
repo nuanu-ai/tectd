@@ -16,6 +16,8 @@ fn settled(name: &str) -> (&'static str, f64) {
         "work" => ("small", 0.7),
         "placement" => ("covered", 0.7),
         "nearest" => ("c1", 0.7),
+        // The `model` point asks about the same input; this suite is about `intake`.
+        "practical" | "specialist" => ("none", 0.7),
         _ => ("in_line", 0.7),
     }
 }
@@ -83,7 +85,7 @@ async fn an_input_a_slice_result_produced_neither_fires_the_point_nor_counts_as_
     let (recorded, _) = command(&mut client, route(Level::Slices), params).await;
     assert_eq!(recorded["advice"]["status"], "advised");
     assert_eq!(recorded["advice"]["nearest"], 1);
-    let requests = stand.jev.requests();
+    let requests = stand.jev.asked("fit");
     assert_eq!(requests.len(), 1);
     let shown = json!([{"key":"c1","kind":"work","title":"Work 1",
         "outcome":"The cause is demonstrated","includes":[{"key":"c1.i1","text":"item 1"}],
@@ -99,7 +101,8 @@ async fn an_input_a_slice_result_produced_neither_fires_the_point_nor_counts_as_
     );
     assert!(!requests[0].to_string().contains(summary));
     assert_eq!(planned.recorded(&stand).await.len(), 3);
-    assert_eq!(stand.count("advice_journal").await, 1);
-    assert_eq!(stand.newest_row().await["point"], "intake");
+    assert_eq!(stand.rows_of("intake").await, (1, 1));
+    // The same input fired the second point of the command, and nothing else did.
+    assert_eq!(stand.count("advice_journal").await, 2);
     client.finish().await;
 }

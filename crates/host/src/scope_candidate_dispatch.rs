@@ -95,14 +95,10 @@ pub(crate) async fn execute(
                 .await?;
             let reply = scope_candidate_output::stored_mutation(stored.clone(), capacity)?;
             // The input is recorded; Jev's advice on it, if any, rides on the same reply.
-            let room = crate::advice_reply::ReplyRoom {
-                reply: &reply,
-                capacity,
-            };
-            let advice = service
-                .advise_scope_candidate_intake(context, &request, &stored, &room)
-                .await?;
-            crate::advice_reply::finish(reply, advice, capacity)
+            crate::input_advice::scope_candidates(
+                service, context, &request, &stored, reply, capacity,
+            )
+            .await
         }
         ScopeCandidateInvocation::Refresh(request) => service
             .refresh_candidate_set(context, &request, &guidance, &guard)

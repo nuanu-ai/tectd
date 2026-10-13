@@ -1,6 +1,6 @@
-//! One real call to the Jev service per level. Ignored by default: each call spends
-//! money and needs the key in `TECT_TEST_LIVE_JEV_KEY`. Run it alone and read what it
-//! prints:
+//! One real call of the `intake` point to the Jev service per level, beside the real
+//! `model` call of the same input. Ignored by default: the calls spend money and need
+//! the key in `TECT_TEST_LIVE_JEV_KEY`. Run it alone and read what it prints:
 //!
 //! `cargo test -p tect-cli --test advice_intake live -- --ignored --nocapture`
 use crate::drafts::Level;
@@ -29,7 +29,7 @@ async fn the_real_jev_answers_one_input(level: Level) {
     let key = std::env::var("TECT_TEST_LIVE_JEV_KEY").expect("TECT_TEST_LIVE_JEV_KEY required");
     let stand = Stand::start_at(Some(ENDPOINT), &key, "30000").await;
     let (mut client, repo) = stand.workspace().await;
-    // The draft is saved before Jev is enabled: the one call is the recorded input.
+    // The draft is saved before Jev is enabled: the calls are those of the recorded input.
     let mut planned = Planned::bare(&mut client, &repo, level).await;
     let save = planned
         .target
@@ -39,10 +39,10 @@ async fn the_real_jev_answers_one_input(level: Level) {
 
     let params = planned.input(input(level), Uuid::new_v4());
     let (recorded, envelope) = command(&mut client, route(level), params).await;
-    let row = stand.newest_row().await;
+    let row = stand.newest_row_of("intake").await;
     let answer: Option<String> = sqlx::query_scalar(
         "SELECT pg_catalog.convert_from(response_body, 'UTF8') FROM advice_journal \
-         WHERE tenant_id=$1 ORDER BY created_at DESC, id DESC LIMIT 1",
+         WHERE tenant_id=$1 AND point='intake' ORDER BY created_at DESC, id DESC LIMIT 1",
     )
     .bind(stand.tenant)
     .fetch_one(&stand.pool)
@@ -75,7 +75,9 @@ async fn the_real_jev_answers_one_input(level: Level) {
     );
     assert_eq!(row["advice"], recorded["advice"]);
     assert_eq!(row["point"], "intake");
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!(stand.rows_of("intake").await, (1, 1));
+    // The second point of the command wrote the other row.
+    assert_eq!(stand.count("advice_journal").await, 2);
     client.finish().await;
 }
 

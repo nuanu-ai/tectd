@@ -1,7 +1,8 @@
 //! How much advice the replies of the Scope candidate commands can carry: `sizing` on
-//! a draft save, `intake` on a recorded input. Measured with the real reply and the
-//! real encoder.
+//! a draft save, `intake` and beside it `model` on a recorded input. Measured with the
+//! real reply and the real encoder.
 use super::*;
+use crate::advice_reply::model_tests::{InputRoom, input_room, reserve_holds};
 use crate::advice_reply::tests::{largest_bytes, most_candidates, scope_intake, scope_sizing};
 
 /// The reply of a command that left the set waiting for review, with these stale
@@ -53,4 +54,37 @@ fn record_input_reply_has_measured_room_for_intake_advice() {
          without a saved draft={bare}, with one={named}"
     );
     assert_eq!((base, bare, named), (3016, 888, 931));
+}
+
+#[test]
+fn record_input_reply_has_measured_room_for_model_advice_beside_intake() {
+    let reply = reply(&["planning_inputs"]);
+    let room = input_room(&reply, &scope_intake(Some(120)));
+    println!(
+        "scope.candidates.record_input base_envelope_bytes={}; largest model advice bytes={}; \
+         its advice_too_large field bytes={}; bytes_left beside the largest intake field and \
+         the largest model field={}",
+        room.base, room.largest, room.short, room.left
+    );
+    assert_eq!(
+        room,
+        InputRoom {
+            base: 3016,
+            largest: 819,
+            short: 194,
+            left: 3426
+        }
+    );
+}
+
+#[test]
+fn intake_measured_beside_the_reserve_leaves_the_second_point_its_short_field() {
+    let reply = reply(&["planning_inputs"]);
+    let bare = reserve_holds(&reply, &scope_intake(None));
+    let named = reserve_holds(&reply, &scope_intake(Some(120)));
+    println!(
+        "scope.candidates.record_input: the largest intake field and the reserve it is \
+         measured beside, in bytes, without a saved draft={bare:?}, with one={named:?}"
+    );
+    assert_eq!((bare, named), ((888, 194), (931, 194)));
 }

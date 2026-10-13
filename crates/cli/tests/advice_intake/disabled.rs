@@ -11,6 +11,8 @@ fn settled(name: &str) -> (&'static str, f64) {
         "work" => ("small", 0.7),
         "placement" => ("covered", 0.7),
         "nearest" => ("c1", 0.7),
+        // The `model` point asks about the same input; this suite is about `intake`.
+        "practical" | "specialist" => ("none", 0.7),
         _ => ("in_line", 0.7),
     }
 }
@@ -38,23 +40,27 @@ async fn a_disabled_jev_answers_as_main_does(level: Level) {
     assert_eq!(stand.count("advice_journal").await, 0);
     assert_eq!(stand.jev.calls(), 0);
 
-    // Enabled: the same reply with one more field, and one journal row.
+    // Enabled: the same reply with the field of each of the two points more, and a
+    // journal row for each.
     configure(&mut client, true, 1).await;
     let (enabled, _) = command(&mut client, route, params.clone()).await;
     assert_eq!(enabled["advice"]["status"], "advised");
     let mut without = enabled.clone();
     without.as_object_mut().unwrap().remove("advice");
+    without.as_object_mut().unwrap().remove("model_advice");
     assert_eq!(without, plain);
-    assert_eq!(stand.jev.calls(), 1);
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!(stand.jev.asked("fit").len(), 1);
+    assert_eq!(stand.rows_of("intake").await, (1, 1));
+    assert_eq!(stand.jev.calls(), 2);
+    assert_eq!(stand.count("advice_journal").await, 2);
 
-    // Disabled again: the stored field is not shown and nothing more is written.
+    // Disabled again: the stored fields are not shown and nothing more is written.
     configure(&mut client, false, 2).await;
     let (again, again_bytes) = command(&mut client, route, params).await;
     assert_eq!(again, plain);
     assert_eq!(again_bytes, plain_bytes);
-    assert_eq!(stand.jev.calls(), 1);
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!(stand.jev.calls(), 2);
+    assert_eq!(stand.count("advice_journal").await, 2);
     let inputs = planned.recorded(&stand).await;
     assert_eq!(inputs.iter().filter(|text| *text == FIRST).count(), 1);
 
@@ -69,8 +75,8 @@ async fn a_disabled_jev_answers_as_main_does(level: Level) {
         recorded.as_object().unwrap().keys().collect::<Vec<_>>(),
         plain.as_object().unwrap().keys().collect::<Vec<_>>()
     );
-    assert_eq!(stand.jev.calls(), 1);
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!(stand.jev.calls(), 2);
+    assert_eq!(stand.count("advice_journal").await, 2);
     assert_eq!(fresh.recorded(&stand).await.last().unwrap(), FIRST);
     client.finish().await;
     other.finish().await;

@@ -1,5 +1,6 @@
 //! An enabled Jev that gives no advice: the input is recorded all the same and the
-//! reply says why there is none.
+//! reply says why there is none. The `model` point of the same command meets the same
+//! Jev and writes a row of its own; this suite reads the rows of `intake`.
 use crate::drafts::Level;
 use crate::inputs::{FIRST, Planned, audit, route};
 use crate::support::{BUDGET, Jev, Stand, command, configure};
@@ -7,9 +8,9 @@ use serde_json::{Value, json};
 use std::time::Duration;
 use uuid::Uuid;
 
-/// What the journal says about the newest point: called, send certainty, reason.
+/// What the journal says about the newest `intake` row: called, send certainty, reason.
 async fn journalled(stand: &Stand, advice: &Value) -> (Value, Value, Value) {
-    let row = stand.newest_row().await;
+    let row = stand.newest_row_of("intake").await;
     assert_eq!(row["point"], "intake");
     assert_eq!(row["outcome"], "unavailable");
     assert_eq!(&row["advice"], advice);
@@ -45,11 +46,13 @@ async fn a_failing_jev_leaves_the_input_recorded(level: Level) {
         journalled(&stand, &recorded["advice"]).await,
         (json!(true), json!("sent_unknown"), json!("timeout"))
     );
-    // The replay returns the recorded outcome and does not ask again.
+    // The replay returns the recorded outcome and does not ask again. Each of the
+    // two points of the command had asked once.
     let (replayed, _) = command(&mut client, route(level), params).await;
     assert_eq!(replayed, recorded);
-    assert_eq!(stand.jev.calls(), 1);
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!((stand.jev.calls(), stand.jev.asked("fit").len()), (2, 1));
+    assert_eq!(stand.rows_of("intake").await, (1, 1));
+    assert_eq!(stand.count("advice_journal").await, 2);
 
     // Jev answers in time with something that is not an answer.
     let (mut other, repo) = stand.workspace().await;
@@ -68,7 +71,7 @@ async fn a_failing_jev_leaves_the_input_recorded(level: Level) {
         journalled(&stand, &recorded["advice"]).await,
         (json!(true), json!("sent"), json!("invalid_response"))
     );
-    assert_eq!(stand.jev.calls(), 2);
+    assert_eq!((stand.jev.calls(), stand.jev.asked("fit").len()), (4, 2));
     client.finish().await;
     other.finish().await;
 }
@@ -98,13 +101,14 @@ async fn a_daemon_without_a_provider_records_the_input_and_says_so(level: Level)
             json!("provider_unconfigured")
         )
     );
-    let row = stand.newest_row().await;
+    let row = stand.newest_row_of("intake").await;
     assert_eq!(row["request"], Value::Null);
     assert_eq!(row["route"], route(level));
     assert_eq!(row["request_id"], json!(request_id));
     let (replayed, _) = command(&mut client, route(level), params).await;
     assert_eq!(replayed, recorded);
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!(stand.rows_of("intake").await, (1, 0));
+    assert_eq!(stand.count("advice_journal").await, 2);
     assert_eq!(stand.jev.calls(), 0);
     client.finish().await;
 }
@@ -136,7 +140,7 @@ async fn an_input_of_a_program_without_a_mode_is_recorded_without_a_call(level: 
         journalled(&stand, &recorded["advice"]).await,
         (json!(false), json!("not_sent"), json!("mode_not_set"))
     );
-    let row = stand.newest_row().await;
+    let row = stand.newest_row_of("intake").await;
     assert_eq!(row["request"], Value::Null);
     assert_eq!(row["route"], route(level));
     assert_eq!(row["request_id"], json!(request_id));
@@ -156,7 +160,8 @@ async fn an_input_of_a_program_without_a_mode_is_recorded_without_a_call(level: 
     stand.set_mode(&legacy.target.program_id, Some("mvp")).await;
     let (replayed, _) = command(&mut client, route(level), params).await;
     assert_eq!(replayed, recorded);
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!(stand.rows_of("intake").await, (1, 0));
+    assert_eq!(stand.count("advice_journal").await, 2);
 
     // Disabled is decided first: without a mode and without Jev the input is recorded
     // as `main` records it, with no field and no row.
@@ -166,7 +171,7 @@ async fn an_input_of_a_program_without_a_mode_is_recorded_without_a_call(level: 
     let params = off.input(FIRST, Uuid::new_v4());
     let (plain, _) = command(&mut other, route(level), params).await;
     assert!(plain.get("advice").is_none(), "{plain}");
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!(stand.count("advice_journal").await, 2);
     assert_eq!(stand.jev.calls(), 0);
     client.finish().await;
     other.finish().await;
@@ -211,16 +216,17 @@ async fn slice_input_of_an_erased_program_is_recorded_and_not_sent_to_jev() {
             json!("program_unavailable")
         )
     );
-    let row = stand.newest_row().await;
+    let row = stand.newest_row_of("intake").await;
     assert_eq!(row["request"], Value::Null);
     assert_eq!(row["request_id"], json!(request_id));
     assert_eq!(row["program_id"], erased.target.program_id);
     assert_eq!(row["scope_id"], erased.scope_id());
 
-    // A replay returns the same reply: no call, no second row, no second input.
+    // A replay returns the same reply: no call, no further row, no second input.
     let (replayed, _) = command(&mut client, route(level), params).await;
     assert_eq!(replayed, recorded);
-    assert_eq!(stand.count("advice_journal").await, 1);
+    assert_eq!(stand.rows_of("intake").await, (1, 0));
+    assert_eq!(stand.count("advice_journal").await, 2);
     assert_eq!(stand.jev.calls(), 0);
     client.finish().await;
 }

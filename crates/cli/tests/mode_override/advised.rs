@@ -8,9 +8,10 @@ use crate::walk::{
 };
 use serde_json::{Value, json};
 
-/// The six requests of the walk: `scope_save` and `slice_save` are `sizing`,
+/// Six of the nine requests of the walk: `scope_save` and `slice_save` are `sizing`,
 /// `slice_pipeline` is the `pipeline` point of the same Slice save, the three inputs
-/// are `intake`. Each advice binary reads the requests of its own point.
+/// are `intake`. Each advice binary reads the requests of its own point. The other
+/// three are `model`, asked about each input after `intake` over the same state.
 pub struct Sent {
     pub scope_save: Value,
     pub scope_input: Value,
@@ -26,6 +27,8 @@ fn settled(name: &str) -> (&'static str, f64) {
         "placement" => ("new_candidate", 0.7),
         "nearest" => ("none", 0.7),
         "fit" => ("in_line", 0.7),
+        "practical" => ("routine", 0.7),
+        "specialist" => ("none", 0.7),
         size if size.ends_with(".size") => ("bounded", 0.7),
         advice if advice.ends_with(".advice") => ("keep", 0.7),
         pipeline if pipeline.ends_with(".pipeline") => ("slice.debug-root-cause", 0.7),
@@ -86,15 +89,27 @@ pub async fn walk(stand: &Stand) -> Sent {
         .await;
     client.finish().await;
 
-    let sent: [Value; 6] = stand.jev.requests().try_into().expect("six requests");
+    let sent: [Value; 9] = stand.jev.requests().try_into().expect("nine requests");
     let [
         scope_save,
         scope_input,
+        scope_model,
         slice_first_input,
+        slice_first_model,
         slice_save,
         slice_pipeline,
         slice_input,
+        slice_model,
     ] = sent;
+    // `model` asked about each input right after `intake`, over the state it read.
+    for (intake, model) in [
+        (&scope_input, &scope_model),
+        (&slice_first_input, &slice_first_model),
+        (&slice_input, &slice_model),
+    ] {
+        assert!(model["questions"].get("practical").is_some(), "{model}");
+        assert_eq!(model["state"], intake["state"]);
+    }
     Sent {
         scope_save,
         scope_input,

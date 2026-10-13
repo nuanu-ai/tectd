@@ -61,5 +61,7 @@ async fn sizing_reads_a_candidates_own_level_and_the_scopes_level_inside_a_scope
             .collect::<Vec<_>>(),
         ["c1.pipeline", "c2.pipeline"]
     );
-    assert_eq!(stand.count("advice_journal").await, 6);
+    // Beside the two saves and the `pipeline` point: three inputs, each asked about by
+    // `intake` and by `model`.
+    assert_eq!(stand.count("advice_journal").await, 9);
 }

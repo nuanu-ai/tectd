@@ -13,6 +13,8 @@ fn growing(name: &str) -> (&'static str, f64) {
         "work" => ("large", 0.7),
         "placement" => ("new_candidate", 0.6),
         "fit" => ("beyond_mode", 0.8),
+        // The `model` point asks about the same input; this suite is about `intake`.
+        "practical" | "specialist" => ("ABSTAIN", 0.9),
         other => panic!("unexpected question {other}"),
     }
 }
@@ -34,7 +36,7 @@ async fn input_without_a_saved_draft_gets_no_nearest_question(level: Level) {
     let (recorded, _) = command(&mut client, route(level), params).await;
     assert_eq!(recorded["advice"], grown(level));
 
-    let requests = stand.jev.requests();
+    let requests = stand.jev.asked("fit");
     assert_eq!(requests.len(), 1);
     let state = &requests[0]["state"];
     assert!(state.get("candidates").is_none(), "{state}");
@@ -47,7 +49,7 @@ async fn input_without_a_saved_draft_gets_no_nearest_question(level: Level) {
         criteria(&requests[0], "placement"),
         placement_without_candidates(level)
     );
-    let row = stand.newest_row().await;
+    let row = stand.newest_row_of("intake").await;
     assert_eq!(row["advice"], recorded["advice"]);
     assert_eq!(row["advice"].to_string(), recorded["advice"].to_string());
     assert_eq!(
@@ -87,7 +89,7 @@ async fn slice_input_for_a_draft_of_decision_nodes_only_gets_no_nearest_question
     assert_eq!(recorded["advice"], grown(Level::Slices));
 
     // The decision node is shown to Jev, and there is still nothing to name.
-    let requests = stand.jev.requests();
+    let requests = stand.jev.asked("fit");
     let shown = json!([{"key":"c1","kind":"decision","title":"Choose correction path",
         "question":"Is Lightweight sufficient?","dependencies":[]}]);
     assert_eq!(
@@ -104,6 +106,9 @@ async fn slice_input_for_a_draft_of_decision_nodes_only_gets_no_nearest_question
         criteria(&requests[0], "placement"),
         placement_without_candidates(Level::Slices)
     );
-    assert_eq!(stand.newest_row().await["advice"], recorded["advice"]);
+    assert_eq!(
+        stand.newest_row_of("intake").await["advice"],
+        recorded["advice"]
+    );
     client.finish().await;
 }
