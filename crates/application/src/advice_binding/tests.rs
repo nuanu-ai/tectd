@@ -33,7 +33,7 @@ fn reviewed(ready: bool, departures: &[AdviceDeparture]) -> Reviewed<'_> {
     Reviewed {
         level: SizingLevel::ScopeToSlices,
         candidate_set_id: Uuid::from_u128(5),
-        draft: vec![(Uuid::from_u128(1), 1), (Uuid::from_u128(2), 1)],
+        draft: Some(vec![(Uuid::from_u128(1), 1), (Uuid::from_u128(2), 1)]),
         ready,
         departures,
     }

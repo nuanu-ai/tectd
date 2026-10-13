@@ -147,15 +147,16 @@ impl WorkspaceService {
         let mut stored = tx.save_candidate_review(workspace.id, request).await?;
         // The review is stored and not yet committed. Held to Jev's advice here, a
         // refusal rolls it back and a stated departure is written with it.
-        let draft = stored.draft.as_ref().ok_or(Error::InternalInvariant)?;
         let reviewed = crate::advice_binding::Reviewed {
             level: tect_domain::SizingLevel::ProgramToScopes,
             candidate_set_id: request.candidate_set_id,
-            draft: draft
-                .candidates
-                .iter()
-                .map(|candidate| (candidate.id, candidate.revision))
-                .collect(),
+            draft: stored.draft.as_ref().map(|draft| {
+                draft
+                    .candidates
+                    .iter()
+                    .map(|candidate| (candidate.id, candidate.revision))
+                    .collect()
+            }),
             ready: request.review.verdict == tect_domain::ReviewVerdict::Ready,
             departures,
         };

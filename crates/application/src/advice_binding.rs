@@ -10,8 +10,9 @@ use uuid::Uuid;
 pub(crate) struct Reviewed<'a> {
     pub level: SizingLevel,
     pub candidate_set_id: Uuid,
-    /// The candidates of the draft under review with the revisions they stand under.
-    pub draft: Vec<(Uuid, i64)>,
+    /// The candidates of the draft under review with the revisions they stand under;
+    /// `None` when the stored review came back without its draft.
+    pub draft: Option<Vec<(Uuid, i64)>>,
     /// Whether the review says ready.
     pub ready: bool,
     pub departures: &'a [AdviceDeparture],
@@ -34,15 +35,16 @@ pub(crate) async fn hold(
     if !enabled {
         return Ok(());
     }
+    // A review is of a draft. Its absence is held against the gate only, so that a
+    // disabled Jev meets no error `main` does not have.
+    let draft = reviewed.draft.as_deref().ok_or(Error::InternalInvariant)?;
     let open = store
         .open_advice(workspace_id, reviewed.level, reviewed.candidate_set_id)
         .await?;
-    let departed = reviewed.level.review_departures(
-        reviewed.ready,
-        &reviewed.draft,
-        &open,
-        reviewed.departures,
-    )?;
+    let departed =
+        reviewed
+            .level
+            .review_departures(reviewed.ready, draft, &open, reviewed.departures)?;
     for (answer_id, reason) in departed {
         store
             .depart_from_advice(workspace_id, answer_id, reason)
