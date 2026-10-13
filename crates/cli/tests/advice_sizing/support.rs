@@ -373,6 +373,8 @@ impl Stand {
     }
 
     /// The newest journal row as the operator sees it, with the request body as JSON.
+    // This module is compiled once per advice binary; the sizing suite reads rows by point.
+    #[allow(dead_code)]
     pub async fn newest_row(&self) -> Value {
         sqlx::query_scalar(
             "SELECT pg_catalog.to_jsonb(j) - 'request_body' - 'response_body' \
