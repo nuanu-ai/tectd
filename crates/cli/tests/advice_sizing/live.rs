@@ -11,7 +11,7 @@ const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 
 async fn the_real_jev_answers_one_draft(level: Level) {
     let key = std::env::var("TECT_TEST_LIVE_JEV_KEY").expect("TECT_TEST_LIVE_JEV_KEY required");
-    let stand = Stand::start_at(Some(ENDPOINT), &key, "30000").await;
+    let stand = Stand::start_at(Some(ENDPOINT), &key, "20000").await;
     let (mut client, repo) = stand.workspace().await;
     let target = target(&mut client, &repo, level).await;
     configure(&mut client, true, 0).await;

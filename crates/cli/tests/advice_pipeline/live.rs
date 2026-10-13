@@ -27,7 +27,7 @@ fn described(number: usize, pipeline: &str, title: &str, outcome: &str, includes
 #[ignore = "calls the real Jev service; needs TECT_TEST_LIVE_JEV_KEY"]
 async fn live_slice_draft_gets_pipeline_advice_from_the_real_jev() {
     let key = std::env::var("TECT_TEST_LIVE_JEV_KEY").expect("TECT_TEST_LIVE_JEV_KEY required");
-    let stand = Stand::start_at(Some(ENDPOINT), &key, "30000").await;
+    let stand = Stand::start_at(Some(ENDPOINT), &key, "20000").await;
     let (mut client, repo) = stand.workspace().await;
     let (head, _) = planning(&mut client, &repo).await;
     configure(&mut client, true, 0).await;

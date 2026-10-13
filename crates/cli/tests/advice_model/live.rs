@@ -31,7 +31,7 @@ fn input(level: Level) -> &'static str {
 
 async fn the_real_jev_advises_on_the_executors_of_one_input(level: Level) {
     let key = std::env::var("TECT_TEST_LIVE_JEV_KEY").expect("TECT_TEST_LIVE_JEV_KEY required");
-    let stand = Stand::start_at(Some(ENDPOINT), &key, "30000").await;
+    let stand = Stand::start_at(Some(ENDPOINT), &key, "20000").await;
     let (mut client, repo) = stand.workspace().await;
     // The draft is saved before Jev is enabled: the calls are those of the recorded input.
     let mut planned = Planned::bare(&mut client, &repo, level).await;
