@@ -160,6 +160,34 @@ fn validated_routes_select_bounded_operation_and_bridge_budgets() {
     );
 }
 
+/// One wait for Jev at the largest `TECT_JEV_TIMEOUT_MS` ends inside the operation
+/// deadline of the commands that record input. Each of them asks Jev twice, `intake`
+/// and then `model`, and two such waits do not: a Jev that answers neither call makes
+/// the command, which has recorded its input by then, answer `operation_timeout`.
+#[test]
+fn two_jev_waits_at_the_largest_timeout_outlast_the_deadline_of_an_input_command() {
+    let id = Uuid::new_v4();
+    let scope_input = parse_invocation(
+        "record_candidate_input",
+        json!({"candidate_set_id":id,"revision":1,"request_id":id,"input":"i"}),
+    )
+    .unwrap();
+    let slice_input = parse_invocation(
+        "record_slice_candidate_input",
+        json!({"scope_id":id,"candidate_set_id":id,"revision":1,"request_id":id,"input":"i"}),
+    )
+    .unwrap();
+    let wait = Duration::from_millis(crate::jev_transport::MAX_TIMEOUT_MS);
+    for command in [&scope_input, &slice_input] {
+        let deadline = operation_timeout_for(command);
+        assert_eq!(deadline, OPERATION_TIMEOUT);
+        assert!(wait < deadline);
+        assert!(2 * wait > deadline);
+    }
+    // Two waits fit the deadline up to this setting of the timeout.
+    assert_eq!(OPERATION_TIMEOUT.as_millis() / 2, 22_500);
+}
+
 #[tokio::test]
 async fn bridge_accepts_success_from_daemon_after_previous_fifteen_second_limit() {
     let directory = tempfile::tempdir().unwrap();
