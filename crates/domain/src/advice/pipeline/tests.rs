@@ -1,5 +1,6 @@
 //! What Jev is asked about the pipelines of a saved draft: which nodes, the state
 //! object and the criteria of the one question per node.
+mod kept;
 mod shaping;
 
 use super::super::test_drafts::stored_slices as stored;

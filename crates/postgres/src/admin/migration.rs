@@ -102,6 +102,11 @@ pub async fn migrate(pool: &PgPool, runtime_role: &str) -> Result<()> {
         format!(
             "GRANT UPDATE(called,outcome,reason,send_certainty,model,request_bytes,response_bytes,input_tokens,output_tokens,latency_ms,request_body,response_body,advice) ON TABLE advice_journal TO {quoted_role}"
         ),
+        format!("REVOKE ALL PRIVILEGES ON TABLE advice_candidate_answers FROM {quoted_role}"),
+        format!("GRANT SELECT, INSERT ON TABLE advice_candidate_answers TO {quoted_role}"),
+        format!(
+            "GRANT UPDATE(departure_reason,departed_at) ON TABLE advice_candidate_answers TO {quoted_role}"
+        ),
         format!(
             "GRANT EXECUTE ON FUNCTION public.tect_authenticate_host(uuid, text, boolean) TO {quoted_role}"
         ),
@@ -333,7 +338,8 @@ pub async fn validate_runtime_role(pool: &PgPool, runtime_role: &str) -> Result<
                          'knowledge_maintenance_signals','knowledge_maintenance_tasks',
                          'knowledge_maintenance_command_receipts','knowledge_maintenance_consumers',
                          'planning_knowledge_manifests','program_knowledge_refresh_receipts',
-                         'planning_knowledge_consumptions','advice_config','advice_journal'
+                         'planning_knowledge_consumptions','advice_config','advice_journal',
+                         'advice_candidate_answers'
                      )
                      AND pg_catalog.pg_has_role(r.oid, c.relowner, 'MEMBER')
                ) OR EXISTS (

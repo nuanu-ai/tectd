@@ -1,5 +1,6 @@
 //! PostgreSQL persistence and operator-only administration.
 pub mod admin;
+mod advice_answers;
 mod advice_store;
 mod advice_words;
 mod durable_knowledge;

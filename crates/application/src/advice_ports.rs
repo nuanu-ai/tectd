@@ -72,6 +72,8 @@ pub trait AdviceStore: Send {
         entry: &NewAdviceEntry,
     ) -> Result<Uuid>;
 
+    /// Complete a reserved journal row and, with it, keep Jev's answer about each
+    /// candidate the completion carries.
     async fn complete_advice_entry(
         &mut self,
         workspace_id: Uuid,

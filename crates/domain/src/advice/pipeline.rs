@@ -6,7 +6,10 @@ use super::pipeline_catalog as catalog;
 use super::point::{self, WIDEST_PROBABILITY, unanswered};
 use super::sizing_state::{SizingDraft, SizingScope, SizingWord};
 use super::written::Written;
-use super::{ADVICE_ABSTAIN, AdviceAnswer, AdviceField, AdviceQuestionSet, AdviceShaping};
+use super::{
+    ADVICE_ABSTAIN, AdviceAnswer, AdviceField, AdviceQuestionSet, AdviceShaping, CandidateAdvice,
+    SizingLevel,
+};
 use crate::{
     Error, PipelineCatalogueEntry, PipelineCatalogueSnapshot, PipelineKind, ProgramMode,
     ResolvedSliceCandidateDraft, Result, SliceCandidateDraft, SliceCandidateDraftNode,
@@ -162,14 +165,14 @@ impl PipelineAdvice {
     }
 }
 
-impl AdviceShaping for PipelineAdvice {
-    /// One entry per asked node, in draft order: a position, names of the catalogue
-    /// and probabilities only, since the agent holds its own draft and catalogue.
-    /// `draft_pipeline_p` is Jev's probability for the pipeline the draft chose, and
-    /// `differs` says Jev chose another one. A node Jev abstained on keeps `ABSTAIN`
-    /// and does not differ.
-    fn shape(&self, answers: &BTreeMap<String, AdviceAnswer>) -> AdviceField {
-        let mut candidates = Vec::new();
+impl PipelineAdvice {
+    /// The entry of each asked node, in draft order, and whether Jev chose another
+    /// pipeline than the draft; or the name of a question without a usable answer.
+    fn entries(
+        &self,
+        answers: &BTreeMap<String, AdviceAnswer>,
+    ) -> std::result::Result<Vec<(Value, bool)>, String> {
+        let mut entries = Vec::new();
         for node in &self.asked {
             let name = question_name(node.written.position);
             let draft = node.chosen.as_str();
@@ -177,15 +180,48 @@ impl AdviceShaping for PipelineAdvice {
                 point::chosen(answers, &name),
                 point::given(answers, &name, draft),
             ) else {
-                return unanswered(&name);
+                return Err(name);
             };
-            candidates.push(
+            let differs = pipeline != ADVICE_ABSTAIN && pipeline != draft;
+            entries.push((
                 json!({"candidate":node.written.position,"pipeline":pipeline,
-                "pipeline_p":pipeline_p,"draft_pipeline_p":draft_pipeline_p,
-                "differs":pipeline != ADVICE_ABSTAIN && pipeline != draft}),
-            );
+                    "pipeline_p":pipeline_p,"draft_pipeline_p":draft_pipeline_p,
+                    "differs":differs}),
+                differs,
+            ));
         }
-        self.advised(candidates)
+        Ok(entries)
+    }
+}
+
+impl AdviceShaping for PipelineAdvice {
+    /// One entry per asked node, in draft order: a position, names of the catalogue
+    /// and probabilities only, since the agent holds its own draft and catalogue.
+    /// `draft_pipeline_p` is Jev's probability for the pipeline the draft chose, and
+    /// `differs` says Jev chose another one. A node Jev abstained on keeps `ABSTAIN`
+    /// and does not differ.
+    fn shape(&self, answers: &BTreeMap<String, AdviceAnswer>) -> AdviceField {
+        match self.entries(answers) {
+            Ok(entries) => self.advised(entries.into_iter().map(|(entry, _)| entry).collect()),
+            Err(name) => unanswered(&name),
+        }
+    }
+
+    /// The entry of each asked node under the id and revision the store holds the
+    /// node under. It asks for a change when Jev chose another pipeline than the draft.
+    fn kept(&self, answers: &BTreeMap<String, AdviceAnswer>) -> Vec<CandidateAdvice> {
+        // Nothing is kept of answers that made no advised field.
+        let Ok(entries) = self.entries(answers) else {
+            return Vec::new();
+        };
+        let kept = |(node, (answer, asks_change)): (&Asked, (Value, bool))| CandidateAdvice {
+            level: SizingLevel::ScopeToSlices,
+            candidate_id: node.written.id,
+            candidate_revision: node.written.revision,
+            asks_change,
+            answer,
+        };
+        self.asked.iter().zip(entries).map(kept).collect()
     }
 
     /// Every asked node with the longest name, the widest probabilities and the

@@ -5,7 +5,8 @@ use super::intake_catalog as catalog;
 use super::point::{self, WIDEST_PROBABILITY, unanswered};
 use super::sizing_state::{SizingScope, SizingWord};
 use super::{
-    ADVICE_ABSTAIN, AdviceAnswer, AdviceField, AdviceQuestionSet, AdviceShaping, SizingLevel,
+    ADVICE_ABSTAIN, AdviceAnswer, AdviceField, AdviceQuestionSet, AdviceShaping, CandidateAdvice,
+    SizingLevel,
 };
 use crate::{
     Error, Program, ProgramMode, ResolvedCandidateDraft, ResolvedSliceCandidateDraft, Result,
@@ -248,6 +249,11 @@ impl AdviceShaping for IntakeAdvice {
 
     fn subject(&self) -> String {
         "this input".to_owned()
+    }
+
+    /// No review is held to `intake`: nothing is kept of it beyond its journal row.
+    fn kept(&self, _: &BTreeMap<String, AdviceAnswer>) -> Vec<CandidateAdvice> {
+        Vec::new()
     }
 }
 

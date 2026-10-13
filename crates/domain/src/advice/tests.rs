@@ -1,7 +1,8 @@
 use super::*;
 use serde_json::json;
 
-/// A point whose content is the accepted answers as they came.
+/// A point whose content is the accepted answers as they came, and which keeps one
+/// answer about one candidate.
 struct Verbatim;
 
 impl AdviceShaping for Verbatim {
@@ -17,6 +18,15 @@ impl AdviceShaping for Verbatim {
     }
     fn subject(&self) -> String {
         "this test".into()
+    }
+    fn kept(&self, answers: &BTreeMap<String, AdviceAnswer>) -> Vec<CandidateAdvice> {
+        vec![CandidateAdvice {
+            level: SizingLevel::ProgramToScopes,
+            candidate_id: Uuid::from_u128(7),
+            candidate_revision: 2,
+            asks_change: answers["size"].choice == "large",
+            answer: json!({"size":answers["size"].choice}),
+        }]
     }
 }
 
@@ -263,7 +273,19 @@ fn provider_results_become_the_row_completion() {
         json!({"status":"advised","answers":{"size":{"choice":"small",
             "probabilities":{"ABSTAIN":0.1,"large":0.2,"small":0.7},"confidence":0.5}}})
     );
-    // Answers that all abstain never reach the point's shaping step.
+    // An advised completion carries what the point keeps of the answers.
+    assert_eq!(
+        advised.kept,
+        [CandidateAdvice {
+            level: SizingLevel::ProgramToScopes,
+            candidate_id: Uuid::from_u128(7),
+            candidate_revision: 2,
+            asks_change: false,
+            answer: json!({"size":"small"}),
+        }]
+    );
+    // Answers that all abstain never reach the point's shaping step, and nothing is
+    // kept of them.
     let abstained = AdviceCompletion::from_provider(
         Ok(AdviceReply {
             answers: answer(ADVICE_ABSTAIN, 0.1, 0.2, 0.7),
@@ -272,6 +294,7 @@ fn provider_results_become_the_row_completion() {
         &Verbatim,
     );
     assert_eq!(abstained.advice, AdviceField::Abstained);
+    assert!(abstained.kept.is_empty());
     let failed = AdviceCompletion::from_provider(
         Err(AdviceFailure {
             reason: AdviceUnavailableReason::Timeout,
@@ -290,6 +313,7 @@ fn provider_results_become_the_row_completion() {
         }
     );
     assert_eq!(failed.exchange.input_tokens, None);
+    assert!(failed.kept.is_empty());
     let skipped = AdviceFailure::not_called(AdviceUnavailableReason::ProviderUnconfigured, "x");
     assert_eq!(skipped.send_certainty, AdviceSendCertainty::NotSent);
 }

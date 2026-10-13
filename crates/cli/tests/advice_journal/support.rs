@@ -109,6 +109,10 @@ impl AdviceShaping for Verbatim {
     fn subject(&self) -> String {
         "this test point".into()
     }
+    /// The point is about no candidate: it keeps nothing.
+    fn kept(&self, _: &BTreeMap<String, AdviceAnswer>) -> Vec<CandidateAdvice> {
+        Vec::new()
+    }
 }
 
 /// A command reply that has room for a field of at most this many JSON bytes.

@@ -173,6 +173,9 @@ impl AdviceShaping for Point {
     fn subject(&self) -> String {
         "this draft (40 candidates, 3 included items)".into()
     }
+    fn kept(&self, _: &std::collections::BTreeMap<String, AdviceAnswer>) -> Vec<CandidateAdvice> {
+        unreachable!()
+    }
 }
 
 /// A command reply with room for a field of at most this many JSON bytes.

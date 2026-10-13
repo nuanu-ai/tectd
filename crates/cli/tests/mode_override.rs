@@ -20,5 +20,8 @@ mod slice;
 #[path = "advice_sizing/support.rs"]
 #[allow(dead_code)]
 mod support;
+#[path = "mode_override/upgrade.rs"]
+#[allow(dead_code)]
+mod upgrade;
 #[path = "mode_override/walk.rs"]
 mod walk;

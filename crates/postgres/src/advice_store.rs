@@ -280,7 +280,8 @@ impl AdviceStore for PgUnitOfWork {
         if result.rows_affected() != 1 {
             return Err(Error::InternalInvariant);
         }
-        Ok(())
+        self.keep_candidate_advice(workspace_id, entry_id, &completion.kept)
+            .await
     }
 
     async fn advice_entry_for_request(

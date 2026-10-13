@@ -1,5 +1,6 @@
 //! What Jev is asked: the state object, the keys and the three kinds of questions.
 mod asked;
+mod kept;
 mod shaping;
 
 use super::super::test_drafts::{stored_scopes, stored_slices};

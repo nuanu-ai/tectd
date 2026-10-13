@@ -1,7 +1,7 @@
 //! What one provider call produced and how it completes its journal row.
 use super::{
     AdviceAnswer, AdviceField, AdviceSendCertainty, AdviceShaping, AdviceUnavailableReason,
-    questions,
+    CandidateAdvice, questions,
 };
 use std::collections::BTreeMap;
 
@@ -40,6 +40,9 @@ pub struct AdviceCompletion {
     pub send_certainty: AdviceSendCertainty,
     pub advice: AdviceField,
     pub exchange: AdviceExchange,
+    /// Jev's answer about each candidate, kept with the row for the review of the
+    /// draft. Empty unless the row is completed as advised.
+    pub kept: Vec<CandidateAdvice>,
 }
 
 impl AdviceCompletion {
@@ -50,19 +53,29 @@ impl AdviceCompletion {
         shaping: &dyn AdviceShaping,
     ) -> Self {
         match result {
-            Ok(reply) => Self {
-                send_certainty: AdviceSendCertainty::Sent,
-                advice: if questions::abstained(&reply.answers) {
+            Ok(reply) => {
+                let advice = if questions::abstained(&reply.answers) {
                     AdviceField::Abstained
                 } else {
                     shaping.shape(&reply.answers)
-                },
-                exchange: reply.exchange,
-            },
+                };
+                // An abstained or unusable answer opens nothing: nothing is kept of it.
+                let kept = match advice {
+                    AdviceField::Advised { .. } => shaping.kept(&reply.answers),
+                    _ => Vec::new(),
+                };
+                Self {
+                    send_certainty: AdviceSendCertainty::Sent,
+                    advice,
+                    exchange: reply.exchange,
+                    kept,
+                }
+            }
             Err(failure) => Self {
                 send_certainty: failure.send_certainty,
                 advice: AdviceField::unavailable(failure.reason, &failure.detail),
                 exchange: failure.exchange,
+                kept: Vec::new(),
             },
         }
     }
