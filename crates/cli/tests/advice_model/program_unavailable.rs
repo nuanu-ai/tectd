@@ -1,6 +1,8 @@
 //! What the one point of `program.record_input` gives when it has no advice: a Jev
 //! that fails, a Program without a mode, a daemon without a provider, the daily call
-//! limit and the ceiling of a request. The input is recorded every time.
+//! limit and the ceiling of a request, each with the input recorded. And a Program
+//! whose text is erased, where the command itself is refused and the point does not
+//! fire.
 use crate::drafts::PROGRAM_WORDS;
 use crate::inputs::{FIRST, SECOND};
 use crate::model::{NOT_AN_ANSWER, advised, enable, journalled, settled, unavailable};
