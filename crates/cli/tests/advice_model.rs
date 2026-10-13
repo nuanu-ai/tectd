@@ -1,7 +1,7 @@
 //! The `model` advice point on `scope.candidates.record_input` and
-//! `slice.candidates.input`, a second point on those commands after `intake`, through
-//! a real daemon and MCP bridge against PostgreSQL. Jev is a loopback fake; nothing
-//! leaves the machine.
+//! `slice.candidates.input`, a second point on those commands after `intake`, and on
+//! `program.record_input`, where it is the only point, through a real daemon and MCP
+//! bridge against PostgreSQL. Jev is a loopback fake; nothing leaves the machine.
 #[path = "advice_model/disabled.rs"]
 mod disabled;
 #[path = "advice_sizing/drafts.rs"]
@@ -22,6 +22,10 @@ mod pipeline;
 #[path = "native_planning/support.rs"]
 #[allow(dead_code)]
 mod planning;
+#[path = "advice_model/program_input.rs"]
+mod program_input;
+#[path = "advice_model/program_unavailable.rs"]
+mod program_unavailable;
 #[allow(dead_code)]
 mod recovery_support;
 #[path = "advice_model/result_inputs.rs"]

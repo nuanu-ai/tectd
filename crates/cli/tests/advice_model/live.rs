@@ -1,11 +1,13 @@
-//! One real call of the `model` point to the Jev service per level, beside the real
-//! `intake` call of the same input. Ignored by default: the calls spend money and need
-//! the key in `TECT_TEST_LIVE_JEV_KEY`. Run it alone and read what it prints:
+//! One real call of the `model` point to the Jev service per level: beside the real
+//! `intake` call of the same input on the two candidate levels, and alone on the
+//! Program level. Ignored by default: the calls spend money and need the key in
+//! `TECT_TEST_LIVE_JEV_KEY`. Run it alone and read what it prints:
 //!
 //! `cargo test -p tect-cli --test advice_model live -- --ignored --nocapture`
 use crate::drafts::Level;
 use crate::inputs::{Planned, route};
 use crate::model::both_rows;
+use crate::program_input::{ROUTE, Stated, the_row};
 use crate::support::{Stand, command, configure};
 use serde_json::json;
 use uuid::Uuid;
@@ -96,4 +98,66 @@ async fn live_scope_input_gets_model_advice_from_the_real_jev() {
 #[ignore = "calls the real Jev service; needs TECT_TEST_LIVE_JEV_KEY"]
 async fn live_slice_input_gets_model_advice_from_the_real_jev() {
     the_real_jev_advises_on_the_executors_of_one_input(Level::Slices).await;
+}
+
+/// An input a person could have written to a Program that is already stated: one
+/// narrow practical change, and beside it intellectual work of its own.
+const PROGRAM_INPUT: &str = "Rename the preview flag in the settings file to preview_enabled. \
+    And before the correction is chosen, compare the three rendering libraries we could move \
+    to and recommend one.";
+
+/// The same on the Program level, where `model` is the only point of the command.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+#[ignore = "calls the real Jev service; needs TECT_TEST_LIVE_JEV_KEY"]
+async fn live_program_input_gets_model_advice_from_the_real_jev() {
+    let key = std::env::var("TECT_TEST_LIVE_JEV_KEY").expect("TECT_TEST_LIVE_JEV_KEY required");
+    let stand = Stand::start_at(Some(ENDPOINT), &key, "20000").await;
+    let (mut client, repo) = stand.workspace().await;
+    let program = Stated::ready(&mut client, &repo).await;
+    configure(&mut client, true, 0).await;
+
+    let request_id = Uuid::new_v4();
+    let params = program.input(PROGRAM_INPUT, request_id);
+    let (recorded, envelope) = command(&mut client, ROUTE, params).await;
+    let row = the_row(&stand, request_id).await;
+    let answer: Option<String> = sqlx::query_scalar(
+        "SELECT pg_catalog.convert_from(response_body, 'UTF8') FROM advice_journal \
+         WHERE tenant_id=$1 AND point='model' ORDER BY created_at DESC, id DESC LIMIT 1",
+    )
+    .bind(stand.tenant)
+    .fetch_one(&stand.pool)
+    .await
+    .unwrap();
+    assert!(!recorded.to_string().contains(&key) && !row.to_string().contains(&key));
+    assert!(answer.as_ref().is_none_or(|body| !body.contains(&key)));
+
+    println!("level=input_to_program reply_envelope_bytes={envelope}");
+    println!("model_advice={}", recorded["model_advice"]);
+    println!("state={}", row["request"]["state"]);
+    for fact in [
+        "outcome",
+        "reason",
+        "send_certainty",
+        "model",
+        "request_bytes",
+        "response_bytes",
+        "input_tokens",
+        "output_tokens",
+        "latency_ms",
+    ] {
+        println!("{fact}={}", row[fact]);
+    }
+    println!("answer_body={}", answer.unwrap_or_default());
+
+    assert_eq!(
+        recorded["model_advice"]["status"], "advised",
+        "{}",
+        recorded["model_advice"]
+    );
+    assert!(recorded.get("advice").is_none());
+    assert_eq!(row["advice"], recorded["model_advice"]);
+    assert_eq!(row["route"], ROUTE);
+    assert_eq!(row["request"]["state"]["level"], "input_to_program");
+    assert_eq!(stand.count("advice_journal").await, 1);
+    client.finish().await;
 }

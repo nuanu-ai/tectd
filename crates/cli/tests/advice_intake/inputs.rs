@@ -22,6 +22,16 @@ pub fn word(source: &str, text: &str) -> Value {
     json!({"source":source,"text":text})
 }
 
+/// The statement of the Program the shared fixtures save, as Jev reads it.
+pub fn statement() -> Value {
+    json!({"name":"Notification preview",
+        "intent":"Correct preview behavior from demonstrated evidence",
+        "basis":"The preview differs from saved settings",
+        "boundaries":"Preview diagnosis and bounded correction",
+        "constraints":"No deployment or adjacent notification work",
+        "success":"The cause and correction are verified"})
+}
+
 /// A candidate set that takes new input, and the set as its latest reply showed it.
 pub struct Planned {
     pub target: Target,
@@ -113,13 +123,7 @@ impl Planned {
     ) -> Value {
         let mut state = json!({"level":self.target.level.name(),
             "mode":{"level":mode.as_str(),"description":mode.description()},
-            "program":{"name":"Notification preview",
-                "intent":"Correct preview behavior from demonstrated evidence",
-                "basis":"The preview differs from saved settings",
-                "boundaries":"Preview diagnosis and bounded correction",
-                "constraints":"No deployment or adjacent notification work",
-                "success":"The cause and correction are verified"},
-            "user_words":user_words,"new_input":new_input});
+            "program":statement(),"user_words":user_words,"new_input":new_input});
         if self.target.level == Level::Slices {
             state["scope"] = json!({"title":"Preview diagnosis and correction decision",
                 "outcome":"The cause is demonstrated and the correction path selected",
