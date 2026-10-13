@@ -10,6 +10,8 @@ mod drafts;
 mod first_draft;
 #[path = "advice_pipeline/limits.rs"]
 mod limits;
+#[path = "advice_pipeline/live.rs"]
+mod live;
 #[path = "advice_pipeline/support.rs"]
 #[allow(dead_code)]
 mod pipeline;

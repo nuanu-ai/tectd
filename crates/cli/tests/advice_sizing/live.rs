@@ -18,10 +18,10 @@ async fn the_real_jev_answers_one_draft(level: Level) {
 
     let params = target.save_draft(target.overgrown(), Uuid::new_v4());
     let (saved, envelope) = command(&mut client, level.save_route(), params).await;
-    let row = stand.newest_row().await;
+    let row = stand.newest_row_of("sizing").await;
     let answer: Option<String> = sqlx::query_scalar(
         "SELECT pg_catalog.convert_from(response_body, 'UTF8') FROM advice_journal \
-         WHERE tenant_id=$1 ORDER BY created_at DESC, id DESC LIMIT 1",
+         WHERE tenant_id=$1 AND point='sizing' ORDER BY created_at DESC, id DESC LIMIT 1",
     )
     .bind(stand.tenant)
     .fetch_one(&stand.pool)
@@ -49,7 +49,8 @@ async fn the_real_jev_answers_one_draft(level: Level) {
 
     assert_eq!(saved["advice"]["status"], "advised", "{}", saved["advice"]);
     assert_eq!(row["advice"], saved["advice"]);
-    assert_eq!(stand.count("advice_journal").await, 1);
+    // A Slice draft save has a second point with a row of its own.
+    assert_eq!(stand.rows_of("sizing").await, (1, 1));
     client.finish().await;
 }
 
