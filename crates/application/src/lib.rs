@@ -1,5 +1,6 @@
 //! Application policy and ports. Adapters depend on this crate, never the reverse.
 mod advice;
+mod advice_binding;
 mod advice_intake;
 mod advice_pipeline;
 mod advice_ports;

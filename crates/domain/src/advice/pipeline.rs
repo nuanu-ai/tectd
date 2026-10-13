@@ -194,6 +194,11 @@ impl PipelineAdvice {
     }
 }
 
+/// What Jev chose for a work node in a kept answer, as a refusal says it: the pipeline.
+pub(super) fn chose(answer: &Value) -> Option<String> {
+    Some(answer.get("pipeline")?.as_str()?.to_owned())
+}
+
 impl AdviceShaping for PipelineAdvice {
     /// One entry per asked node, in draft order: a position, names of the catalogue
     /// and probabilities only, since the agent holds its own draft and catalogue.

@@ -81,6 +81,23 @@ pub trait AdviceStore: Send {
         completion: &AdviceCompletion,
     ) -> Result<()>;
 
+    /// The kept answers about candidates of one candidate set that ask for a change
+    /// and that no review has departed from, in the order they were given.
+    async fn open_advice(
+        &mut self,
+        workspace_id: Uuid,
+        level: SizingLevel,
+        candidate_set_id: Uuid,
+    ) -> Result<Vec<OpenAdvice>>;
+
+    /// Write on one open kept answer the reason a review departs from it, and when.
+    async fn depart_from_advice(
+        &mut self,
+        workspace_id: Uuid,
+        answer_id: Uuid,
+        reason: &str,
+    ) -> Result<()>;
+
     /// Newest row a command wrote under one idempotency request id.
     async fn advice_entry_for_request(
         &mut self,

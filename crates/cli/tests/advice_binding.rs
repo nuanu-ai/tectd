@@ -4,11 +4,15 @@
 #[path = "advice_binding/support.rs"]
 #[allow(dead_code)]
 mod binding;
+#[path = "advice_binding/closing.rs"]
+mod closing;
 #[path = "advice_binding/departures.rs"]
 mod departures;
 #[path = "advice_sizing/drafts.rs"]
 #[allow(dead_code)]
 mod drafts;
+#[path = "advice_binding/gate.rs"]
+mod gate;
 #[path = "advice_binding/kept.rs"]
 mod kept;
 #[path = "advice_binding/migration.rs"]

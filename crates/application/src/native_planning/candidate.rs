@@ -201,6 +201,21 @@ impl WorkspaceService {
             )
             .await?;
         let mut value = tx.review_slice_candidate_set(workspace.id, request).await?;
+        // The review is stored and not yet committed. Held to Jev's advice here, a
+        // refusal rolls it back and a stated departure is written with it.
+        let draft = value.draft.as_ref().ok_or(Error::InternalInvariant)?;
+        let reviewed = crate::advice_binding::Reviewed {
+            level: tect_domain::SizingLevel::ScopeToSlices,
+            candidate_set_id: request.candidate_set_id,
+            draft: draft
+                .nodes
+                .iter()
+                .map(|node| (node.id(), node.revision()))
+                .collect(),
+            ready: request.review.verdict == tect_domain::SlicePlanReviewVerdict::Ready,
+            departures,
+        };
+        crate::advice_binding::hold(&mut *tx, workspace.id, &reviewed).await?;
         if let Some(manifest) = &consumed {
             tx.register_planning_consumption(
                 workspace.id,

@@ -85,6 +85,11 @@ pub(super) fn intro(data: &Value) -> &'static str {
 const SCOPE_MODE_OVERRIDE: &str = "This mode override is not recorded: a product level other than the Program's needs the user's explicit written permission, and an agent cannot grant it. Ask the user. Record their whole answer with command route scope.candidates.record_input, refresh with command route scope.candidates.refresh, read the answer's source_ref_id in query route scope.candidates.context view inputs, then save again with that source_ref_id and the permission quoted verbatim in exact_quote. Nothing was stored.";
 const SLICE_MODE_OVERRIDE: &str = "This mode override is not recorded: a product level other than the Scope's needs the user's explicit written permission, and an agent cannot grant it. Ask the user. Record their whole answer with command route slice.candidates.input, refresh with command route slice.candidates.refresh, read the answer's id in query route slice.candidates.context view inputs, then save again with that id as input_id and the permission quoted verbatim in exact_quote. Nothing was stored.";
 
+/// A ready review refused over Jev's open advice: the two ways out, for the level
+/// that refused.
+const SCOPE_ADVICE_OPEN: &str = "This review is not stored: Jev's advice on the saved draft is still open, and a review says ready only when that advice is followed. For each candidate named in the refusal, either change it as the advice says and save the draft again with command route scope.candidates.save, kind draft, or, where the advice about it is plainly wrong, add an entry to advice_departures of this review with the candidate's id, the advice point and your reason. Nothing was stored.";
+const SLICE_ADVICE_OPEN: &str = "This review is not stored: Jev's advice on the saved draft is still open, and a review says ready only when that advice is followed. For each candidate named in the refusal, either change it as the advice says and save the draft again with command route slice.candidates.save, kind draft, or, where the advice about it is plainly wrong, add an entry to advice_departures of this review with the candidate's id, the advice point and your reason. Nothing was stored.";
+
 pub(crate) fn error_intro(error: &Error) -> &'static str {
     if let Some(level) = error
         .refusal()
@@ -94,6 +99,16 @@ pub(crate) fn error_intro(error: &Error) -> &'static str {
         return match level {
             tect_domain::ModeOverrideLevel::Scope => SCOPE_MODE_OVERRIDE,
             tect_domain::ModeOverrideLevel::Slice => SLICE_MODE_OVERRIDE,
+        };
+    }
+    if let Some(level) = error
+        .refusal()
+        .as_ref()
+        .and_then(tect_domain::SizingLevel::of_open_advice)
+    {
+        return match level {
+            tect_domain::SizingLevel::ProgramToScopes => SCOPE_ADVICE_OPEN,
+            tect_domain::SizingLevel::ScopeToSlices => SLICE_ADVICE_OPEN,
         };
     }
     if error

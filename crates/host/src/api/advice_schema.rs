@@ -43,7 +43,7 @@ pub(super) fn departures() -> Value {
     json!({"type":"array","items":departure,"description":DEPARTURES})
 }
 
-const DEPARTURES: &str = "Jev's advice this review departs from. The advice on a saved draft is to be followed: change the draft as it says and save it again. State a departure only where the advice about one candidate is plainly wrong: candidate_id is that candidate's id in the saved draft, point is the advice point (sizing for the advice field of the draft save, pipeline for its pipeline_advice field) and reason says why that advice is wrong. One candidate and point is named once. Omit the field when the review departs from nothing: null is invalid.";
+const DEPARTURES: &str = "Jev's advice this review departs from. The advice on a saved draft is to be followed: change the draft as it says and save it again. State a departure only where the advice about one candidate is plainly wrong: candidate_id is that candidate's id in the saved draft, point is the advice point (sizing for the advice field of the draft save, pipeline for its pipeline_advice field) and reason says why that advice is wrong. One candidate and point is named once. A review whose verdict is ready is refused with ADVICE_NOT_FOLLOWED while advice that asks for a change is open on a candidate of the draft and the review states no departure for it. Omit the field when the review departs from nothing: null is invalid.";
 
 pub(super) fn routes() -> Vec<RouteSpec> {
     vec![

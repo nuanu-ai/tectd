@@ -60,6 +60,7 @@ fn the_review_of_both_save_routes_describes_advice_departures() {
             "change the draft as it says and save it again",
             "only where the advice about one candidate is plainly wrong",
             "reason says why that advice is wrong",
+            "whose verdict is ready is refused with ADVICE_NOT_FOLLOWED",
             "null is invalid",
         ] {
             assert!(about.contains(said), "{said}: {about}");
@@ -69,6 +70,15 @@ fn the_review_of_both_save_routes_describes_advice_departures() {
             conditions.contains("A review may state advice_departures"),
             "{conditions}"
         );
+        let effects = described["effects"].as_str().unwrap();
+        for said in [
+            "While Jev is enabled, a review whose verdict is ready is refused with \
+             ADVICE_NOT_FOLLOWED and nothing is stored",
+            "the review states no departure for it",
+            "a stated departure is recorded with the review",
+        ] {
+            assert!(effects.contains(said), "{said}: {effects}");
+        }
         // The draft of the same route takes no such list.
         let draft = &described["params_schema"]["oneOf"][0]["properties"]["draft"];
         assert!(draft["properties"].get("advice_departures").is_none());

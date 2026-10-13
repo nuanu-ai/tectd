@@ -35,6 +35,9 @@ pub enum RefusalCode {
     /// A draft states a product level for one Scope or one Slice without a verbatim
     /// quote of the user's permission from an input they gave to that candidate set.
     ModeOverrideNotPermitted,
+    /// A review says ready while Jev's advice on a candidate of its draft asks for a
+    /// change that was neither made nor departed from with a stated reason.
+    AdviceNotFollowed,
 }
 
 impl RefusalCode {
@@ -61,6 +64,7 @@ impl RefusalCode {
             Self::BackendDerivedProofRequired => "BACKEND_DERIVED_PROOF_REQUIRED",
             Self::LegacyMigrationRequired => "LEGACY_MIGRATION_REQUIRED",
             Self::ModeOverrideNotPermitted => "MODE_OVERRIDE_NOT_PERMITTED",
+            Self::AdviceNotFollowed => "ADVICE_NOT_FOLLOWED",
         }
     }
 
@@ -109,6 +113,9 @@ impl RefusalCode {
             }
             Self::ModeOverrideNotPermitted => {
                 "a mode override is recorded only with the user's explicit written permission"
+            }
+            Self::AdviceNotFollowed => {
+                "a review says ready only when Jev's open advice is followed or departed from with a reason"
             }
         }
     }

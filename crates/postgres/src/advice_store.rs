@@ -284,6 +284,26 @@ impl AdviceStore for PgUnitOfWork {
             .await
     }
 
+    async fn open_advice(
+        &mut self,
+        workspace_id: Uuid,
+        level: SizingLevel,
+        candidate_set_id: Uuid,
+    ) -> Result<Vec<OpenAdvice>> {
+        self.read_open_advice(workspace_id, level, candidate_set_id)
+            .await
+    }
+
+    async fn depart_from_advice(
+        &mut self,
+        workspace_id: Uuid,
+        answer_id: Uuid,
+        reason: &str,
+    ) -> Result<()> {
+        self.write_advice_departure(workspace_id, answer_id, reason)
+            .await
+    }
+
     async fn advice_entry_for_request(
         &mut self,
         workspace_id: Uuid,

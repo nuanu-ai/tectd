@@ -6,13 +6,19 @@ use crate::AdviceOutputGuard;
 use async_trait::async_trait;
 use serde_json::json;
 #[derive(Default)]
-pub(super) struct Journal {
+pub(crate) struct Journal {
     pub config: Option<AdviceConfig>,
     pub calls_today: i64,
     pub rows: Vec<(Uuid, NewAdviceEntry)>,
     pub locked: bool,
     /// Every read of input texts: which inputs, whose, and through which entry.
     pub reads: Vec<(&'static str, Uuid, i64)>,
+    /// The kept answers that ask for a change and have no departure.
+    pub open: Vec<OpenAdvice>,
+    /// Every read of the open answers: at which level, of which candidate set.
+    pub open_reads: Vec<(SizingLevel, Uuid)>,
+    /// Every departure written: on which kept answer, with which reason.
+    pub departed: Vec<(Uuid, String)>,
 }
 
 impl Journal {
@@ -59,6 +65,19 @@ impl AdviceStore for Journal {
         _: &AdviceCompletion,
     ) -> Result<()> {
         unreachable!()
+    }
+    async fn open_advice(
+        &mut self,
+        _: Uuid,
+        level: SizingLevel,
+        candidate_set_id: Uuid,
+    ) -> Result<Vec<OpenAdvice>> {
+        self.open_reads.push((level, candidate_set_id));
+        Ok(self.open.clone())
+    }
+    async fn depart_from_advice(&mut self, _: Uuid, answer_id: Uuid, reason: &str) -> Result<()> {
+        self.departed.push((answer_id, reason.to_owned()));
+        Ok(())
     }
     async fn advice_entry_for_request(
         &mut self,

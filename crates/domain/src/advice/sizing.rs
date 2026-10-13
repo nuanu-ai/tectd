@@ -150,6 +150,18 @@ impl SizingAdvice {
     }
 }
 
+/// What Jev chose for a candidate in a kept answer, as a refusal says it: the advice
+/// and the included items it classed as extra.
+pub(super) fn chose(answer: &Value) -> Option<String> {
+    let advice = answer.get("advice")?.as_str()?;
+    let extra = answer.get("extra_items")?.as_array()?;
+    if extra.is_empty() {
+        return Some(advice.to_owned());
+    }
+    let items = extra.iter().map(Value::to_string).collect::<Vec<_>>();
+    Some(format!("{advice}, extra items {}", items.join(", ")))
+}
+
 impl AdviceShaping for SizingAdvice {
     /// One entry per asked candidate, in draft order: positions, tokens and
     /// probabilities only, since the agent holds its own draft. `extra_items` lists the

@@ -1,4 +1,6 @@
 //! How a review states a departure from Jev's advice, and what it may not state.
+mod gate;
+
 use super::*;
 use crate::{CandidateReviewDraft, ReviewCandidateSet, ReviewSliceCandidateSet};
 use crate::{SliceCandidateReviewDraft, SlicePlanReviewVerdict};

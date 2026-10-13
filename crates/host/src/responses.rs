@@ -250,6 +250,7 @@ fn failure_data(
                 || rule.starts_with("SCOPE-DRAFT-MODE-OVERRIDE-")
                 || rule.starts_with("SLICE-DRAFT-")
                 || rule == "SLICE-OPEN-WORK-CANDIDATE-REQUIRED"
+                || tect_domain::SizingLevel::of_open_advice(&refusal).is_some()
         })
     {
         actions.clear();
@@ -463,6 +464,9 @@ mod tests;
 
 #[cfg(test)]
 mod engineering_path_tests;
+
+#[cfg(test)]
+mod advice_open_tests;
 
 #[cfg(test)]
 mod failure_budget_tests;
