@@ -507,13 +507,14 @@ command the agent already calls, as an `advice` field. The advice is binding: th
 follows it and departs only where it holds the advice plainly wrong, stating why; a
 review that says ready is refused until then, as described below. The advice itself
 applies nothing, and a Jev failure blocks nothing: no advice, no obligation.
-Three advice points exist:
+Four advice points exist:
 
 | Point | Fires after | Jev is asked once |
 | --- | --- | --- |
 | `sizing` | `scope.candidates.save` or `slice.candidates.save` has stored a draft that created or changed a candidate | How large each of those candidates is, whether to keep, split or cut it, and which of its included items go beyond what the user asked for |
 | `intake` | `scope.candidates.record_input` or `slice.candidates.input` has recorded new user input | How much new work the input asks for, where that work lands in what is planned, and how it sits with the user's earlier words |
 | `pipeline` | `slice.candidates.save` has stored a draft that created or changed a work node, after `sizing` | Which pipeline of the catalogue fits each of those work nodes, without seeing the pipeline the draft chose |
+| `model` | `scope.candidates.record_input` or `slice.candidates.input` has recorded new user input, after `intake` | Which kind of executor the practical work of the input needs, and whether it needs bounded intellectual work of its own and how hard that is |
 
 Every request carries a product level as `state.mode`,
 `{"level":"prod","description":"..."}`: size, the advice to simplify, what counts as
@@ -671,6 +672,36 @@ input entry that a Slice result produced is written by another command: it does 
 fire the point and is not among the user's words. The wording lives in
 `crates/domain/src/advice/intake_catalog.rs`.
 
+A recorded input carries the `model` point's field beside `advice`, under its own key
+`model_advice`, with its own Jev request and its own journal row; either point may be
+advised while the other is unavailable. It fires exactly when `intake` fires and sends
+the same `state`. Jev is asked which kinds of executor the work of the input needs.
+The daemon names kinds of work only and never a model: which model runs a kind is the
+orchestration policy of the agent that reads the advice.
+
+```json
+{"status":"advised","note":"...",
+ "practical":"implementation","practical_p":0.71,"specialist":"none","specialist_p":0.88}
+```
+
+| Value | Jev's choices |
+| --- | --- |
+| `practical` | `none` (the input asks for no practical work), `routine` (routine or tightly bounded practical work), `implementation` (ordinary or complex implementation) |
+| `specialist` | `none`, `standard`, `demanding`: whether the input needs bounded intellectual work of its own (research, analysis, a comparison, a design, a plan, a substantive review) and how hard that work is |
+
+The questions tell Jev to choose the more capable criterion where two fit about
+equally; the code applies no threshold. A question Jev abstained on keeps `ABSTAIN`,
+and Jev abstaining on both gives `{"status":"abstained"}`. The field carries no text
+of the input and no name of a model. Its `note` says what to do: start the executor of
+the practical work on the route the orchestration policy gives the named kind, hand
+separate intellectual work to the specialist at its standard effort for `standard` and
+at its raised effort for `demanding`, and depart only where the advice is plainly
+wrong, telling the user so. No review is held to this point, and nothing is kept of it
+beyond its journal row. Its room is what the reply has left with the `advice` field it
+holds, and `intake` is measured on a reply that keeps room for the short
+`advice_too_large` field of `model`. Each of the two calls counts against the daily
+limit on its own. The wording lives in `crates/domain/src/advice/model_catalog.rs`.
+
 `unavailable` reasons are `provider_unconfigured`, `daily_limit_reached`, `timeout`,
 `transport_error`, `http_status`, `invalid_response`, `request_too_large`,
 `advice_too_large`, `mode_not_set` and `program_unavailable`. Jev is not asked when the largest advice the
@@ -689,13 +720,13 @@ holds a row with `called` false, and the reply carries:
 {"status":"unavailable","reason":"mode_not_set","message":"Jev advice is not available: the Program has no mode; set it with program.save"}
 ```
 
-`intake` sends the Program's statement. When the Program's text is erased or cannot
-be read, the input is recorded all the same, Jev is not asked, and the reply carries
-`program_unavailable` with the message `Jev advice is not available: the Program's
+`intake` and `model` send the Program's statement. When the Program's text is erased
+or cannot be read, the input is recorded all the same, Jev is not asked, and each of
+the two fields carries `program_unavailable` with the message `Jev advice is not available: the Program's
 text is erased or cannot be read`.
 
 A point is decided in a fixed order: Jev disabled, a replay, the point's own
-precondition (the mode, and for `intake` a readable Program), no provider, the reply
+precondition (the mode, and for `intake` and `model` a readable Program), no provider, the reply
 fit, the daily limit, and only then the call.
 
 `workspace.advisory.audit` requires `bodies`: `true` returns `request_body` and
