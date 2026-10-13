@@ -16,7 +16,7 @@ fn sizing(name: &str) -> Option<Weights> {
 /// Jev abstains on the first work node, giving the draft's pipeline a share of its
 /// own, and chooses the draft's pipeline for the second.
 fn abstaining_on_one(name: &str) -> Weights {
-    sizing(name).unwrap_or_else(|| match name {
+    sizing(name).unwrap_or(match name {
         "c1.pipeline" => (("ABSTAIN", 0.55), Some((DEBUG, 0.31))),
         _ => ((LIGHTWEIGHT, 0.9), None),
     })
