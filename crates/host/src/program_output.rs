@@ -344,6 +344,8 @@ impl ProgramOutputGuard for ProgramEncoding {
 #[cfg(test)]
 use tect_domain::ProgramInput;
 #[cfg(test)]
+mod advice_fit_tests;
+#[cfg(test)]
 mod tests;
 
 pub(crate) fn page_read(
