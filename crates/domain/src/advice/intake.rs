@@ -151,8 +151,9 @@ impl IntakePlanning {
     }
 
     /// The one JSON object Jev reads. `scope` is there on the Slice level and
-    /// `candidates` when the set has a saved draft.
-    fn state(
+    /// `candidates` when the set has a saved draft. The `model` point, asked about
+    /// the same input, sends this state too.
+    pub(super) fn state(
         &self,
         program: &Program,
         mode: ProgramMode,

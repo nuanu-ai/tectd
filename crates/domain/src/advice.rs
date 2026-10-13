@@ -10,6 +10,8 @@ mod draft_view;
 mod exchange;
 mod intake;
 mod intake_catalog;
+mod model;
+mod model_catalog;
 mod pipeline;
 mod pipeline_catalog;
 mod point;
@@ -26,6 +28,7 @@ pub use binding::{
 };
 pub use exchange::{AdviceCompletion, AdviceExchange, AdviceFailure, AdviceReply};
 pub use intake::{INTAKE_NOTE, INTAKE_POINT, IntakeAdvice, IntakePlanning};
+pub use model::{MODEL_NOTE, MODEL_POINT, ModelAdvice};
 pub use pipeline::{PIPELINE_NOTE, PIPELINE_POINT, PipelineAdvice, PipelineDraft};
 pub use questions::{ADVICE_ABSTAIN, AdviceAnswer, AdviceQuestion, AdviceQuestionSet};
 pub use shaping::AdviceShaping;
