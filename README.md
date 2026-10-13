@@ -514,14 +514,15 @@ Four advice points exist:
 | `sizing` | `scope.candidates.save` or `slice.candidates.save` has stored a draft that created or changed a candidate | How large each of those candidates is, whether to keep, split or cut it, and which of its included items go beyond what the user asked for |
 | `intake` | `scope.candidates.record_input` or `slice.candidates.input` has recorded new user input | How much new work the input asks for, where that work lands in what is planned, and how it sits with the user's earlier words |
 | `pipeline` | `slice.candidates.save` has stored a draft that created or changed a work node, after `sizing` | Which pipeline of the catalogue fits each of those work nodes, without seeing the pipeline the draft chose |
-| `model` | `scope.candidates.record_input` or `slice.candidates.input` has recorded new user input, after `intake` | Which kind of executor the practical work of the input needs, and whether it needs bounded intellectual work of its own and how hard that is |
+| `model` | `scope.candidates.record_input` or `slice.candidates.input` has recorded new user input, after `intake`; `program.record_input` has recorded new user input, as the only point of that command | Which kind of executor the practical work of the input needs, and whether it needs bounded intellectual work of its own and how hard that is |
 
 Every request carries a product level as `state.mode`,
 `{"level":"prod","description":"..."}`: size, the advice to simplify, what counts as
 extra and whether an input asks for too much are judged against the user's words and
-that level. On the way from a Program to Scopes it is the Program's mode. Inside an
-opened Scope it is the Scope's effective level: its mode override, else the Program's
-mode. A candidate that carries a mode override of its own has
+that level. For an input recorded on the Program itself and on the way from a Program
+to Scopes it is the Program's mode. Inside an opened Scope it is the Scope's effective
+level: its mode override, else the Program's mode. A candidate that carries a mode
+override of its own has
 `mode_override: {"level":"demo","description":"..."}` in its object in
 `state.candidates`, and `sizing` judges that candidate against its own level. The id
 and the user's quote of an override are not sent.
@@ -672,12 +673,13 @@ input entry that a Slice result produced is written by another command: it does 
 fire the point and is not among the user's words. The wording lives in
 `crates/domain/src/advice/intake_catalog.rs`.
 
-A recorded input carries the `model` point's field beside `advice`, under its own key
-`model_advice`, with its own Jev request and its own journal row; either point may be
-advised while the other is unavailable. It fires exactly when `intake` fires and sends
-the same `state`. Jev is asked which kinds of executor the work of the input needs.
-The daemon names kinds of work only and never a model: which model runs a kind is the
-orchestration policy of the agent that reads the advice.
+An input recorded for a candidate set carries the `model` point's field beside
+`advice`, under its own key `model_advice`, with its own Jev request and its own
+journal row; either point may be advised while the other is unavailable. There it
+fires exactly when `intake` fires and sends the same `state`. Jev is asked which kinds
+of executor the work of the input needs. The daemon names kinds of work only and never
+a model: which model runs a kind is the orchestration policy of the agent that reads
+the advice.
 
 ```json
 {"status":"advised","note":"...",
@@ -702,6 +704,24 @@ holds, and `intake` is measured on a reply that keeps room for the short
 `advice_too_large` field of `model`. Each of the two calls counts against the daily
 limit on its own. The wording lives in `crates/domain/src/advice/model_catalog.rs`.
 
+`program.record_input` has the `model` point alone, so that an agent which records
+every user input on the Program still gets this advice: `intake` asks where an input
+lands in a candidate set, and a Program has none. The reply carries `model_advice` and
+no `advice`. The two questions, the `note` and the field are the ones above, text for
+text. Jev reads the part of that state a Program has: `state.level` is
+`input_to_program`, `state.mode` is the Program's mode, `state.program` is its
+statement, `state.user_words` holds the inputs recorded for the Program before the new
+one, in recorded order and each with source `program_input`, and `state.new_input` is
+the input; there is no `state.scope` and no `state.candidates`. The room of the field
+is what the reply of the command leaves and nothing is reserved; one input costs one
+call against the daily limit. The journal row carries `point` `model`, `route`
+`program.record_input` and the Program's id, and no candidate set. A replay under the
+same `request_id` returns the stored field beside the Program as it now stands, since
+this command answers a replay with the current Program. Every request carries all the
+earlier inputs of the Program, so it grows with them: once it would exceed the request
+limit, each further input is recorded and its field carries `request_too_large`.
+`program.begin`, which records the first input of a Program, has no advice point.
+
 `unavailable` reasons are `provider_unconfigured`, `daily_limit_reached`, `timeout`,
 `transport_error`, `http_status`, `invalid_response`, `request_too_large`,
 `advice_too_large`, `mode_not_set` and `program_unavailable`. Jev is not asked when the largest advice the
@@ -712,9 +732,10 @@ limit. A Jev failure never fails the command: the draft is stored or the input i
 recorded all the same. A replay of a command under the same `request_id` returns the
 recorded field and asks nobody.
 
-A Program opened before the product level existed has no mode, and without one Jev is
-not asked by any point. The draft is stored or the input recorded, the journal
-holds a row with `called` false, and the reply carries:
+A Program opened before the product level existed has no mode, and neither has a
+Program that was begun and never saved with one. Without a mode Jev is not asked by any
+point. The draft is stored or the input recorded, the journal holds a row with `called`
+false, and the reply carries:
 
 ```json
 {"status":"unavailable","reason":"mode_not_set","message":"Jev advice is not available: the Program has no mode; set it with program.save"}
@@ -723,7 +744,9 @@ holds a row with `called` false, and the reply carries:
 `intake` and `model` send the Program's statement. When the Program's text is erased
 or cannot be read, the input is recorded all the same, Jev is not asked, and each of
 the two fields carries `program_unavailable` with the message `Jev advice is not available: the Program's
-text is erased or cannot be read`.
+text is erased or cannot be read`. `program.record_input` reads the Program itself:
+for a Program whose text is erased it is refused with `knowledge_payload_erased`
+before anything is recorded, as it is without this feature, and no point fires.
 
 A point is decided in a fixed order: Jev disabled, a replay, the point's own
 precondition (the mode, and for `intake` and `model` a readable Program), no provider, the reply
