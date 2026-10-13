@@ -14,12 +14,12 @@ use uuid::Uuid;
 pub(crate) const SCOPE_CANDIDATES_RECORD_INPUT: &str = "scope.candidates.record_input";
 pub(crate) const SLICE_CANDIDATES_INPUT: &str = "slice.candidates.input";
 /// A point that fired for a Program without a mode gathers nothing for Jev.
-const WITHOUT_MODE: AdviceAsk<'static> = AdviceAsk::Unmet {
+pub(crate) const WITHOUT_MODE: AdviceAsk<'static> = AdviceAsk::Unmet {
     reason: AdviceUnavailableReason::ModeNotSet,
     detail: NO_MODE,
 };
 /// Nor does one that fired for a Program whose statement cannot be read.
-const WITHOUT_PROGRAM: AdviceAsk<'static> = AdviceAsk::Unmet {
+pub(crate) const WITHOUT_PROGRAM: AdviceAsk<'static> = AdviceAsk::Unmet {
     reason: AdviceUnavailableReason::ProgramUnavailable,
     detail: NO_PROGRAM,
 };
@@ -27,7 +27,7 @@ const WITHOUT_PROGRAM: AdviceAsk<'static> = AdviceAsk::Unmet {
 /// The Program a recorded input belongs to, or `None` when its text is erased or not
 /// readable. That is not a failure of the command, which has recorded its input: the
 /// point then says it has no advice.
-async fn readable_program(
+pub(crate) async fn readable_program(
     tx: &mut dyn UnitOfWork,
     workspace_id: Uuid,
     program_id: Uuid,

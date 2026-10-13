@@ -1,5 +1,6 @@
-//! The user's recorded words behind a candidate set, by source and in recorded order.
-//! Every advice point reads them through these two functions and in no other way.
+//! The user's recorded words behind a Program or a candidate set, by source and in
+//! recorded order. Every advice point reads them through these three functions and in
+//! no other way.
 use crate::AdviceStore;
 use tect_domain::*;
 use uuid::Uuid;
@@ -7,20 +8,29 @@ use uuid::Uuid;
 /// One sequence of inputs and the last entry of it that is read, inclusive.
 pub(crate) type Through = (Uuid, i64);
 
-/// Words behind a Scope candidate set: the inputs of its Program, then the set's own.
-pub(crate) async fn scope_level(
+/// Words behind a Program: its own inputs.
+pub(crate) async fn program_level(
     store: &mut dyn AdviceStore,
     workspace_id: Uuid,
     (program_id, program_through): Through,
-    (candidate_set_id, planning_through): Through,
 ) -> Result<Vec<SizingWord>> {
     let program = store
         .program_input_texts(workspace_id, program_id, program_through)
         .await?;
+    Ok(labelled(SizingWordSource::ProgramInput, program))
+}
+
+/// Words behind a Scope candidate set: the inputs of its Program, then the set's own.
+pub(crate) async fn scope_level(
+    store: &mut dyn AdviceStore,
+    workspace_id: Uuid,
+    program: Through,
+    (candidate_set_id, planning_through): Through,
+) -> Result<Vec<SizingWord>> {
+    let mut words = program_level(store, workspace_id, program).await?;
     let planning = store
         .scope_candidate_input_texts(workspace_id, candidate_set_id, planning_through)
         .await?;
-    let mut words = labelled(SizingWordSource::ProgramInput, program);
     words.extend(labelled(SizingWordSource::ScopeCandidateInput, planning));
     Ok(words)
 }
