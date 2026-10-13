@@ -1,5 +1,6 @@
 //! What Jev is asked about the executors of a recorded input: the state `intake`
 //! sends for the same input and the two questions; and what the answers become.
+mod program_input;
 mod shaping;
 
 use super::super::test_drafts::{stored_scopes, stored_slices};

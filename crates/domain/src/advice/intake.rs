@@ -1,6 +1,7 @@
 //! The `intake` advice point: how much new work an input the user has just given asks
 //! for, where that work lands in what is planned, and how it sits with the earlier words.
 use super::draft_view::{DraftView, candidate_key};
+use super::input_state;
 use super::intake_catalog as catalog;
 use super::point::{self, WIDEST_PROBABILITY, unanswered};
 use super::sizing_state::{SizingScope, SizingWord};
@@ -160,11 +161,8 @@ impl IntakePlanning {
         user_words: &[SizingWord],
         new_input: &str,
     ) -> Value {
-        let mut state = json!({"level":self.level,"mode":point::mode(mode),
-            "program":{"name":program.name,"intent":program.intent,"basis":program.basis,
-                "boundaries":program.boundaries,"constraints":program.constraints,
-                "success":program.success},
-            "user_words":user_words,"new_input":new_input});
+        let level = self.level.as_str();
+        let mut state = input_state::of(level, program, mode, user_words, new_input);
         if let Some(scope) = &self.scope {
             state["scope"] = json!(scope);
         }

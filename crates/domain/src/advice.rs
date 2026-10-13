@@ -8,6 +8,7 @@ use uuid::Uuid;
 mod binding;
 mod draft_view;
 mod exchange;
+mod input_state;
 mod intake;
 mod intake_catalog;
 mod model;

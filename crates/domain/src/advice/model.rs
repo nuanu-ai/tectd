@@ -1,7 +1,10 @@
 //! The `model` advice point: which kinds of executor the work of an input the user has
-//! just given needs. It is a second point on the commands that record input, asked
-//! after `intake` over the state `intake` reads. It names kinds of work only: which
-//! model runs a kind is the policy of the agent that reads the advice.
+//! just given needs. On the two commands that record input for a candidate set it is
+//! a second point, asked after `intake` over the state `intake` reads. On the command
+//! that records input on the Program it is the only point, asked over the part of
+//! that state a Program has. It names kinds of work only: which model runs a kind is
+//! the policy of the agent that reads the advice.
+use super::input_state;
 use super::intake::IntakePlanning;
 use super::model_catalog as catalog;
 use super::point::{self, WIDEST_PROBABILITY, unanswered};
@@ -29,9 +32,9 @@ pub struct ModelAdvice {
 }
 
 impl ModelAdvice {
-    /// The two questions about the input just recorded, over the state `intake` sends
-    /// for the same input: `planning` lays it out from the same Program, product
-    /// level, earlier words and new input.
+    /// The two questions about the input just recorded for a candidate set, over the
+    /// state `intake` sends for the same input: `planning` lays it out from the same
+    /// Program, product level, earlier words and new input.
     pub fn of(
         planning: &IntakePlanning,
         program: &Program,
@@ -39,6 +42,26 @@ impl ModelAdvice {
         user_words: &[SizingWord],
         new_input: &str,
     ) -> Self {
+        Self::over(planning.state(program, mode, user_words, new_input))
+    }
+
+    /// The same two questions about an input recorded on the Program itself, where
+    /// `intake` is not asked: a Program has no candidate set to place the input in.
+    /// The state is the part of the state of `intake` that a Program has: its own
+    /// level, the Program's statement, the product level, the words recorded for the
+    /// Program before the input, and the input. It holds no Scope and no candidates.
+    pub fn of_program_input(
+        program: &Program,
+        mode: ProgramMode,
+        user_words: &[SizingWord],
+        new_input: &str,
+    ) -> Self {
+        let level = input_state::PROGRAM_LEVEL;
+        Self::over(input_state::of(level, program, mode, user_words, new_input))
+    }
+
+    /// The two questions over what Jev reads about the input.
+    fn over(state: Value) -> Self {
         let practical = point::question(
             catalog::PRACTICAL_INSTRUCTIONS.to_owned(),
             &catalog::PRACTICAL_CRITERIA,
@@ -51,7 +74,7 @@ impl ModelAdvice {
         );
         Self {
             questions: AdviceQuestionSet {
-                state: planning.state(program, mode, user_words, new_input),
+                state,
                 questions: BTreeMap::from([
                     (PRACTICAL.to_owned(), practical),
                     (SPECIALIST.to_owned(), specialist),
@@ -65,8 +88,9 @@ impl ModelAdvice {
     }
 
     /// What the point answers when the reply has no room for its advice. A command
-    /// that records input keeps room for this field before `intake`, its first point,
-    /// is measured, so the second point can always say why it gave nothing.
+    /// that records input for a candidate set keeps room for this field before
+    /// `intake`, its first point, is measured, so the second point can always say why
+    /// it gave nothing.
     pub fn without_room() -> AdviceField {
         AdviceField::too_large(SUBJECT)
     }
