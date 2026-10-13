@@ -67,14 +67,14 @@ fn any_jev_variable_requires_all_three_and_the_key_with_no_defaults() {
             Some(Error::InvalidConfiguration)
         );
     }
-    for timeout in ["", "0", "30001", "-1", "+5", "1.5", " 100", "100 ", "2s"] {
+    for timeout in ["", "0", "20001", "-1", "+5", "1.5", " 100", "100 ", "2s"] {
         assert_eq!(
             JevConfig::from_values(full.0, full.1, Some(timeout), full.3).err(),
             Some(Error::InvalidConfiguration),
             "{timeout:?}"
         );
     }
-    for timeout in ["1", "30000"] {
+    for timeout in ["1", "20000"] {
         assert!(JevConfig::from_values(full.0, full.1, Some(timeout), full.3).is_ok());
     }
     for model in ["", "jev latest", "jev\n", &"m".repeat(129)] {

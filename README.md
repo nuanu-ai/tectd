@@ -739,7 +739,7 @@ The daemon reads one client configuration for all advice points:
 | --- | --- |
 | `TECT_JEV_ENDPOINT` | `https://api.typesafe.ai/v1/systemone`; tests may use `http://127.0.0.1:<port>/v1/systemone` |
 | `TECT_JEV_MODEL` | Model name |
-| `TECT_JEV_TIMEOUT_MS` | Answer deadline, 1 through 30000 |
+| `TECT_JEV_TIMEOUT_MS` | Answer deadline, 1 through 20000 |
 | `TYPESAFE_API_KEY` | Key, sent only as the bearer header |
 | `TECT_JEV_NEW_WORKSPACE_DAILY_LIMIT` | Optional. Daily call limit a workspace this daemon creates is enabled with |
 

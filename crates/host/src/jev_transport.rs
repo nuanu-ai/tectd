@@ -11,8 +11,10 @@ pub(crate) const MAX_REQUEST_BYTES: usize = 256 * 1024;
 /// Ceiling of one answer body read from Jev. A measured answer takes 150 to 200 bytes
 /// per question, and the request ceiling admits about 520 `sizing` questions.
 pub(crate) const MAX_RESPONSE_BYTES: usize = 128 * 1024;
-/// Upper bound of `TECT_JEV_TIMEOUT_MS`; below the daemon's 45 s operation deadline.
-pub(crate) const MAX_TIMEOUT_MS: u64 = 30_000;
+/// Upper bound of `TECT_JEV_TIMEOUT_MS`. A command asks Jev at most twice, one point
+/// after the other, and two waits of this length end inside the daemon's 45 s
+/// operation deadline.
+pub(crate) const MAX_TIMEOUT_MS: u64 = 20_000;
 const PRODUCTION_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 const BEARER: &str = "Bearer ";
 
