@@ -86,7 +86,8 @@ pub(crate) fn with_pipeline_reserve(reply: &Value, without_room: &AdviceField) -
     measured
 }
 
-/// The same for the `model_advice` field: untouched when the point gave none.
+/// The reply a recorded input returns once `model` is decided: with the
+/// `model_advice` field attached, or untouched when the point gave none.
 pub(crate) fn finish_model(
     reply: Value,
     advice: Option<AdviceField>,
