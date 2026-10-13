@@ -5,11 +5,11 @@ use super::draft_view::candidate_key;
 use super::pipeline_catalog as catalog;
 use super::point::{self, WIDEST_PROBABILITY, unanswered};
 use super::sizing_state::{SizingDraft, SizingScope, SizingWord};
+use super::written::Written;
 use super::{ADVICE_ABSTAIN, AdviceAnswer, AdviceField, AdviceQuestionSet, AdviceShaping};
 use crate::{
     Error, PipelineCatalogueEntry, PipelineCatalogueSnapshot, PipelineKind, ProgramMode,
     ResolvedSliceCandidateDraft, Result, SliceCandidateDraft, SliceCandidateDraftNode,
-    SliceDraftIdentity,
 };
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
@@ -17,11 +17,11 @@ use std::collections::BTreeMap;
 pub const PIPELINE_POINT: &str = "pipeline";
 pub use catalog::NOTE as PIPELINE_NOTE;
 
-/// A work node Jev is asked about: its 1-based draft position, counted over every
-/// node of the draft, and the pipeline the draft chose for it.
+/// A work node Jev is asked about: one the save created or changed, and the pipeline
+/// the draft chose for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Asked {
-    position: usize,
+    written: Written,
     chosen: PipelineKind,
 }
 
@@ -56,24 +56,20 @@ impl PipelineDraft {
         catalogue: &PipelineCatalogueSnapshot,
         scope: SizingScope,
     ) -> Result<Option<Self>> {
-        let Some(layout) = SizingDraft::slice_candidates(draft, scope)? else {
+        // The layout holds the rule: it asks about exactly the work nodes the save wrote.
+        let Some(layout) = SizingDraft::slice_candidates(draft, stored, scope)? else {
             return Ok(None);
         };
         let mut asked = Vec::new();
-        for (index, node) in draft.nodes.iter().enumerate() {
-            if let SliceCandidateDraftNode::Work {
-                identity, pipeline, ..
-            } = node
-                && written(identity, stored)?
-            {
-                asked.push(Asked {
-                    position: index + 1,
-                    chosen: *pipeline,
-                });
-            }
-        }
-        if asked.is_empty() {
-            return Ok(None);
+        for candidate in &layout.asked {
+            let node = draft.nodes.get(candidate.written.position - 1);
+            let Some(SliceCandidateDraftNode::Work { pipeline, .. }) = node else {
+                return Err(Error::InternalInvariant);
+            };
+            asked.push(Asked {
+                written: candidate.written,
+                chosen: *pipeline,
+            });
         }
         // The save has held that a work node it writes names a pipeline of this catalogue.
         let offered = |node: &Asked| catalogue.entries.iter().any(|e| e.kind == node.chosen);
@@ -107,10 +103,10 @@ impl PipelineDraft {
             .asked
             .iter()
             .map(|node| {
-                let key = candidate_key(node.position);
+                let key = candidate_key(node.written.position);
                 let instructions = catalog::INSTRUCTIONS.replace("{key}", &key);
                 (
-                    question_name(node.position),
+                    question_name(node.written.position),
                     point::question(instructions, &criteria, catalog::ABSTAIN),
                 )
             })
@@ -131,22 +127,6 @@ impl PipelineDraft {
             asked: self.asked,
         }
     }
-}
-
-/// Whether the save wrote this node. A node the draft names by a local label is new.
-/// A node it names by id is changed when the store holds it under a higher revision
-/// than the draft named, and unchanged when the revision is the one named.
-fn written(identity: &SliceDraftIdentity, stored: &ResolvedSliceCandidateDraft) -> Result<bool> {
-    if identity.local.is_some() {
-        return Ok(true);
-    }
-    // The save has held that a node without a label names an id and a revision, and
-    // has stored every node of the draft.
-    let (Some(id), Some(named)) = (identity.candidate_id, identity.revision) else {
-        return Err(Error::InternalInvariant);
-    };
-    let kept = stored.nodes.iter().find(|node| node.id() == id);
-    Ok(kept.ok_or(Error::InternalInvariant)?.revision() > named)
 }
 
 /// One pipeline as a criterion: its name and the three texts of its catalogue entry.
@@ -191,7 +171,7 @@ impl AdviceShaping for PipelineAdvice {
     fn shape(&self, answers: &BTreeMap<String, AdviceAnswer>) -> AdviceField {
         let mut candidates = Vec::new();
         for node in &self.asked {
-            let name = question_name(node.position);
+            let name = question_name(node.written.position);
             let draft = node.chosen.as_str();
             let (Some((pipeline, pipeline_p)), Some(draft_pipeline_p)) = (
                 point::chosen(answers, &name),
@@ -199,9 +179,11 @@ impl AdviceShaping for PipelineAdvice {
             ) else {
                 return unanswered(&name);
             };
-            candidates.push(json!({"candidate":node.position,"pipeline":pipeline,
+            candidates.push(
+                json!({"candidate":node.written.position,"pipeline":pipeline,
                 "pipeline_p":pipeline_p,"draft_pipeline_p":draft_pipeline_p,
-                "differs":pipeline != ADVICE_ABSTAIN && pipeline != draft}));
+                "differs":pipeline != ADVICE_ABSTAIN && pipeline != draft}),
+            );
         }
         self.advised(candidates)
     }
@@ -213,7 +195,7 @@ impl AdviceShaping for PipelineAdvice {
             self.asked
                 .iter()
                 .map(|node| {
-                    json!({"candidate":node.position,"pipeline":self.longest,
+                    json!({"candidate":node.written.position,"pipeline":self.longest,
                         "pipeline_p":WIDEST_PROBABILITY,
                         "draft_pipeline_p":WIDEST_PROBABILITY,"differs":false})
                 })

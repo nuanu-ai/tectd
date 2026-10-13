@@ -3,13 +3,45 @@ use crate::json_fragment::READ_BUDGET;
 use serde_json::json;
 use tect_domain::{
     AdviceShaping, AdviceUnavailableReason, IntakeAdvice, IntakePlanning, PipelineAdvice,
-    PipelineCatalogueSnapshot, PipelineDraft, Program, ProgramMode, SizingAdvice, SizingDraft,
-    SizingScope,
+    PipelineCatalogueSnapshot, PipelineDraft, Program, ProgramMode, ResolvedCandidateDraft,
+    ResolvedSliceCandidateDraft, SizingAdvice, SizingDraft, SizingScope,
 };
 use uuid::Uuid;
 
-/// The `sizing` point for a Scope candidate draft of this shape.
+/// What the save of a first Scope candidate draft stored, as far as an advice point
+/// reads it: this many candidates, each under an id of its own at revision 1.
+fn stored_scopes(candidates: usize) -> ResolvedCandidateDraft {
+    let candidates = (0..candidates)
+        .map(|_| {
+            json!({"id":Uuid::new_v4(),"revision":1,"title":"t","outcome":"o","trigger":"t",
+                "delivered_behavior":"b","proof":"p","includes":[],"excludes":[],
+                "dependencies":[],"coverage_goal_ids":[],"evidence_ids":[]})
+        })
+        .collect::<Vec<_>>();
+    serde_json::from_value(json!({"boundary":"ongoing","goals":[],"evidence":[],
+        "candidates":candidates,"blockers":[],"protected_changes":[]}))
+    .unwrap()
+}
+
+/// The same for a first Slice candidate draft of this many work nodes.
+fn stored_slices(nodes: usize) -> ResolvedSliceCandidateDraft {
+    let nodes = (0..nodes)
+        .map(|_| {
+            json!({"kind":"work","id":Uuid::new_v4(),"revision":1,"title":"t","outcome":"o",
+                "includes":[],"excludes":[],"dependencies":[],"proof":["p"],
+                "pipeline":"slice.lightweight-tdd-development","pipeline_reason":"r",
+                "why_lightweight_insufficient":null,
+                "why_further_vertical_split_not_viable":null,"source_result_ids":[]})
+        })
+        .collect::<Vec<_>>();
+    serde_json::from_value(json!({"coverage_summary":"s","nodes":nodes,"supersessions":[]}))
+        .unwrap()
+}
+
+/// The `sizing` point for a first Scope candidate draft of this shape: every
+/// candidate of it is new and so asked about.
 pub(crate) fn scope_sizing(candidates: usize, items: usize) -> SizingAdvice {
+    let stored = stored_scopes(candidates);
     let candidates = (0..candidates)
         .map(|index| {
             json!({"identity":{"local":format!("c{index}")},"title":"t","outcome":"o",
@@ -20,14 +52,16 @@ pub(crate) fn scope_sizing(candidates: usize, items: usize) -> SizingAdvice {
     let draft = serde_json::from_value(json!({"boundary":"ongoing","goals":[],
         "candidates":candidates}))
     .unwrap();
-    SizingDraft::scope_candidates(&draft)
+    SizingDraft::scope_candidates(&draft, &stored)
         .unwrap()
         .unwrap()
         .advice(&[], ProgramMode::Prod)
 }
 
-/// The `sizing` point for a Slice candidate draft of this shape.
+/// The `sizing` point for a first Slice candidate draft of this shape: every work
+/// node of it is new and so asked about.
 pub(crate) fn slice_sizing(candidates: usize, items: usize) -> SizingAdvice {
+    let stored = stored_slices(candidates);
     let nodes = (0..candidates)
         .map(|index| {
             json!({"kind":"work","identity":{"local":format!("c{index}")},"title":"t",
@@ -42,7 +76,7 @@ pub(crate) fn slice_sizing(candidates: usize, items: usize) -> SizingAdvice {
         includes: Vec::new(),
         excludes: Vec::new(),
     };
-    SizingDraft::slice_candidates(&draft, scope)
+    SizingDraft::slice_candidates(&draft, &stored, scope)
         .unwrap()
         .unwrap()
         .advice(&[], ProgramMode::Prod)
@@ -68,6 +102,7 @@ pub(crate) fn slice_pipeline_draft(
     nodes: usize,
     catalogue: &PipelineCatalogueSnapshot,
 ) -> PipelineDraft {
+    let stored = stored_slices(nodes);
     let nodes = (0..nodes)
         .map(|index| {
             json!({"kind":"work","identity":{"local":format!("c{index}")},"title":"t",
@@ -76,10 +111,6 @@ pub(crate) fn slice_pipeline_draft(
         })
         .collect::<Vec<_>>();
     let draft = serde_json::from_value(json!({"coverage_summary":"s","nodes":nodes})).unwrap();
-    // A new node is told by its label; the stored draft is read for named ids only.
-    let stored =
-        serde_json::from_value(json!({"coverage_summary":"s","nodes":[],"supersessions":[]}))
-            .unwrap();
     let scope = SizingScope {
         title: "t".into(),
         outcome: "o".into(),

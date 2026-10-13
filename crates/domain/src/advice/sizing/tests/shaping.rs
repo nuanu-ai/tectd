@@ -86,7 +86,7 @@ fn no_shaped_field_is_larger_than_the_worst_case_sample() {
             .iter()
             .zip(&advice.asked)
         {
-            assert_eq!(entry["candidate"], asked.position);
+            assert_eq!(entry["candidate"], asked.written.position);
             assert_eq!(
                 entry["extra_items"],
                 json!((1..=asked.items).collect::<Vec<_>>())
@@ -161,7 +161,10 @@ fn the_subject_counts_candidates_and_included_items() {
     one.candidates.truncate(1);
     one.candidates[0].dependencies.clear();
     one.candidates[0].includes.truncate(1);
-    let one = SizingDraft::scope_candidates(&one).unwrap().unwrap();
+    let stored = stored_scopes(&[(Uuid::new_v4(), 1)]);
+    let one = SizingDraft::scope_candidates(&one, &stored)
+        .unwrap()
+        .unwrap();
     assert_eq!(
         one.advice(&[], ProgramMode::Prod).subject(),
         "this draft (1 candidate, 1 included item)"

@@ -1,6 +1,7 @@
 //! The `sizing` advice point on the two draft saves. Each use case runs after its
-//! save has committed: it reads the Program's product level and the user's recorded
-//! words up to what the save consumed, lays the saved draft out for Jev and asks once.
+//! save has committed, for the candidates the save created or changed: it reads the
+//! Program's product level and the user's recorded words up to what the save consumed,
+//! lays the saved draft out for Jev and asks once.
 use crate::advice::{earlier, words};
 use crate::advice_ports::NO_MODE;
 use crate::{AdviceAsk, AdviceOutputGuard, AdviceRequest, TransactionMode, WorkspaceService};
@@ -10,9 +11,10 @@ const SCOPE_CANDIDATES_SAVE: &str = "scope.candidates.save";
 const SLICE_CANDIDATES_SAVE: &str = "slice.candidates.save";
 
 impl WorkspaceService {
-    /// Advice on the Scope candidate draft that `scope.candidates.save` has stored.
-    /// `None` when Jev is disabled or the draft has no candidate; nothing is read
-    /// beyond the setting in the first case and nothing at all in the second.
+    /// Advice on the candidates that `scope.candidates.save` created or changed in
+    /// the draft it stored. `None` when Jev is disabled or the save created and
+    /// changed no candidate; nothing is read beyond the setting in the first case
+    /// and nothing at all in the second.
     pub async fn advise_scope_candidate_sizing(
         &self,
         context: &RequestContext,
@@ -20,7 +22,9 @@ impl WorkspaceService {
         stored: &StoredCandidateContext,
         reply: &dyn AdviceOutputGuard,
     ) -> Result<Option<AdviceField>> {
-        let Some(draft) = SizingDraft::scope_candidates(&request.draft)? else {
+        // A save answers with the draft it stored.
+        let kept = stored.draft.as_ref().ok_or(Error::InternalInvariant)?;
+        let Some(draft) = SizingDraft::scope_candidates(&request.draft, kept)? else {
             return Ok(None);
         };
         let set = &stored.context.candidate_set;
@@ -62,8 +66,9 @@ impl WorkspaceService {
         .await
     }
 
-    /// Advice on the Slice candidate draft that `slice.candidates.save` has stored.
-    /// `None` when Jev is disabled or the draft has no work node.
+    /// Advice on the work nodes that `slice.candidates.save` created or changed in
+    /// the draft it stored. `None` when Jev is disabled or the save created and
+    /// changed no work node.
     pub async fn advise_slice_candidate_sizing(
         &self,
         context: &RequestContext,
@@ -72,7 +77,9 @@ impl WorkspaceService {
         reply: &dyn AdviceOutputGuard,
     ) -> Result<Option<AdviceField>> {
         let scope = &saved.scope;
-        let Some(draft) = SizingDraft::slice_candidates(&request.draft, scope.into())? else {
+        // A save answers with the draft it stored.
+        let kept = saved.draft.as_ref().ok_or(Error::InternalInvariant)?;
+        let Some(draft) = SizingDraft::slice_candidates(&request.draft, kept, scope.into())? else {
             return Ok(None);
         };
 

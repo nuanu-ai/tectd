@@ -2,6 +2,7 @@
 //! object and the criteria of the one question per node.
 mod shaping;
 
+use super::super::test_drafts::stored_slices as stored;
 use super::*;
 use crate::{
     AdviceCompletion, AdviceExchange, AdviceReply, AdviceUnavailableReason, SizingWordSource,
@@ -100,22 +101,6 @@ fn draft(existing: &Existing) -> SliceCandidateDraft {
         full
     ]}))
     .unwrap()
-}
-
-/// The draft a save stored, as far as this point reads it: each node's id and revision.
-fn stored(nodes: &[(Uuid, i64)]) -> ResolvedSliceCandidateDraft {
-    let nodes = nodes
-        .iter()
-        .map(|(id, revision)| {
-            json!({"kind":"work","id":id,"revision":revision,"title":"t","outcome":"o",
-                "includes":[],"excludes":[],"dependencies":[],"proof":["p"],
-                "pipeline":LIGHTWEIGHT,"pipeline_reason":"r",
-                "why_lightweight_insufficient":null,
-                "why_further_vertical_split_not_viable":null,"source_result_ids":[]})
-        })
-        .collect::<Vec<_>>();
-    serde_json::from_value(json!({"coverage_summary":"s","nodes":nodes,"supersessions":[]}))
-        .unwrap()
 }
 
 /// What the save of `draft(existing)` stored: new nodes under revision 1, the kept
@@ -267,6 +252,7 @@ fn only_the_work_nodes_the_save_created_or_changed_are_asked_about() {
     assert_eq!(ask(&decisions, &after), Ok(None));
     // A draft of decision nodes alone has no work node at all.
     decisions.nodes.remove(1);
+    let after = stored(&[(Uuid::new_v4(), 1), (existing.decision, 2)]);
     assert_eq!(ask(&decisions, &after), Ok(None));
 }
 
@@ -338,7 +324,7 @@ fn the_criteria_are_the_pipelines_of_the_catalogue_and_abstain() {
 fn the_state_is_what_sizing_sends_and_holds_nothing_of_the_agents_choice() {
     let existing = Existing::new();
     let draft = draft(&existing);
-    let sizing = SizingDraft::slice_candidates(&draft, scope_statement())
+    let sizing = SizingDraft::slice_candidates(&draft, &saved(&existing), scope_statement())
         .unwrap()
         .unwrap();
     for mode in ProgramMode::ALL {

@@ -17,20 +17,22 @@ pub(crate) async fn advised(
     reply: Value,
     capacity: usize,
 ) -> Result<Value> {
-    // A save answers with the draft it stored. The second point is laid out first:
-    // it says which work nodes the save wrote and what the point answers without room.
+    // A save answers with the draft it stored. Both points ask about the work nodes
+    // the save created or changed, and the second is laid out first: it says which
+    // those are and what the point answers without room.
     let stored = saved.draft.as_ref().ok_or(Error::InternalInvariant)?;
     let catalogue = &saved.snapshot.catalogue;
     let scope = (&saved.scope).into();
     let pipeline = PipelineDraft::slice_candidates(&request.draft, stored, catalogue, scope)?;
+    // The save created and changed no work node: neither point fires.
+    let Some(draft) = pipeline else {
+        return Ok(reply);
+    };
 
     // `sizing` is measured on a reply that already holds that short field, so however
     // much of the reply its advice takes, the second point can still say why it gave
     // nothing. The reply that leaves does not hold the reserve.
-    let measured = match &pipeline {
-        Some(draft) => advice_reply::with_pipeline_reserve(&reply, &draft.without_room()),
-        None => reply.clone(),
-    };
+    let measured = advice_reply::with_pipeline_reserve(&reply, &draft.without_room());
     let room = ReplyRoom {
         reply: &measured,
         capacity,
@@ -40,10 +42,6 @@ pub(crate) async fn advised(
         .await?;
     let reply = advice_reply::finish(reply, advice, capacity)?;
 
-    // The save created and changed no work node: the second point does not fire.
-    let Some(draft) = pipeline else {
-        return Ok(reply);
-    };
     // Its room is what the reply has left with the `advice` field it now holds.
     let room = PipelineReplyRoom {
         reply: &reply,

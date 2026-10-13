@@ -2,9 +2,13 @@
 //! under, the user's recorded words and one draft, its candidates under short keys
 //! that the questions name. A candidate with a level of its own carries it.
 use super::SizingLevel;
-use super::draft_view::{Asked, DraftView};
+use super::draft_view::DraftView;
 use super::point;
-use crate::{Error, NativeScope, ProgramMode, Result, ScopeCandidateDraft, SliceCandidateDraft};
+use super::written::{self, Written};
+use crate::{
+    Error, NativeScope, ProgramMode, ResolvedCandidateDraft, ResolvedSliceCandidateDraft, Result,
+    ScopeCandidateDraft, SliceCandidateDraft,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -54,8 +58,16 @@ pub struct SizingWordsBasis {
     pub planning_latest_input: i64,
 }
 
-/// One draft laid out for Jev; the user's words and the product level are added last,
-/// after they are read.
+/// A candidate Jev is asked about: one the save created or changed, and how many
+/// items it includes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Asked {
+    pub written: Written,
+    pub items: usize,
+}
+
+/// One saved draft laid out for Jev; the user's words and the product level are added
+/// last, after they are read.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SizingDraft {
     pub(super) level: SizingLevel,
@@ -66,9 +78,15 @@ pub struct SizingDraft {
 }
 
 impl SizingDraft {
-    /// A Scope candidate draft of a Program. `None` when it has no candidate.
-    pub fn scope_candidates(draft: &ScopeCandidateDraft) -> Result<Option<Self>> {
+    /// A Scope candidate draft of a Program as its save carried it, with the draft
+    /// the save `stored`. The whole draft is laid out; Jev is asked about the
+    /// candidates the save created or changed. `None` when it created and changed none.
+    pub fn scope_candidates(
+        draft: &ScopeCandidateDraft,
+        stored: &ResolvedCandidateDraft,
+    ) -> Result<Option<Self>> {
         let view = DraftView::scope_draft(draft).ok_or(Error::InvalidArguments)?;
+        let asked = asked(&view, written::scope_candidates(draft, stored)?)?;
         let goals = draft
             .goals
             .iter()
@@ -77,29 +95,32 @@ impl SizingDraft {
                 None => json!({"text":goal.text}),
             })
             .collect();
-        Ok((!view.asked.is_empty()).then_some(Self {
+        Ok((!asked.is_empty()).then_some(Self {
             level: SizingLevel::ProgramToScopes,
             scope: None,
             goals,
             candidates: view.candidates,
-            asked: view.asked,
+            asked,
         }))
     }
 
-    /// A Slice candidate draft of an opened Scope. Jev is asked about its work nodes;
-    /// decision nodes are shown so that dependencies read whole. `None` when the
-    /// draft has no work node.
+    /// A Slice candidate draft of an opened Scope as its save carried it, with the
+    /// draft the save `stored`. Jev is asked about the work nodes the save created or
+    /// changed; the other nodes, decision nodes among them, are shown so that the
+    /// draft reads whole. `None` when the save created and changed no work node.
     pub fn slice_candidates(
         draft: &SliceCandidateDraft,
+        stored: &ResolvedSliceCandidateDraft,
         scope: SizingScope,
     ) -> Result<Option<Self>> {
         let view = DraftView::slice_draft(draft).ok_or(Error::InvalidArguments)?;
-        Ok((!view.asked.is_empty()).then_some(Self {
+        let asked = asked(&view, written::slice_work_nodes(draft, stored)?)?;
+        Ok((!asked.is_empty()).then_some(Self {
             level: SizingLevel::ScopeToSlices,
             scope: Some(scope),
             goals: Vec::new(),
             candidates: view.candidates,
-            asked: view.asked,
+            asked,
         }))
     }
 
@@ -113,4 +134,28 @@ impl SizingDraft {
         }
         state
     }
+}
+
+/// The candidates a save wrote, each with the number of items the layout shows it to
+/// include.
+fn asked(view: &DraftView, written: Vec<Written>) -> Result<Vec<Asked>> {
+    let items = |written: &Written| {
+        let shown = view
+            .asked
+            .iter()
+            .find(|shown| shown.position == written.position);
+        // A candidate a save wrote is work, and the layout shows every piece of work.
+        shown
+            .map(|shown| shown.items)
+            .ok_or(Error::InternalInvariant)
+    };
+    written
+        .into_iter()
+        .map(|written| {
+            Ok(Asked {
+                items: items(&written)?,
+                written,
+            })
+        })
+        .collect()
 }

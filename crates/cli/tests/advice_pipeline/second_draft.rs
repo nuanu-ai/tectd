@@ -1,4 +1,5 @@
-//! Later drafts: Jev is asked only about the work nodes a save created or changed.
+//! Later drafts: Jev is asked only about the work nodes a save created or changed,
+//! by `pipeline` and by `sizing` alike.
 use crate::pipeline::{
     DEBUG, LIGHTWEIGHT, RESEARCH, asked, decision, draft, kept, planning, points, rows, save,
     stored, work,
@@ -63,15 +64,12 @@ async fn a_later_draft_is_asked_about_its_changed_and_added_work_nodes_only() {
         "The cause is demonstrated on a fixed input"
     );
 
-    // `sizing` asked about all three work nodes; `pipeline` about the two written ones.
+    // Both points asked about the two written work nodes and not about the kept one.
     let (sizing, pipeline) = (stand.jev.asked(".size"), stand.jev.asked(".pipeline"));
     assert_eq!((sizing.len(), pipeline.len()), (2, 2));
     assert_eq!(
         asked(&sizing[1]),
         [
-            "c1.advice",
-            "c1.i1",
-            "c1.size",
             "c2.advice",
             "c2.i1",
             "c2.size",
@@ -99,7 +97,7 @@ async fn a_later_draft_is_asked_about_its_changed_and_added_work_nodes_only() {
     );
     assert_eq!(
         saved["advice"]["candidates"].as_array().unwrap().len(),
-        3,
+        2,
         "{saved}"
     );
     for request in [first_request, second_request] {
@@ -107,7 +105,7 @@ async fn a_later_draft_is_asked_about_its_changed_and_added_work_nodes_only() {
     }
 
     // The third draft keeps the three work nodes and adds a decision node: nothing
-    // that is work was created or changed, so the point does not fire.
+    // that is work was created or changed, so neither point fires.
     let third = draft(vec![
         kept(&nodes[0]),
         kept(&nodes[1]),
@@ -118,10 +116,10 @@ async fn a_later_draft_is_asked_about_its_changed_and_added_work_nodes_only() {
     let (saved, head, third_request) = save(&mut client, &head, third).await;
     let nodes = stored(&head);
     assert_eq!(revisions(&nodes), [1, 2, 1, 1]);
-    assert_eq!(saved["advice"]["status"], "advised", "{saved}");
+    assert!(saved.get("advice").is_none(), "{saved}");
     assert!(saved.get("pipeline_advice").is_none(), "{saved}");
-    assert_eq!(points(&rows(&stand, third_request).await), ["sizing"]);
-    assert_eq!(stand.jev.calls(), calls + 1);
+    assert!(rows(&stand, third_request).await.is_empty());
+    assert_eq!(stand.jev.calls(), calls);
     assert_eq!(stand.jev.asked(".pipeline").len(), 2);
 
     // The fourth draft changes that decision node and nothing else: still no work
@@ -138,11 +136,12 @@ async fn a_later_draft_is_asked_about_its_changed_and_added_work_nodes_only() {
     let (saved, head, fourth_request) = save(&mut client, &head, fourth).await;
     let nodes = stored(&head);
     assert_eq!(revisions(&nodes), [1, 2, 1, 2]);
-    assert_eq!(saved["advice"]["status"], "advised", "{saved}");
+    assert!(saved.get("advice").is_none(), "{saved}");
     assert!(saved.get("pipeline_advice").is_none(), "{saved}");
-    assert_eq!(points(&rows(&stand, fourth_request).await), ["sizing"]);
+    assert!(rows(&stand, fourth_request).await.is_empty());
     assert_eq!(stand.jev.asked(".pipeline").len(), 2);
     assert_eq!(stand.rows_of("pipeline").await, (2, 2));
+    assert_eq!(stand.rows_of("sizing").await, (2, 2));
 
     // The fifth draft changes nothing of the first work node but the pipeline the
     // agent chose for it: that is a changed node, and the only one asked about.

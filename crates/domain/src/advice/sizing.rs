@@ -1,9 +1,9 @@
 //! The `sizing` advice point: how large each candidate of a draft is, whether to keep,
 //! split or cut it, and which of its included items go beyond what was asked.
-use super::draft_view::{Asked, candidate_key, item_key};
+use super::draft_view::{candidate_key, item_key};
 use super::point::{self, WIDEST_PROBABILITY, unanswered};
 use super::sizing_catalog as catalog;
-use super::sizing_state::{SizingDraft, SizingWord};
+use super::sizing_state::{Asked, SizingDraft, SizingWord};
 use super::{
     ADVICE_ABSTAIN, AdviceAnswer, AdviceField, AdviceQuestion, AdviceQuestionSet, AdviceShaping,
 };
@@ -22,7 +22,8 @@ pub enum SizingLevel {
     ScopeToSlices,
 }
 
-/// One draft prepared for Jev: the questions to ask and how the answers are shaped.
+/// One saved draft prepared for Jev: the questions to ask about the candidates the
+/// save created or changed, and how the answers are shaped.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SizingAdvice {
     level: SizingLevel,
@@ -37,7 +38,7 @@ impl SizingDraft {
     pub fn advice(self, user_words: &[SizingWord], mode: ProgramMode) -> SizingAdvice {
         let mut questions = BTreeMap::new();
         for candidate in &self.asked {
-            let key = candidate_key(candidate.position);
+            let key = candidate_key(candidate.written.position);
             questions.insert(
                 format!("{key}.size"),
                 question(
@@ -57,7 +58,7 @@ impl SizingDraft {
                 ),
             );
             for item in 1..=candidate.items {
-                let item = item_key(candidate.position, item);
+                let item = item_key(candidate.written.position, item);
                 questions.insert(
                     item.clone(),
                     question(
@@ -109,16 +110,16 @@ impl AdviceShaping for SizingAdvice {
         let chosen = |name: String| point::chosen(answers, &name);
         let mut candidates = Vec::new();
         for candidate in &self.asked {
-            let key = candidate_key(candidate.position);
+            let key = candidate_key(candidate.written.position);
             let (mut extra_items, mut extra_p) = (Vec::new(), Vec::new());
             for item in 1..=candidate.items {
-                match chosen(item_key(candidate.position, item)) {
+                match chosen(item_key(candidate.written.position, item)) {
                     Some((choice, probability)) if choice == catalog::ITEM_EXTRA.0 => {
                         extra_items.push(item);
                         extra_p.push(probability);
                     }
                     Some(_) => {}
-                    None => return unanswered(&item_key(candidate.position, item)),
+                    None => return unanswered(&item_key(candidate.written.position, item)),
                 }
             }
             let Some((size, size_p)) = chosen(format!("{key}.size")) else {
@@ -128,7 +129,7 @@ impl AdviceShaping for SizingAdvice {
                 return unanswered(&format!("{key}.advice"));
             };
             candidates.push(
-                json!({"candidate":candidate.position,"size":size,"size_p":size_p,
+                json!({"candidate":candidate.written.position,"size":size,"size_p":size_p,
                 "advice":advice,"advice_p":advice_p,"extra_items":extra_items,
                 "extra_p":extra_p}),
             );
@@ -144,7 +145,7 @@ impl AdviceShaping for SizingAdvice {
             self.asked
                 .iter()
                 .map(|candidate| {
-                    json!({"candidate":candidate.position,"size":size,
+                    json!({"candidate":candidate.written.position,"size":size,
                         "size_p":WIDEST_PROBABILITY,"advice":advice,
                         "advice_p":WIDEST_PROBABILITY,
                         "extra_items":(1..=candidate.items).collect::<Vec<_>>(),

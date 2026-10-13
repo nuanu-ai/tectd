@@ -17,6 +17,9 @@ mod shaping;
 mod sizing;
 mod sizing_catalog;
 mod sizing_state;
+#[cfg(test)]
+mod test_drafts;
+mod written;
 pub use exchange::{AdviceCompletion, AdviceExchange, AdviceFailure, AdviceReply};
 pub use intake::{INTAKE_NOTE, INTAKE_POINT, IntakeAdvice, IntakePlanning};
 pub use pipeline::{PIPELINE_NOTE, PIPELINE_POINT, PipelineAdvice, PipelineDraft};

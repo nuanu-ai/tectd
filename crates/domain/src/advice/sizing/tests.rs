@@ -1,10 +1,13 @@
 //! What Jev is asked: the state object, the keys and the three kinds of questions.
+mod asked;
 mod shaping;
 
+use super::super::test_drafts::{stored_scopes, stored_slices};
 use super::*;
 use crate::{
     AdviceCompletion, AdviceExchange, AdviceReply, AdviceUnavailableReason, Error, ProgramMode,
-    ScopeCandidateDraft, SizingScope, SizingWordSource, SliceCandidateDraft,
+    ResolvedCandidateDraft, ResolvedSliceCandidateDraft, ScopeCandidateDraft, SizingScope,
+    SizingWordSource, SliceCandidateDraft,
 };
 use uuid::Uuid;
 
@@ -63,6 +66,21 @@ fn slice_draft(existing: Uuid) -> SliceCandidateDraft {
     .unwrap()
 }
 
+/// What the save of `scope_draft(existing)` stored when it changed the candidate the
+/// draft names by id: the new one under revision 1, the named one under the next.
+fn scope_stored(existing: Uuid) -> ResolvedCandidateDraft {
+    stored_scopes(&[(Uuid::from_u128(1), 1), (existing, 3)])
+}
+
+/// The same for `slice_draft(existing)`: two new nodes and the named one changed.
+fn slice_stored(existing: Uuid) -> ResolvedSliceCandidateDraft {
+    stored_slices(&[
+        (Uuid::from_u128(1), 1),
+        (Uuid::from_u128(2), 1),
+        (existing, 2),
+    ])
+}
+
 fn scope_statement() -> SizingScope {
     SizingScope {
         title: "Invitations".into(),
@@ -72,15 +90,16 @@ fn scope_statement() -> SizingScope {
     }
 }
 
+/// The point for a save that wrote every candidate of the Scope draft.
 fn scope_advice() -> SizingAdvice {
-    SizingDraft::scope_candidates(&scope_draft(Uuid::new_v4()))
-        .unwrap()
-        .unwrap()
-        .advice(&words(), ProgramMode::Prod)
+    scope_advice_of(Uuid::new_v4())
 }
 
+/// The point for a save that wrote every work node of the Slice draft.
 fn slice_advice() -> SizingAdvice {
-    SizingDraft::slice_candidates(&slice_draft(Uuid::new_v4()), scope_statement())
+    let existing = Uuid::new_v4();
+    let stored = slice_stored(existing);
+    SizingDraft::slice_candidates(&slice_draft(existing), &stored, scope_statement())
         .unwrap()
         .unwrap()
         .advice(&words(), ProgramMode::Prod)
@@ -268,8 +287,9 @@ fn slice_draft_asks_about_work_nodes_and_alone_offers_a_separate_scope() {
 
 #[test]
 fn every_request_carries_the_product_level_and_the_wording_judges_against_it() {
+    let existing = Uuid::new_v4();
     let draft = || {
-        SizingDraft::scope_candidates(&scope_draft(Uuid::new_v4()))
+        SizingDraft::scope_candidates(&scope_draft(existing), &scope_stored(existing))
             .unwrap()
             .unwrap()
     };
@@ -319,7 +339,7 @@ fn an_overridden_candidate_carries_its_own_level_in_its_object() {
     draft["candidates"][0]["mode_override"] =
         json!({"mode":"demo","source_ref_id":Uuid::new_v4(),"exact_quote":"I allow demo"});
     let overridden: ScopeCandidateDraft = serde_json::from_value(draft.clone()).unwrap();
-    let advice = SizingDraft::scope_candidates(&overridden)
+    let advice = SizingDraft::scope_candidates(&overridden, &scope_stored(existing))
         .unwrap()
         .unwrap()
         .advice(&words(), ProgramMode::Prod);
@@ -335,10 +355,7 @@ fn an_overridden_candidate_carries_its_own_level_in_its_object() {
     assert!(!state.to_string().contains("I allow demo"));
     assert!(!state.to_string().contains("source_ref_id"));
     // An override changes one candidate object and no question.
-    let plain = SizingDraft::scope_candidates(&scope_draft(existing))
-        .unwrap()
-        .unwrap()
-        .advice(&words(), ProgramMode::Prod);
+    let plain = scope_advice_of(existing);
     assert_eq!(advice.questions().questions, plain.questions().questions);
     assert_eq!(
         state["candidates"][1],
@@ -356,7 +373,8 @@ fn an_overridden_candidate_carries_its_own_level_in_its_object() {
     draft["nodes"][work]["mode_override"] =
         json!({"mode":"serious_prod","input_id":Uuid::new_v4(),"exact_quote":"I allow it"});
     let overridden: SliceCandidateDraft = serde_json::from_value(draft.clone()).unwrap();
-    let advice = SizingDraft::slice_candidates(&overridden, scope_statement())
+    let stored = slice_stored(existing);
+    let advice = SizingDraft::slice_candidates(&overridden, &stored, scope_statement())
         .unwrap()
         .unwrap()
         .advice(&words(), ProgramMode::Mvp);
@@ -374,7 +392,7 @@ fn an_overridden_candidate_carries_its_own_level_in_its_object() {
     draft["nodes"][work]["mode_override"]["mode"] = json!("enterprise");
     let unknown: SliceCandidateDraft = serde_json::from_value(draft).unwrap();
     assert_eq!(
-        SizingDraft::slice_candidates(&unknown, scope_statement()).unwrap_err(),
+        SizingDraft::slice_candidates(&unknown, &stored, scope_statement()).unwrap_err(),
         Error::InvalidArguments
     );
 }
@@ -382,15 +400,12 @@ fn an_overridden_candidate_carries_its_own_level_in_its_object() {
 #[test]
 fn keys_follow_draft_positions_and_nothing_else() {
     let existing = Uuid::new_v4();
-    let first = SizingDraft::scope_candidates(&scope_draft(existing))
-        .unwrap()
-        .unwrap()
-        .advice(&words(), ProgramMode::Prod);
+    let first = scope_advice_of(existing);
     let mut reworded = scope_draft(existing);
     reworded.candidates[0].title = "Another title".into();
     reworded.candidates[0].identity.local = Some("renamed".into());
     reworded.candidates[0].includes[1] = "another item".into();
-    let second = SizingDraft::scope_candidates(&reworded)
+    let second = SizingDraft::scope_candidates(&reworded, &scope_stored(existing))
         .unwrap()
         .unwrap()
         .advice(&[], ProgramMode::Prod);
@@ -407,7 +422,7 @@ fn keys_follow_draft_positions_and_nothing_else() {
 }
 
 fn scope_advice_of(existing: Uuid) -> SizingAdvice {
-    SizingDraft::scope_candidates(&scope_draft(existing))
+    SizingDraft::scope_candidates(&scope_draft(existing), &scope_stored(existing))
         .unwrap()
         .unwrap()
         .advice(&words(), ProgramMode::Prod)
@@ -417,29 +432,34 @@ fn scope_advice_of(existing: Uuid) -> SizingAdvice {
 fn drafts_without_a_candidate_to_ask_about_give_no_advice_point() {
     let mut empty = scope_draft(Uuid::new_v4());
     empty.candidates.clear();
-    assert_eq!(SizingDraft::scope_candidates(&empty), Ok(None));
+    assert_eq!(
+        SizingDraft::scope_candidates(&empty, &stored_scopes(&[])),
+        Ok(None)
+    );
     let mut decisions = slice_draft(Uuid::new_v4());
     decisions.nodes = serde_json::from_value(json!([{"kind":"decision",
         "identity":{"local":"mail"},"title":"t","question":"q","resolution_criteria":["c"]}]))
     .unwrap();
+    let stored = stored_slices(&[(Uuid::new_v4(), 1)]);
     assert_eq!(
-        SizingDraft::slice_candidates(&decisions, scope_statement()),
+        SizingDraft::slice_candidates(&decisions, &stored, scope_statement()),
         Ok(None)
     );
 }
 
 #[test]
 fn a_dependency_outside_the_draft_is_refused() {
-    let mut scope = scope_draft(Uuid::new_v4());
+    let existing = Uuid::new_v4();
+    let mut scope = scope_draft(existing);
     scope.candidates[0].dependencies[0].id = Some(Uuid::new_v4());
     assert_eq!(
-        SizingDraft::scope_candidates(&scope),
+        SizingDraft::scope_candidates(&scope, &scope_stored(existing)),
         Err(Error::InvalidArguments)
     );
-    let mut slices = slice_draft(Uuid::new_v4());
+    let mut slices = slice_draft(existing);
     slices.nodes.remove(0);
     assert_eq!(
-        SizingDraft::slice_candidates(&slices, scope_statement()),
+        SizingDraft::slice_candidates(&slices, &slice_stored(existing), scope_statement()),
         Err(Error::InvalidArguments)
     );
 }
