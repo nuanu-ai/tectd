@@ -56,7 +56,7 @@ impl AdviceQuestionSet {
 
     /// Accept answers only when every question is answered, the probabilities cover
     /// exactly its criteria and sum to 1 within their rounding, and the choice is the
-    /// most probable one.
+    /// most probable one within that rounding.
     /// The error names the first rule that failed.
     pub fn accept(
         &self,
@@ -90,7 +90,14 @@ impl AdviceQuestion {
         let Some(chosen) = answer.probabilities.get(&answer.choice) else {
             return Err("chooses a criterion that was not asked");
         };
-        if answer.probabilities.values().any(|other| other > chosen) {
+        // Two values rounded to two decimals: the chosen one may read up to a
+        // hundredth below another and still be the most probable.
+        let tie = 2.0 * PROBABILITY_ROUNDING + FLOAT_SLACK;
+        if answer
+            .probabilities
+            .values()
+            .any(|other| other - chosen > tie)
+        {
             return Err("chooses a criterion that is not the most probable");
         }
         if !answer.confidence.is_none_or(unit) {

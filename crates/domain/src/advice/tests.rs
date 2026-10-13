@@ -188,6 +188,9 @@ fn answers_are_accepted_only_under_every_rule() {
     // Jev rounds each probability to two decimals: three criteria may miss 1 by 0.015.
     assert_eq!(questions.accept(&answer("small", 0.7, 0.2, 0.09)), Ok(()));
     assert_eq!(questions.accept(&answer("small", 0.7, 0.2, 0.11)), Ok(()));
+    // And its choice may read a hundredth below another criterion: the live answer
+    // that chose 0.43 beside 0.44.
+    assert_eq!(questions.accept(&answer("small", 0.43, 0.44, 0.13)), Ok(()));
     assert!(
         questions
             .accept(&BTreeMap::new())
@@ -199,6 +202,7 @@ fn answers_are_accepted_only_under_every_rule() {
         (answer("small", 0.7, 0.2, 0.08), "do not sum to 1"),
         (answer("small", 0.7, 0.2, 0.12), "do not sum to 1"),
         (answer("large", 0.7, 0.2, 0.1), "not the most probable"),
+        (answer("small", 0.42, 0.44, 0.14), "not the most probable"),
         (answer("medium", 0.7, 0.2, 0.1), "was not asked"),
         (answer("small", 1.5, -0.6, 0.1), "outside 0 to 1"),
         (answer("small", f64::NAN, 0.2, 0.1), "outside 0 to 1"),
