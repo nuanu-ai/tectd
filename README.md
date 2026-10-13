@@ -503,12 +503,15 @@ Read-only context reports stale or unresolved knowledge and returns an exact
 ## Jev advice
 
 Jev is an outside adviser a workspace may switch on. Advice arrives in the reply of a
-command the agent already calls, as an `advice` field; it forbids nothing and applies
-nothing. Three advice points exist:
+command the agent already calls, as an `advice` field. The advice is binding: the agent
+follows it and departs only where it holds the advice plainly wrong, stating why; a
+review that says ready is refused until then, as described below. The advice itself
+applies nothing, and a Jev failure blocks nothing: no advice, no obligation.
+Three advice points exist:
 
 | Point | Fires after | Jev is asked once |
 | --- | --- | --- |
-| `sizing` | `scope.candidates.save` or `slice.candidates.save` has stored a draft | How large each candidate is, whether to keep, split or cut it, and which of its included items go beyond what the user asked for |
+| `sizing` | `scope.candidates.save` or `slice.candidates.save` has stored a draft that created or changed a candidate | How large each of those candidates is, whether to keep, split or cut it, and which of its included items go beyond what the user asked for |
 | `intake` | `scope.candidates.record_input` or `slice.candidates.input` has recorded new user input | How much new work the input asks for, where that work lands in what is planned, and how it sits with the user's earlier words |
 | `pipeline` | `slice.candidates.save` has stored a draft that created or changed a work node, after `sizing` | Which pipeline of the catalogue fits each of those work nodes, without seeing the pipeline the draft chose |
 
@@ -543,15 +546,21 @@ The `advice` field of a draft save is one of:
 {"status":"unavailable","reason":"timeout","message":"Jev advice is not available: ..."}
 ```
 
+It has one entry per candidate the save created or changed: a candidate the draft names
+by a local label, or names by id and the save stored under a higher revision. Jev still
+reads the whole draft, and positions count every candidate of it. A save that created
+and changed no candidate, at the Slice level no work node, gets no `advice` field and
+writes no journal row. `pipeline` asks about the same work nodes by the same rule.
+
 `candidate` and `extra_items` are 1-based positions in the saved draft; `size_p` and
 `advice_p` are Jev's probability for its choice, to two decimals; `extra_items` lists
 the included items Jev classed as extra and `extra_p` its probability for each, in the
 same order; a candidate Jev abstained on keeps `ABSTAIN`. `size` is `small`, `bounded`, `large` or `oversized`;
 `advice` is `keep`, `split`, `simplify` or `clarify`, and for Slice candidates also
 `separate_scope`. `level` is `program_to_scopes` or `scope_to_slices`; at the Slice
-level only work nodes are asked about. `note` says the same in one sentence and travels
-only inside an advised field. The wording Jev is asked with lives in one file,
-`crates/domain/src/advice/sizing_catalog.rs`.
+level only work nodes are asked about. `note` explains the field in one sentence, says
+what to do with the advice, and travels only inside an advised field. The wording Jev
+is asked with lives in one file, `crates/domain/src/advice/sizing_catalog.rs`.
 
 A Slice draft save carries the `pipeline` point's field beside `advice`, under its own
 key `pipeline_advice`, with its own Jev request and its own journal row; either point
@@ -574,6 +583,55 @@ are not sent. `sizing` is measured on a reply that keeps room for the short
 `advice_too_large` field of `pipeline`, so the second point can always answer. The
 wording lives in `crates/domain/src/advice/pipeline_catalog.rs`.
 
+The advice of `sizing` and `pipeline` binds the review of the draft. An answer asks for
+a change when Jev chose `split`, `simplify`, `clarify` or `separate_scope` for the
+candidate or classed at least one of its included items as extra (`sizing`), or when
+`differs` is true (`pipeline`). `keep`, agreement on the pipeline and `ABSTAIN` ask for
+nothing, and a size alone asks for nothing.
+
+Such advice is open while the candidate stands in the draft under the revision it was
+given for. It closes when the candidate is changed and saved: Jev is asked about the
+new revision and only the new answer counts, and when Jev is then unavailable or
+abstains, nothing is open. It also closes when a review states a departure for it, in
+the optional `advice_departures` list of the review body of both save routes:
+
+```json
+{"verdict":"ready","summary":"...","findings":[],
+ "advice_departures":[{"candidate_id":"<uuid>","point":"sizing",
+   "reason":"why that advice is plainly wrong"}]}
+```
+
+`point` is `sizing` or `pipeline`, and one entry closes the advice of one point about
+one candidate. A blank `reason`, an unknown `point`, one candidate and point named
+twice, and an explicit `null` are `invalid_arguments`. An entry about a candidate
+without open advice is no error and records nothing. A review without the list is read
+and stored as before.
+
+`scope.candidates.save` and `slice.candidates.save` with `kind: review` and verdict
+`ready` are refused while the draft under review has a candidate with open advice of a
+point for which the review states no departure. `revise` and `blocked` pass as before.
+The refusal has code `ADVICE_NOT_FOLLOWED`, rule `SCOPE-REVIEW-ADVICE-OPEN` or
+`SLICE-REVIEW-ADVICE-OPEN`, and points at `/params/review/advice_departures`. Its
+`actual` names the open items, each with the candidate id, the point and what Jev
+chose, as far as 2048 bytes carry and counts the rest; its intro gives the two ways
+out: change the draft as advised and save it again, or add `advice_departures` to the
+review with the reason for each. Nothing is stored on a refusal. When a review passes,
+whatever its verdict, each departure it states that matches open advice is written with
+its reason and time in the transaction that stores the review.
+
+With Jev disabled for the workspace no review is held to anything: it passes as it does
+without this feature even when advice was left open from the time Jev was enabled, and
+nothing is written. `intake` has no such check: its `note` says how to bring the plan in
+line before the work, and nothing verifies that the agent did.
+
+Migration 0045 adds `advice_candidate_answers` with forced RLS, one row per candidate,
+revision and point, written in the transaction that completes the journal row of an
+advised `sizing` or `pipeline` call. A row holds the journal row, the candidate set and
+its level, the candidate id and revision, the point, whether the answer asks for a
+change, the answer itself (what Jev chose and its probabilities, no text of the draft)
+and, once a review departed from it, the reason and the time. The runtime role may read
+rows, insert them and write the two departure columns.
+
 A recorded input gets one short `advice` field from `intake`, or the same `abstained`
 and `unavailable` shapes:
 
@@ -592,7 +650,12 @@ and `unavailable` shapes:
 
 Each `*_p` is Jev's probability for its choice, to two decimals; a question Jev
 abstained on keeps `ABSTAIN`, and Jev abstaining on every question gives
-`{"status":"abstained"}`. The field carries no text of the input or the draft. For this
+`{"status":"abstained"}`. The field carries no text of the input or the draft. Its `note`
+says what to do before the work: `new_candidate` means add a candidate to the draft,
+`extends` means change candidate `nearest`, `covered` changes nothing, `separate_scope`
+and `outside_program` mean do not plan it here and tell the user, and a `fit` other
+than `in_line` means ask the user; the agent departs only where the advice is plainly
+wrong and tells the user so. For this
 advice Jev reads `state.level`, `state.mode`, `state.program` (the six PRD text fields
 of the Program's row), `state.scope` (the opened Scope, Slice level only),
 `state.user_words` (the words recorded before the new input, by source and in recorded
