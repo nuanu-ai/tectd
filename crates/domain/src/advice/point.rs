@@ -36,11 +36,20 @@ pub(super) fn chosen<'a>(
     name: &str,
 ) -> Option<(&'a str, f64)> {
     let answer = answers.get(name)?;
-    let probability = answer.probabilities.get(&answer.choice)?;
     Some((
         answer.choice.as_str(),
-        (probability * 100.0).round() / 100.0,
+        given(answers, name, &answer.choice)?,
     ))
+}
+
+/// The probability Jev gave one criterion of a question, to two decimals.
+pub(super) fn given(
+    answers: &BTreeMap<String, AdviceAnswer>,
+    name: &str,
+    criterion: &str,
+) -> Option<f64> {
+    let probability = answers.get(name)?.probabilities.get(criterion)?;
+    Some((probability * 100.0).round() / 100.0)
 }
 
 /// Unreachable after the answers were accepted; never a panic and never a guess.
