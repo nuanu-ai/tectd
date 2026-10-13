@@ -242,3 +242,58 @@ async fn a_ready_slice_review_waits_for_the_pipeline_advice_to_be_followed() {
     assert_eq!(reviewed["candidate_set"]["status"], "ready", "{reviewed}");
     client.finish().await;
 }
+
+/// Jev wants the second work node moved into a Scope of its own.
+fn second_elsewhere(name: &str) -> (&'static str, f64) {
+    match name {
+        "c2.advice" => ("separate_scope", 0.8),
+        other => content(other),
+    }
+}
+
+/// What `main` leaves of "follow the advice" for `separate_scope`: a Slice draft may
+/// not drop a node without a replacement or a result, so the advised node cannot
+/// simply leave this Scope's plan. The advice is closed by a departure, or by any
+/// saved change of the node that Jev then asks nothing about.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_node_advised_into_a_scope_of_its_own_cannot_be_dropped_from_the_draft() {
+    let level = Level::Slices;
+    let stand = Stand::start("2000").await;
+    let (mut client, repo) = stand.workspace().await;
+    let head = Head::begun(&mut client, &repo, level).await;
+    configure(&mut client, true, 0).await;
+    stand.jev.answer(Jev::Answers(second_elsewhere));
+    let (saved, _) = command(&mut client, head.route(), head.first(2)).await;
+    assert_eq!(
+        saved["advice"]["candidates"][1]["advice"], "separate_scope",
+        "{saved}"
+    );
+    let head = head.after(&mut client, &saved).await;
+    let candidates = head.candidates(&mut client).await;
+    let second = &candidates[1];
+    let review = head.review(&candidates, "ready", None);
+    let refusal = refused(&mut client, head.route(), review).await;
+    assert_not_followed(&refusal, level, &[item(second, "sizing", "separate_scope")]);
+
+    // The draft without the advised node: refused, with and without a supersession
+    // that names no replacement and no result.
+    let mut dropped = head.again(&mut client, &[]).await;
+    dropped["draft"]["nodes"].as_array_mut().unwrap().remove(1);
+    let (error, _) = refused(&mut client, head.route(), dropped.clone()).await;
+    assert_eq!(error["code"], "invalid_arguments", "{error}");
+    dropped["draft"]["supersessions"] = json!([{"candidate_id":second["id"],
+        "revision":second["revision"],"reason":"It belongs in a Scope of its own"}]);
+    let (error, _) = refused(&mut client, head.route(), dropped).await;
+    assert_eq!(error["code"], "invalid_arguments", "{error}");
+
+    // The review passes with the departure that says so.
+    let stated = json!([crate::binding::departure(
+        second,
+        "sizing",
+        "It cannot leave this plan without a replacement; planned as a separate Scope next"
+    )]);
+    let review = head.review(&candidates, "ready", Some(stated));
+    let (reviewed, _) = command(&mut client, head.route(), review).await;
+    assert_eq!(reviewed["candidate_set"]["status"], "ready", "{reviewed}");
+    client.finish().await;
+}
