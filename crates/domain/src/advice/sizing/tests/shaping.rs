@@ -20,12 +20,13 @@ fn answers_become_positions_tokens_and_two_decimal_probabilities() {
         content(&field),
         json!({"status":"advised","note":SIZING_NOTE,"level":"scope_to_slices","candidates":[
             {"candidate":1,"size":"small","size_p":0.62,"advice":"keep","advice_p":1.0,
-             "extra_items":[]},
+             "extra_items":[],"extra_p":[]},
             {"candidate":3,"size":"oversized","size_p":0.51,"advice":"separate_scope",
-             "advice_p":0.3,"extra_items":[2,3]}
+             "advice_p":0.3,"extra_items":[2,3],"extra_p":[0.7,0.34]}
         ]})
     );
-    // Positions and tokens only: no text of the draft and no confidence travel back.
+    // Positions, tokens and probabilities only: no text of the draft and no confidence
+    // travel back.
     let text = json!(field).to_string();
     for absent in ["Invitation form", "retries", "confidence", "probabilities"] {
         assert!(!text.contains(absent), "{absent}");
@@ -51,9 +52,9 @@ fn an_abstained_candidate_keeps_abstain_and_only_all_abstain_abstains() {
         content(&completed.advice)["candidates"],
         json!([
             {"candidate":1,"size":"ABSTAIN","size_p":0.55,"advice":"ABSTAIN","advice_p":0.55,
-             "extra_items":[2]},
+             "extra_items":[2],"extra_p":[0.8]},
             {"candidate":2,"size":"bounded","size_p":0.7,"advice":"keep","advice_p":0.7,
-             "extra_items":[]}
+             "extra_items":[],"extra_p":[]}
         ])
     );
     let all = answers(&advice, |_| (ADVICE_ABSTAIN, 0.9));
@@ -90,6 +91,7 @@ fn no_shaped_field_is_larger_than_the_worst_case_sample() {
                 entry["extra_items"],
                 json!((1..=asked.items).collect::<Vec<_>>())
             );
+            assert_eq!(entry["extra_p"], json!(vec![0.99; asked.items]));
             assert_eq!(
                 (&entry["size_p"], &entry["advice_p"]),
                 (&json!(0.99), &json!(0.99))
@@ -137,7 +139,7 @@ fn no_shaped_field_is_larger_than_the_worst_case_sample() {
     assert_eq!(
         content(&slice_advice().largest())["candidates"][1],
         json!({"candidate":3,"size":"oversized","size_p":0.99,"advice":"separate_scope",
-            "advice_p":0.99,"extra_items":[1,2,3]})
+            "advice_p":0.99,"extra_items":[1,2,3],"extra_p":[0.99,0.99,0.99]})
     );
     assert_eq!(
         content(&scope_advice().largest())["candidates"][0]["advice"],

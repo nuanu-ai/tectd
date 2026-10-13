@@ -68,9 +68,9 @@ async fn advised_then_replayed_then_abstained(level: Level) {
         advice,
         json!({"status":"advised","note":SIZING_NOTE,"level":level.name(),"candidates":[
             {"candidate":1,"size":"large","size_p":0.62,"advice":"split","advice_p":1.0,
-             "extra_items":[2]},
+             "extra_items":[2],"extra_p":[0.7]},
             {"candidate":second,"size":"bounded","size_p":0.55,"advice":"ABSTAIN",
-             "advice_p":0.5,"extra_items":[]}
+             "advice_p":0.5,"extra_items":[],"extra_p":[]}
         ]})
     );
     assert!(envelope <= BUDGET, "{envelope}");

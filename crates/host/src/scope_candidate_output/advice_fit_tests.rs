@@ -37,8 +37,8 @@ fn draft_save_reply_has_measured_room_for_sizing_advice() {
         "scope.candidates.save base_envelope_bytes={base}; sizing advice bytes_per_candidate={each}; \
          candidates_that_fit with 0/5/100 included items each={bare}/{usual}/{heavy}"
     );
-    assert_eq!((base, each), (2954, 118));
-    assert_eq!((bare, usual, heavy), (41, 38, 12));
+    assert_eq!((base, each), (2954, 133));
+    assert_eq!((bare, usual, heavy), (37, 29, 5));
 }
 
 #[test]

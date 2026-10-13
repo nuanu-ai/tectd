@@ -37,8 +37,8 @@ fn draft_save_reply_has_measured_room_for_sizing_advice() {
         "slice.candidates.save base_envelope_bytes={base}; sizing advice bytes_per_candidate={each}; \
          candidates_that_fit with 0/5/100 included items each={bare}/{usual}/{heavy}"
     );
-    assert_eq!((base, each), (1373, 124));
-    assert_eq!((bare, usual, heavy), (52, 48, 15));
+    assert_eq!((base, each), (1373, 139));
+    assert_eq!((bare, usual, heavy), (46, 37, 7));
 }
 
 #[test]

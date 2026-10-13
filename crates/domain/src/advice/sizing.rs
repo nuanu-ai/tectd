@@ -101,17 +101,22 @@ impl SizingAdvice {
 }
 
 impl AdviceShaping for SizingAdvice {
-    /// One entry per asked candidate, in draft order: positions and tokens only, since
-    /// the agent holds its own draft. A candidate Jev abstained on keeps `ABSTAIN`.
+    /// One entry per asked candidate, in draft order: positions, tokens and
+    /// probabilities only, since the agent holds its own draft. `extra_items` lists the
+    /// included items Jev classed as extra and `extra_p` the probability of each, in
+    /// the same order. A candidate Jev abstained on keeps `ABSTAIN`.
     fn shape(&self, answers: &BTreeMap<String, AdviceAnswer>) -> AdviceField {
         let chosen = |name: String| point::chosen(answers, &name);
         let mut candidates = Vec::new();
         for candidate in &self.asked {
             let key = candidate_key(candidate.position);
-            let mut extra_items = Vec::new();
+            let (mut extra_items, mut extra_p) = (Vec::new(), Vec::new());
             for item in 1..=candidate.items {
                 match chosen(item_key(candidate.position, item)) {
-                    Some((choice, _)) if choice == catalog::ITEM_EXTRA.0 => extra_items.push(item),
+                    Some((choice, probability)) if choice == catalog::ITEM_EXTRA.0 => {
+                        extra_items.push(item);
+                        extra_p.push(probability);
+                    }
                     Some(_) => {}
                     None => return unanswered(&item_key(candidate.position, item)),
                 }
@@ -124,7 +129,8 @@ impl AdviceShaping for SizingAdvice {
             };
             candidates.push(
                 json!({"candidate":candidate.position,"size":size,"size_p":size_p,
-                "advice":advice,"advice_p":advice_p,"extra_items":extra_items}),
+                "advice":advice,"advice_p":advice_p,"extra_items":extra_items,
+                "extra_p":extra_p}),
             );
         }
         self.advised(candidates)
@@ -141,7 +147,8 @@ impl AdviceShaping for SizingAdvice {
                     json!({"candidate":candidate.position,"size":size,
                         "size_p":WIDEST_PROBABILITY,"advice":advice,
                         "advice_p":WIDEST_PROBABILITY,
-                        "extra_items":(1..=candidate.items).collect::<Vec<_>>()})
+                        "extra_items":(1..=candidate.items).collect::<Vec<_>>(),
+                        "extra_p":vec![WIDEST_PROBABILITY; candidate.items]})
                 })
                 .collect(),
         )

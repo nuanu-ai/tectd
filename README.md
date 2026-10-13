@@ -536,14 +536,16 @@ The `advice` field of a draft save is one of:
 
 ```json
 {"status":"advised","note":"...","level":"scope_to_slices","candidates":[
-  {"candidate":1,"size":"large","size_p":0.62,"advice":"split","advice_p":0.8,"extra_items":[2,5]}]}
+  {"candidate":1,"size":"large","size_p":0.62,"advice":"split","advice_p":0.8,
+   "extra_items":[2,5],"extra_p":[0.71,0.44]}]}
 {"status":"abstained"}
 {"status":"unavailable","reason":"timeout","message":"Jev advice is not available: ..."}
 ```
 
 `candidate` and `extra_items` are 1-based positions in the saved draft; `size_p` and
-`advice_p` are Jev's probability for its choice, to two decimals; a candidate Jev
-abstained on keeps `ABSTAIN`. `size` is `small`, `bounded`, `large` or `oversized`;
+`advice_p` are Jev's probability for its choice, to two decimals; `extra_items` lists
+the included items Jev classed as extra and `extra_p` its probability for each, in the
+same order; a candidate Jev abstained on keeps `ABSTAIN`. `size` is `small`, `bounded`, `large` or `oversized`;
 `advice` is `keep`, `split`, `simplify` or `clarify`, and for Slice candidates also
 `separate_scope`. `level` is `program_to_scopes` or `scope_to_slices`; at the Slice
 level only work nodes are asked about. `note` says the same in one sentence and travels
