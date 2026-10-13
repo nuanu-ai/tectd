@@ -504,12 +504,13 @@ Read-only context reports stale or unresolved knowledge and returns an exact
 
 Jev is an outside adviser a workspace may switch on. Advice arrives in the reply of a
 command the agent already calls, as an `advice` field; it forbids nothing and applies
-nothing. Two advice points exist:
+nothing. Three advice points exist:
 
 | Point | Fires after | Jev is asked once |
 | --- | --- | --- |
 | `sizing` | `scope.candidates.save` or `slice.candidates.save` has stored a draft | How large each candidate is, whether to keep, split or cut it, and which of its included items go beyond what the user asked for |
 | `intake` | `scope.candidates.record_input` or `slice.candidates.input` has recorded new user input | How much new work the input asks for, where that work lands in what is planned, and how it sits with the user's earlier words |
+| `pipeline` | `slice.candidates.save` has stored a draft that created or changed a work node, after `sizing` | Which pipeline of the catalogue fits each of those work nodes, without seeing the pipeline the draft chose |
 
 Every request carries a product level as `state.mode`,
 `{"level":"prod","description":"..."}`: size, the advice to simplify, what counts as
@@ -551,6 +552,27 @@ same order; a candidate Jev abstained on keeps `ABSTAIN`. `size` is `small`, `bo
 level only work nodes are asked about. `note` says the same in one sentence and travels
 only inside an advised field. The wording Jev is asked with lives in one file,
 `crates/domain/src/advice/sizing_catalog.rs`.
+
+A Slice draft save carries the `pipeline` point's field beside `advice`, under its own
+key `pipeline_advice`, with its own Jev request and its own journal row; either point
+may be unavailable while the other is advised:
+
+```json
+{"status":"advised","note":"...","candidates":[
+  {"candidate":3,"pipeline":"slice.lightweight-tdd-development","pipeline_p":0.74,
+   "draft_pipeline_p":0.12,"differs":true}]}
+```
+
+It has one entry per work node the save created or changed, in draft order; unchanged
+work nodes and decision nodes are not asked about, and a save that wrote no work node
+gets no `pipeline_advice`. `pipeline` and `pipeline_p` are Jev's choice among the
+entries of the catalogue the draft was saved against and its probability;
+`draft_pipeline_p` is Jev's probability for the pipeline the draft chose; `differs` says
+Jev chose another one. A node Jev abstained on keeps `ABSTAIN` and does not differ. Jev
+reads the same state as `sizing` at the Slice level; the chosen pipeline and its reasons
+are not sent. `sizing` is measured on a reply that keeps room for the short
+`advice_too_large` field of `pipeline`, so the second point can always answer. The
+wording lives in `crates/domain/src/advice/pipeline_catalog.rs`.
 
 A recorded input gets one short `advice` field from `intake`, or the same `abstained`
 and `unavailable` shapes:
@@ -597,7 +619,7 @@ recorded all the same. A replay of a command under the same `request_id` returns
 recorded field and asks nobody.
 
 A Program opened before the product level existed has no mode, and without one Jev is
-not asked by either point. The draft is stored or the input recorded, the journal
+not asked by any point. The draft is stored or the input recorded, the journal
 holds a row with `called` false, and the reply carries:
 
 ```json
