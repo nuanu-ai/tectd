@@ -417,18 +417,23 @@ async fn execute_program(
             request_id,
             input,
             task_context,
-        } => service
-            .record_program_input(
-                context,
-                program_id,
-                request_id,
-                &input,
-                task_context.as_ref(),
-                &guidance,
-                &guard,
-            )
-            .await
-            .and_then(program_output::program),
+        } => {
+            let recorded = service
+                .record_program_input(
+                    context,
+                    program_id,
+                    request_id,
+                    &input,
+                    task_context.as_ref(),
+                    &guidance,
+                    &guard,
+                )
+                .await?;
+            let reply = program_output::program(recorded)?;
+            // The input is recorded; Jev's advice on it, if any, rides on the same reply.
+            let asked = (program_id, request_id, input.as_str());
+            crate::input_advice::program(service, context, asked, reply, capacity).await
+        }
         ProgramInvocation::Refresh(request) => service
             .refresh_program_knowledge(context, &request, &guidance, &guard)
             .await

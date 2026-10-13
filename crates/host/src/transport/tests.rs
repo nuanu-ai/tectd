@@ -185,6 +185,22 @@ fn two_jev_waits_at_the_largest_timeout_end_inside_the_deadline_of_an_input_comm
     }
 }
 
+/// `program.record_input` asks Jev once, `model`, after the input is recorded. One wait
+/// at the largest `TECT_JEV_TIMEOUT_MS` ends inside its operation deadline.
+#[test]
+fn one_jev_wait_at_the_largest_timeout_ends_inside_the_deadline_of_a_program_input() {
+    let id = Uuid::new_v4();
+    let program_input = parse_invocation(
+        "record_program_input",
+        json!({"program_id":id,"request_id":id,"input":"i"}),
+    )
+    .unwrap();
+    let wait = Duration::from_millis(crate::jev_transport::MAX_TIMEOUT_MS);
+    let deadline = operation_timeout_for(&program_input);
+    assert_eq!(deadline, OPERATION_TIMEOUT);
+    assert!(wait < deadline);
+}
+
 #[tokio::test]
 async fn bridge_accepts_success_from_daemon_after_previous_fifteen_second_limit() {
     let directory = tempfile::tempdir().unwrap();

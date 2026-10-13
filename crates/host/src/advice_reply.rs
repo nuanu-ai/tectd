@@ -39,8 +39,10 @@ impl AdviceOutputGuard for PipelineReplyRoom<'_> {
     }
 }
 
-/// A recorded-input reply that already holds whatever `advice` field `intake` gave,
-/// and the capacity its caller gave: the room the `model_advice` field has.
+/// A recorded-input reply as it stands when `model` is asked, and the capacity its
+/// caller gave: the room the `model_advice` field has. For an input of a candidate
+/// set the reply already holds whatever `advice` field `intake` gave; for an input of
+/// a Program it is the reply as the command built it.
 pub(crate) struct ModelReplyRoom<'a> {
     pub reply: &'a Value,
     pub capacity: usize,
