@@ -185,6 +185,9 @@ fn answers_are_accepted_only_under_every_rule() {
     let questions = questions();
     assert_eq!(questions.accept(&answer("small", 0.7, 0.2, 0.1)), Ok(()));
     assert_eq!(questions.accept(&answer("small", 0.4, 0.4, 0.2)), Ok(()));
+    // Jev rounds each probability to two decimals: three criteria may miss 1 by 0.015.
+    assert_eq!(questions.accept(&answer("small", 0.7, 0.2, 0.09)), Ok(()));
+    assert_eq!(questions.accept(&answer("small", 0.7, 0.2, 0.11)), Ok(()));
     assert!(
         questions
             .accept(&BTreeMap::new())
@@ -193,6 +196,8 @@ fn answers_are_accepted_only_under_every_rule() {
     );
     for (answers, rule) in [
         (answer("small", 0.7, 0.2, 0.2), "do not sum to 1"),
+        (answer("small", 0.7, 0.2, 0.08), "do not sum to 1"),
+        (answer("small", 0.7, 0.2, 0.12), "do not sum to 1"),
         (answer("large", 0.7, 0.2, 0.1), "not the most probable"),
         (answer("medium", 0.7, 0.2, 0.1), "was not asked"),
         (answer("small", 1.5, -0.6, 0.1), "outside 0 to 1"),

@@ -6,7 +6,11 @@ use std::collections::BTreeMap;
 
 /// Criterion every question carries; choosing it means Jev gives no advice.
 pub const ADVICE_ABSTAIN: &str = "ABSTAIN";
-const PROBABILITY_SUM_TOLERANCE: f64 = 1e-6;
+/// Jev reports each probability rounded to two decimals, so the sum of a question's
+/// probabilities may miss 1 by up to half a hundredth per criterion.
+const PROBABILITY_ROUNDING: f64 = 0.005;
+/// Room for the error of adding the rounded values as binary floats.
+const FLOAT_SLACK: f64 = 1e-9;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdviceQuestion {
@@ -51,7 +55,8 @@ impl AdviceQuestionSet {
     }
 
     /// Accept answers only when every question is answered, the probabilities cover
-    /// exactly its criteria and sum to 1, and the choice is the most probable one.
+    /// exactly its criteria and sum to 1 within their rounding, and the choice is the
+    /// most probable one.
     /// The error names the first rule that failed.
     pub fn accept(
         &self,
@@ -78,7 +83,8 @@ impl AdviceQuestion {
         if !answer.probabilities.values().copied().all(unit) {
             return Err("has a probability outside 0 to 1");
         }
-        if (answer.probabilities.values().sum::<f64>() - 1.0).abs() > PROBABILITY_SUM_TOLERANCE {
+        let rounding = PROBABILITY_ROUNDING * answer.probabilities.len() as f64 + FLOAT_SLACK;
+        if (answer.probabilities.values().sum::<f64>() - 1.0).abs() > rounding {
             return Err("has probabilities that do not sum to 1");
         }
         let Some(chosen) = answer.probabilities.get(&answer.choice) else {
