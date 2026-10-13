@@ -32,7 +32,7 @@ async fn live_slice_draft_gets_pipeline_advice_from_the_real_jev() {
     let (head, _) = planning(&mut client, &repo).await;
     configure(&mut client, true, 0).await;
 
-    // Three new work nodes. The draft chose Lightweight for work whose cause is
+    // Four new work nodes. The draft chose Lightweight for work whose cause is
     // unknown, Lightweight for a bounded change, and Full for a comparison of options.
     let nodes = vec![
         described(
@@ -61,6 +61,19 @@ async fn live_slice_draft_gets_pipeline_advice_from_the_real_jev() {
                 "Collect the published terms",
                 "Compare them",
                 "Write the recommendation"
+            ]),
+        ),
+        // The case of the stand probes of 2026-10-13: a document of the repository, for
+        // which Jev chose the knowledge-base and the operational pipelines.
+        described(
+            4,
+            LIGHTWEIGHT,
+            "Write the initial proof matrix",
+            "docs/proof-matrix.md maps every required service and UI to its invariant, local command and proving artifact",
+            json!([
+                "One row per required service",
+                "The local command that proves each row",
+                "A check that the file lists every service"
             ]),
         ),
     ];
@@ -107,7 +120,7 @@ async fn live_slice_draft_gets_pipeline_advice_from_the_real_jev() {
             .as_array()
             .unwrap()
             .len(),
-        3
+        4
     );
     client.finish().await;
 }
