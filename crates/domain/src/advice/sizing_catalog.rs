@@ -3,8 +3,9 @@
 //! key such as `c2` and `{item}` for an included item key such as `c2.i3`. Each list
 //! pairs a criterion name with its description; every question also gets `ABSTAIN`.
 
-/// One sentence that travels inside an advised field and explains it to the agent.
-pub const NOTE: &str = "Jev's advice on size, splitting and extra items for this draft: positions are 1-based in draft order, each *_p is Jev's probability for its choice, and you decide what to do with it.";
+/// One sentence that travels inside an advised field: it explains the field to the
+/// agent and says what to do with the advice, which binds.
+pub const NOTE: &str = "Jev's advice on size, splitting and extra items for each candidate this save created or changed: positions are 1-based in draft order and each *_p is Jev's probability for its choice; follow the advice by changing the draft and saving it again, or where the advice is plainly wrong give the reason in advice_departures of the review; a review that says ready is refused until then.";
 
 pub(super) const SIZE_INSTRUCTIONS: &str = "Judge how large the work of candidate {key} in state.candidates is, relative to what the user asked for in state.user_words and to the candidate's product level: its own mode_override when it carries one, else state.mode. Judge the work that its title, outcome and includes describe, not the quality of the writing.";
 pub(super) const SIZE_CRITERIA: [(&str, &str); 4] = [

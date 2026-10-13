@@ -64,7 +64,7 @@ fn answers_become_jevs_choice_its_probability_and_the_one_for_the_drafts_choice(
 }
 
 #[test]
-fn the_note_is_one_sentence_that_explains_the_four_keys() {
+fn the_note_is_one_sentence_that_explains_the_four_keys_and_says_what_to_do() {
     for part in [
         "Jev's",
         "1-based in draft order",
@@ -72,10 +72,13 @@ fn the_note_is_one_sentence_that_explains_the_four_keys() {
         "pipeline_p",
         "draft_pipeline_p",
         "differs",
-        "you decide",
+        "where it differs follow the advice by changing the draft and saving it again",
+        "where the advice is plainly wrong give the reason in advice_departures of the review",
+        "a review that says ready is refused until then",
     ] {
         assert!(PIPELINE_NOTE.contains(part), "{part}");
     }
+    assert!(!PIPELINE_NOTE.contains("you decide"));
     assert_eq!(PIPELINE_NOTE.matches(". ").count(), 0, "one sentence");
     assert_eq!(PIPELINE_NOTE.matches('.').count(), 1, "one sentence");
     assert!(PIPELINE_NOTE.ends_with('.'));

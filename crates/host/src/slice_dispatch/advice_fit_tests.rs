@@ -47,7 +47,7 @@ fn draft_save_reply_has_measured_room_for_sizing_advice() {
          candidates_that_fit with 0/5/100 included items each={bare}/{usual}/{heavy}"
     );
     assert_eq!((base, each), (1373, 139));
-    assert_eq!((bare, usual, heavy), (46, 37, 7));
+    assert_eq!((bare, usual, heavy), (45, 36, 6));
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn record_input_reply_has_measured_room_for_intake_advice() {
         "slice.candidates.input base_envelope_bytes={base}; largest intake advice bytes \
          without a saved draft={bare}, with one={named}"
     );
-    assert_eq!((base, bare, named), (1373, 551, 594));
+    assert_eq!((base, bare, named), (1373, 886, 929));
 }
 
 /// The reply with the largest `sizing` field a draft of this shape can get.
@@ -110,8 +110,8 @@ fn draft_save_reply_has_measured_room_for_pipeline_advice_beside_sizing() {
          field={alone}; nodes of a first draft that fit beside the largest sizing field with \
          0/5/100 included items each={bare}/{usual}/{heavy}"
     );
-    assert_eq!((base, one, each), (1373, 557, 134));
-    assert_eq!((alone, bare, usual, heavy), (47, 22, 19, 5));
+    assert_eq!((base, one, each), (1373, 740, 134));
+    assert_eq!((alone, bare, usual, heavy), (46, 20, 18, 5));
 }
 
 /// What the largest `pipeline_advice` field for this many asked nodes adds to a reply
@@ -147,7 +147,9 @@ fn sizing_measured_beside_the_reserve_leaves_the_second_point_its_short_field() 
             }
             most += 1;
         }
-        assert!(most == unreserved || most + 1 == unreserved, "{items}");
+        // The reserve is 226 bytes and a candidate costs 139 or more: it takes the
+        // room of two candidates at most.
+        assert!(most <= unreserved && unreserved <= most + 2, "{items}");
         // Whatever `sizing` then gives, the reply carries the second point's field.
         let unfit = slice_pipeline_draft(most, &catalogue).without_room();
         let need = largest_bytes_of(&reply, &unfit);
@@ -161,18 +163,26 @@ fn sizing_measured_beside_the_reserve_leaves_the_second_point_its_short_field() 
         assert!(left >= need, "{items}: {left} < {need}");
         finish_pipeline(sized, Some(unfit), READ_BUDGET).unwrap();
     }
-    // The case that failed before the reserve: thirty-seven candidates of five items
-    // left 148 bytes where 226 are needed. `sizing` now gives way at thirty-seven.
-    let unfit = slice_pipeline_draft(37, &catalogue).without_room();
+    // The case the reserve is for: the largest `sizing` field for thirty-six
+    // candidates of five items fits the reply and leaves less than the 226 bytes the
+    // second point needs. Measured with the reserve, `sizing` gives way at thirty-six.
+    let unfit = slice_pipeline_draft(36, &catalogue).without_room();
     assert_eq!(largest_bytes_of(&reply, &unfit), 226);
+    let sized = with_full_sizing(&reply, 36, 5).unwrap();
+    let left = READ_BUDGET - responses::encoded_len(&sized).unwrap();
+    println!(
+        "slice.candidates.save, 36 candidates of 5 items without the reserve: bytes_left={left}"
+    );
+    assert_eq!(left, 122);
     let room = ReplyRoom {
         reply: &with_pipeline_reserve(&reply, &unfit),
         capacity: READ_BUDGET,
     };
     assert_eq!(
-        room.check_reply(&slice_sizing(37, 5).largest()),
+        room.check_reply(&slice_sizing(36, 5).largest()),
         Err(Error::RequestTooLarge)
     );
+    assert_eq!(room.check_reply(&slice_sizing(35, 5).largest()), Ok(()));
 }
 
 /// What a field adds under `pipeline_advice` to a reply that has room for it.

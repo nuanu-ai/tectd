@@ -38,7 +38,7 @@ fn draft_save_reply_has_measured_room_for_sizing_advice() {
          candidates_that_fit with 0/5/100 included items each={bare}/{usual}/{heavy}"
     );
     assert_eq!((base, each), (2954, 133));
-    assert_eq!((bare, usual, heavy), (37, 29, 5));
+    assert_eq!((bare, usual, heavy), (35, 28, 5));
 }
 
 #[test]
@@ -52,5 +52,5 @@ fn record_input_reply_has_measured_room_for_intake_advice() {
         "scope.candidates.record_input base_envelope_bytes={base}; largest intake advice bytes \
          without a saved draft={bare}, with one={named}"
     );
-    assert_eq!((base, bare, named), (3016, 553, 596));
+    assert_eq!((base, bare, named), (3016, 888, 931));
 }

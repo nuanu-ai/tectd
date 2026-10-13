@@ -4,8 +4,9 @@
 //! of the catalogue the draft was saved against, under its own name, described with
 //! the three texts of its entry under the labels below; the question also gets `ABSTAIN`.
 
-/// One sentence that travels inside an advised field and explains it to the agent.
-pub const NOTE: &str = "Jev's second opinion on the pipeline of each work node this save created or changed: positions are 1-based in draft order, pipeline is Jev's choice from the same catalogue and pipeline_p its probability, draft_pipeline_p is Jev's probability for the pipeline your draft chose, differs says Jev chose another one, and you decide what to do with it.";
+/// One sentence that travels inside an advised field: it explains the field to the
+/// agent and says what to do with the advice, which binds.
+pub const NOTE: &str = "Jev's second opinion on the pipeline of each work node this save created or changed: positions are 1-based in draft order, pipeline is Jev's choice from the same catalogue and pipeline_p its probability, draft_pipeline_p is Jev's probability for the pipeline your draft chose and differs says Jev chose another one; where it differs follow the advice by changing the draft and saving it again, or where the advice is plainly wrong give the reason in advice_departures of the review; a review that says ready is refused until then.";
 
 pub(super) const INSTRUCTIONS: &str = "Choose the pipeline that fits the work of candidate {key} in state.candidates, judged against what the user asked for in state.user_words and against the candidate's product level: its own mode_override when it carries one, else state.mode. Judge the work that its title, outcome and includes describe. Each criterion is one pipeline of the catalogue: when to choose it, when not to choose it and the result it gives. This is a second opinion for the planning agent, which decides.";
 

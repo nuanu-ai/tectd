@@ -31,7 +31,27 @@ fn answers_become_positions_tokens_and_two_decimal_probabilities() {
     for absent in ["Invitation form", "retries", "confidence", "probabilities"] {
         assert!(!text.contains(absent), "{absent}");
     }
-    assert!(SIZING_NOTE.len() <= 200 && SIZING_NOTE.contains("1-based"));
+}
+
+#[test]
+fn the_note_is_one_sentence_that_says_to_follow_the_advice_or_give_the_reason() {
+    for part in [
+        "Jev's advice",
+        "each candidate this save created or changed",
+        "1-based in draft order",
+        "*_p is Jev's probability",
+        "follow the advice by changing the draft and saving it again",
+        "where the advice is plainly wrong give the reason in advice_departures of the review",
+        "a review that says ready is refused until then",
+    ] {
+        assert!(SIZING_NOTE.contains(part), "{part}");
+    }
+    assert!(!SIZING_NOTE.contains("you decide"));
+    assert_eq!(SIZING_NOTE.matches('.').count(), 1, "one sentence");
+    assert!(SIZING_NOTE.ends_with('.'));
+    // It travels only inside an advised field, the largest one too.
+    let advice = slice_advice();
+    assert_eq!(content(&advice.largest())["note"], SIZING_NOTE);
 }
 
 #[test]

@@ -55,8 +55,23 @@ fn answers_become_tokens_a_draft_position_and_two_decimal_probabilities() {
     ] {
         assert!(INTAKE_NOTE.contains(part), "{part}");
     }
-    assert!(INTAKE_NOTE.contains("*_p is Jev's probability") && INTAKE_NOTE.contains("you decide"));
-    assert_eq!(INTAKE_NOTE.matches(". ").count(), 0, "one sentence");
+    assert!(INTAKE_NOTE.contains("*_p is Jev's probability"));
+    // What to do with each answer, before the work: there is no gate behind this point.
+    for part in [
+        "before doing the work bring the plan in line with it",
+        "new_candidate means add a candidate to the draft",
+        "extends means change candidate nearest",
+        "covered changes nothing",
+        "separate_scope and outside_program mean do not plan it here and tell the user",
+        "a fit other than in_line means ask the user",
+        "depart only where the advice is plainly wrong, and tell the user so",
+    ] {
+        assert!(INTAKE_NOTE.contains(part), "{part}");
+    }
+    assert!(!INTAKE_NOTE.contains("you decide"));
+    assert!(!INTAKE_NOTE.contains("advice_departures"));
+    assert_eq!(INTAKE_NOTE.matches('.').count(), 1, "one sentence");
+    assert!(INTAKE_NOTE.ends_with('.'));
 }
 
 #[test]

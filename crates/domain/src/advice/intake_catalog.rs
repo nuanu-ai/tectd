@@ -3,8 +3,9 @@
 //! candidate key such as `c2`. Each criterion pairs a name with its description; every
 //! question also gets `ABSTAIN`.
 
-/// One sentence that travels inside an advised field and explains it to the agent.
-pub const NOTE: &str = "Jev's advice on the input just recorded: work is how much new work it asks for, placement is where that work lands, nearest is the 1-based position in the saved draft of the closest candidate, fit is how it sits with the earlier words and the product level; each *_p is Jev's probability for its choice, and you decide what to do with it.";
+/// One sentence that travels inside an advised field: it explains the field to the
+/// agent and says what to do with the advice. No review is held to this point.
+pub const NOTE: &str = "Jev's advice on the input just recorded: work is how much new work it asks for, placement is where that work lands, nearest is the 1-based position in the saved draft of the closest candidate, fit is how it sits with the earlier words and the product level, and each *_p is Jev's probability for its choice; before doing the work bring the plan in line with it: new_candidate means add a candidate to the draft, extends means change candidate nearest, covered changes nothing, separate_scope and outside_program mean do not plan it here and tell the user, and a fit other than in_line means ask the user; depart only where the advice is plainly wrong, and tell the user so.";
 
 pub(super) const WORK_INSTRUCTIONS: &str = "Judge how much new work the text in state.new_input asks for, beyond what state.user_words and state.program already ask for. Measure it as if that work were one candidate, at the product level in state.mode; do not judge the length or the quality of the text.";
 pub(super) const WORK_NONE: (&str, &str) = (

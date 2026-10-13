@@ -178,9 +178,9 @@ fn longest(name: &str) -> (&'static str, f64) {
 
 /// `sizing` is measured on a reply that keeps room for the short field of the second
 /// point, so a draft at the very limit of `sizing` still gets an answer from both.
-/// Without that reserve thirty-seven new work nodes of five included items, with every
-/// answer of Jev at its longest, left 148 bytes where the second point needs 226, and
-/// the stored save answered with an error.
+/// Without that reserve thirty-six new work nodes of five included items, with every
+/// answer of Jev at its longest, leave 122 bytes where the second point needs 226, and
+/// the stored save would answer with an error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_draft_at_the_limit_of_sizing_still_gets_a_field_from_both_points() {
     let stand = Stand::start("2000").await;
@@ -197,27 +197,27 @@ async fn a_draft_at_the_limit_of_sizing_still_gets_a_field_from_both_points() {
         )
     };
 
-    // Thirty-six: `sizing` is advised at its largest, and the second point says in
+    // Thirty-five: `sizing` is advised at its largest, and the second point says in
     // its short field that its own advice has no room left.
     let (mut client, repo) = stand.workspace().await;
     let (head, _) = planning(&mut client, &repo).await;
     configure(&mut client, true, 0).await;
-    let (saved, next, request_id) = save(&mut client, &head, full(36)).await;
-    assert_eq!(saved["advice"]["candidates"].as_array().unwrap().len(), 36);
-    assert_eq!(saved["pipeline_advice"], too_large(36), "{saved}");
-    assert_eq!(stored(&next).len(), 36);
+    let (saved, next, request_id) = save(&mut client, &head, full(35)).await;
+    assert_eq!(saved["advice"]["candidates"].as_array().unwrap().len(), 35);
+    assert_eq!(saved["pipeline_advice"], too_large(35), "{saved}");
+    assert_eq!(stored(&next).len(), 35);
     let written = rows(&stand, request_id).await;
     assert_eq!(points(&written), ["sizing", "pipeline"]);
     assert_eq!(written[0]["advice"], saved["advice"]);
     assert_eq!(written[1]["advice"], saved["pipeline_advice"]);
 
-    // Thirty-seven: the largest `sizing` field would leave the second point no room
+    // Thirty-six: the largest `sizing` field would leave the second point no room
     // for even that, so `sizing` is the one that is not asked, and `pipeline` is.
     let (mut other, repo) = stand.workspace().await;
     let (head, _) = planning(&mut other, &repo).await;
     configure(&mut other, true, 0).await;
     let calls = stand.jev.calls();
-    let params = head.save(full(37));
+    let params = head.save(full(36));
     let request_id = uuid::Uuid::parse_str(params["request_id"].as_str().unwrap()).unwrap();
     let (saved, _) = command(&mut other, SAVE, params.clone()).await;
     assert_eq!(saved["candidate_set"]["status"], "review_required");
@@ -228,7 +228,7 @@ async fn a_draft_at_the_limit_of_sizing_still_gets_a_field_from_both_points() {
             .as_array()
             .unwrap()
             .len(),
-        37
+        36
     );
     let written = rows(&stand, request_id).await;
     assert_eq!(points(&written), ["sizing", "pipeline"]);
