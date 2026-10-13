@@ -1,5 +1,5 @@
-//! The daily call limit and the room of the reply: each point is counted and measured
-//! for itself.
+//! The daily call limit, the ceiling of a request and the room of the reply: each
+//! point is counted and measured for itself.
 use crate::drafts::{Level, Shape};
 use crate::inputs::{FIRST, Planned, SECOND, route};
 use crate::model::{advised, both_rows, enable, intake_advised, journalled, settled, unavailable};
@@ -135,6 +135,51 @@ async fn an_intake_field_at_its_largest_leaves_the_second_point_its_room(level: 
     client.finish().await;
 }
 
+/// The state both points send holds the new input, and this one alone is over the
+/// 256 KiB a request to Jev may take: the input is recorded and neither point sends it.
+async fn an_input_over_the_request_ceiling_reaches_jev_from_neither_point(level: Level) {
+    let stand = Stand::start("2000").await;
+    stand.jev.answer(Jev::Answers(settled));
+    let (mut client, repo) = stand.workspace().await;
+    let planned = Planned::bare(&mut client, &repo, level).await;
+    configure(&mut client, true, 0).await;
+    let long = "A long amendment. ".repeat(16_000);
+    let request_id = Uuid::new_v4();
+    let params = planned.input(&long, request_id);
+    let (recorded, envelope) = command(&mut client, route(level), params).await;
+    for field in ["advice", "model_advice"] {
+        assert_eq!(recorded[field]["status"], "unavailable", "{field}");
+        assert_eq!(recorded[field]["reason"], "request_too_large", "{field}");
+        let message = recorded[field]["message"].as_str().unwrap();
+        assert!(
+            message.starts_with("Jev advice is not available: the request of ")
+                && message.ends_with(" bytes exceeds the limit of 262144 bytes"),
+            "{field}: {message}"
+        );
+    }
+    assert!(envelope <= BUDGET, "{envelope}");
+    assert_eq!(planned.recorded(&stand).await.last().unwrap(), &long);
+    let (intake, model) = both_rows(&stand, request_id).await;
+    assert_eq!(intake["advice"], recorded["advice"]);
+    assert_eq!(model["advice"], recorded["model_advice"]);
+    for row in [&intake, &model] {
+        assert_eq!(
+            journalled(row),
+            (
+                &json!(false),
+                &json!("not_sent"),
+                &json!("unavailable"),
+                &json!("request_too_large")
+            ),
+            "{}",
+            row["point"]
+        );
+        assert_eq!(row["request"], Value::Null);
+    }
+    assert_eq!(stand.jev.calls(), 0);
+    client.finish().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn scope_input_gets_no_model_advice_once_intake_took_the_last_call_of_the_day() {
     the_daily_limit_reached_between_the_two_points_stops_the_second(Level::Scopes).await;
@@ -153,4 +198,14 @@ async fn scope_input_with_the_largest_intake_field_still_carries_model_advice() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn slice_input_with_the_largest_intake_field_still_carries_model_advice() {
     an_intake_field_at_its_largest_leaves_the_second_point_its_room(Level::Slices).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn scope_input_over_the_request_ceiling_is_recorded_and_not_sent_to_jev() {
+    an_input_over_the_request_ceiling_reaches_jev_from_neither_point(Level::Scopes).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn slice_input_over_the_request_ceiling_is_recorded_and_not_sent_to_jev() {
+    an_input_over_the_request_ceiling_reaches_jev_from_neither_point(Level::Slices).await;
 }
