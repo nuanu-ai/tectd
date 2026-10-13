@@ -1,10 +1,16 @@
 //! Jev's advice binds: the agent follows it and departs only where it holds the advice
 //! plainly wrong, stating why. Here is what is kept of Jev's answer about one
-//! candidate, so that the review of the draft can be held to it.
+//! candidate, so that the review of the draft can be held to it, and how a review
+//! states a departure from it.
 use super::{PIPELINE_POINT, SIZING_POINT, SizingLevel};
+use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeSet;
 use uuid::Uuid;
+
+/// Where a review states its departures.
+const DEPARTURES_PATH: &str = "/params/review/advice_departures";
 
 /// The advice points a ready review is held to. `intake` is not one of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -38,3 +44,41 @@ pub struct CandidateAdvice {
     /// probabilities, and no text of the draft.
     pub answer: Value,
 }
+
+/// One departure a review states: the advice of one point about one candidate is
+/// plainly wrong, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdviceDeparture {
+    pub candidate_id: Uuid,
+    pub point: BindingPoint,
+    pub reason: String,
+}
+
+/// The departures a review states are held to two rules: each gives a reason, and
+/// one candidate and point is named once.
+pub fn validate_advice_departures(departures: &[AdviceDeparture]) -> Result<()> {
+    let mut named = BTreeSet::new();
+    for (index, departure) in departures.iter().enumerate() {
+        if departure.reason.trim().is_empty() {
+            return Err(Error::invalid_arguments_at(
+                format!("advice departure at index {index} requires a nonblank reason"),
+                format!("{DEPARTURES_PATH}/{index}/reason"),
+            ));
+        }
+        if !named.insert((departure.candidate_id, departure.point)) {
+            return Err(Error::invalid_arguments_at(
+                format!(
+                    "advice departure at index {index} repeats candidate {} and point {}",
+                    departure.candidate_id,
+                    departure.point.as_str()
+                ),
+                format!("{DEPARTURES_PATH}/{index}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests;

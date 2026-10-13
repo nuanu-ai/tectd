@@ -66,6 +66,7 @@ fn request(candidate_ids: &[Uuid]) -> ReviewCandidateSet {
                 .map(|id| decision(id, CandidateDecisionKind::Accept, "In scope"))
                 .collect(),
             protected_change_reviews: Vec::new(),
+            advice_departures: None,
         },
         consumed_knowledge: None,
     }

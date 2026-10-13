@@ -21,7 +21,7 @@ mod sizing_state;
 #[cfg(test)]
 mod test_drafts;
 mod written;
-pub use binding::{BindingPoint, CandidateAdvice};
+pub use binding::{AdviceDeparture, BindingPoint, CandidateAdvice, validate_advice_departures};
 pub use exchange::{AdviceCompletion, AdviceExchange, AdviceFailure, AdviceReply};
 pub use intake::{INTAKE_NOTE, INTAKE_POINT, IntakeAdvice, IntakePlanning};
 pub use pipeline::{PIPELINE_NOTE, PIPELINE_POINT, PipelineAdvice, PipelineDraft};

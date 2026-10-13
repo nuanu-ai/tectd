@@ -30,6 +30,21 @@ fn audit() -> Value {
     ))
 }
 
+/// The departures from Jev's advice that a review states, on both save routes.
+pub(super) fn departures() -> Value {
+    let departure = object_schema(
+        json!({
+            "candidate_id":{"type":"string","format":"uuid"},
+            "point":{"type":"string","enum":["sizing","pipeline"]},
+            "reason":{"type":"string","minLength":1}
+        }),
+        json!(["candidate_id", "point", "reason"]),
+    );
+    json!({"type":"array","items":departure,"description":DEPARTURES})
+}
+
+const DEPARTURES: &str = "Jev's advice this review departs from. The advice on a saved draft is to be followed: change the draft as it says and save it again. State a departure only where the advice about one candidate is plainly wrong: candidate_id is that candidate's id in the saved draft, point is the advice point (sizing for the advice field of the draft save, pipeline for its pipeline_advice field) and reason says why that advice is wrong. One candidate and point is named once. Omit the field when the review departs from nothing: null is invalid.";
+
 pub(super) fn routes() -> Vec<RouteSpec> {
     vec![
         RouteSpec {
@@ -163,3 +178,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod departure_tests;

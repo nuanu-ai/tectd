@@ -4,6 +4,8 @@
 #[path = "advice_binding/support.rs"]
 #[allow(dead_code)]
 mod binding;
+#[path = "advice_binding/departures.rs"]
+mod departures;
 #[path = "advice_sizing/drafts.rs"]
 #[allow(dead_code)]
 mod drafts;

@@ -123,6 +123,8 @@ impl WorkspaceService {
             request.input_cursor,
             request.request_id,
         )?;
+        let departures = request.review.advice_departures.as_deref().unwrap_or(&[]);
+        tect_domain::validate_advice_departures(departures)?;
         ensure_fresh(
             &mut *tx,
             workspace.id,

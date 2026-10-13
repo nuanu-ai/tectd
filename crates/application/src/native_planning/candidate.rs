@@ -165,6 +165,8 @@ impl WorkspaceService {
         if request.review.summary.trim().is_empty() {
             return Err(Error::InvalidArguments);
         }
+        let departures = request.review.advice_departures.as_deref().unwrap_or(&[]);
+        tect_domain::validate_advice_departures(departures)?;
         let (mut tx, workspace, session) = self
             .native_planning_transaction(context, TransactionMode::ReadWrite)
             .await?;

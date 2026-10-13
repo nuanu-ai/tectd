@@ -225,6 +225,7 @@ async fn new_scope_open_rejects_source_guidance_drift_but_receipt_replays() {
                         rationale: "Still bounded".into(),
                     }],
                     protected_change_reviews: vec![],
+                    advice_departures: None,
                 },
                 consumed_knowledge: None,
             },

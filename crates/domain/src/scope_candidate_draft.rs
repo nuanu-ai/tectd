@@ -273,6 +273,14 @@ pub struct CandidateReviewDraft {
     pub candidate_decisions: Vec<CandidateDecision>,
     #[serde(default)]
     pub protected_change_reviews: Vec<ProtectedChangeReview>,
+    /// The advice of Jev this review departs from, each with the reason that advice
+    /// is plainly wrong. Omitted means none; an explicit null is not "none".
+    #[serde(
+        default,
+        deserialize_with = "crate::mode_override::stated",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub advice_departures: Option<Vec<crate::AdviceDeparture>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

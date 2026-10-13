@@ -259,7 +259,8 @@ pub(super) fn save() -> Value {
             "protected_change_reviews":{"type":"array","items":object_schema(
                 json!({"accepted_evidence_id":uuid(),"prior_candidate_id":uuid(),"rationale":text()}),
                 json!(["accepted_evidence_id","rationale"])
-            ),"maxItems":100}
+            ),"maxItems":100},
+            "advice_departures":super::advice_schema::departures()
         }),
         json!(["verdict", "summary", "findings", "candidate_decisions"]),
     );

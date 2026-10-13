@@ -124,7 +124,8 @@ pub(super) fn save() -> Value {
     let review = object_schema(
         json!({
             "verdict":{"type":"string","enum":["ready","revise","blocked"]},"summary":text(),
-            "findings":{"type":"array","items":finding,"maxItems":100}
+            "findings":{"type":"array","items":finding,"maxItems":100},
+            "advice_departures":super::advice_schema::departures()
         }),
         json!(["verdict", "summary"]),
     );
